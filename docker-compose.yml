@@ -24,10 +24,6 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres/postgres_service
       SECRET_KEY: "dKq2BK3pqGQfNqC7SK8ZxNCdqJnGV4F9"  # More secure key for development
-      POSTGRES_HOST: postgres
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: postgres_service
       LITELLM_API_URL: "https://demo.litellm.ai"
       LITELLM_MASTER_KEY: "sk-1234"  # Replace with your actual master key
     ports:
@@ -57,7 +53,7 @@ services:
       - backend
     user: '10000'
     labels:
-      lagoon.type: python
+      lagoon.type: node
 
 volumes:
   postgres_data:
