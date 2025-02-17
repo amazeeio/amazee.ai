@@ -14,5 +14,7 @@ COPY . .
 # Expose port 3000 for development server
 EXPOSE 3000
 
+ENV ESLINT_CACHE_DIR=/tmp/.eslintcache
+
 # Start development server
 CMD ["npm", "start"]
