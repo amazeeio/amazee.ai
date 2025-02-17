@@ -43,18 +43,23 @@ This repository contains the backend and frontend services for the amazee.ai app
 
 ### Backend Tests
 ```bash
-make test          # Run backend tests
-make test-cov      # Run backend tests with coverage report
+make backend-test     # Run backend tests
+make backend-test-cov # Run backend tests with coverage report
 ```
 
 ### Frontend Tests
 ```bash
-make frontend-test # Run frontend tests
+make frontend-test    # Run frontend tests
 ```
 
 ### All Tests
 ```bash
-make test-all     # Run both backend and frontend tests
+make test-all        # Run both backend and frontend tests
+```
+
+### Cleanup
+```bash
+make test-clean      # Clean up test containers and images
 ```
 
 ## 🧹 Cleanup
