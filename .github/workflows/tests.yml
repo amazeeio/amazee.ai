@@ -27,7 +27,7 @@ jobs:
       run: npm ci
 
     - name: Run frontend tests
-      run: npm test -- --watchAll=false
+      run: npm test -- --ci
 
   backend-tests:
     runs-on: ubuntu-latest
