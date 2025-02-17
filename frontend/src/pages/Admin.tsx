@@ -235,8 +235,11 @@ export const Admin: React.FC = () => {
                       id="postgres-port"
                       name="postgres_port"
                       type="number"
-                      value={newRegion.postgres_port}
-                      onChange={(e) => setNewRegion({ ...newRegion, postgres_port: parseInt(e.target.value) })}
+                      value={newRegion.postgres_port || ''}
+                      onChange={(e) => {
+                        const value = e.target.value === '' ? 5432 : parseInt(e.target.value);
+                        setNewRegion({ ...newRegion, postgres_port: value });
+                      }}
                       className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
                       required
                       aria-label="Postgres port"

@@ -19,7 +19,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const { data: user, isLoading } = useQuery({
     queryKey: ['user'],
-    queryFn: auth.me,
+    queryFn: async () => {
+      try {
+        const data = await auth.me();
+        return data || null;
+      } catch (error) {
+        return null;
+      }
+    },
     retry: false,
     enabled: true,
     staleTime: 1000 * 60 * 5, // 5 minutes
