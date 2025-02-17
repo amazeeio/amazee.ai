@@ -11,12 +11,15 @@ RUN npm install
 # Copy project files
 COPY . .
 
-# Expose port 3000 for development server
+# Build the application
+RUN npm run build
+
+# Expose port 3000 for the server
 EXPOSE 3000
 
 ENV ESLINT_CACHE_DIR=/tmp/.eslintcache
 
 RUN mkdir -p /app/node_modules/.cache && fix-permissions /app/node_modules/.cache
 
-# Start development server
-CMD ["npm", "start"]
+# Serve the production build
+CMD ["npm", "run", "serve"]
