@@ -79,10 +79,19 @@ describe('APITokens Component', () => {
   });
 
   it('renders loading state initially', async () => {
+    (tokens.list as jest.Mock).mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(mockTokens), 500)));
+
     await act(async () => {
       renderAPITokens();
     });
-    expect(screen.getByText('Loading...')).toBeInTheDocument();
+
+    // Wait for and verify loading state
+    await waitFor(() => {
+      expect(screen.getByText(/loading/i)).toBeInTheDocument();
+    });
+
+    // Wait for loading to finish
+    await waitForElementToBeRemoved(() => screen.queryByText(/loading/i));
   });
 
   it('renders list of tokens', async () => {
