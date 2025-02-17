@@ -34,7 +34,6 @@ services:
       - "8800:8800"
     volumes:
       - ./app:/app/app
-      - ./scripts:/app/scripts
     depends_on:
       postgres:
         condition: service_healthy
