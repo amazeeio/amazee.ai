@@ -1,14 +1,15 @@
-FROM python:3.9-slim
+FROM uselagoon/python-3.11:latest
+
+RUN apk add bash --no-cache
 
 WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app app/
+COPY app .
 
-# Create a script to initialize the database and start the server
-COPY scripts/start.sh /start.sh
-RUN chmod +x /start.sh
+# Script to initialize the database and start the server
+RUN chmod +x /app/start.sh
 
-CMD ["/start.sh"]
+CMD ["/app/start.sh"]
