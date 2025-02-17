@@ -8,10 +8,11 @@ import psycopg2
 import os
 try:
     psycopg2.connect(
-        dbname=os.getenv("POSTGRES_DB", "postgres_service"),
-        user=os.getenv("POSTGRES_USER", "postgres"),
+        dbname=os.getenv("POSTGRES_DATABASE", "postgres_service"),
+        user=os.getenv("POSTGRES_USERNAME", "postgres"),
         password=os.getenv("POSTGRES_PASSWORD", "postgres"),
-        host=os.getenv("POSTGRES_HOST", "postgres")
+        host=os.getenv("POSTGRES_HOST", "postgres"),
+        port=os.getenv("POSTGRES_PORT", "5432")
     )
 except psycopg2.OperationalError:
     sys.exit(-1)
