@@ -9,6 +9,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app app/
 
+# Copy Lagon environment variables
+COPY .lagoon.env .
+
 # Script to initialize the database and start the server
 COPY backend-start.sh .
 RUN chmod +x /app/backend-start.sh
