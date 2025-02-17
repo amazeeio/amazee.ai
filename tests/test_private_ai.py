@@ -159,4 +159,4 @@ def test_delete_region_with_active_keys(client, admin_token, test_region, db, te
 
     assert response.status_code == 400
     assert "Cannot delete region" in response.json()["detail"]
-    assert "private AI key(s) are currently using this region" in response.json()["detail"]
+    assert "database(s) are currently using this region" in response.json()["detail"]
