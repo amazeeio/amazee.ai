@@ -1,14 +1,14 @@
-.PHONY: test test-build test-clean test-network test-postgres frontend-test frontend-test-build
+.PHONY: backend-test backend-test-build test-clean test-network test-postgres frontend-test frontend-test-build
 
 # Default target
-all: test
+all: backend-test
 
 # Create Docker network if it doesn't exist
 test-network:
 	docker network create amazeeai_default 2>/dev/null || true
 
-# Build the test container
-test-build:
+# Build the backend test container
+backend-test-build:
 	docker build -t amazee-backend-test -f Dockerfile.test .
 
 # Start PostgreSQL container for testing
@@ -22,8 +22,8 @@ test-postgres: test-network
 		postgres:14 && \
 	sleep 5
 
-# Run tests in a new container
-test: test-build test-postgres
+# Run backend tests in a new container
+backend-test: backend-test-build test-postgres
 	docker run --rm \
 		--network amazeeai_default \
 		-e DATABASE_URL="postgresql://postgres:postgres@amazee-test-postgres/postgres_service" \
@@ -39,8 +39,8 @@ test: test-build test-postgres
 		-v $(PWD)/tests:/app/tests \
 		amazee-backend-test
 
-# Run tests with coverage report
-test-cov: test-build test-postgres
+# Run backend tests with coverage report
+backend-test-cov: backend-test-build test-postgres
 	docker run --rm \
 		--network amazeeai_default \
 		-e DATABASE_URL="postgresql://postgres:postgres@amazee-test-postgres/postgres_service" \
@@ -67,7 +67,7 @@ frontend-test: frontend-test-build
 		amazeeai-frontend-test npm test -- --ci
 
 # Run all tests (backend and frontend)
-test-all: test frontend-test
+test-all: backend-test frontend-test
 
 # Clean up test containers and images
 test-clean:
