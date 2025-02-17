@@ -1,0 +1,26 @@
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements files
+COPY requirements.txt .
+COPY requirements-test.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-test.txt
+
+# Copy application code and tests
+COPY app/ app/
+COPY tests/ tests/
+
+# Set environment variables for testing
+ENV PYTHONPATH=/app
+ENV TESTING=1
+
+# Command to run tests
+CMD ["pytest", "-v", "tests/"]
