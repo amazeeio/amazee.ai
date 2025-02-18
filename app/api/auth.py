@@ -62,15 +62,24 @@ async def logout(response: Response):
     return {"message": "Successfully logged out"}
 
 async def get_current_user_from_token(
-    api_token: str = Header(None, alias="X-API-Token"),
+    authorization: str = Header(None),
     db: Session = Depends(get_db)
 ) -> DBUser:
-    if not api_token:
+    if not authorization:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="API token is missing",
+            detail="Authorization header is missing",
         )
 
+    # Extract token from Authorization header
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authorization header format. Use 'Bearer <token>'",
+        )
+
+    api_token = parts[1]
     db_token = db.query(DBAPIToken).filter(DBAPIToken.token == api_token).first()
     if not db_token:
         raise HTTPException(
@@ -86,11 +95,11 @@ async def get_current_user_from_token(
 
 async def get_current_user_from_auth(
     access_token: Optional[str] = Cookie(None, alias="access_token"),
-    api_token: Optional[str] = Header(None, alias="X-API-Token"),
+    authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db)
 ) -> DBUser:
-    if api_token:
-        return await get_current_user_from_token(api_token, db)
+    if authorization:
+        return await get_current_user_from_token(authorization, db)
 
     if not access_token:
         raise HTTPException(
@@ -124,7 +133,7 @@ async def register(user: UserCreate, db: Session = Depends(get_db)):
     db_user = DBUser(
         email=user.email,
         hashed_password=hashed_password,
-        is_admin=user.is_admin
+        is_admin=False  # Force is_admin to be False for all new registrations
     )
     db.add(db_user)
     db.commit()
