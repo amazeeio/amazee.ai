@@ -230,7 +230,11 @@ describe('Admin Component', () => {
 
     await userEvent.type(nameInput, 'test-region');
     await userEvent.type(hostInput, 'localhost');
+
+    // Clear the port input first, then type the new value
+    await userEvent.clear(portInput);
     await userEvent.type(portInput, '5432');
+
     await userEvent.type(dbInput, 'test');
     await userEvent.type(userInput, 'test');
     await userEvent.type(passwordInput, 'test');
