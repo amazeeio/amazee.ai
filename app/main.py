@@ -75,9 +75,9 @@ def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
     openapi_schema = get_openapi(
-        title="Postgres as a Service API",
+        title="Private AI as a Service",
         version="1.0.0",
-        description="API documentation for the Postgres as a Service platform",
+        description="API documentation for the Private AI as a Service",
         routes=app.routes,
     )
     app.openapi_schema = openapi_schema
