@@ -13,13 +13,13 @@ jest.mock('../api/client', () => ({
     list: jest.fn(),
     update: jest.fn(),
   },
-  privateAIKeys: {
-    list: jest.fn(),
-    delete: jest.fn(),
-  },
   regions: {
     list: jest.fn(),
     create: jest.fn(),
+    delete: jest.fn(),
+  },
+  privateAIKeys: {
+    list: jest.fn(),
     delete: jest.fn(),
   },
   auth: {
@@ -65,6 +65,18 @@ const mockPrivateAIKeys = [
 const mockRegions = [
   { id: 1, name: 'us-east-1', postgres_host: 'localhost', postgres_port: 5432, is_active: true }
 ];
+
+const mockNewRegion = {
+  id: 2,
+  name: 'test-region',
+  postgres_host: 'localhost',
+  postgres_port: 5432,
+  postgres_db: 'test',
+  postgres_user: 'test',
+  postgres_password: 'test',
+  litellm_api_url: 'http://localhost:8800',
+  litellm_api_key: 'test-key',
+};
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -116,10 +128,10 @@ describe('Admin Component', () => {
   });
 
   it('renders loading state initially', async () => {
-    // Mock the API calls to resolve immediately
-    (users.list as jest.Mock).mockResolvedValueOnce(mockUsers);
-    (privateAIKeys.list as jest.Mock).mockResolvedValueOnce(mockPrivateAIKeys);
-    (regions.list as jest.Mock).mockResolvedValueOnce(mockRegions);
+    // Mock the API calls to resolve after a delay to ensure loading state is visible
+    (users.list as jest.Mock).mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(mockUsers), 100)));
+    (privateAIKeys.list as jest.Mock).mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(mockPrivateAIKeys), 100)));
+    (regions.list as jest.Mock).mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(mockRegions), 100)));
     (auth.me as jest.Mock).mockResolvedValueOnce(mockUser);
 
     await act(async () => {
@@ -134,11 +146,12 @@ describe('Admin Component', () => {
       );
     });
 
-    // Verify loading state is shown
-    expect(screen.getByText('Loading...')).toBeInTheDocument();
+    // Verify loading spinner is shown
+    const loadingSpinner = document.querySelector('.animate-spin');
+    expect(loadingSpinner).toBeInTheDocument();
 
     // Wait for loading to finish
-    await waitForElementToBeRemoved(() => screen.queryByText('Loading...'));
+    await waitForElementToBeRemoved(() => document.querySelector('.animate-spin'));
 
     // Verify content is loaded
     expect(screen.getByText('Admin Dashboard')).toBeInTheDocument();
@@ -147,10 +160,8 @@ describe('Admin Component', () => {
   it('renders admin dashboard with all sections', async () => {
     await renderAdmin();
 
-    // Wait for content to load
-    await waitFor(() => {
-      expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
-    });
+    // Wait for loading spinner to disappear
+    await waitForElementToBeRemoved(() => document.querySelector('.animate-spin'));
 
     expect(screen.getByText('Admin Dashboard')).toBeInTheDocument();
     expect(screen.getByText('Regions')).toBeInTheDocument();
@@ -158,25 +169,28 @@ describe('Admin Component', () => {
   });
 
   it('toggles admin status for a user', async () => {
-    (users.list as jest.Mock).mockResolvedValueOnce(mockUsers);
-    (users.update as jest.Mock).mockResolvedValueOnce({ ...mockUsers[0], is_admin: true });
+    (users.update as jest.Mock).mockResolvedValueOnce({ ...mockUsers[1], is_admin: true });
+    (auth.me as jest.Mock).mockResolvedValueOnce(mockUser);
 
-    await renderAdmin();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          <Admin />
+        </BrowserRouter>
+      </QueryClientProvider>
+    );
 
-    // Wait for content to load
+    // Wait for loading spinner to disappear
+    await waitForElementToBeRemoved(() => screen.queryByTestId('loading-spinner'));
+
+    // Wait for the users table to be rendered
     await waitFor(() => {
-      expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
+      expect(screen.getAllByRole('cell', { name: 'user@example.com' })[0]).toBeInTheDocument();
     });
-
-    // Find the specific user row by its email in the first column
-    const userRow = screen.getAllByRole('cell', { name: 'user@example.com' })[0];
-    expect(userRow).toBeInTheDocument();
 
     // Find and click the toggle button for the specific user
-    const toggleButton = screen.getByRole('switch', { name: `Toggle admin status for user@example.com` });
-    await act(async () => {
-      await userEvent.click(toggleButton);
-    });
+    const toggleButton = screen.getByRole('switch', { name: /toggle admin status for user@example.com/i });
+    await userEvent.click(toggleButton);
 
     await waitFor(() => {
       expect(users.update).toHaveBeenCalledWith(1, { is_admin: true });
@@ -184,53 +198,60 @@ describe('Admin Component', () => {
   });
 
   it('creates a new region', async () => {
-    (regions.create as jest.Mock).mockResolvedValueOnce({});
+    // Mock successful region creation
+    (regions.create as jest.Mock).mockResolvedValueOnce(mockNewRegion);
+    (regions.list as jest.Mock).mockResolvedValue(mockRegions);
+    (auth.me as jest.Mock).mockResolvedValueOnce(mockUser);
 
-    await renderAdmin();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          <Admin />
+        </BrowserRouter>
+      </QueryClientProvider>
+    );
 
-    // Wait for content to load
-    await waitFor(() => {
-      expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
-    });
+    // Wait for loading spinner to disappear
+    await waitForElementToBeRemoved(() => screen.queryByTestId('loading-spinner'));
 
     // Click add region button
     const addButton = screen.getByRole('button', { name: /add region/i });
-    await act(async () => {
-      await userEvent.click(addButton);
-    });
+    await userEvent.click(addButton);
 
     // Fill in the form
-    await act(async () => {
-      await userEvent.type(screen.getByLabelText('Region name'), 'test-region');
-      await userEvent.type(screen.getByLabelText('Postgres host'), 'localhost');
+    const nameInput = screen.getByLabelText(/name/i);
+    const hostInput = screen.getByLabelText(/postgres host/i);
+    const portInput = screen.getByLabelText(/postgres port/i);
+    const dbInput = screen.getByLabelText(/postgres database/i);
+    const userInput = screen.getByLabelText(/postgres admin user/i);
+    const passwordInput = screen.getByLabelText(/postgres admin password/i);
+    const apiUrlInput = screen.getByLabelText(/litellm api url/i);
+    const apiKeyInput = screen.getByLabelText(/litellm api key/i);
 
-      // Set postgres port
-      const portInput = screen.getByLabelText('Postgres port');
-      await userEvent.clear(portInput);
-      await userEvent.type(portInput, '5432', { delay: 0 });
-
-      await userEvent.type(screen.getByLabelText('Postgres admin user'), 'admin');
-      await userEvent.type(screen.getByLabelText('Postgres admin password'), 'password');
-      await userEvent.type(screen.getByLabelText('LiteLLM API URL'), 'http://localhost:8800');
-      await userEvent.type(screen.getByLabelText('LiteLLM API key'), 'test-key');
-    });
+    await userEvent.type(nameInput, 'test-region');
+    await userEvent.type(hostInput, 'localhost');
+    await userEvent.type(portInput, '5432');
+    await userEvent.type(dbInput, 'test');
+    await userEvent.type(userInput, 'test');
+    await userEvent.type(passwordInput, 'test');
+    await userEvent.type(apiUrlInput, 'http://localhost:8800');
+    await userEvent.type(apiKeyInput, 'test-key');
 
     // Submit the form
-    const createButton = screen.getByRole('button', { name: /create region/i });
-    await act(async () => {
-      await userEvent.click(createButton);
-    });
+    const submitButton = screen.getByRole('button', { name: /create/i });
+    await userEvent.click(submitButton);
 
     await waitFor(() => {
-      expect(regions.create).toHaveBeenCalledWith({
+      expect(regions.create).toHaveBeenCalledWith(expect.objectContaining({
         name: 'test-region',
         postgres_host: 'localhost',
         postgres_port: 5432,
-        postgres_admin_user: 'admin',
-        postgres_admin_password: 'password',
+        postgres_db: 'test',
+        postgres_admin_user: 'test',
+        postgres_admin_password: 'test',
         litellm_api_url: 'http://localhost:8800',
-        litellm_api_key: 'test-key'
-      });
+        litellm_api_key: 'test-key',
+      }));
     });
   });
 
@@ -375,6 +396,64 @@ describe('Admin Component', () => {
         litellm_api_url: 'http://localhost:8800',
         litellm_api_key: 'test-key'
       }));
+    });
+  });
+
+  it('handles region deletion', async () => {
+    (regions.delete as jest.Mock).mockRejectedValueOnce(new Error('Failed to delete region'));
+    (auth.me as jest.Mock).mockResolvedValueOnce(mockUser);
+    (regions.list as jest.Mock).mockResolvedValue(mockRegions);
+    (users.list as jest.Mock).mockResolvedValue(mockUsers);
+    (privateAIKeys.list as jest.Mock).mockResolvedValue([]);
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          <Admin />
+        </BrowserRouter>
+      </QueryClientProvider>
+    );
+
+    // Wait for loading spinner to disappear
+    await waitForElementToBeRemoved(() => screen.queryByTestId('loading-spinner'));
+
+    // Click delete button
+    const deleteButton = screen.getByRole('button', { name: /delete region us-east-1/i });
+    window.confirm = jest.fn(() => true);
+    await userEvent.click(deleteButton);
+
+    // Verify error message is shown
+    await waitFor(() => {
+      expect(screen.getByText(/failed to delete region/i)).toBeInTheDocument();
+    });
+  });
+
+  it('prevents deletion of region with active keys', async () => {
+    (regions.delete as jest.Mock).mockRejectedValueOnce(new Error('Cannot delete region with active private AI keys'));
+    (auth.me as jest.Mock).mockResolvedValueOnce(mockUser);
+    (regions.list as jest.Mock).mockResolvedValue(mockRegions);
+    (users.list as jest.Mock).mockResolvedValue(mockUsers);
+    (privateAIKeys.list as jest.Mock).mockResolvedValue([]);
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          <Admin />
+        </BrowserRouter>
+      </QueryClientProvider>
+    );
+
+    // Wait for loading spinner to disappear
+    await waitForElementToBeRemoved(() => screen.queryByTestId('loading-spinner'));
+
+    // Click delete button
+    const deleteButton = screen.getByRole('button', { name: /delete region us-east-1/i });
+    window.confirm = jest.fn(() => true);
+    await userEvent.click(deleteButton);
+
+    // Verify error message is shown
+    await waitFor(() => {
+      expect(screen.getByText(/cannot delete region with active private ai keys/i)).toBeInTheDocument();
     });
   });
 });

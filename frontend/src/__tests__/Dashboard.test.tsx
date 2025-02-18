@@ -113,8 +113,8 @@ describe('Dashboard Component', () => {
       renderDashboard();
     });
 
-    // Wait for loading state to disappear
-    await waitForElementToBeRemoved(() => screen.queryByText('Loading...'));
+    // Wait for loading spinner to disappear
+    await waitForElementToBeRemoved(() => document.querySelector('.animate-spin'));
 
     // Check for private AI key details
     expect(screen.getByText('key1')).toBeInTheDocument();
@@ -141,7 +141,7 @@ describe('Dashboard Component', () => {
     });
 
     // Wait for loading state to disappear
-    await waitForElementToBeRemoved(() => screen.queryByText('Loading...'));
+    await waitForElementToBeRemoved(() => screen.queryByTestId('loading-spinner'));
 
     // Click create button to show the form
     await act(async () => {

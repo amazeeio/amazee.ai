@@ -4,6 +4,6 @@ import App from './App';
 
 test('renders loading state initially', () => {
   render(<App />);
-  const loadingElement = screen.getByText(/loading/i);
+  const loadingElement = screen.getByTestId('loading-spinner');
   expect(loadingElement).toBeInTheDocument();
 });

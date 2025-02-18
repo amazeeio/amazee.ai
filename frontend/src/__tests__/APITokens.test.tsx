@@ -79,30 +79,27 @@ describe('APITokens Component', () => {
   });
 
   it('renders loading state initially', async () => {
-    (tokens.list as jest.Mock).mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(mockTokens), 500)));
+    (tokens.list as jest.Mock).mockImplementation(() => new Promise(resolve => setTimeout(() => resolve(mockTokens), 100)));
 
     await act(async () => {
       renderAPITokens();
     });
 
-    // Wait for and verify loading state
-    await waitFor(() => {
-      expect(screen.getByText(/loading/i)).toBeInTheDocument();
-    });
+    // Verify loading spinner is shown
+    const loadingSpinner = document.querySelector('.animate-spin');
+    expect(loadingSpinner).toBeInTheDocument();
 
     // Wait for loading to finish
-    await waitForElementToBeRemoved(() => screen.queryByText(/loading/i));
+    await waitForElementToBeRemoved(() => screen.queryByTestId('loading-spinner'));
   });
 
   it('renders list of tokens', async () => {
     await renderAPITokens();
 
-    // Wait for content to load
-    await waitFor(() => {
-      expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
-      expect(screen.getByText('Test Token 1')).toBeInTheDocument();
-    });
+    // Wait for loading spinner to disappear
+    await waitForElementToBeRemoved(() => document.querySelector('.animate-spin'));
 
+    expect(screen.getByText('Test Token 1')).toBeInTheDocument();
     expect(screen.getByText('Test Token 2')).toBeInTheDocument();
     expect(screen.getByText(/created: 2\/15\/2024/i)).toBeInTheDocument();
     expect(screen.getByText(/last used: 2\/16\/2024/i)).toBeInTheDocument();
