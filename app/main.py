@@ -4,6 +4,8 @@ from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
 import os
 
 class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
@@ -17,7 +19,11 @@ from app.core.config import settings
 from app.db.database import get_db
 
 app = FastAPI(
-    title="Postgres as a Service",
+    title="Private AI Keys as a Service",
+    description="API for managing Private AI Keys as a service",
+    version="1.0.0",
+    docs_url=None,  # Disable default docs url
+    redoc_url=None,  # Disable redoc
     root_path_in_servers=True,
     server_options={"forwarded_allow_ips": "*"}
 )
@@ -56,6 +62,25 @@ app.include_router(users.router, prefix="/users", tags=["users"])
 app.include_router(tokens.router, prefix="/tokens", tags=["tokens"])
 app.include_router(regions.router, prefix="/regions", tags=["regions"])
 
-@app.get("/")
-def read_root():
-    return {"message": "Welcome to Private AI Key Service"}
+@app.get("/", include_in_schema=False)
+async def custom_swagger_ui_html():
+    return get_swagger_ui_html(
+        openapi_url="/openapi.json",
+        title="API Documentation",
+        swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui-bundle.js",
+        swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui.css",
+    )
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title="Postgres as a Service API",
+        version="1.0.0",
+        description="API documentation for the Postgres as a Service platform",
+        routes=app.routes,
+    )
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
