@@ -11,7 +11,6 @@ from app.db.postgres import PostgresManager
 from app.db.models import DBPrivateAIKey, DBRegion
 
 router = APIRouter(
-    prefix="/private-ai-keys",
     tags=["Private AI Keys"]
 )
 

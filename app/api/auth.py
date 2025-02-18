@@ -16,7 +16,6 @@ from app.core.security import (
 from app.core.config import settings
 
 router = APIRouter(
-    prefix="/auth",
     tags=["Authentication"]
 )
 
