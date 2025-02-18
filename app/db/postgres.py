@@ -65,7 +65,8 @@ class PostgresManager:
                 "username": db_user,
                 "password": db_password,
                 "host": self.host,
-                "litellm_token": litellm_token
+                "litellm_token": litellm_token,
+                "litellm_api_url": self.litellm_service.api_url
             }
         except Exception as e:
             print(f"Error creating database: {str(e)}")

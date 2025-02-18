@@ -53,6 +53,7 @@ class DBPrivateAIKey(Base):
     username = Column(String)
     password = Column(String)
     litellm_token = Column(String)
+    litellm_api_url = Column(String)
     owner_id = Column(Integer, ForeignKey("users.id"))
     region_id = Column(Integer, ForeignKey("regions.id"))
 
@@ -66,6 +67,7 @@ class DBPrivateAIKey(Base):
             "username": self.username,
             "password": self.password,
             "litellm_token": self.litellm_token,
+            "litellm_api_url": self.litellm_api_url or "",
             "region": self.region.name if self.region else None,
             "owner_id": self.owner_id
         }

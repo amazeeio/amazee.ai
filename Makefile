@@ -1,4 +1,4 @@
-.PHONY: backend-test backend-test-build test-clean test-network test-postgres frontend-test frontend-test-build
+.PHONY: backend-test backend-test-build test-clean test-network test-postgres frontend-test frontend-test-build migration-create migration-upgrade migration-downgrade
 
 # Default target
 all: backend-test
@@ -76,3 +76,14 @@ test-clean:
 	docker network rm amazeeai_default 2>/dev/null || true
 	docker rmi amazee-backend-test 2>/dev/null || true
 	docker rmi amazeeai-frontend-test 2>/dev/null || true
+
+# Database migrations
+migration-create:
+	@read -p "Enter migration message: " message; \
+	python3 scripts/manage_migrations.py create "$$message"
+
+migration-upgrade:
+	python3 scripts/manage_migrations.py upgrade
+
+migration-downgrade:
+	python3 scripts/manage_migrations.py downgrade

@@ -6,6 +6,9 @@ python << END
 import sys
 import psycopg2
 import os
+import alembic
+import alembic.config
+import alembic.command
 try:
     psycopg2.connect(
         os.getenv("DATABASE_URL", "postgres://postgres:postgres@postgres:5432/postgres_service")
@@ -34,11 +37,20 @@ print("Creating database tables...")
 Base.metadata.create_all(bind=engine)
 print("Database tables created successfully!")
 
+# Run database migrations
+print("Running database migrations...")
+import alembic.config
+import os
+
+alembic_cfg = alembic.config.Config(os.path.join(os.path.dirname(__file__), "app", "migrations", "alembic.ini"))
+alembic_cfg.set_main_option("script_location", "app/migrations")
+alembic.command.upgrade(alembic_cfg, "head")
+print("Database migrations completed successfully!")
+
 # Create initial admin user if none exists
 from sqlalchemy.orm import sessionmaker
 from app.db.models import DBUser
 from app.core.security import get_password_hash
-import os
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 db = SessionLocal()

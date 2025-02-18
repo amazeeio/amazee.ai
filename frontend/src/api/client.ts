@@ -80,6 +80,7 @@ export interface PrivateAIKey {
   username: string;  // This is the database username, not the user's email
   password?: string;
   litellm_token?: string;
+  litellm_api_url?: string;
   owner_id: number;
   region?: string;
 }

@@ -45,6 +45,7 @@ async def create_private_ai_key(
             username=key_credentials["username"],
             password=key_credentials["password"],
             litellm_token=key_credentials["litellm_token"],
+            litellm_api_url=region.litellm_api_url,
             owner_id=current_user.id,
             region_id=region.id
         )
@@ -55,6 +56,7 @@ async def create_private_ai_key(
         # Add owner_id and region to the response
         key_credentials["owner_id"] = current_user.id
         key_credentials["region"] = region.name
+        key_credentials["litellm_api_url"] = region.litellm_api_url
 
         # Return credentials to user
         return key_credentials

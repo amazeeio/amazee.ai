@@ -63,6 +63,7 @@ class PrivateAIKeyBase(BaseModel):
     username: str  # This is the database username, not the user's email
     password: str
     litellm_token: str
+    litellm_api_url: str
     region: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
