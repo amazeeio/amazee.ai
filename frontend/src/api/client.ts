@@ -1,6 +1,8 @@
 import axios, { AxiosError } from 'axios';
+import { getConfig } from '../config';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8800';
+const config = getConfig();
+const API_URL = config.apiUrl || 'http://localhost:8800';
 
 export const api = axios.create({
   baseURL: API_URL,
