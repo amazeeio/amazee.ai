@@ -15,6 +15,7 @@ def generate_token() -> str:
     return secrets.token_urlsafe(32)
 
 @router.post("", response_model=APIToken)
+@router.post("/", response_model=APIToken)
 async def create_token(
     token_create: APITokenCreate,
     current_user = Depends(get_current_user_from_auth),
@@ -31,6 +32,7 @@ async def create_token(
     return db_token
 
 @router.get("", response_model=List[APIToken])
+@router.get("/", response_model=List[APIToken])
 async def list_tokens(
     current_user = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)

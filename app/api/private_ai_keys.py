@@ -12,6 +12,7 @@ from app.db.models import DBPrivateAIKey, DBRegion
 
 router = APIRouter()
 
+@router.post("", response_model=PrivateAIKey)
 @router.post("/", response_model=PrivateAIKey)
 async def create_private_ai_key(
     private_ai_key: PrivateAIKeyCreate,
@@ -64,6 +65,7 @@ async def create_private_ai_key(
             detail=f"Failed to create Private AI Key: {str(e)}"
         )
 
+@router.get("", response_model=List[PrivateAIKey])
 @router.get("/", response_model=List[PrivateAIKey])
 async def list_private_ai_keys(
     current_user = Depends(get_current_user_from_auth),

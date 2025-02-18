@@ -17,6 +17,7 @@ def check_admin(current_user: DBUser):
             detail="Not authorized to perform this action"
         )
 
+@router.get("", response_model=List[User])
 @router.get("/", response_model=List[User])
 async def list_users(
     current_user: DBUser = Depends(get_current_user_from_auth),
@@ -25,6 +26,7 @@ async def list_users(
     check_admin(current_user)
     return db.query(DBUser).all()
 
+@router.post("", response_model=User, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=User, status_code=status.HTTP_201_CREATED)
 async def create_user(
     user: UserCreate,

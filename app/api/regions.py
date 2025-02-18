@@ -9,6 +9,7 @@ from app.db.models import DBRegion, DBPrivateAIKey
 
 router = APIRouter()
 
+@router.post("", response_model=Region)
 @router.post("/", response_model=Region)
 async def create_region(
     region: RegionCreate,
@@ -42,6 +43,7 @@ async def create_region(
         )
     return db_region
 
+@router.get("", response_model=List[Region])
 @router.get("/", response_model=List[Region])
 async def list_regions(
     current_user: User = Depends(get_current_user_from_auth),
