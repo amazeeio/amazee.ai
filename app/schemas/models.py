@@ -11,7 +11,6 @@ class TokenData(BaseModel):
 
 class UserBase(BaseModel):
     email: str
-    is_admin: bool = False
 
 class UserCreate(UserBase):
     password: str
