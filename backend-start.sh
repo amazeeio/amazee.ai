@@ -68,5 +68,11 @@ finally:
     db.close()
 END
 
-# Start the FastAPI application
-exec uvicorn app.main:app --host 0.0.0.0 --port 8800 --reload
+# Check if running in production (Lagoon) or development mode
+if [ -n "${LAGOON_ENVIRONMENT}" ]; then
+    # Production mode (Lagoon)
+    exec uvicorn app.main:app --host 0.0.0.0 --port 8800 --workers 4
+else
+    # Development mode (local docker-compose)
+    exec uvicorn app.main:app --host 0.0.0.0 --port 8800 --reload
+fi
