@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { privateAIKeys, regions, PrivateAIKey, Region } from '../api/client';
 import { Header } from '../components/Header';
+import { LoadingSpinner } from '../components/LoadingSpinner';
 
 export const Dashboard: React.FC = () => {
   const queryClient = useQueryClient();
@@ -84,11 +85,10 @@ export const Dashboard: React.FC = () => {
 
   if (isLoadingPrivateAIKeys || isLoadingRegions) {
     return (
-      <div className="min-h-screen bg-gray-100 py-6 flex flex-col justify-center sm:py-12">
-        <div className="relative py-3 sm:max-w-xl sm:mx-auto">
-          <div className="text-center">Loading...</div>
-        </div>
-      </div>
+      <>
+        <Header />
+        <LoadingSpinner fullScreen />
+      </>
     );
   }
 

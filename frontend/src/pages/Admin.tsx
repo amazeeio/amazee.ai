@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { users, privateAIKeys, regions, User, PrivateAIKey, RegionCreate } from '../api/client';
 import { Navigate } from 'react-router-dom';
 import { Header } from '../components/Header';
+import { LoadingSpinner } from '../components/LoadingSpinner';
 
 export const Admin: React.FC = () => {
   const { user } = useAuth();
@@ -19,6 +20,7 @@ export const Admin: React.FC = () => {
     postgres_admin_password: '',
     litellm_api_url: '',
     litellm_api_key: '',
+    postgres_db: '',
   });
 
   const { data: usersList = [], isLoading: isLoadingUsers } = useQuery({
@@ -57,6 +59,7 @@ export const Admin: React.FC = () => {
         postgres_admin_password: '',
         litellm_api_url: '',
         litellm_api_key: '',
+        postgres_db: '',
       });
     },
   });
@@ -88,6 +91,15 @@ export const Admin: React.FC = () => {
   });
 
   // Redirect if not admin
+  if (isLoadingUsers || isLoadingPrivateAIKeys || isLoadingRegions) {
+    return (
+      <>
+        <Header />
+        <LoadingSpinner fullScreen />
+      </>
+    );
+  }
+
   if (!user?.is_admin) {
     return <Navigate to="/" />;
   }
@@ -142,16 +154,6 @@ export const Admin: React.FC = () => {
       }
     }
   };
-
-  if (isLoadingUsers || isLoadingPrivateAIKeys || isLoadingRegions) {
-    return (
-      <div className="min-h-screen bg-gray-100 py-6 flex flex-col justify-center sm:py-12">
-        <div className="relative py-3 sm:max-w-xl sm:mx-auto">
-          <div className="text-center">Loading...</div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-gray-100">
@@ -243,6 +245,19 @@ export const Admin: React.FC = () => {
                       className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
                       required
                       aria-label="Postgres port"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="postgres-db" className="block text-sm font-medium text-gray-700">Postgres Database</label>
+                    <input
+                      id="postgres-db"
+                      name="postgres_db"
+                      type="text"
+                      value={newRegion.postgres_db}
+                      onChange={(e) => setNewRegion({ ...newRegion, postgres_db: e.target.value })}
+                      className="mt-1 block w-full border border-gray-300 rounded-md shadow-sm py-2 px-3 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+                      required
+                      aria-label="Postgres database"
                     />
                   </div>
                   <div>

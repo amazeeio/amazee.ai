@@ -71,6 +71,7 @@ export interface RegionCreate {
   postgres_admin_password: string;
   litellm_api_url: string;
   litellm_api_key: string;
+  postgres_db: string;
 }
 
 export interface PrivateAIKey {
