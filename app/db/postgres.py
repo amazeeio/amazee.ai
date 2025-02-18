@@ -19,26 +19,37 @@ class PostgresManager:
             raise ValueError("Region is required for PostgresManager")
 
     async def create_database(self, owner: str, user_id: int) -> Dict:
+        # Generate LiteLLM token
+        print("Generating LiteLLM token...")
+        litellm_token = await self.litellm_service.create_key(user_id)
+        print("LiteLLM token generated successfully")
+
         print(f"Creating new database for owner: {owner}")
+
+        # Connect to postgres and create database/user
+        try:
+            print(f"Attempting to connect to PostgreSQL at {self.host}:{self.port} as {self.admin_user}...")
+            conn = await asyncpg.connect(
+                host=self.host,
+                port=self.port,
+                user=self.admin_user,
+                password=self.admin_password
+            )
+            print("Successfully connected to PostgreSQL")
+        except asyncpg.exceptions.PostgresError as e:
+            print(f"Failed to connect to PostgreSQL: {str(e)}")
+            print(f"Connection details: host={self.host}, port={self.port}, user={self.admin_user}")
+            raise
+        except Exception as e:
+            print(f"Unexpected error connecting to PostgreSQL: {str(e)}")
+            raise
+
         # Generate unique database name and credentials
         db_name = f"db_{uuid.uuid4().hex[:8]}"
         db_user = f"user_{uuid.uuid4().hex[:8]}"
         db_password = uuid.uuid4().hex
 
         print(f"Generated credentials - DB: {db_name}, User: {db_user}")
-
-        # Generate LiteLLM token
-        print("Generating LiteLLM token...")
-        litellm_token = await self.litellm_service.create_key(user_id)
-        print("LiteLLM token generated successfully")
-
-        # Connect to postgres and create database/user
-        conn = await asyncpg.connect(
-            host=self.host,
-            port=self.port,
-            user=self.admin_user,
-            password=self.admin_password
-        )
 
         try:
             print("Creating database...")
