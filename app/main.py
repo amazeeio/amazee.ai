@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
+import os
 
 from app.api import auth, private_ai_keys, users, tokens, regions
 from app.core.config import settings
@@ -9,10 +10,15 @@ from app.db.database import get_db
 
 app = FastAPI(title="Postgres as a Service")
 
+# Get allowed origins from environment
+default_origins = ["http://localhost:8080", "http://localhost:3000", "http://localhost:8800"]
+lagoon_routes = os.getenv("LAGOON_ROUTES", "").split(",")
+allowed_origins = default_origins + [route.strip() for route in lagoon_routes if route.strip()]
+
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8080", "http://localhost:3000"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
