@@ -20,12 +20,45 @@ from app.db.database import get_db
 
 app = FastAPI(
     title="Private AI Keys as a Service",
-    description="API for managing Private AI Keys as a service",
+    description="""
+    Welcome to the Private AI Keys as a Service API! This API allows you to manage your private AI keys.
+
+    ## Getting Started
+
+    Follow these steps to get started with the API:
+
+    1. **Register a new account**
+       * Use the `/auth/register` endpoint
+       * Provide your email and password
+
+    2. **Login to get access**
+       * Use the `/auth/login` endpoint
+       * Provide your email and password
+       * You'll receive an access token that will be automatically set as a cookie
+
+    3. **Create a Private AI Key**
+       * Use the `/private-ai-keys` endpoint
+       * Specify the region ID for your key
+       * The API will create a new database and return your credentials
+
+    All authenticated endpoints require you to be logged in. The API will automatically use your session cookie
+    or you can provide a Bearer token in the Authorization header.
+    """,
     version="1.0.0",
-    docs_url=None,  # Disable default docs url
-    redoc_url=None,  # Disable redoc
+    docs_url=None,  # Disable default /docs endpoint
+    redoc_url=None,  # Disable default /redoc endpoint
     root_path_in_servers=True,
-    server_options={"forwarded_allow_ips": "*"}
+    server_options={"forwarded_allow_ips": "*"},
+    openapi_tags=[
+        {
+            "name": "Authentication",
+            "description": "Operations for user registration, login, and session management"
+        },
+        {
+            "name": "Private AI Keys",
+            "description": "Operations for managing your private AI keys"
+        }
+    ]
 )
 
 # Get allowed origins from environment
@@ -70,17 +103,3 @@ async def custom_swagger_ui_html():
         swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui-bundle.js",
         swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui.css",
     )
-
-def custom_openapi():
-    if app.openapi_schema:
-        return app.openapi_schema
-    openapi_schema = get_openapi(
-        title="Private AI as a Service",
-        version="1.0.0",
-        description="API documentation for the Private AI as a Service",
-        routes=app.routes,
-    )
-    app.openapi_schema = openapi_schema
-    return app.openapi_schema
-
-app.openapi = custom_openapi

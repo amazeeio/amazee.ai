@@ -10,7 +10,10 @@ from app.schemas.models import PrivateAIKey, PrivateAIKeyCreate, User
 from app.db.postgres import PostgresManager
 from app.db.models import DBPrivateAIKey, DBRegion
 
-router = APIRouter()
+router = APIRouter(
+    prefix="/private-ai-keys",
+    tags=["Private AI Keys"]
+)
 
 @router.post("", response_model=PrivateAIKey)
 @router.post("/", response_model=PrivateAIKey)
@@ -19,6 +22,24 @@ async def create_private_ai_key(
     current_user = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
+    """
+    Create a new private AI key.
+
+    This endpoint will:
+    1. Create a new database in the specified region
+    2. Set up necessary credentials and permissions
+    3. Return connection details and tokens
+
+    Required parameters:
+    - **region_id**: The ID of the region where you want to create the key
+
+    The response will include:
+    - Database connection details (host, database name, username, password)
+    - LiteLLM API token for authentication
+    - LiteLLM API URL for making requests
+
+    Note: You must be authenticated to use this endpoint.
+    """
     # Get the region
     region = db.query(DBRegion).filter(
         DBRegion.id == private_ai_key.region_id,

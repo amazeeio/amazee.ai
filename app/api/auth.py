@@ -15,7 +15,10 @@ from app.core.security import (
 )
 from app.core.config import settings
 
-router = APIRouter()
+router = APIRouter(
+    prefix="/auth",
+    tags=["Authentication"]
+)
 
 def authenticate_user(db: Session, email: str, password: str) -> Optional[DBUser]:
     user = db.query(DBUser).filter(DBUser.email == email).first()
@@ -31,6 +34,15 @@ async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db)
 ):
+    """
+    Login to get access to the API.
+
+    - **username**: Your email address
+    - **password**: Your password
+
+    On successful login, an access token will be set as an HTTP-only cookie and also returned in the response.
+    Use this token for subsequent authenticated requests.
+    """
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
         raise HTTPException(
@@ -140,6 +152,14 @@ async def read_users_me(current_user: DBUser = Depends(get_current_user_from_aut
 
 @router.post("/register", response_model=User)
 async def register(user: UserCreate, db: Session = Depends(get_db)):
+    """
+    Register a new user account.
+
+    - **email**: Your email address
+    - **password**: A secure password (minimum 8 characters)
+
+    After registration, you'll need to login to get an access token.
+    """
     # Check if user with this email exists
     db_user = db.query(DBUser).filter(DBUser.email == user.email).first()
     if db_user:
