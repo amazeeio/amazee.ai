@@ -19,7 +19,8 @@ EXPOSE 3000
 
 RUN mkdir -p /app/node_modules/.cache \
     && fix-permissions /app/node_modules/.cache \
-    && fix-permissions /app/build/config.js
+    && fix-permissions /app/build/config.js \
+    && fix-permissions /app/public/config.js
 
 # Copy the Lagoon entrypoint script
 COPY lagoon/entrypoints/80-nodejs-config.sh /lagoon/entrypoints/80-nodejs-config.sh
