@@ -59,7 +59,7 @@ const AppRoutes = () => {
         }
       />
       <Route
-        path="/tokens"
+        path="/api-tokens"
         element={
           <PrivateRoute>
             <APITokens />

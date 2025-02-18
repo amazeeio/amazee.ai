@@ -14,7 +14,7 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
             request.scope["scheme"] = "https"
         return await call_next(request)
 
-from app.api import auth, private_ai_keys, users, tokens, regions
+from app.api import auth, private_ai_keys, users, api_tokens, regions
 from app.core.config import settings
 from app.db.database import get_db
 
@@ -59,7 +59,7 @@ async def health_check():
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(private_ai_keys.router, prefix="/private-ai-keys", tags=["private-ai-keys"])
 app.include_router(users.router, prefix="/users", tags=["users"])
-app.include_router(tokens.router, prefix="/tokens", tags=["tokens"])
+app.include_router(api_tokens.router, prefix="/api-tokens", tags=["api-tokens"])
 app.include_router(regions.router, prefix="/regions", tags=["regions"])
 
 @app.get("/", include_in_schema=False)

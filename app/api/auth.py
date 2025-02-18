@@ -98,21 +98,41 @@ async def get_current_user_from_auth(
     authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db)
 ) -> DBUser:
-    if authorization:
-        return await get_current_user_from_token(authorization, db)
-
-    if not access_token:
+    if not access_token and not authorization:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Remove "Bearer " prefix if present
-    if access_token.startswith("Bearer "):
-        access_token = access_token[7:]
+    # Try JWT token first
+    token_to_try = access_token
+    if authorization:
+        parts = authorization.split()
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid authorization header format. Use 'Bearer <token>'",
+            )
+        token_to_try = parts[1]
 
-    return await get_current_user(token=access_token, db=db)
+    try:
+        # Try JWT token validation first
+        return await get_current_user(token=token_to_try, db=db)
+    except HTTPException as jwt_error:
+        # If JWT validation fails, try API token validation
+        try:
+            db_token = db.query(DBAPIToken).filter(DBAPIToken.token == token_to_try).first()
+            if not db_token:
+                raise jwt_error
+
+            # Update last used timestamp
+            db_token.last_used_at = datetime.utcnow()
+            db.commit()
+
+            return db_token.user
+        except Exception:
+            raise jwt_error
 
 @router.get("/me", response_model=User)
 async def read_users_me(current_user: DBUser = Depends(get_current_user_from_auth)):

@@ -131,17 +131,17 @@ export const users = {
 
 export const tokens = {
   list: async () => {
-    const { data } = await api.get<APIToken[]>('/tokens');
+    const { data } = await api.get<APIToken[]>('/api-tokens');
     return data;
   },
 
   create: async (name: string) => {
-    const { data } = await api.post<APIToken>('/tokens', { name });
+    const { data } = await api.post<APIToken>('/api-tokens', { name });
     return data;
   },
 
   delete: async (tokenId: number) => {
-    await api.delete(`/tokens/${tokenId}`);
+    await api.delete(`/api-tokens/${tokenId}`);
   },
 };
 
