@@ -2,13 +2,19 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 import os
 
 from app.api import auth, private_ai_keys, users, tokens, regions
 from app.core.config import settings
 from app.db.database import get_db
 
-app = FastAPI(title="Postgres as a Service")
+app = FastAPI(
+    title="Postgres as a Service",
+    root_path="",
+    root_path_in_servers=True,
+    server_options={"forwarded_allow_ips": "*"}
+)
 
 # Get allowed origins from environment
 default_origins = ["http://localhost:8080", "http://localhost:3000", "http://localhost:8800"]
@@ -22,6 +28,12 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+# Add trusted host middleware
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["*"]  # In production, you might want to restrict this
 )
 
 @app.get("/health")
