@@ -23,7 +23,7 @@ import {
 } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2 } from 'lucide-react';
-import { get, del } from '@/utils/api';
+import { get, del, post } from '@/utils/api';
 
 interface User {
   id: string;
@@ -45,29 +45,18 @@ export default function UsersPage() {
   const { data: usersData = [], isLoading: isLoadingUsers } = useQuery<User[]>({
     queryKey: ['users'],
     queryFn: async () => {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/users`, {
-        credentials: 'include',
-      });
-      if (!response.ok) {
-        throw new Error('Failed to fetch users');
-      }
-      return response.json();
+      const response = await get('/users');
+      const data = await response.json();
+      return data;
     },
   });
 
   // Mutations
   const updateUserMutation = useMutation({
     mutationFn: async ({ userId, isAdmin }: { userId: string; isAdmin: boolean }) => {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/users/${userId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({ is_admin: isAdmin }),
-      });
-      if (!response.ok) {
-        throw new Error('Failed to update user');
-      }
-      return response.json();
+      const response = await post(`/users/${userId}`, { is_admin: isAdmin });
+      const data = await response.json();
+      return data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] });

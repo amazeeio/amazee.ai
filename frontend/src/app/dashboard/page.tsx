@@ -115,20 +115,9 @@ export default function DashboardPage() {
   // Create key mutation
   const createKeyMutation = useMutation({
     mutationFn: async ({ region_id, name }: { region_id: number, name: string }) => {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/private-ai-keys`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ region_id, name }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail?.[0]?.msg || error.detail || 'Failed to create private AI key');
-      }
-      return response.json();
+      const response = await post('/private-ai-keys', { region_id, name });
+      const data = await response.json();
+      return data;
     },
     onSuccess: async (data) => {
       await queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });

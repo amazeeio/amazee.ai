@@ -40,30 +40,17 @@ export default function APITokensPage() {
   const { data: tokensList = [], isLoading: queryLoading } = useQuery({
     queryKey: ['tokens'],
     queryFn: async () => {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/token`, {
-        credentials: 'include',
-      });
-      if (!response.ok) {
-        throw new Error('Failed to fetch tokens');
-      }
-      return response.json();
+      const response = await get('/auth/token');
+      const data = await response.json();
+      return data;
     },
   });
 
   const createMutation = useMutation({
     mutationFn: async (name: string) => {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/token`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify({ name }),
-      });
-      if (!response.ok) {
-        throw new Error('Failed to create token');
-      }
-      return response.json();
+      const response = await post('/auth/token', { name });
+      const data = await response.json();
+      return data;
     },
     onSuccess: (newToken) => {
       queryClient.invalidateQueries({ queryKey: ['tokens'] });
@@ -85,13 +72,7 @@ export default function APITokensPage() {
 
   const deleteMutation = useMutation({
     mutationFn: async (tokenId: string) => {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/token/${tokenId}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      });
-      if (!response.ok) {
-        throw new Error('Failed to delete token');
-      }
+      await del(`/auth/token/${tokenId}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tokens'] });
