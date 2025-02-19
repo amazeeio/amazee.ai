@@ -1,14 +1,15 @@
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie, Header
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 import logging
+import secrets
 
 logger = logging.getLogger(__name__)
 
 from app.db.database import get_db
-from app.schemas.models import Token, User, UserCreate
+from app.schemas.models import Token, User, UserCreate, APIToken, APITokenCreate
 from app.db.models import DBUser, DBAPIToken
 from app.core.security import (
     verify_password,
@@ -63,6 +64,9 @@ async def login(
         httponly=True,
         max_age=1800,
         expires=1800,
+        samesite='lax',  # Allow the cookie to be sent in navigation requests
+        secure=True,     # Only send over HTTPS
+        path='/',        # Make cookie available for all paths
     )
 
     return {"access_token": access_token, "token_type": "bearer"}
@@ -195,3 +199,51 @@ async def register(user: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_user)
     return db_user
+
+def generate_token() -> str:
+    return secrets.token_urlsafe(32)
+
+# API Token routes
+@router.post("/token", response_model=APIToken)
+async def create_token(
+    token_create: APITokenCreate,
+    current_user = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db)
+):
+    db_token = DBAPIToken(
+        name=token_create.name,
+        token=generate_token(),
+        user_id=current_user.id
+    )
+    db.add(db_token)
+    db.commit()
+    db.refresh(db_token)
+    return db_token
+
+@router.get("/token", response_model=List[APIToken])
+async def list_tokens(
+    current_user = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db)
+):
+    return current_user.api_tokens
+
+@router.delete("/token/{token_id}")
+async def delete_token(
+    token_id: int,
+    current_user = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db)
+):
+    token = db.query(DBAPIToken).filter(
+        DBAPIToken.id == token_id,
+        DBAPIToken.user_id == current_user.id
+    ).first()
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Token not found"
+        )
+
+    db.delete(token)
+    db.commit()
+    return {"message": "Token deleted successfully"}

@@ -51,13 +51,15 @@ class DBPrivateAIKey(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     database_name = Column(String, unique=True, index=True)
-    host = Column(String)
-    username = Column(String)
-    password = Column(String)
+    name = Column(String, nullable=True)  # User-friendly display name
+    database_host = Column(String)
+    database_username = Column(String)
+    database_password = Column(String)
     litellm_token = Column(String)
     litellm_api_url = Column(String)
     owner_id = Column(Integer, ForeignKey("users.id"))
     region_id = Column(Integer, ForeignKey("regions.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
 
     owner = relationship("DBUser", back_populates="private_ai_keys")
     region = relationship("DBRegion", back_populates="private_ai_keys")
@@ -65,13 +67,15 @@ class DBPrivateAIKey(Base):
     def to_dict(self):
         return {
             "database_name": self.database_name,
-            "host": self.host,
-            "username": self.username,
-            "password": self.password,
+            "name": self.name,
+            "database_host": self.database_host,
+            "database_username": self.database_username,
+            "database_password": self.database_password,
             "litellm_token": self.litellm_token,
             "litellm_api_url": self.litellm_api_url or "",
             "region": self.region.name if self.region else None,
-            "owner_id": self.owner_id
+            "owner_id": self.owner_id,
+            "created_at": self.created_at
         }
 
 class DBAuditLog(Base):

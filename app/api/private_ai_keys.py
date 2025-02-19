@@ -61,9 +61,10 @@ async def create_private_ai_key(
         # Store private AI key info in main application database
         new_key = DBPrivateAIKey(
             database_name=key_credentials["database_name"],
-            host=key_credentials["host"],
-            username=key_credentials["username"],
-            password=key_credentials["password"],
+            name=private_ai_key.name,
+            database_host=key_credentials["database_host"],
+            database_username=key_credentials["database_username"],
+            database_password=key_credentials["database_password"],
             litellm_token=key_credentials["litellm_token"],
             litellm_api_url=region.litellm_api_url,
             owner_id=current_user.id,
@@ -77,6 +78,7 @@ async def create_private_ai_key(
         key_credentials["owner_id"] = current_user.id
         key_credentials["region"] = region.name
         key_credentials["litellm_api_url"] = region.litellm_api_url
+        key_credentials["name"] = private_ai_key.name
 
         # Return credentials to user
         return key_credentials

@@ -114,9 +114,9 @@ def test_list_private_ai_keys(client, test_token, test_region, db, test_user):
     # Create a test private AI key
     test_key = DBPrivateAIKey(
         database_name="test-db",
-        host="test-host",
-        username="test-user",
-        password="test-pass",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
         litellm_token="test-token",
         owner_id=test_user.id,
         region_id=test_region.id
@@ -142,9 +142,9 @@ def test_delete_region_with_active_keys(client, admin_token, test_region, db, te
     # Create a test private AI key in the region
     test_key = DBPrivateAIKey(
         database_name="test-db",
-        host="test-host",
-        username="test-user",
-        password="test-pass",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
         litellm_token="test-token",
         owner_id=test_admin.id,
         region_id=test_region.id

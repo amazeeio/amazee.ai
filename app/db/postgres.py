@@ -62,9 +62,9 @@ class PostgresManager:
             print("Database created successfully")
             return {
                 "database_name": db_name,
-                "username": db_user,
-                "password": db_password,
-                "host": self.host,
+                "database_username": db_user,
+                "database_password": db_password,
+                "database_host": self.host,
                 "litellm_token": litellm_token,
                 "litellm_api_url": self.litellm_service.api_url
             }

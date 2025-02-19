@@ -63,16 +63,19 @@ class Region(RegionBase):
 
 class PrivateAIKeyBase(BaseModel):
     database_name: str
-    host: str
-    username: str  # This is the database username, not the user's email
-    password: str
+    name: Optional[str] = None
+    database_host: str
+    database_username: str  # This is the database username, not the user's email
+    database_password: str
     litellm_token: str
     litellm_api_url: str
     region: Optional[str] = None
+    created_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
 class PrivateAIKeyCreate(BaseModel):
     region_id: int
+    name: str
 
 class PrivateAIKey(PrivateAIKeyBase):
     owner_id: int
