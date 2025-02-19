@@ -165,7 +165,7 @@ export default function APITokensPage() {
             <div>
               <h3 className="font-medium">New Token Created</h3>
               <AlertDescription className="text-green-700 mt-1">
-                Make sure to copy your token now. You won't be able to see it again!
+                Make sure to copy your token now. You won&apos;t be able to see it again!
               </AlertDescription>
             </div>
             <Button
@@ -236,8 +236,8 @@ export default function APITokensPage() {
         {tokensList.length === 0 && (
           <Card>
             <CardContent className="pt-6">
-              <p className="text-center text-muted-foreground">
-                No API tokens found. Create one to get started.
+              <p className="text-sm text-muted-foreground">
+                Don&apos;t have a token? Contact your administrator.
               </p>
             </CardContent>
           </Card>

@@ -1,68 +1,44 @@
 "use client"
 
 import {
-  BadgeCheck,
-  Bell,
-  ChevronsUpDown,
-  CreditCard,
-  LogOut,
-  Sparkles,
-  User,
-  Key,
-} from "lucide-react"
-
-import {
-  Avatar,
-  AvatarFallback,
-  AvatarImage,
-} from "@/components/ui/avatar"
-import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuGroup,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import Link from 'next/link'
-import { Button } from '@/components/ui/button'
-import { useMediaQuery } from '@/hooks/use-media-query'
+} from '@/components/ui/dropdown-menu';
 
-interface UserData {
-  name: string;
-  email: string;
-  avatar: string;
-}
+import { Button } from '@/components/ui/button';
+import Link from 'next/link';
+import { useAuth } from '@/hooks/use-auth';
 
-export function NavUser({ user }: { user?: UserData }) {
-  const isMobile = useMediaQuery("(max-width: 1024px)")
+export function NavUser() {
+  const { user } = useAuth();
+
   return (
-    <div className="mt-auto p-4">
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="ghost" className="w-full justify-start gap-2">
-            <User className="h-4 w-4" />
-            <span>Account</span>
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent className="w-56" align="end" forceMount>
-          <DropdownMenuItem asChild>
-            <Link href="/auth/token" className="flex items-center">
-              <Key className="mr-2 h-4 w-4" />
-              <span>API Tokens</span>
-            </Link>
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem asChild>
-            <Link href="/auth/login" className="flex items-center">
-              <LogOut className="mr-2 h-4 w-4" />
-              <span>Sign out</span>
-            </Link>
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" className="w-full justify-start gap-2">
+              <span>{user?.email || 'Account'}</span>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent className="w-56" align="end" forceMount>
+            <DropdownMenuItem asChild>
+              <Link href="/auth/token" className="flex items-center">
+                <span>API Tokens</span>
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem asChild>
+              <Link href="/auth/login" className="flex items-center">
+                <span>Sign out</span>
+              </Link>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
     </div>
   );
-
 }

@@ -52,87 +52,86 @@ const data = {
   ],
   navMain: [
     {
-      title: "Playground",
-      url: "#",
+      name: "Playground",
+      href: "#",
       icon: SquareTerminal,
-      isActive: true,
-      items: [
+      subItems: [
         {
-          title: "History",
-          url: "#",
+          name: "History",
+          href: "#",
         },
         {
-          title: "Starred",
-          url: "#",
+          name: "Starred",
+          href: "#",
         },
         {
-          title: "Settings",
-          url: "#",
+          name: "Settings",
+          href: "#",
         },
       ],
     },
     {
-      title: "Models",
-      url: "#",
+      name: "Models",
+      href: "#",
       icon: Bot,
-      items: [
+      subItems: [
         {
-          title: "Genesis",
-          url: "#",
+          name: "Genesis",
+          href: "#",
         },
         {
-          title: "Explorer",
-          url: "#",
+          name: "Explorer",
+          href: "#",
         },
         {
-          title: "Quantum",
-          url: "#",
+          name: "Quantum",
+          href: "#",
         },
       ],
     },
     {
-      title: "Documentation",
-      url: "#",
+      name: "Documentation",
+      href: "#",
       icon: BookOpen,
-      items: [
+      subItems: [
         {
-          title: "Introduction",
-          url: "#",
+          name: "Introduction",
+          href: "#",
         },
         {
-          title: "Get Started",
-          url: "#",
+          name: "Get Started",
+          href: "#",
         },
         {
-          title: "Tutorials",
-          url: "#",
+          name: "Tutorials",
+          href: "#",
         },
         {
-          title: "Changelog",
-          url: "#",
+          name: "Changelog",
+          href: "#",
         },
       ],
     },
     {
-      title: "Settings",
-      url: "#",
+      name: "Settings",
+      href: "#",
       icon: Settings2,
-      items: [
+      subItems: [
         {
-          title: "General",
-          url: "#",
+          name: "General",
+          href: "#",
         },
         {
-          title: "Team",
-          url: "#",
+          name: "Team",
+          href: "#",
         },
         {
-          title: "Billing",
-          url: "#",
+          name: "Billing",
+          href: "#",
         },
         {
-          title: "Limits",
-          url: "#",
+          name: "Limits",
+          href: "#",
         },
       ],
     },
@@ -163,11 +162,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         <TeamSwitcher teams={data.teams} />
       </SidebarHeader>
       <SidebarContent>
-        <NavMain items={data.navMain} />
+        <NavMain navigation={data.navMain} pathname={window.location.pathname} />
         <NavProjects projects={data.projects} />
       </SidebarContent>
       <SidebarFooter>
-        <NavUser user={data.user} />
+        <NavUser />
       </SidebarFooter>
       <SidebarRail />
     </Sidebar>

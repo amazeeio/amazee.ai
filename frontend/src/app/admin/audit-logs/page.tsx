@@ -30,21 +30,17 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 
-interface AuditLog {
-  id: number;
+interface LogEntry {
+  id: string;
   timestamp: string;
-  user_id: number;
-  user_email: string | null;
+  action: string;
+  details: Record<string, unknown>;
+  user_id: string;
   event_type: string;
   resource_type: string;
-  resource_id: string;
-  action: string;
-  details: {
-    status_code: number;
-    [key: string]: any;
-  };
-  ip_address: string;
+  user_email: string;
   request_source: string;
+  ip_address: string;
 }
 
 interface AuditLogFilters {
@@ -58,7 +54,6 @@ interface AuditLogFilters {
 }
 
 const ITEMS_PER_PAGE = 20;
-const DEFAULT_SELECT_VALUE = '_all_';
 
 export default function AuditLogsPage() {
   const { toast } = useToast();
@@ -67,32 +62,32 @@ export default function AuditLogsPage() {
     limit: ITEMS_PER_PAGE,
   });
 
-  const { data: logs = [], isLoading } = useQuery<AuditLog[]>({
+  const { data: logs = [], isLoading } = useQuery({
     queryKey: ['audit-logs', filters],
-    queryFn: async () => {
-      const queryParams = new URLSearchParams();
-      Object.entries(filters).forEach(([key, value]) => {
-        if (value) queryParams.append(key, value.toString());
-      });
+    queryFn: async (): Promise<LogEntry[]> => {
+      try {
+        const queryParams = new URLSearchParams();
+        Object.entries(filters).forEach(([key, value]) => {
+          if (value) queryParams.append(key, value.toString());
+        });
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/audit/logs?${queryParams}`, {
-        credentials: 'include',
-      });
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to fetch audit logs');
-      }
-      return response.json();
-    },
-    staleTime: 30000, // Consider data fresh for 30 seconds
-    retry: 1,
-    onSettled: (data, error) => {
-      if (error) {
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/audit/logs?${queryParams}`, {
+          credentials: 'include',
+        });
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.detail || 'Failed to fetch audit logs');
+        }
+        const data = await response.json();
+        return data as LogEntry[];
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to fetch audit logs';
         toast({
           title: 'Error',
-          description: error.message,
+          description: message,
           variant: 'destructive',
         });
+        throw error;
       }
     },
   });
@@ -143,8 +138,8 @@ export default function AuditLogsPage() {
   }
 
   // Get unique event types and resource types
-  const uniqueEventTypes = Array.from(new Set(logs.map(log => log.event_type))).filter(Boolean);
-  const uniqueResourceTypes = Array.from(new Set(logs.map(log => log.resource_type))).filter(Boolean);
+  const uniqueEventTypes = Array.from(new Set((logs as LogEntry[]).map(log => log.event_type))).filter(Boolean) as string[];
+  const uniqueResourceTypes = Array.from(new Set((logs as LogEntry[]).map(log => log.resource_type))).filter(Boolean) as string[];
 
   return (
     <div className="space-y-6">
@@ -242,7 +237,7 @@ export default function AuditLogsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {logs.map((log) => (
+              {(logs as LogEntry[]).map((log: LogEntry) => (
                 <TableRow key={log.id}>
                   <TableCell className="whitespace-nowrap">
                     {format(parseISO(log.timestamp), 'yyyy-MM-dd HH:mm:ss')}
@@ -258,7 +253,7 @@ export default function AuditLogsPage() {
                     </span>
                   </TableCell>
                   <TableCell className="whitespace-nowrap">{log.action}</TableCell>
-                  <TableCell>{getStatusBadge(log.details.status_code)}</TableCell>
+                  <TableCell>{getStatusBadge(log.details.status_code as number)}</TableCell>
                   <TableCell className="whitespace-nowrap">
                     {log.user_email || 'Anonymous'}
                   </TableCell>
@@ -322,7 +317,7 @@ export default function AuditLogsPage() {
           <Button
             variant="outline"
             onClick={handleNextPage}
-            disabled={logs.length < ITEMS_PER_PAGE}
+            disabled={(logs as LogEntry[]).length < ITEMS_PER_PAGE}
           >
             Next
           </Button>

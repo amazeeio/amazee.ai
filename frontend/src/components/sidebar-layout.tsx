@@ -1,21 +1,14 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { Button } from '@/components/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { Menu, User } from 'lucide-react';
+import { Menu } from 'lucide-react';
 import { Sidebar, SidebarProvider } from '@/components/ui/sidebar';
 import { NavMain } from '@/components/nav-main';
 import { NavUser } from '@/components/nav-user';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
-import { useAuth } from '@/hooks/use-auth';
+import { Button } from '@/components/ui/button';
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 
 const navigation = [
   { name: 'Dashboard', href: '/dashboard' },
@@ -38,7 +31,6 @@ export function SidebarLayout({
 }) {
   const pathname = usePathname();
   const [isMounted, setIsMounted] = useState(false);
-  const { user } = useAuth();
 
   useEffect(() => {
     setIsMounted(true);
@@ -76,7 +68,7 @@ export function SidebarLayout({
             </Link>
           </div>
           <NavMain navigation={navigation} pathname={pathname} />
-          <NavUser user={user} />
+          <NavUser />
         </Sidebar>
 
         {/* Mobile menu */}
@@ -111,7 +103,7 @@ export function SidebarLayout({
                   </Link>
                 </div>
                 <NavMain navigation={navigation} pathname={pathname} />
-                <NavUser user={user} />
+                <NavUser />
               </Sidebar>
             </SidebarProvider>
           </SheetContent>

@@ -18,7 +18,7 @@ import {
 } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { useToast } from '@/components/ui/use-toast';
+import { useToast } from '@/hooks/use-toast';
 
 const formSchema = z.object({
   email: z.string().email('Invalid email address'),
@@ -75,8 +75,8 @@ export function RegisterForm() {
       });
 
       router.push('/auth/login');
-    } catch (err: any) {
-      setError(err.message || 'An error occurred during registration');
+    } catch (err: Error | unknown) {
+      setError(err instanceof Error ? err.message : 'An error occurred during registration');
     } finally {
       setIsLoading(false);
     }

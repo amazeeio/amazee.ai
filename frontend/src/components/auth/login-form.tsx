@@ -77,9 +77,8 @@ export function LoginForm() {
 
       router.refresh();
       router.push('/dashboard');
-    } catch (err: any) {
-      console.error('Login error:', err);
-      setError(err.message || 'An error occurred during sign in');
+    } catch (err: Error | unknown) {
+      setError(err instanceof Error ? err.message : 'An error occurred during login');
     } finally {
       setIsLoading(false);
     }
