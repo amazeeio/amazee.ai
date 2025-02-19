@@ -1,6 +1,9 @@
 from pydantic import BaseModel, EmailStr, ConfigDict
-from typing import Optional, List
+from typing import Optional, List, ClassVar
 from datetime import datetime
+from sqlalchemy import Column, Integer, DateTime, String, JSON, ForeignKey
+from sqlalchemy.orm import relationship
+from app.db.database import Base
 
 class Token(BaseModel):
     access_token: str
@@ -22,7 +25,9 @@ class UserUpdate(BaseModel):
 class User(UserBase):
     id: int
     is_active: bool
+    is_admin: bool
     model_config = ConfigDict(from_attributes=True)
+    audit_logs: ClassVar = relationship("AuditLog", back_populates="user")
 
 class APITokenBase(BaseModel):
     name: str
@@ -71,4 +76,31 @@ class PrivateAIKeyCreate(BaseModel):
 
 class PrivateAIKey(PrivateAIKeyBase):
     owner_id: int
+    model_config = ConfigDict(from_attributes=True)
+
+class AuditLog(BaseModel):
+    id: int
+    timestamp: datetime
+    user_id: Optional[int]
+    event_type: str
+    resource_type: str
+    resource_id: Optional[str]
+    action: str
+    details: Optional[dict]
+    ip_address: Optional[str]
+    user_agent: Optional[str]
+    model_config = ConfigDict(from_attributes=True)
+
+class AuditLogResponse(BaseModel):
+    id: int
+    timestamp: datetime
+    user_id: Optional[int]
+    user_email: Optional[str]
+    event_type: str
+    resource_type: str
+    resource_id: Optional[str]
+    action: str
+    details: Optional[dict]
+    ip_address: Optional[str]
+    user_agent: Optional[str]
     model_config = ConfigDict(from_attributes=True)

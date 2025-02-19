@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime, JSON
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime
 
@@ -24,13 +24,13 @@ class DBAPIToken(Base):
     __tablename__ = "api_tokens"
 
     id = Column(Integer, primary_key=True, index=True)
-    token = Column(String, unique=True, index=True)
     name = Column(String)
+    token = Column(String, unique=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     last_used_at = Column(DateTime, nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"))
 
-    user = relationship("DBUser", back_populates="api_tokens")
+    owner = relationship("DBUser", back_populates="api_tokens")
 
 class DBUser(Base):
     __tablename__ = "users"
@@ -40,9 +40,11 @@ class DBUser(Base):
     hashed_password = Column(String)
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="owner")
-    api_tokens = relationship("DBAPIToken", back_populates="user", cascade="all, delete-orphan")
+    api_tokens = relationship("DBAPIToken", back_populates="owner")
+    audit_logs = relationship("DBAuditLog", back_populates="user")
 
 class DBPrivateAIKey(Base):
     __tablename__ = "ai_tokens"
@@ -71,3 +73,19 @@ class DBPrivateAIKey(Base):
             "region": self.region.name if self.region else None,
             "owner_id": self.owner_id
         }
+
+class DBAuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    event_type = Column(String, nullable=False)
+    resource_type = Column(String, nullable=False)
+    resource_id = Column(String, nullable=True)
+    action = Column(String, nullable=False)
+    details = Column(JSON, nullable=True)
+    ip_address = Column(String, nullable=True)
+    user_agent = Column(String, nullable=True)
+
+    user = relationship("DBUser", back_populates="audit_logs")

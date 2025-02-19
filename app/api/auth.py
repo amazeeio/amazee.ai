@@ -3,6 +3,9 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie, Header
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+import logging
+
+logger = logging.getLogger(__name__)
 
 from app.db.database import get_db
 from app.schemas.models import Token, User, UserCreate
@@ -110,6 +113,7 @@ async def get_current_user_from_auth(
     db: Session = Depends(get_db)
 ) -> DBUser:
     if not access_token and not authorization:
+        logger.debug("No access token or authorization header found")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
@@ -121,28 +125,38 @@ async def get_current_user_from_auth(
     if authorization:
         parts = authorization.split()
         if len(parts) != 2 or parts[0].lower() != "bearer":
+            logger.debug("Invalid authorization header format")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid authorization header format. Use 'Bearer <token>'",
             )
         token_to_try = parts[1]
+        logger.debug("Using token from authorization header")
+    else:
+        logger.debug("Using token from cookie")
 
     try:
         # Try JWT token validation first
-        return await get_current_user(token=token_to_try, db=db)
+        user = await get_current_user(token=token_to_try, db=db)
+        logger.debug(f"Successfully authenticated user {user.id} using JWT token")
+        return user
     except HTTPException as jwt_error:
         # If JWT validation fails, try API token validation
         try:
+            logger.debug("JWT validation failed, trying API token")
             db_token = db.query(DBAPIToken).filter(DBAPIToken.token == token_to_try).first()
             if not db_token:
+                logger.debug("No valid API token found")
                 raise jwt_error
 
             # Update last used timestamp
             db_token.last_used_at = datetime.utcnow()
             db.commit()
 
+            logger.debug(f"Successfully authenticated user {db_token.user.id} using API token")
             return db_token.user
         except Exception:
+            logger.debug("API token validation failed")
             raise jwt_error
 
 @router.get("/me", response_model=User)

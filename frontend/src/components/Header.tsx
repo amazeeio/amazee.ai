@@ -27,12 +27,20 @@ export const Header: React.FC = () => {
               API Tokens
             </Link>
             {user?.is_admin && (
-              <Link
-                to="/admin"
-                className={`${linkClasses} ${location.pathname === '/admin' ? activeClass : ''}`}
-              >
-                Admin
-              </Link>
+              <>
+                <Link
+                  to="/admin"
+                  className={`${linkClasses} ${location.pathname === '/admin' ? activeClass : ''}`}
+                >
+                  Admin
+                </Link>
+                <Link
+                  to="/audit-logs"
+                  className={`${linkClasses} ${location.pathname === '/audit-logs' ? activeClass : ''}`}
+                >
+                  Audit Logs
+                </Link>
+              </>
             )}
             <button
               onClick={logout}

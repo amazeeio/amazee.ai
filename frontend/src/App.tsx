@@ -7,6 +7,7 @@ import { Register } from './pages/Register';
 import { Dashboard } from './pages/Dashboard';
 import { Admin } from './pages/Admin';
 import { APITokens } from './pages/APITokens';
+import { AuditLogs } from './pages/AuditLogs';
 import { LoadingSpinner } from './components/LoadingSpinner';
 
 const queryClient = new QueryClient({
@@ -52,6 +53,14 @@ const AppRoutes = () => {
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route
+        path="/"
+        element={
+          <PrivateRoute>
+            <Dashboard />
+          </PrivateRoute>
+        }
+      />
+      <Route
         path="/admin"
         element={
           <AdminRoute>
@@ -60,18 +69,18 @@ const AppRoutes = () => {
         }
       />
       <Route
+        path="/audit-logs"
+        element={
+          <AdminRoute>
+            <AuditLogs />
+          </AdminRoute>
+        }
+      />
+      <Route
         path="/api-tokens"
         element={
           <PrivateRoute>
             <APITokens />
-          </PrivateRoute>
-        }
-      />
-      <Route
-        path="/"
-        element={
-          <PrivateRoute>
-            <Dashboard />
           </PrivateRoute>
         }
       />

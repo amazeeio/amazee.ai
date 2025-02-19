@@ -7,6 +7,15 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 import os
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+logger = logging.getLogger(__name__)
 
 class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
@@ -14,9 +23,10 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
             request.scope["scheme"] = "https"
         return await call_next(request)
 
-from app.api import auth, private_ai_keys, users, api_tokens, regions
+from app.api import auth, private_ai_keys, users, api_tokens, regions, audit
 from app.core.config import settings
 from app.db.database import get_db
+from app.middleware.audit import AuditLogMiddleware
 
 app = FastAPI(
     title="Private AI Keys as a Service",
@@ -72,7 +82,7 @@ app.add_middleware(HTTPSRedirectMiddleware)
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -81,8 +91,10 @@ app.add_middleware(
 # Add trusted host middleware
 app.add_middleware(
     TrustedHostMiddleware,
-    allowed_hosts=["*"]  # In production, you might want to restrict this
+    allowed_hosts=settings.ALLOWED_HOSTS
 )
+
+app.add_middleware(AuditLogMiddleware, db=next(get_db()))
 
 @app.get("/health")
 async def health_check():
@@ -94,6 +106,7 @@ app.include_router(private_ai_keys.router, prefix="/private-ai-keys", tags=["pri
 app.include_router(users.router, prefix="/users", tags=["users"])
 app.include_router(api_tokens.router, prefix="/api-tokens", tags=["api-tokens"])
 app.include_router(regions.router, prefix="/regions", tags=["regions"])
+app.include_router(audit.router, prefix="/audit", tags=["audit"])
 
 @app.get("/", include_in_schema=False)
 async def custom_swagger_ui_html():

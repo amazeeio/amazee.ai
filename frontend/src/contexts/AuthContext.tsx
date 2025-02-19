@@ -36,8 +36,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const loginMutation = useMutation({
     mutationFn: auth.login,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['user'] });
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['user'] });
+      await queryClient.refetchQueries({ queryKey: ['user'] });
       navigate('/');
     },
   });

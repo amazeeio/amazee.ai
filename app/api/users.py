@@ -17,6 +17,20 @@ def check_admin(current_user: DBUser):
             detail="Not authorized to perform this action"
         )
 
+@router.get("/search", response_model=List[User])
+async def search_users(
+    email: str,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db)
+):
+    """
+    Search users by email pattern. Only accessible by admin users.
+    Returns a list of users whose email matches the search pattern.
+    """
+    check_admin(current_user)
+    users = db.query(DBUser).filter(DBUser.email.ilike(f"%{email}%")).limit(10).all()
+    return users
+
 @router.get("", response_model=List[User])
 @router.get("/", response_model=List[User])
 async def list_users(

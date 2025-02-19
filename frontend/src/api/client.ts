@@ -86,6 +86,35 @@ export interface PrivateAIKey {
   region?: string;
 }
 
+export interface AuditLog {
+  id: number;
+  timestamp: string;
+  user_id: number | null;
+  user_email: string | null;
+  event_type: string;
+  resource_type: string;
+  resource_id: string | null;
+  action: string;
+  details: {
+    path: string;
+    query_params: Record<string, string>;
+    status_code: number;
+  };
+  ip_address: string | null;
+  user_agent: string | null;
+}
+
+export interface AuditLogFilters {
+  skip?: number;
+  limit?: number;
+  event_type?: string;
+  resource_type?: string;
+  user_id?: number;
+  user_email?: string;
+  from_date?: string;
+  to_date?: string;
+}
+
 export const auth = {
   login: async (credentials: LoginCredentials) => {
     const params = new URLSearchParams();
@@ -121,6 +150,11 @@ export const auth = {
 export const users = {
   list: async () => {
     const { data } = await api.get<User[]>('/users/all');
+    return data;
+  },
+
+  search: async (email: string): Promise<User[]> => {
+    const { data } = await api.get<User[]>('/users/search', { params: { email } });
     return data;
   },
 
@@ -192,4 +226,9 @@ export const privateAIKeys = {
       throw error;
     }
   }
+};
+
+export const getAuditLogs = async (filters: AuditLogFilters = {}): Promise<AuditLog[]> => {
+  const response = await api.get('/audit/logs', { params: filters });
+  return response.data;
 };
