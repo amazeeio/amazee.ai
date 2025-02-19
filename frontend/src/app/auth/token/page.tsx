@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -19,11 +19,12 @@ import {
 } from '@/components/ui/alert-dialog';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, X } from 'lucide-react';
+import { get, post, del } from '@/utils/api';
 
 interface APIToken {
-  id: number;
+  id: string;
   name: string;
-  token?: string;
+  token: string;
   created_at: string;
   last_used_at?: string;
 }
@@ -33,8 +34,10 @@ export default function APITokensPage() {
   const queryClient = useQueryClient();
   const [newTokenName, setNewTokenName] = useState('');
   const [showNewToken, setShowNewToken] = useState<APIToken | null>(null);
+  const [tokens, setTokens] = useState<APIToken[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const { data: tokensList = [], isLoading } = useQuery({
+  const { data: tokensList = [], isLoading: queryLoading } = useQuery({
     queryKey: ['tokens'],
     queryFn: async () => {
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/token`, {
@@ -81,7 +84,7 @@ export default function APITokensPage() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: async (tokenId: number) => {
+    mutationFn: async (tokenId: string) => {
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/token/${tokenId}`, {
         method: 'DELETE',
         credentials: 'include',
@@ -106,14 +109,68 @@ export default function APITokensPage() {
     },
   });
 
-  const handleCreateToken = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (newTokenName.trim()) {
-      await createMutation.mutateAsync(newTokenName);
+  const fetchTokens = async () => {
+    try {
+      const response = await get('auth/token', { credentials: 'include' });
+      const data = await response.json();
+      setTokens(data);
+    } catch (error) {
+      console.error('Error fetching tokens:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to fetch tokens',
+        variant: 'destructive',
+      });
     }
   };
 
-  if (isLoading) {
+  const handleCreateToken = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    try {
+      const response = await post('/auth/token', {
+        name: formData.get('name'),
+        description: formData.get('description'),
+      }, { credentials: 'include' });
+      const data = await response.json();
+      setTokens([...tokens, data]);
+      toast({
+        title: 'Success',
+        description: 'Token created successfully',
+      });
+    } catch (error) {
+      console.error('Error creating token:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to create token',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleDeleteToken = async (tokenId: string) => {
+    try {
+      await del('/auth/token/' + tokenId, { credentials: 'include' });
+      setTokens(tokens.filter(token => token.id !== tokenId));
+      toast({
+        title: 'Success',
+        description: 'Token deleted successfully',
+      });
+    } catch (error) {
+      console.error('Error deleting token:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to delete token',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  useEffect(() => {
+    fetchTokens();
+  }, []);
+
+  if (queryLoading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <Loader2 className="h-8 w-8 animate-spin" />
@@ -185,7 +242,7 @@ export default function APITokensPage() {
 
       {/* Tokens List */}
       <div className="grid gap-4">
-        {tokensList.map((token: APIToken) => (
+        {tokens.map((token: APIToken) => (
           <Card key={token.id}>
             <CardContent className="pt-6">
               <div className="flex items-center justify-between">
@@ -214,7 +271,7 @@ export default function APITokensPage() {
                     <AlertDialogFooter>
                       <AlertDialogCancel>Cancel</AlertDialogCancel>
                       <AlertDialogAction
-                        onClick={() => deleteMutation.mutate(token.id)}
+                        onClick={() => handleDeleteToken(token.id)}
                         className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                       >
                         {deleteMutation.isPending ? (
@@ -233,7 +290,7 @@ export default function APITokensPage() {
             </CardContent>
           </Card>
         ))}
-        {tokensList.length === 0 && (
+        {tokens.length === 0 && (
           <Card>
             <CardContent className="pt-6">
               <p className="text-sm text-muted-foreground">

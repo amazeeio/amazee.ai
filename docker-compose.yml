@@ -48,9 +48,6 @@ services:
       - ./frontend/package-lock.json:/app/package-lock.json
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8800
-      - WATCHPACK_POLLING=true
-      - CHOKIDAR_USEPOLLING=true
-    command: npm run dev
     depends_on:
       - backend
     user: '10000'

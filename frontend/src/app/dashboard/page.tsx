@@ -31,6 +31,7 @@ import {
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Eye, EyeOff } from 'lucide-react';
 import { Input } from '@/components/ui/input';
+import { get, post } from '@/utils/api';
 
 interface Region {
   id: number;
@@ -58,36 +59,41 @@ export default function DashboardPage() {
   const [keyName, setKeyName] = useState<string>('');
   const [newKeyName, setNewKeyName] = useState<string | null>(null);
   const newKeyRef = useRef<HTMLTableRowElement>(null);
+  const [regions, setRegions] = useState<Region[]>([]);
+  const [privateAIKeys, setPrivateAIKeys] = useState<PrivateAIKey[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
 
   // Fetch regions
-  const { data: regions = [] } = useQuery<Region[]>({
-    queryKey: ['regions'],
-    queryFn: async () => {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/regions`, {
-        credentials: 'include',
+  const fetchRegions = async () => {
+    try {
+      const response = await get('regions');
+      const data = await response.json();
+      setRegions(data);
+    } catch (error) {
+      console.error('Error fetching regions:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to fetch regions',
+        variant: 'destructive',
       });
-      if (!response.ok) {
-        throw new Error('Failed to fetch regions');
-      }
-      return response.json();
-    },
-  });
+    }
+  };
 
   // Fetch private AI keys
-  const { data: privateAIKeys = [], isLoading } = useQuery<PrivateAIKey[]>({
-    queryKey: ['private-ai-keys'],
-    queryFn: async () => {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/private-ai-keys`, {
-        credentials: 'include',
+  const fetchKeys = async () => {
+    try {
+      const response = await get('/private-ai-keys');
+      const data = await response.json();
+      setPrivateAIKeys(data);
+    } catch (error) {
+      console.error('Error fetching private AI keys:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to fetch private AI keys',
+        variant: 'destructive',
       });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Failed to fetch private AI keys');
-      }
-      return response.json();
-    },
-  });
+    }
+  };
 
   useEffect(() => {
     if (newKeyName && newKeyRef.current) {
@@ -168,34 +174,37 @@ export default function DashboardPage() {
     return acc;
   }, {});
 
-  const handleCreateKey = () => {
-    if (!selectedRegion) {
+  const handleCreateKey = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    try {
+      setIsLoading(true);
+      const response = await post('private-ai-keys', {
+        name: formData.get('name'),
+        key: formData.get('key'),
+      });
+      const data = await response.json();
+      setPrivateAIKeys([...privateAIKeys, data]);
+      toast({
+        title: 'Success',
+        description: 'Private AI key created successfully',
+      });
+    } catch (error) {
+      console.error('Error creating private AI key:', error);
       toast({
         title: 'Error',
-        description: 'Please select a region',
+        description: 'Failed to create private AI key',
         variant: 'destructive',
       });
-      return;
+    } finally {
+      setIsLoading(false);
     }
-    if (!keyName.trim()) {
-      toast({
-        title: 'Error',
-        description: 'Please enter a name for your key',
-        variant: 'destructive',
-      });
-      return;
-    }
-    const selectedRegionData = regions.find(r => r.name === selectedRegion);
-    if (!selectedRegionData) {
-      toast({
-        title: 'Error',
-        description: 'Selected region not found',
-        variant: 'destructive',
-      });
-      return;
-    }
-    createKeyMutation.mutate({ region_id: selectedRegionData.id, name: keyName });
   };
+
+  useEffect(() => {
+    fetchRegions();
+    fetchKeys();
+  }, []);
 
   if (isLoading) {
     return (

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -23,12 +23,14 @@ import {
 } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2 } from 'lucide-react';
+import { get, del } from '@/utils/api';
 
 interface User {
-  id: number;
+  id: string;
   email: string;
-  is_admin: boolean;
   is_active: boolean;
+  is_superuser: boolean;
+  created_at: string;
 }
 
 export default function UsersPage() {
@@ -37,9 +39,10 @@ export default function UsersPage() {
   const [isAddingUser, setIsAddingUser] = useState(false);
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserPassword, setNewUserPassword] = useState('');
+  const [users, setUsers] = useState<User[]>([]);
 
   // Queries
-  const { data: users = [], isLoading: isLoadingUsers } = useQuery<User[]>({
+  const { data: usersData = [], isLoading: isLoadingUsers } = useQuery<User[]>({
     queryKey: ['users'],
     queryFn: async () => {
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/users`, {
@@ -54,7 +57,7 @@ export default function UsersPage() {
 
   // Mutations
   const updateUserMutation = useMutation({
-    mutationFn: async ({ userId, isAdmin }: { userId: number; isAdmin: boolean }) => {
+    mutationFn: async ({ userId, isAdmin }: { userId: string; isAdmin: boolean }) => {
       const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/users/${userId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -113,6 +116,43 @@ export default function UsersPage() {
     },
   });
 
+  const fetchUsers = async () => {
+    try {
+      const response = await get('/users');
+      const data = await response.json();
+      setUsers(data);
+    } catch (error) {
+      console.error('Error fetching users:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to fetch users',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleDeleteUser = async (userId: string) => {
+    try {
+      await del(`/users/${userId}`);
+      setUsers(users.filter(user => user.id !== userId));
+      toast({
+        title: 'Success',
+        description: 'User deleted successfully',
+      });
+    } catch (error) {
+      console.error('Error deleting user:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to delete user',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  useEffect(() => {
+    fetchUsers();
+  }, []);
+
   if (isLoadingUsers) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
@@ -121,7 +161,7 @@ export default function UsersPage() {
     );
   }
 
-  const handleToggleAdmin = (userId: number, currentIsAdmin: boolean) => {
+  const handleToggleAdmin = (userId: string, currentIsAdmin: boolean) => {
     updateUserMutation.mutate({ userId, isAdmin: !currentIsAdmin });
   };
 
@@ -210,15 +250,15 @@ export default function UsersPage() {
                     {user.is_active ? 'Active' : 'Inactive'}
                   </span>
                 </TableCell>
-                <TableCell>{user.is_admin ? 'Admin' : 'User'}</TableCell>
+                <TableCell>{user.is_superuser ? 'Admin' : 'User'}</TableCell>
                 <TableCell>
                   <Button
-                    variant={user.is_admin ? "destructive" : "secondary"}
+                    variant={user.is_superuser ? "destructive" : "secondary"}
                     size="sm"
-                    onClick={() => handleToggleAdmin(user.id, user.is_admin)}
+                    onClick={() => handleToggleAdmin(user.id, user.is_superuser)}
                     disabled={updateUserMutation.isPending}
                   >
-                    {user.is_admin ? 'Remove Admin' : 'Make Admin'}
+                    {user.is_superuser ? 'Remove Admin' : 'Make Admin'}
                   </Button>
                 </TableCell>
               </TableRow>

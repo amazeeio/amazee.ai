@@ -19,6 +19,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useToast } from '@/hooks/use-toast';
+import { post } from '@/utils/api';
 
 const formSchema = z.object({
   email: z.string().email('Invalid email address'),
@@ -39,46 +40,26 @@ export function LoginForm() {
     },
   });
 
-  async function onSubmit(values: z.infer<typeof formSchema>) {
-    setError(null);
-    setIsLoading(true);
-
+  async function onSubmit(data: z.infer<typeof formSchema>) {
     try {
-      console.log('Submitting login form...');
+      setIsLoading(true);
+      const response = await post('auth/login', data);
+      const result = await response.json();
 
-      // Create FormData
-      const formData = new FormData();
-      formData.append('username', values.email);
-      formData.append('password', values.password);
+      if (result.access_token) {
+        toast({
+          title: 'Success',
+          description: 'Successfully signed in',
+        });
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/auth/login`, {
-        method: 'POST',
-        body: formData,
-        credentials: 'include',
-      });
+        // Add a small delay to ensure the cookie is set
+        await new Promise(resolve => setTimeout(resolve, 100));
 
-      console.log('Login response status:', response.status);
-      console.log('Login response headers:', Object.fromEntries(response.headers.entries()));
-
-      const data = await response.json();
-      console.log('Login response data:', data);
-
-      if (!response.ok) {
-        throw new Error(data.detail || 'Invalid credentials');
+        router.refresh();
+        router.push('/dashboard');
       }
-
-      toast({
-        title: 'Success',
-        description: 'Successfully signed in',
-      });
-
-      // Add a small delay to ensure the cookie is set
-      await new Promise(resolve => setTimeout(resolve, 100));
-
-      router.refresh();
-      router.push('/dashboard');
-    } catch (err: Error | unknown) {
-      setError(err instanceof Error ? err.message : 'An error occurred during login');
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'An error occurred during login');
     } finally {
       setIsLoading(false);
     }

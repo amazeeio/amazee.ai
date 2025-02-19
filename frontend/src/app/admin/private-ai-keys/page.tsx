@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Eye, EyeOff } from 'lucide-react';
+import { get, del } from '@/utils/api';
 
 interface PrivateAIKey {
   database_name: string;
@@ -46,26 +47,16 @@ export default function PrivateAIKeysPage() {
   const { data: privateAIKeys = [], isLoading: isLoadingPrivateAIKeys } = useQuery<PrivateAIKey[]>({
     queryKey: ['private-ai-keys'],
     queryFn: async () => {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/private-ai-keys`, {
-        credentials: 'include',
-      });
-      if (!response.ok) {
-        throw new Error('Failed to fetch private AI keys');
-      }
-      return response.json();
+      const response = await get('/private-ai-keys');
+      const data = await response.json();
+      return data;
     },
   });
 
   // Mutations
   const deletePrivateAIKeyMutation = useMutation({
     mutationFn: async (keyName: string) => {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/private-ai-keys/${keyName}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      });
-      if (!response.ok) {
-        throw new Error('Failed to delete private AI key');
-      }
+      await del(`/private-ai-keys/${keyName}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });

@@ -67,7 +67,7 @@ export function SidebarLayout({
               <span className="text-lg font-semibold">AmazeeAI</span>
             </Link>
           </div>
-          <NavMain navigation={navigation} pathname={pathname} />
+          <NavMain navigation={navigation} pathname={pathname ?? '/'} />
           <NavUser />
         </Sidebar>
 
@@ -102,7 +102,7 @@ export function SidebarLayout({
                     <span className="text-lg font-semibold">AmazeeAI</span>
                   </Link>
                 </div>
-                <NavMain navigation={navigation} pathname={pathname} />
+                <NavMain navigation={navigation} pathname={pathname ?? '/'} />
                 <NavUser />
               </Sidebar>
             </SidebarProvider>

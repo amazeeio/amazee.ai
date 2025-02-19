@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { format, parseISO } from 'date-fns';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -29,6 +29,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+import { get } from '@/utils/api';
 
 interface LogEntry {
   id: string;
@@ -61,36 +62,43 @@ export default function AuditLogsPage() {
     skip: 0,
     limit: ITEMS_PER_PAGE,
   });
+  const [auditLogs, setAuditLogs] = useState<LogEntry[]>([]);
+  const [totalItems, setTotalItems] = useState<number>(0);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [itemsPerPage, setItemsPerPage] = useState<number>(ITEMS_PER_PAGE);
+  const [startDate, setStartDate] = useState<string | null>(null);
+  const [endDate, setEndDate] = useState<string | null>(null);
+  const [selectedUser, setSelectedUser] = useState<string | null>(null);
+  const [selectedAction, setSelectedAction] = useState<string | null>(null);
 
-  const { data: logs = [], isLoading } = useQuery({
-    queryKey: ['audit-logs', filters],
-    queryFn: async (): Promise<LogEntry[]> => {
-      try {
-        const queryParams = new URLSearchParams();
-        Object.entries(filters).forEach(([key, value]) => {
-          if (value) queryParams.append(key, value.toString());
-        });
+  const fetchAuditLogs = async () => {
+    try {
+      const queryParams = new URLSearchParams({
+        page: currentPage.toString(),
+        per_page: itemsPerPage.toString(),
+        ...(startDate && { start_date: startDate }),
+        ...(endDate && { end_date: endDate }),
+        ...(selectedUser && { user_id: selectedUser }),
+        ...(selectedAction && { action: selectedAction }),
+      }).toString();
 
-        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/audit/logs?${queryParams}`, {
-          credentials: 'include',
-        });
-        if (!response.ok) {
-          const error = await response.json();
-          throw new Error(error.detail || 'Failed to fetch audit logs');
-        }
-        const data = await response.json();
-        return data as LogEntry[];
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to fetch audit logs';
-        toast({
-          title: 'Error',
-          description: message,
-          variant: 'destructive',
-        });
-        throw error;
-      }
-    },
-  });
+      const response = await get(`audit/logs?${queryParams}`, { credentials: 'include' });
+      const data = await response.json();
+      setAuditLogs(data.items || []);
+      setTotalItems(data.total || 0);
+    } catch (error) {
+      console.error('Error fetching audit logs:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to fetch audit logs',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  useEffect(() => {
+    fetchAuditLogs();
+  }, [currentPage, itemsPerPage, startDate, endDate, selectedUser, selectedAction]);
 
   const handleFilterChange = (key: keyof AuditLogFilters, value: string | undefined) => {
     setFilters(prev => ({
@@ -101,17 +109,11 @@ export default function AuditLogsPage() {
   };
 
   const handleNextPage = () => {
-    setFilters(prev => ({
-      ...prev,
-      skip: (prev.skip || 0) + ITEMS_PER_PAGE,
-    }));
+    setCurrentPage(prev => prev + 1);
   };
 
   const handlePrevPage = () => {
-    setFilters(prev => ({
-      ...prev,
-      skip: Math.max((prev.skip || 0) - ITEMS_PER_PAGE, 0),
-    }));
+    setCurrentPage(prev => Math.max(prev - 1, 1));
   };
 
   const getStatusBadge = (status: number) => {
@@ -129,7 +131,7 @@ export default function AuditLogsPage() {
     );
   };
 
-  if (isLoading) {
+  if (!auditLogs.length) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <Loader2 className="h-8 w-8 animate-spin" />
@@ -138,8 +140,8 @@ export default function AuditLogsPage() {
   }
 
   // Get unique event types and resource types
-  const uniqueEventTypes = Array.from(new Set((logs as LogEntry[]).map(log => log.event_type))).filter(Boolean) as string[];
-  const uniqueResourceTypes = Array.from(new Set((logs as LogEntry[]).map(log => log.resource_type))).filter(Boolean) as string[];
+  const uniqueEventTypes = Array.from(new Set(auditLogs.map(log => log.event_type))).filter(Boolean) as string[];
+  const uniqueResourceTypes = Array.from(new Set(auditLogs.map(log => log.resource_type))).filter(Boolean) as string[];
 
   return (
     <div className="space-y-6">
@@ -237,7 +239,7 @@ export default function AuditLogsPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {(logs as LogEntry[]).map((log: LogEntry) => (
+              {auditLogs.map((log: LogEntry) => (
                 <TableRow key={log.id}>
                   <TableCell className="whitespace-nowrap">
                     {format(parseISO(log.timestamp), 'yyyy-MM-dd HH:mm:ss')}
@@ -287,7 +289,7 @@ export default function AuditLogsPage() {
                   </TableCell>
                 </TableRow>
               ))}
-              {logs.length === 0 && (
+              {auditLogs.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={9} className="text-center py-4">
                     No audit logs found
@@ -303,21 +305,21 @@ export default function AuditLogsPage() {
       <div className="flex items-center justify-between">
         <div>
           <p className="text-sm text-muted-foreground">
-            Page {Math.floor((filters.skip || 0) / ITEMS_PER_PAGE) + 1}
+            Page {currentPage} of {Math.ceil(totalItems / itemsPerPage)}
           </p>
         </div>
         <div className="flex gap-2">
           <Button
             variant="outline"
             onClick={handlePrevPage}
-            disabled={!filters.skip || filters.skip === 0}
+            disabled={currentPage === 1}
           >
             Previous
           </Button>
           <Button
             variant="outline"
             onClick={handleNextPage}
-            disabled={(logs as LogEntry[]).length < ITEMS_PER_PAGE}
+            disabled={currentPage === Math.ceil(totalItems / itemsPerPage)}
           >
             Next
           </Button>
