@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie, Header
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 import logging
 
@@ -136,10 +136,13 @@ async def get_current_user_from_auth(
         logger.debug("Using token from cookie")
 
     try:
+        # Create HTTPAuthorizationCredentials for the token
+        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_to_try)
         # Try JWT token validation first
-        user = await get_current_user(token=token_to_try, db=db)
-        logger.debug(f"Successfully authenticated user {user.id} using JWT token")
-        return user
+        user = await get_current_user(credentials=credentials, db=db)
+        if user:
+            logger.debug(f"Successfully authenticated user {user.id} using JWT token")
+            return user
     except HTTPException as jwt_error:
         # If JWT validation fails, try API token validation
         try:

@@ -115,4 +115,64 @@ async def custom_swagger_ui_html():
         title="API Documentation",
         swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui-bundle.js",
         swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui.css",
+        oauth2_redirect_url="/oauth2-redirect",
+        init_oauth={
+            "usePkceWithAuthorizationCodeGrant": False,
+        }
     )
+
+@app.get("/oauth2-redirect", include_in_schema=False)
+async def oauth2_redirect():
+    return get_swagger_ui_html(
+        openapi_url="/openapi.json",
+        title="OAuth2 Redirect"
+    )
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+
+    # Initialize components if not present
+    if "components" not in openapi_schema:
+        openapi_schema["components"] = {}
+
+    # Add security scheme - only Bearer auth
+    openapi_schema["components"]["securitySchemes"] = {
+        "Bearer": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": "Enter your JWT token in the format: Bearer <token>"
+        }
+    }
+
+    # Ensure schemas are properly initialized
+    if "schemas" not in openapi_schema["components"]:
+        openapi_schema["components"]["schemas"] = {}
+
+    # Add global security requirement
+    openapi_schema["security"] = [{"Bearer": []}]
+
+    # Remove all auth-related parameters and clean up paths
+    for path_name, path_item in openapi_schema.get("paths", {}).items():
+        for operation in path_item.values():
+            # Remove all parameters
+            if "parameters" in operation:
+                del operation["parameters"]
+
+            # Remove security from non-protected endpoints
+            if path_name in ["/auth/login", "/auth/register", "/health"]:
+                if "security" in operation:
+                    del operation["security"]
+
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
