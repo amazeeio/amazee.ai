@@ -67,7 +67,8 @@ async def get_audit_logs(
             action=log.action,
             details=log.details,
             ip_address=log.ip_address,
-            user_agent=log.user_agent
+            user_agent=log.user_agent,
+            request_source=log.request_source
         ) for log in results]
 
         return response_data

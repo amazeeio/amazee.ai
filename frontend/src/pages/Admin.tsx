@@ -22,6 +22,9 @@ export const Admin: React.FC = () => {
     litellm_api_key: '',
     postgres_db: '',
   });
+  const [isAddingUser, setIsAddingUser] = useState(false);
+  const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
 
   const { data: usersList = [], isLoading: isLoadingUsers } = useQuery({
     queryKey: ['users'],
@@ -90,6 +93,21 @@ export const Admin: React.FC = () => {
     },
   });
 
+  const registerUserMutation = useMutation({
+    mutationFn: users.create,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['users'] });
+      setIsAddingUser(false);
+      setNewUserEmail('');
+      setNewUserPassword('');
+    },
+    onError: (err: any) => {
+      console.error('Failed to create user:', err);
+      const errorMessage = err?.response?.data?.detail || err?.message || 'Failed to create user';
+      setError(errorMessage);
+    },
+  });
+
   // Redirect if not admin
   if (isLoadingUsers || isLoadingPrivateAIKeys || isLoadingRegions) {
     return (
@@ -153,6 +171,13 @@ export const Admin: React.FC = () => {
         setError(errorMessage);
       }
     }
+  };
+
+  const handleCreateUser = () => {
+    registerUserMutation.mutate({
+      email: newUserEmail,
+      password: newUserPassword,
+    });
   };
 
   return (
@@ -365,44 +390,77 @@ export const Admin: React.FC = () => {
 
         {/* Users Section */}
         <div className="bg-white shadow overflow-hidden sm:rounded-lg mb-8">
-          <div className="px-4 py-5 sm:px-6">
+          <div className="px-4 py-5 sm:px-6 flex justify-between items-center">
             <h2 className="text-xl font-semibold text-gray-900">Users</h2>
+            <button
+              onClick={() => setIsAddingUser(!isAddingUser)}
+              className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700"
+            >
+              {isAddingUser ? 'Cancel' : 'Add User'}
+            </button>
           </div>
-          <div className="border-t border-gray-200">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Admin Status</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {usersList.map((user: User) => (
-                  <tr key={user.id}>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{user.email}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      <button
-                        onClick={() => handleToggleAdmin(user.id, user.is_admin)}
-                        role="switch"
-                        aria-checked={user.is_admin}
-                        aria-label={`Toggle admin status for ${user.email}`}
-                        className={`relative inline-flex flex-shrink-0 h-6 w-11 border-2 border-transparent rounded-full cursor-pointer transition-colors ease-in-out duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 ${
-                          user.is_admin ? 'bg-indigo-600' : 'bg-gray-200'
-                        }`}
-                      >
-                        <span className="sr-only">Toggle admin status for {user.email}</span>
-                        <span
-                          className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transform ring-0 transition ease-in-out duration-200 ${
-                            user.is_admin ? 'translate-x-5' : 'translate-x-0'
-                          }`}
-                        />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+
+          {isAddingUser && (
+            <div className="px-4 py-5 sm:px-6 border-t border-gray-200">
+              <div className="flex items-center gap-4">
+                <input
+                  type="email"
+                  value={newUserEmail}
+                  onChange={(e) => setNewUserEmail(e.target.value)}
+                  placeholder="Email"
+                  className="block w-64 pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md"
+                />
+                <input
+                  type="password"
+                  value={newUserPassword}
+                  onChange={(e) => setNewUserPassword(e.target.value)}
+                  placeholder="Password"
+                  className="block w-64 pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md"
+                />
+                <button
+                  onClick={handleCreateUser}
+                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700"
+                  disabled={registerUserMutation.isPending}
+                >
+                  {registerUserMutation.isPending ? 'Adding...' : 'Add User'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          <ul className="divide-y divide-gray-200">
+            {usersList.map((user: User) => (
+              <li key={user.id} className="px-6 py-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-lg font-medium text-gray-900">{user.email}</h3>
+                    <p className="text-sm text-gray-600">
+                      Status: {user.is_active ? 'Active' : 'Inactive'}
+                    </p>
+                    <p className="text-sm text-gray-600">
+                      Role: {user.is_admin ? 'Admin' : 'User'}
+                    </p>
+                  </div>
+                  <div>
+                    <button
+                      onClick={() => handleToggleAdmin(user.id, user.is_admin)}
+                      className={`inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md ${
+                        user.is_admin
+                          ? 'text-red-700 bg-red-100 hover:bg-red-200'
+                          : 'text-green-700 bg-green-100 hover:bg-green-200'
+                      }`}
+                      disabled={updateUserMutation.isPending}
+                    >
+                      {user.is_admin ? 'Remove Admin' : 'Make Admin'}
+                    </button>
+                  </div>
+                </div>
+              </li>
+            ))}
+            {usersList.length === 0 && (
+              <li className="px-6 py-4 text-center text-gray-500">No users found</li>
+            )}
+          </ul>
         </div>
 
         {/* Private AI Keys Section */}

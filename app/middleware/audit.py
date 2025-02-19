@@ -57,6 +57,18 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
             path_params = request.path_params
             resource_id = next(iter(path_params.values()), None) if path_params else None
 
+            # Determine request source
+            request_source = None
+            origin = request.headers.get("origin")
+            referer = request.headers.get("referer")
+
+            # Check if request is from our frontend
+            if origin or referer:
+                request_source = "frontend"
+            else:
+                # If no origin/referer and has auth header, likely direct API call
+                request_source = "api" if auth_header else None
+
             # Create audit log entry
             audit_log = DBAuditLog(
                 user_id=user_id,
@@ -70,7 +82,8 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                     "status_code": response.status_code
                 },
                 ip_address=request.client.host if request.client else None,
-                user_agent=request.headers.get("user-agent")
+                user_agent=request.headers.get("user-agent"),
+                request_source=request_source
             )
 
             db.add(audit_log)

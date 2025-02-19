@@ -102,6 +102,7 @@ export interface AuditLog {
   };
   ip_address: string | null;
   user_agent: string | null;
+  request_source: string | null;
 }
 
 export interface AuditLogFilters {
@@ -149,7 +150,7 @@ export const auth = {
 
 export const users = {
   list: async () => {
-    const { data } = await api.get<User[]>('/users/all');
+    const { data } = await api.get<User[]>('/users');
     return data;
   },
 
@@ -160,6 +161,11 @@ export const users = {
 
   update: async (userId: number, updateData: { is_admin?: boolean }) => {
     const { data } = await api.put<User>(`/users/${userId}`, updateData);
+    return data;
+  },
+
+  create: async (userData: RegisterData) => {
+    const { data } = await api.post<User>('/users', userData);
     return data;
   },
 };

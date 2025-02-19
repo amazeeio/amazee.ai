@@ -87,5 +87,6 @@ class DBAuditLog(Base):
     details = Column(JSON, nullable=True)
     ip_address = Column(String, nullable=True)
     user_agent = Column(String, nullable=True)
+    request_source = Column(String, nullable=True)  # Values: 'frontend', 'api', or None
 
     user = relationship("DBUser", back_populates="audit_logs")

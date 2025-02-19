@@ -89,6 +89,7 @@ class AuditLog(BaseModel):
     details: Optional[dict]
     ip_address: Optional[str]
     user_agent: Optional[str]
+    request_source: Optional[str]
     model_config = ConfigDict(from_attributes=True)
 
 class AuditLogResponse(BaseModel):
@@ -103,4 +104,5 @@ class AuditLogResponse(BaseModel):
     details: Optional[dict]
     ip_address: Optional[str]
     user_agent: Optional[str]
+    request_source: Optional[str]
     model_config = ConfigDict(from_attributes=True)

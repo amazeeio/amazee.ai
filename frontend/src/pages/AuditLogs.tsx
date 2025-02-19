@@ -362,6 +362,9 @@ const AuditLogs: React.FC = () => {
                                                             User
                                                         </th>
                                                         <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                            Source
+                                                        </th>
+                                                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                                             IP Address
                                                         </th>
                                                         <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -399,6 +402,17 @@ const AuditLogs: React.FC = () => {
                                                             </td>
                                                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                                                                 {log.user_email || 'Anonymous'}
+                                                            </td>
+                                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                                                    log.request_source === 'frontend'
+                                                                        ? 'bg-green-100 text-green-800'
+                                                                        : log.request_source === 'api'
+                                                                        ? 'bg-yellow-100 text-yellow-800'
+                                                                        : 'bg-gray-100 text-gray-800'
+                                                                }`}>
+                                                                    {log.request_source || 'Unknown'}
+                                                                </span>
                                                             </td>
                                                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                                                                 {log.ip_address || '-'}
