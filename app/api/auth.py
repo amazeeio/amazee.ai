@@ -148,7 +148,7 @@ async def get_current_user_from_token(
     db_token.last_used_at = datetime.utcnow()
     db.commit()
 
-    return db_token.user
+    return db_token.owner
 
 async def get_current_user_from_auth(
     access_token: Optional[str] = Cookie(None, alias="access_token"),
@@ -156,7 +156,6 @@ async def get_current_user_from_auth(
     db: Session = Depends(get_db)
 ) -> DBUser:
     if not access_token and not authorization:
-        logger.debug("No access token or authorization header found")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
@@ -168,42 +167,35 @@ async def get_current_user_from_auth(
     if authorization:
         parts = authorization.split()
         if len(parts) != 2 or parts[0].lower() != "bearer":
-            logger.debug("Invalid authorization header format")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid authorization header format. Use 'Bearer <token>'",
             )
         token_to_try = parts[1]
-        logger.debug("Using token from authorization header")
-    else:
-        logger.debug("Using token from cookie")
 
+    # First try API token validation since it's simpler
     try:
-        # Create HTTPAuthorizationCredentials for the token
-        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_to_try)
-        # Try JWT token validation first
-        user = await get_current_user(credentials=credentials, db=db)
-        if user:
-            logger.debug(f"Successfully authenticated user {user.id} using JWT token")
-            return user
-    except HTTPException as jwt_error:
-        # If JWT validation fails, try API token validation
-        try:
-            logger.debug("JWT validation failed, trying API token")
-            db_token = db.query(DBAPIToken).filter(DBAPIToken.token == token_to_try).first()
-            if not db_token:
-                logger.debug("No valid API token found")
-                raise jwt_error
-
+        db_token = db.query(DBAPIToken).filter(DBAPIToken.token == token_to_try).first()
+        if db_token:
             # Update last used timestamp
             db_token.last_used_at = datetime.utcnow()
             db.commit()
+            return db_token.owner
+    except Exception:
+        pass
 
-            logger.debug(f"Successfully authenticated user {db_token.user.id} using API token")
-            return db_token.user
-        except Exception:
-            logger.debug("API token validation failed")
-            raise jwt_error
+    # If API token validation fails, try JWT validation
+    try:
+        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_to_try)
+        user = await get_current_user(credentials=credentials, db=db)
+        if user:
+            return user
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 @router.get("/me", response_model=User)
 async def read_users_me(current_user: DBUser = Depends(get_current_user_from_auth)):
