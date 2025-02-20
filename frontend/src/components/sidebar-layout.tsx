@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useAuth } from '@/hooks/use-auth';
 
 const navigation = [
   { name: 'Dashboard', href: '/dashboard' },
@@ -31,6 +32,7 @@ export function SidebarLayout({
 }) {
   const pathname = usePathname();
   const [isMounted, setIsMounted] = useState(false);
+  const { user } = useAuth();
 
   useEffect(() => {
     setIsMounted(true);
@@ -44,6 +46,14 @@ export function SidebarLayout({
   if (pathname === '/auth/login' || pathname === '/auth/register') {
     return <>{children}</>;
   }
+
+  // Filter out admin navigation for non-admin users
+  const filteredNavigation = navigation.filter(item => {
+    if (item.name === 'Admin') {
+      return user?.is_admin === true;
+    }
+    return true;
+  });
 
   return (
     <div className="min-h-screen bg-background">
@@ -67,7 +77,7 @@ export function SidebarLayout({
               <span className="text-lg font-semibold">amazee.ai</span>
             </Link>
           </div>
-          <NavMain navigation={navigation} pathname={pathname ?? '/'} />
+          <NavMain navigation={filteredNavigation} pathname={pathname ?? '/'} />
           <NavUser />
         </Sidebar>
 
@@ -102,7 +112,7 @@ export function SidebarLayout({
                     <span className="text-lg font-semibold">amazee.ai</span>
                   </Link>
                 </div>
-                <NavMain navigation={navigation} pathname={pathname ?? '/'} />
+                <NavMain navigation={filteredNavigation} pathname={pathname ?? '/'} />
                 <NavUser />
               </Sidebar>
             </SidebarProvider>

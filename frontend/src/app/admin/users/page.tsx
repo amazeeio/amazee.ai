@@ -29,7 +29,7 @@ interface User {
   id: string;
   email: string;
   is_active: boolean;
-  is_superuser: boolean;
+  is_admin: boolean;
   created_at: string;
 }
 
@@ -221,15 +221,15 @@ export default function UsersPage() {
                     {user.is_active ? 'Active' : 'Inactive'}
                   </span>
                 </TableCell>
-                <TableCell>{user.is_superuser ? 'Admin' : 'User'}</TableCell>
+                <TableCell>{user.is_admin ? 'Admin' : 'User'}</TableCell>
                 <TableCell>
                   <Button
-                    variant={user.is_superuser ? "destructive" : "secondary"}
+                    variant={user.is_admin ? "destructive" : "secondary"}
                     size="sm"
-                    onClick={() => handleToggleAdmin(user.id, user.is_superuser)}
+                    onClick={() => handleToggleAdmin(user.id, user.is_admin)}
                     disabled={updateUserMutation.isPending}
                   >
-                    {user.is_superuser ? 'Remove Admin' : 'Make Admin'}
+                    {user.is_admin ? 'Remove Admin' : 'Make Admin'}
                   </Button>
                 </TableCell>
               </TableRow>

@@ -19,6 +19,9 @@ import {
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useToast } from '@/hooks/use-toast';
+import { getCachedConfig } from '@/utils/config';
+import { useAuth } from '@/hooks/use-auth';
+import { get, post } from '@/utils/api';
 
 const formSchema = z.object({
   email: z.string().email('Invalid email address'),
@@ -36,6 +39,7 @@ const formSchema = z.object({
 export function RegisterForm() {
   const router = useRouter();
   const { toast } = useToast();
+  const { setUser } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -53,29 +57,49 @@ export function RegisterForm() {
     setIsLoading(true);
 
     try {
-      const response = await fetch('/api/auth/register', {
+      // Register the user
+      const registerResponse = await post('/auth/register', {
+        email: values.email,
+        password: values.password,
+      });
+      await registerResponse.json();
+
+      // Automatically log in the user
+      const { NEXT_PUBLIC_API_URL: apiUrl } = getCachedConfig();
+      const loginResponse = await fetch(`${apiUrl}/auth/login`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded',
         },
-        body: JSON.stringify({
-          email: values.email,
+        body: new URLSearchParams({
+          username: values.email,
           password: values.password,
-        }),
+        }).toString(),
+        credentials: 'include',
       });
 
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.detail || 'Registration failed');
+      const loginResult = await loginResponse.json();
+
+      if (!loginResponse.ok) {
+        throw new Error(loginResult.detail || 'Login failed after registration');
       }
 
-      toast({
-        title: 'Success',
-        description: 'Account created successfully',
-      });
+      if (loginResult.access_token) {
+        // Fetch user profile
+        const profileResponse = await get('/auth/me');
+        const profileData = await profileResponse.json();
+        setUser(profileData);
 
-      router.push('/auth/login');
+        toast({
+          title: 'Success',
+          description: 'Account created and logged in successfully',
+        });
+
+        router.refresh();
+        router.push('/dashboard');
+      }
     } catch (err: Error | unknown) {
+      console.error('Registration error:', err);
       setError(err instanceof Error ? err.message : 'An error occurred during registration');
     } finally {
       setIsLoading(false);
