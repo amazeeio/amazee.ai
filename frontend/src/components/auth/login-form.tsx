@@ -68,26 +68,23 @@ export function LoginForm() {
       }
 
       if (result.access_token) {
-        // Add a small delay to ensure the cookie is set
-        await new Promise(resolve => setTimeout(resolve, 100));
-
         // Fetch user profile
         try {
           const profileResponse = await get('/auth/me');
           const profileData = await profileResponse.json();
           setUser(profileData);
+
+          toast({
+            title: 'Success',
+            description: 'Successfully signed in',
+          });
+
+          router.refresh();
+          router.push('/dashboard');
         } catch (profileError) {
           console.error('Failed to fetch user profile:', profileError);
-          // Continue with login even if profile fetch fails
+          setError('Successfully logged in but failed to fetch user profile. Please refresh the page.');
         }
-
-        toast({
-          title: 'Success',
-          description: 'Successfully signed in',
-        });
-
-        router.refresh();
-        router.push('/dashboard');
       }
     } catch (error) {
       setError(error instanceof Error ? error.message : 'An error occurred during login');

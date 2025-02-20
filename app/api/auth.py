@@ -5,6 +5,8 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HT
 from sqlalchemy.orm import Session
 import logging
 import secrets
+import os
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,20 @@ from app.core.config import settings
 router = APIRouter(
     tags=["Authentication"]
 )
+
+def get_cookie_domain():
+    """Extract domain from LAGOON_ROUTES for cookie settings."""
+    lagoon_routes = os.getenv("LAGOON_ROUTES")
+    if not lagoon_routes:
+        return None
+
+    # Take first URL from comma-separated list
+    first_url = lagoon_routes.split(',')[0]
+    # Parse the URL and get the hostname
+    hostname = urlparse(first_url).netloc
+    # Remove the first part (e.g., 'backend' or 'frontend')
+    domain = '.'.join(hostname.split('.')[1:])
+    return domain
 
 def authenticate_user(db: Session, email: str, password: str) -> Optional[DBUser]:
     user = db.query(DBUser).filter(DBUser.email == email).first()
@@ -57,26 +73,49 @@ async def login(
         data={"sub": user.email}
     )
 
-    # Set cookie with more permissive settings
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=False,  # Allow JavaScript access
-        max_age=1800,
-        expires=1800,
-        samesite='none',  # Allow cross-site requests
-        secure=True,     # Still require HTTPS for security
-        path='/',        # Make cookie available for all paths
-    )
+    # Get cookie domain from LAGOON_ROUTES
+    cookie_domain = get_cookie_domain()
+
+    # Prepare cookie settings
+    cookie_settings = {
+        "key": "access_token",
+        "value": access_token,
+        "httponly": True,
+        "max_age": 1800,
+        "expires": 1800,
+        "samesite": 'none',
+        "secure": True,
+        "path": '/',
+    }
+
+    # Only set domain if we got one from LAGOON_ROUTES
+    if cookie_domain:
+        cookie_settings["domain"] = cookie_domain
+
+    # Set cookie with appropriate settings
+    response.set_cookie(**cookie_settings)
 
     return {"access_token": access_token, "token_type": "bearer"}
 
 @router.post("/logout")
 async def logout(response: Response):
-    response.delete_cookie(
-        key="access_token",
-        path="/"
-    )
+    # Get cookie domain for logout
+    cookie_domain = get_cookie_domain()
+
+    # Prepare cookie deletion settings
+    delete_settings = {
+        "key": "access_token",
+        "path": "/",
+        "secure": True,
+        "samesite": 'none',
+    }
+
+    # Only set domain if we got one from LAGOON_ROUTES
+    if cookie_domain:
+        delete_settings["domain"] = cookie_domain
+
+    # Delete cookie with appropriate settings
+    response.delete_cookie(**delete_settings)
     return {"message": "Successfully logged out"}
 
 async def get_current_user_from_token(
