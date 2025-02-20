@@ -20,7 +20,8 @@ import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth';
-import { get, post } from '@/utils/api';
+import { get } from '@/utils/api';
+import { getCachedConfig } from '@/utils/config';
 
 const formSchema = z.object({
   email: z.string().email('Invalid email address'),
@@ -50,11 +51,14 @@ export function LoginForm() {
       formData.append('username', data.email);
       formData.append('password', data.password);
 
-      const response = await post('/auth/login', {
+      const { NEXT_PUBLIC_API_URL: apiUrl } = getCachedConfig();
+      const response = await fetch(`${apiUrl}/auth/login`, {
+        method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
         },
-        body: formData,
+        body: formData.toString(),
+        credentials: 'include',
       });
 
       const result = await response.json();
