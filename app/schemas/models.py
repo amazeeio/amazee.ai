@@ -43,6 +43,13 @@ class APIToken(APITokenBase):
     user_id: int
     model_config = ConfigDict(from_attributes=True)
 
+class APITokenResponse(APITokenBase):
+    id: int
+    created_at: datetime
+    last_used_at: Optional[datetime] = None
+    user_id: int
+    model_config = ConfigDict(from_attributes=True)
+
 class RegionBase(BaseModel):
     name: str
     postgres_host: str

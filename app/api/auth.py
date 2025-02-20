@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 from app.db.database import get_db
-from app.schemas.models import Token, User, UserCreate, APIToken, APITokenCreate
+from app.schemas.models import Token, User, UserCreate, APIToken, APITokenCreate, APITokenResponse
 from app.db.models import DBUser, DBAPIToken
 from app.core.security import (
     verify_password,
@@ -251,7 +251,7 @@ async def create_token(
     db.refresh(db_token)
     return db_token
 
-@router.get("/token", response_model=List[APIToken])
+@router.get("/token", response_model=List[APITokenResponse])
 async def list_tokens(
     current_user = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)

@@ -41,7 +41,7 @@ export default function APITokensPage() {
     queryFn: async () => {
       const response = await get('/auth/token');
       const data = await response.json();
-      return data;
+      return data.map(({ token, ...rest }: APIToken) => rest);
     },
   });
 
@@ -93,7 +93,7 @@ export default function APITokensPage() {
     try {
       const response = await get('auth/token', { credentials: 'include' });
       const data = await response.json();
-      setTokens(data);
+      setTokens(data.map(({ token, ...rest }: APIToken) => rest));
     } catch (error) {
       console.error('Error fetching tokens:', error);
       toast({
@@ -107,26 +107,7 @@ export default function APITokensPage() {
   const handleCreateToken = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!newTokenName.trim()) return;
-
-    try {
-      const response = await post('/auth/token', {
-        name: newTokenName,
-      }, { credentials: 'include' });
-      const data = await response.json();
-      setTokens([...tokens, data]);
-      setNewTokenName('');
-      toast({
-        title: 'Success',
-        description: 'Token created successfully',
-      });
-    } catch (error) {
-      console.error('Error creating token:', error);
-      toast({
-        title: 'Error',
-        description: 'Failed to create token',
-        variant: 'destructive',
-      });
-    }
+    createMutation.mutate(newTokenName);
   };
 
   const handleDeleteToken = async (tokenId: string) => {
