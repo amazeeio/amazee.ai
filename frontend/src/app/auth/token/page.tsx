@@ -41,7 +41,7 @@ export default function APITokensPage() {
     queryFn: async () => {
       const response = await get('/auth/token');
       const data = await response.json();
-      return data.map(({ token, ...rest }: APIToken) => rest);
+      return data;
     },
   });
 
@@ -93,7 +93,7 @@ export default function APITokensPage() {
     try {
       const response = await get('auth/token', { credentials: 'include' });
       const data = await response.json();
-      setTokens(data.map(({ token, ...rest }: APIToken) => rest));
+      setTokens(data);
     } catch (error) {
       console.error('Error fetching tokens:', error);
       toast({
