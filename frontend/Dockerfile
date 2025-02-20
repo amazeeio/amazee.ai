@@ -1,4 +1,4 @@
-FROM uselagoon/node-20 AS builder
+FROM uselagoon/node-20:25.1.0 AS builder
 
 WORKDIR /app
 
@@ -15,7 +15,7 @@ COPY . .
 RUN npm run build
 
 # Production stage
-FROM uselagoon/node-20
+FROM uselagoon/node-20:25.1.0
 
 WORKDIR /app
 

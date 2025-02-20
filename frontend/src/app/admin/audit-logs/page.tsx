@@ -6,13 +6,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
   Table,
   TableBody,
   TableCell,
@@ -66,10 +59,6 @@ export default function AuditLogsPage() {
   const [totalItems, setTotalItems] = useState<number>(0);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [itemsPerPage] = useState<number>(ITEMS_PER_PAGE);
-  const [startDate] = useState<string | null>(null);
-  const [endDate] = useState<string | null>(null);
-  const [selectedUser] = useState<string | null>(null);
-  const [selectedAction] = useState<string | null>(null);
   const [eventTypeOptions, setEventTypeOptions] = useState<{ value: string; label: string }[]>([]);
   const [resourceTypeOptions, setResourceTypeOptions] = useState<{ value: string; label: string }[]>([]);
 
@@ -119,8 +108,6 @@ export default function AuditLogsPage() {
         ...(filters.event_type?.length && { event_type: filters.event_type.join(',') }),
         ...(filters.resource_type?.length && { resource_type: filters.resource_type.join(',') }),
         ...(filters.user_email && { user_email: filters.user_email }),
-        ...(filters.from_date && { from_date: filters.from_date }),
-        ...(filters.to_date && { to_date: filters.to_date }),
       }).toString();
 
       const response = await get(`audit/logs?${queryParams}`, { credentials: 'include' });
@@ -221,24 +208,6 @@ export default function AuditLogsPage() {
                 placeholder="Search by email"
                 value={filters.user_email || ''}
                 onChange={(e) => handleFilterChange('user_email', e.target.value)}
-              />
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm font-medium">From Date</label>
-              <Input
-                type="datetime-local"
-                value={filters.from_date || ''}
-                onChange={(e) => handleFilterChange('from_date', e.target.value)}
-              />
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm font-medium">To Date</label>
-              <Input
-                type="datetime-local"
-                value={filters.to_date || ''}
-                onChange={(e) => handleFilterChange('to_date', e.target.value)}
               />
             </div>
           </div>
