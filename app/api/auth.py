@@ -57,15 +57,15 @@ async def login(
         data={"sub": user.email}
     )
 
-    # Set cookie
+    # Set cookie with more permissive settings
     response.set_cookie(
         key="access_token",
         value=access_token,
-        httponly=True,
+        httponly=False,  # Allow JavaScript access
         max_age=1800,
         expires=1800,
-        samesite='lax',  # Allow the cookie to be sent in navigation requests
-        secure=True,     # Only send over HTTPS
+        samesite='none',  # Allow cross-site requests
+        secure=True,     # Still require HTTPS for security
         path='/',        # Make cookie available for all paths
     )
 
