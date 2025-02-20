@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import {
@@ -61,10 +61,9 @@ export default function DashboardPage() {
   const newKeyRef = useRef<HTMLTableRowElement>(null);
   const [regions, setRegions] = useState<Region[]>([]);
   const [privateAIKeys, setPrivateAIKeys] = useState<PrivateAIKey[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
 
   // Fetch regions
-  const fetchRegions = async () => {
+  const fetchRegions = useCallback(async () => {
     try {
       const response = await get('regions');
       const data = await response.json();
@@ -77,10 +76,10 @@ export default function DashboardPage() {
         variant: 'destructive',
       });
     }
-  };
+  }, [toast, setRegions]);
 
   // Fetch private AI keys
-  const fetchKeys = async () => {
+  const fetchKeys = useCallback(async () => {
     try {
       const response = await get('/private-ai-keys');
       const data = await response.json();
@@ -93,7 +92,7 @@ export default function DashboardPage() {
         variant: 'destructive',
       });
     }
-  };
+  }, [toast, setPrivateAIKeys]);
 
   useEffect(() => {
     if (newKeyName && newKeyRef.current) {
@@ -163,45 +162,22 @@ export default function DashboardPage() {
     return acc;
   }, {});
 
-  const handleCreateKey = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    try {
-      setIsLoading(true);
-      const response = await post('private-ai-keys', {
-        name: formData.get('name'),
-        key: formData.get('key'),
-      });
-      const data = await response.json();
-      setPrivateAIKeys([...privateAIKeys, data]);
-      toast({
-        title: 'Success',
-        description: 'Private AI key created successfully',
-      });
-    } catch (error) {
-      console.error('Error creating private AI key:', error);
-      toast({
-        title: 'Error',
-        description: 'Failed to create private AI key',
-        variant: 'destructive',
-      });
-    } finally {
-      setIsLoading(false);
-    }
+  const handleCreateKey = () => {
+    if (!selectedRegion || !keyName) return;
+
+    const region = regions.find(r => r.name === selectedRegion);
+    if (!region) return;
+
+    createKeyMutation.mutate({
+      region_id: region.id,
+      name: keyName
+    });
   };
 
   useEffect(() => {
-    fetchRegions();
-    fetchKeys();
-  }, []);
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <Loader2 className="h-8 w-8 animate-spin" />
-      </div>
-    );
-  }
+    void fetchRegions();
+    void fetchKeys();
+  }, [fetchRegions, fetchKeys]);
 
   return (
     <div className="space-y-6">
@@ -252,12 +228,16 @@ export default function DashboardPage() {
             <DialogFooter>
               <Button
                 onClick={handleCreateKey}
-                disabled={createKeyMutation.isPending || !selectedRegion || !keyName.trim()}
+                disabled={!selectedRegion || !keyName || createKeyMutation.isPending}
               >
-                {createKeyMutation.isPending && (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                {createKeyMutation.isPending ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Creating...
+                  </>
+                ) : (
+                  'Create Key'
                 )}
-                Create Key
               </Button>
             </DialogFooter>
           </DialogContent>

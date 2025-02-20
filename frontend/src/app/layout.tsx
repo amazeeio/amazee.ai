@@ -8,7 +8,7 @@ import { SidebarLayout } from "@/components/sidebar-layout";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "AmazeeAI",
+  title: "amazee.ai",
   description: "AI-powered development platform",
 };
 

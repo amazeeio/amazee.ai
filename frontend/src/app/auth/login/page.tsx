@@ -20,12 +20,12 @@ export default function LoginPage() {
           >
             <path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3" />
           </svg>
-          AmazeeAI
+          amazee.ai
         </div>
         <div className="relative z-20 mt-auto">
           <blockquote className="space-y-2">
             <p className="text-lg">
-              &ldquo;Welcome to AmazeeAI - Your AI-powered development platform.&rdquo;
+              &ldquo;Welcome to amazee.ai - Your AI-powered development platform.&rdquo;
             </p>
           </blockquote>
         </div>

@@ -19,7 +19,8 @@ import {
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useToast } from '@/hooks/use-toast';
-import { post } from '@/utils/api';
+import { useAuth } from '@/hooks/use-auth';
+import { get } from '@/utils/api';
 
 const formSchema = z.object({
   email: z.string().email('Invalid email address'),
@@ -29,6 +30,7 @@ const formSchema = z.object({
 export function LoginForm() {
   const router = useRouter();
   const { toast } = useToast();
+  const { setUser } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -43,17 +45,44 @@ export function LoginForm() {
   async function onSubmit(data: z.infer<typeof formSchema>) {
     try {
       setIsLoading(true);
-      const response = await post('auth/login', data);
+      // Convert to the format expected by OAuth2PasswordRequestForm
+      const formData = new URLSearchParams();
+      formData.append('username', data.email);
+      formData.append('password', data.password);
+
+      const response = await fetch('http://localhost:8800/auth/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: formData,
+        credentials: 'include',
+      });
+
       const result = await response.json();
 
+      if (!response.ok) {
+        throw new Error(result.detail || 'Failed to login');
+      }
+
       if (result.access_token) {
+        // Add a small delay to ensure the cookie is set
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        // Fetch user profile
+        try {
+          const profileResponse = await get('/auth/me');
+          const profileData = await profileResponse.json();
+          setUser(profileData);
+        } catch (profileError) {
+          console.error('Failed to fetch user profile:', profileError);
+          // Continue with login even if profile fetch fails
+        }
+
         toast({
           title: 'Success',
           description: 'Successfully signed in',
         });
-
-        // Add a small delay to ensure the cookie is set
-        await new Promise(resolve => setTimeout(resolve, 100));
 
         router.refresh();
         router.push('/dashboard');

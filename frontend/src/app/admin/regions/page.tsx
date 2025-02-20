@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -66,7 +66,7 @@ export default function RegionsPage() {
   const [regions, setRegions] = useState<Region[]>([]);
 
   // Queries
-  const { data: regionsData = [], isLoading: isLoadingRegions } = useQuery<Region[]>({
+  const { isLoading: isLoadingRegions } = useQuery<Region[]>({
     queryKey: ['regions'],
     queryFn: async () => {
       const response = await get('regions');
@@ -171,7 +171,7 @@ export default function RegionsPage() {
     }
   };
 
-  const fetchRegions = async () => {
+  const fetchRegions = useCallback(async () => {
     try {
       const response = await get('regions');
       const data = await response.json();
@@ -184,11 +184,11 @@ export default function RegionsPage() {
         variant: 'destructive',
       });
     }
-  };
+  }, [toast, setRegions]);
 
   useEffect(() => {
-    fetchRegions();
-  }, []);
+    void fetchRegions();
+  }, [fetchRegions]);
 
   return (
     <div>

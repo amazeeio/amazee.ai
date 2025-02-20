@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -23,7 +23,7 @@ import {
 } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2 } from 'lucide-react';
-import { get, del, post } from '@/utils/api';
+import { get, post } from '@/utils/api';
 
 interface User {
   id: string;
@@ -42,7 +42,7 @@ export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
 
   // Queries
-  const { data: usersData = [], isLoading: isLoadingUsers } = useQuery<User[]>({
+  const { isLoading: isLoadingUsers } = useQuery<User[]>({
     queryKey: ['users'],
     queryFn: async () => {
       const response = await get('/users');
@@ -105,7 +105,7 @@ export default function UsersPage() {
     },
   });
 
-  const fetchUsers = async () => {
+  const fetchUsers = useCallback(async () => {
     try {
       const response = await get('/users');
       const data = await response.json();
@@ -118,29 +118,11 @@ export default function UsersPage() {
         variant: 'destructive',
       });
     }
-  };
-
-  const handleDeleteUser = async (userId: string) => {
-    try {
-      await del(`/users/${userId}`);
-      setUsers(users.filter(user => user.id !== userId));
-      toast({
-        title: 'Success',
-        description: 'User deleted successfully',
-      });
-    } catch (error) {
-      console.error('Error deleting user:', error);
-      toast({
-        title: 'Error',
-        description: 'Failed to delete user',
-        variant: 'destructive',
-      });
-    }
-  };
+  }, [toast, setUsers]);
 
   useEffect(() => {
-    fetchUsers();
-  }, []);
+    void fetchUsers();
+  }, [fetchUsers]);
 
   if (isLoadingUsers) {
     return (

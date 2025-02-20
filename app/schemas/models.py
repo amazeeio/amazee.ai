@@ -109,3 +109,13 @@ class AuditLogResponse(BaseModel):
     user_agent: Optional[str]
     request_source: Optional[str]
     model_config = ConfigDict(from_attributes=True)
+
+class PaginatedAuditLogResponse(BaseModel):
+    items: List[AuditLogResponse]
+    total: int
+    model_config = ConfigDict(from_attributes=True)
+
+class AuditLogMetadata(BaseModel):
+    event_types: List[str]
+    resource_types: List[str]
+    model_config = ConfigDict(from_attributes=True)

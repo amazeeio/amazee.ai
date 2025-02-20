@@ -38,7 +38,11 @@ export async function get(endpoint: string, options: RequestInit = {}) {
   return fetchApi(endpoint, { ...options, method: 'GET' });
 }
 
-export async function post(endpoint: string, data: any, options: RequestInit = {}) {
+export async function post<T extends Record<string, unknown>>(
+  endpoint: string,
+  data: T,
+  options: RequestInit = {}
+) {
   return fetchApi(endpoint, {
     ...options,
     method: 'POST',
@@ -46,7 +50,11 @@ export async function post(endpoint: string, data: any, options: RequestInit = {
   });
 }
 
-export async function put(endpoint: string, data: any, options: RequestInit = {}) {
+export async function put<T extends Record<string, unknown>>(
+  endpoint: string,
+  data: T,
+  options: RequestInit = {}
+) {
   return fetchApi(endpoint, {
     ...options,
     method: 'PUT',

@@ -5,11 +5,17 @@ export function middleware(request: NextRequest) {
   const token = request.cookies.get('access_token')?.value;
   const { pathname } = request.nextUrl;
 
+  // Auth paths that should redirect to dashboard when logged in
+  const authPaths = ['/auth/login', '/auth/register'];
+
   // Public paths that don't require authentication
-  const publicPaths = ['/auth/login', '/auth/register'];
+  const publicPaths = [...authPaths, '/api/config'];
 
   // Check if the path is public
   const isPublicPath = publicPaths.some(path => pathname.startsWith(path));
+
+  // Check if the path is an auth path
+  const isAuthPath = authPaths.some(path => pathname.startsWith(path));
 
   // Redirect to login if accessing a protected route without a token
   if (!token && !isPublicPath) {
@@ -19,7 +25,7 @@ export function middleware(request: NextRequest) {
   }
 
   // Redirect to dashboard if accessing auth pages with a valid token
-  if (token && isPublicPath) {
+  if (token && isAuthPath) {
     return NextResponse.redirect(new URL('/dashboard', request.url));
   }
 

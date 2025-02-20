@@ -4,15 +4,16 @@ from typing import List, Optional
 from datetime import datetime
 from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
-from app.schemas.models import AuditLogResponse
+from app.schemas.models import AuditLogResponse, PaginatedAuditLogResponse, AuditLogMetadata
 from app.db.models import DBAuditLog, DBUser
+from sqlalchemy import distinct
 import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["audit"])
 
-@router.get("/logs", response_model=List[AuditLogResponse])
+@router.get("/logs", response_model=PaginatedAuditLogResponse)
 async def get_audit_logs(
     db: Session = Depends(get_db),
     current_user: DBUser = Depends(get_current_user_from_auth),
@@ -28,6 +29,7 @@ async def get_audit_logs(
     """
     Retrieve audit logs with optional filtering.
     Only accessible by admin users.
+    event_type and resource_type can be comma-separated lists for multiple values.
     """
     if not current_user.is_admin:
         logger.warning(f"Non-admin user {current_user.id} attempted to access audit logs")
@@ -41,9 +43,11 @@ async def get_audit_logs(
         query = db.query(DBAuditLog).outerjoin(DBUser, DBAuditLog.user_id == DBUser.id)
 
         if event_type:
-            query = query.filter(DBAuditLog.event_type == event_type)
+            event_types = [et.strip() for et in event_type.split(',')]
+            query = query.filter(DBAuditLog.event_type.in_(event_types))
         if resource_type:
-            query = query.filter(DBAuditLog.resource_type == resource_type)
+            resource_types = [rt.strip() for rt in resource_type.split(',')]
+            query = query.filter(DBAuditLog.resource_type.in_(resource_types))
         if user_id:
             query = query.filter(DBAuditLog.user_id == user_id)
         if user_email:
@@ -52,6 +56,9 @@ async def get_audit_logs(
             query = query.filter(DBAuditLog.timestamp >= from_date)
         if to_date:
             query = query.filter(DBAuditLog.timestamp <= to_date)
+
+        # Get total count
+        total = query.count()
 
         # Execute the query with pagination
         results = query.order_by(DBAuditLog.timestamp.desc()).offset(skip).limit(limit).all()
@@ -71,11 +78,53 @@ async def get_audit_logs(
             request_source=log.request_source
         ) for log in results]
 
-        return response_data
+        return {
+            "items": response_data,
+            "total": total
+        }
 
     except Exception as e:
         logger.error(f"Error fetching audit logs: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error fetching audit logs: {str(e)}"
+        )
+
+@router.get("/logs/metadata", response_model=AuditLogMetadata)
+async def get_audit_logs_metadata(
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user_from_auth),
+):
+    """
+    Retrieve distinct event types and resource types from audit logs.
+    Only accessible by admin users.
+    """
+    if not current_user.is_admin:
+        logger.warning(f"Non-admin user {current_user.id} attempted to access audit logs metadata")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access audit logs metadata"
+        )
+
+    try:
+        # Get distinct event types and resource types, filtering out None and empty strings
+        event_types = [et[0] for et in db.query(distinct(DBAuditLog.event_type))
+                      .filter(DBAuditLog.event_type.isnot(None))
+                      .filter(DBAuditLog.event_type != '')
+                      .all()]
+        resource_types = [rt[0] for rt in db.query(distinct(DBAuditLog.resource_type))
+                        .filter(DBAuditLog.resource_type.isnot(None))
+                        .filter(DBAuditLog.resource_type != '')
+                        .all()]
+
+        return {
+            "event_types": sorted(event_types),
+            "resource_types": sorted(resource_types)
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching audit logs metadata: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching audit logs metadata: {str(e)}"
         )

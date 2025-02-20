@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -35,9 +35,8 @@ export default function APITokensPage() {
   const [newTokenName, setNewTokenName] = useState('');
   const [showNewToken, setShowNewToken] = useState<APIToken | null>(null);
   const [tokens, setTokens] = useState<APIToken[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
 
-  const { data: tokensList = [], isLoading: queryLoading } = useQuery({
+  const { isLoading: queryLoading } = useQuery({
     queryKey: ['tokens'],
     queryFn: async () => {
       const response = await get('/auth/token');
@@ -90,7 +89,7 @@ export default function APITokensPage() {
     },
   });
 
-  const fetchTokens = async () => {
+  const fetchTokens = useCallback(async () => {
     try {
       const response = await get('auth/token', { credentials: 'include' });
       const data = await response.json();
@@ -103,7 +102,7 @@ export default function APITokensPage() {
         variant: 'destructive',
       });
     }
-  };
+  }, [toast, setTokens]);
 
   const handleCreateToken = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -148,8 +147,8 @@ export default function APITokensPage() {
   };
 
   useEffect(() => {
-    fetchTokens();
-  }, []);
+    void fetchTokens();
+  }, [fetchTokens]);
 
   if (queryLoading) {
     return (
