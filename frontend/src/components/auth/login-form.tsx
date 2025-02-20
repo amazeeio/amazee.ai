@@ -20,7 +20,7 @@ import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useToast } from '@/hooks/use-toast';
 import { useAuth } from '@/hooks/use-auth';
-import { get } from '@/utils/api';
+import { get, post } from '@/utils/api';
 
 const formSchema = z.object({
   email: z.string().email('Invalid email address'),
@@ -50,13 +50,11 @@ export function LoginForm() {
       formData.append('username', data.email);
       formData.append('password', data.password);
 
-      const response = await fetch('http://localhost:8800/auth/login', {
-        method: 'POST',
+      const response = await post('/auth/login', {
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
         },
         body: formData,
-        credentials: 'include',
       });
 
       const result = await response.json();
