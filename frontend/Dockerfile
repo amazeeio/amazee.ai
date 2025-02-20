@@ -24,10 +24,10 @@ COPY package*.json ./
 RUN npm install --production
 
 # Copy built application from builder
+COPY --from=builder /app/.lagoon.env ./.lagoon.env
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/src ./src
-COPY --from=builder /app/node_modules ./node_modules
 
 EXPOSE 3000
 

@@ -48,8 +48,6 @@ services:
       - ./frontend/package-lock.json:/app/package-lock.json
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8800
-    depends_on:
-      - backend
     user: '10000'
     labels:
       lagoon.type: node
