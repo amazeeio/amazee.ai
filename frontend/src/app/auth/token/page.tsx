@@ -106,14 +106,15 @@ export default function APITokensPage() {
 
   const handleCreateToken = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const formData = new FormData(e.currentTarget);
+    if (!newTokenName.trim()) return;
+
     try {
       const response = await post('/auth/token', {
-        name: formData.get('name'),
-        description: formData.get('description'),
+        name: newTokenName,
       }, { credentials: 'include' });
       const data = await response.json();
       setTokens([...tokens, data]);
+      setNewTokenName('');
       toast({
         title: 'Success',
         description: 'Token created successfully',
