@@ -13,6 +13,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
+import { getCachedConfig } from '@/utils/config';
 
 export function NavUser() {
   const router = useRouter();
@@ -21,7 +22,8 @@ export function NavUser() {
 
   const handleSignOut = async () => {
     try {
-      const response = await fetch('http://localhost:8800/auth/logout', {
+      const { NEXT_PUBLIC_API_URL: apiUrl } = getCachedConfig();
+      const response = await fetch(`${apiUrl}/auth/logout`, {
         method: 'POST',
         credentials: 'include',
       });
