@@ -4,7 +4,7 @@ from typing import List
 
 from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
-from app.schemas.models import Region, RegionCreate, User
+from app.schemas.models import Region, RegionCreate, RegionResponse, User
 from app.db.models import DBRegion, DBPrivateAIKey
 
 router = APIRouter()
@@ -43,15 +43,15 @@ async def create_region(
         )
     return db_region
 
-@router.get("", response_model=List[Region])
-@router.get("/", response_model=List[Region])
+@router.get("", response_model=List[RegionResponse])
+@router.get("/", response_model=List[RegionResponse])
 async def list_regions(
     current_user: User = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
     return db.query(DBRegion).filter(DBRegion.is_active == True).all()
 
-@router.get("/{region_id}", response_model=Region)
+@router.get("/{region_id}", response_model=RegionResponse)
 async def get_region(
     region_id: int,
     current_user: User = Depends(get_current_user_from_auth),
