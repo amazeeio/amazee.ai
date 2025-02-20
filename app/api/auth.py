@@ -1,12 +1,13 @@
 from datetime import datetime, timedelta
-from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie, Header
+from typing import Optional, List, Union
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie, Header, Request, Form
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 import logging
 import secrets
 import os
 from urllib.parse import urlparse
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,11 @@ from app.core.config import settings
 router = APIRouter(
     tags=["Authentication"]
 )
+
+# Add new model for JSON login
+class LoginData(BaseModel):
+    username: str  # Using username to match OAuth2 form field
+    password: str
 
 def get_cookie_domain():
     """Extract domain from LAGOON_ROUTES for cookie settings."""
@@ -47,22 +53,52 @@ def authenticate_user(db: Session, email: str, password: str) -> Optional[DBUser
         return None
     return user
 
+async def get_login_data(
+    request: Request,
+    username: Optional[str] = Form(None),
+    password: Optional[str] = Form(None),
+) -> Union[LoginData, None]:
+    if username and password:
+        return LoginData(username=username, password=password)
+
+    if request.headers.get("content-type", "").lower() == "application/json":
+        try:
+            body = await request.json()
+            return LoginData(**body)
+        except Exception:
+            return None
+    return None
+
 @router.post("/login", response_model=Token)
 async def login(
+    request: Request,
     response: Response,
-    form_data: OAuth2PasswordRequestForm = Depends(),
+    login_data: Optional[LoginData] = Depends(get_login_data),
     db: Session = Depends(get_db)
 ):
     """
     Login to get access to the API.
 
+    Accepts both application/x-www-form-urlencoded and application/json formats.
+
+    Form data:
+    - **username**: Your email address
+    - **password**: Your password
+
+    JSON data:
     - **username**: Your email address
     - **password**: Your password
 
     On successful login, an access token will be set as an HTTP-only cookie and also returned in the response.
     Use this token for subsequent authenticated requests.
     """
-    user = authenticate_user(db, form_data.username, form_data.password)
+    if not login_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid login data. Please provide username and password in either form data or JSON format."
+        )
+
+    user = authenticate_user(db, login_data.username, login_data.password)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
