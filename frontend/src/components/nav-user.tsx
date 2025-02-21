@@ -14,6 +14,7 @@ import Link from 'next/link';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { getCachedConfig } from '@/utils/config';
+import { User2, Key, LogOut, ChevronDown } from 'lucide-react';
 
 export function NavUser() {
   const router = useRouter();
@@ -58,17 +59,21 @@ export function NavUser() {
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="w-full justify-start gap-2">
+              <User2 className="h-4 w-4" />
               <span>{user?.email || 'Account'}</span>
+              <ChevronDown className="ml-auto h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent className="w-56" align="end" forceMount>
             <DropdownMenuItem asChild>
-              <Link href="/auth/token" className="flex items-center">
+              <Link href="/auth/token" className="flex items-center gap-2">
+                <Key className="h-4 w-4" />
                 <span>API Tokens</span>
               </Link>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={handleSignOut}>
+            <DropdownMenuItem onSelect={handleSignOut} className="gap-2">
+              <LogOut className="h-4 w-4" />
               <span>Sign out</span>
             </DropdownMenuItem>
           </DropdownMenuContent>
