@@ -7,7 +7,9 @@ import {
   Globe,
   Key,
   ScrollText,
-  ChevronDown
+  ChevronDown,
+  PanelLeftClose,
+  PanelLeft
 } from 'lucide-react';
 import { Sidebar, SidebarProvider } from '@/components/ui/sidebar';
 import { NavUser } from '@/components/nav-user';
@@ -17,6 +19,13 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/hooks/use-auth';
+import { cn } from '@/lib/utils';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 interface NavItem {
   name: string;
@@ -40,15 +49,17 @@ const navigation = [
   },
 ];
 
-function NavMain({ navigation, pathname }: { navigation: NavItem[]; pathname: string }) {
+function NavMain({ navigation, pathname, collapsed }: { navigation: NavItem[]; pathname: string; collapsed: boolean }) {
   const [expandedItems, setExpandedItems] = useState<string[]>(['/admin']);
 
   const toggleExpanded = (href: string) => {
-    setExpandedItems((prev) =>
-      prev.includes(href)
-        ? prev.filter((item) => item !== href)
-        : [...prev, href]
-    );
+    if (!collapsed) {
+      setExpandedItems((prev) =>
+        prev.includes(href)
+          ? prev.filter((item) => item !== href)
+          : [...prev, href]
+      );
+    }
   };
 
   const renderNavItem = (item: NavItem, level = 0) => {
@@ -58,6 +69,48 @@ function NavMain({ navigation, pathname }: { navigation: NavItem[]; pathname: st
     const isSubItemActive = hasSubItems && item.subItems?.some(
       (subItem) => pathname === subItem.href
     );
+
+    const itemContent = (
+      <span className="flex items-center gap-2">
+        {item.icon && <div className="h-4 w-4 flex-shrink-0">{item.icon}</div>}
+        {!collapsed && <span>{item.name}</span>}
+      </span>
+    );
+
+    if (collapsed && hasSubItems) {
+      return (
+        <div key={item.href}>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className={cn(
+                  "flex w-full items-center justify-start rounded-lg px-2.5 py-1.5 transition-all",
+                  isActive || isSubItemActive
+                    ? "bg-accent text-accent-foreground"
+                    : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                )}
+              >
+                {itemContent}
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              className="w-56 ml-2"
+              align="center"
+              side="right"
+            >
+              {item.subItems?.map((subItem) => (
+                <DropdownMenuItem key={subItem.href} asChild>
+                  <Link href={subItem.href} className="flex items-center gap-2">
+                    {subItem.icon && <div className="h-4 w-4 flex-shrink-0">{subItem.icon}</div>}
+                    <span>{subItem.name}</span>
+                  </Link>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      );
+    }
 
     return (
       <div key={item.href}>
@@ -72,11 +125,8 @@ function NavMain({ navigation, pathname }: { navigation: NavItem[]; pathname: st
               : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
           }`}
         >
-          <span className="flex items-center gap-2">
-            {item.icon && <div className="h-4 w-4 flex-shrink-0">{item.icon}</div>}
-            {item.name}
-          </span>
-          {hasSubItems && (
+          {itemContent}
+          {!collapsed && hasSubItems && (
             <ChevronDown
               size={16}
               className={`transition-transform ${
@@ -85,7 +135,7 @@ function NavMain({ navigation, pathname }: { navigation: NavItem[]; pathname: st
             />
           )}
         </Link>
-        {hasSubItems && isExpanded && item.subItems && (
+        {!collapsed && hasSubItems && isExpanded && item.subItems && (
           <div className="mt-1">
             {item.subItems.map((subItem) => renderNavItem(subItem, level + 1))}
           </div>
@@ -110,6 +160,7 @@ export function SidebarLayout({
 }) {
   const pathname = usePathname();
   const [isMounted, setIsMounted] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
   const { user } = useAuth();
 
   useEffect(() => {
@@ -137,26 +188,36 @@ export function SidebarLayout({
     <div className="min-h-screen bg-background">
       {/* Desktop navigation */}
       <SidebarProvider defaultOpen>
-        <Sidebar className="hidden lg:flex">
-          <div className="flex h-16 items-center border-b px-6">
-            <Link href="/private-ai-keys" className="flex items-center space-x-3">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                className="h-6 w-6"
-              >
-                <path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3" />
-              </svg>
-              <span className="text-lg font-semibold">amazee.ai</span>
-            </Link>
+        <Sidebar className={cn("hidden lg:flex transition-all duration-300", collapsed ? "w-[70px]" : "w-[240px]")}>
+          <div className={cn("flex h-16 items-center border-b px-6 transition-all", collapsed ? "justify-center px-2" : "justify-between")}>
+            {!collapsed && (
+              <Link href="/private-ai-keys" className="flex items-center space-x-3">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-6 w-6"
+                >
+                  <path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3" />
+                </svg>
+                <span className="text-lg font-semibold">amazee.ai</span>
+              </Link>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-6 w-6"
+              onClick={() => setCollapsed(!collapsed)}
+            >
+              {collapsed ? <PanelLeft className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+            </Button>
           </div>
-          <NavMain navigation={filteredNavigation} pathname={pathname ?? '/'} />
-          <NavUser />
+          <NavMain navigation={filteredNavigation} pathname={pathname ?? '/'} collapsed={collapsed} />
+          <NavUser collapsed={collapsed} />
         </Sidebar>
 
         {/* Mobile menu */}
@@ -190,15 +251,15 @@ export function SidebarLayout({
                     <span className="text-lg font-semibold">amazee.ai</span>
                   </Link>
                 </div>
-                <NavMain navigation={filteredNavigation} pathname={pathname ?? '/'} />
-                <NavUser />
+                <NavMain navigation={filteredNavigation} pathname={pathname ?? '/'} collapsed={false} />
+                <NavUser collapsed={false} />
               </Sidebar>
             </SidebarProvider>
           </SheetContent>
         </Sheet>
 
         {/* Main content */}
-        <main className="flex-1">
+        <main className={cn("flex-1 transition-all duration-300", collapsed ? "lg:pl-[70px]" : "lg:pl-[240px]")}>
           <div className="px-4 pt-6 sm:px-6 lg:px-8">{children}</div>
         </main>
       </SidebarProvider>

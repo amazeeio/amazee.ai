@@ -15,8 +15,13 @@ import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { getCachedConfig } from '@/utils/config';
 import { User2, Key, LogOut, ChevronDown } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
-export function NavUser() {
+interface NavUserProps {
+  collapsed?: boolean;
+}
+
+export function NavUser({ collapsed }: NavUserProps) {
   const router = useRouter();
   const { user, setUser } = useAuth();
   const { toast } = useToast();
@@ -58,13 +63,28 @@ export function NavUser() {
       <div className="flex flex-col gap-1">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" className="w-full justify-start gap-2">
+            <Button
+              variant="ghost"
+              className={cn(
+                "w-full justify-start gap-2",
+                collapsed && "px-2"
+              )}
+            >
               <User2 className="h-4 w-4" />
-              <span>{user?.email || 'Account'}</span>
-              <ChevronDown className="ml-auto h-4 w-4" />
+              {!collapsed && (
+                <>
+                  <span className="flex-1 text-left">{user?.email || 'Account'}</span>
+                  <ChevronDown className="h-4 w-4" />
+                </>
+              )}
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent className="w-56" align="end" forceMount>
+          <DropdownMenuContent
+            className={cn("w-56", collapsed && "ml-2")}
+            align={collapsed ? "center" : "end"}
+            side={collapsed ? "right" : "top"}
+            forceMount
+          >
             <DropdownMenuItem asChild>
               <Link href="/auth/token" className="flex items-center gap-2">
                 <Key className="h-4 w-4" />
