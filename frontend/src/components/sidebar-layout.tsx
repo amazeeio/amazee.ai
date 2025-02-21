@@ -259,8 +259,8 @@ export function SidebarLayout({
         </Sheet>
 
         {/* Main content */}
-        <main className={cn("flex-1 transition-all duration-300", collapsed ? "lg:pl-[70px]" : "lg:pl-[240px]")}>
-          <div className="px-4 pt-6 sm:px-6 lg:px-8">{children}</div>
+        <main className="flex-1 transition-all duration-300">
+          <div className="h-full w-full pl-0 pr-2 pt-6 sm:pr-4 lg:pr-6">{children}</div>
         </main>
       </SidebarProvider>
     </div>
