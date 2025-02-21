@@ -14,7 +14,7 @@ import Link from 'next/link';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
 import { getCachedConfig } from '@/utils/config';
-import { User2, Key, LogOut, ChevronDown } from 'lucide-react';
+import { User2, Key, LogOut, ChevronDown, Settings } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface NavUserProps {
@@ -85,6 +85,12 @@ export function NavUser({ collapsed }: NavUserProps) {
             side={collapsed ? "right" : "top"}
             forceMount
           >
+            <DropdownMenuItem asChild>
+              <Link href="/account" className="flex items-center gap-2">
+                <Settings className="h-4 w-4" />
+                <span>Account Settings</span>
+              </Link>
+            </DropdownMenuItem>
             <DropdownMenuItem asChild>
               <Link href="/auth/token" className="flex items-center gap-2">
                 <Key className="h-4 w-4" />

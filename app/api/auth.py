@@ -12,13 +12,14 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 from app.db.database import get_db
-from app.schemas.models import Token, User, UserCreate, APIToken, APITokenCreate, APITokenResponse
+from app.schemas.models import Token, User, UserCreate, APIToken, APITokenCreate, APITokenResponse, UserUpdate
 from app.db.models import DBUser, DBAPIToken
 from app.core.security import (
     verify_password,
     get_password_hash,
     create_access_token,
     get_current_user,
+    get_current_user_from_auth,
 )
 from app.core.config import settings
 
@@ -235,6 +236,58 @@ async def get_current_user_from_auth(
 
 @router.get("/me", response_model=User)
 async def read_users_me(current_user: DBUser = Depends(get_current_user_from_auth)):
+    return current_user
+
+@router.put("/me/update", response_model=User)
+async def update_user_me(
+    user_update: UserUpdate,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db)
+):
+    """
+    Update the current user's profile.
+
+    - To update email: provide new email and current_password
+    - To update password: provide current_password and new_password
+    """
+    # Always verify current password if provided
+    if user_update.current_password is not None:
+        if not verify_password(user_update.current_password, current_user.hashed_password):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Incorrect password"
+            )
+
+    # Handle password update
+    if user_update.new_password is not None:
+        if user_update.current_password is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is required to update password"
+            )
+        current_user.hashed_password = get_password_hash(user_update.new_password)
+
+    # Handle email update
+    if user_update.email is not None and user_update.email != current_user.email:
+        if user_update.current_password is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current password is required to update email"
+            )
+        # Check if email is already taken
+        existing_user = db.query(DBUser).filter(
+            DBUser.email == user_update.email,
+            DBUser.id != current_user.id
+        ).first()
+        if existing_user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
+        current_user.email = user_update.email
+
+    db.commit()
+    db.refresh(current_user)
     return current_user
 
 @router.post("/register", response_model=User)

@@ -21,6 +21,8 @@ class UserCreate(UserBase):
 class UserUpdate(BaseModel):
     email: Optional[str] = None
     is_admin: Optional[bool] = None
+    current_password: Optional[str] = None
+    new_password: Optional[str] = None
 
 class User(UserBase):
     id: int
