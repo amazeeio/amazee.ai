@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from fastapi import status
 from sqlalchemy.exc import IntegrityError
 
@@ -92,10 +92,28 @@ async def create_private_ai_key(
 @router.get("", response_model=List[PrivateAIKey])
 @router.get("/", response_model=List[PrivateAIKey])
 async def list_private_ai_keys(
+    owner_id: Optional[int] = None,
     current_user = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
-    private_ai_keys = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.owner_id == current_user.id).all()
+    """
+    List private AI keys.
+    If user is admin:
+        - Returns all keys if no owner_id is provided
+        - Returns keys for specific owner if owner_id is provided
+    If user is not admin:
+        - Returns only their own keys, ignoring owner_id parameter
+    """
+    query = db.query(DBPrivateAIKey)
+
+    if current_user.is_admin:
+        if owner_id is not None:
+            query = query.filter(DBPrivateAIKey.owner_id == owner_id)
+    else:
+        # Non-admin users can only see their own keys
+        query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
+
+    private_ai_keys = query.all()
     return [key.to_dict() for key in private_ai_keys]
 
 @router.delete("/{key_name}")

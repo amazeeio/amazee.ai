@@ -4,7 +4,7 @@ from typing import List
 
 from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
-from app.schemas.models import Region, RegionCreate, RegionResponse, User
+from app.schemas.models import Region, RegionCreate, RegionResponse, User, RegionUpdate
 from app.db.models import DBRegion, DBPrivateAIKey
 
 router = APIRouter()
@@ -50,6 +50,18 @@ async def list_regions(
     db: Session = Depends(get_db)
 ):
     return db.query(DBRegion).filter(DBRegion.is_active == True).all()
+
+@router.get("/admin", response_model=List[Region])
+async def list_admin_regions(
+    current_user: User = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db)
+):
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can access this endpoint"
+        )
+    return db.query(DBRegion).all()
 
 @router.get("/{region_id}", response_model=RegionResponse)
 async def get_region(
@@ -103,3 +115,51 @@ async def delete_region(
             detail=f"Failed to delete region: {str(e)}"
         )
     return {"message": "Region deleted successfully"}
+
+@router.put("/{region_id}", response_model=Region)
+async def update_region(
+    region_id: int,
+    region: RegionUpdate,
+    current_user: User = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db)
+):
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can update regions"
+        )
+
+    db_region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+    if not db_region:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Region not found"
+        )
+
+    # Check if updating to a name that already exists (excluding current region)
+    if region.name != db_region.name:
+        existing_region = db.query(DBRegion).filter(
+            DBRegion.name == region.name,
+            DBRegion.id != region_id
+        ).first()
+        if existing_region:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"A region with the name '{region.name}' already exists"
+            )
+
+    # Update the region fields
+    update_data = region.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(db_region, field, value)
+
+    try:
+        db.commit()
+        db.refresh(db_region)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Failed to update region: {str(e)}"
+        )
+    return db_region

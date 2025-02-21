@@ -63,6 +63,17 @@ class RegionBase(BaseModel):
 class RegionCreate(RegionBase):
     pass
 
+class RegionUpdate(BaseModel):
+    name: str
+    postgres_host: str
+    postgres_port: int
+    postgres_admin_user: str
+    postgres_admin_password: Optional[str] = None
+    litellm_api_url: str
+    litellm_api_key: Optional[str] = None
+    is_active: bool
+    model_config = ConfigDict(from_attributes=True)
+
 class RegionResponse(BaseModel):
     id: int
     name: str

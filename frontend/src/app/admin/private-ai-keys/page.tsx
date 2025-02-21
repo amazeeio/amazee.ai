@@ -23,8 +23,27 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, Eye, EyeOff } from 'lucide-react';
+import { Loader2, Eye, EyeOff, Search } from 'lucide-react';
 import { get, del } from '@/utils/api';
+import { useDebounce } from '@/hooks/use-debounce';
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
+
+interface User {
+  id: number;
+  email: string;
+}
 
 interface PrivateAIKey {
   database_name: string;
@@ -42,16 +61,74 @@ export default function PrivateAIKeysPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [visibleCredentials, setVisibleCredentials] = useState<Set<string>>(new Set());
+  const [searchTerm, setSearchTerm] = useState('');
+  const [isUserSearchOpen, setIsUserSearchOpen] = useState(false);
+  const [selectedUser, setSelectedUser] = useState<User | null>(null);
+  const debouncedSearchTerm = useDebounce(searchTerm, 300);
 
   // Queries
   const { data: privateAIKeys = [], isLoading: isLoadingPrivateAIKeys } = useQuery<PrivateAIKey[]>({
-    queryKey: ['private-ai-keys'],
+    queryKey: ['private-ai-keys', selectedUser?.id],
     queryFn: async () => {
-      const response = await get('/private-ai-keys');
+      const url = selectedUser?.id
+        ? `/private-ai-keys?owner_id=${selectedUser.id}`
+        : '/private-ai-keys';
+      const response = await get(url);
       const data = await response.json();
       return data;
     },
   });
+
+  // Query to get all users for displaying emails
+  const { data: usersMap = {} } = useQuery<Record<number, User>>({
+    queryKey: ['users-map'],
+    queryFn: async () => {
+      const response = await get('/users');
+      const users: User[] = await response.json();
+      return users.reduce((acc, user) => ({
+        ...acc,
+        [user.id]: user
+      }), {});
+    },
+  });
+
+  const { data: users = [], isLoading: isLoadingUsers, isFetching: isFetchingUsers } = useQuery<User[], Error, User[]>({
+    queryKey: ['users', debouncedSearchTerm],
+    queryFn: async () => {
+      if (!debouncedSearchTerm) return [];
+      await new Promise(resolve => setTimeout(resolve, 100)); // Small delay to ensure loading state shows
+      const response = await get(`/users/search?email=${encodeURIComponent(debouncedSearchTerm)}`);
+      const data = await response.json();
+      return data;
+    },
+    enabled: isUserSearchOpen && !!debouncedSearchTerm,
+    gcTime: 60000,
+    staleTime: 30000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+  });
+
+  // Show loading state immediately when search term changes
+  const isSearching = searchTerm.length > 0 && (
+    isLoadingUsers ||
+    isFetchingUsers ||
+    debouncedSearchTerm !== searchTerm
+  );
+
+  const handleSearchChange = (value: string) => {
+    setSearchTerm(value);
+    // Prefetch the query if we have a value
+    if (value) {
+      queryClient.prefetchQuery({
+        queryKey: ['users', value],
+        queryFn: async () => {
+          const response = await get(`/users/search?email=${encodeURIComponent(value)}`);
+          const data = await response.json();
+          return data;
+        },
+      });
+    }
+  };
 
   // Mutations
   const deletePrivateAIKeyMutation = useMutation({
@@ -88,6 +165,66 @@ export default function PrivateAIKeysPage() {
         <h1 className="text-3xl font-bold">Private AI Keys</h1>
       </div>
 
+      <div className="flex items-center gap-2">
+        <Popover open={isUserSearchOpen} onOpenChange={setIsUserSearchOpen}>
+          <PopoverTrigger asChild>
+            <Button variant="outline" className="w-[250px] justify-between">
+              {selectedUser ? selectedUser.email : 'Filter by owner...'}
+              <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-[250px] p-0">
+            <Command>
+              <CommandInput
+                placeholder="Search users..."
+                value={searchTerm}
+                onValueChange={handleSearchChange}
+              />
+              <CommandList>
+                {!searchTerm ? (
+                  <div className="py-6 text-center text-sm text-muted-foreground">
+                    Start typing to search users...
+                  </div>
+                ) : isSearching ? (
+                  <div className="py-6 text-center text-sm">
+                    <Loader2 className="mx-auto h-4 w-4 animate-spin" />
+                    <p className="mt-2">Searching users...</p>
+                  </div>
+                ) : users.length === 0 ? (
+                  <CommandEmpty>No users found.</CommandEmpty>
+                ) : (
+                  <CommandGroup>
+                    {users.map((user) => (
+                      <CommandItem
+                        key={user.id}
+                        onSelect={() => {
+                          setSelectedUser(user);
+                          setIsUserSearchOpen(false);
+                          setSearchTerm('');
+                        }}
+                      >
+                        {user.email}
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                )}
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
+        {selectedUser && (
+          <Button
+            variant="ghost"
+            onClick={() => {
+              setSelectedUser(null);
+              setSearchTerm('');
+            }}
+          >
+            Clear filter
+          </Button>
+        )}
+      </div>
+
       <div className="rounded-md border">
         <Table>
           <TableHeader>
@@ -95,6 +232,7 @@ export default function PrivateAIKeysPage() {
               <TableHead>Name</TableHead>
               <TableHead>Credentials</TableHead>
               <TableHead>Region</TableHead>
+              <TableHead>Owner</TableHead>
               <TableHead>Actions</TableHead>
             </TableRow>
           </TableHeader>
@@ -197,6 +335,12 @@ export default function PrivateAIKeysPage() {
                   <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
                     {key.region}
                   </span>
+                </TableCell>
+                <TableCell>
+                  <div className="flex flex-col gap-1">
+                    <span className="text-sm">{usersMap[key.owner_id]?.email || 'Unknown'}</span>
+                    <span className="text-xs text-muted-foreground">ID: {key.owner_id}</span>
+                  </div>
                 </TableCell>
                 <TableCell>
                   <AlertDialog>
