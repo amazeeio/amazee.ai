@@ -96,7 +96,7 @@ export function RegisterForm() {
         });
 
         router.refresh();
-        router.push('/dashboard');
+        router.push('/private-ai-keys');
       }
     } catch (err: Error | unknown) {
       console.error('Registration error:', err);

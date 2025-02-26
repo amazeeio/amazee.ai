@@ -80,7 +80,7 @@ export function LoginForm() {
           });
 
           router.refresh();
-          router.push('/dashboard');
+          router.push('/private-ai-keys');
         } catch (profileError) {
           console.error('Failed to fetch user profile:', profileError);
           setError('Successfully logged in but failed to fetch user profile. Please refresh the page.');

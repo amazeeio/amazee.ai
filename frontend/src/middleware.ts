@@ -26,7 +26,7 @@ export function middleware(request: NextRequest) {
 
   // Redirect to dashboard if accessing auth pages with a valid token
   if (token && isAuthPath) {
-    return NextResponse.redirect(new URL('/dashboard', request.url));
+    return NextResponse.redirect(new URL('/private-ai-keys', request.url));
   }
 
   return NextResponse.next();

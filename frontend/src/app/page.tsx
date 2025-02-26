@@ -10,7 +10,7 @@ export default function Home() {
 
   useEffect(() => {
     if (user) {
-      router.replace('/dashboard');
+      router.replace('/private-ai-keys');
     } else {
       router.replace('/auth/login');
     }
