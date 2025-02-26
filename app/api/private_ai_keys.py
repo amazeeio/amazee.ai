@@ -54,8 +54,7 @@ async def create_private_ai_key(
         # Create new postgres database
         postgres_manager = PostgresManager(region=region)
         key_credentials = await postgres_manager.create_database(
-            owner=current_user.email,
-            user_id=current_user.id
+            owner=current_user.email
         )
 
         # Store private AI key info in main application database

@@ -9,33 +9,29 @@ class LiteLLMService:
         if not self.master_key:
             raise ValueError("LiteLLM API key is required")
 
-    async def create_key(self, user_id: int) -> str:
+    async def create_key(self, email: str = None) -> str:
         """Create a new API key for LiteLLM"""
         try:
-            print(f"Attempting to create LiteLLM key for user {user_id}")
-            print(f"Using API URL: {self.api_url}")
+            request_data = {
+                "duration": "8760h",  # Set token duration to 1 year (365 days * 24 hours)
+                "models": ["*"],   # Allow access to all models
+                "aliases": {},
+                "config": {},
+                "spend": 0,
+            }
+            
+            # Add email as key_alias and metadata if provided
+            if email:
+                request_data["key_alias"] = email
+                request_data["metadata"] = {"service_account_id": email}
+            
             response = requests.post(
                 f"{self.api_url}/key/generate",
-                json={
-                    "duration": "8760h",  # Set token duration to 1 year (365 days * 24 hours)
-                    "models": ["*"],   # Allow access to all models
-                    "aliases": {},
-                    "config": {},
-                    "spend": 0,
-                    "user_id": str(user_id)  # Convert user_id to string
-                },
+                json=request_data,
                 headers={
                     "Authorization": f"Bearer {self.master_key}"
                 }
             )
-            print(f"Response status code: {response.status_code}")
-            print(f"Response headers: {response.headers}")
-
-            try:
-                response_json = response.json()
-                print(f"Response body: {response_json}")
-            except ValueError:
-                print(f"Raw response text: {response.text}")
 
             response.raise_for_status()
             return response.json()["key"]
@@ -56,7 +52,6 @@ class LiteLLMService:
     async def delete_key(self, key: str) -> bool:
         """Delete a LiteLLM API key"""
         try:
-            print(f"Attempting to delete LiteLLM key")
             response = requests.post(
                 f"{self.api_url}/key/delete",
                 json={"keys": [key]},  # API expects an array of keys
@@ -64,13 +59,6 @@ class LiteLLMService:
                     "Authorization": f"Bearer {self.master_key}"
                 }
             )
-            print(f"Delete response status code: {response.status_code}")
-
-            try:
-                response_json = response.json()
-                print(f"Delete response body: {response_json}")
-            except ValueError:
-                print(f"Raw delete response text: {response.text}")
 
             response.raise_for_status()
             return True

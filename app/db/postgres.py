@@ -18,24 +18,18 @@ class PostgresManager:
         else:
             raise ValueError("Region is required for PostgresManager")
 
-    async def create_database(self, owner: str, user_id: int) -> Dict:
+    async def create_database(self, owner: str) -> Dict:
         # Generate LiteLLM token
-        print("Generating LiteLLM token...")
-        litellm_token = await self.litellm_service.create_key(user_id)
-        print("LiteLLM token generated successfully")
-
-        print(f"Creating new database for owner: {owner}")
+        litellm_token = await self.litellm_service.create_key(email=owner)
 
         # Connect to postgres and create database/user
         try:
-            print(f"Attempting to connect to PostgreSQL at {self.host}:{self.port} as {self.admin_user}...")
             conn = await asyncpg.connect(
                 host=self.host,
                 port=self.port,
                 user=self.admin_user,
                 password=self.admin_password
             )
-            print("Successfully connected to PostgreSQL")
         except asyncpg.exceptions.PostgresError as e:
             print(f"Failed to connect to PostgreSQL: {str(e)}")
             print(f"Connection details: host={self.host}, port={self.port}, user={self.admin_user}")
@@ -49,17 +43,11 @@ class PostgresManager:
         db_user = f"user_{uuid.uuid4().hex[:8]}"
         db_password = uuid.uuid4().hex
 
-        print(f"Generated credentials - DB: {db_name}, User: {db_user}")
-
         try:
-            print("Creating database...")
             await conn.execute(f'CREATE DATABASE {db_name}')
-            print("Creating user...")
             await conn.execute(f'CREATE USER {db_user} WITH PASSWORD \'{db_password}\'')
-            print("Granting privileges...")
             await conn.execute(f'GRANT ALL PRIVILEGES ON DATABASE {db_name} TO {db_user}')
 
-            print("Database created successfully")
             return {
                 "database_name": db_name,
                 "database_username": db_user,
