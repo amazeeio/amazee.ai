@@ -9,7 +9,7 @@ class LiteLLMService:
         if not self.master_key:
             raise ValueError("LiteLLM API key is required")
 
-    async def create_key(self, email: str = None) -> str:
+    async def create_key(self, email: str = None, name: str = None, user_id: int = None) -> str:
         """Create a new API key for LiteLLM"""
         try:
             request_data = {
@@ -20,10 +20,22 @@ class LiteLLMService:
                 "spend": 0,
             }
             
-            # Add email as key_alias and metadata if provided
+            # Add email and name to key_alias and metadata if provided
             if email:
-                request_data["key_alias"] = email
-                request_data["metadata"] = {"service_account_id": email}
+                key_alias = email
+                metadata = {"service_account_id": email}
+                
+                # Add name to key_alias and metadata if provided
+                if name:
+                    key_alias = f"{email} - {name}"
+                    metadata["amazeeai_private_ai_key_name"] = name
+                
+                # Add user_id to metadata if provided
+                if user_id is not None:
+                    metadata["amazeeai_user_id"] = str(user_id)
+                
+                request_data["key_alias"] = key_alias
+                request_data["metadata"] = metadata
             
             response = requests.post(
                 f"{self.api_url}/key/generate",

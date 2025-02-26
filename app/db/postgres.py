@@ -18,9 +18,14 @@ class PostgresManager:
         else:
             raise ValueError("Region is required for PostgresManager")
 
-    async def create_database(self, owner: str) -> Dict:
+    async def create_database(self, owner: str, name: str = None, user_id: int = None) -> Dict:
+        # Generate unique database name and credentials
+        db_name = f"db_{uuid.uuid4().hex[:8]}"
+        db_user = f"user_{uuid.uuid4().hex[:8]}"
+        db_password = uuid.uuid4().hex
+        
         # Generate LiteLLM token
-        litellm_token = await self.litellm_service.create_key(email=owner)
+        litellm_token = await self.litellm_service.create_key(email=owner, name=name, user_id=user_id)
 
         # Connect to postgres and create database/user
         try:
@@ -37,11 +42,6 @@ class PostgresManager:
         except Exception as e:
             print(f"Unexpected error connecting to PostgreSQL: {str(e)}")
             raise
-
-        # Generate unique database name and credentials
-        db_name = f"db_{uuid.uuid4().hex[:8]}"
-        db_user = f"user_{uuid.uuid4().hex[:8]}"
-        db_password = uuid.uuid4().hex
 
         try:
             await conn.execute(f'CREATE DATABASE {db_name}')
