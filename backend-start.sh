@@ -31,27 +31,32 @@ done
 python << END
 from app.db.database import engine
 from app.db.models import Base
-
-print("Creating database tables...")
-# Create all tables
-Base.metadata.create_all(bind=engine)
-print("Database tables created successfully!")
-
-# Run database migrations
-print("Running database migrations...")
+from sqlalchemy import inspect
 import alembic.config
 import os
-
-alembic_cfg = alembic.config.Config(os.path.join(os.path.dirname(__file__), "app", "migrations", "alembic.ini"))
-alembic_cfg.set_main_option("script_location", "app/migrations")
-alembic.command.upgrade(alembic_cfg, "head")
-print("Database migrations completed successfully!")
-
-# Create initial admin user if none exists
 from sqlalchemy.orm import sessionmaker
 from app.db.models import DBUser
 from app.core.security import get_password_hash
 
+# Check if database is empty (no tables exist)
+inspector = inspect(engine)
+existing_tables = inspector.get_table_names()
+print(f"Existing tables: {existing_tables}")
+
+if not existing_tables:
+    print("No tables found - creating database schema from models...")
+    # Create all tables from models
+    Base.metadata.create_all(bind=engine)
+    print("Database tables created successfully!")
+else:
+    print("Tables already exist - running migrations...")
+    # Run database migrations
+    alembic_cfg = alembic.config.Config(os.path.join(os.path.dirname(__file__), "app", "migrations", "alembic.ini"))
+    alembic_cfg.set_main_option("script_location", "app/migrations")
+    alembic.command.upgrade(alembic_cfg, "head")
+    print("Database migrations completed successfully!")
+
+# Create initial admin user if none exists
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 db = SessionLocal()
 
