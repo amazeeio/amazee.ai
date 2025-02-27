@@ -14,7 +14,7 @@ class LiteLLMService:
         try:
             request_data = {
                 "duration": "8760h",  # Set token duration to 1 year (365 days * 24 hours)
-                "models": ["*"],   # Allow access to all models
+                "models": ["all-team-models"],   # Allow access to all models
                 "aliases": {},
                 "config": {},
                 "spend": 0,
