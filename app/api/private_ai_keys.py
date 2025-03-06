@@ -31,6 +31,10 @@ async def create_private_ai_key(
 
     Required parameters:
     - **region_id**: The ID of the region where you want to create the key
+    - **name**: The name for the private AI key
+
+    Optional parameters:
+    - **owner_id**: The ID of the user who will own this key (admin only)
 
     The response will include:
     - Database connection details (host, database name, username, password)
@@ -38,6 +42,7 @@ async def create_private_ai_key(
     - LiteLLM API URL for making requests
 
     Note: You must be authenticated to use this endpoint.
+    Only admins can create keys for other users.
     """
     # Get the region
     region = db.query(DBRegion).filter(
@@ -50,13 +55,31 @@ async def create_private_ai_key(
             detail="Region not found or inactive"
         )
 
+    # Determine the owner of the key
+    owner_id = private_ai_key.owner_id if private_ai_key.owner_id is not None else current_user.id
+    
+    # If trying to create for another user, verify admin status
+    if owner_id != current_user.id and not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only administrators can create keys for other users"
+        )
+
+    # Get the owner user
+    owner = db.query(User).filter(User.id == owner_id).first()
+    if not owner:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Owner user not found"
+        )
+
     try:
         # Create new postgres database
         postgres_manager = PostgresManager(region=region)
         key_credentials = await postgres_manager.create_database(
-            owner=current_user.email,
+            owner=owner.email,
             name=private_ai_key.name,
-            user_id=current_user.id
+            user_id=owner_id
         )
 
         # Store private AI key info in main application database
@@ -68,7 +91,7 @@ async def create_private_ai_key(
             database_password=key_credentials["database_password"],
             litellm_token=key_credentials["litellm_token"],
             litellm_api_url=region.litellm_api_url,
-            owner_id=current_user.id,
+            owner_id=owner_id,
             region_id=region.id
         )
         db.add(new_key)
@@ -76,7 +99,7 @@ async def create_private_ai_key(
         db.refresh(new_key)
 
         # Add owner_id and region to the response
-        key_credentials["owner_id"] = current_user.id
+        key_credentials["owner_id"] = owner_id
         key_credentials["region"] = region.name
         key_credentials["litellm_api_url"] = region.litellm_api_url
         key_credentials["name"] = private_ai_key.name

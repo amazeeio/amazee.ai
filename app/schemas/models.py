@@ -105,6 +105,7 @@ class PrivateAIKeyBase(BaseModel):
 class PrivateAIKeyCreate(BaseModel):
     region_id: int
     name: str
+    owner_id: Optional[int] = None
 
 class PrivateAIKey(PrivateAIKeyBase):
     owner_id: int
