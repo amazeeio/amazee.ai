@@ -204,6 +204,7 @@ export default function UsersPage() {
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead>ID</TableHead>
               <TableHead>Email</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Role</TableHead>
@@ -213,6 +214,7 @@ export default function UsersPage() {
           <TableBody>
             {users.map((user) => (
               <TableRow key={user.id}>
+                <TableCell className="font-mono text-sm">{user.id}</TableCell>
                 <TableCell>{user.email}</TableCell>
                 <TableCell>
                   <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
