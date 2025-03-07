@@ -8,7 +8,7 @@ from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
 from app.schemas.models import PrivateAIKey, PrivateAIKeyCreate, User
 from app.db.postgres import PostgresManager
-from app.db.models import DBPrivateAIKey, DBRegion
+from app.db.models import DBPrivateAIKey, DBRegion, DBUser
 
 router = APIRouter(
     tags=["Private AI Keys"]
@@ -66,7 +66,7 @@ async def create_private_ai_key(
         )
 
     # Get the owner user
-    owner = db.query(User).filter(User.id == owner_id).first()
+    owner = db.query(DBUser).filter(DBUser.id == owner_id).first()
     if not owner:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
