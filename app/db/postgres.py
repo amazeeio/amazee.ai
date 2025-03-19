@@ -67,6 +67,7 @@ class PostgresManager:
                 await conn.execute(f'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO {db_user}')
                 await conn.execute(f'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO {db_user}')
                 await conn.execute(f'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO {db_user}')
+                await conn.execute('CREATE EXTENSION IF NOT EXISTS vector')
             finally:
                 await conn.close()
 
