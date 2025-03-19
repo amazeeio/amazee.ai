@@ -48,6 +48,28 @@ class PostgresManager:
             await conn.execute(f'CREATE USER {db_user} WITH PASSWORD \'{db_password}\'')
             await conn.execute(f'GRANT ALL PRIVILEGES ON DATABASE {db_name} TO {db_user}')
 
+            # Close the initial connection
+            await conn.close()
+
+            # Connect to the newly created database to grant schema permissions
+            conn = await asyncpg.connect(
+                host=self.host,
+                port=self.port,
+                user=self.admin_user,
+                password=self.admin_password,
+                database=db_name
+            )
+
+            try:
+                # Grant schema permissions
+                await conn.execute(f'GRANT ALL ON SCHEMA public TO {db_user}')
+                await conn.execute(f'ALTER SCHEMA public OWNER TO {db_user}')
+                await conn.execute(f'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO {db_user}')
+                await conn.execute(f'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO {db_user}')
+                await conn.execute(f'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO {db_user}')
+            finally:
+                await conn.close()
+
             return {
                 "database_name": db_name,
                 "database_username": db_user,
@@ -59,8 +81,6 @@ class PostgresManager:
         except Exception as e:
             print(f"Error creating database: {str(e)}")
             raise
-        finally:
-            await conn.close()
 
     async def delete_database(self, database_name: str, litellm_token: str = None):
         conn = await asyncpg.connect(
