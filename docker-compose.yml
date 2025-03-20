@@ -68,7 +68,8 @@ services:
       timeout: 10s   # Health check command times out after 10 seconds
       retries: 3     # Retry up to 3 times if health check fails
       start_period: 40s  # Wait 40 seconds after container start before beginning health checks
-
+    labels:
+      lagoon.type: none
  
   litellm_db:
     image: postgres:16
@@ -84,7 +85,8 @@ services:
       interval: 1s
       timeout: 5s
       retries: 10
-
+    labels:
+      lagoon.type: none
 
 
 volumes:
