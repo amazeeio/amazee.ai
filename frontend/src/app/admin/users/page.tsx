@@ -23,7 +23,18 @@ import {
 } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2 } from 'lucide-react';
-import { get, post } from '@/utils/api';
+import { get, post, del } from '@/utils/api';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 
 interface User {
   id: string;
@@ -105,6 +116,28 @@ export default function UsersPage() {
     },
   });
 
+  const deleteUserMutation = useMutation({
+    mutationFn: async (userId: string) => {
+      const response = await del(`/users/${userId}`);
+      const data = await response.json();
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['users'] });
+      toast({
+        title: 'Success',
+        description: 'User deleted successfully',
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
   const fetchUsers = useCallback(async () => {
     try {
       const response = await get('/users');
@@ -142,6 +175,10 @@ export default function UsersPage() {
       email: newUserEmail,
       password: newUserPassword,
     });
+  };
+
+  const handleDeleteUser = (userId: string) => {
+    deleteUserMutation.mutate(userId);
   };
 
   return (
@@ -225,14 +262,49 @@ export default function UsersPage() {
                 </TableCell>
                 <TableCell>{user.is_admin ? 'Admin' : 'User'}</TableCell>
                 <TableCell>
-                  <Button
-                    variant={user.is_admin ? "destructive" : "secondary"}
-                    size="sm"
-                    onClick={() => handleToggleAdmin(user.id, user.is_admin)}
-                    disabled={updateUserMutation.isPending}
-                  >
-                    {user.is_admin ? 'Remove Admin' : 'Make Admin'}
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button
+                      variant={user.is_admin ? "destructive" : "secondary"}
+                      size="sm"
+                      onClick={() => handleToggleAdmin(user.id, user.is_admin)}
+                      disabled={updateUserMutation.isPending}
+                    >
+                      {user.is_admin ? 'Remove Admin' : 'Make Admin'}
+                    </Button>
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button variant="destructive" size="sm">
+                          Delete
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            This action cannot be undone. This will permanently delete the user account
+                            and all associated data.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Cancel</AlertDialogCancel>
+                          <AlertDialogAction
+                            onClick={() => handleDeleteUser(user.id)}
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                            disabled={deleteUserMutation.isPending}
+                          >
+                            {deleteUserMutation.isPending ? (
+                              <>
+                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                Deleting...
+                              </>
+                            ) : (
+                              'Delete'
+                            )}
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
