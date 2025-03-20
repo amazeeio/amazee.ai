@@ -27,7 +27,7 @@ This repository contains the backend and frontend services for the amazee.ai app
 
 2. Environment Setup:
    - Copy any example environment files and configure as needed
-   - Ensure all required API keys are set (LITELLM_API_URL, LITELLM_MASTER_KEY, etc.)
+   - Ensure all required API keys are set
 
 3. Start the services:
    ```bash
@@ -94,8 +94,6 @@ The project uses Docker volumes for development, allowing for hot-reloading:
 ### Backend
 - `DATABASE_URL`: PostgreSQL connection string
 - `SECRET_KEY`: Application secret key
-- `LITELLM_API_URL`: LiteLLM API URL
-- `LITELLM_MASTER_KEY`: LiteLLM API key
 
 ### Frontend
 - `NEXT_PUBLIC_API_URL`: Backend API URL

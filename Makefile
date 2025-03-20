@@ -32,8 +32,6 @@ backend-test: backend-test-build test-postgres
 		-e POSTGRES_USER="postgres" \
 		-e POSTGRES_PASSWORD="postgres" \
 		-e POSTGRES_DB="postgres_service" \
-		-e LITELLM_API_URL="https://test-litellm.ai" \
-		-e LITELLM_MASTER_KEY="test-master-key" \
 		-e TESTING="1" \
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
@@ -49,8 +47,6 @@ backend-test-cov: backend-test-build test-postgres
 		-e POSTGRES_USER="postgres" \
 		-e POSTGRES_PASSWORD="postgres" \
 		-e POSTGRES_DB="postgres_service" \
-		-e LITELLM_API_URL="https://test-litellm.ai" \
-		-e LITELLM_MASTER_KEY="test-master-key" \
 		-e TESTING="1" \
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \

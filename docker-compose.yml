@@ -24,8 +24,6 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres/postgres_service
       SECRET_KEY: "dKq2BK3pqGQfNqC7SK8ZxNCdqJnGV4F9"  # More secure key for development
-      LITELLM_API_URL: "https://demo.litellm.ai"
-      LITELLM_MASTER_KEY: "sk-1234"  # Replace with your actual master key
     ports:
       - "8800:8800"
     volumes:

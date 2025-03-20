@@ -3,9 +3,12 @@ from fastapi import HTTPException, status
 import os
 
 class LiteLLMService:
-    def __init__(self, api_url: str = None, api_key: str = None):
-        self.api_url = api_url or os.getenv("LITELLM_API_URL", "https://demo.litellm.ai")
-        self.master_key = api_key or os.getenv("LITELLM_MASTER_KEY")
+    def __init__(self, api_url: str, api_key: str):
+        self.api_url = api_url
+        self.master_key = api_key
+        
+        if not self.api_url:
+            raise ValueError("LiteLLM API URL is required")
         if not self.master_key:
             raise ValueError("LiteLLM API key is required")
 
