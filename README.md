@@ -69,11 +69,42 @@ To clean up test containers and images:
 make test-clean
 ```
 
-## 🔧 Development
+## 🚀 Local Development
 
-The project uses Docker volumes for development, allowing for hot-reloading:
-- Frontend code changes in `./frontend/src` and `./frontend/app` will automatically reload
-- Backend code changes in `./app` will automatically reload
+1. Start all services in development mode:
+   ```bash
+   docker-compose up -d
+   ```
+
+2. View logs for all services:
+   ```bash
+   docker-compose logs -f
+   ```
+
+3. View logs for a specific service:
+   ```bash
+   docker-compose logs -f [service]  # e.g. frontend, backend, postgres
+   ```
+
+4. Restart a specific service:
+   ```bash
+   docker-compose restart [service]
+   ```
+
+5. Stop all services:
+   ```bash
+   docker-compose down
+   ```
+
+The development environment includes:
+- Hot reloading for frontend (Next.js) on port 3000
+- Hot reloading for backend (Python) on port 8800 
+- PostgreSQL database on port 5432
+
+Access the services at:
+- Frontend: http://localhost:3000
+- Backend API: http://localhost:8800
+
 
 ## 📁 Project Structure
 
