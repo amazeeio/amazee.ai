@@ -40,13 +40,15 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
+    command: 
+      - "npm"
+      - "run"
+      - "dev"
     volumes:
-      - ./frontend/src:/app/src
-      - ./frontend/package.json:/app/package.json
-      - ./frontend/package-lock.json:/app/package-lock.json
+      - ./frontend:/app
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8800
-    user: '10000'
+    # user: '10000'
     labels:
       lagoon.type: node
 
