@@ -1,11 +1,11 @@
 # amazee.ai
 
-This repository contains the backend and frontend services for the amazee.ai application. The project is built using a modern tech stack including Python FastAPI for the backend, React with TypeScript for the frontend, and PostgreSQL for the database.
+This repository contains the backend and frontend services for the amazee.ai application. The project is built using a modern tech stack including Python FastAPI for the backend, Next.js with TypeScript for the frontend, and PostgreSQL for the database.
 
 ## 🚀 Tech Stack
 
 - **Backend**: Python FastAPI
-- **Frontend**: React + TypeScript
+- **Frontend**: Next.js + TypeScript
 - **Database**: PostgreSQL
 - **Testing**: Pytest (backend), Jest (frontend)
 - **Containerization**: Docker & Docker Compose
@@ -72,7 +72,7 @@ make test-clean
 ## 🔧 Development
 
 The project uses Docker volumes for development, allowing for hot-reloading:
-- Frontend code changes in `./frontend/src` will automatically reload
+- Frontend code changes in `./frontend/src` and `./frontend/app` will automatically reload
 - Backend code changes in `./app` will automatically reload
 
 ## 📁 Project Structure
@@ -98,7 +98,7 @@ The project uses Docker volumes for development, allowing for hot-reloading:
 - `LITELLM_MASTER_KEY`: LiteLLM API key
 
 ### Frontend
-- `REACT_APP_API_URL`: Backend API URL
+- `NEXT_PUBLIC_API_URL`: Backend API URL
 
 ## 👥 Contributing
 
