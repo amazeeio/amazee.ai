@@ -435,8 +435,8 @@ export default function PrivateAIKeysPage() {
                           ${spendMap[key.database_name].spend.toFixed(2)}
                         </span>
                         <span className="text-xs text-muted-foreground">
-                          {spendMap[key.database_name].max_budget !== null 
-                            ? `/ $${spendMap[key.database_name].max_budget.toFixed(2)}`
+                          {spendMap[key.database_name]?.max_budget !== null 
+                            ? `/ $${spendMap[key.database_name]?.max_budget?.toFixed(2)}`
                             : '(No budget)'}
                         </span>
                       </div>
