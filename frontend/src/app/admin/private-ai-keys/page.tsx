@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useState, useMemo } from 'react';
+import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import {
   Table,
@@ -22,9 +22,20 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, Eye, EyeOff, Search } from 'lucide-react';
-import { get, del } from '@/utils/api';
+import { Loader2, Eye, EyeOff, Search, Pencil } from 'lucide-react';
+import { get, del, put } from '@/utils/api';
 import { useDebounce } from '@/hooks/use-debounce';
 import {
   Command,
@@ -57,6 +68,29 @@ interface PrivateAIKey {
   region: string;
 }
 
+interface SpendInfo {
+  spend: number;
+  expires: string;
+  created_at: string;
+  updated_at: string;
+  max_budget: number | null;
+  budget_duration: string | null;
+  budget_reset_at: string | null;
+}
+
+function formatTimeUntil(date: string): string {
+  const now = new Date();
+  const resetDate = new Date(date);
+  const diffMs = resetDate.getTime() - now.getTime();
+  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+  const diffMinutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+
+  if (diffHours > 0) {
+    return `in ${diffHours}h ${diffMinutes}m`;
+  }
+  return `in ${diffMinutes}m`;
+}
+
 export default function PrivateAIKeysPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -64,6 +98,7 @@ export default function PrivateAIKeysPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [isUserSearchOpen, setIsUserSearchOpen] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
+  const [openBudgetDialog, setOpenBudgetDialog] = useState<string | null>(null);
   const debouncedSearchTerm = useDebounce(searchTerm, 300);
 
   // Queries
@@ -130,6 +165,29 @@ export default function PrivateAIKeysPage() {
     }
   };
 
+  // Query to get spend information for each key
+  const spendQueries = useQueries({
+    queries: privateAIKeys.map((key) => ({
+      queryKey: ['private-ai-key-spend', key.database_name],
+      queryFn: async () => {
+        const response = await get(`/private-ai-keys/${key.database_name}/spend`);
+        const data = await response.json();
+        return data as SpendInfo;
+      },
+      refetchInterval: 60000, // Refetch every minute
+    })),
+  });
+
+  // Create a map of spend information
+  const spendMap = useMemo(() => {
+    return spendQueries.reduce((acc, query, index) => {
+      if (query.data) {
+        acc[privateAIKeys[index].database_name] = query.data;
+      }
+      return acc;
+    }, {} as Record<string, SpendInfo>);
+  }, [spendQueries, privateAIKeys]);
+
   // Mutations
   const deletePrivateAIKeyMutation = useMutation({
     mutationFn: async (keyName: string) => {
@@ -140,6 +198,32 @@ export default function PrivateAIKeysPage() {
       toast({
         title: 'Success',
         description: 'Private AI key deleted successfully',
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
+  // Add mutation for updating budget period
+  const updateBudgetPeriodMutation = useMutation({
+    mutationFn: async ({ keyName, budgetDuration }: { keyName: string; budgetDuration: string }) => {
+      const response = await put(`/private-ai-keys/${keyName}/budget-period`, {
+        budget_duration: budgetDuration
+      });
+      return response.json();
+    },
+    onSuccess: (data, variables) => {
+      // Update the spend information for this specific key
+      queryClient.setQueryData(['private-ai-key-spend', variables.keyName], data);
+      setOpenBudgetDialog(null); // Close the dialog
+      toast({
+        title: 'Success',
+        description: 'Budget period updated successfully',
       });
     },
     onError: (error: Error) => {
@@ -233,6 +317,7 @@ export default function PrivateAIKeysPage() {
               <TableHead>Credentials</TableHead>
               <TableHead>Region</TableHead>
               <TableHead>Owner</TableHead>
+              <TableHead>Spend</TableHead>
               <TableHead>Actions</TableHead>
             </TableRow>
           </TableHeader>
@@ -341,6 +426,76 @@ export default function PrivateAIKeysPage() {
                     <span className="text-sm">{usersMap[key.owner_id]?.email || 'Unknown'}</span>
                     <span className="text-xs text-muted-foreground">ID: {key.owner_id}</span>
                   </div>
+                </TableCell>
+                <TableCell>
+                  {spendMap[key.database_name] ? (
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium">
+                          ${spendMap[key.database_name].spend.toFixed(2)}
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          {spendMap[key.database_name].max_budget !== null 
+                            ? `/ $${spendMap[key.database_name].max_budget.toFixed(2)}`
+                            : '(No budget)'}
+                        </span>
+                      </div>
+                      <span className="text-xs text-muted-foreground">
+                        {spendMap[key.database_name].budget_duration || 'No budget period'}
+                        {spendMap[key.database_name].budget_reset_at && ` • Resets ${formatTimeUntil(spendMap[key.database_name].budget_reset_at as string)}`}
+                        <Dialog open={openBudgetDialog === key.database_name} onOpenChange={(open) => setOpenBudgetDialog(open ? key.database_name : null)}>
+                          <DialogTrigger asChild>
+                            <Button variant="ghost" size="icon" className="h-4 w-4 ml-1">
+                              <Pencil className="h-3 w-3" />
+                            </Button>
+                          </DialogTrigger>
+                          <DialogContent>
+                            <DialogHeader>
+                              <DialogTitle>Update Budget Period</DialogTitle>
+                              <DialogDescription>
+                                Set the budget period for this key. Examples: &quot;30d&quot; (30 days), &quot;24h&quot; (24 hours), &quot;60m&quot; (60 minutes)
+                              </DialogDescription>
+                            </DialogHeader>
+                            <div className="grid gap-4 py-4">
+                              <div className="grid gap-2">
+                                <Label htmlFor="budget-duration">Budget Period</Label>
+                                <Input
+                                  id="budget-duration"
+                                  defaultValue={spendMap[key.database_name].budget_duration || ''}
+                                  placeholder="e.g. 30d"
+                                />
+                              </div>
+                            </div>
+                            <DialogFooter>
+                              <Button
+                                onClick={() => {
+                                  const input = document.getElementById('budget-duration') as HTMLInputElement;
+                                  if (input) {
+                                    updateBudgetPeriodMutation.mutate({
+                                      keyName: key.database_name,
+                                      budgetDuration: input.value
+                                    });
+                                  }
+                                }}
+                                disabled={updateBudgetPeriodMutation.isPending}
+                              >
+                                {updateBudgetPeriodMutation.isPending ? (
+                                  <>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    Updating...
+                                  </>
+                                ) : (
+                                  'Update'
+                                )}
+                              </Button>
+                            </DialogFooter>
+                          </DialogContent>
+                        </Dialog>
+                      </span>
+                    </div>
+                  ) : (
+                    <span className="text-sm text-muted-foreground">Loading...</span>
+                  )}
                 </TableCell>
                 <TableCell>
                   <AlertDialog>
