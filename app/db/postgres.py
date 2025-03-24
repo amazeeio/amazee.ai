@@ -26,7 +26,7 @@ class PostgresManager:
         db_name = f"db_{uuid.uuid4().hex[:8]}"
         db_user = f"user_{uuid.uuid4().hex[:8]}"
         db_password = uuid.uuid4().hex
-        
+
         # Generate LiteLLM token
         litellm_token = await self.litellm_service.create_key(email=owner, name=name, user_id=user_id)
 
@@ -57,8 +57,6 @@ class PostgresManager:
             # Close the initial connection
             await conn.close()
 
-            # Connect to the newly created database to grant schema permissions
-            logger.info(f"Connecting to new database {db_name} to grant schema permissions")
             conn = await asyncpg.connect(
                 host=self.host,
                 port=self.port,
@@ -91,6 +89,8 @@ class PostgresManager:
         except Exception as e:
             logger.error(f"Error creating database: {str(e)}")
             raise
+        finally:
+            await conn.close()
 
     async def delete_database(self, database_name: str, litellm_token: str = None):
         conn = await asyncpg.connect(

@@ -5,6 +5,7 @@ from fastapi import status
 from sqlalchemy.exc import IntegrityError
 import requests
 from pydantic import BaseModel
+import logging
 
 from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
@@ -12,6 +13,9 @@ from app.schemas.models import PrivateAIKey, PrivateAIKeyCreate, User
 from app.db.postgres import PostgresManager
 from app.db.models import DBPrivateAIKey, DBRegion, DBUser
 from app.services.litellm import LiteLLMService
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     tags=["Private AI Keys"]
@@ -63,7 +67,7 @@ async def create_private_ai_key(
 
     # Determine the owner of the key
     owner_id = private_ai_key.owner_id if private_ai_key.owner_id is not None else current_user.id
-    
+
     # If trying to create for another user, verify admin status
     if owner_id != current_user.id and not current_user.is_admin:
         raise HTTPException(
@@ -113,6 +117,7 @@ async def create_private_ai_key(
         # Return credentials to user
         return key_credentials
     except Exception as e:
+        logger.error(f"Failed to create Private AI Key: {str(e)}", exc_info=True)
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

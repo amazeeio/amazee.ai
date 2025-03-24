@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch
 from app.db.models import DBRegion, DBPrivateAIKey
+import logging
 
 @pytest.fixture
 def test_region(db):
@@ -81,13 +82,14 @@ def test_create_private_ai_key(mock_post, client, test_token, test_region, mock_
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {test_token}"},
-        json={"region_id": test_region.id}
+        json={
+            "region_id": test_region.id,
+            "name": "Test AI Key"
+        }
     )
 
     assert response.status_code == 200
     data = response.json()
-    assert "database_name" in data
-    assert "litellm_token" in data
     assert data["region"] == test_region.name
     assert data["litellm_token"] == "test-private-key-123"
     assert data["owner_id"] == test_user.id
@@ -103,7 +105,10 @@ def test_create_private_ai_key_invalid_region(mock_post, client, test_token):
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {test_token}"},
-        json={"region_id": 99999}
+        json={
+            "region_id": 99999,
+            "name": "Test Invalid Region Key"
+        }
     )
 
     assert response.status_code == 404

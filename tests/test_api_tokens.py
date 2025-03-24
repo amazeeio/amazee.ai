@@ -5,7 +5,7 @@ from app.db.models import DBAPIToken
 def test_create_api_token(client, test_token, test_user):
     """Test creating a new API token"""
     response = client.post(
-        "/api-tokens",
+        "/auth/token",
         headers={"Authorization": f"Bearer {test_token}"},
         json={"name": "Test Token"}
     )
@@ -30,7 +30,7 @@ def test_list_api_tokens(client, test_token, test_user, db):
     db.commit()
 
     response = client.get(
-        "/api-tokens",
+        "/auth/token",
         headers={"Authorization": f"Bearer {test_token}"}
     )
 
@@ -39,8 +39,11 @@ def test_list_api_tokens(client, test_token, test_user, db):
     assert isinstance(data, list)
     assert len(data) > 0
     assert data[0]["name"] == "Test Token"
-    assert data[0]["token"] == "test-token-123"
     assert data[0]["user_id"] == test_user.id
+    assert "created_at" in data[0]
+    assert "last_used_at" in data[0]
+    # Token should not be included in response for security
+    assert "token" not in data[0]
 
 def test_delete_api_token(client, test_token, test_user, db):
     """Test deleting an API token"""
@@ -54,7 +57,7 @@ def test_delete_api_token(client, test_token, test_user, db):
     db.commit()
 
     response = client.delete(
-        f"/api-tokens/{test_api_token.id}",
+        f"/auth/token/{test_api_token.id}",
         headers={"Authorization": f"Bearer {test_token}"}
     )
 
@@ -68,7 +71,7 @@ def test_delete_api_token(client, test_token, test_user, db):
 def test_delete_nonexistent_token(client, test_token):
     """Test deleting a nonexistent API token"""
     response = client.delete(
-        "/api-tokens/99999",
+        "/auth/token/99999",
         headers={"Authorization": f"Bearer {test_token}"}
     )
 
@@ -88,7 +91,7 @@ def test_delete_other_users_token(client, test_token, test_admin, db):
 
     # Try to delete admin's token as regular user
     response = client.delete(
-        f"/api-tokens/{admin_token.id}",
+        f"/auth/token/{admin_token.id}",
         headers={"Authorization": f"Bearer {test_token}"}
     )
 
@@ -98,7 +101,7 @@ def test_delete_other_users_token(client, test_token, test_admin, db):
 def test_create_api_token_unauthenticated(client):
     """Test that unauthenticated users cannot create tokens"""
     response = client.post(
-        "/api-tokens",
+        "/auth/token",
         json={"name": "Test Token"}
     )
 
@@ -107,7 +110,7 @@ def test_create_api_token_unauthenticated(client):
 
 def test_list_api_tokens_unauthenticated(client):
     """Test that unauthenticated users cannot list tokens"""
-    response = client.get("/api-tokens")
+    response = client.get("/auth/token")
 
     assert response.status_code == 401
     assert "Could not validate credentials" in response.json()["detail"]

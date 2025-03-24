@@ -9,10 +9,10 @@ from app.db.models import Base
 from app.core.config import settings
 import os
 
-# Use PostgreSQL for testing in container
+# Get database URL from environment
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://postgres:postgres@postgres/postgres_service"
+    "postgresql://postgres:postgres@amazee-test-postgres/postgres_service"
 )
 
 # Create test database engine
