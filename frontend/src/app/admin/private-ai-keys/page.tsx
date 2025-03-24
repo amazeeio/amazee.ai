@@ -99,6 +99,7 @@ export default function PrivateAIKeysPage() {
   const [isUserSearchOpen, setIsUserSearchOpen] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [openBudgetDialog, setOpenBudgetDialog] = useState<string | null>(null);
+  const [loadedSpendKeys, setLoadedSpendKeys] = useState<Set<string>>(new Set());
   const debouncedSearchTerm = useDebounce(searchTerm, 300);
 
   // Queries
@@ -167,26 +168,28 @@ export default function PrivateAIKeysPage() {
 
   // Query to get spend information for each key
   const spendQueries = useQueries({
-    queries: privateAIKeys.map((key) => ({
-      queryKey: ['private-ai-key-spend', key.database_name],
-      queryFn: async () => {
-        const response = await get(`/private-ai-keys/${key.database_name}/spend`);
-        const data = await response.json();
-        return data as SpendInfo;
-      },
-      refetchInterval: 60000, // Refetch every minute
-    })),
+    queries: privateAIKeys
+      .filter(key => loadedSpendKeys.has(key.database_name))
+      .map((key) => ({
+        queryKey: ['private-ai-key-spend', key.database_name],
+        queryFn: async () => {
+          const response = await get(`/private-ai-keys/${key.database_name}/spend`);
+          const data = await response.json();
+          return data as SpendInfo;
+        },
+        refetchInterval: 60000, // Refetch every minute
+      })),
   });
 
   // Create a map of spend information
   const spendMap = useMemo(() => {
     return spendQueries.reduce((acc, query, index) => {
       if (query.data) {
-        acc[privateAIKeys[index].database_name] = query.data;
+        acc[privateAIKeys.filter(key => loadedSpendKeys.has(key.database_name))[index].database_name] = query.data;
       }
       return acc;
     }, {} as Record<string, SpendInfo>);
-  }, [spendQueries, privateAIKeys]);
+  }, [spendQueries, privateAIKeys, loadedSpendKeys]);
 
   // Mutations
   const deletePrivateAIKeyMutation = useMutation({
@@ -428,73 +431,85 @@ export default function PrivateAIKeysPage() {
                   </div>
                 </TableCell>
                 <TableCell>
-                  {spendMap[key.database_name] ? (
-                    <div className="flex flex-col gap-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium">
-                          ${spendMap[key.database_name].spend.toFixed(2)}
-                        </span>
+                  {loadedSpendKeys.has(key.database_name) ? (
+                    spendMap[key.database_name] ? (
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium">
+                            ${spendMap[key.database_name].spend.toFixed(2)}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            {spendMap[key.database_name]?.max_budget !== null 
+                              ? `/ $${spendMap[key.database_name]?.max_budget?.toFixed(2)}`
+                              : '(No budget)'}
+                          </span>
+                        </div>
                         <span className="text-xs text-muted-foreground">
-                          {spendMap[key.database_name]?.max_budget !== null 
-                            ? `/ $${spendMap[key.database_name]?.max_budget?.toFixed(2)}`
-                            : '(No budget)'}
+                          {spendMap[key.database_name].budget_duration || 'No budget period'}
+                          {spendMap[key.database_name].budget_reset_at && ` • Resets ${formatTimeUntil(spendMap[key.database_name].budget_reset_at as string)}`}
+                          <Dialog open={openBudgetDialog === key.database_name} onOpenChange={(open) => setOpenBudgetDialog(open ? key.database_name : null)}>
+                            <DialogTrigger asChild>
+                              <Button variant="ghost" size="icon" className="h-4 w-4 ml-1">
+                                <Pencil className="h-3 w-3" />
+                              </Button>
+                            </DialogTrigger>
+                            <DialogContent>
+                              <DialogHeader>
+                                <DialogTitle>Update Budget Period</DialogTitle>
+                                <DialogDescription>
+                                  Set the budget period for this key. Examples: &quot;30d&quot; (30 days), &quot;24h&quot; (24 hours), &quot;60m&quot; (60 minutes)
+                                </DialogDescription>
+                              </DialogHeader>
+                              <div className="grid gap-4 py-4">
+                                <div className="grid gap-2">
+                                  <Label htmlFor="budget-duration">Budget Period</Label>
+                                  <Input
+                                    id="budget-duration"
+                                    defaultValue={spendMap[key.database_name].budget_duration || ''}
+                                    placeholder="e.g. 30d"
+                                  />
+                                </div>
+                              </div>
+                              <DialogFooter>
+                                <Button
+                                  onClick={() => {
+                                    const input = document.getElementById('budget-duration') as HTMLInputElement;
+                                    if (input) {
+                                      updateBudgetPeriodMutation.mutate({
+                                        keyName: key.database_name,
+                                        budgetDuration: input.value
+                                      });
+                                    }
+                                  }}
+                                  disabled={updateBudgetPeriodMutation.isPending}
+                                >
+                                  {updateBudgetPeriodMutation.isPending ? (
+                                    <>
+                                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                      Updating...
+                                    </>
+                                  ) : (
+                                    'Update'
+                                  )}
+                                </Button>
+                              </DialogFooter>
+                            </DialogContent>
+                          </Dialog>
                         </span>
                       </div>
-                      <span className="text-xs text-muted-foreground">
-                        {spendMap[key.database_name].budget_duration || 'No budget period'}
-                        {spendMap[key.database_name].budget_reset_at && ` • Resets ${formatTimeUntil(spendMap[key.database_name].budget_reset_at as string)}`}
-                        <Dialog open={openBudgetDialog === key.database_name} onOpenChange={(open) => setOpenBudgetDialog(open ? key.database_name : null)}>
-                          <DialogTrigger asChild>
-                            <Button variant="ghost" size="icon" className="h-4 w-4 ml-1">
-                              <Pencil className="h-3 w-3" />
-                            </Button>
-                          </DialogTrigger>
-                          <DialogContent>
-                            <DialogHeader>
-                              <DialogTitle>Update Budget Period</DialogTitle>
-                              <DialogDescription>
-                                Set the budget period for this key. Examples: &quot;30d&quot; (30 days), &quot;24h&quot; (24 hours), &quot;60m&quot; (60 minutes)
-                              </DialogDescription>
-                            </DialogHeader>
-                            <div className="grid gap-4 py-4">
-                              <div className="grid gap-2">
-                                <Label htmlFor="budget-duration">Budget Period</Label>
-                                <Input
-                                  id="budget-duration"
-                                  defaultValue={spendMap[key.database_name].budget_duration || ''}
-                                  placeholder="e.g. 30d"
-                                />
-                              </div>
-                            </div>
-                            <DialogFooter>
-                              <Button
-                                onClick={() => {
-                                  const input = document.getElementById('budget-duration') as HTMLInputElement;
-                                  if (input) {
-                                    updateBudgetPeriodMutation.mutate({
-                                      keyName: key.database_name,
-                                      budgetDuration: input.value
-                                    });
-                                  }
-                                }}
-                                disabled={updateBudgetPeriodMutation.isPending}
-                              >
-                                {updateBudgetPeriodMutation.isPending ? (
-                                  <>
-                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                    Updating...
-                                  </>
-                                ) : (
-                                  'Update'
-                                )}
-                              </Button>
-                            </DialogFooter>
-                          </DialogContent>
-                        </Dialog>
-                      </span>
-                    </div>
+                    ) : (
+                      <span className="text-sm text-muted-foreground">Loading...</span>
+                    )
                   ) : (
-                    <span className="text-sm text-muted-foreground">Loading...</span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setLoadedSpendKeys(prev => new Set([...prev, key.database_name]));
+                      }}
+                    >
+                      Load Spend
+                    </Button>
                   )}
                 </TableCell>
                 <TableCell>
