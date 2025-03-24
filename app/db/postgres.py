@@ -2,9 +2,11 @@ import asyncpg
 from typing import Dict
 import uuid
 import logging
+import logging
 from app.services.litellm import LiteLLMService
 from app.db.models import DBRegion
 
+# Set up logging
 logger = logging.getLogger(__name__)
 
 class PostgresManager:
@@ -26,7 +28,7 @@ class PostgresManager:
         db_name = f"db_{uuid.uuid4().hex[:8]}"
         db_user = f"user_{uuid.uuid4().hex[:8]}"
         db_password = uuid.uuid4().hex
-        
+
         # Generate LiteLLM token
         litellm_token = await self.litellm_service.create_key(email=owner, name=name, user_id=user_id)
 
@@ -42,9 +44,11 @@ class PostgresManager:
         except asyncpg.exceptions.PostgresError as e:
             logger.error(f"Failed to connect to PostgreSQL: {str(e)}")
             logger.error(f"Connection details: host={self.host}, port={self.port}, user={self.admin_user}")
+            logger.error(f"Failed to connect to PostgreSQL: {str(e)}")
+            logger.error(f"Connection details: host={self.host}, port={self.port}, user={self.admin_user}")
             raise
         except Exception as e:
-            logger.error(f"Unexpected error connecting to PostgreSQL: {str(e)}")
+            logger.error(f"Unexpected error connecting to PostgreSQL: {str(e)}", exc_info=True)
             raise
 
         try:
@@ -91,6 +95,8 @@ class PostgresManager:
         except Exception as e:
             logger.error(f"Error creating database: {str(e)}")
             raise
+        finally:
+            await conn.close()
 
     async def delete_database(self, database_name: str, litellm_token: str = None):
         conn = await asyncpg.connect(

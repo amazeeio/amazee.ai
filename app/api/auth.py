@@ -323,7 +323,7 @@ async def register(user: UserCreate, db: Session = Depends(get_db)):
 def generate_token() -> str:
     return secrets.token_urlsafe(32)
 
-# API Token routes
+# API Token routes (as apposed to AI Token routes)
 @router.post("/token", response_model=APIToken)
 async def create_token(
     token_create: APITokenCreate,
@@ -345,6 +345,7 @@ async def list_tokens(
     current_user = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
+    """List all API tokens for the current user"""
     return current_user.api_tokens
 
 @router.delete("/token/{token_id}")
@@ -353,17 +354,13 @@ async def delete_token(
     current_user = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
+    """Delete an API token"""
     token = db.query(DBAPIToken).filter(
         DBAPIToken.id == token_id,
         DBAPIToken.user_id == current_user.id
     ).first()
-
     if not token:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Token not found"
-        )
-
+        raise HTTPException(status_code=404, detail="Token not found")
     db.delete(token)
     db.commit()
     return {"message": "Token deleted successfully"}
