@@ -24,6 +24,13 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres/postgres_service
       SECRET_KEY: "dKq2BK3pqGQfNqC7SK8ZxNCdqJnGV4F9"  # More secure key for development
+      OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED: "true"
+      OTEL_SERVICE_NAME: "backend-service"
+      OTEL_TRACES_EXPORTER: "otlp"
+      OTEL_METRICS_EXPORTER: "otlp"
+      OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+      OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST: "content-type,user-agent"
     ports:
       - "8800:8800"
     volumes:
@@ -31,6 +38,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     labels:
       lagoon.type: python
 
@@ -52,6 +61,24 @@ services:
     labels:
       lagoon.type: node
 
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./ollama-init.sh:/usr/local/bin/ollama-init.sh
+    entrypoint: ["/bin/sh", "/usr/local/bin/ollama-init.sh"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    labels:
+      lagoon.type: none
+
   litellm:
     image: ghcr.io/berriai/litellm-database:main-latest
     ports:
@@ -60,14 +87,21 @@ services:
         DATABASE_URL: "postgresql://llmproxy:dbpassword9090@litellm_db:5432/litellm"
         STORE_MODEL_IN_DB: "True" # allows adding models to proxy via UI
         LITELLM_MASTER_KEY: "sk-1234"
+        OTEL_SERVICE_NAME: "litellm-service"
+        OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
+        OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+        LITELLM_CALLBACKS: "['opentelemetry']"
+        OLLAMA_BASE_URL: "http://ollama:11434"
     depends_on:
-      - litellm_db  # Indicates that this service depends on the 'db' service, ensuring 'db' starts first
-    healthcheck:  # Defines the health check configuration for the container
-      test: [ "CMD", "curl", "-f", "http://localhost:4000/health/liveliness || exit 1" ]  # Command to execute for health check
-      interval: 30s  # Perform health check every 30 seconds
-      timeout: 10s   # Health check command times out after 10 seconds
-      retries: 3     # Retry up to 3 times if health check fails
-      start_period: 40s  # Wait 40 seconds after container start before beginning health checks
+      - litellm_db
+      - otel-collector
+      - ollama
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:4000/health/liveliness || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     labels:
       lagoon.type: none
 
@@ -88,8 +122,31 @@ services:
     labels:
       lagoon.type: none
 
+  otel-collector:
+    image: otel/opentelemetry-collector:latest
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"   # OTLP gRPC receiver
+      - "8888:8888"   # Prometheus metrics exposed by the collector
+      - "8889:8889"   # Prometheus exporter metrics
+    labels:
+      lagoon.type: none
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+    labels:
+      lagoon.type: none
 
 volumes:
   postgres_data:
   litellm_postgres_data:
-    name: litellm_postgres_data  # Named volume for Postgres data persistence
+    name: litellm_postgres_data
+  ollama_data:

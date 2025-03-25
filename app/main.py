@@ -8,13 +8,18 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 import os
 import logging
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from app.middleware.telemetry import TelemetryMiddleware
+from app.middleware.audit import AuditLogMiddleware
+from app.db.database import get_db
+from app.api import auth, private_ai_keys, users, regions, audit
+from app.core.config import settings
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-
 logger = logging.getLogger(__name__)
 
 class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
@@ -22,11 +27,6 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
         if request.headers.get("X-Forwarded-Proto") == "https":
             request.scope["scheme"] = "https"
         return await call_next(request)
-
-from app.api import auth, private_ai_keys, users, regions, audit
-from app.core.config import settings
-from app.db.database import get_db
-from app.middleware.audit import AuditLogMiddleware
 
 app = FastAPI(
     title="Private AI Keys as a Service",
@@ -94,7 +94,13 @@ app.add_middleware(
     allowed_hosts=settings.ALLOWED_HOSTS
 )
 
+# Add audit logging
 app.add_middleware(AuditLogMiddleware, db=next(get_db()))
+
+# Add telemetry
+app.add_middleware(TelemetryMiddleware)
+# Instrument FastAPI
+FastAPIInstrumentor.instrument_app(app)
 
 @app.get("/health")
 async def health_check():

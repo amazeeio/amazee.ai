@@ -1,0 +1,46 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+        cors:
+          allowed_origins: ["*"]
+          allowed_headers: ["*"]
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+  attributes:
+    actions:
+      - key: service.name
+        action: insert
+        value: backend-service
+
+exporters:
+  debug:
+    verbosity: detailed
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: "otel"
+    const_labels:
+      deployment: "production"
+    send_timestamps: true
+    metric_expiration: 180m
+    enable_open_metrics: true
+
+service:
+  telemetry:
+    logs:
+      level: "debug"
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      processors: [batch, attributes]
+      exporters: [prometheus]

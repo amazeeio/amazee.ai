@@ -8,6 +8,7 @@ from app.db.database import get_db
 from app.db.models import Base
 from app.core.config import settings
 import os
+from opentelemetry import trace, metrics
 
 # Get database URL from environment
 DATABASE_URL = os.getenv(
@@ -99,3 +100,10 @@ def admin_token(client, test_admin):
         data={"username": test_admin.email, "password": "adminpassword"}
     )
     return response.json()["access_token"]
+
+@pytest.fixture(scope="session", autouse=True)
+def setup_telemetry():
+    # Set null providers to prevent any telemetry during tests
+    trace.set_tracer_provider(trace.NoOpTracerProvider())
+    metrics.set_meter_provider(metrics.NoOpMeterProvider())
+    yield
