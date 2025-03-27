@@ -2,9 +2,9 @@ receivers:
   otlp:
     protocols:
       grpc:
-        endpoint: 0.0.0.0:4317
+        endpoint: "0.0.0.0:4317"
       http:
-        endpoint: 0.0.0.0:4318
+        endpoint: "0.0.0.0:4318"
         cors:
           allowed_origins: ["*"]
           allowed_headers: ["*"]
@@ -30,6 +30,10 @@ exporters:
     send_timestamps: true
     metric_expiration: 180m
     enable_open_metrics: true
+  otlp:
+    endpoint: "jaeger:4317"  # Jaeger accepts OTLP on port 4317
+    tls:
+      insecure: true
 
 service:
   telemetry:
@@ -39,7 +43,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug]
+      exporters: [debug, otlp]
     metrics:
       receivers: [otlp]
       processors: [batch, attributes]

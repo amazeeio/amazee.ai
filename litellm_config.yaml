@@ -1,0 +1,5 @@
+model_list:
+
+litellm_settings:
+  callbacks: ["otel"]
+  turn_off_message_logging: True # Never want to hold onto these for PII reasons

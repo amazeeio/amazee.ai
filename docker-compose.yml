@@ -87,10 +87,8 @@ services:
         DATABASE_URL: "postgresql://llmproxy:dbpassword9090@litellm_db:5432/litellm"
         STORE_MODEL_IN_DB: "True" # allows adding models to proxy via UI
         LITELLM_MASTER_KEY: "sk-1234"
-        OTEL_SERVICE_NAME: "litellm-service"
-        OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
-        OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
-        LITELLM_CALLBACKS: "['opentelemetry']"
+        OTEL_EXPORTER: "otlp_grpc"
+        OTEL_ENDPOINT: "http://otel-collector:4317"
         OLLAMA_BASE_URL: "http://ollama:11434"
     depends_on:
       - litellm_db
@@ -102,6 +100,9 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml # Mount the local configuration file
+    command: [ "--config", "/app/config.yaml"]
     labels:
       lagoon.type: none
 
@@ -123,14 +124,23 @@ services:
       lagoon.type: none
 
   otel-collector:
-    image: otel/opentelemetry-collector:latest
+    image: otel/opentelemetry-collector-contrib:latest
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
       - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
     ports:
-      - "4317:4317"   # OTLP gRPC receiver
-      - "8888:8888"   # Prometheus metrics exposed by the collector
-      - "8889:8889"   # Prometheus exporter metrics
+      - "4317:4317"   # OTLP gRPC - needed for receiving traces/metrics
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus metrics
+    depends_on:
+      - jaeger
+    labels:
+      lagoon.type: none
+
+  jaeger:
+    image: jaegertracing/jaeger:latest
+    ports:
+      - "16686:16686"  # UI only - remove the 4317 port
     labels:
       lagoon.type: none
 

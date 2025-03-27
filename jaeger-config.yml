@@ -1,0 +1,34 @@
+service:
+  extensions: [jaeger_storage, jaeger_query]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [jaeger_storage_exporter]
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "otel-collector:14250"
+
+extensions:
+  jaeger_storage:
+    backends:
+      service_trace_storage:
+        memory:
+          max_traces: 100000
+    metric_backends:
+      metrics_storage:
+        prometheus:
+          endpoint: http://prometheus:9090
+          normalize_calls: true
+          normalize_duration: true
+  jaeger_query:
+    storage:
+      traces: service_trace_storage
+      metrics: metrics_storage
+    base_path: /
+
+exporters:
+  jaeger_storage_exporter:
+    trace_storage: service_trace_storage
