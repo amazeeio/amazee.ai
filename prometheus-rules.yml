@@ -1,0 +1,11 @@
+groups:
+  - name: llm_metrics
+    rules:
+      - record: llm_completion_tokens
+        expr: label_replace(llm_traces_span_metrics_calls_total{span_name="litellm_request"}, "tokens", "$1", "gen_ai_usage_completion_tokens", "([0-9]+)")
+
+      - record: llm_prompt_tokens
+        expr: label_replace(llm_traces_span_metrics_calls_total{span_name="litellm_request"}, "tokens", "$1", "gen_ai_usage_prompt_tokens", "([0-9]+)")
+
+      - record: llm_token_usage_total
+        expr: sum(llm_completion_tokens) by (gen_ai_request_model) + sum(llm_prompt_tokens) by (gen_ai_request_model)

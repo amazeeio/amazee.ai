@@ -19,21 +19,39 @@ processors:
         action: insert
         value: backend-service
 
+connectors:
+  spanmetrics/usage_details:
+    histogram:
+      explicit:
+    metrics_flush_interval: 15s
+    dimensions:
+      - name: metadata.user_api_key_alias
+      - name: metadata.requester_metadata
+      - name: metadata.user_api_key_metadata
+      - name: metadata.user_api_key_spend
+      - name: metadata.user_api_key_max_budget
+      - name: gen_ai.request.model
+      - name: gen_ai.response.model
+      - name: gen_ai.system
+      - name: gen_ai.call_type
+      - name: gen_ai.usage.completion_tokens
+      - name: gen_ai.usage.prompt_tokens
+    exclude_dimensions:
+      - span.kind
+    dimensions_cache_size: 2000
+    namespace: "usage_details"
+
 exporters:
   debug:
     verbosity: detailed
   prometheus:
     endpoint: "0.0.0.0:8889"
-    namespace: "otel"
+    namespace: "llm"
     const_labels:
       deployment: "production"
     send_timestamps: true
     metric_expiration: 180m
     enable_open_metrics: true
-  otlp:
-    endpoint: "jaeger:4317"  # Jaeger accepts OTLP on port 4317
-    tls:
-      insecure: true
 
 service:
   telemetry:
@@ -43,8 +61,8 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug, otlp]
+      exporters: [debug, spanmetrics/usage_details]
     metrics:
-      receivers: [otlp]
+      receivers: [spanmetrics/usage_details]
       processors: [batch, attributes]
       exporters: [prometheus]
