@@ -26,7 +26,7 @@
     </user_directories>
 
     <default_profile>default</default_profile>
-    <default_database>default</default_database>
+    <default_database>openmeter</default_database>
 
     <mark_cache_size>5368709120</mark_cache_size>
 

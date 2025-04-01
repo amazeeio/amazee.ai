@@ -2,4 +2,10 @@ model_list:
 
 litellm_settings:
   callbacks: ["otel", "openmeter"]
+  environment_variables:
+    OPENMETER_BASE_URL: "http://openmeter:8888"
+    OPENMETER_API_KEY: "sk-test"
+  openmeter:
+    base_url: "http://openmeter:8888"
+    token: "sk-test"
   turn_off_message_logging: True # Never want to hold onto these for PII reasons

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, ConfigDict
-from typing import Optional, List, ClassVar
+from typing import Optional, List, ClassVar, Dict, Any
 from datetime import datetime
 from sqlalchemy import Column, Integer, DateTime, String, JSON, ForeignKey
 from sqlalchemy.orm import relationship
@@ -148,4 +148,20 @@ class PaginatedAuditLogResponse(BaseModel):
 class AuditLogMetadata(BaseModel):
     event_types: List[str]
     resource_types: List[str]
+    model_config = ConfigDict(from_attributes=True)
+
+class MeteringDataPoint(BaseModel):
+    value: float
+    windowEnd: str
+    windowStart: str
+    groupBy: Optional[Dict[str, str]] = None
+    subject: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class MeteringResponse(BaseModel):
+    data: List[MeteringDataPoint]
+    windowSize: str
+    meter_id: str
+    from_: Optional[str] = None
+    to: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)

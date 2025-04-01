@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     ]
     ALLOWED_HOSTS: list[str] = ["*"]  # In production, restrict this
 
+    # OpenMeter settings
+    OPENMETER_URL: str = "http://openmeter:8888"
+    OPENMETER_API_KEY: str = "test"  # In production, use environment variable
+
     model_config = ConfigDict(env_file=".env")
 
     def model_post_init(self, values):

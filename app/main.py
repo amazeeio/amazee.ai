@@ -12,12 +12,12 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from app.middleware.telemetry import TelemetryMiddleware
 from app.middleware.audit import AuditLogMiddleware
 from app.db.database import get_db
-from app.api import auth, private_ai_keys, users, regions, audit
+from app.api import auth, private_ai_keys, users, regions, audit, metering
 from app.core.config import settings
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -112,6 +112,7 @@ app.include_router(private_ai_keys.router, prefix="/private-ai-keys", tags=["pri
 app.include_router(users.router, prefix="/users", tags=["users"])
 app.include_router(regions.router, prefix="/regions", tags=["regions"])
 app.include_router(audit.router, prefix="/audit", tags=["audit"])
+app.include_router(metering.router, prefix="/api", tags=["metering"])
 
 @app.get("/", include_in_schema=False)
 async def custom_swagger_ui_html():
