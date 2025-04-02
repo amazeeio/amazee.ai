@@ -16,6 +16,8 @@ services:
       retries: 5
     labels:
       lagoon.type: postgres
+    networks:
+      - amazeeai
 
   backend:
     build:
@@ -42,6 +44,8 @@ services:
         condition: service_started
     labels:
       lagoon.type: python
+    networks:
+      - amazeeai
 
   frontend:
     build:
@@ -60,6 +64,8 @@ services:
     # user: '10000'
     labels:
       lagoon.type: node
+    networks:
+      - amazeeai
 
   ollama:
     image: ollama/ollama:latest
@@ -78,34 +84,36 @@ services:
               capabilities: [gpu]
     labels:
       lagoon.type: none
+    networks:
+      - amazeeai
 
-  litellm:
-    image: ghcr.io/berriai/litellm-database:main-latest
-    ports:
-      - "4000:4000"
-    environment:
-      DATABASE_URL: "postgresql://llmproxy:dbpassword9090@litellm_db:5432/litellm"
-      STORE_MODEL_IN_DB: "True"
-      LITELLM_MASTER_KEY: "sk-1234"
-      OTEL_EXPORTER: "otlp_grpc"
-      OTEL_ENDPOINT: "http://otel-collector:4317"
-      OLLAMA_BASE_URL: "http://ollama:11434"
-    depends_on:
-      - litellm_db
-      - otel-collector
-      - ollama
-      - openmeter
-    healthcheck:
-      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:4000/health/liveliness" ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    volumes:
-      - ./litellm_config.yaml:/app/config.yaml
-    command: [ "--config", "/app/config.yaml"]
-    labels:
-      lagoon.type: none
+  # litellm:
+  #   image: ghcr.io/berriai/litellm-database:main-latest
+  #   ports:
+  #     - "4000:4000"
+  #   environment:
+  #     DATABASE_URL: "postgresql://llmproxy:dbpassword9090@litellm_db:5432/litellm"
+  #     STORE_MODEL_IN_DB: "True"
+  #     LITELLM_MASTER_KEY: "sk-1234"
+  #     OTEL_EXPORTER: "otlp_grpc"
+  #     OTEL_ENDPOINT: "http://otel-collector:4317"
+  #     OLLAMA_BASE_URL: "http://ollama:11434"
+  #   depends_on:
+  #     - litellm_db
+  #     - otel-collector
+  #     - ollama
+  #     - openmeter
+  #   healthcheck:
+  #     test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:4000/health/liveliness" ]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 40s
+  #   volumes:
+  #     - ./litellm_config.yaml:/app/config.yaml
+  #   command: [ "--config", "/app/config.yaml"]
+  #   labels:
+  #     lagoon.type: none
 
   litellm_db:
     image: postgres:16
@@ -123,6 +131,8 @@ services:
       retries: 10
     labels:
       lagoon.type: none
+    networks:
+      - amazeeai
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
@@ -137,6 +147,8 @@ services:
       - jaeger
     labels:
       lagoon.type: none
+    networks:
+      - amazeeai
 
   jaeger:
     image: jaegertracing/jaeger:latest
@@ -144,22 +156,8 @@ services:
     - "16686:16686"  # UI
     labels:
       lagoon.type: none
-
-  prometheus:
-    image: prom/prometheus:latest
-    volumes:
-      - type: bind
-        source: ./prometheus.yml
-        target: /etc/prometheus/prometheus.yml
-      - type: bind
-        source: ./prometheus-rules.yml
-        target: /etc/prometheus/prometheus-rules.yml
-    ports:
-      - "9090:9090"
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-    labels:
-      lagoon.type: none
+    networks:
+      - amazeeai
 
   grafana:
     image: grafana/grafana:latest
@@ -173,10 +171,10 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning
-    depends_on:
-      - prometheus
     labels:
       lagoon.type: none
+    networks:
+      - amazeeai
 
   openmeter:
     image: ghcr.io/openmeterio/openmeter:latest
@@ -202,6 +200,8 @@ services:
       retries: 30
     labels:
       lagoon.type: none
+    networks:
+      - amazeeai
 
   clickhouse:
     image: clickhouse/clickhouse-server:latest
@@ -229,6 +229,8 @@ services:
       start_period: 10s
     labels:
       lagoon.type: none
+    networks:
+      - amazeeai
 
   zookeeper:
     image: confluentinc/cp-zookeeper:latest
@@ -244,6 +246,8 @@ services:
       retries: 5
     labels:
       lagoon.type: none
+    networks:
+      - amazeeai
 
   kafka:
     image: confluentinc/cp-kafka:latest
@@ -282,6 +286,8 @@ services:
       start_period: 30s
     labels:
       lagoon.type: none
+    networks:
+      - amazeeai
 
 volumes:
   postgres_data:
@@ -291,3 +297,7 @@ volumes:
   grafana_data:
   clickhouse_data:
   clickhouse_logs:
+
+networks:
+  amazeeai:
+    external: true

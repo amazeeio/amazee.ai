@@ -30,23 +30,38 @@ postgres:
   autoMigrate: migration # Runs migrations as part of the service startup, valid values are: ent, migration, false
 
 meters:
-  - id: completion_tokens
-    slug: completion_tokens
+  - id: completion_tokens_1
+    slug: completion_tokens_1
     description: "Track completion tokens from litellm requests"
-    eventType: litellm.request
+    eventType: litellm_tokens
+    valueProperty: $.data.completion_tokens
     aggregation: SUM
-    valueProperty: $.gen_ai.usage.completion_tokens
     groupBy:
-      user_api_key: $.metadata.user_api_key_alias
-      requester: $.metadata.requester_metadata
-      api_key_metadata: $.metadata.user_api_key_metadata
-      api_key_spend: $.metadata.user_api_key_spend
-      api_key_max_budget: $.metadata.user_api_key_max_budget
-      request_model: $.gen_ai.request.model
-      response_model: $.gen_ai.response.model
-      system: $.gen_ai.system
-      call_type: $.gen_ai.call_type
-      prompt_tokens: $.gen_ai.usage.prompt_tokens
+      subject: $.subject
+      model: $.data.model
+      source: $.source
+
+  - id: prompt_tokens_1
+    slug: prompt_tokens_1
+    description: "Track prompt tokens from litellm requests"
+    eventType: litellm_tokens
+    valueProperty: $.data.prompt_tokens
+    aggregation: SUM
+    groupBy:
+      subject: $.subject
+      model: $.data.model
+      source: $.source
+
+  - id: total_tokens_1
+    slug: total_tokens_1
+    description: "Track total tokens from litellm requests"
+    eventType: litellm_tokens
+    valueProperty: $.data.total_tokens
+    aggregation: SUM
+    groupBy:
+      subject: $.subject
+      model: $.data.model
+      source: $.source
 
 portal:
   enabled: true

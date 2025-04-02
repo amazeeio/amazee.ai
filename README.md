@@ -39,6 +39,7 @@ This repository contains the backend and frontend services for the amazee.ai app
    - Backend service (port 8000)
    - Frontend service (port 3000)
 
+
 ## 🧪 Running Tests
 
 ### Backend Tests
@@ -98,7 +99,7 @@ make test-clean
 
 The development environment includes:
 - Hot reloading for frontend (Next.js) on port 3000
-- Hot reloading for backend (Python) on port 8800 
+- Hot reloading for backend (Python) on port 8800
 - PostgreSQL database on port 5432
 
 Access the services at:
