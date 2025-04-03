@@ -6,6 +6,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
+from prometheus_client import make_asgi_app
 import os
 import logging
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -101,6 +102,9 @@ app.add_middleware(AuditLogMiddleware, db=next(get_db()))
 app.add_middleware(TelemetryMiddleware)
 # Instrument FastAPI
 FastAPIInstrumentor.instrument_app(app)
+# Add Prometheus metrics endpoint
+metrics_app = make_asgi_app()
+app.mount("/metrics", metrics_app)
 
 @app.get("/health")
 async def health_check():

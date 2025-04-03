@@ -24,7 +24,7 @@ exporters:
     verbosity: detailed
   prometheus:
     endpoint: "0.0.0.0:8889"
-    namespace: "llm"
+    namespace: "backend"
     const_labels:
       deployment: "production"
     send_timestamps: true

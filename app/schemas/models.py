@@ -159,9 +159,27 @@ class MeteringDataPoint(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class MeteringResponse(BaseModel):
-    data: List[MeteringDataPoint]
+    data: List[Any]
     windowSize: str
     meter_id: str
     from_: Optional[str] = None
     to: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
+
+class Event(BaseModel):
+    id: str
+    type: str
+    subject: Optional[str] = None
+    source: Optional[str] = None
+    data: dict
+    time: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+class EventsResponse(BaseModel):
+    events: List[Event]
+    model_config = ConfigDict(from_attributes=True)
+
+class OpenMeterPassthroughRequest(BaseModel):
+    endpoint: str
+    method: str = "GET"  # Default to GET
+    data: Any = None  # Accept any JSON value

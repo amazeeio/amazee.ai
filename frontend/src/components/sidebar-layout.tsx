@@ -45,6 +45,7 @@ const navigation = [
       { name: 'Regions', href: '/admin/regions', icon: <Globe size={16} /> },
       { name: 'Private AI Keys', href: '/admin/private-ai-keys', icon: <Key size={16} /> },
       { name: 'Audit Logs', href: '/admin/audit-logs', icon: <ScrollText size={16} /> },
+      { name: 'OpenMeter', href: '/admin/openmeter', icon: <Key size={16} /> },
     ],
   },
 ];
