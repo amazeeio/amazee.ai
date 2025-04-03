@@ -18,27 +18,36 @@ This repository contains the backend and frontend services for the amazee.ai app
 - Python 3.x (for local backend development)
 
 ## 🛠️ Setup & Installation
+**Specific to the `litellm-integrations` branch**
 
-1. Clone the repository:
-   ```bash
-   git clone [repository-url]
-   cd [repository-name]
-   ```
+In order to have a complete experience, we need to have two repos with their independent docker-compose files running in parallel. To connect the two, we need a named network so that docker knows how to connect smoothly. To achieve this we run:
+```bash
+docker network create amazeeai
+```
+Then, in the `amazeeai` folder, we need to start up all the DBs, volumes, telemetry services, and the `amazeeai` backend and frontend services. This is straightforward, in the root of the folder run:
+```bash
+docker compose up -d
+```
+**If this is the first run** you may need to bootstrap some of the pieces. Once this is done the docker run will happen seamlessly.
+```bash
+cd frontend
+npm run build
+cd ../
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install -r requirements-test.txt
+```
+Next, in the second repo, which is `litellm` (our fork of LiteLLM where we're doing what we need to), we are going to start up Prometheus and LiteLLM. First checkout the telemetry branch `git checkout dev/amazeeai-telemetry` then use compose to start up the services.
+```bash
+docker compose up -d
+```
+**On first run** you will need to do a full build in order to have all components available. add the `--build` flag to your compose command once only. LiteLLM takes a while for a full build and does not have hot-reloading configured yet.
 
-2. Environment Setup:
-   - Copy any example environment files and configure as needed
-   - Ensure all required API keys are set
-
-3. Start the services:
-   ```bash
-   docker-compose up -d
-   ```
-
-   This will start:
-   - PostgreSQL database (port 5432)
-   - Backend service (port 8000)
-   - Frontend service (port 3000)
-
+What it looks like:
+![amazeeai compose](compose-all.VizFormats.svg)
+![litellm compose](compose-litellm.VizFormats.svg)
+These two graphs connect on the custom external network named `amazeeai`, which allows the single Prometheus instance to scrape any and all backend services, and allows LiteLLM to pass through to Ollama, make use of the amzeeai postgres to store keys, and publish meter events to OpenMeter.
 
 ## 🧪 Running Tests
 
