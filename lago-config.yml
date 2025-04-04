@@ -1,0 +1,20 @@
+version: '1.0'
+
+api:
+  port: 3000  # Internal port is 3000
+  host: '0.0.0.0'
+  database:
+    url: postgresql://postgres:postgres@postgres:5432/postgres_service
+  redis:
+    url: redis://redis:6379/0
+  jwt:
+    secret: 'your-secret-key-here'  # Change this in production
+  cors:
+    allowed_origins:
+      - http://localhost:3000
+      - http://localhost:3002  # Lago frontend port
+
+frontend:
+  port: 80  # Internal port is 80
+  host: '0.0.0.0'
+  api_url: http://lago-api:3000  # Internal communication uses port 3000

@@ -23,44 +23,52 @@ sink:
     socketKeepAliveEnable: true
     topicMetadataRefreshInterval: 10s
   dedupe:
-    enabled: false
+    enabled: true
+    driver: redis
+    config:
+      address: redis:6379
+      database: 0
+      expiration: 768h # 32d
 
 postgres:
   url: postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable
   autoMigrate: migration # Runs migrations as part of the service startup, valid values are: ent, migration, false
 
 meters:
-  - id: completion_tokens_1
-    slug: completion_tokens_1
+  - id: completion_tokens_3
+    slug: completion_tokens_3
+    name: "Completion Tokens"
     description: "Track completion tokens from litellm requests"
     eventType: litellm_tokens
-    valueProperty: $.data.completion_tokens
+    valueProperty: $.completion_tokens
     aggregation: SUM
     groupBy:
       subject: $.subject
-      model: $.data.model
+      model: $.model
       source: $.source
 
-  - id: prompt_tokens_1
-    slug: prompt_tokens_1
+  - id: prompt_tokens_2
+    slug: prompt_tokens_2
+    name: "Prompt Tokens"
     description: "Track prompt tokens from litellm requests"
     eventType: litellm_tokens
-    valueProperty: $.data.prompt_tokens
+    valueProperty: $.prompt_tokens
     aggregation: SUM
     groupBy:
       subject: $.subject
-      model: $.data.model
+      model: $.model
       source: $.source
 
-  - id: total_tokens_1
-    slug: total_tokens_1
+  - id: total_tokens_2
+    slug: total_tokens_2
+    name: "Total Tokens"
     description: "Track total tokens from litellm requests"
     eventType: litellm_tokens
-    valueProperty: $.data.total_tokens
+    valueProperty: $.total_tokens
     aggregation: SUM
     groupBy:
       subject: $.subject
-      model: $.data.model
+      model: $.model
       source: $.source
 
 portal:

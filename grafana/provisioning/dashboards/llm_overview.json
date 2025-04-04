@@ -436,6 +436,282 @@
             "axisBorderShow": false,
             "axisCenteredZero": false,
             "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "id": 16,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "disableTextWrap": false,
+          "editorMode": "builder",
+          "expr": "count without(litellm_model_name) (sum by(litellm_model_name) (sum_over_time(litellm_deployment_state[1m])))",
+          "fullMetaSearch": false,
+          "includeNullMetadata": true,
+          "legendFormat": "Unique Models",
+          "range": true,
+          "refId": "A",
+          "useBackend": false
+        }
+      ],
+      "title": "Models Deployed",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 12,
+        "y": 6
+      },
+      "id": 17,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "disableTextWrap": false,
+          "editorMode": "builder",
+          "expr": "count without(api_key_alias) (sum by(api_key_alias) (sum_over_time(litellm_input_tokens_created[1m])))",
+          "fullMetaSearch": false,
+          "includeNullMetadata": true,
+          "legendFormat": "Unique Keys",
+          "range": true,
+          "refId": "A",
+          "useBackend": false
+        }
+      ],
+      "title": "Keys in use",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 18,
+        "y": 6
+      },
+      "id": 18,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "pluginVersion": "11.6.0",
+      "targets": [
+        {
+          "disableTextWrap": false,
+          "editorMode": "builder",
+          "exemplar": false,
+          "expr": "group by(api_key_alias) (litellm_input_tokens_created)",
+          "format": "table",
+          "fullMetaSearch": false,
+          "includeNullMetadata": true,
+          "instant": true,
+          "legendFormat": "__auto",
+          "range": false,
+          "refId": "A",
+          "useBackend": false
+        }
+      ],
+      "title": "Unique Keys",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true
+            },
+            "includeByName": {},
+            "indexByName": {},
+            "renameByName": {
+              "Value": ""
+            }
+          }
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
             "axisLabel": "seconds",
             "axisPlacement": "auto",
             "barAlignment": 0,
@@ -485,7 +761,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 6
+        "y": 12
       },
       "id": 14,
       "options": {
@@ -623,7 +899,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 6
+        "y": 12
       },
       "id": 15,
       "options": {
@@ -704,7 +980,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 14
+        "y": 20
       },
       "id": 3,
       "panels": [],
@@ -774,7 +1050,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 15
+        "y": 21
       },
       "id": 1,
       "options": {
@@ -878,7 +1154,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 15
+        "y": 21
       },
       "id": 9,
       "options": {
@@ -982,7 +1258,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 23
+        "y": 29
       },
       "id": 2,
       "options": {
@@ -1086,7 +1362,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 23
+        "y": 29
       },
       "id": 10,
       "options": {
@@ -1133,7 +1409,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 31
+        "y": 37
       },
       "id": 11,
       "panels": [],
@@ -1203,7 +1479,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 32
+        "y": 38
       },
       "id": 12,
       "options": {
@@ -1307,7 +1583,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 32
+        "y": 38
       },
       "id": 13,
       "options": {
@@ -1371,12 +1647,12 @@
     ]
   },
   "time": {
-    "from": "now-15m",
+    "from": "now-30m",
     "to": "now"
   },
   "timepicker": {},
   "timezone": "browser",
   "title": "LLM Overview",
   "uid": "llm-overview",
-  "version": 41
+  "version": 5
 }
