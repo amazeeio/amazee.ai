@@ -408,6 +408,7 @@ volumes:
   clickhouse_logs:
   lago_storage_data:
   lago_postgres_data:
+    name: lago_postgres_data
 
 networks:
   amazeeai:

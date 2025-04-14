@@ -39,10 +39,19 @@ make_api_call() {
     local prompt=$2
     local metadata_id=$3
 
+    # Determine user based on auth token
+    local user=""
+    if [ "$auth_token" = "$ADMIN" ]; then
+        user="ADMIN"
+    else
+        user="DEV"
+    fi
+
     curl -X POST http://localhost:4000/chat/completions \
         -H "Authorization: Bearer $auth_token" \
         -H "Content-Type: application/json" \
-        -d "{\"model\":\"ollama/llama3.2\", \"messages\": [{\"role\":\"user\", \"content\":\"$prompt\"}], \"metadata\":{\"ID\":\"$metadata_id\"}}"
+        -d "{\"model\":\"ollama/llama3.2\", \"messages\": [{\"role\":\"user\", \
+            \"content\":\"$prompt\"}], \"user\": \"$user\", \"metadata\":{\"ID\":\"$metadata_id\"}}"
 }
 
 # Make 5 calls alternating between DEV and ADMIN tokens

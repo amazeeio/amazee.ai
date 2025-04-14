@@ -9,7 +9,7 @@ class LiteLLMService:
     def __init__(self, api_url: str, api_key: str):
         self.api_url = api_url
         self.master_key = api_key
-        
+
         if not self.api_url:
             raise ValueError("LiteLLM API URL is required")
         if not self.master_key:
@@ -26,24 +26,26 @@ class LiteLLMService:
                 "config": {},
                 "spend": 0,
             }
-            
+
             # Add email and name to key_alias and metadata if provided
             if email:
                 key_alias = email
                 metadata = {"service_account_id": email}
-                
+
                 # Add name to key_alias and metadata if provided
                 if name:
                     key_alias = f"{email} - {name}"
                     metadata["amazeeai_private_ai_key_name"] = name
-                
+
                 # Add user_id to metadata if provided
                 if user_id is not None:
                     metadata["amazeeai_user_id"] = str(user_id)
-                
+                    request_data["user_id"] = str(user_id)
+
                 request_data["key_alias"] = key_alias
+                request_data["team_id"] = "dev_test"
                 request_data["metadata"] = metadata
-            
+
             logger.info("Making request to LiteLLM API to generate key")
             response = requests.post(
                 f"{self.api_url}/key/generate",

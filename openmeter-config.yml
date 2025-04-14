@@ -35,41 +35,35 @@ postgres:
   autoMigrate: migration # Runs migrations as part of the service startup, valid values are: ent, migration, false
 
 meters:
-  - id: completion_tokens_3
-    slug: completion_tokens_3
+  - id: completion_tokens_4
+    slug: completion_tokens_4
     name: "Completion Tokens"
     description: "Track completion tokens from litellm requests"
     eventType: litellm_tokens
     valueProperty: $.completion_tokens
     aggregation: SUM
     groupBy:
-      subject: $.subject
       model: $.model
-      source: $.source
 
-  - id: prompt_tokens_2
-    slug: prompt_tokens_2
+  - id: prompt_tokens_3
+    slug: prompt_tokens_3
     name: "Prompt Tokens"
     description: "Track prompt tokens from litellm requests"
     eventType: litellm_tokens
     valueProperty: $.prompt_tokens
     aggregation: SUM
     groupBy:
-      subject: $.subject
       model: $.model
-      source: $.source
 
-  - id: total_tokens_2
-    slug: total_tokens_2
+  - id: total_tokens_3
+    slug: total_tokens_3
     name: "Total Tokens"
     description: "Track total tokens from litellm requests"
     eventType: litellm_tokens
     valueProperty: $.total_tokens
     aggregation: SUM
     groupBy:
-      subject: $.subject
       model: $.model
-      source: $.source
 
 portal:
   enabled: true
