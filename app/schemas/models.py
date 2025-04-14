@@ -17,12 +17,14 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: str
+    team_id: Optional[int] = None
 
 class UserUpdate(BaseModel):
     email: Optional[str] = None
     is_admin: Optional[bool] = None
     current_password: Optional[str] = None
     new_password: Optional[str] = None
+    team_id: Optional[int] = None
 
 class User(UserBase):
     id: int

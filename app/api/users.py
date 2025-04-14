@@ -58,7 +58,8 @@ async def create_user(
     db_user = DBUser(
         email=user.email,
         hashed_password=hashed_password,
-        is_admin=False
+        is_admin=False,
+        team_id=user.team_id
     )
     db.add(db_user)
     db.commit()
