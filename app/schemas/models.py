@@ -149,3 +149,31 @@ class AuditLogMetadata(BaseModel):
     event_types: List[str]
     resource_types: List[str]
     model_config = ConfigDict(from_attributes=True)
+
+# Team schemas
+class TeamBase(BaseModel):
+    name: str
+    email: str
+    phone: Optional[str] = None
+    billing_address: Optional[str] = None
+
+class TeamCreate(TeamBase):
+    pass
+
+class TeamUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    billing_address: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class Team(TeamBase):
+    id: int
+    is_active: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class TeamWithUsers(Team):
+    users: List[User] = []
+    model_config = ConfigDict(from_attributes=True)
