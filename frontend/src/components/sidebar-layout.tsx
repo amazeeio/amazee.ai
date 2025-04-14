@@ -9,7 +9,8 @@ import {
   ScrollText,
   ChevronDown,
   PanelLeftClose,
-  PanelLeft
+  PanelLeft,
+  Users2
 } from 'lucide-react';
 import { Sidebar, SidebarProvider } from '@/components/ui/sidebar';
 import { NavUser } from '@/components/nav-user';
@@ -41,6 +42,7 @@ const navigation = [
     href: '/admin',
     icon: <Settings size={16} />,
     subItems: [
+      { name: 'Teams', href: '/admin/teams', icon: <Users2 size={16} /> },
       { name: 'Users', href: '/admin/users', icon: <Users size={16} /> },
       { name: 'Regions', href: '/admin/regions', icon: <Globe size={16} /> },
       { name: 'Private AI Keys', href: '/admin/private-ai-keys', icon: <Key size={16} /> },
