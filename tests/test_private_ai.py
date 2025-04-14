@@ -165,3 +165,56 @@ def test_delete_region_with_active_keys(client, admin_token, test_region, db, te
     assert response.status_code == 400
     assert "Cannot delete region" in response.json()["detail"]
     assert "database(s) are currently using this region" in response.json()["detail"]
+
+@patch("app.services.litellm.requests.post")
+def test_delete_private_ai_key(mock_post, client, test_token, test_region, db, test_user):
+    """Test deleting a private AI key"""
+    # Refresh the test_region to ensure it's attached to the session
+    db.refresh(test_region)
+
+    # Store the region values we need for the test
+    region_api_url = test_region.litellm_api_url
+    region_api_key = test_region.litellm_api_key
+
+    # Create a test private AI key
+    test_key = DBPrivateAIKey(
+        database_name="test-db-delete",
+        name="Test Key to Delete",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="test-token-delete",
+        litellm_api_url="https://test-litellm.com",
+        owner_id=test_user.id,
+        region_id=test_region.id
+    )
+    db.add(test_key)
+    db.commit()
+
+    # Get the key ID for later verification
+    key_id = test_key.id
+
+    # Mock the LiteLLM API delete response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Delete the private AI key
+    response = client.delete(
+        f"/private-ai-keys/{test_key.database_name}",
+        headers={"Authorization": f"Bearer {test_token}"}
+    )
+
+    # Verify the response
+    assert response.status_code == 200
+    assert response.json()["message"] == "Private AI Key deleted successfully"
+
+    # Verify the LiteLLM token was deleted
+    mock_post.assert_called_once_with(
+        f"{region_api_url}/key/delete",
+        headers={"Authorization": f"Bearer {region_api_key}"},
+        json={"keys": [test_key.litellm_token]}
+    )
+
+    # Verify the key was removed from the database
+    deleted_key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
+    assert deleted_key is None

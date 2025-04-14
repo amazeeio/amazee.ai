@@ -86,8 +86,22 @@ async def create_private_ai_key(
     try:
         # Create new postgres database
         postgres_manager = PostgresManager(region=region)
+
+        # Generate LiteLLM token first
+        litellm_service = LiteLLMService(
+            api_url=region.litellm_api_url,
+            api_key=region.litellm_api_key
+        )
+        litellm_token = await litellm_service.create_key(
+            email=owner.email,
+            name=private_ai_key.name,
+            user_id=owner_id
+        )
+
+        # Create database with the generated token
         key_credentials = await postgres_manager.create_database(
             owner=owner.email,
+            litellm_token=litellm_token,
             name=private_ai_key.name,
             user_id=owner_id
         )
@@ -179,9 +193,17 @@ async def delete_private_ai_key(
 
     # Delete database and remove from user's list
     postgres_manager = PostgresManager(region=region)
+
+    # Delete LiteLLM token first
+    litellm_service = LiteLLMService(
+        api_url=region.litellm_api_url,
+        api_key=region.litellm_api_key
+    )
+    await litellm_service.delete_key(private_ai_key.litellm_token)
+
+    # Delete the database
     await postgres_manager.delete_database(
-        key_name,
-        litellm_token=private_ai_key.litellm_token
+        private_ai_key.database_name
     )
 
     # Remove the private AI key record from the application database
