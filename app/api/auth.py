@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from typing import Optional, List, Union
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie, Header, Request, Form
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HTTPAuthorizationCredentials
@@ -182,7 +182,7 @@ async def get_current_user_from_token(
         )
 
     # Update last used timestamp
-    db_token.last_used_at = datetime.utcnow()
+    db_token.last_used_at = datetime.now(UTC)
     db.commit()
 
     return db_token.owner
@@ -215,7 +215,7 @@ async def get_current_user_from_auth(
         db_token = db.query(DBAPIToken).filter(DBAPIToken.token == token_to_try).first()
         if db_token:
             # Update last used timestamp
-            db_token.last_used_at = datetime.utcnow()
+            db_token.last_used_at = datetime.now(UTC)
             db.commit()
             return db_token.owner
     except Exception:

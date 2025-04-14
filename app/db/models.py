@@ -1,6 +1,6 @@
 from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime, JSON
 from sqlalchemy.orm import relationship, declarative_base
-from datetime import datetime
+from datetime import datetime, UTC
 
 Base = declarative_base()
 
@@ -16,7 +16,7 @@ class DBRegion(Base):
     litellm_api_url = Column(String)
     litellm_api_key = Column(String)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
 
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="region")
 
@@ -26,7 +26,7 @@ class DBAPIToken(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String)
     token = Column(String, unique=True, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
     last_used_at = Column(DateTime, nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"))
 
@@ -40,7 +40,7 @@ class DBUser(Base):
     hashed_password = Column(String)
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
 
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="owner")
     api_tokens = relationship("DBAPIToken", back_populates="owner")
@@ -59,7 +59,7 @@ class DBPrivateAIKey(Base):
     litellm_api_url = Column(String)
     owner_id = Column(Integer, ForeignKey("users.id"))
     region_id = Column(Integer, ForeignKey("regions.id"))
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
 
     owner = relationship("DBUser", back_populates="private_ai_keys")
     region = relationship("DBRegion", back_populates="private_ai_keys")
@@ -82,7 +82,7 @@ class DBAuditLog(Base):
     __tablename__ = "audit_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
+    timestamp = Column(DateTime, nullable=False, default=lambda: datetime.now(UTC))
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     event_type = Column(String, nullable=False)
     resource_type = Column(String, nullable=False)
