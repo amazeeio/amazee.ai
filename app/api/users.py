@@ -90,6 +90,27 @@ async def update_user(
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # Check if user is already a member of another team
+    if user_update.team_id is not None and db_user.team_id is not None and db_user.team_id != user_update.team_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User is already a member of another team"
+        )
+
+    # Check if trying to make a team member an admin
+    if user_update.is_admin is True and db_user.team_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Team members cannot be made administrators"
+        )
+
+    # Check if trying to add an admin to a team
+    if user_update.team_id is not None and db_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Administrators cannot be added to teams"
+        )
+
     for key, value in user_update.model_dump(exclude_unset=True).items():
         setattr(db_user, key, value)
 

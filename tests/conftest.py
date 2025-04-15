@@ -99,3 +99,41 @@ def admin_token(client, test_admin):
         data={"username": test_admin.email, "password": "adminpassword"}
     )
     return response.json()["access_token"]
+
+@pytest.fixture
+def test_team(db):
+    from app.db.models import DBTeam
+    from datetime import datetime, UTC
+
+    team = DBTeam(
+        name="Test Team",
+        email="testteam@example.com",
+        phone="1234567890",
+        billing_address="123 Test St, Test City, 12345",
+        is_active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(team)
+    db.commit()
+    db.refresh(team)
+    return team
+
+@pytest.fixture
+def test_team_user(db, test_team):
+    from app.core.security import get_password_hash
+    from app.db.models import DBUser
+    from datetime import datetime, UTC
+
+    user = DBUser(
+        email="teamuser@example.com",
+        hashed_password=get_password_hash("password123"),
+        is_active=True,
+        is_admin=False,
+        role="user",
+        team_id=test_team.id,
+        created_at=datetime.now(UTC)
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
