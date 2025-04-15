@@ -21,7 +21,7 @@ def check_admin(current_user: DBUser):
             detail="Not authorized to perform this action"
         )
 
-def check_team_admin(current_user: DBUser, team_id: int, db: Session):
+def check_team_admin(current_user: DBUser, team_id: int):
     """Check if the current user is an admin of the specified team"""
     if current_user.is_admin:
         return True
@@ -143,7 +143,7 @@ async def update_team(
         raise HTTPException(status_code=404, detail="Team not found")
 
     # Check if user is authorized
-    check_team_admin(current_user, team_id, db)
+    check_team_admin(current_user, team_id)
 
     # Update team fields
     for key, value in team_update.model_dump(exclude_unset=True).items():

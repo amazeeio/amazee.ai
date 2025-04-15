@@ -47,23 +47,46 @@ async def create_user(
     current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
-    check_admin(current_user)
+    """
+    Create a new user. Accessible by admin users or team admins for their own team.
+    """
+    # Check if user is a system admin or a team admin
+    if not current_user.is_admin:
+        # If not a system admin, check if user is a team admin
+        if not current_user.team_id or current_user.role != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to perform this action"
+            )
+
+        # If team admin, ensure they're creating a user in their own team
+        if user.team_id != current_user.team_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Team admins can only create users in their own team"
+            )
+
+    # Check if email already exists
     db_user = db.query(DBUser).filter(DBUser.email == user.email).first()
     if db_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
         )
+
+    # Create the user
     hashed_password = get_password_hash(user.password)
     db_user = DBUser(
         email=user.email,
         hashed_password=hashed_password,
-        is_admin=False,
+        is_admin=False,  # Users are created as non-admin by default
         team_id=user.team_id
     )
+
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+
     return db_user
 
 @router.get("/{user_id}", response_model=User)
@@ -85,6 +108,9 @@ async def update_user(
     current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
+    """
+    Update a user. Accessible by admin users or team admins.
+    """
     check_admin(current_user)
     db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
     if not db_user:
