@@ -3,16 +3,26 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from fastapi import status
 from sqlalchemy.exc import IntegrityError
+import requests
+from pydantic import BaseModel
+import logging
 
 from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
 from app.schemas.models import PrivateAIKey, PrivateAIKeyCreate, User
 from app.db.postgres import PostgresManager
 from app.db.models import DBPrivateAIKey, DBRegion, DBUser
+from app.services.litellm import LiteLLMService
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     tags=["Private AI Keys"]
 )
+
+class BudgetPeriodUpdate(BaseModel):
+    budget_duration: str
 
 @router.post("", response_model=PrivateAIKey)
 @router.post("/", response_model=PrivateAIKey)
@@ -57,7 +67,7 @@ async def create_private_ai_key(
 
     # Determine the owner of the key
     owner_id = private_ai_key.owner_id if private_ai_key.owner_id is not None else current_user.id
-    
+
     # If trying to create for another user, verify admin status
     if owner_id != current_user.id and not current_user.is_admin:
         raise HTTPException(
@@ -107,6 +117,7 @@ async def create_private_ai_key(
         # Return credentials to user
         return key_credentials
     except Exception as e:
+        logger.error(f"Failed to create Private AI Key: {str(e)}", exc_info=True)
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -178,3 +189,167 @@ async def delete_private_ai_key(
     db.commit()
 
     return {"message": "Private AI Key deleted successfully"}
+
+@router.get("/{key_name}/spend")
+async def get_private_ai_key_spend(
+    key_name: str,
+    current_user = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db)
+):
+    # Get the private AI key record
+    private_ai_key = db.query(DBPrivateAIKey).filter(
+        DBPrivateAIKey.database_name == key_name
+    ).first()
+
+    if not private_ai_key:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Private AI Key not found"
+        )
+
+    # Get the region
+    region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
+    if not region:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Region not found"
+        )
+
+    # Create LiteLLM service instance
+    litellm_service = LiteLLMService(
+        api_url=region.litellm_api_url,
+        api_key=region.litellm_api_key
+    )
+
+    try:
+        # Get spend information from LiteLLM API
+        response = requests.get(
+            f"{region.litellm_api_url}/key/info",
+            headers={
+                "Authorization": f"Bearer {region.litellm_api_key}"
+            },
+            params={
+                "key": private_ai_key.litellm_token
+            }
+        )
+        response.raise_for_status()
+        data = response.json()
+        info = data.get("info", {})
+        return {
+            "spend": info.get("spend", 0),
+            "expires": info.get("expires"),
+            "created_at": info.get("created_at"),
+            "updated_at": info.get("updated_at"),
+            "max_budget": info.get("max_budget"),
+            "budget_duration": info.get("budget_duration"),
+            "budget_reset_at": info.get("budget_reset_at")
+        }
+    except requests.exceptions.RequestException as e:
+        error_msg = str(e)
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                error_details = e.response.json()
+                error_msg = f"Status {e.response.status_code}: {error_details}"
+            except ValueError:
+                error_msg = f"Status {e.response.status_code}: {e.response.text}"
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get spend information: {error_msg}"
+        )
+
+@router.put("/{key_name}/budget-period")
+async def update_budget_period(
+    key_name: str,
+    budget_update: BudgetPeriodUpdate,
+    current_user = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db)
+):
+    """
+    Update the budget period for a private AI key.
+    
+    This endpoint will:
+    1. Verify the user has access to the key
+    2. Update the budget period in LiteLLM
+    3. Return the updated spend information
+    
+    Required parameters:
+    - **budget_duration**: The new budget period (e.g. "monthly", "weekly", "daily")
+    
+    Note: You must be authenticated to use this endpoint.
+    Only the owner of the key or an admin can update it.
+    """
+    # Get the private AI key record
+    private_ai_key = db.query(DBPrivateAIKey).filter(
+        DBPrivateAIKey.database_name == key_name
+    ).first()
+
+    if not private_ai_key:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Private AI Key not found"
+        )
+
+    # Verify user has access to the key
+    if not current_user.is_admin and private_ai_key.owner_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to update this key"
+        )
+
+    # Get the region
+    region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
+    if not region:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Region not found"
+        )
+
+    try:
+        # Update budget period in LiteLLM
+        response = requests.post(
+            f"{region.litellm_api_url}/key/update",
+            headers={
+                "Authorization": f"Bearer {region.litellm_api_key}"
+            },
+            json={
+                "key": private_ai_key.litellm_token,
+                "budget_duration": budget_update.budget_duration
+            }
+        )
+        response.raise_for_status()
+        
+        # Get updated spend information
+        spend_response = requests.get(
+            f"{region.litellm_api_url}/key/info",
+            headers={
+                "Authorization": f"Bearer {region.litellm_api_key}"
+            },
+            params={
+                "key": private_ai_key.litellm_token
+            }
+        )
+        spend_response.raise_for_status()
+        data = spend_response.json()
+        info = data.get("info", {})
+        
+        return {
+            "spend": info.get("spend", 0),
+            "expires": info.get("expires"),
+            "created_at": info.get("created_at"),
+            "updated_at": info.get("updated_at"),
+            "max_budget": info.get("max_budget"),
+            "budget_duration": info.get("budget_duration"),
+            "budget_reset_at": info.get("budget_reset_at")
+        }
+    except requests.exceptions.RequestException as e:
+        error_msg = str(e)
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                error_details = e.response.json()
+                error_msg = f"Status {e.response.status_code}: {error_details}"
+            except ValueError:
+                error_msg = f"Status {e.response.status_code}: {e.response.text}"
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update budget period: {error_msg}"
+        )

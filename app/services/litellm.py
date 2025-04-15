@@ -1,6 +1,9 @@
 import requests
 from fastapi import HTTPException, status
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 class LiteLLMService:
     def __init__(self, api_url: str, api_key: str):
@@ -15,6 +18,7 @@ class LiteLLMService:
     async def create_key(self, email: str = None, name: str = None, user_id: int = None) -> str:
         """Create a new API key for LiteLLM"""
         try:
+            logger.info(f"Creating new LiteLLM API key for email: {email}, name: {name}, user_id: {user_id}")
             request_data = {
                 "duration": "8760h",  # Set token duration to 1 year (365 days * 24 hours)
                 "models": ["all-team-models"],   # Allow access to all models
@@ -40,6 +44,7 @@ class LiteLLMService:
                 request_data["key_alias"] = key_alias
                 request_data["metadata"] = metadata
             
+            logger.info("Making request to LiteLLM API to generate key")
             response = requests.post(
                 f"{self.api_url}/key/generate",
                 json=request_data,
@@ -49,7 +54,9 @@ class LiteLLMService:
             )
 
             response.raise_for_status()
-            return response.json()["key"]
+            key = response.json()["key"]
+            logger.info("Successfully generated new LiteLLM API key")
+            return key
         except requests.exceptions.RequestException as e:
             error_msg = str(e)
             if hasattr(e, 'response') and e.response is not None:

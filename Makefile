@@ -19,11 +19,11 @@ test-postgres: test-network
 		-e POSTGRES_USER=postgres \
 		-e POSTGRES_PASSWORD=postgres \
 		-e POSTGRES_DB=postgres_service \
-		postgres:14 && \
+		pgvector/pgvector:pg16 && \
 	sleep 5
 
 # Run backend tests in a new container
-backend-test: backend-test-build test-postgres
+backend-test: test-clean backend-test-build test-postgres
 	docker run --rm \
 		--network amazeeai_default \
 		-e DATABASE_URL="postgresql://postgres:postgres@amazee-test-postgres/postgres_service" \
