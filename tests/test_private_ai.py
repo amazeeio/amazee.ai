@@ -1,25 +1,8 @@
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch
-from app.db.models import DBRegion, DBPrivateAIKey
+from app.db.models import DBPrivateAIKey
 import logging
-
-@pytest.fixture
-def test_region(db):
-    region = DBRegion(
-        name="test-region",
-        postgres_host="amazee-test-postgres",
-        postgres_port=5432,
-        postgres_admin_user="postgres",
-        postgres_admin_password="postgres",
-        litellm_api_url="https://test-litellm.com",
-        litellm_api_key="test-litellm-key",
-        is_active=True
-    )
-    db.add(region)
-    db.commit()
-    db.refresh(region)
-    return region
 
 @pytest.fixture
 def mock_litellm_response():

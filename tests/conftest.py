@@ -5,9 +5,11 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from app.main import app
 from app.db.database import get_db
-from app.db.models import Base
+from app.db.models import Base, DBRegion, DBUser, DBTeam
 from app.core.config import settings
 import os
+from app.core.security import get_password_hash
+from datetime import datetime, UTC
 
 # Get database URL from environment
 DATABASE_URL = os.getenv(
@@ -19,7 +21,7 @@ DATABASE_URL = os.getenv(
 engine = create_engine(DATABASE_URL)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def db():
     # Create the test database and tables
     Base.metadata.drop_all(bind=engine)
@@ -34,7 +36,7 @@ def db():
         # Clean up after test
         Base.metadata.drop_all(bind=engine)
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def client(db):
     def override_get_db():
         try:
@@ -49,9 +51,6 @@ def client(db):
 
 @pytest.fixture
 def test_user(db):
-    from app.core.security import get_password_hash
-    from app.db.models import DBUser
-
     # Check if user already exists
     existing_user = db.query(DBUser).filter(DBUser.email == "test@example.com").first()
     if existing_user:
@@ -70,9 +69,6 @@ def test_user(db):
 
 @pytest.fixture
 def test_admin(db):
-    from app.core.security import get_password_hash
-    from app.db.models import DBUser
-
     admin = DBUser(
         email="admin@example.com",
         hashed_password=get_password_hash("adminpassword"),
@@ -102,9 +98,6 @@ def admin_token(client, test_admin):
 
 @pytest.fixture
 def test_team(db):
-    from app.db.models import DBTeam
-    from datetime import datetime, UTC
-
     team = DBTeam(
         name="Test Team",
         email="testteam@example.com",
@@ -120,10 +113,6 @@ def test_team(db):
 
 @pytest.fixture
 def test_team_user(db, test_team):
-    from app.core.security import get_password_hash
-    from app.db.models import DBUser
-    from datetime import datetime, UTC
-
     user = DBUser(
         email="teamuser@example.com",
         hashed_password=get_password_hash("password123"),
@@ -136,14 +125,11 @@ def test_team_user(db, test_team):
     db.add(user)
     db.commit()
     db.refresh(user)
+    db.refresh(test_team)
     return user
 
 @pytest.fixture
 def test_team_admin(db, test_team):
-    from app.core.security import get_password_hash
-    from app.db.models import DBUser
-    from datetime import datetime, UTC
-
     user = DBUser(
         email="teamadmin@example.com",
         hashed_password=get_password_hash("password123"),
@@ -156,6 +142,7 @@ def test_team_admin(db, test_team):
     db.add(user)
     db.commit()
     db.refresh(user)
+    db.refresh(test_team)
     return user
 
 @pytest.fixture
@@ -165,3 +152,20 @@ def team_admin_token(client, test_team_admin):
         data={"username": test_team_admin.email, "password": "password123"}
     )
     return response.json()["access_token"]
+
+@pytest.fixture
+def test_region(db):
+    region = DBRegion(
+        name="test-region",
+        postgres_host="amazee-test-postgres",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="https://test-litellm.com",
+        litellm_api_key="test-litellm-key",
+        is_active=True
+    )
+    db.add(region)
+    db.commit()
+    db.refresh(region)
+    return region

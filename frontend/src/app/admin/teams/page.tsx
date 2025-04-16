@@ -216,7 +216,7 @@ export default function TeamsPage() {
   const addUserToTeamMutation = useMutation({
     mutationFn: async ({ userId, teamId }: { userId: number; teamId: string }) => {
       try {
-        const response = await put(`/users/${userId}`, { team_id: parseInt(teamId) });
+        const response = await post(`/users/${userId}/add-to-team`, { team_id: parseInt(teamId) });
         return response.json();
       } catch (error) {
         if (error instanceof Error) {
@@ -237,6 +237,37 @@ export default function TeamsPage() {
       setIsAddingUserToTeam(false);
       setSearchQuery('');
       setSearchResults([]);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const removeUserFromTeamMutation = useMutation({
+    mutationFn: async (userId: number) => {
+      try {
+        const response = await post(`/users/${userId}/remove-from-team`, {});
+        return response.json();
+      } catch (error) {
+        if (error instanceof Error) {
+          throw new Error(`Failed to remove user from team: ${error.message}`);
+        } else {
+          throw new Error('An unexpected error occurred while removing the user from the team.');
+        }
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId] });
+      queryClient.invalidateQueries({ queryKey: ['teams'] });
+
+      toast({
+        title: 'Success',
+        description: 'User removed from team successfully',
+      });
     },
     onError: (error: Error) => {
       toast({
@@ -268,13 +299,19 @@ export default function TeamsPage() {
     });
   };
 
-  const handleAddUserToTeam = (userId: number) => {
+  const handleAddUserToTeam = (userId: number, e: React.MouseEvent) => {
+    e.stopPropagation();
     if (!selectedTeamId) return;
 
     addUserToTeamMutation.mutate({
       userId,
       teamId: selectedTeamId,
     });
+  };
+
+  const handleRemoveUserFromTeam = (userId: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    removeUserFromTeamMutation.mutate(userId);
   };
 
   const handleSearchUsers = (e: React.FormEvent) => {
@@ -546,6 +583,7 @@ export default function TeamsPage() {
                                                 <TableHead>Role</TableHead>
                                                 <TableHead>Status</TableHead>
                                                 <TableHead>Admin</TableHead>
+                                                <TableHead className="text-right">Actions</TableHead>
                                               </TableRow>
                                             </TableHeader>
                                             <TableBody>
@@ -562,6 +600,16 @@ export default function TeamsPage() {
                                                     <Badge variant={user.is_admin ? "default" : "outline"}>
                                                       {user.is_admin ? "Yes" : "No"}
                                                     </Badge>
+                                                  </TableCell>
+                                                  <TableCell className="text-right">
+                                                    <Button
+                                                      size="sm"
+                                                      variant="destructive"
+                                                      onClick={(e) => handleRemoveUserFromTeam(user.id, e)}
+                                                      disabled={removeUserFromTeamMutation.isPending}
+                                                    >
+                                                      Remove
+                                                    </Button>
                                                   </TableCell>
                                                 </TableRow>
                                               ))}
@@ -654,7 +702,10 @@ export default function TeamsPage() {
                         <TableCell>
                           <Button
                             size="sm"
-                            onClick={() => handleAddUserToTeam(user.id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleAddUserToTeam(user.id, e);
+                            }}
                             disabled={addUserToTeamMutation.isPending}
                           >
                             {addUserToTeamMutation.isPending ? (

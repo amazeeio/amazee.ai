@@ -24,7 +24,6 @@ class UserUpdate(BaseModel):
     is_admin: Optional[bool] = None
     current_password: Optional[str] = None
     new_password: Optional[str] = None
-    team_id: Optional[int] = None
 
 class User(UserBase):
     id: int
@@ -180,3 +179,6 @@ class Team(TeamBase):
 class TeamWithUsers(Team):
     users: List[User] = []
     model_config = ConfigDict(from_attributes=True)
+
+class TeamOperation(BaseModel):
+    team_id: int

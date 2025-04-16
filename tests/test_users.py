@@ -2,6 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 from app.db.models import DBUser, DBTeam
 from datetime import datetime, UTC
+from unittest.mock import patch
 
 def test_create_user(client, test_admin, admin_token):
     response = client.post(
@@ -92,6 +93,75 @@ def test_delete_user(client, admin_token, test_user):
         headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert response.status_code == 404
+
+def test_delete_team_member(client, admin_token, test_team_user):
+    """
+    Test deleting a user who is a member of a team and has no AI keys.
+
+    GIVEN: User A is a member of Team 1 and has no AI keys
+    WHEN: User A is deleted
+    THEN: A 200 - Success is returned, User A is deleted
+    """
+    response = client.delete(
+        f"/users/{test_team_user.id}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200
+    assert response.json()["message"] == "User deleted successfully"
+
+    # Verify user is actually deleted
+    response = client.get(
+        f"/users/{test_team_user.id}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 404
+
+@patch("app.services.litellm.requests.post")
+def test_delete_team_member_with_ai_keys(mock_post, client, admin_token, test_team_user, test_region, db):
+    """
+    Test deleting a user who is a member of a team and has associated AI keys.
+
+    GIVEN: User A is a member of Team 1 AND has associated AI Keys
+    WHEN: User A is deleted
+    THEN: A 400 - Invalid Request is returned
+    """
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Create an AI key for the team user
+    from app.db.models import DBPrivateAIKey
+    ai_key = DBPrivateAIKey(
+        database_name=f"test_db_{test_team_user.id}",
+        name="Test AI Key",
+        database_host="localhost",
+        database_username="test_user",
+        database_password="test_password",
+        litellm_token="test-private-key-123",
+        litellm_api_url="http://localhost:8000",
+        owner_id=test_team_user.id,
+        region_id=test_region.id,
+        team_id=test_team_user.team_id
+    )
+    db.add(ai_key)
+    db.commit()
+    db.refresh(ai_key)
+
+    # Try to delete the user
+    response = client.delete(
+        f"/users/{test_team_user.id}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 400
+    assert "Cannot delete user with associated AI keys" in response.json()["detail"]
+
+    # Verify user is not deleted
+    response = client.get(
+        f"/users/{test_team_user.id}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200
 
 def test_create_user_by_team_admin(client, team_admin_token, test_team, db):
     """Test that a team admin can create a user in their own team"""

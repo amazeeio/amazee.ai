@@ -1,10 +1,6 @@
-import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
 from app.db.models import DBTeam, DBUser
-from app.db.database import get_db
 from app.main import app
-from app.api.auth import get_current_user
 from app.core.security import get_password_hash
 from datetime import datetime, UTC
 
@@ -281,8 +277,8 @@ def test_add_user_to_second_team(client, admin_token, db, test_team, test_team_u
     db.refresh(team2)
 
     # Try to add the user to Team 2
-    response = client.put(
-        f"/users/{test_team_user.id}",
+    response = client.post(
+        f"/users/{test_team_user.id}/add-to-team",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={"team_id": team2.id}
     )
@@ -322,8 +318,8 @@ def test_add_non_team_user_to_team(client, admin_token, db, test_team):
     team_id = test_team.id  # Store the ID for later use
 
     # Add the user to the team
-    response = client.put(
-        f"/users/{user.id}",
+    response = client.post(
+        f"/users/{user.id}/add-to-team",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={"team_id": team_id}
     )
@@ -362,10 +358,53 @@ def test_add_admin_user_to_team(client, admin_token, db, test_team):
     db.refresh(user)
 
     # Try to add the admin user to the team
-    response = client.put(
-        f"/users/{user.id}",
+    response = client.post(
+        f"/users/{user.id}/add-to-team",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={"team_id": test_team.id}
     )
     assert response.status_code == 400
     assert "Administrators cannot be added to teams" in response.json()["detail"]
+
+def test_remove_user_from_team(client, admin_token, test_team_user):
+    """Test removing a user from a team"""
+    response = client.post(
+        f"/users/{test_team_user.id}/remove-from-team",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200
+    user_data = response.json()
+    assert user_data["team_id"] is None
+
+def test_remove_user_not_in_team(client, admin_token, test_user):
+    """Test removing a user who is not in a team"""
+    response = client.post(
+        f"/users/{test_user.id}/remove-from-team",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 400
+    assert "User is not a member of any team" in response.json()["detail"]
+
+def test_team_admin_cannot_remove_user_from_team(client, team_admin_token, test_team_user):
+    """
+    Test that a team admin cannot remove a user from their team.
+
+    GIVEN: User A is a member of Team 1
+    WHEN: a team admin tries to remove the user from the team
+    THEN: A 403 - Forbidden is returned
+    """
+    response = client.post(
+        f"/users/{test_team_user.id}/remove-from-team",
+        headers={"Authorization": f"Bearer {team_admin_token}"}
+    )
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
+
+    # Verify user is still in the team
+    response = client.get(
+        f"/users/{test_team_user.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"}
+    )
+    assert response.status_code == 200
+    user_data = response.json()
+    assert user_data["team_id"] == test_team_user.team_id

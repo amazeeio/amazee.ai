@@ -3,8 +3,8 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from app.db.database import get_db
-from app.schemas.models import User, UserUpdate, UserCreate
-from app.db.models import DBUser
+from app.schemas.models import User, UserUpdate, UserCreate, TeamOperation
+from app.db.models import DBUser, DBTeam
 from app.api.auth import get_current_user_from_auth
 from app.core.security import get_password_hash
 
@@ -95,11 +95,22 @@ async def get_user(
     current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
-    check_admin(current_user)
     db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
+
+    # If user doesn't exist, return 404
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
-    return db_user
+
+    # Allow admin users to view any user
+    if current_user.is_admin:
+        return db_user
+
+    # Allow team admins to view users in their own team
+    if current_user.team_id is not None and current_user.team_id == db_user.team_id and current_user.role == "admin":
+        return db_user
+
+    # Otherwise, return 404 to avoid leaking information about user existence
+    raise HTTPException(status_code=404, detail="User not found")
 
 @router.put("/{user_id}", response_model=User)
 async def update_user(
@@ -116,13 +127,6 @@ async def update_user(
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Check if user is already a member of another team
-    if user_update.team_id is not None and db_user.team_id is not None and db_user.team_id != user_update.team_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User is already a member of another team"
-        )
-
     # Check if trying to make a team member an admin
     if user_update.is_admin is True and db_user.team_id is not None:
         raise HTTPException(
@@ -130,16 +134,76 @@ async def update_user(
             detail="Team members cannot be made administrators"
         )
 
+    for key, value in user_update.model_dump(exclude_unset=True).items():
+        setattr(db_user, key, value)
+
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+@router.post("/{user_id}/add-to-team", response_model=User)
+async def add_user_to_team(
+    user_id: int,
+    team_operation: TeamOperation,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db)
+):
+    """
+    Add a user to a team. Accessible by admin users or team admins.
+    """
+    check_admin(current_user)
+    db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Check if user is already a member of another team
+    if db_user.team_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User is already a member of another team"
+        )
+
     # Check if trying to add an admin to a team
-    if user_update.team_id is not None and db_user.is_admin:
+    if db_user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Administrators cannot be added to teams"
         )
 
-    for key, value in user_update.model_dump(exclude_unset=True).items():
-        setattr(db_user, key, value)
+    # Check if team exists
+    db_team = db.query(DBTeam).filter(DBTeam.id == team_operation.team_id).first()
+    if not db_team:
+        raise HTTPException(status_code=404, detail="Team not found")
 
+    # Add user to team
+    db_user.team_id = team_operation.team_id
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+@router.post("/{user_id}/remove-from-team", response_model=User)
+async def remove_user_from_team(
+    user_id: int,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db)
+):
+    """
+    Remove a user from a team. Accessible by admin users or team admins.
+    """
+    check_admin(current_user)
+    db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Check if user is a member of a team
+    if db_user.team_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User is not a member of any team"
+        )
+
+    # Remove user from team
+    db_user.team_id = None
     db.commit()
     db.refresh(db_user)
     return db_user
@@ -154,6 +218,14 @@ async def delete_user(
     db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    # Check if user has associated AI keys
+    if db_user.private_ai_keys and len(db_user.private_ai_keys) > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete user with associated AI keys"
+        )
+
     db.delete(db_user)
     db.commit()
     return {"message": "User deleted successfully"}
