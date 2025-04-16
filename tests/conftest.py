@@ -125,7 +125,6 @@ def test_team_user(db, test_team):
     db.add(user)
     db.commit()
     db.refresh(user)
-    db.refresh(test_team)
     return user
 
 @pytest.fixture
@@ -142,6 +141,7 @@ def test_team_admin(db, test_team):
     db.add(user)
     db.commit()
     db.refresh(user)
+    db.merge(test_team)
     db.refresh(test_team)
     return user
 

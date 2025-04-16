@@ -30,6 +30,8 @@ class User(UserBase):
     is_active: bool
     is_admin: bool
     team_id: Optional[int] = None
+    team_name: Optional[str] = None
+    role: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
     audit_logs: ClassVar = relationship("AuditLog", back_populates="user")
 
@@ -182,3 +184,7 @@ class TeamWithUsers(Team):
 
 class TeamOperation(BaseModel):
     team_id: int
+
+class UserRoleUpdate(BaseModel):
+    role: str
+    model_config = ConfigDict(from_attributes=True)

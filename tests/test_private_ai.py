@@ -201,3 +201,45 @@ def test_delete_private_ai_key(mock_post, client, test_token, test_region, db, t
     # Verify the key was removed from the database
     deleted_key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
     assert deleted_key is None
+
+@patch("app.services.litellm.requests.post")
+def test_list_private_ai_keys_as_team_admin(mock_post, client, team_admin_token, test_team_user, test_region, db):
+    """Test that a team admin can list all AI keys associated with users in their team"""
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # First, get a token for the team user
+    response = client.post(
+        "/auth/login",
+        data={"username": test_team_user.email, "password": "password123"}
+    )
+    team_user_token = response.json()["access_token"]
+
+    # Create a private AI key as the team user
+    key_data = {
+        "name": "team-user-key",
+        "region_id": test_region.id
+    }
+
+    # Create key as team user
+    response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {team_user_token}"},
+        json=key_data
+    )
+    assert response.status_code == 200
+
+    # List all keys as team admin
+    response = client.get(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {team_admin_token}"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    # Verify that the team user's key is in the response
+    assert len(data) > 0
+    assert any(key["name"] == "team-user-key" for key in data)
+    assert any(key["owner_id"] == test_team_user.id for key in data)

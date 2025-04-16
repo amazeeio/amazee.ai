@@ -3,10 +3,11 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from app.db.database import get_db
-from app.schemas.models import User, UserUpdate, UserCreate, TeamOperation
-from app.db.models import DBUser, DBTeam
+from app.schemas.models import User, UserUpdate, UserCreate, TeamOperation, UserRoleUpdate
+from app.db.models import DBUser, DBTeam, DBAuditLog
 from app.api.auth import get_current_user_from_auth
 from app.core.security import get_password_hash
+from datetime import datetime, UTC
 
 router = APIRouter()
 
@@ -37,8 +38,39 @@ async def list_users(
     current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
-    check_admin(current_user)
-    return db.query(DBUser).all()
+    """
+    List users. Accessible by admin users or team admins for their team members.
+    """
+    if current_user.is_admin:
+        users = db.query(DBUser).all()
+        # Add team information to each user
+        for user in users:
+            if user.team_id:
+                team = db.query(DBTeam).filter(DBTeam.id == user.team_id).first()
+                if team:
+                    user.team_name = team.name
+            else:
+                user.team_name = None
+        return users
+
+    # If not admin, check if user is a team admin
+    if not current_user.team_id or current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action"
+        )
+
+    # Return only users in the team admin's team
+    users = db.query(DBUser).filter(DBUser.team_id == current_user.team_id).all()
+    # Add team information to each user
+    for user in users:
+        if user.team_id:
+            team = db.query(DBTeam).filter(DBTeam.id == user.team_id).first()
+            if team:
+                user.team_name = team.name
+        else:
+            user.team_name = None
+    return users
 
 @router.post("", response_model=User, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=User, status_code=status.HTTP_201_CREATED)
@@ -229,3 +261,73 @@ async def delete_user(
     db.delete(db_user)
     db.commit()
     return {"message": "User deleted successfully"}
+
+@router.post("/{user_id}/role", response_model=User)
+async def update_user_role(
+    user_id: int,
+    role_update: UserRoleUpdate,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db)
+):
+    """
+    Update a user's role. Accessible by admin users or team admins for their team members.
+    """
+    # Validate role
+    valid_roles = ["admin", "key_creator", "read_only"]
+    if role_update.role not in valid_roles:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid role. Must be one of: {', '.join(valid_roles)}"
+        )
+
+    # Get the user to update
+    db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Check authorization
+    if not current_user.is_admin:
+        # If not a system admin, check if user is a team admin
+        if not current_user.team_id or current_user.role != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to perform this action"
+            )
+
+        # If team admin, ensure they're updating a user in their own team
+        if db_user.team_id != current_user.team_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Team admins can only update roles for users in their own team"
+            )
+
+    # Don't allow changing admin roles through this endpoint
+    if db_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot change role of an administrator"
+        )
+
+    # Update the role
+    old_role = db_user.role
+    db_user.role = role_update.role
+    db_user.updated_at = datetime.now(UTC)
+
+    # Create audit log
+    audit_log = DBAuditLog(
+        user_id=current_user.id,
+        event_type="user_role_update",
+        resource_type="user",
+        resource_id=str(user_id),
+        action="update",
+        details={
+            "old_role": old_role,
+            "new_role": role_update.role,
+            "user_email": db_user.email
+        }
+    )
+    db.add(audit_log)
+
+    db.commit()
+    db.refresh(db_user)
+    return db_user
