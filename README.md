@@ -2,6 +2,7 @@
 
 This repository contains the backend and frontend services for the amazee.ai application. The project is built using a modern tech stack including Python FastAPI for the backend, Next.js with TypeScript for the frontend, and PostgreSQL for the database.
 
+
 ## 🚀 Tech Stack
 
 - **Backend**: Python FastAPI
