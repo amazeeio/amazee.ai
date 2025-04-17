@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -28,9 +28,9 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     """Create JWT access token."""
     to_encode = data.copy()
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(UTC) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=60)  # Default to 60 minutes
+        expire = datetime.now(UTC) + timedelta(minutes=60)  # Default to 60 minutes
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
@@ -95,7 +95,7 @@ async def get_current_user_from_auth(
         db_token = db.query(DBAPIToken).filter(DBAPIToken.token == token_to_try).first()
         if db_token:
             # Update last used timestamp
-            db_token.last_used_at = datetime.utcnow()
+            db_token.last_used_at = datetime.now(UTC)
             db.commit()
             return db_token.owner
     except Exception:
