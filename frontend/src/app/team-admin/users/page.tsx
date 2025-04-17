@@ -23,7 +23,7 @@ import {
 } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, UserPlus } from 'lucide-react';
-import { get, post, del } from '@/utils/api';
+import { get, post } from '@/utils/api';
 import { useAuth } from '@/hooks/use-auth';
 import {
   AlertDialog,
@@ -99,7 +99,7 @@ export default function TeamUsersPage() {
         description: 'User added to team successfully',
       });
     },
-    onError: (error) => {
+    onError: () => {
       toast({
         title: 'Error',
         description: 'Failed to add user to team',
@@ -169,14 +169,6 @@ export default function TeamUsersPage() {
   const handleUpdateRole = (userId: string, currentRole: string) => {
     setSelectedUser({ id: userId, currentRole });
     setIsUpdatingRole(true);
-  };
-
-  const handleConfirmRoleUpdate = () => {
-    if (!selectedUser) return;
-    const newRole = selectedUser.currentRole === 'admin' ? 'member' : 'admin';
-    updateUserRoleMutation.mutate({ userId: selectedUser.id, role: newRole });
-    setIsUpdatingRole(false);
-    setSelectedUser(null);
   };
 
   const handleRemoveUser = (userId: string) => {

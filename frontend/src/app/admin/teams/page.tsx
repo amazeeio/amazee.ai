@@ -23,7 +23,7 @@ import {
 } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Plus, ChevronDown, ChevronRight, UserPlus } from 'lucide-react';
-import { get, post, put } from '@/utils/api';
+import { get, post } from '@/utils/api';
 import {
   Collapsible,
   CollapsibleContent,

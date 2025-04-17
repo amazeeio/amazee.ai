@@ -35,7 +35,7 @@ export default function TeamAdminPage() {
             <Key className="h-5 w-5" />
             Team AI Keys
           </CardTitle>
-          <CardDescription>Manage team's private AI database credentials</CardDescription>
+          <CardDescription>Manage team&apos;s private AI database credentials</CardDescription>
         </CardHeader>
         <CardContent>
           <Button variant="secondary" className="w-full">View Team Keys</Button>

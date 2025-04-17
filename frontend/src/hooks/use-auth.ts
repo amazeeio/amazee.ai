@@ -1,7 +1,6 @@
 'use client';
 
 import { create } from 'zustand';
-import { get } from '@/utils/api';
 
 export interface User {
   id: number;

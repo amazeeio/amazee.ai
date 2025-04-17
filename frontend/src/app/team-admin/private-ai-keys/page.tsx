@@ -56,6 +56,7 @@ export default function TeamAIKeysPage() {
   const [showPassword, setShowPassword] = useState<Record<string, boolean>>({});
   const [newKeyName, setNewKeyName] = useState('');
   const [newKeyRegion, setNewKeyRegion] = useState('');
+  const [newKeyValue, setNewKeyValue] = useState('');
 
   const queryClient = useQueryClient();
 
@@ -69,7 +70,7 @@ export default function TeamAIKeysPage() {
   });
 
   const createKeyMutation = useMutation({
-    mutationFn: async (data: { name: string; region: string }) => {
+    mutationFn: async (data: { name: string; api_key: string }) => {
       const response = await post('private-ai-keys', data, { credentials: 'include' });
       return response.json();
     },
@@ -77,16 +78,16 @@ export default function TeamAIKeysPage() {
       queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
       setIsAddingKey(false);
       setNewKeyName('');
-      setNewKeyRegion('');
+      setNewKeyValue('');
       toast({
         title: 'Success',
-        description: 'AI key created successfully',
+        description: 'AI key added successfully',
       });
     },
     onError: () => {
       toast({
         title: 'Error',
-        description: 'Failed to create AI key',
+        description: 'Failed to add AI key',
         variant: 'destructive',
       });
     },
@@ -125,7 +126,7 @@ export default function TeamAIKeysPage() {
     e.preventDefault();
     createKeyMutation.mutate({
       name: newKeyName,
-      region: newKeyRegion,
+      api_key: newKeyValue,
     });
   };
 
@@ -175,6 +176,15 @@ export default function TeamAIKeysPage() {
                     id="region"
                     value={newKeyRegion}
                     onChange={(e) => setNewKeyRegion(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <label htmlFor="value">Value</label>
+                  <Input
+                    id="value"
+                    value={newKeyValue}
+                    onChange={(e) => setNewKeyValue(e.target.value)}
                     required
                   />
                 </div>
