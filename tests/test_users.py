@@ -232,3 +232,34 @@ def test_create_user_in_other_team_by_team_admin(client, team_admin_token, db):
     )
     assert response.status_code == 403
     assert "Not authorized to perform this action" in response.json()["detail"]
+
+def test_create_user_in_team_by_system_admin(client, admin_token, test_team, db):
+    """
+    Test that a system admin can create a user in a specific team.
+
+    GIVEN: The authenticated user is a system admin
+    WHEN: They create a user in a specific team
+    THEN: A 201 - Created is returned
+    """
+    team_id = test_team.id
+
+    # Create a new user in the team
+    response = client.post(
+        "/users/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "email": "newteamuser@example.com",
+            "password": "newpassword",
+            "team_id": team_id
+        }
+    )
+    assert response.status_code == 201
+    user_data = response.json()
+    assert user_data["email"] == "newteamuser@example.com"
+    assert user_data["is_admin"] is False
+    assert user_data["team_id"] == team_id
+    assert "id" in user_data
+
+    # Verify the user is actually in the team in the database
+    db_user = db.query(DBUser).filter(DBUser.id == user_data["id"]).first()
+    assert db_user.team_id == team_id

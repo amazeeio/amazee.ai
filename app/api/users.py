@@ -69,8 +69,8 @@ async def create_user(
             detail="Email already registered"
         )
 
-    # Admin may only create a user in their own team.
-    if current_user.team_id != user.team_id:
+    # Team admin may only create a user in their own team, system admin may create in any team
+    if not current_user.is_admin and current_user.team_id != user.team_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to perform this action"

@@ -11,7 +11,7 @@ import { Loader2 } from 'lucide-react';
 interface Team {
   id: number;
   name: string;
-  email: string;
+  admin_email: string;
   phone: string;
   billing_address: string;
   is_active: boolean;

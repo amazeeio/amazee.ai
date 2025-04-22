@@ -44,7 +44,7 @@ interface TeamUser {
 interface Team {
   id: string;
   name: string;
-  email: string;
+  admin_email: string;
   phone: string;
   billing_address: string;
   is_active: boolean;
@@ -65,7 +65,7 @@ export default function TeamsPage() {
   const queryClient = useQueryClient();
   const [isAddingTeam, setIsAddingTeam] = useState(false);
   const [newTeamName, setNewTeamName] = useState('');
-  const [newTeamEmail, setNewTeamEmail] = useState('');
+  const [newTeamAdminEmail, setNewTeamAdminEmail] = useState('');
   const [newTeamPhone, setNewTeamPhone] = useState('');
   const [newTeamBillingAddress, setNewTeamBillingAddress] = useState('');
   const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null);
@@ -124,7 +124,7 @@ export default function TeamsPage() {
   const createTeamMutation = useMutation({
     mutationFn: async (teamData: {
       name: string;
-      email: string;
+      admin_email: string;
       phone: string;
       billing_address: string;
     }) => {
@@ -166,7 +166,7 @@ export default function TeamsPage() {
       });
       setIsAddingTeam(false);
       setNewTeamName('');
-      setNewTeamEmail('');
+      setNewTeamAdminEmail('');
       setNewTeamPhone('');
       setNewTeamBillingAddress('');
     },
@@ -282,7 +282,7 @@ export default function TeamsPage() {
     e.preventDefault();
     createTeamMutation.mutate({
       name: newTeamName,
-      email: newTeamEmail,
+      admin_email: newTeamAdminEmail,
       phone: newTeamPhone,
       billing_address: newTeamBillingAddress,
     });
@@ -373,14 +373,14 @@ export default function TeamsPage() {
                   />
                 </div>
                 <div className="grid grid-cols-4 items-center gap-4">
-                  <label htmlFor="email" className="text-right">
-                    Email
+                  <label htmlFor="admin_email" className="text-right">
+                    Admin Email
                   </label>
                   <Input
-                    id="email"
+                    id="admin_email"
                     type="email"
-                    value={newTeamEmail}
-                    onChange={(e) => setNewTeamEmail(e.target.value)}
+                    value={newTeamAdminEmail}
+                    onChange={(e) => setNewTeamAdminEmail(e.target.value)}
                     className="col-span-3"
                     required
                   />
@@ -444,7 +444,7 @@ export default function TeamsPage() {
               <TableRow>
                 <TableHead className="w-10"></TableHead>
                 <TableHead>Name</TableHead>
-                <TableHead>Email</TableHead>
+                <TableHead>Admin Email</TableHead>
                 <TableHead>Phone</TableHead>
                 <TableHead>Billing Address</TableHead>
                 <TableHead>Status</TableHead>
@@ -473,7 +473,7 @@ export default function TeamsPage() {
                         )}
                       </TableCell>
                       <TableCell className="font-medium">{team.name}</TableCell>
-                      <TableCell>{team.email}</TableCell>
+                      <TableCell>{team.admin_email}</TableCell>
                       <TableCell>{team.phone}</TableCell>
                       <TableCell>{team.billing_address}</TableCell>
                       <TableCell>
@@ -522,8 +522,8 @@ export default function TeamsPage() {
                                               <p>{expandedTeam.name}</p>
                                             </div>
                                             <div>
-                                              <p className="text-sm font-medium text-muted-foreground">Email</p>
-                                              <p>{expandedTeam.email}</p>
+                                              <p className="text-sm font-medium text-muted-foreground">Admin Email</p>
+                                              <p>{expandedTeam.admin_email}</p>
                                             </div>
                                             <div>
                                               <p className="text-sm font-medium text-muted-foreground">Phone</p>
