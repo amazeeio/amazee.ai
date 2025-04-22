@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, UTC
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi import Depends, HTTPException, status, Request, Cookie, Header
+from fastapi import Depends, HTTPException, status, Cookie, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.core.config import settings
@@ -112,4 +112,29 @@ async def get_current_user_from_auth(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+
+def check_system_admin(current_user: DBUser = Depends(get_current_user)):
+    """Check if the current user is a system admin."""
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action"
+        )
+
+def check_team_admin(current_user: DBUser = Depends(get_current_user)):
+    """Check if the current user is an admin of a team"""
+    # System admin overrides all
+    if (not current_user.is_admin) and (not (current_user.team_id and current_user.role == "admin")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action"
+        )
+
+def check_specific_team_admin(current_user: DBUser = Depends(get_current_user), team_id: int = None):
+    # System admin overrides all
+    if (not current_user.is_admin) and (not (current_user.team_id == team_id and current_user.role == "admin")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action"
         )

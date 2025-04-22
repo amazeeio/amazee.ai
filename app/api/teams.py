@@ -5,6 +5,7 @@ from datetime import datetime, UTC
 
 from app.db.database import get_db
 from app.db.models import DBTeam, DBUser
+from app.core.security import check_system_admin, check_specific_team_admin
 from app.schemas.models import (
     Team, TeamCreate, TeamUpdate,
     TeamWithUsers
@@ -12,28 +13,6 @@ from app.schemas.models import (
 from app.api.auth import get_current_user_from_auth
 
 router = APIRouter()
-
-def check_admin(current_user: DBUser):
-    """Check if the current user is an admin"""
-    if not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to perform this action"
-        )
-
-def check_team_admin(current_user: DBUser, team_id: int):
-    """Check if the current user is an admin of the specified team"""
-    if current_user.is_admin:
-        return True
-
-    # Check if user is associated with the team and has admin role
-    if current_user.team_id != team_id or current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to perform this action for this team"
-        )
-
-    return True
 
 @router.post("", response_model=Team, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=Team, status_code=status.HTTP_201_CREATED)
@@ -68,8 +47,8 @@ async def register_team(
 
     return db_team
 
-@router.get("", response_model=List[Team])
-@router.get("/", response_model=List[Team])
+@router.get("", response_model=List[Team], dependencies=[Depends(check_system_admin)])
+@router.get("/", response_model=List[Team], dependencies=[Depends(check_system_admin)])
 async def list_teams(
     current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
@@ -77,10 +56,9 @@ async def list_teams(
     """
     List all teams. Only accessible by admin users.
     """
-    check_admin(current_user)
     return db.query(DBTeam).all()
 
-@router.get("/{team_id}", response_model=TeamWithUsers)
+@router.get("/{team_id}", response_model=TeamWithUsers, dependencies=[Depends(check_specific_team_admin)])
 async def get_team(
     team_id: int,
     current_user: DBUser = Depends(get_current_user_from_auth),
@@ -93,13 +71,6 @@ async def get_team(
     db_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not db_team:
         raise HTTPException(status_code=404, detail="Team not found")
-
-    # Check if user is authorized
-    if not current_user.is_admin and current_user.team_id != team_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to access this team"
-        )
 
     # Get users associated with the team
     team_users = []
@@ -127,7 +98,7 @@ async def get_team(
 
     return response
 
-@router.put("/{team_id}", response_model=Team)
+@router.put("/{team_id}", response_model=Team, dependencies=[Depends(check_specific_team_admin)])
 async def update_team(
     team_id: int,
     team_update: TeamUpdate,
@@ -142,9 +113,6 @@ async def update_team(
     if not db_team:
         raise HTTPException(status_code=404, detail="Team not found")
 
-    # Check if user is authorized
-    check_team_admin(current_user, team_id)
-
     # Update team fields
     for key, value in team_update.model_dump(exclude_unset=True).items():
         setattr(db_team, key, value)
@@ -155,7 +123,7 @@ async def update_team(
 
     return db_team
 
-@router.delete("/{team_id}")
+@router.delete("/{team_id}", dependencies=[Depends(check_system_admin)])
 async def delete_team(
     team_id: int,
     current_user: DBUser = Depends(get_current_user_from_auth),
@@ -164,8 +132,6 @@ async def delete_team(
     """
     Delete a team. Only accessible by admin users.
     """
-    check_admin(current_user)
-
     # Check if team exists
     db_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not db_team:

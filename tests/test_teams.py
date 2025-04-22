@@ -148,7 +148,7 @@ def test_get_team_unauthorized(client, test_token, test_team):
         headers={"Authorization": f"Bearer {test_token}"}
     )
     assert response.status_code == 403
-    assert response.json()["detail"] == "Not authorized to access this team"
+    assert response.json()["detail"] == "Not authorized to perform this action"
 
 def test_update_team(client, admin_token, test_team):
     """Test updating a team as an admin"""
@@ -235,7 +235,7 @@ def test_update_team_unauthorized(client, test_token, test_team):
         }
     )
     assert response.status_code == 403
-    assert response.json()["detail"] == "Not authorized to perform this action for this team"
+    assert response.json()["detail"] == "Not authorized to perform this action"
 
 def test_delete_team(client, admin_token, test_team, db):
     """Test deleting a team as an admin"""

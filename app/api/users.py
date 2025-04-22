@@ -1,24 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Literal
 
 from app.db.database import get_db
 from app.schemas.models import User, UserUpdate, UserCreate, TeamOperation, UserRoleUpdate
 from app.db.models import DBUser, DBTeam, DBAuditLog
 from app.api.auth import get_current_user_from_auth
-from app.core.security import get_password_hash
+from app.core.security import get_password_hash, check_system_admin, check_team_admin
 from datetime import datetime, UTC
 
 router = APIRouter()
 
-def check_admin(current_user: DBUser):
-    if not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to perform this action"
-        )
-
-@router.get("/search", response_model=List[User])
+@router.get("/search", response_model=List[User], dependencies=[Depends(check_system_admin)])
 async def search_users(
     email: str,
     current_user: DBUser = Depends(get_current_user_from_auth),
@@ -28,12 +21,11 @@ async def search_users(
     Search users by email pattern. Only accessible by admin users.
     Returns a list of users whose email matches the search pattern.
     """
-    check_admin(current_user)
     users = db.query(DBUser).filter(DBUser.email.ilike(f"%{email}%")).limit(10).all()
     return users
 
-@router.get("", response_model=List[User])
-@router.get("/", response_model=List[User])
+@router.get("", response_model=List[User], dependencies=[Depends(check_team_admin)])
+@router.get("/", response_model=List[User], dependencies=[Depends(check_team_admin)])
 async def list_users(
     current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
@@ -53,13 +45,6 @@ async def list_users(
                 user.team_name = None
         return users
 
-    # If not admin, check if user is a team admin
-    if not current_user.team_id or current_user.role != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to perform this action"
-        )
-
     # Return only users in the team admin's team
     users = db.query(DBUser).filter(DBUser.team_id == current_user.team_id).all()
     # Add team information to each user
@@ -72,8 +57,8 @@ async def list_users(
             user.team_name = None
     return users
 
-@router.post("", response_model=User, status_code=status.HTTP_201_CREATED)
-@router.post("/", response_model=User, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=User, status_code=status.HTTP_201_CREATED, dependencies=[Depends(check_team_admin)])
+@router.post("/", response_model=User, status_code=status.HTTP_201_CREATED, dependencies=[Depends(check_team_admin)])
 async def create_user(
     user: UserCreate,
     current_user: DBUser = Depends(get_current_user_from_auth),
@@ -82,28 +67,19 @@ async def create_user(
     """
     Create a new user. Accessible by admin users or team admins for their own team.
     """
-    # Check if user is a system admin or a team admin
-    if not current_user.is_admin:
-        # If not a system admin, check if user is a team admin
-        if not current_user.team_id or current_user.role != "admin":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to perform this action"
-            )
-
-        # If team admin, ensure they're creating a user in their own team
-        if user.team_id != current_user.team_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Team admins can only create users in their own team"
-            )
-
     # Check if email already exists
     db_user = db.query(DBUser).filter(DBUser.email == user.email).first()
     if db_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
+        )
+
+    # Admin may only create a user in their own team.
+    if current_user.team_id != user.team_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action"
         )
 
     # Create the user
@@ -144,7 +120,7 @@ async def get_user(
     # Otherwise, return 404 to avoid leaking information about user existence
     raise HTTPException(status_code=404, detail="User not found")
 
-@router.put("/{user_id}", response_model=User)
+@router.put("/{user_id}", response_model=User, dependencies=[Depends(check_team_admin)])
 async def update_user(
     user_id: int,
     user_update: UserUpdate,
@@ -154,7 +130,6 @@ async def update_user(
     """
     Update a user. Accessible by admin users or team admins.
     """
-    check_admin(current_user)
     db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -173,7 +148,7 @@ async def update_user(
     db.refresh(db_user)
     return db_user
 
-@router.post("/{user_id}/add-to-team", response_model=User)
+@router.post("/{user_id}/add-to-team", response_model=User, dependencies=[Depends(check_team_admin)])
 async def add_user_to_team(
     user_id: int,
     team_operation: TeamOperation,
@@ -183,7 +158,6 @@ async def add_user_to_team(
     """
     Add a user to a team. Accessible by admin users or team admins.
     """
-    check_admin(current_user)
     db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -213,16 +187,15 @@ async def add_user_to_team(
     db.refresh(db_user)
     return db_user
 
-@router.post("/{user_id}/remove-from-team", response_model=User)
+@router.post("/{user_id}/remove-from-team", response_model=User, dependencies=[Depends(check_system_admin)])
 async def remove_user_from_team(
     user_id: int,
     current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
     """
-    Remove a user from a team. Accessible by admin users or team admins.
+    Remove a user from a team. Accessible by admin users.
     """
-    check_admin(current_user)
     db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -240,13 +213,12 @@ async def remove_user_from_team(
     db.refresh(db_user)
     return db_user
 
-@router.delete("/{user_id}")
+@router.delete("/{user_id}", dependencies=[Depends(check_system_admin)])
 async def delete_user(
     user_id: int,
     current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
-    check_admin(current_user)
     db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -273,7 +245,7 @@ async def update_user_role(
     Update a user's role. Accessible by admin users or team admins for their team members.
     """
     # Validate role
-    valid_roles = ["admin", "key_creator", "read_only"]
+    valid_roles = Literal["admin", "key_creator", "read_only"]
     if role_update.role not in valid_roles:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

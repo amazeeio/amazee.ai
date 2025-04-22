@@ -94,6 +94,13 @@ def test_delete_user(client, admin_token, test_user):
     )
     assert response.status_code == 404
 
+def test_delete_user_unauthorized(client, test_user, test_token):
+    response = client.delete(
+        f"/users/{test_user.id}",
+        headers={"Authorization": f"Bearer {test_token}"}
+    )
+    assert response.status_code == 403
+
 def test_delete_team_member(client, admin_token, test_team_user):
     """
     Test deleting a user who is a member of a team and has no AI keys.
@@ -224,4 +231,4 @@ def test_create_user_in_other_team_by_team_admin(client, team_admin_token, db):
         }
     )
     assert response.status_code == 403
-    assert "Team admins can only create users in their own team" in response.json()["detail"]
+    assert "Not authorized to perform this action" in response.json()["detail"]
