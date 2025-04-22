@@ -24,7 +24,7 @@ async def register_team(
     Register a new team. This endpoint is publicly accessible.
     """
     # Check if team email already exists
-    db_team = db.query(DBTeam).filter(DBTeam.email == team.email).first()
+    db_team = db.query(DBTeam).filter(DBTeam.admin_email == team.admin_email).first()
     if db_team:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -34,7 +34,7 @@ async def register_team(
     # Create the team
     db_team = DBTeam(
         name=team.name,
-        email=team.email,
+        admin_email=team.admin_email,
         phone=team.phone,
         billing_address=team.billing_address,
         is_active=True,

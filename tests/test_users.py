@@ -173,7 +173,7 @@ def test_delete_team_member_with_ai_keys(mock_post, client, admin_token, test_te
 def test_create_user_by_team_admin(client, team_admin_token, test_team, db):
     """Test that a team admin can create a user in their own team"""
     # Get the team ID directly from the database to avoid detached instance issues
-    team_id = db.query(DBTeam).filter(DBTeam.email == "testteam@example.com").first().id
+    team_id = db.query(DBTeam).filter(DBTeam.admin_email == "testteam@example.com").first().id
 
     # Create a new user in the team
     response = client.post(
@@ -210,7 +210,7 @@ def test_create_user_in_other_team_by_team_admin(client, team_admin_token, db):
     # Create a second team
     team2 = DBTeam(
         name="Team 2",
-        email="team2@example.com",
+        admin_email="team2@example.com",
         phone="0987654321",
         billing_address="456 Team 2 St, City 2, 54321",
         is_active=True,

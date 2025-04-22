@@ -12,7 +12,7 @@ def test_register_team(client):
         "/teams/",
         json={
             "name": "Test Team",
-            "email": "team@example.com",
+            "admin_email": "team@example.com",
             "phone": "1234567890",
             "billing_address": "123 Test St, Test City, 12345"
         }
@@ -20,7 +20,7 @@ def test_register_team(client):
     assert response.status_code == 201
     team_data = response.json()
     assert team_data["name"] == "Test Team"
-    assert team_data["email"] == "team@example.com"
+    assert team_data["admin_email"] == "team@example.com"
     assert team_data["phone"] == "1234567890"
     assert team_data["billing_address"] == "123 Test St, Test City, 12345"
     assert team_data["is_active"] is True
@@ -28,12 +28,12 @@ def test_register_team(client):
     assert "created_at" in team_data
     assert "updated_at" in team_data
 
-def test_register_team_duplicate_email(client, db):
+def test_register_team_duplicate_admin_email(client, db):
     """Test registering a team with an email that already exists"""
     # First, create a team
     team = DBTeam(
         name="Existing Team",
-        email="existing@example.com",
+        admin_email="existing@example.com",
         phone="1234567890",
         billing_address="123 Test St, Test City, 12345",
         is_active=True,
@@ -43,12 +43,12 @@ def test_register_team_duplicate_email(client, db):
     db.commit()
     db.refresh(team)
 
-    # Try to register a new team with the same email
+    # Try to register a new team with the same admin_email
     response = client.post(
         "/teams/",
         json={
             "name": "New Team",
-            "email": "existing@example.com",
+            "admin_email": "existing@example.com",
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321"
         }
@@ -67,7 +67,7 @@ def test_list_teams(client, admin_token, db, test_team):
     teams = response.json()
     assert isinstance(teams, list)
     assert len(teams) >= 1
-    assert any(t["email"] == "testteam@example.com" for t in teams)
+    assert any(t["admin_email"] == "testteam@example.com" for t in teams)
 
 def test_list_teams_unauthorized(client, test_token):
     """Test listing teams without admin privileges"""
@@ -88,7 +88,7 @@ def test_get_team(client, admin_token, test_team):
     assert response.status_code == 200
     team_data = response.json()
     assert team_data["name"] == "Test Team"
-    assert team_data["email"] == "testteam@example.com"
+    assert team_data["admin_email"] == "testteam@example.com"
     assert team_data["id"] == test_team.id
     assert "users" in team_data
     assert isinstance(team_data["users"], list)
@@ -98,7 +98,7 @@ def test_get_team_as_team_user(client, db):
     # Create a test team
     team = DBTeam(
         name="Test Team",
-        email="testteam@example.com",
+        admin_email="testteam@example.com",
         phone="1234567890",
         billing_address="123 Test St, Test City, 12345",
         is_active=True,
@@ -137,7 +137,7 @@ def test_get_team_as_team_user(client, db):
     assert response.status_code == 200
     team_data = response.json()
     assert team_data["name"] == "Test Team"
-    assert team_data["email"] == "testteam@example.com"
+    assert team_data["admin_email"] == "testteam@example.com"
     assert team_data["id"] == team_id
 
 def test_get_team_unauthorized(client, test_token, test_team):
@@ -165,7 +165,7 @@ def test_update_team(client, admin_token, test_team):
     assert response.status_code == 200
     team_data = response.json()
     assert team_data["name"] == "Updated Team"
-    assert team_data["email"] == "testteam@example.com"  # Email shouldn't change
+    assert team_data["admin_email"] == "testteam@example.com"  # admin_email shouldn't change
     assert team_data["phone"] == "0987654321"
     assert team_data["billing_address"] == "456 Updated St, Updated City, 54321"
 
@@ -174,7 +174,7 @@ def test_update_team_as_team_admin(client, db):
     # Create a test team
     team = DBTeam(
         name="Test Team",
-        email="testteam@example.com",
+        admin_email="testteam@example.com",
         phone="1234567890",
         billing_address="123 Test St, Test City, 12345",
         is_active=True,
@@ -218,7 +218,7 @@ def test_update_team_as_team_admin(client, db):
     assert response.status_code == 200
     team_data = response.json()
     assert team_data["name"] == "Updated Team"
-    assert team_data["email"] == "testteam@example.com"  # Email shouldn't change
+    assert team_data["admin_email"] == "testteam@example.com"  # admin_email shouldn't change
     assert team_data["phone"] == "0987654321"
     assert team_data["billing_address"] == "456 Updated St, Updated City, 54321"
 
@@ -266,7 +266,7 @@ def test_add_user_to_second_team(client, admin_token, db, test_team, test_team_u
     # Create a second team
     team2 = DBTeam(
         name="Team 2",
-        email="team2@example.com",
+        admin_email="team2@example.com",
         phone="0987654321",
         billing_address="456 Team 2 St, City 2, 54321",
         is_active=True,

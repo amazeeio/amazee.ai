@@ -56,7 +56,7 @@ class DBTeam(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
-    email = Column(String, unique=True, index=True)
+    admin_email = Column(String, unique=True, index=True)
     phone = Column(String, nullable=True)
     billing_address = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)

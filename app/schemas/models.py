@@ -157,7 +157,7 @@ class AuditLogMetadata(BaseModel):
 # Team schemas
 class TeamBase(BaseModel):
     name: str
-    email: str
+    admin_email: str
     phone: Optional[str] = None
     billing_address: Optional[str] = None
 
@@ -166,7 +166,7 @@ class TeamCreate(TeamBase):
 
 class TeamUpdate(BaseModel):
     name: Optional[str] = None
-    email: Optional[str] = None
+    admin_email: Optional[str] = None
     phone: Optional[str] = None
     billing_address: Optional[str] = None
     is_active: Optional[bool] = None

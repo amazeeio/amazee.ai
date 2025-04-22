@@ -100,7 +100,7 @@ def admin_token(client, test_admin):
 def test_team(db):
     team = DBTeam(
         name="Test Team",
-        email="testteam@example.com",
+        admin_email="testteam@example.com",
         phone="1234567890",
         billing_address="123 Test St, Test City, 12345",
         is_active=True,
