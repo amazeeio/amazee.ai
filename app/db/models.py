@@ -46,7 +46,7 @@ class DBUser(Base):
     team_id = Column(Integer, ForeignKey("teams.id", name="fk_user_team"))
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
-    team = relationship("DBTeam", foreign_keys=[team_id])
+    team = relationship("DBTeam", back_populates="users")
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="owner")
     api_tokens = relationship("DBAPIToken", back_populates="owner")
     audit_logs = relationship("DBAuditLog", back_populates="user")

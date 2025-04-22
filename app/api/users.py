@@ -4,10 +4,14 @@ from typing import List, Literal
 
 from app.db.database import get_db
 from app.schemas.models import User, UserUpdate, UserCreate, TeamOperation, UserRoleUpdate
-from app.db.models import DBUser, DBTeam, DBAuditLog
+from app.db.models import DBUser, DBTeam
 from app.api.auth import get_current_user_from_auth
 from app.core.security import get_password_hash, check_system_admin, check_team_admin
 from datetime import datetime, UTC
+
+# Define valid user roles as a Literal type
+UserRole = Literal["admin", "key_creator", "read_only"]
+VALID_ROLES: List[UserRole] = ["admin", "key_creator", "read_only"]
 
 router = APIRouter()
 
@@ -235,11 +239,10 @@ async def update_user_role(
     Update a user's role. Accessible by admin users or team admins for their team members.
     """
     # Validate role
-    valid_roles = ["admin", "key_creator", "read_only"]
-    if role_update.role not in valid_roles:
+    if role_update.role not in VALID_ROLES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid role. Must be one of: {', '.join(valid_roles)}"
+            detail=f"Invalid role. Must be one of: {', '.join(VALID_ROLES)}"
         )
 
     # Get the user to update
