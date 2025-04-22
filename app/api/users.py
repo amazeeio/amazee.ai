@@ -34,28 +34,18 @@ async def list_users(
     List users. Accessible by admin users or team admins for their team members.
     """
     if current_user.is_admin:
-        users = db.query(DBUser).all()
-        # Add team information to each user
-        for user in users:
-            if user.team_id:
-                team = db.query(DBTeam).filter(DBTeam.id == user.team_id).first()
-                if team:
-                    user.team_name = team.name
-            else:
-                user.team_name = None
-        return users
+        # Use LEFT JOIN to get all users and their team information in a single query
+        users = db.query(DBUser, DBTeam.name.label('team_name')).outerjoin(DBTeam, DBUser.team_id == DBTeam.id).all()
+    else:
+        # Return only users in the team admin's team with team information
+        users = db.query(DBUser, DBTeam.name.label('team_name')).join(DBTeam, DBUser.team_id == DBTeam.id).filter(DBUser.team_id == current_user.team_id).all()
 
-    # Return only users in the team admin's team
-    users = db.query(DBUser).filter(DBUser.team_id == current_user.team_id).all()
-    # Add team information to each user
-    for user in users:
-        if user.team_id:
-            team = db.query(DBTeam).filter(DBTeam.id == user.team_id).first()
-            if team:
-                user.team_name = team.name
-        else:
-            user.team_name = None
-    return users
+    # Map the results to DBUser objects with team_name
+    result = []
+    for user, team_name in users:
+        user.team_name = team_name
+        result.append(user)
+    return result
 
 @router.post("", response_model=User, status_code=status.HTTP_201_CREATED, dependencies=[Depends(check_team_admin)])
 @router.post("/", response_model=User, status_code=status.HTTP_201_CREATED, dependencies=[Depends(check_team_admin)])
@@ -234,7 +224,7 @@ async def delete_user(
     db.commit()
     return {"message": "User deleted successfully"}
 
-@router.post("/{user_id}/role", response_model=User)
+@router.post("/{user_id}/role", response_model=User, dependencies=[Depends(check_team_admin)])
 async def update_user_role(
     user_id: int,
     role_update: UserRoleUpdate,
@@ -245,7 +235,7 @@ async def update_user_role(
     Update a user's role. Accessible by admin users or team admins for their team members.
     """
     # Validate role
-    valid_roles = Literal["admin", "key_creator", "read_only"]
+    valid_roles = ["admin", "key_creator", "read_only"]
     if role_update.role not in valid_roles:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -259,18 +249,11 @@ async def update_user_role(
 
     # Check authorization
     if not current_user.is_admin:
-        # If not a system admin, check if user is a team admin
-        if not current_user.team_id or current_user.role != "admin":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to perform this action"
-            )
-
         # If team admin, ensure they're updating a user in their own team
         if db_user.team_id != current_user.team_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Team admins can only update roles for users in their own team"
+                detail="Not authorized to perform this action"
             )
 
     # Don't allow changing admin roles through this endpoint
@@ -281,24 +264,8 @@ async def update_user_role(
         )
 
     # Update the role
-    old_role = db_user.role
     db_user.role = role_update.role
     db_user.updated_at = datetime.now(UTC)
-
-    # Create audit log
-    audit_log = DBAuditLog(
-        user_id=current_user.id,
-        event_type="user_role_update",
-        resource_type="user",
-        resource_id=str(user_id),
-        action="update",
-        details={
-            "old_role": old_role,
-            "new_role": role_update.role,
-            "user_email": db_user.email
-        }
-    )
-    db.add(audit_log)
 
     db.commit()
     db.refresh(db_user)

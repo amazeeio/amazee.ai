@@ -72,31 +72,8 @@ async def get_team(
     if not db_team:
         raise HTTPException(status_code=404, detail="Team not found")
 
-    # Get users associated with the team
-    team_users = []
-    for user in db_team.users:
-        team_users.append({
-            "id": user.id,
-            "email": user.email,
-            "is_active": user.is_active,
-            "is_admin": user.is_admin,
-            "role": user.role
-        })
-
-    # Create response with users
-    response = TeamWithUsers(
-        id=db_team.id,
-        name=db_team.name,
-        email=db_team.email,
-        phone=db_team.phone,
-        billing_address=db_team.billing_address,
-        is_active=db_team.is_active,
-        created_at=db_team.created_at,
-        updated_at=db_team.updated_at,
-        users=team_users
-    )
-
-    return response
+    # Convert directly to TeamWithUsers model
+    return TeamWithUsers.model_validate(db_team)
 
 @router.put("/{team_id}", response_model=Team, dependencies=[Depends(check_specific_team_admin)])
 async def update_team(

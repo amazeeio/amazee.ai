@@ -114,7 +114,7 @@ async def get_current_user_from_auth(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-def check_system_admin(current_user: DBUser = Depends(get_current_user)):
+async def check_system_admin(current_user: DBUser = Depends(get_current_user_from_auth)):
     """Check if the current user is a system admin."""
     if not current_user.is_admin:
         raise HTTPException(
@@ -122,7 +122,7 @@ def check_system_admin(current_user: DBUser = Depends(get_current_user)):
             detail="Not authorized to perform this action"
         )
 
-def check_team_admin(current_user: DBUser = Depends(get_current_user)):
+async def check_team_admin(current_user: DBUser = Depends(get_current_user_from_auth)):
     """Check if the current user is an admin of a team"""
     # System admin overrides all
     if (not current_user.is_admin) and (not (current_user.team_id and current_user.role == "admin")):
@@ -131,7 +131,7 @@ def check_team_admin(current_user: DBUser = Depends(get_current_user)):
             detail="Not authorized to perform this action"
         )
 
-def check_specific_team_admin(current_user: DBUser = Depends(get_current_user), team_id: int = None):
+async def check_specific_team_admin(current_user: DBUser = Depends(get_current_user_from_auth), team_id: int = None):
     # System admin overrides all
     if (not current_user.is_admin) and (not (current_user.team_id == team_id and current_user.role == "admin")):
         raise HTTPException(
