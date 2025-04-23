@@ -1,8 +1,8 @@
-from datetime import datetime, timedelta, UTC
+from datetime import datetime, timedelta
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi import Depends, HTTPException, status, Cookie, Header
+from fastapi import Depends, HTTPException, status, Request, Cookie, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.core.config import settings
@@ -28,9 +28,9 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     """Create JWT access token."""
     to_encode = data.copy()
     if expires_delta:
-        expire = datetime.now(UTC) + expires_delta
+        expire = datetime.utcnow() + expires_delta
     else:
-        expire = datetime.now(UTC) + timedelta(minutes=60)  # Default to 60 minutes
+        expire = datetime.utcnow() + timedelta(minutes=60)  # Default to 60 minutes
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
@@ -95,7 +95,7 @@ async def get_current_user_from_auth(
         db_token = db.query(DBAPIToken).filter(DBAPIToken.token == token_to_try).first()
         if db_token:
             # Update last used timestamp
-            db_token.last_used_at = datetime.now(UTC)
+            db_token.last_used_at = datetime.utcnow()
             db.commit()
             return db_token.owner
     except Exception:
@@ -112,29 +112,4 @@ async def get_current_user_from_auth(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
-        )
-
-async def check_system_admin(current_user: DBUser = Depends(get_current_user_from_auth)):
-    """Check if the current user is a system admin."""
-    if not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to perform this action"
-        )
-
-async def check_team_admin(current_user: DBUser = Depends(get_current_user_from_auth)):
-    """Check if the current user is an admin of a team"""
-    # System admin overrides all
-    if (not current_user.is_admin) and (not (current_user.team_id and current_user.role == "admin")):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to perform this action"
-        )
-
-async def check_specific_team_admin(current_user: DBUser = Depends(get_current_user_from_auth), team_id: int = None):
-    # System admin overrides all
-    if (not current_user.is_admin) and (not (current_user.team_id == team_id and current_user.role == "admin")):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to perform this action"
         )

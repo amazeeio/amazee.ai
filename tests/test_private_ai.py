@@ -1,8 +1,25 @@
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch
-from app.db.models import DBPrivateAIKey
+from app.db.models import DBRegion, DBPrivateAIKey
 import logging
+
+@pytest.fixture
+def test_region(db):
+    region = DBRegion(
+        name="test-region",
+        postgres_host="amazee-test-postgres",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="https://test-litellm.com",
+        litellm_api_key="test-litellm-key",
+        is_active=True
+    )
+    db.add(region)
+    db.commit()
+    db.refresh(region)
+    return region
 
 @pytest.fixture
 def mock_litellm_response():
@@ -148,98 +165,3 @@ def test_delete_region_with_active_keys(client, admin_token, test_region, db, te
     assert response.status_code == 400
     assert "Cannot delete region" in response.json()["detail"]
     assert "database(s) are currently using this region" in response.json()["detail"]
-
-@patch("app.services.litellm.requests.post")
-def test_delete_private_ai_key(mock_post, client, test_token, test_region, db, test_user):
-    """Test deleting a private AI key"""
-    # Refresh the test_region to ensure it's attached to the session
-    db.refresh(test_region)
-
-    # Store the region values we need for the test
-    region_api_url = test_region.litellm_api_url
-    region_api_key = test_region.litellm_api_key
-
-    # Create a test private AI key
-    test_key = DBPrivateAIKey(
-        database_name="test-db-delete",
-        name="Test Key to Delete",
-        database_host="test-host",
-        database_username="test-user",
-        database_password="test-pass",
-        litellm_token="test-token-delete",
-        litellm_api_url="https://test-litellm.com",
-        owner_id=test_user.id,
-        region_id=test_region.id
-    )
-    db.add(test_key)
-    db.commit()
-
-    # Get the key ID for later verification
-    key_id = test_key.id
-
-    # Mock the LiteLLM API delete response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.raise_for_status.return_value = None
-
-    # Delete the private AI key
-    response = client.delete(
-        f"/private-ai-keys/{test_key.database_name}",
-        headers={"Authorization": f"Bearer {test_token}"}
-    )
-
-    # Verify the response
-    assert response.status_code == 200
-    assert response.json()["message"] == "Private AI Key deleted successfully"
-
-    # Verify the LiteLLM token was deleted
-    mock_post.assert_called_once_with(
-        f"{region_api_url}/key/delete",
-        headers={"Authorization": f"Bearer {region_api_key}"},
-        json={"keys": [test_key.litellm_token]}
-    )
-
-    # Verify the key was removed from the database
-    deleted_key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
-    assert deleted_key is None
-
-@patch("app.services.litellm.requests.post")
-def test_list_private_ai_keys_as_team_admin(mock_post, client, team_admin_token, test_team_user, test_region, db):
-    """Test that a team admin can list all AI keys associated with users in their team"""
-    # Mock the LiteLLM API response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
-    mock_post.return_value.raise_for_status.return_value = None
-
-    # First, get a token for the team user
-    response = client.post(
-        "/auth/login",
-        data={"username": test_team_user.email, "password": "password123"}
-    )
-    team_user_token = response.json()["access_token"]
-
-    # Create a private AI key as the team user
-    key_data = {
-        "name": "team-user-key",
-        "region_id": test_region.id
-    }
-
-    # Create key as team user
-    response = client.post(
-        "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {team_user_token}"},
-        json=key_data
-    )
-    assert response.status_code == 200
-
-    # List all keys as team admin
-    response = client.get(
-        "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {team_admin_token}"}
-    )
-    assert response.status_code == 200
-    data = response.json()
-
-    # Verify that the team user's key is in the response
-    assert len(data) > 0
-    assert any(key["name"] == "team-user-key" for key in data)
-    assert any(key["owner_id"] == test_team_user.id for key in data)

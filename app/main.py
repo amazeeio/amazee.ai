@@ -23,7 +23,7 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
             request.scope["scheme"] = "https"
         return await call_next(request)
 
-from app.api import auth, private_ai_keys, users, regions, audit, teams
+from app.api import auth, private_ai_keys, users, regions, audit
 from app.core.config import settings
 from app.db.database import get_db
 from app.middleware.audit import AuditLogMiddleware
@@ -106,7 +106,6 @@ app.include_router(private_ai_keys.router, prefix="/private-ai-keys", tags=["pri
 app.include_router(users.router, prefix="/users", tags=["users"])
 app.include_router(regions.router, prefix="/regions", tags=["regions"])
 app.include_router(audit.router, prefix="/audit", tags=["audit"])
-app.include_router(teams.router, prefix="/teams", tags=["teams"])
 
 @app.get("/", include_in_schema=False)
 async def custom_swagger_ui_html():

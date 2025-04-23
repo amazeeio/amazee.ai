@@ -1,4 +1,4 @@
-FROM uselagoon/python-3.12:latest
+FROM uselagoon/python-3.11:latest
 
 WORKDIR /app
 

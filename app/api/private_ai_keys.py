@@ -86,22 +86,8 @@ async def create_private_ai_key(
     try:
         # Create new postgres database
         postgres_manager = PostgresManager(region=region)
-
-        # Generate LiteLLM token first
-        litellm_service = LiteLLMService(
-            api_url=region.litellm_api_url,
-            api_key=region.litellm_api_key
-        )
-        litellm_token = await litellm_service.create_key(
-            email=owner.email,
-            name=private_ai_key.name,
-            user_id=owner_id
-        )
-
-        # Create database with the generated token
         key_credentials = await postgres_manager.create_database(
             owner=owner.email,
-            litellm_token=litellm_token,
             name=private_ai_key.name,
             user_id=owner_id
         )
@@ -142,42 +128,25 @@ async def create_private_ai_key(
 @router.get("/", response_model=List[PrivateAIKey])
 async def list_private_ai_keys(
     owner_id: Optional[int] = None,
-    team_id: Optional[int] = None,
     current_user = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
     """
     List private AI keys.
     If user is admin:
-        - Returns all keys if no owner_id or team_id is provided
+        - Returns all keys if no owner_id is provided
         - Returns keys for specific owner if owner_id is provided
-        - Returns keys for specific team if team_id is provided
-    If user is team admin:
-        - Returns keys owned by users in their team
     If user is not admin:
-        - Returns only their own keys, ignoring owner_id and team_id parameters
+        - Returns only their own keys, ignoring owner_id parameter
     """
     query = db.query(DBPrivateAIKey)
 
     if current_user.is_admin:
         if owner_id is not None:
             query = query.filter(DBPrivateAIKey.owner_id == owner_id)
-        elif team_id is not None:
-            # Get all users in the team
-            team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
-            team_user_ids = [user.id for user in team_users]
-            query = query.filter(DBPrivateAIKey.owner_id.in_(team_user_ids))
     else:
-        # Check if user is a team admin
-        if current_user.team_id is not None and current_user.role == "admin":
-            # Get all users in the team
-            team_users = db.query(DBUser).filter(DBUser.team_id == current_user.team_id).all()
-            team_user_ids = [user.id for user in team_users]
-            # Return keys owned by any user in the team
-            query = query.filter(DBPrivateAIKey.owner_id.in_(team_user_ids))
-        else:
-            # Non-admin users can only see their own keys
-            query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
+        # Non-admin users can only see their own keys
+        query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
 
     private_ai_keys = query.all()
     return [key.to_dict() for key in private_ai_keys]
@@ -210,17 +179,9 @@ async def delete_private_ai_key(
 
     # Delete database and remove from user's list
     postgres_manager = PostgresManager(region=region)
-
-    # Delete LiteLLM token first
-    litellm_service = LiteLLMService(
-        api_url=region.litellm_api_url,
-        api_key=region.litellm_api_key
-    )
-    await litellm_service.delete_key(private_ai_key.litellm_token)
-
-    # Delete the database
     await postgres_manager.delete_database(
-        private_ai_key.database_name
+        key_name,
+        litellm_token=private_ai_key.litellm_token
     )
 
     # Remove the private AI key record from the application database
@@ -305,15 +266,15 @@ async def update_budget_period(
 ):
     """
     Update the budget period for a private AI key.
-
+    
     This endpoint will:
     1. Verify the user has access to the key
     2. Update the budget period in LiteLLM
     3. Return the updated spend information
-
+    
     Required parameters:
     - **budget_duration**: The new budget period (e.g. "monthly", "weekly", "daily")
-
+    
     Note: You must be authenticated to use this endpoint.
     Only the owner of the key or an admin can update it.
     """
@@ -356,7 +317,7 @@ async def update_budget_period(
             }
         )
         response.raise_for_status()
-
+        
         # Get updated spend information
         spend_response = requests.get(
             f"{region.litellm_api_url}/key/info",
@@ -370,7 +331,7 @@ async def update_budget_period(
         spend_response.raise_for_status()
         data = spend_response.json()
         info = data.get("info", {})
-
+        
         return {
             "spend": info.get("spend", 0),
             "expires": info.get("expires"),

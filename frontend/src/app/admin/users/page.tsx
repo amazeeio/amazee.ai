@@ -35,39 +35,21 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 
 interface User {
   id: string;
   email: string;
   is_active: boolean;
   is_admin: boolean;
-  role: string;
   created_at: string;
-  team_name?: string;
 }
-
-const USER_ROLES = [
-  { value: 'admin', label: 'Admin' },
-  { value: 'key_creator', label: 'Key Creator' },
-  { value: 'read_only', label: 'Read Only' },
-];
 
 export default function UsersPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [isAddingUser, setIsAddingUser] = useState(false);
-  const [isUpdatingRole, setIsUpdatingRole] = useState(false);
-  const [selectedUser, setSelectedUser] = useState<{ id: string; currentRole: string } | null>(null);
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserPassword, setNewUserPassword] = useState('');
-  const [newUserRole, setNewUserRole] = useState('read_only');
   const [users, setUsers] = useState<User[]>([]);
 
   // Queries
@@ -103,30 +85,8 @@ export default function UsersPage() {
     },
   });
 
-  const updateUserRoleMutation = useMutation({
-    mutationFn: async ({ userId, role }: { userId: string; role: string }) => {
-      const response = await post(`/users/${userId}/role`, { role });
-      const data = await response.json();
-      return data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['users'] });
-      toast({
-        title: 'Success',
-        description: 'User role updated successfully',
-      });
-    },
-    onError: (error: Error) => {
-      toast({
-        title: 'Error',
-        description: error.message,
-        variant: 'destructive',
-      });
-    },
-  });
-
   const createUserMutation = useMutation({
-    mutationFn: async (userData: { email: string; password: string; role: string }) => {
+    mutationFn: async (userData: { email: string; password: string }) => {
       const response = await fetch('/api/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -142,7 +102,6 @@ export default function UsersPage() {
       setIsAddingUser(false);
       setNewUserEmail('');
       setNewUserPassword('');
-      setNewUserRole('read_only');
       toast({
         title: 'Success',
         description: 'User created successfully',
@@ -210,24 +169,11 @@ export default function UsersPage() {
     updateUserMutation.mutate({ userId, isAdmin: !currentIsAdmin });
   };
 
-  const handleUpdateRole = (userId: string, currentRole: string) => {
-    setSelectedUser({ id: userId, currentRole });
-    setIsUpdatingRole(true);
-  };
-
-  const handleConfirmRoleUpdate = (newRole: string) => {
-    if (!selectedUser) return;
-    updateUserRoleMutation.mutate({ userId: selectedUser.id, role: newRole });
-    setIsUpdatingRole(false);
-    setSelectedUser(null);
-  };
-
   const handleCreateUser = (e: React.FormEvent) => {
     e.preventDefault();
     createUserMutation.mutate({
       email: newUserEmail,
       password: newUserPassword,
-      role: newUserRole,
     });
   };
 
@@ -271,24 +217,6 @@ export default function UsersPage() {
                   required
                 />
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Role</label>
-                <Select
-                  value={newUserRole}
-                  onValueChange={setNewUserRole}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a role" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {USER_ROLES.map((role) => (
-                      <SelectItem key={role.value} value={role.value}>
-                        {role.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
               <DialogFooter>
                 <Button
                   type="submit"
@@ -316,8 +244,7 @@ export default function UsersPage() {
               <TableHead>ID</TableHead>
               <TableHead>Email</TableHead>
               <TableHead>Status</TableHead>
-              <TableHead>Team</TableHead>
-              <TableHead>Team Role</TableHead>
+              <TableHead>Role</TableHead>
               <TableHead>Actions</TableHead>
             </TableRow>
           </TableHeader>
@@ -333,12 +260,7 @@ export default function UsersPage() {
                     {user.is_active ? 'Active' : 'Inactive'}
                   </span>
                 </TableCell>
-                <TableCell>
-                  {user.team_name || 'None'}
-                </TableCell>
-                <TableCell>
-                  {USER_ROLES.find(r => r.value === user.role)?.label || user.role}
-                </TableCell>
+                <TableCell>{user.is_admin ? 'Admin' : 'User'}</TableCell>
                 <TableCell>
                   <div className="flex gap-2">
                     <Button
@@ -348,14 +270,6 @@ export default function UsersPage() {
                       disabled={updateUserMutation.isPending}
                     >
                       {user.is_admin ? 'Remove Admin' : 'Make Admin'}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleUpdateRole(user.id, 'member')}
-                      disabled={updateUserRoleMutation.isPending}
-                    >
-                      Change Role
                     </Button>
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
@@ -397,43 +311,6 @@ export default function UsersPage() {
           </TableBody>
         </Table>
       </div>
-
-      {/* Role Update Dialog */}
-      <Dialog open={isUpdatingRole} onOpenChange={setIsUpdatingRole}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Update User Role</DialogTitle>
-            <DialogDescription>
-              Select a new role for this user. This will change their permissions within the system.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Role</label>
-              <Select
-                value={selectedUser?.currentRole || 'read_only'}
-                onValueChange={handleConfirmRoleUpdate}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select a role" />
-                </SelectTrigger>
-                <SelectContent>
-                  {USER_ROLES.map((role) => (
-                    <SelectItem key={role.value} value={role.value}>
-                      {role.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsUpdatingRole(false)}>
-              Cancel
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

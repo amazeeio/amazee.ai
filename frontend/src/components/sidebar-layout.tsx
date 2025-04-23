@@ -9,8 +9,7 @@ import {
   ScrollText,
   ChevronDown,
   PanelLeftClose,
-  PanelLeft,
-  Users2
+  PanelLeft
 } from 'lucide-react';
 import { Sidebar, SidebarProvider } from '@/components/ui/sidebar';
 import { NavUser } from '@/components/nav-user';
@@ -19,7 +18,7 @@ import { Button } from '@/components/ui/button';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useAuth, isTeamAdmin } from '@/hooks/use-auth';
+import { useAuth } from '@/hooks/use-auth';
 import { cn } from '@/lib/utils';
 import {
   DropdownMenu,
@@ -42,20 +41,10 @@ const navigation = [
     href: '/admin',
     icon: <Settings size={16} />,
     subItems: [
-      { name: 'Teams', href: '/admin/teams', icon: <Users2 size={16} /> },
       { name: 'Users', href: '/admin/users', icon: <Users size={16} /> },
       { name: 'Regions', href: '/admin/regions', icon: <Globe size={16} /> },
       { name: 'Private AI Keys', href: '/admin/private-ai-keys', icon: <Key size={16} /> },
       { name: 'Audit Logs', href: '/admin/audit-logs', icon: <ScrollText size={16} /> },
-    ],
-  },
-  {
-    name: 'Team Admin',
-    href: '/team-admin',
-    icon: <Users2 size={16} />,
-    subItems: [
-      { name: 'Users', href: '/team-admin/users', icon: <Users size={16} /> },
-      { name: 'Private AI Keys', href: '/team-admin/private-ai-keys', icon: <Key size={16} /> },
     ],
   },
 ];
@@ -188,9 +177,10 @@ export function SidebarLayout({
   }
 
   // Filter out admin navigation for non-admin users
-  const filteredNavigation = navigation.filter((item) => {
-    if (item.name === 'Admin' && !user?.is_admin) return false;
-    if (item.name === 'Team Admin' && !isTeamAdmin(user)) return false;
+  const filteredNavigation = navigation.filter(item => {
+    if (item.name === 'Admin') {
+      return user?.is_admin === true;
+    }
     return true;
   });
 

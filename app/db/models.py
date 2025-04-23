@@ -1,7 +1,6 @@
 from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime, JSON
 from sqlalchemy.orm import relationship, declarative_base
-from datetime import datetime, UTC
-from sqlalchemy.sql import func
+from datetime import datetime
 
 Base = declarative_base()
 
@@ -17,7 +16,7 @@ class DBRegion(Base):
     litellm_api_url = Column(String)
     litellm_api_key = Column(String)
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), default=func.now())
+    created_at = Column(DateTime, default=datetime.utcnow)
 
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="region")
 
@@ -27,8 +26,8 @@ class DBAPIToken(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String)
     token = Column(String, unique=True, index=True)
-    created_at = Column(DateTime(timezone=True), default=func.now())
-    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_used_at = Column(DateTime, nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"))
 
     owner = relationship("DBUser", back_populates="api_tokens")
@@ -41,30 +40,11 @@ class DBUser(Base):
     hashed_password = Column(String)
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)
-    created_at = Column(DateTime(timezone=True), default=func.now())
-    role = Column(String, default="user")  # user, admin, key_creator, read_only
-    team_id = Column(Integer, ForeignKey("teams.id", name="fk_user_team"))
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    created_at = Column(DateTime, default=datetime.utcnow)
 
-    team = relationship("DBTeam", back_populates="users")
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="owner")
     api_tokens = relationship("DBAPIToken", back_populates="owner")
     audit_logs = relationship("DBAuditLog", back_populates="user")
-
-class DBTeam(Base):
-    __tablename__ = "teams"
-
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, index=True)
-    admin_email = Column(String, unique=True, index=True)
-    phone = Column(String, nullable=True)
-    billing_address = Column(String, nullable=True)
-    is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime(timezone=True), default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-    users = relationship("DBUser", back_populates="team")
-    private_ai_keys = relationship("DBPrivateAIKey", back_populates="team")
 
 class DBPrivateAIKey(Base):
     __tablename__ = "ai_tokens"
@@ -79,19 +59,15 @@ class DBPrivateAIKey(Base):
     litellm_api_url = Column(String)
     owner_id = Column(Integer, ForeignKey("users.id"))
     region_id = Column(Integer, ForeignKey("regions.id"))
-    created_at = Column(DateTime(timezone=True), default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-    team_id = Column(Integer, ForeignKey("teams.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
 
     owner = relationship("DBUser", back_populates="private_ai_keys")
     region = relationship("DBRegion", back_populates="private_ai_keys")
-    team = relationship("DBTeam", back_populates="private_ai_keys")
 
     def to_dict(self):
         return {
-            "id": self.id,
-            "name": self.name,
             "database_name": self.database_name,
+            "name": self.name,
             "database_host": self.database_host,
             "database_username": self.database_username,
             "database_password": self.database_password,
@@ -106,7 +82,7 @@ class DBAuditLog(Base):
     __tablename__ = "audit_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, nullable=False, default=lambda: datetime.now(UTC))
+    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     event_type = Column(String, nullable=False)
     resource_type = Column(String, nullable=False)

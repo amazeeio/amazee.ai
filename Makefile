@@ -1,4 +1,4 @@
-.PHONY: backend-test backend-test-build test-clean test-network test-postgres frontend-test frontend-test-build migration-create migration-upgrade migration-downgrade migration-stamp
+.PHONY: backend-test backend-test-build test-clean test-network test-postgres frontend-test frontend-test-build migration-create migration-upgrade migration-downgrade
 
 # Default target
 all: backend-test
@@ -83,7 +83,3 @@ migration-upgrade:
 
 migration-downgrade:
 	python3 scripts/manage_migrations.py downgrade
-
-migration-stamp:
-	@read -p "Enter revision to stamp: " revision; \
-	python3 scripts/manage_migrations.py stamp "$$revision"
