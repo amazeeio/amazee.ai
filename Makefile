@@ -12,15 +12,32 @@ backend-test-build:
 	docker build -t amazee-backend-test -f Dockerfile.test .
 
 # Start PostgreSQL container for testing
-test-postgres: test-network
+test-postgres: test-clean test-network
 	docker run -d \
 		--name amazee-test-postgres \
 		--network amazeeai_default \
 		-e POSTGRES_USER=postgres \
 		-e POSTGRES_PASSWORD=postgres \
 		-e POSTGRES_DB=postgres_service \
+		-p 5432:5432 \
 		pgvector/pgvector:pg16 && \
 	sleep 5
+
+# Run backend tests for a specific regex
+backend-test-regex: test-clean backend-test-build test-postgres
+	@read -p "Enter regex: " regex; \
+	docker run --rm \
+		--network amazeeai_default \
+		-e DATABASE_URL="postgresql://postgres:postgres@amazee-test-postgres/postgres_service" \
+		-e SECRET_KEY="test-secret-key" \
+		-e POSTGRES_HOST="amazee-test-postgres" \
+		-e POSTGRES_USER="postgres" \
+		-e POSTGRES_PASSWORD="postgres" \
+		-e POSTGRES_DB="postgres_service" \
+		-e TESTING="1" \
+		-v $(PWD)/app:/app/app \
+		-v $(PWD)/tests:/app/tests \
+		amazee-backend-test pytest -v -k "$$regex"
 
 # Run backend tests in a new container
 backend-test: test-clean backend-test-build test-postgres
@@ -38,7 +55,7 @@ backend-test: test-clean backend-test-build test-postgres
 		amazee-backend-test
 
 # Run backend tests with coverage report
-backend-test-cov: backend-test-build test-postgres
+backend-test-cov: test-clean backend-test-build test-postgres
 	docker run --rm \
 		--network amazeeai_default \
 		-e DATABASE_URL="postgresql://postgres:postgres@amazee-test-postgres/postgres_service" \

@@ -110,9 +110,15 @@ class PrivateAIKeyCreate(BaseModel):
     region_id: int
     name: str
     owner_id: Optional[int] = None
+    team_id: Optional[int] = None
+
+class TeamPrivateAIKeyCreate(PrivateAIKeyCreate):
+    team_id: int  # Override to make team_id required
+    owner_id: Optional[int] = None  # Explicitly set to None for team keys
 
 class PrivateAIKey(PrivateAIKeyBase):
-    owner_id: int
+    owner_id: Optional[int] = None
+    team_id: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
 
 class AuditLog(BaseModel):

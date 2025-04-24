@@ -1,8 +1,10 @@
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch
-from app.db.models import DBPrivateAIKey
+from app.db.models import DBPrivateAIKey, DBTeam, DBUser
 import logging
+from datetime import datetime, UTC
+from app.core.security import get_password_hash
 
 @pytest.fixture
 def mock_litellm_response():
@@ -243,3 +245,328 @@ def test_list_private_ai_keys_as_team_admin(mock_post, client, team_admin_token,
     assert len(data) > 0
     assert any(key["name"] == "team-user-key" for key in data)
     assert any(key["owner_id"] == test_team_user.id for key in data)
+
+@patch("app.services.litellm.requests.post")
+def test_create_team_private_ai_key(mock_post, client, test_team, team_admin_token, test_region, mock_litellm_response):
+    """Test creating a private AI key owned by a team"""
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Team AI Key",
+            "team_id": test_team.id
+        }
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["region"] == test_region.name
+    assert data["litellm_token"] == "test-private-key-123"
+    assert data["team_id"] == test_team.id
+    assert data["owner_id"] is None
+
+@patch("app.services.litellm.requests.post")
+def test_create_private_ai_key_without_owner_or_team(mock_post, client, admin_token, test_region):
+    """Test that an admin user can create a private AI key without owner_id or team_id, defaulting to themselves as owner"""
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
+    mock_post.return_value.raise_for_status.return_value = None
+
+    response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Test AI Key"
+        }
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["region"] == test_region.name
+    assert data["litellm_token"] == "test-private-key-123"
+    # Verify that the LiteLLM API was called
+    mock_post.assert_called_once()
+
+@patch("app.services.litellm.requests.post")
+def test_create_team_private_ai_key_as_key_creator(mock_post, client, team_key_creator_token, test_team_id, test_region, mock_litellm_response):
+    """Test that a team member with key_creator role cannot create a team key"""
+    # Mock the LiteLLM API response (though it shouldn't be called)
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Try to create a team key as a team member with key_creator role
+    response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {team_key_creator_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Team AI Key",
+            "team_id": test_team_id
+        }
+    )
+
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
+    # Verify that the LiteLLM API was not called
+    mock_post.assert_not_called()
+
+@patch("app.services.litellm.requests.post")
+def test_create_private_ai_key_with_both_owner_and_team(mock_post, client, admin_token, test_team, test_team_user, test_region, mock_litellm_response):
+    """Test that an admin cannot create a key with both owner_id and team_id set"""
+    # Mock the LiteLLM API response (though it shouldn't be called)
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Try to create a key with both owner_id and team_id set
+    response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Invalid Key",
+            "owner_id": test_team_user.id,
+            "team_id": test_team.id
+        }
+    )
+
+    assert response.status_code == 400
+    assert "Either owner_id or team_id must be specified, not both" in response.json()["detail"]
+    # Verify that the LiteLLM API was not called
+    mock_post.assert_not_called()
+
+@patch("app.services.litellm.requests.post")
+def test_create_private_ai_key_as_read_only(mock_post, client, team_read_only_token, test_region, mock_litellm_response):
+    """Test that a team member with read_only role cannot create a private AI key"""
+    # Mock the LiteLLM API response (though it shouldn't be called)
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Try to create a private AI key as a read_only team member
+    response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {team_read_only_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Test AI Key"
+        }
+    )
+
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
+    # Verify that the LiteLLM API was not called
+    mock_post.assert_not_called()
+
+@patch("app.services.litellm.requests.post")
+def test_create_private_ai_key_for_other_team(mock_post, client, team_admin_token, test_region, mock_litellm_response, db):
+    """Test that a team admin cannot create a private AI key for another team"""
+    # Create a second team
+    other_team = DBTeam(
+        name="Other Team",
+        admin_email="otherteam@example.com",
+        phone="0987654321",
+        billing_address="456 Other St, Other City, 54321",
+        is_active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(other_team)
+    db.commit()
+    db.refresh(other_team)
+
+    # Mock the LiteLLM API response (though it shouldn't be called)
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Try to create a private AI key for the other team
+    response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Other Team Key",
+            "team_id": other_team.id
+        }
+    )
+
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
+    # Verify that the LiteLLM API was not called
+    mock_post.assert_not_called()
+
+@patch("app.services.litellm.requests.post")
+def test_create_private_ai_key_for_user_in_other_team(mock_post, client, team_admin_token, test_region, mock_litellm_response, db):
+    """Test that a team admin cannot create a private AI key for a user in another team"""
+    # Create a second team
+    other_team = DBTeam(
+        name="Other Team",
+        admin_email="otherteam@example.com",
+        phone="0987654321",
+        billing_address="456 Other St, Other City, 54321",
+        is_active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(other_team)
+    db.commit()
+    db.refresh(other_team)
+
+    # Create a user in the other team
+    other_team_user = DBUser(
+        email="otherteamuser@example.com",
+        hashed_password=get_password_hash("password123"),
+        is_active=True,
+        is_admin=False,
+        role="user",
+        team_id=other_team.id,
+        created_at=datetime.now(UTC)
+    )
+    db.add(other_team_user)
+    db.commit()
+    db.refresh(other_team_user)
+
+    # Mock the LiteLLM API response (though it shouldn't be called)
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Try to create a private AI key for the user in the other team
+    response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Other Team User Key",
+            "owner_id": other_team_user.id
+        }
+    )
+
+    assert response.status_code == 404
+    assert "Owner user not found" in response.json()["detail"]
+    # Verify that the LiteLLM API was not called
+    mock_post.assert_not_called()
+
+@patch("app.services.litellm.requests.post")
+def test_create_private_ai_key_for_nonexistent_team(mock_post, client, admin_token, test_region, mock_litellm_response):
+    """Test that a system admin cannot create a private AI key for a non-existent team"""
+    # Mock the LiteLLM API response (though it shouldn't be called)
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Try to create a private AI key for a non-existent team
+    response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Non-existent Team Key",
+            "team_id": 99999  # Use a non-existent team ID
+        }
+    )
+
+    assert response.status_code == 404
+    assert "Team not found" in response.json()["detail"]
+    # Verify that the LiteLLM API was not called
+    mock_post.assert_not_called()
+
+@patch("app.services.litellm.requests.post")
+def test_list_private_ai_keys_as_team_admin_includes_team_and_user_keys(mock_post, client, team_admin_token, test_team_user, test_team, test_region, db):
+    """Test that a team admin can list both team keys and keys owned by users in their team"""
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # First, get a token for the team user
+    response = client.post(
+        "/auth/login",
+        data={"username": test_team_user.email, "password": "password123"}
+    )
+    team_user_token = response.json()["access_token"]
+
+    # Create a private AI key as the team user
+    user_key_data = {
+        "name": "team-user-key",
+        "region_id": test_region.id
+    }
+
+    # Create key as team user
+    response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {team_user_token}"},
+        json=user_key_data
+    )
+    assert response.status_code == 200
+
+    # Create a team-owned key as team admin
+    team_key_data = {
+        "name": "team-owned-key",
+        "region_id": test_region.id,
+        "team_id": test_team.id
+    }
+
+    response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json=team_key_data
+    )
+    assert response.status_code == 200
+
+    # List all keys as team admin
+    response = client.get(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {team_admin_token}"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    # Verify that both the team user's key and team key are in the response
+    assert len(data) == 2
+    assert any(key["name"] == "team-user-key" and key["owner_id"] == test_team_user.id for key in data)
+    assert any(key["name"] == "team-owned-key" and key["team_id"] == test_team.id for key in data)
+
+@patch("app.services.litellm.requests.post")
+def test_list_private_ai_keys_as_read_only_user(mock_post, client, team_admin_token, team_read_only_token, test_region, test_team_read_only, db):
+    """Test that a user with read_only access can see their own AI keys"""
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Create a private AI key for the read_only user using team admin token
+    key_data = {
+        "name": "read-only-user-key",
+        "region_id": test_region.id,
+        "owner_id": test_team_read_only.id  # Create key for the read_only user
+    }
+
+    # Create key as team admin
+    response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json=key_data
+    )
+    assert response.status_code == 200
+
+    # List keys as read_only user
+    response = client.get(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {team_read_only_token}"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    # Verify that only the user's own key is returned
+    assert len(data) == 1
+    assert data[0]["name"] == "read-only-user-key"
+    assert data[0]["owner_id"] == test_team_read_only.id

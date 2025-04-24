@@ -112,6 +112,10 @@ def test_team(db):
     return team
 
 @pytest.fixture
+def test_team_id(test_team):
+    return test_team.id
+
+@pytest.fixture
 def test_team_user(db, test_team):
     user = DBUser(
         email="teamuser@example.com",
@@ -154,6 +158,32 @@ def team_admin_token(client, test_team_admin):
     return response.json()["access_token"]
 
 @pytest.fixture
+def test_team_key_creator(db, test_team):
+    user = DBUser(
+        email="teamkeycreator@example.com",
+        hashed_password=get_password_hash("password123"),
+        is_active=True,
+        is_admin=False,
+        role="key_creator",
+        team_id=test_team.id,
+        created_at=datetime.now(UTC)
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    db.merge(test_team)
+    db.refresh(test_team)
+    return user
+
+@pytest.fixture
+def team_key_creator_token(client, test_team_key_creator):
+    response = client.post(
+        "/auth/login",
+        data={"username": test_team_key_creator.email, "password": "password123"}
+    )
+    return response.json()["access_token"]
+
+@pytest.fixture
 def test_region(db):
     region = DBRegion(
         name="test-region",
@@ -169,3 +199,27 @@ def test_region(db):
     db.commit()
     db.refresh(region)
     return region
+
+@pytest.fixture
+def test_team_read_only(db, test_team):
+    user = DBUser(
+        email="teamreadonly@example.com",
+        hashed_password=get_password_hash("password123"),
+        is_active=True,
+        is_admin=False,
+        role="read_only",
+        team_id=test_team.id,
+        created_at=datetime.now(UTC)
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+@pytest.fixture
+def team_read_only_token(client, test_team_read_only):
+    response = client.post(
+        "/auth/login",
+        data={"username": test_team_read_only.email, "password": "password123"}
+    )
+    return response.json()["access_token"]

@@ -8,11 +8,11 @@ from pydantic import BaseModel
 import logging
 
 from app.db.database import get_db
-from app.api.auth import get_current_user_from_auth
-from app.schemas.models import PrivateAIKey, PrivateAIKeyCreate, User
+from app.schemas.models import PrivateAIKey, PrivateAIKeyCreate, TeamPrivateAIKeyCreate, User
 from app.db.postgres import PostgresManager
-from app.db.models import DBPrivateAIKey, DBRegion, DBUser
+from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
 from app.services.litellm import LiteLLMService
+from app.core.security import get_current_user_from_auth, get_role_min_key_creator
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ class BudgetPeriodUpdate(BaseModel):
 async def create_private_ai_key(
     private_ai_key: PrivateAIKeyCreate,
     current_user = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_role_min_key_creator),
     db: Session = Depends(get_db)
 ):
     """
@@ -45,6 +46,7 @@ async def create_private_ai_key(
 
     Optional parameters:
     - **owner_id**: The ID of the user who will own this key (admin only)
+    - **team_id**: The ID of the team that will own this key (admin only)
 
     The response will include:
     - Database connection details (host, database name, username, password)
@@ -52,8 +54,34 @@ async def create_private_ai_key(
     - LiteLLM API URL for making requests
 
     Note: You must be authenticated to use this endpoint.
-    Only admins can create keys for other users.
+    Only admins can create keys for other users or teams.
     """
+    owner_id = private_ai_key.owner_id
+    team_id = private_ai_key.team_id
+    # If no owner_id or team_id is specified, use the current user's ID
+    if owner_id is None and team_id is None:
+        owner_id = current_user.id
+
+    # Fail fast without having to do DB lookups
+    if user_role in ["key_creator", "user"]:
+        if owner_id != current_user.id or team_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to perform this action"
+            )
+    elif user_role == "admin": # roles always refer to the team role, so admin is a team admin
+        if team_id is not None and team_id != current_user.team_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to perform this action"
+            )
+
+    if team_id is not None and owner_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either owner_id or team_id must be specified, not both"
+        )
+
     # Get the region
     region = db.query(DBRegion).filter(
         DBRegion.id == private_ai_key.region_id,
@@ -65,23 +93,32 @@ async def create_private_ai_key(
             detail="Region not found or inactive"
         )
 
-    # Determine the owner of the key
-    owner_id = private_ai_key.owner_id if private_ai_key.owner_id is not None else current_user.id
+    # Get the owner user if different from current user
+    owner = None
+    if owner_id is not None and owner_id != current_user.id:
+        owner = db.query(DBUser).filter(DBUser.id == owner_id).first()
+        if not owner or (user_role == "admin" and owner.team_id != current_user.team_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Owner user not found"
+            )
+    else:
+        owner = current_user
 
-    # If trying to create for another user, verify admin status
-    if owner_id != current_user.id and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only administrators can create keys for other users"
-        )
+    # Get the team if team_id is specified
+    team = None
+    if team_id is not None:
+        team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+        if not team:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Team not found"
+            )
 
-    # Get the owner user
-    owner = db.query(DBUser).filter(DBUser.id == owner_id).first()
-    if not owner:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Owner user not found"
-        )
+    if team is not None:
+        owner_email = team.admin_email
+    else:
+        owner_email = owner.email
 
     try:
         # Create new postgres database
@@ -93,14 +130,14 @@ async def create_private_ai_key(
             api_key=region.litellm_api_key
         )
         litellm_token = await litellm_service.create_key(
-            email=owner.email,
+            email=owner_email,
             name=private_ai_key.name,
             user_id=owner_id
         )
 
         # Create database with the generated token
         key_credentials = await postgres_manager.create_database(
-            owner=owner.email,
+            owner=owner_email,
             litellm_token=litellm_token,
             name=private_ai_key.name,
             user_id=owner_id
@@ -116,19 +153,20 @@ async def create_private_ai_key(
             litellm_token=key_credentials["litellm_token"],
             litellm_api_url=region.litellm_api_url,
             owner_id=owner_id,
+            team_id=team_id,
             region_id=region.id
         )
         db.add(new_key)
         db.commit()
         db.refresh(new_key)
 
-        # Add owner_id and region to the response
+        # Add metadata to the response
         key_credentials["owner_id"] = owner_id
+        key_credentials["team_id"] = team_id
         key_credentials["region"] = region.name
         key_credentials["litellm_api_url"] = region.litellm_api_url
         key_credentials["name"] = private_ai_key.name
 
-        # Return credentials to user
         return key_credentials
     except Exception as e:
         logger.error(f"Failed to create Private AI Key: {str(e)}", exc_info=True)
@@ -153,7 +191,7 @@ async def list_private_ai_keys(
         - Returns keys for specific owner if owner_id is provided
         - Returns keys for specific team if team_id is provided
     If user is team admin:
-        - Returns keys owned by users in their team
+        - Returns keys owned by users in their team AND keys owned by their team
     If user is not admin:
         - Returns only their own keys, ignoring owner_id and team_id parameters
     """
@@ -166,15 +204,22 @@ async def list_private_ai_keys(
             # Get all users in the team
             team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
             team_user_ids = [user.id for user in team_users]
-            query = query.filter(DBPrivateAIKey.owner_id.in_(team_user_ids))
+            # Return keys owned by users in the team OR owned by the team
+            query = query.filter(
+                (DBPrivateAIKey.owner_id.in_(team_user_ids)) |
+                (DBPrivateAIKey.team_id == team_id)
+            )
     else:
         # Check if user is a team admin
         if current_user.team_id is not None and current_user.role == "admin":
             # Get all users in the team
             team_users = db.query(DBUser).filter(DBUser.team_id == current_user.team_id).all()
             team_user_ids = [user.id for user in team_users]
-            # Return keys owned by any user in the team
-            query = query.filter(DBPrivateAIKey.owner_id.in_(team_user_ids))
+            # Return keys owned by any user in the team OR owned by the team
+            query = query.filter(
+                (DBPrivateAIKey.owner_id.in_(team_user_ids)) |
+                (DBPrivateAIKey.team_id == current_user.team_id)
+            )
         else:
             # Non-admin users can only see their own keys
             query = query.filter(DBPrivateAIKey.owner_id == current_user.id)

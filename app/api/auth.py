@@ -187,53 +187,6 @@ async def get_current_user_from_token(
 
     return db_token.owner
 
-async def get_current_user_from_auth(
-    access_token: Optional[str] = Cookie(None, alias="access_token"),
-    authorization: Optional[str] = Header(None),
-    db: Session = Depends(get_db)
-) -> DBUser:
-    if not access_token and not authorization:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    # Try JWT token first
-    token_to_try = access_token
-    if authorization:
-        parts = authorization.split()
-        if len(parts) != 2 or parts[0].lower() != "bearer":
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid authorization header format. Use 'Bearer <token>'",
-            )
-        token_to_try = parts[1]
-
-    # First try API token validation since it's simpler
-    try:
-        db_token = db.query(DBAPIToken).filter(DBAPIToken.token == token_to_try).first()
-        if db_token:
-            # Update last used timestamp
-            db_token.last_used_at = datetime.now(UTC)
-            db.commit()
-            return db_token.owner
-    except Exception:
-        pass
-
-    # If API token validation fails, try JWT validation
-    try:
-        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_to_try)
-        user = await get_current_user(credentials=credentials, db=db)
-        if user:
-            return user
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
 @router.get("/me", response_model=User)
 async def read_users_me(current_user: DBUser = Depends(get_current_user_from_auth)):
     return current_user

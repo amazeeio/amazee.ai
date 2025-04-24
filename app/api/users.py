@@ -1,17 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List, Literal
+from typing import List
 
 from app.db.database import get_db
 from app.schemas.models import User, UserUpdate, UserCreate, TeamOperation, UserRoleUpdate
 from app.db.models import DBUser, DBTeam
-from app.api.auth import get_current_user_from_auth
-from app.core.security import get_password_hash, check_system_admin, check_team_admin
+from app.core.security import get_password_hash, check_system_admin, get_current_user_from_auth, VALID_ROLES, get_role_min_team_admin
 from datetime import datetime, UTC
-
-# Define valid user roles as a Literal type
-UserRole = Literal["admin", "key_creator", "read_only"]
-VALID_ROLES: List[UserRole] = ["admin", "key_creator", "read_only"]
 
 router = APIRouter()
 
@@ -28,8 +23,8 @@ async def search_users(
     users = db.query(DBUser).filter(DBUser.email.ilike(f"%{email}%")).limit(10).all()
     return users
 
-@router.get("", response_model=List[User], dependencies=[Depends(check_team_admin)])
-@router.get("/", response_model=List[User], dependencies=[Depends(check_team_admin)])
+@router.get("", response_model=List[User], dependencies=[Depends(get_role_min_team_admin)])
+@router.get("/", response_model=List[User], dependencies=[Depends(get_role_min_team_admin)])
 async def list_users(
     current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
@@ -51,8 +46,8 @@ async def list_users(
         result.append(user)
     return result
 
-@router.post("", response_model=User, status_code=status.HTTP_201_CREATED, dependencies=[Depends(check_team_admin)])
-@router.post("/", response_model=User, status_code=status.HTTP_201_CREATED, dependencies=[Depends(check_team_admin)])
+@router.post("", response_model=User, status_code=status.HTTP_201_CREATED, dependencies=[Depends(get_role_min_team_admin)])
+@router.post("/", response_model=User, status_code=status.HTTP_201_CREATED, dependencies=[Depends(get_role_min_team_admin)])
 async def create_user(
     user: UserCreate,
     current_user: DBUser = Depends(get_current_user_from_auth),
@@ -114,7 +109,7 @@ async def get_user(
     # Otherwise, return 404 to avoid leaking information about user existence
     raise HTTPException(status_code=404, detail="User not found")
 
-@router.put("/{user_id}", response_model=User, dependencies=[Depends(check_team_admin)])
+@router.put("/{user_id}", response_model=User, dependencies=[Depends(get_role_min_team_admin)])
 async def update_user(
     user_id: int,
     user_update: UserUpdate,
@@ -142,7 +137,7 @@ async def update_user(
     db.refresh(db_user)
     return db_user
 
-@router.post("/{user_id}/add-to-team", response_model=User, dependencies=[Depends(check_team_admin)])
+@router.post("/{user_id}/add-to-team", response_model=User, dependencies=[Depends(get_role_min_team_admin)])
 async def add_user_to_team(
     user_id: int,
     team_operation: TeamOperation,
@@ -228,7 +223,7 @@ async def delete_user(
     db.commit()
     return {"message": "User deleted successfully"}
 
-@router.post("/{user_id}/role", response_model=User, dependencies=[Depends(check_team_admin)])
+@router.post("/{user_id}/role", response_model=User, dependencies=[Depends(get_role_min_team_admin)])
 async def update_user_role(
     user_id: int,
     role_update: UserRoleUpdate,
