@@ -194,3 +194,13 @@ class TeamOperation(BaseModel):
 class UserRoleUpdate(BaseModel):
     role: str
     model_config = ConfigDict(from_attributes=True)
+
+class PrivateAIKeySpend(BaseModel):
+    spend: float
+    expires: datetime
+    created_at: datetime
+    updated_at: datetime
+    max_budget: Optional[float] = None
+    budget_duration: Optional[str] = None
+    budget_reset_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)

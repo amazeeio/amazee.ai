@@ -571,6 +571,60 @@ def test_list_private_ai_keys_as_read_only_user(mock_post, client, team_admin_to
     assert data[0]["name"] == "read-only-user-key"
     assert data[0]["owner_id"] == test_team_read_only.id
 
+@patch("app.services.litellm.requests.get")
+def test_view_spend_as_read_only_user(mock_get, client, team_read_only_token, test_region, mock_litellm_response, db, test_team_read_only):
+    """Test that a read-only user can view spend information for their own key"""
+    # Mock the LiteLLM API response
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = {
+        "info": {
+            "spend": 10.5,
+            "expires": "2024-12-31T23:59:59Z",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-02T00:00:00Z",
+            "max_budget": 100.0,
+            "budget_duration": "monthly",
+            "budget_reset_at": "2024-02-01T00:00:00Z"
+        }
+    }
+    mock_get.return_value.raise_for_status.return_value = None
+
+    # Create a test key owned by the read-only user
+    test_key = DBPrivateAIKey(
+        database_name="test-db-read-only-spend",
+        name="Test Key for Spend",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="test-token-spend",
+        litellm_api_url="https://test-litellm.com",
+        owner_id=test_team_read_only.id,
+        region_id=test_region.id
+    )
+    db.add(test_key)
+    db.commit()
+
+    # View spend information as read-only user
+    response = client.get(
+        f"/private-ai-keys/{test_key.database_name}/spend",
+        headers={"Authorization": f"Bearer {team_read_only_token}"}
+    )
+
+    # Verify the response
+    assert response.status_code == 200
+    data = response.json()
+    assert data["spend"] == 10.5
+    assert data["expires"] == "2024-12-31T23:59:59Z"
+    assert data["created_at"] == "2024-01-01T00:00:00Z"
+    assert data["updated_at"] == "2024-01-02T00:00:00Z"
+    assert data["max_budget"] == 100.0
+    assert data["budget_duration"] == "monthly"
+    assert data["budget_reset_at"] == "2024-02-01T00:00:00Z"
+
+    # Clean up the test key
+    db.delete(test_key)
+    db.commit()
+
 @patch("app.services.litellm.requests.post")
 def test_delete_private_ai_key_as_read_only_user(mock_post, client, team_read_only_token, test_region, mock_litellm_response, db):
     """Test that a user with read_only role cannot delete a key"""
@@ -813,6 +867,137 @@ def test_delete_private_ai_key_as_default_user_not_owner(mock_post, client, test
 
     # Verify that the LiteLLM API was not called
     mock_post.assert_not_called()
+
+    # Clean up the test key
+    db.delete(test_key)
+    db.commit()
+
+@patch("app.services.litellm.requests.get")
+def test_view_spend_with_extra_fields(mock_get, client, team_read_only_token, test_region, mock_litellm_response, db, test_team_read_only):
+    """Test that the spend endpoint correctly handles extra fields in the LiteLLM response"""
+    # Mock the LiteLLM API response with extra fields
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = {
+        "info": {
+            "spend": 10.5,
+            "expires": "2024-12-31T23:59:59Z",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-02T00:00:00Z",
+            "max_budget": 100.0,
+            "budget_duration": "monthly",
+            "budget_reset_at": "2024-02-01T00:00:00Z",
+            "extra_field1": "value1",  # Extra field not in our model
+            "extra_field2": 123,       # Extra field not in our model
+            "extra_field3": {          # Extra field not in our model
+                "nested": "value"
+            }
+        }
+    }
+    mock_get.return_value.raise_for_status.return_value = None
+
+    # Create a test key owned by the read-only user
+    test_key = DBPrivateAIKey(
+        database_name="test-db-extra-fields",
+        name="Test Key with Extra Fields",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="test-token-extra-fields",
+        litellm_api_url="https://test-litellm.com",
+        owner_id=test_team_read_only.id,
+        region_id=test_region.id
+    )
+    db.add(test_key)
+    db.commit()
+
+    # View spend information as read-only user
+    response = client.get(
+        f"/private-ai-keys/{test_key.database_name}/spend",
+        headers={"Authorization": f"Bearer {team_read_only_token}"}
+    )
+
+    # Verify the response
+    assert response.status_code == 200
+    data = response.json()
+
+    # Verify only the expected fields are present
+    expected_fields = {
+        "spend", "expires", "created_at", "updated_at",
+        "max_budget", "budget_duration", "budget_reset_at"
+    }
+    assert set(data.keys()) == expected_fields
+
+    # Verify the values match
+    assert data["spend"] == 10.5
+    assert data["expires"] == "2024-12-31T23:59:59Z"
+    assert data["created_at"] == "2024-01-01T00:00:00Z"
+    assert data["updated_at"] == "2024-01-02T00:00:00Z"
+    assert data["max_budget"] == 100.0
+    assert data["budget_duration"] == "monthly"
+    assert data["budget_reset_at"] == "2024-02-01T00:00:00Z"
+
+    # Clean up the test key
+    db.delete(test_key)
+    db.commit()
+
+@patch("app.services.litellm.requests.get")
+def test_view_spend_with_missing_fields(mock_get, client, team_read_only_token, test_region, mock_litellm_response, db, test_team_read_only):
+    """Test that the spend endpoint handles missing spend and budget fields correctly"""
+    # Mock the LiteLLM API response with missing fields
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = {
+        "info": {
+            # Missing spend field
+            "expires": "2024-12-31T23:59:59Z",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-02T00:00:00Z",
+            # Missing max_budget field
+            # Missing budget_duration field
+            # Missing budget_reset_at field
+        }
+    }
+    mock_get.return_value.raise_for_status.return_value = None
+
+    # Create a test key owned by the read-only user
+    test_key = DBPrivateAIKey(
+        database_name="test-db-missing-fields",
+        name="Test Key with Missing Fields",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="test-token-missing-fields",
+        litellm_api_url="https://test-litellm.com",
+        owner_id=test_team_read_only.id,
+        region_id=test_region.id
+    )
+    db.add(test_key)
+    db.commit()
+
+    # View spend information as read-only user
+    response = client.get(
+        f"/private-ai-keys/{test_key.database_name}/spend",
+        headers={"Authorization": f"Bearer {team_read_only_token}"}
+    )
+
+    # Verify the response
+    assert response.status_code == 200
+    data = response.json()
+
+    # Verify all required fields are present
+    expected_fields = {
+        "spend", "expires", "created_at", "updated_at",
+        "max_budget", "budget_duration", "budget_reset_at"
+    }
+    assert set(data.keys()) == expected_fields
+
+    # Verify the values match
+    assert data["spend"] == 0.0  # Default value for missing spend
+    assert data["expires"] == "2024-12-31T23:59:59Z"
+    assert data["created_at"] == "2024-01-01T00:00:00Z"
+    assert data["updated_at"] == "2024-01-02T00:00:00Z"
+    assert data["max_budget"] is None  # No default value for missing max_budget
+    assert data["budget_duration"] is None  # No default value for missing budget_duration
+    assert data["budget_reset_at"] is None  # No default value for missing budget_reset_at
 
     # Clean up the test key
     db.delete(test_key)
