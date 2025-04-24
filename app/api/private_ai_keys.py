@@ -2,12 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from fastapi import status
-import requests
-from pydantic import BaseModel
 import logging
 
 from app.db.database import get_db
-from app.schemas.models import PrivateAIKey, PrivateAIKeyCreate, PrivateAIKeySpend
+from app.schemas.models import PrivateAIKey, PrivateAIKeyCreate, PrivateAIKeySpend, BudgetPeriodUpdate
 from app.db.postgres import PostgresManager
 from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
 from app.services.litellm import LiteLLMService
@@ -19,9 +17,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(
     tags=["Private AI Keys"]
 )
-
-class BudgetPeriodUpdate(BaseModel):
-    budget_duration: str
 
 @router.post("", response_model=PrivateAIKey)
 @router.post("/", response_model=PrivateAIKey)

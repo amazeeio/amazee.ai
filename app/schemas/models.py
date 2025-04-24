@@ -1,9 +1,7 @@
-from pydantic import BaseModel, EmailStr, ConfigDict
+from pydantic import BaseModel, ConfigDict
 from typing import Optional, List, ClassVar
 from datetime import datetime
-from sqlalchemy import Column, Integer, DateTime, String, JSON, ForeignKey
 from sqlalchemy.orm import relationship
-from app.db.database import Base
 
 class Token(BaseModel):
     access_token: str
@@ -121,6 +119,19 @@ class PrivateAIKey(PrivateAIKeyBase):
     team_id: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
 
+class BudgetPeriodUpdate(BaseModel):
+    budget_duration: str
+
+class PrivateAIKeySpend(BaseModel):
+    spend: float
+    expires: datetime
+    created_at: datetime
+    updated_at: datetime
+    max_budget: Optional[float] = None
+    budget_duration: Optional[str] = None
+    budget_reset_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
 class AuditLog(BaseModel):
     id: int
     timestamp: datetime
@@ -193,14 +204,4 @@ class TeamOperation(BaseModel):
 
 class UserRoleUpdate(BaseModel):
     role: str
-    model_config = ConfigDict(from_attributes=True)
-
-class PrivateAIKeySpend(BaseModel):
-    spend: float
-    expires: datetime
-    created_at: datetime
-    updated_at: datetime
-    max_budget: Optional[float] = None
-    budget_duration: Optional[str] = None
-    budget_reset_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
