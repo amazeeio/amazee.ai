@@ -268,7 +268,6 @@ def _get_key_if_allowed(key_name: str, current_user: DBUser, user_role: str, db:
             )
     return private_ai_key
 
-
 @router.delete("/{key_name}")
 async def delete_private_ai_key(
     key_name: str,
@@ -379,52 +378,29 @@ async def update_budget_period(
             detail="Region not found"
         )
 
+    litellm_service = LiteLLMService(
+        api_url=region.litellm_api_url,
+        api_key=region.litellm_api_key
+    )
+
     try:
         # Update budget period in LiteLLM
-        response = requests.post(
-            f"{region.litellm_api_url}/key/update",
-            headers={
-                "Authorization": f"Bearer {region.litellm_api_key}"
-            },
-            json={
-                "key": private_ai_key.litellm_token,
-                "budget_duration": budget_update.budget_duration
-            }
+        await litellm_service.update_budget(
+            litellm_token=private_ai_key.litellm_token,
+            budget_duration=budget_update.budget_duration
         )
-        response.raise_for_status()
 
         # Get updated spend information
-        spend_response = requests.get(
-            f"{region.litellm_api_url}/key/info",
-            headers={
-                "Authorization": f"Bearer {region.litellm_api_key}"
-            },
-            params={
-                "key": private_ai_key.litellm_token
-            }
-        )
-        spend_response.raise_for_status()
-        data = spend_response.json()
-        info = data.get("info", {})
-
-        return {
-            "spend": info.get("spend", 0),
-            "expires": info.get("expires"),
-            "created_at": info.get("created_at"),
-            "updated_at": info.get("updated_at"),
-            "max_budget": info.get("max_budget"),
-            "budget_duration": info.get("budget_duration"),
-            "budget_reset_at": info.get("budget_reset_at")
+        spend_data = await litellm_service.get_key_info(private_ai_key.litellm_token)
+        # Only set default for spend field
+        spend_info = {
+            "spend": spend_data.get("spend", 0.0),
+            **spend_data
         }
-    except requests.exceptions.RequestException as e:
-        error_msg = str(e)
-        if hasattr(e, 'response') and e.response is not None:
-            try:
-                error_details = e.response.json()
-                error_msg = f"Status {e.response.status_code}: {error_details}"
-            except ValueError:
-                error_msg = f"Status {e.response.status_code}: {e.response.text}"
+
+        return PrivateAIKeySpend.model_validate(spend_info)
+    except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update budget period: {error_msg}"
+            detail=f"Failed to update budget period: {str(e)}"
         )

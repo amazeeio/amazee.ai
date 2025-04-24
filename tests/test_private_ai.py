@@ -1002,3 +1002,44 @@ def test_view_spend_with_missing_fields(mock_get, client, team_read_only_token, 
     # Clean up the test key
     db.delete(test_key)
     db.commit()
+
+@patch("app.services.litellm.requests.post")
+def test_update_budget_period_as_key_creator(mock_post, client, team_key_creator_token, test_region, mock_litellm_response, db, test_team_key_creator):
+    """Test that a key_creator cannot update the budget period for a key they own"""
+    # Mock the LiteLLM API response (though it shouldn't be called)
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Create a test key owned by the key_creator user
+    test_key = DBPrivateAIKey(
+        database_name="test-db-key-creator",
+        name="Test Key for Key Creator",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="test-token-key-creator",
+        litellm_api_url="https://test-litellm.com",
+        owner_id=test_team_key_creator.id,
+        region_id=test_region.id
+    )
+    db.add(test_key)
+    db.commit()
+
+    # Try to update the budget period as a key_creator
+    response = client.put(
+        f"/private-ai-keys/{test_key.database_name}/budget-period",
+        headers={"Authorization": f"Bearer {team_key_creator_token}"},
+        json={"budget_duration": "monthly"}
+    )
+
+    # Verify the response
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
+
+    # Verify that the LiteLLM API was not called
+    mock_post.assert_not_called()
+
+    # Clean up the test key
+    db.delete(test_key)
+    db.commit()
