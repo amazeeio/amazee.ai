@@ -231,12 +231,12 @@ async def list_private_ai_keys(
 async def delete_private_ai_key(
     key_name: str,
     current_user = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_role_min_key_creator),
     db: Session = Depends(get_db)
 ):
-    # Get the private AI key record
+    # First try to find the key
     private_ai_key = db.query(DBPrivateAIKey).filter(
-        DBPrivateAIKey.database_name == key_name,
-        DBPrivateAIKey.owner_id == current_user.id
+        DBPrivateAIKey.database_name == key_name
     ).first()
 
     if not private_ai_key:
@@ -244,6 +244,35 @@ async def delete_private_ai_key(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Private AI Key not found"
         )
+
+    # Check if user has permission to delete the key
+    if current_user.is_admin:
+        # System admin can delete any key
+        pass
+    elif user_role == "admin":
+        # Team admin can only delete keys from their team
+        if private_ai_key.team_id is not None:
+            # For team-owned keys, check if it belongs to the admin's team
+            if private_ai_key.team_id != current_user.team_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Private AI Key not found"
+                )
+        else:
+            # For user-owned keys, check if the owner is in the admin's team
+            owner = db.query(DBUser).filter(DBUser.id == private_ai_key.owner_id).first()
+            if not owner or owner.team_id != current_user.team_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Private AI Key not found"
+                )
+    else:
+        # Regular users can only delete their own keys
+        if private_ai_key.owner_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Private AI Key not found"
+            )
 
     # Get the region
     region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()

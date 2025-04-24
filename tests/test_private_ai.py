@@ -570,3 +570,250 @@ def test_list_private_ai_keys_as_read_only_user(mock_post, client, team_admin_to
     assert len(data) == 1
     assert data[0]["name"] == "read-only-user-key"
     assert data[0]["owner_id"] == test_team_read_only.id
+
+@patch("app.services.litellm.requests.post")
+def test_delete_private_ai_key_as_read_only_user(mock_post, client, team_read_only_token, test_region, mock_litellm_response, db):
+    """Test that a user with read_only role cannot delete a key"""
+    # Mock the LiteLLM API response (though it shouldn't be called)
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Create a test key
+    test_key = DBPrivateAIKey(
+        database_name="test-db-read-only",
+        name="Test Key for Read Only User",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="test-token-read-only",
+        litellm_api_url="https://test-litellm.com",
+        owner_id=1,  # Any owner ID since we're testing read_only access
+        region_id=test_region.id
+    )
+    db.add(test_key)
+    db.commit()
+
+    # Try to delete the key as a read_only user
+    delete_response = client.delete(
+        f"/private-ai-keys/{test_key.database_name}",
+        headers={"Authorization": f"Bearer {team_read_only_token}"}
+    )
+
+    # Verify the delete response
+    assert delete_response.status_code == 403
+    assert "Not authorized to perform this action" in delete_response.json()["detail"]
+
+    # Verify that the LiteLLM API was not called
+    mock_post.assert_not_called()
+
+    # Clean up the test key
+    db.delete(test_key)
+    db.commit()
+
+@patch("app.services.litellm.requests.post")
+def test_delete_team_private_ai_key(mock_post, client, team_admin_token, test_team, test_region, mock_litellm_response):
+    """Test that a team admin can delete a team-owned private AI key"""
+    # Mock the LiteLLM API response for both create and delete operations
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # First create a team-owned key
+    create_response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Team Key to Delete",
+            "team_id": test_team.id
+        }
+    )
+    assert create_response.status_code == 200
+    created_key = create_response.json()
+    assert created_key["team_id"] == test_team.id
+    assert created_key["owner_id"] is None
+
+    # Now delete the team-owned key
+    delete_response = client.delete(
+        f"/private-ai-keys/{created_key['database_name']}",
+        headers={"Authorization": f"Bearer {team_admin_token}"}
+    )
+
+    # Verify the delete response
+    assert delete_response.status_code == 200
+    assert delete_response.json()["message"] == "Private AI Key deleted successfully"
+
+    # Verify the LiteLLM token was deleted
+    mock_post.assert_called_with(
+        f"{test_region.litellm_api_url}/key/delete",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={"keys": [created_key["litellm_token"]]}
+    )
+
+@patch("app.services.litellm.requests.post")
+def test_delete_private_ai_key_as_system_admin(mock_post, client, admin_token, test_team_user, test_region, mock_litellm_response):
+    """Test that a system admin can delete any private AI key"""
+    # Mock the LiteLLM API response for both create and delete operations
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Create a private AI key for the team user using admin token
+    test_team_user_id = test_team_user.id
+    create_response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Key to Delete",
+            "owner_id": test_team_user_id
+        }
+    )
+    assert create_response.status_code == 200
+    created_key = create_response.json()
+    assert created_key["owner_id"] == test_team_user_id
+
+    # Now delete the key as system admin
+    delete_response = client.delete(
+        f"/private-ai-keys/{created_key['database_name']}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    # Verify the delete response
+    assert delete_response.status_code == 200
+    assert delete_response.json()["message"] == "Private AI Key deleted successfully"
+
+    # Verify the LiteLLM token was deleted
+    mock_post.assert_called_with(
+        f"{test_region.litellm_api_url}/key/delete",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={"keys": [created_key["litellm_token"]]}
+    )
+
+@patch("app.services.litellm.requests.post")
+def test_delete_private_ai_key_from_other_team(mock_post, client, team_admin_token, admin_token, test_region, mock_litellm_response, db):
+    """Test that a team admin cannot delete a key from another team"""
+    # Create a second team
+    other_team = DBTeam(
+        name="Other Team",
+        admin_email="otherteam@example.com",
+        phone="0987654321",
+        billing_address="456 Other St, Other City, 54321",
+        is_active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(other_team)
+    db.commit()
+    db.refresh(other_team)
+
+    # Mock the LiteLLM API response for create operation
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Create a team key for the other team using admin token
+    other_team_id = other_team.id
+    create_response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Other Team Key",
+            "team_id": other_team_id
+        }
+    )
+    assert create_response.status_code == 200
+    created_key = create_response.json()
+    assert created_key["team_id"] == other_team_id
+    assert created_key["owner_id"] is None
+
+    # Try to delete the key as team admin
+    delete_response = client.delete(
+        f"/private-ai-keys/{created_key['database_name']}",
+        headers={"Authorization": f"Bearer {team_admin_token}"}
+    )
+
+    # Verify the delete response
+    assert delete_response.status_code == 404
+    assert "Private AI Key not found" in delete_response.json()["detail"]
+
+@patch("app.services.litellm.requests.post")
+def test_delete_team_member_key_as_team_admin(mock_post, client, team_admin_token, admin_token, test_team_user, test_region, mock_litellm_response):
+    """Test that a team admin can delete a key belonging to a user in their team"""
+    # Mock the LiteLLM API response for both create and delete operations
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Create a private AI key for the team user using admin token
+    test_team_user_id = test_team_user.id
+    create_response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Team Member Key",
+            "owner_id": test_team_user_id
+        }
+    )
+    assert create_response.status_code == 200
+    created_key = create_response.json()
+    assert created_key["owner_id"] == test_team_user_id
+
+    # Delete the key as team admin
+    delete_response = client.delete(
+        f"/private-ai-keys/{created_key['database_name']}",
+        headers={"Authorization": f"Bearer {team_admin_token}"}
+    )
+
+    # Verify the delete response
+    assert delete_response.status_code == 200
+    assert delete_response.json()["message"] == "Private AI Key deleted successfully"
+
+    # Verify the LiteLLM token was deleted
+    mock_post.assert_called_with(
+        f"{test_region.litellm_api_url}/key/delete",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={"keys": [created_key["litellm_token"]]}
+    )
+
+@patch("app.services.litellm.requests.post")
+def test_delete_private_ai_key_as_default_user_not_owner(mock_post, client, test_token, test_region, mock_litellm_response, db, test_admin):
+    """Test that a default user cannot delete a key they don't own"""
+    # Mock the LiteLLM API response (though it shouldn't be called)
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Create a test key owned by the admin user
+    test_key = DBPrivateAIKey(
+        database_name="test-db-not-owned",
+        name="Test Key Not Owned",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="test-token-not-owned",
+        litellm_api_url="https://test-litellm.com",
+        owner_id=test_admin.id,  # Use the admin's ID as the owner
+        region_id=test_region.id
+    )
+    db.add(test_key)
+    db.commit()
+
+    # Try to delete the key as a default user
+    delete_response = client.delete(
+        f"/private-ai-keys/{test_key.database_name}",
+        headers={"Authorization": f"Bearer {test_token}"}
+    )
+
+    # Verify the delete response
+    assert delete_response.status_code == 404
+    assert "Private AI Key not found" in delete_response.json()["detail"]
+
+    # Verify that the LiteLLM API was not called
+    mock_post.assert_not_called()
+
+    # Clean up the test key
+    db.delete(test_key)
+    db.commit()
