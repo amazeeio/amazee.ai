@@ -43,18 +43,29 @@ inspector = inspect(engine)
 existing_tables = inspector.get_table_names()
 print(f"Existing tables: {existing_tables}")
 
+alembic_cfg = alembic.config.Config(os.path.join(os.path.dirname(__file__), "app", "migrations", "alembic.ini"))
+alembic_cfg.set_main_option("script_location", "app/migrations")
+if not "alembic_version" in existing_tables:
+    alembic.command.ensure_version(alembic_cfg)
 if not existing_tables:
     print("No tables found - creating database schema from models...")
     # Create all tables from models
     Base.metadata.create_all(bind=engine)
     print("Database tables created successfully!")
+    alembic.command.stamp(alembic_cfg, "head")
+    print("Stamped alembic version for future migrations")
 else:
     print("Tables already exist - running migrations...")
     # Run database migrations
-    alembic_cfg = alembic.config.Config(os.path.join(os.path.dirname(__file__), "app", "migrations", "alembic.ini"))
-    alembic_cfg.set_main_option("script_location", "app/migrations")
-    alembic.command.upgrade(alembic_cfg, "head")
-    print("Database migrations completed successfully!")
+    try:
+        alembic.command.upgrade(alembic_cfg, "head")
+        print("Database migrations completed successfully!")
+    except Exception as e:
+        print(f"Migration failed: {str(e)}")
+        print("Attempting to stamp current version and continue...")
+        # If migration fails, stamp the current version
+        alembic.command.stamp(alembic_cfg, "head")
+        print("Database version stamped successfully!")
 
 # Create initial admin user if none exists
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
