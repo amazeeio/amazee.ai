@@ -93,13 +93,14 @@ class Region(RegionBase):
     model_config = ConfigDict(from_attributes=True)
 
 class PrivateAIKeyBase(BaseModel):
-    database_name: str
+    id: int
+    database_name: Optional[str] = None
     name: Optional[str] = None
-    database_host: str
-    database_username: str  # This is the database username, not the user's email
-    database_password: str
-    litellm_token: str
-    litellm_api_url: str
+    database_host: Optional[str] = None
+    database_username: Optional[str] = None  # This is the database username, not the user's email
+    database_password: Optional[str] = None
+    litellm_token: Optional[str] = None
+    litellm_api_url: Optional[str] = None
     region: Optional[str] = None
     created_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
@@ -117,6 +118,7 @@ class VectorDBCreate(BaseModel):
     team_id: Optional[int] = None
 
 class VectorDB(BaseModel):
+    id: int
     database_name: str
     database_host: str
     database_username: str
@@ -150,6 +152,7 @@ class PrivateAIKeySpend(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class LiteLLMToken(BaseModel):
+    id: int
     litellm_token: str
     litellm_api_url: str
     owner_id: Optional[int] = None

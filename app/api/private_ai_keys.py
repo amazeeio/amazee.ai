@@ -1,3 +1,4 @@
+import re
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -116,30 +117,28 @@ async def create_vector_db(
         key_credentials = await postgres_manager.create_database()
 
         # Create response object
-        response = VectorDB(
+        db_ai_key = DBPrivateAIKey(
             database_name=key_credentials["database_name"],
             database_host=key_credentials["database_host"],
             database_username=key_credentials["database_username"],
             database_password=key_credentials["database_password"],
             owner_id=owner_id,
             team_id=team_id,
-            region=region.name,
-            name=vector_db.name
+            name=vector_db.name,
+            region_id = vector_db.region_id
         )
 
         # If store_result is True, store the vector DB info in DBPrivateAIKey
         if store_result:
-            # Convert Pydantic model to dict and add region_id
-            key_data = response.model_dump()
-            key_data["region_id"] = vector_db.region_id
-
-            # Create DBPrivateAIKey from the dict
-            new_key = DBPrivateAIKey(**key_data)
-            db.add(new_key)
+            db.add(db_ai_key)
             db.commit()
-            db.refresh(new_key)
+            db.refresh(db_ai_key)
+        else:
+            db_ai_key.region = region
+            db_ai_key.id = -1
 
-        return response
+        logger.info(f"Vector DB created: {db_ai_key.to_dict()}")
+        return VectorDB.model_validate(db_ai_key.to_dict())
     except Exception as e:
         logger.error(f"Failed to create vector database: {str(e)}", exc_info=True)
         db.rollback()
@@ -210,10 +209,6 @@ async def create_private_ai_key(
     db.refresh(new_key)
 
     key_data = new_key.to_dict()
-    key_data["litellm_token"] = llm_token.litellm_token
-    key_data["litellm_api_url"] = llm_token.litellm_api_url
-    key_data["region"] = db_info.region
-    key_data["name"] = private_ai_key.name
 
     return PrivateAIKey.model_validate(key_data)
 
@@ -306,28 +301,25 @@ async def create_llm_token(
         )
 
         # Create response object
-        response = LiteLLMToken.model_validate({
-            "litellm_token": litellm_token,
-            "litellm_api_url": region.litellm_api_url,
-            "owner_id": owner_id,
-            "team_id": team_id,
-            "region": region.name,
-            "name": private_ai_key.name
-        })
+        db_token = DBPrivateAIKey(
+            litellm_token=litellm_token,
+            litellm_api_url=region.litellm_api_url,
+            owner_id=owner_id,
+            team_id=team_id,
+            name=private_ai_key.name,
+            region_id = private_ai_key.region_id
+        )
 
         # If store_result is True, store the LiteLLM token info in DBPrivateAIKey
         if store_result:
-            # Convert Pydantic model to dict and add region_id
-            key_data = response.model_dump()
-            key_data["region_id"] = private_ai_key.region_id
-
-            # Create DBPrivateAIKey from the dict
-            new_key = DBPrivateAIKey(**key_data)
-            db.add(new_key)
+            db.add(db_token)
             db.commit()
-            db.refresh(new_key)
+            db.refresh(db_token)
+        else:
+            db_token.region = region
+            db_token.id = -1
 
-        return response
+        return LiteLLMToken.model_validate(db_token.to_dict())
     except Exception as e:
         logger.error(f"Failed to create LiteLLM token: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -386,10 +378,10 @@ async def list_private_ai_keys(
     private_ai_keys = query.all()
     return [key.to_dict() for key in private_ai_keys]
 
-def _get_key_if_allowed(key_name: str, current_user: DBUser, user_role: str, db: Session) -> DBPrivateAIKey:
+def _get_key_if_allowed(key_id: id, current_user: DBUser, user_role: str, db: Session) -> DBPrivateAIKey:
     # First try to find the key
     private_ai_key = db.query(DBPrivateAIKey).filter(
-        DBPrivateAIKey.database_name == key_name
+        DBPrivateAIKey.id == key_id
     ).first()
 
     if not private_ai_key:
@@ -428,14 +420,14 @@ def _get_key_if_allowed(key_name: str, current_user: DBUser, user_role: str, db:
             )
     return private_ai_key
 
-@router.delete("/{key_name}")
+@router.delete("/{key_id}")
 async def delete_private_ai_key(
-    key_name: str,
+    key_id: int,
     current_user = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_role_min_key_creator),
     db: Session = Depends(get_db)
 ):
-    private_ai_key = _get_key_if_allowed(key_name, current_user, user_role, db)
+    private_ai_key = _get_key_if_allowed(key_id, current_user, user_role, db)
     # Get the region
     region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
     if not region:
@@ -465,14 +457,14 @@ async def delete_private_ai_key(
 
     return {"message": "Private AI Key deleted successfully"}
 
-@router.get("/{key_name}/spend", response_model=PrivateAIKeySpend)
+@router.get("/{key_id}/spend", response_model=PrivateAIKeySpend)
 async def get_private_ai_key_spend(
-    key_name: str,
+    key_id: int,
     current_user = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
     user_role = current_user.role
-    private_ai_key = _get_key_if_allowed(key_name, current_user, user_role, db)
+    private_ai_key = _get_key_if_allowed(key_id, current_user, user_role, db)
 
     # Get the region
     region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
@@ -506,9 +498,9 @@ async def get_private_ai_key_spend(
             detail=f"Failed to get Private AI Key spend: {str(e)}"
         )
 
-@router.put("/{key_name}/budget-period")
+@router.put("/{key_id}/budget-period")
 async def update_budget_period(
-    key_name: str,
+    key_id: int,
     budget_update: BudgetPeriodUpdate,
     current_user = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_role_min_team_admin),
@@ -528,7 +520,7 @@ async def update_budget_period(
     Note: You must be authenticated to use this endpoint.
     Only the owner of the key or an admin can update it.
     """
-    private_ai_key = _get_key_if_allowed(key_name, current_user, user_role, db)
+    private_ai_key = _get_key_if_allowed(key_id, current_user, user_role, db)
 
     # Get the region
     region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()

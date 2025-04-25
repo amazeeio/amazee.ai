@@ -1,5 +1,6 @@
 import pytest
 from app.db.models import DBPrivateAIKey
+from unittest.mock import patch
 
 def test_create_region(client, admin_token):
     """Test creating a new region with private AI key settings"""
@@ -47,20 +48,50 @@ def test_create_region_non_admin(client, test_token):
     assert response.status_code == 403
     assert "Only administrators can create regions" in response.json()["detail"]
 
-def test_delete_region_with_active_keys(client, admin_token, test_region, db, test_admin):
+@patch("app.services.litellm.requests.post")
+def test_delete_region_with_active_keys(mock_post, client, admin_token, test_region, db, test_admin):
     """Test that a region with active private AI keys cannot be deleted"""
-    # Create a test private AI key in the region
-    test_key = DBPrivateAIKey(
-        database_name="test-db",
-        database_host="test-host",
-        database_username="test-user",
-        database_password="test-pass",
-        litellm_token="test-token",
-        owner_id=test_admin.id,
-        region_id=test_region.id
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Create a test private AI key in the region via API
+    response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Test Key",
+            "owner_id": test_admin.id
+        }
     )
-    db.add(test_key)
-    db.commit()
+    assert response.status_code == 200
+    test_key = response.json()
+
+    response = client.delete(
+        f"/regions/{test_region.id}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    assert response.status_code == 400
+    assert "Cannot delete region" in response.json()["detail"]
+    assert "database(s) are currently using this region" in response.json()["detail"]
+
+def test_delete_region_with_active_vector_db(client, admin_token, test_region, db, test_admin):
+    """Test that a region with an active vector database cannot be deleted"""
+    # Create a test vector database in the region via API
+    response = client.post(
+        "/private-ai-keys/vector-db",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Test Vector DB",
+            "owner_id": test_admin.id
+        }
+    )
+    assert response.status_code == 200
+    test_db = response.json()
 
     response = client.delete(
         f"/regions/{test_region.id}",

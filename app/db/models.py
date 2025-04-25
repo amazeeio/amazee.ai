@@ -89,7 +89,7 @@ class DBPrivateAIKey(Base):
 
     def to_dict(self):
         return {
-            "id": self.id,
+            "id": self.id or -1,
             "name": self.name,
             "database_name": self.database_name,
             "database_host": self.database_host,

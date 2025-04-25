@@ -32,6 +32,7 @@ def test_create_private_ai_key(mock_post, client, test_token, test_region, mock_
     assert data["region"] == test_region.name
     assert data["litellm_token"] == "test-private-key-123"
     assert data["owner_id"] == test_user.id
+    assert data["id"] != -1
 
 @patch("app.services.litellm.requests.post")
 def test_create_private_ai_key_invalid_region(mock_post, client, test_token):
@@ -115,7 +116,7 @@ def test_delete_private_ai_key(mock_post, client, test_token, test_region, db, t
 
     # Delete the private AI key
     response = client.delete(
-        f"/private-ai-keys/{test_key.database_name}",
+        f"/private-ai-keys/{key_id}",
         headers={"Authorization": f"Bearer {test_token}"}
     )
 
@@ -533,10 +534,11 @@ def test_view_spend_as_read_only_user(mock_get, client, team_read_only_token, te
     )
     db.add(test_key)
     db.commit()
+    db.refresh(test_key)
 
     # View spend information as read-only user
     response = client.get(
-        f"/private-ai-keys/{test_key.database_name}/spend",
+        f"/private-ai-keys/{test_key.id}/spend",
         headers={"Authorization": f"Bearer {team_read_only_token}"}
     )
 
@@ -577,10 +579,10 @@ def test_delete_private_ai_key_as_read_only_user(mock_post, client, team_read_on
     )
     db.add(test_key)
     db.commit()
-
+    db.refresh(test_key)
     # Try to delete the key as a read_only user
     delete_response = client.delete(
-        f"/private-ai-keys/{test_key.database_name}",
+        f"/private-ai-keys/{test_key.id}",
         headers={"Authorization": f"Bearer {team_read_only_token}"}
     )
 
@@ -620,7 +622,7 @@ def test_delete_team_private_ai_key(mock_post, client, team_admin_token, test_te
 
     # Now delete the team-owned key
     delete_response = client.delete(
-        f"/private-ai-keys/{created_key['database_name']}",
+        f"/private-ai-keys/{created_key['id']}",
         headers={"Authorization": f"Bearer {team_admin_token}"}
     )
 
@@ -660,7 +662,7 @@ def test_delete_private_ai_key_as_system_admin(mock_post, client, admin_token, t
 
     # Now delete the key as system admin
     delete_response = client.delete(
-        f"/private-ai-keys/{created_key['database_name']}",
+        f"/private-ai-keys/{created_key['id']}",
         headers={"Authorization": f"Bearer {admin_token}"}
     )
 
@@ -714,7 +716,7 @@ def test_delete_private_ai_key_from_other_team(mock_post, client, team_admin_tok
 
     # Try to delete the key as team admin
     delete_response = client.delete(
-        f"/private-ai-keys/{created_key['database_name']}",
+        f"/private-ai-keys/{created_key['id']}",
         headers={"Authorization": f"Bearer {team_admin_token}"}
     )
 
@@ -747,7 +749,7 @@ def test_delete_team_member_key_as_team_admin(mock_post, client, team_admin_toke
 
     # Delete the key as team admin
     delete_response = client.delete(
-        f"/private-ai-keys/{created_key['database_name']}",
+        f"/private-ai-keys/{created_key['id']}",
         headers={"Authorization": f"Bearer {team_admin_token}"}
     )
 
@@ -784,10 +786,11 @@ def test_delete_private_ai_key_as_default_user_not_owner(mock_post, client, test
     )
     db.add(test_key)
     db.commit()
+    db.refresh(test_key)
 
     # Try to delete the key as a default user
     delete_response = client.delete(
-        f"/private-ai-keys/{test_key.database_name}",
+        f"/private-ai-keys/{test_key.id}",
         headers={"Authorization": f"Bearer {test_token}"}
     )
 
@@ -839,10 +842,10 @@ def test_view_spend_with_extra_fields(mock_get, client, team_read_only_token, te
     )
     db.add(test_key)
     db.commit()
-
+    db.refresh(test_key)
     # View spend information as read-only user
     response = client.get(
-        f"/private-ai-keys/{test_key.database_name}/spend",
+        f"/private-ai-keys/{test_key.id}/spend",
         headers={"Authorization": f"Bearer {team_read_only_token}"}
     )
 
@@ -902,10 +905,11 @@ def test_view_spend_with_missing_fields(mock_get, client, team_read_only_token, 
     )
     db.add(test_key)
     db.commit()
+    db.refresh(test_key)
 
     # View spend information as read-only user
     response = client.get(
-        f"/private-ai-keys/{test_key.database_name}/spend",
+        f"/private-ai-keys/{test_key.id}/spend",
         headers={"Authorization": f"Bearer {team_read_only_token}"}
     )
 
@@ -955,10 +959,11 @@ def test_update_budget_period_as_key_creator(mock_post, client, team_key_creator
     )
     db.add(test_key)
     db.commit()
+    db.refresh(test_key)
 
     # Try to update the budget period as a key_creator
     response = client.put(
-        f"/private-ai-keys/{test_key.database_name}/budget-period",
+        f"/private-ai-keys/{test_key.id}/budget-period",
         headers={"Authorization": f"Bearer {team_key_creator_token}"},
         json={"budget_duration": "monthly"}
     )
@@ -973,3 +978,159 @@ def test_update_budget_period_as_key_creator(mock_post, client, team_key_creator
     # Clean up the test key
     db.delete(test_key)
     db.commit()
+
+@patch("app.services.litellm.requests.post")
+def test_create_llm_token_as_system_admin(mock_post, client, admin_token, test_region, mock_litellm_response):
+    """Test that a system admin can create an LLM token for themselves"""
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    llm_url = test_region.litellm_api_url
+    region_name = test_region.name
+
+    # Create LLM token
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Test LLM Token"
+        }
+    )
+
+    # Verify the create response
+    assert response.status_code == 200
+    data = response.json()
+    assert data["litellm_token"] == "test-private-key-123"
+    assert data["litellm_api_url"] == llm_url
+    assert data["region"] == region_name
+    assert data["name"] == "Test LLM Token"
+
+    # Verify the token is visible in list_keys
+    list_response = client.get(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert list_response.status_code == 200
+    list_data = list_response.json()
+    assert isinstance(list_data, list)
+    assert any(
+        key["litellm_token"] == "test-private-key-123" and
+        key["litellm_api_url"] == llm_url and
+        key["name"] == "Test LLM Token"
+        for key in list_data
+    )
+
+def test_create_vector_db_as_system_admin(client, admin_token, test_region):
+    """Test that a system admin can create a vector database for themselves"""
+    region_name = test_region.name
+    # Create vector database
+    response = client.post(
+        "/private-ai-keys/vector-db",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Test Vector DB"
+        }
+    )
+
+    # Verify the create response
+    assert response.status_code == 200
+    data = response.json()
+    assert data["database_name"] is not None
+    assert data["database_host"] is not None
+    assert data["database_username"] is not None
+    assert data["database_password"] is not None
+    assert data["region"] == region_name
+    assert data["name"] == "Test Vector DB"
+
+    # Verify the vector DB is visible in list_keys
+    list_response = client.get(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert list_response.status_code == 200
+    list_data = list_response.json()
+    assert isinstance(list_data, list)
+    assert any(
+        key["database_name"] == data["database_name"] and
+        key["database_host"] == data["database_host"] and
+        key["name"] == "Test Vector DB"
+        for key in list_data
+    )
+
+@patch("app.services.litellm.requests.post")
+def test_delete_llm_token_as_system_admin(mock_post, client, admin_token, test_region, mock_litellm_response, db):
+    """Test that a system admin can delete an LLM token they own"""
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # First create an LLM token
+    create_response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Test LLM Token to Delete"
+        }
+    )
+    assert create_response.status_code == 200
+    created_token = create_response.json()
+
+    # Now delete the token
+    delete_response = client.delete(
+        f"/private-ai-keys/{created_token['id']}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    # Verify the delete response
+    assert delete_response.status_code == 200
+    assert delete_response.json()["message"] == "Private AI Key deleted successfully"
+
+    # Verify the token was removed from the database
+    deleted_key = db.query(DBPrivateAIKey).filter(
+        DBPrivateAIKey.id == created_token["id"]
+    ).first()
+    assert deleted_key is None
+
+    # Verify the LiteLLM API was called to delete the token
+    mock_post.assert_called_with(
+        f"{test_region.litellm_api_url}/key/delete",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={"keys": [created_token["litellm_token"]]}
+    )
+
+def test_delete_vector_db_as_system_admin(client, admin_token, test_region, db):
+    """Test that a system admin can delete their own vector database"""
+    # First create a vector database
+    create_response = client.post(
+        "/private-ai-keys/vector-db",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Test Vector DB to Delete"
+        }
+    )
+    assert create_response.status_code == 200
+    created_db = create_response.json()
+    assert created_db["name"] == "Test Vector DB to Delete"
+
+    # Now delete the vector database
+    delete_response = client.delete(
+        f"/private-ai-keys/{created_db['id']}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    # Verify the delete response
+    assert delete_response.status_code == 200
+    assert delete_response.json()["message"] == "Private AI Key deleted successfully"
+
+    # Verify the vector DB was removed from the database
+    deleted_key = db.query(DBPrivateAIKey).filter(
+        DBPrivateAIKey.id == created_db["id"]
+    ).first()
+    assert deleted_key is None
