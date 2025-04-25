@@ -5,14 +5,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -21,46 +13,58 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import { useToast } from '@/hooks/use-toast';
-import { Loader2, Eye, EyeOff, Plus } from 'lucide-react';
-import { get, post, del } from '@/utils/api';
-import { useAuth } from '@/hooks/use-auth';
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog';
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { useToast } from '@/hooks/use-toast';
+import { Loader2, Plus } from 'lucide-react';
+import { get, post, del, put } from '@/utils/api';
+import { useAuth } from '@/hooks/use-auth';
+import { PrivateAIKeysTable } from '@/components/private-ai-keys-table';
+import { PrivateAIKey } from '@/types/private-ai-key';
 
-interface TeamAIKey {
-  id: string;
-  name: string;
-  database_name: string;
-  database_host: string;
-  database_username: string;
-  database_password: string;
-  region: string;
+interface SpendInfo {
+  spend: number;
+  expires: string;
   created_at: string;
-  owner_id: number;
+  updated_at: string;
+  max_budget: number | null;
+  budget_duration: string | null;
+  budget_reset_at: string | null;
+}
+
+interface Region {
+  id: number;
+  name: string;
+  is_active: boolean;
+}
+
+interface TeamUser {
+  id: number;
+  email: string;
+  is_active: boolean;
+  role: string;
+  team_id: number | null;
+  created_at: string;
 }
 
 export default function TeamAIKeysPage() {
   const { toast } = useToast();
   const { user } = useAuth();
   const [isAddingKey, setIsAddingKey] = useState(false);
-  const [showPassword, setShowPassword] = useState<Record<string, boolean>>({});
   const [newKeyName, setNewKeyName] = useState('');
-  const [newKeyRegion, setNewKeyRegion] = useState('');
-  const [newKeyValue, setNewKeyValue] = useState('');
+  const [selectedRegion, setSelectedRegion] = useState<string>('');
+  const [selectedUserId, setSelectedUserId] = useState<string>('team');
+  const [loadedSpendKeys, setLoadedSpendKeys] = useState<Set<number>>(new Set());
+  const [openBudgetDialog, setOpenBudgetDialog] = useState<number | null>(null);
 
   const queryClient = useQueryClient();
 
-  const { data: keys = [], isLoading: isLoadingKeys } = useQuery<TeamAIKey[]>({
+  const { data: keys = [], isLoading: isLoadingKeys } = useQuery<PrivateAIKey[]>({
     queryKey: ['private-ai-keys', user?.team_id],
     queryFn: async () => {
       const response = await get(`private-ai-keys?team_id=${user?.team_id}`, { credentials: 'include' });
@@ -69,8 +73,41 @@ export default function TeamAIKeysPage() {
     enabled: !!user?.team_id,
   });
 
+  const { data: regions = [] } = useQuery<Region[]>({
+    queryKey: ['regions'],
+    queryFn: async () => {
+      const response = await get('regions', { credentials: 'include' });
+      return response.json();
+    },
+  });
+
+  const { data: teamMembers = [] } = useQuery<TeamUser[]>({
+    queryKey: ['team-users', user?.team_id],
+    queryFn: async () => {
+      const response = await get('users', { credentials: 'include' });
+      const allUsers = await response.json();
+      // Filter users to only show those in the current team
+      return allUsers.filter((u: TeamUser) => u.team_id === user?.team_id);
+    },
+    enabled: !!user?.team_id,
+  });
+
+  // Query to get spend information for each key
+  const { data: spendMap = {} } = useQuery<Record<number, SpendInfo>>({
+    queryKey: ['private-ai-keys-spend', Array.from(loadedSpendKeys)],
+    queryFn: async () => {
+      const spendPromises = Array.from(loadedSpendKeys).map(async (keyId) => {
+        const response = await get(`private-ai-keys/${keyId}/spend`, { credentials: 'include' });
+        return [keyId, await response.json()] as [number, SpendInfo];
+      });
+      const spendResults = await Promise.all(spendPromises);
+      return Object.fromEntries(spendResults);
+    },
+    enabled: loadedSpendKeys.size > 0,
+  });
+
   const createKeyMutation = useMutation({
-    mutationFn: async (data: { name: string; api_key: string }) => {
+    mutationFn: async (data: { name: string; region_id: number; owner_id?: number; team_id?: number }) => {
       const response = await post('private-ai-keys', data, { credentials: 'include' });
       return response.json();
     },
@@ -78,7 +115,8 @@ export default function TeamAIKeysPage() {
       queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
       setIsAddingKey(false);
       setNewKeyName('');
-      setNewKeyValue('');
+      setSelectedRegion('');
+      setSelectedUserId('team');
       toast({
         title: 'Success',
         description: 'AI key added successfully',
@@ -94,7 +132,7 @@ export default function TeamAIKeysPage() {
   });
 
   const deleteKeyMutation = useMutation({
-    mutationFn: async (keyId: string) => {
+    mutationFn: async (keyId: number) => {
       const response = await del(`private-ai-keys/${keyId}`, { credentials: 'include' });
       return response.json();
     },
@@ -114,31 +152,52 @@ export default function TeamAIKeysPage() {
     },
   });
 
-  if (isLoadingKeys) {
-    return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <Loader2 className="h-8 w-8 animate-spin" />
-      </div>
-    );
-  }
+  // Add mutation for updating budget period
+  const updateBudgetPeriodMutation = useMutation({
+    mutationFn: async ({ keyId, budgetDuration }: { keyId: number; budgetDuration: string }) => {
+      const response = await put(`private-ai-keys/${keyId}/budget-period`, {
+        budget_duration: budgetDuration
+      }, { credentials: 'include' });
+      return response.json();
+    },
+    onSuccess: (data, variables) => {
+      // Update the spend information for this specific key
+      queryClient.setQueryData(['private-ai-keys-spend', Array.from(loadedSpendKeys)], (oldData: Record<number, SpendInfo> = {}) => ({
+        ...oldData,
+        [variables.keyId]: data
+      }));
+      setOpenBudgetDialog(null); // Close the dialog
+      toast({
+        title: 'Success',
+        description: 'Budget period updated successfully',
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
 
   const handleCreateKey = (e: React.FormEvent) => {
     e.preventDefault();
-    createKeyMutation.mutate({
+    const region = regions.find(r => r.name === selectedRegion);
+    if (!region || !user?.team_id) return;
+
+    const data: { name: string; region_id: number; owner_id?: number; team_id?: number } = {
       name: newKeyName,
-      api_key: newKeyValue,
-    });
-  };
+      region_id: region.id,
+    };
 
-  const handleDeleteKey = (keyId: string) => {
-    deleteKeyMutation.mutate(keyId);
-  };
+    if (selectedUserId === 'team') {
+      data.team_id = user.team_id;
+    } else {
+      data.owner_id = parseInt(selectedUserId);
+    }
 
-  const togglePasswordVisibility = (keyId: string) => {
-    setShowPassword(prev => ({
-      ...prev,
-      [keyId]: !prev[keyId]
-    }));
+    createKeyMutation.mutate(data);
   };
 
   return (
@@ -172,25 +231,47 @@ export default function TeamAIKeysPage() {
                 </div>
                 <div className="grid gap-2">
                   <label htmlFor="region">Region</label>
-                  <Input
-                    id="region"
-                    value={newKeyRegion}
-                    onChange={(e) => setNewKeyRegion(e.target.value)}
-                    required
-                  />
+                  <Select value={selectedRegion} onValueChange={setSelectedRegion}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a region" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {regions
+                        .filter(region => region.is_active)
+                        .map(region => (
+                          <SelectItem key={region.id} value={region.name}>
+                            {region.name}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="grid gap-2">
-                  <label htmlFor="value">Value</label>
-                  <Input
-                    id="value"
-                    value={newKeyValue}
-                    onChange={(e) => setNewKeyValue(e.target.value)}
+                  <label htmlFor="user">Assign to <span className="text-red-500">*</span></label>
+                  <Select
+                    value={selectedUserId}
+                    onValueChange={setSelectedUserId}
                     required
-                  />
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select who will own this key" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="team">Team (Shared)</SelectItem>
+                      {teamMembers.map(member => (
+                        <SelectItem key={member.id} value={member.id.toString()}>
+                          {member.email}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-sm text-muted-foreground">
+                    Select "Team (Shared)" to create a key accessible to all team members
+                  </p>
                 </div>
               </div>
               <DialogFooter>
-                <Button type="submit" disabled={createKeyMutation.isPending}>
+                <Button type="submit" disabled={createKeyMutation.isPending || !selectedRegion || !selectedUserId}>
                   {createKeyMutation.isPending && (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   )}
@@ -202,81 +283,19 @@ export default function TeamAIKeysPage() {
         </Dialog>
       </div>
 
-      <div className="rounded-md border">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Credentials</TableHead>
-              <TableHead>Region</TableHead>
-              <TableHead>Created At</TableHead>
-              <TableHead>Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {keys.map((key, index) => (
-              <TableRow key={key.id ? String(key.id) : `key-${index}`}>
-                <TableCell>{key.name}</TableCell>
-                <TableCell>
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2">
-                      <span>Database: {key.database_name}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span>Host: {key.database_host}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span>Username: {key.database_username}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span>Password: </span>
-                      <span className="font-mono">
-                        {showPassword[key.id ? String(key.id) : `key-${index}`] ? key.database_password : '••••••••'}
-                      </span>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => togglePasswordVisibility(key.id ? String(key.id) : `key-${index}`)}
-                      >
-                        {showPassword[key.id ? String(key.id) : `key-${index}`] ? (
-                          <EyeOff className="h-4 w-4" />
-                        ) : (
-                          <Eye className="h-4 w-4" />
-                        )}
-                      </Button>
-                    </div>
-                  </div>
-                </TableCell>
-                <TableCell>{key.region}</TableCell>
-                <TableCell>{new Date(key.created_at).toLocaleString()}</TableCell>
-                <TableCell>
-                  <AlertDialog>
-                    <AlertDialogTrigger asChild>
-                      <Button variant="destructive" size="sm">
-                        Delete
-                      </Button>
-                    </AlertDialogTrigger>
-                    <AlertDialogContent>
-                      <AlertDialogHeader>
-                        <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                          This will permanently delete the AI key and its associated database. This action cannot be undone.
-                        </AlertDialogDescription>
-                      </AlertDialogHeader>
-                      <AlertDialogFooter>
-                        <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction onClick={() => handleDeleteKey(key.id ? String(key.id) : `key-${index}`)}>
-                          Delete
-                        </AlertDialogAction>
-                      </AlertDialogFooter>
-                    </AlertDialogContent>
-                  </AlertDialog>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
+      <PrivateAIKeysTable
+        keys={keys}
+        onDelete={deleteKeyMutation.mutate}
+        isLoading={isLoadingKeys}
+        isDeleting={deleteKeyMutation.isPending}
+        showSpend={true}
+        spendMap={spendMap}
+        onLoadSpend={(keyId) => setLoadedSpendKeys(prev => new Set([...prev, keyId]))}
+        onUpdateBudget={(keyId, budgetDuration) => {
+          updateBudgetPeriodMutation.mutate({ keyId, budgetDuration });
+        }}
+        isUpdatingBudget={updateBudgetPeriodMutation.isPending}
+      />
     </div>
   );
 }
