@@ -85,6 +85,24 @@ export default function PrivateAIKeysPage() {
     },
   });
 
+  // Get unique team IDs from the keys
+  const teamIds = Array.from(new Set(privateAIKeys.filter(key => key.team_id).map(key => key.team_id)));
+
+  // Fetch team details for each team ID
+  const { data: teamDetails = {} } = useQuery({
+    queryKey: ['team-details', teamIds],
+    queryFn: async () => {
+      const teamPromises = teamIds.map(async (teamId) => {
+        const response = await get(`teams/${teamId}`);
+        const data = await response.json();
+        return [teamId, data];
+      });
+      const teamResults = await Promise.all(teamPromises);
+      return Object.fromEntries(teamResults);
+    },
+    enabled: teamIds.length > 0,
+  });
+
   // Query to get all users for displaying emails
   const { data: usersMap = {} } = useQuery<Record<number, User>>({
     queryKey: ['users-map'],
@@ -278,15 +296,17 @@ export default function PrivateAIKeysPage() {
         keys={privateAIKeys}
         onDelete={deletePrivateAIKeyMutation.mutate}
         isLoading={isLoadingPrivateAIKeys}
-        showOwner={true}
+        isDeleting={deletePrivateAIKeyMutation.isPending}
         showSpend={true}
+        showOwner={true}
         spendMap={spendMap}
         onLoadSpend={(keyId) => setLoadedSpendKeys(prev => new Set([...prev, keyId]))}
         onUpdateBudget={(keyId, budgetDuration) => {
           updateBudgetPeriodMutation.mutate({ keyId, budgetDuration });
         }}
-        isDeleting={deletePrivateAIKeyMutation.isPending}
         isUpdatingBudget={updateBudgetPeriodMutation.isPending}
+        teamDetails={teamDetails}
+        teamMembers={Object.values(usersMap)}
       />
     </div>
   );

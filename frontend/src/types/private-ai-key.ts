@@ -8,6 +8,8 @@ export interface PrivateAIKey {
   region: string;
   created_at: string;
   owner_id: number;
+  team_id?: number;
+  team_name?: string;
   litellm_token?: string;
   litellm_api_url?: string;
 }

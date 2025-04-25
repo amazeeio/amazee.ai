@@ -68,9 +68,38 @@ export default function TeamAIKeysPage() {
     queryKey: ['private-ai-keys', user?.team_id],
     queryFn: async () => {
       const response = await get(`private-ai-keys?team_id=${user?.team_id}`, { credentials: 'include' });
-      return response.json();
+      const data = await response.json();
+      return data;
     },
     enabled: !!user?.team_id,
+  });
+
+  // Get unique team IDs from the keys
+  const teamIds = Array.from(new Set(keys.filter(key => key.team_id).map(key => key.team_id)));
+
+  // Fetch team details for each team ID
+  const { data: teamDetails = {} } = useQuery({
+    queryKey: ['team-details', teamIds],
+    queryFn: async () => {
+      const teamPromises = teamIds.map(async (teamId) => {
+        const response = await get(`teams/${teamId}`, { credentials: 'include' });
+        const data = await response.json();
+        return [teamId, data];
+      });
+      const teamResults = await Promise.all(teamPromises);
+      return Object.fromEntries(teamResults);
+    },
+    enabled: teamIds.length > 0,
+  });
+
+  const { data: teams = [] } = useQuery({
+    queryKey: ['teams'],
+    queryFn: async () => {
+      const response = await get('teams', { credentials: 'include' });
+      const data = await response.json();
+      console.log('Teams list:', data);
+      return data;
+    },
   });
 
   const { data: regions = [] } = useQuery<Region[]>({
@@ -82,14 +111,25 @@ export default function TeamAIKeysPage() {
   });
 
   const { data: teamMembers = [] } = useQuery<TeamUser[]>({
-    queryKey: ['team-users', user?.team_id],
+    queryKey: ['team-users'],
     queryFn: async () => {
       const response = await get('users', { credentials: 'include' });
       const allUsers = await response.json();
-      // Filter users to only show those in the current team
-      return allUsers.filter((u: TeamUser) => u.team_id === user?.team_id);
+      return allUsers;
     },
-    enabled: !!user?.team_id,
+  });
+
+  // Query to get all users for displaying emails
+  const { data: usersMap = {} } = useQuery<Record<number, { id: number; email: string }>>({
+    queryKey: ['users-map'],
+    queryFn: async () => {
+      const response = await get('users', { credentials: 'include' });
+      const users = await response.json();
+      return users.reduce((acc: Record<number, { id: number; email: string }>, user: TeamUser) => ({
+        ...acc,
+        [user.id]: { id: user.id, email: user.email }
+      }), {});
+    },
   });
 
   // Query to get spend information for each key
@@ -289,12 +329,15 @@ export default function TeamAIKeysPage() {
         isLoading={isLoadingKeys}
         isDeleting={deleteKeyMutation.isPending}
         showSpend={true}
+        showOwner={true}
         spendMap={spendMap}
         onLoadSpend={(keyId) => setLoadedSpendKeys(prev => new Set([...prev, keyId]))}
         onUpdateBudget={(keyId, budgetDuration) => {
           updateBudgetPeriodMutation.mutate({ keyId, budgetDuration });
         }}
         isUpdatingBudget={updateBudgetPeriodMutation.isPending}
+        teamDetails={teamDetails}
+        teamMembers={Object.values(usersMap)}
       />
     </div>
   );

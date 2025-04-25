@@ -46,6 +46,8 @@ interface PrivateAIKeysTableProps {
   onUpdateBudget?: (keyId: number, budgetDuration: string) => void;
   isDeleting?: boolean;
   isUpdatingBudget?: boolean;
+  teamDetails?: Record<number, { name: string }>;
+  teamMembers?: { id: number; email: string }[];
 }
 
 export function PrivateAIKeysTable({
@@ -59,6 +61,8 @@ export function PrivateAIKeysTable({
   onUpdateBudget,
   isDeleting = false,
   isUpdatingBudget = false,
+  teamDetails = {},
+  teamMembers = [],
 }: PrivateAIKeysTableProps) {
   const { toast } = useToast();
   const [showPassword, setShowPassword] = useState<Record<number | string, boolean>>({});
@@ -161,7 +165,13 @@ export function PrivateAIKeysTable({
               {showOwner && (
                 <TableCell>
                   <div className="flex flex-col gap-1">
-                    <span className="text-sm">{key.owner_id}</span>
+                    {key.owner_id ? (
+                      <span className="text-sm">
+                        {teamMembers.find(member => member.id === key.owner_id)?.email || `User ${key.owner_id}`}
+                      </span>
+                    ) : key.team_id ? (
+                      <span className="text-sm">(Team) {teamDetails[key.team_id]?.name || 'Team (Shared)'}</span>
+                    ) : null}
                   </div>
                 </TableCell>
               )}
