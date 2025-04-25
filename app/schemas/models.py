@@ -110,6 +110,23 @@ class PrivateAIKeyCreate(BaseModel):
     owner_id: Optional[int] = None
     team_id: Optional[int] = None
 
+class VectorDBCreate(BaseModel):
+    region_id: int
+    name: str
+    owner_id: Optional[int] = None
+    team_id: Optional[int] = None
+
+class VectorDB(BaseModel):
+    database_name: str
+    database_host: str
+    database_username: str
+    database_password: str
+    owner_id: Optional[int] = None
+    team_id: Optional[int] = None
+    region: str
+    name: str
+    model_config = ConfigDict(from_attributes=True)
+
 class TeamPrivateAIKeyCreate(PrivateAIKeyCreate):
     team_id: int  # Override to make team_id required
     owner_id: Optional[int] = None  # Explicitly set to None for team keys
@@ -130,6 +147,15 @@ class PrivateAIKeySpend(BaseModel):
     max_budget: Optional[float] = None
     budget_duration: Optional[str] = None
     budget_reset_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class LiteLLMToken(BaseModel):
+    litellm_token: str
+    litellm_api_url: str
+    owner_id: Optional[int] = None
+    team_id: Optional[int] = None
+    region: str
+    name: str
     model_config = ConfigDict(from_attributes=True)
 
 class AuditLog(BaseModel):

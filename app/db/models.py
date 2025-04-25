@@ -70,13 +70,13 @@ class DBPrivateAIKey(Base):
     __tablename__ = "ai_tokens"
 
     id = Column(Integer, primary_key=True, index=True)
-    database_name = Column(String, unique=True, index=True)
+    database_name = Column(String, unique=True, index=True, nullable=True)
     name = Column(String, nullable=True)  # User-friendly display name
-    database_host = Column(String)
+    database_host = Column(String, nullable=True)
     database_username = Column(String)
-    database_password = Column(String)
-    litellm_token = Column(String)
-    litellm_api_url = Column(String)
+    database_password = Column(String, nullable=True)
+    litellm_token = Column(String, nullable=True)
+    litellm_api_url = Column(String, nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"))
     region_id = Column(Integer, ForeignKey("regions.id"))
     created_at = Column(DateTime(timezone=True), default=func.now())

@@ -5,7 +5,10 @@ from fastapi import status
 import logging
 
 from app.db.database import get_db
-from app.schemas.models import PrivateAIKey, PrivateAIKeyCreate, PrivateAIKeySpend, BudgetPeriodUpdate
+from app.schemas.models import (
+    PrivateAIKey, PrivateAIKeyCreate, PrivateAIKeySpend,
+    BudgetPeriodUpdate, LiteLLMToken, VectorDBCreate, VectorDB
+)
 from app.db.postgres import PostgresManager
 from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
 from app.services.litellm import LiteLLMService
@@ -14,9 +17,136 @@ from app.core.security import get_current_user_from_auth, get_role_min_key_creat
 # Set up logging
 logger = logging.getLogger(__name__)
 
+def _get_ownership_info(
+    owner_id: Optional[int],
+    team_id: Optional[int],
+    current_user: DBUser,
+    user_role: str
+) -> tuple[Optional[int], Optional[int]]:
+    """
+    Helper function to determine ownership information based on user role and input.
+    Returns a tuple of (owner_id, team_id).
+    """
+    # If no owner_id or team_id is specified, use the current user's ID
+    if owner_id is None and team_id is None:
+        owner_id = current_user.id
+
+    # Fail fast without having to do DB lookups
+    if user_role in ["key_creator", "user"]:
+        if owner_id != current_user.id or team_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to perform this action"
+            )
+    elif user_role == "admin": # roles always refer to the team role, so admin is a team admin
+        if team_id is not None and team_id != current_user.team_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to perform this action"
+            )
+
+    if team_id is not None and owner_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either owner_id or team_id must be specified, not both"
+        )
+
+    return owner_id, team_id
+
 router = APIRouter(
     tags=["Private AI Keys"]
 )
+
+@router.post("/vector-db", response_model=VectorDB)
+async def create_vector_db(
+    vector_db: VectorDBCreate,
+    current_user = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_role_min_key_creator),
+    db: Session = Depends(get_db),
+    store_result: bool = True
+):
+    """
+    Create a new vector database.
+
+    This endpoint will:
+    1. Create a new database in the specified region
+    2. Set up necessary credentials and permissions
+    3. Return connection details
+
+    Required parameters:
+    - **region_id**: The ID of the region where you want to create the database
+    - **name**: The name for the database
+
+    Optional parameters:
+    - **owner_id**: The ID of the user who will own this database (admin only)
+    - **team_id**: The ID of the team that will own this database (admin only)
+
+    The response will include:
+    - Database connection details (host, database name, username, password)
+    - Owner and team information
+    - Region name
+
+    Note: You must be authenticated to use this endpoint.
+    Only admins can create databases for other users or teams.
+    """
+    # Get ownership information
+    owner_id, team_id = _get_ownership_info(
+        vector_db.owner_id,
+        vector_db.team_id,
+        current_user,
+        user_role
+    )
+
+    # Get the region
+    region = db.query(DBRegion).filter(
+        DBRegion.id == vector_db.region_id,
+        DBRegion.is_active == True
+    ).first()
+    if not region:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Region not found or inactive"
+        )
+
+    try:
+        # Create new postgres database
+        postgres_manager = PostgresManager(region=region)
+
+        # Create database
+        key_credentials = await postgres_manager.create_database()
+
+        # Create response object
+        response = VectorDB(
+            database_name=key_credentials["database_name"],
+            database_host=key_credentials["database_host"],
+            database_username=key_credentials["database_username"],
+            database_password=key_credentials["database_password"],
+            owner_id=owner_id,
+            team_id=team_id,
+            region=region.name,
+            name=vector_db.name
+        )
+
+        # If store_result is True, store the vector DB info in DBPrivateAIKey
+        if store_result:
+            # Convert Pydantic model to dict and add region_id
+            key_data = response.model_dump()
+            key_data["region_id"] = vector_db.region_id
+
+            # Create DBPrivateAIKey from the dict
+            new_key = DBPrivateAIKey(**key_data)
+            db.add(new_key)
+            db.commit()
+            db.refresh(new_key)
+
+        return response
+    except Exception as e:
+        logger.error(f"Failed to create vector database: {str(e)}", exc_info=True)
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create vector database: {str(e)}"
+        )
 
 @router.post("", response_model=PrivateAIKey)
 @router.post("/", response_model=PrivateAIKey)
@@ -50,31 +180,80 @@ async def create_private_ai_key(
     Note: You must be authenticated to use this endpoint.
     Only admins can create keys for other users or teams.
     """
-    owner_id = private_ai_key.owner_id
-    team_id = private_ai_key.team_id
-    # If no owner_id or team_id is specified, use the current user's ID
-    if owner_id is None and team_id is None:
-        owner_id = current_user.id
+    # First create the LiteLLM token
+    llm_token = await create_llm_token(private_ai_key, current_user, user_role, db, store_result=False)
 
-    # Fail fast without having to do DB lookups
-    if user_role in ["key_creator", "user"]:
-        if owner_id != current_user.id or team_id is not None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to perform this action"
-            )
-    elif user_role == "admin": # roles always refer to the team role, so admin is a team admin
-        if team_id is not None and team_id != current_user.team_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to perform this action"
-            )
+    # Then create the vector database
+    vector_db = VectorDBCreate(
+        region_id=private_ai_key.region_id,
+        name=private_ai_key.name,
+        owner_id=private_ai_key.owner_id,
+        team_id=private_ai_key.team_id
+    )
+    db_info = await create_vector_db(vector_db, current_user, user_role, db, store_result=False)
 
-    if team_id is not None and owner_id is not None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Either owner_id or team_id must be specified, not both"
-        )
+    # Store private AI key info in main application database
+    new_key = DBPrivateAIKey(
+        database_name=db_info.database_name,
+        name=db_info.name,
+        database_host=db_info.database_host,
+        database_username=db_info.database_username,
+        database_password=db_info.database_password,
+        litellm_token=llm_token.litellm_token,
+        litellm_api_url=llm_token.litellm_api_url,
+        owner_id=db_info.owner_id,
+        team_id=db_info.team_id,
+        region_id=private_ai_key.region_id
+    )
+    db.add(new_key)
+    db.commit()
+    db.refresh(new_key)
+
+    key_data = new_key.to_dict()
+    key_data["litellm_token"] = llm_token.litellm_token
+    key_data["litellm_api_url"] = llm_token.litellm_api_url
+    key_data["region"] = db_info.region
+    key_data["name"] = private_ai_key.name
+
+    return PrivateAIKey.model_validate(key_data)
+
+@router.post("/token", response_model=LiteLLMToken)
+async def create_llm_token(
+    private_ai_key: PrivateAIKeyCreate,
+    current_user = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_role_min_key_creator),
+    db: Session = Depends(get_db),
+    store_result: bool = True
+):
+    """
+    Create a new LiteLLM token without creating a vector database.
+
+    This endpoint will:
+    1. Create a new LiteLLM token in the specified region
+    2. Return the token and related information
+
+    Required parameters:
+    - **region_id**: The ID of the region where you want to create the token
+    - **name**: The name for the token
+
+    Optional parameters:
+    - **owner_id**: The ID of the user who will own this token (admin only)
+    - **team_id**: The ID of the team that will own this token (admin only)
+
+    The response will include:
+    - LiteLLM API token for authentication
+    - LiteLLM API URL for making requests
+
+    Note: You must be authenticated to use this endpoint.
+    Only admins can create tokens for other users or teams.
+    """
+    # Get ownership information
+    owner_id, team_id = _get_ownership_info(
+        private_ai_key.owner_id,
+        private_ai_key.team_id,
+        current_user,
+        user_role
+    )
 
     # Get the region
     region = db.query(DBRegion).filter(
@@ -115,10 +294,7 @@ async def create_private_ai_key(
         owner_email = owner.email
 
     try:
-        # Create new postgres database
-        postgres_manager = PostgresManager(region=region)
-
-        # Generate LiteLLM token first
+        # Generate LiteLLM token
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url,
             api_key=region.litellm_api_key
@@ -129,45 +305,34 @@ async def create_private_ai_key(
             user_id=owner_id
         )
 
-        # Create database with the generated token
-        key_credentials = await postgres_manager.create_database(
-            owner=owner_email,
-            litellm_token=litellm_token,
-            name=private_ai_key.name,
-            user_id=owner_id
-        )
+        # Create response object
+        response = LiteLLMToken.model_validate({
+            "litellm_token": litellm_token,
+            "litellm_api_url": region.litellm_api_url,
+            "owner_id": owner_id,
+            "team_id": team_id,
+            "region": region.name,
+            "name": private_ai_key.name
+        })
 
-        # Store private AI key info in main application database
-        new_key = DBPrivateAIKey(
-            database_name=key_credentials["database_name"],
-            name=private_ai_key.name,
-            database_host=key_credentials["database_host"],
-            database_username=key_credentials["database_username"],
-            database_password=key_credentials["database_password"],
-            litellm_token=key_credentials["litellm_token"],
-            litellm_api_url=region.litellm_api_url,
-            owner_id=owner_id,
-            team_id=team_id,
-            region_id=region.id
-        )
-        db.add(new_key)
-        db.commit()
-        db.refresh(new_key)
+        # If store_result is True, store the LiteLLM token info in DBPrivateAIKey
+        if store_result:
+            # Convert Pydantic model to dict and add region_id
+            key_data = response.model_dump()
+            key_data["region_id"] = private_ai_key.region_id
 
-        # Add metadata to the response
-        key_credentials["owner_id"] = owner_id
-        key_credentials["team_id"] = team_id
-        key_credentials["region"] = region.name
-        key_credentials["litellm_api_url"] = region.litellm_api_url
-        key_credentials["name"] = private_ai_key.name
+            # Create DBPrivateAIKey from the dict
+            new_key = DBPrivateAIKey(**key_data)
+            db.add(new_key)
+            db.commit()
+            db.refresh(new_key)
 
-        return key_credentials
+        return response
     except Exception as e:
-        logger.error(f"Failed to create Private AI Key: {str(e)}", exc_info=True)
-        db.rollback()
+        logger.error(f"Failed to create LiteLLM token: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create Private AI Key: {str(e)}"
+            detail=f"Failed to create LiteLLM token: {str(e)}"
         )
 
 @router.get("", response_model=List[PrivateAIKey])
