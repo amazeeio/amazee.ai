@@ -77,6 +77,10 @@ async def create_user(
             detail=f"Invalid role. Must be one of: {', '.join(VALID_ROLES)}"
         )
 
+    # Default to the lowest permissions for a user in a team
+    if user.role is None and user.team_id is not None:
+        user.role = 'read_only'
+
     # Create the user
     hashed_password = get_password_hash(user.password)
     db_user = DBUser(
@@ -84,7 +88,7 @@ async def create_user(
         hashed_password=hashed_password,
         is_admin=False,  # Users are created as non-admin by default
         team_id=user.team_id,
-        role=user.role if hasattr(user, 'role') and user.role else 'read_only'  # Default to read_only if not specified
+        role=user.role
     )
 
     db.add(db_user)
