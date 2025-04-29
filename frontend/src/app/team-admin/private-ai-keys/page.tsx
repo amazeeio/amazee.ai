@@ -60,7 +60,6 @@ export default function TeamAIKeysPage() {
   const [selectedRegion, setSelectedRegion] = useState<string>('');
   const [selectedUserId, setSelectedUserId] = useState<string>('team');
   const [loadedSpendKeys, setLoadedSpendKeys] = useState<Set<number>>(new Set());
-  const [openBudgetDialog, setOpenBudgetDialog] = useState<number | null>(null);
 
   const queryClient = useQueryClient();
 
@@ -90,16 +89,6 @@ export default function TeamAIKeysPage() {
       return Object.fromEntries(teamResults);
     },
     enabled: teamIds.length > 0,
-  });
-
-  const { data: teams = [] } = useQuery({
-    queryKey: ['teams'],
-    queryFn: async () => {
-      const response = await get('teams', { credentials: 'include' });
-      const data = await response.json();
-      console.log('Teams list:', data);
-      return data;
-    },
   });
 
   const { data: regions = [] } = useQuery<Region[]>({
@@ -206,7 +195,6 @@ export default function TeamAIKeysPage() {
         ...oldData,
         [variables.keyId]: data
       }));
-      setOpenBudgetDialog(null); // Close the dialog
       toast({
         title: 'Success',
         description: 'Budget period updated successfully',
@@ -306,7 +294,7 @@ export default function TeamAIKeysPage() {
                     </SelectContent>
                   </Select>
                   <p className="text-sm text-muted-foreground">
-                    Select "Team (Shared)" to create a key accessible to all team members
+                    Select &quot;Team (Shared)&quot; to create a key accessible to all team members
                   </p>
                 </div>
               </div>

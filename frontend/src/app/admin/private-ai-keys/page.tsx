@@ -3,19 +3,8 @@
 import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, Search, Pencil } from 'lucide-react';
+import { Loader2, Search } from 'lucide-react';
 import { get, del, put } from '@/utils/api';
 import { useDebounce } from '@/hooks/use-debounce';
 import {
@@ -49,26 +38,12 @@ interface SpendInfo {
   budget_reset_at: string | null;
 }
 
-function formatTimeUntil(date: string): string {
-  const now = new Date();
-  const resetDate = new Date(date);
-  const diffMs = resetDate.getTime() - now.getTime();
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-  const diffMinutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-
-  if (diffHours > 0) {
-    return `in ${diffHours}h ${diffMinutes}m`;
-  }
-  return `in ${diffMinutes}m`;
-}
-
 export default function PrivateAIKeysPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [searchTerm, setSearchTerm] = useState('');
   const [isUserSearchOpen, setIsUserSearchOpen] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
-  const [openBudgetDialog, setOpenBudgetDialog] = useState<string | null>(null);
   const [loadedSpendKeys, setLoadedSpendKeys] = useState<Set<number>>(new Set());
   const debouncedSearchTerm = useDebounce(searchTerm, 300);
 
@@ -211,7 +186,6 @@ export default function PrivateAIKeysPage() {
     onSuccess: (data, variables) => {
       // Update the spend information for this specific key
       queryClient.setQueryData(['private-ai-key-spend', variables.keyId], data);
-      setOpenBudgetDialog(null); // Close the dialog
       toast({
         title: 'Success',
         description: 'Budget period updated successfully',

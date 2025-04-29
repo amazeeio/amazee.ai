@@ -263,3 +263,58 @@ def test_create_user_in_team_by_system_admin(client, admin_token, test_team, db)
     # Verify the user is actually in the team in the database
     db_user = db.query(DBUser).filter(DBUser.id == user_data["id"]).first()
     assert db_user.team_id == team_id
+
+def test_create_read_only_user_by_team_admin(client, team_admin_token, test_team, db):
+    """Test that a team admin can create a read-only user in their own team"""
+    team_id = test_team.id
+
+    # Create a new read-only user in the team
+    response = client.post(
+        "/users/",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={
+            "email": "newreadonly@example.com",
+            "password": "newpassword",
+            "team_id": team_id,
+            "role": "read_only"
+        }
+    )
+    assert response.status_code == 201
+    user_data = response.json()
+    assert user_data["email"] == "newreadonly@example.com"
+    assert user_data["is_admin"] is False
+    assert user_data["role"] == "read_only"
+    assert user_data["team_id"] == team_id
+    assert "id" in user_data
+
+    # Verify the user is actually in the team in the database
+    db_user = db.query(DBUser).filter(DBUser.id == user_data["id"]).first()
+    assert db_user.team_id == team_id
+    assert db_user.role == "read_only"
+
+    # Verify the user appears in the team's user list
+    team_response = client.get(
+        f"/teams/{team_id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"}
+    )
+    assert team_response.status_code == 200
+    team_data = team_response.json()
+    assert any(u["id"] == user_data["id"] for u in team_data["users"])
+
+def test_create_user_with_invalid_role_by_team_admin(client, team_admin_token, test_team):
+    """Test that a team admin cannot create a user with an invalid role"""
+    team_id = test_team.id
+
+    # Try to create a user with an invalid role
+    response = client.post(
+        "/users/",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={
+            "email": "invalidrole@example.com",
+            "password": "newpassword",
+            "team_id": team_id,
+            "role": "nonsense_role"
+        }
+    )
+    assert response.status_code == 400
+    assert "Invalid role" in response.json()["detail"]

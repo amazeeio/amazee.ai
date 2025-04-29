@@ -13,7 +13,6 @@ router = APIRouter()
 @router.get("/search", response_model=List[User], dependencies=[Depends(check_system_admin)])
 async def search_users(
     email: str,
-    current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
     """
@@ -71,13 +70,21 @@ async def create_user(
             detail="Not authorized to perform this action"
         )
 
+    # Validate role if provided
+    if user.role and user.role not in VALID_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid role. Must be one of: {', '.join(VALID_ROLES)}"
+        )
+
     # Create the user
     hashed_password = get_password_hash(user.password)
     db_user = DBUser(
         email=user.email,
         hashed_password=hashed_password,
         is_admin=False,  # Users are created as non-admin by default
-        team_id=user.team_id
+        team_id=user.team_id,
+        role=user.role if hasattr(user, 'role') and user.role else 'read_only'  # Default to read_only if not specified
     )
 
     db.add(db_user)

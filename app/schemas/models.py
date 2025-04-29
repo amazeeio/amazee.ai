@@ -16,6 +16,8 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str
     team_id: Optional[int] = None
+    role: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
 
 class UserUpdate(BaseModel):
     email: Optional[str] = None

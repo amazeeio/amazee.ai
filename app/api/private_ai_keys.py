@@ -372,8 +372,11 @@ async def list_private_ai_keys(
                 (DBPrivateAIKey.team_id == current_user.team_id)
             )
         else:
-            # Non-admin users can only see their own keys
-            query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
+            # Non-admin users can see their own keys and team-owned keys
+            query = query.filter(
+                (DBPrivateAIKey.owner_id == current_user.id) |
+                (DBPrivateAIKey.team_id == current_user.team_id)
+            )
 
     private_ai_keys = query.all()
     return [key.to_dict() for key in private_ai_keys]

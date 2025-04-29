@@ -31,7 +31,6 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Eye, EyeOff, Pencil, Loader2 } from 'lucide-react';
-import { useToast } from '@/hooks/use-toast';
 import { formatTimeUntil } from '@/lib/utils';
 import { PrivateAIKey } from '@/types/private-ai-key';
 
@@ -41,7 +40,12 @@ interface PrivateAIKeysTableProps {
   isLoading?: boolean;
   showOwner?: boolean;
   showSpend?: boolean;
-  spendMap?: Record<number, any>;
+  spendMap?: Record<number, {
+    spend: number;
+    max_budget: number | null;
+    budget_duration: string | null;
+    budget_reset_at: string | null;
+  }>;
   onLoadSpend?: (keyId: number) => void;
   onUpdateBudget?: (keyId: number, budgetDuration: string) => void;
   isDeleting?: boolean;
@@ -64,7 +68,6 @@ export function PrivateAIKeysTable({
   teamDetails = {},
   teamMembers = [],
 }: PrivateAIKeysTableProps) {
-  const { toast } = useToast();
   const [showPassword, setShowPassword] = useState<Record<number | string, boolean>>({});
   const [openBudgetDialog, setOpenBudgetDialog] = useState<number | null>(null);
 
