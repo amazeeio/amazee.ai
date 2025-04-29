@@ -137,7 +137,6 @@ async def create_vector_db(
             db_ai_key.region = region
             db_ai_key.id = -1
 
-        logger.info(f"Vector DB created: {db_ai_key.to_dict()}")
         return VectorDB.model_validate(db_ai_key.to_dict())
     except Exception as e:
         logger.error(f"Failed to create vector database: {str(e)}", exc_info=True)
@@ -285,8 +284,10 @@ async def create_llm_token(
 
     if team is not None:
         owner_email = team.admin_email
+        litellm_team = team.id
     else:
         owner_email = owner.email
+        litellm_team = owner.team_id or -1
 
     try:
         # Generate LiteLLM token
@@ -297,7 +298,8 @@ async def create_llm_token(
         litellm_token = await litellm_service.create_key(
             email=owner_email,
             name=private_ai_key.name,
-            user_id=owner_id
+            user_id=owner_id,
+            team_id=litellm_team
         )
 
         # Create response object

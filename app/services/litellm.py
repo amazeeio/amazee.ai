@@ -15,10 +15,10 @@ class LiteLLMService:
         if not self.master_key:
             raise ValueError("LiteLLM API key is required")
 
-    async def create_key(self, email: str = None, name: str = None, user_id: int = None) -> str:
+    async def create_key(self, email: str, name: str, user_id: int, team_id: int) -> str:
         """Create a new API key for LiteLLM"""
         try:
-            logger.info(f"Creating new LiteLLM API key for email: {email}, name: {name}, user_id: {user_id}")
+            logger.info(f"Creating new LiteLLM API key for email: {email}, name: {name}, user_id: {user_id}, team_id: {team_id}")
             request_data = {
                 "duration": "8760h",  # Set token duration to 1 year (365 days * 24 hours)
                 "models": ["all-team-models"],   # Allow access to all models
@@ -28,21 +28,19 @@ class LiteLLMService:
             }
 
             # Add email and name to key_alias and metadata if provided
-            if email:
-                key_alias = email
-                metadata = {"service_account_id": email}
+            key_alias = f"{email} - {name}"
+            metadata = {"service_account_id": email}
+            metadata["amazeeai_private_ai_key_name"] = name
 
-                # Add name to key_alias and metadata if provided
-                if name:
-                    key_alias = f"{email} - {name}"
-                    metadata["amazeeai_private_ai_key_name"] = name
+            # Add user_id to metadata if provided
+            metadata["amazeeai_user_id"] = str(user_id or None)
+            metadata["amazeeai_team_id"] = str(team_id)
 
-                # Add user_id to metadata if provided
-                if user_id is not None:
-                    metadata["amazeeai_user_id"] = str(user_id)
-
-                request_data["key_alias"] = key_alias
-                request_data["metadata"] = metadata
+            request_data["key_alias"] = key_alias
+            request_data["metadata"] = metadata
+            request_data["team_id"] = str(team_id)
+            if user_id is not None:
+                request_data["user_id"] = str(user_id)
 
             logger.info("Making request to LiteLLM API to generate key")
             response = requests.post(
