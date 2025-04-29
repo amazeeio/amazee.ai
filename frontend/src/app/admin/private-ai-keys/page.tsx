@@ -271,7 +271,7 @@ export default function PrivateAIKeysPage() {
         onDelete={deletePrivateAIKeyMutation.mutate}
         isLoading={isLoadingPrivateAIKeys}
         isDeleting={deletePrivateAIKeyMutation.isPending}
-        showSpend={true}
+        allowModification={true}
         showOwner={true}
         spendMap={spendMap}
         onLoadSpend={(keyId) => setLoadedSpendKeys(prev => new Set([...prev, keyId]))}

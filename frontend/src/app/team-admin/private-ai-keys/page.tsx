@@ -59,6 +59,7 @@ export default function TeamAIKeysPage() {
   const [newKeyName, setNewKeyName] = useState('');
   const [selectedRegion, setSelectedRegion] = useState<string>('');
   const [selectedUserId, setSelectedUserId] = useState<string>('team');
+  const [keyType, setKeyType] = useState<'full' | 'llm' | 'vector'>('full');
   const [loadedSpendKeys, setLoadedSpendKeys] = useState<Set<number>>(new Set());
 
   const queryClient = useQueryClient();
@@ -136,16 +137,23 @@ export default function TeamAIKeysPage() {
   });
 
   const createKeyMutation = useMutation({
-    mutationFn: async (data: { name: string; region_id: number; owner_id?: number; team_id?: number }) => {
-      const response = await post('private-ai-keys', data, { credentials: 'include' });
+    mutationFn: async (data: { name: string; region_id: number; owner_id?: number; team_id?: number; key_type: 'full' | 'llm' | 'vector' }) => {
+      const endpoint = data.key_type === 'full' ? 'private-ai-keys' :
+                      data.key_type === 'llm' ? 'private-ai-keys/token' :
+                      'private-ai-keys/vector-db';
+      const response = await post(endpoint, data, { credentials: 'include' });
       return response.json();
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
       setIsAddingKey(false);
       setNewKeyName('');
       setSelectedRegion('');
       setSelectedUserId('team');
+      // Determine key type based on returned data
+      const newKeyType = data.litellm_token && data.database_name ? 'full' :
+                        data.litellm_token ? 'llm' : 'vector';
+      setKeyType(newKeyType);
       toast({
         title: 'Success',
         description: 'AI key added successfully',
@@ -214,9 +222,10 @@ export default function TeamAIKeysPage() {
     const region = regions.find(r => r.name === selectedRegion);
     if (!region || !user?.team_id) return;
 
-    const data: { name: string; region_id: number; owner_id?: number; team_id?: number } = {
+    const data: { name: string; region_id: number; owner_id?: number; team_id?: number; key_type: 'full' | 'llm' | 'vector' } = {
       name: newKeyName,
       region_id: region.id,
+      key_type: keyType
     };
 
     if (selectedUserId === 'team') {
@@ -256,6 +265,22 @@ export default function TeamAIKeysPage() {
                     onChange={(e) => setNewKeyName(e.target.value)}
                     required
                   />
+                </div>
+                <div className="grid gap-2">
+                  <label htmlFor="type">Type</label>
+                  <Select value={keyType} onValueChange={(value: 'full' | 'llm' | 'vector') => setKeyType(value)}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="full">Full Key (LLM + Vector DB)</SelectItem>
+                      <SelectItem value="llm">LLM Token Only</SelectItem>
+                      <SelectItem value="vector">Vector DB Only</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-sm text-muted-foreground">
+                    Choose whether to create a full key with both LLM and Vector DB access, or just one component
+                  </p>
                 </div>
                 <div className="grid gap-2">
                   <label htmlFor="region">Region</label>
@@ -316,7 +341,7 @@ export default function TeamAIKeysPage() {
         onDelete={deleteKeyMutation.mutate}
         isLoading={isLoadingKeys}
         isDeleting={deleteKeyMutation.isPending}
-        showSpend={true}
+        allowModification={true}
         showOwner={true}
         spendMap={spendMap}
         onLoadSpend={(keyId) => setLoadedSpendKeys(prev => new Set([...prev, keyId]))}
