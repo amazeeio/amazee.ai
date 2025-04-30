@@ -31,7 +31,20 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import React from 'react';
+
+const USER_ROLES = [
+  { value: 'admin', label: 'Admin' },
+  { value: 'key_creator', label: 'Key Creator' },
+  { value: 'read_only', label: 'Read Only' },
+];
 
 interface TeamUser {
   id: number;
@@ -74,6 +87,7 @@ export default function TeamsPage() {
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserPassword, setNewUserPassword] = useState('');
+  const [newUserRole, setNewUserRole] = useState('read_only');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<User[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -180,7 +194,7 @@ export default function TeamsPage() {
   });
 
   const createUserMutation = useMutation({
-    mutationFn: async (userData: { email: string; password: string; team_id?: number }) => {
+    mutationFn: async (userData: { email: string; password: string; team_id?: number; role: string }) => {
       try {
         const response = await post('/users', userData);
         return response.json();
@@ -203,6 +217,7 @@ export default function TeamsPage() {
       setIsCreatingUserInTeam(false);
       setNewUserEmail('');
       setNewUserPassword('');
+      setNewUserRole('read_only');
     },
     onError: (error: Error) => {
       toast({
@@ -296,6 +311,7 @@ export default function TeamsPage() {
       email: newUserEmail,
       password: newUserPassword,
       team_id: parseInt(selectedTeamId),
+      role: newUserRole,
     });
   };
 
@@ -781,6 +797,26 @@ export default function TeamsPage() {
                   className="col-span-3"
                   required
                 />
+              </div>
+              <div className="grid grid-cols-4 items-center gap-4">
+                <label htmlFor="new-user-role" className="text-right">
+                  Role
+                </label>
+                <Select
+                  value={newUserRole}
+                  onValueChange={setNewUserRole}
+                >
+                  <SelectTrigger className="col-span-3">
+                    <SelectValue placeholder="Select a role" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {USER_ROLES.map((role) => (
+                      <SelectItem key={role.value} value={role.value}>
+                        {role.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
             <DialogFooter>

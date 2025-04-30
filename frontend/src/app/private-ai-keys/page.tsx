@@ -1,17 +1,9 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import {
   Dialog,
   DialogContent,
@@ -29,9 +21,11 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, Eye, EyeOff } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { get, post } from '@/utils/api';
+import { PrivateAIKeysTable } from '@/components/private-ai-keys-table';
+import { useAuth } from '@/hooks/use-auth';
 
 interface Region {
   id: number;
@@ -48,19 +42,30 @@ interface PrivateAIKey {
   litellm_token: string;
   litellm_api_url: string;
   region: string;
+  id: number;
+  owner_id: number;
+  team_id?: number;
+  created_at: string;
 }
 
 export default function DashboardPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [visibleCredentials, setVisibleCredentials] = useState<Set<string>>(new Set());
+  const { user } = useAuth();
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [selectedRegion, setSelectedRegion] = useState<string>('');
   const [keyName, setKeyName] = useState<string>('');
-  const [newKeyName, setNewKeyName] = useState<string | null>(null);
-  const newKeyRef = useRef<HTMLTableRowElement>(null);
+  const [keyType, setKeyType] = useState<'full' | 'llm' | 'vector'>('full');
   const [regions, setRegions] = useState<Region[]>([]);
   const [privateAIKeys, setPrivateAIKeys] = useState<PrivateAIKey[]>([]);
+  const [spendMap, setSpendMap] = useState<Record<number, {
+    spend: number;
+    max_budget: number | null;
+    budget_duration: string | null;
+    budget_reset_at: string | null;
+  }>>({});
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isUpdatingBudget, setIsUpdatingBudget] = useState(false);
 
   // Fetch regions
   const fetchRegions = useCallback(async () => {
@@ -76,7 +81,7 @@ export default function DashboardPage() {
         variant: 'destructive',
       });
     }
-  }, [toast, setRegions]);
+  }, [toast]);
 
   // Fetch private AI keys
   const fetchKeys = useCallback(async () => {
@@ -92,29 +97,78 @@ export default function DashboardPage() {
         variant: 'destructive',
       });
     }
-  }, [toast, setPrivateAIKeys]);
+  }, [toast]);
 
-  useEffect(() => {
-    if (newKeyName && newKeyRef.current) {
-      // First scroll attempt
-      setTimeout(() => {
-        if (newKeyRef.current) {
-          newKeyRef.current.scrollIntoView({
-            behavior: 'smooth',
-            block: 'center'
-          });
-        }
-      }, 500);
-
-      const timer = setTimeout(() => setNewKeyName(null), 5000);
-      return () => clearTimeout(timer);
+  // Load spend for a key
+  const loadSpend = useCallback(async (keyId: number) => {
+    try {
+      const response = await get(`/private-ai-keys/${keyId}/spend`);
+      const data = await response.json();
+      setSpendMap(prev => ({
+        ...prev,
+        [keyId]: data
+      }));
+    } catch (error) {
+      console.error('Error loading spend:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to load spend information',
+        variant: 'destructive',
+      });
     }
-  }, [newKeyName]);
+  }, [toast]);
+
+  // Update budget period
+  const updateBudget = useCallback(async (keyId: number, budgetDuration: string) => {
+    setIsUpdatingBudget(true);
+    try {
+      await post(`/private-ai-keys/${keyId}/budget-period`, { budget_duration: budgetDuration });
+      await loadSpend(keyId);
+      toast({
+        title: 'Success',
+        description: 'Budget period updated successfully',
+      });
+    } catch (error) {
+      console.error('Error updating budget:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to update budget period',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsUpdatingBudget(false);
+    }
+  }, [toast, loadSpend]);
+
+  // Delete key
+  const deleteKey = useCallback(async (keyId: number) => {
+    setIsDeleting(true);
+    try {
+      await post(`/private-ai-keys/${keyId}/delete`, {});
+      await fetchKeys();
+      toast({
+        title: 'Success',
+        description: 'Key deleted successfully',
+      });
+    } catch (error) {
+      console.error('Error deleting key:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to delete key',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [toast, fetchKeys]);
 
   // Create key mutation
   const createKeyMutation = useMutation({
-    mutationFn: async ({ region_id, name }: { region_id: number, name: string }) => {
-      const response = await post('/private-ai-keys', { region_id, name });
+    mutationFn: async ({ region_id, name, key_type }: { region_id: number, name: string, key_type: 'full' | 'llm' | 'vector' }) => {
+      const endpoint = key_type === 'full' ? '/private-ai-keys' :
+                      key_type === 'llm' ? '/private-ai-keys/token' :
+                      '/private-ai-keys/vector-db';
+      const response = await post(endpoint, { region_id, name });
       const data = await response.json();
       return data;
     },
@@ -123,10 +177,10 @@ export default function DashboardPage() {
       setIsCreateDialogOpen(false);
       setSelectedRegion('');
       setKeyName('');
-      // Small delay to ensure the data is refetched before we set the new key name
-      setTimeout(() => {
-        setNewKeyName(data.database_name);
-      }, 100);
+      // Determine key type based on returned data
+      const newKeyType = data.litellm_token && data.database_name ? 'full' :
+                        data.litellm_token ? 'llm' : 'vector';
+      setKeyType(newKeyType);
       toast({
         title: 'Success',
         description: 'Private AI key created successfully',
@@ -141,27 +195,6 @@ export default function DashboardPage() {
     },
   });
 
-  const toggleCredentialVisibility = (key: string) => {
-    setVisibleCredentials(prev => {
-      const next = new Set(prev);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
-      return next;
-    });
-  };
-
-  // Group keys by region
-  const keysByRegion = (privateAIKeys as PrivateAIKey[]).reduce<Record<string, PrivateAIKey[]>>((acc, key) => {
-    if (!acc[key.region]) {
-      acc[key.region] = [];
-    }
-    acc[key.region].push(key);
-    return acc;
-  }, {});
-
   const handleCreateKey = () => {
     if (!selectedRegion || !keyName) return;
 
@@ -170,7 +203,8 @@ export default function DashboardPage() {
 
     createKeyMutation.mutate({
       region_id: region.id,
-      name: keyName
+      name: keyName,
+      key_type: keyType
     });
   };
 
@@ -183,178 +217,97 @@ export default function DashboardPage() {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold">Private AI Keys</h1>
-        <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
-          <DialogTrigger asChild>
-            <Button>Create Private AI Key</Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Create Private AI Key</DialogTitle>
-              <DialogDescription>
-                Select a region and provide a name for your new private AI key.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="py-4 space-y-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Name <span className="text-red-500">*</span></label>
-                <Input
-                  value={keyName}
-                  onChange={(e) => setKeyName(e.target.value)}
-                  placeholder="My AI Key"
-                  required
-                />
-                <p className="text-sm text-muted-foreground">
-                  A descriptive name to help you identify this key
-                </p>
+        {user?.role !== 'read_only' && (
+          <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
+            <DialogTrigger asChild>
+              <Button>Create Private AI Key</Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Create Private AI Key</DialogTitle>
+                <DialogDescription>
+                  Select a region and provide a name for your new private AI key.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="py-4 space-y-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Name <span className="text-red-500">*</span></label>
+                  <Input
+                    value={keyName}
+                    onChange={(e) => setKeyName(e.target.value)}
+                    placeholder="My AI Key"
+                    required
+                  />
+                  <p className="text-sm text-muted-foreground">
+                    A descriptive name to help you identify this key
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Type <span className="text-red-500">*</span></label>
+                  <Select value={keyType} onValueChange={(value: 'full' | 'llm' | 'vector') => setKeyType(value)}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="full">Full Key (LLM + Vector DB)</SelectItem>
+                      <SelectItem value="llm">LLM Token Only</SelectItem>
+                      <SelectItem value="vector">Vector DB Only</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-sm text-muted-foreground">
+                    Choose whether to create a full key with both LLM and Vector DB access, or just one component
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Region <span className="text-red-500">*</span></label>
+                  <Select value={selectedRegion} onValueChange={setSelectedRegion}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a region" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {regions
+                        .filter(region => region.is_active)
+                        .map(region => (
+                          <SelectItem key={region.id} value={region.name}>
+                            {region.name}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Region <span className="text-red-500">*</span></label>
-                <Select value={selectedRegion} onValueChange={setSelectedRegion}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a region" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {regions
-                      .filter(region => region.is_active)
-                      .map(region => (
-                        <SelectItem key={region.id} value={region.name}>
-                          {region.name}
-                        </SelectItem>
-                      ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <DialogFooter>
-              <Button
-                onClick={handleCreateKey}
-                disabled={!selectedRegion || !keyName || createKeyMutation.isPending}
-              >
-                {createKeyMutation.isPending ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Creating...
-                  </>
-                ) : (
-                  'Create Key'
-                )}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+              <DialogFooter>
+                <Button
+                  onClick={handleCreateKey}
+                  disabled={!selectedRegion || !keyName || createKeyMutation.isPending}
+                >
+                  {createKeyMutation.isPending ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Creating...
+                    </>
+                  ) : (
+                    'Create Key'
+                  )}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        )}
       </div>
 
-      {Object.entries(keysByRegion).map(([region, keys]) => (
-        <Card key={region}>
-          <CardHeader>
-            <CardTitle>Region: {region}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Name</TableHead>
-                    <TableHead>VectorDB Credentials</TableHead>
-                    <TableHead>LLM Credentials</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {keys.map((key) => {
-                    return (
-                      <TableRow
-                        key={key.database_name}
-                        ref={key.database_name === newKeyName ? newKeyRef : null}
-                        className={`scroll-mt-32 ${
-                          key.database_name === newKeyName
-                            ? 'bg-green-100 dark:bg-green-900/20 shadow-[0_0_15px_rgba(0,128,0,0.2)] transition-all duration-1000'
-                            : ''
-                        }`}
-                      >
-                        <TableCell>{key.name || key.database_name}</TableCell>
-                        <TableCell>
-                          <div className="space-y-2">
-                            <div className="flex items-center gap-2">
-                              <span>DB Name: {key.database_name}</span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <span>Host: {key.database_host}</span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <span>Username: {key.database_username}</span>
-                            </div>
-                            {key.database_password && (
-                              <div className="flex items-center gap-2">
-                                <span>Password:</span>
-                                {visibleCredentials.has(`${key.database_name}-password`) ? (
-                                  <div className="flex items-center gap-2">
-                                    <code className="px-2 py-1 bg-muted rounded text-sm font-mono">
-                                      {key.database_password}
-                                    </code>
-                                    <Button
-                                      variant="ghost"
-                                      size="icon"
-                                      onClick={() => toggleCredentialVisibility(`${key.database_name}-password`)}
-                                    >
-                                      <EyeOff className="h-4 w-4" />
-                                    </Button>
-                                  </div>
-                                ) : (
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    onClick={() => toggleCredentialVisibility(`${key.database_name}-password`)}
-                                  >
-                                    <Eye className="h-4 w-4" />
-                                  </Button>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="space-y-2">
-                            <div className="flex items-center gap-2">
-                              <span>API URL: {key.litellm_api_url}</span>
-                            </div>
-                            {key.litellm_token && (
-                              <div className="flex items-center gap-2">
-                                <span>API Key:</span>
-                                {visibleCredentials.has(`${key.database_name}-token`) ? (
-                                  <div className="flex items-center gap-2">
-                                    <code className="px-2 py-1 bg-muted rounded text-sm font-mono">
-                                      {key.litellm_token}
-                                    </code>
-                                    <Button
-                                      variant="ghost"
-                                      size="icon"
-                                      onClick={() => toggleCredentialVisibility(`${key.database_name}-token`)}
-                                    >
-                                      <EyeOff className="h-4 w-4" />
-                                    </Button>
-                                  </div>
-                                ) : (
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    onClick={() => toggleCredentialVisibility(`${key.database_name}-token`)}
-                                  >
-                                    <Eye className="h-4 w-4" />
-                                  </Button>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
-      ))}
+      <PrivateAIKeysTable
+        keys={privateAIKeys}
+        onDelete={deleteKey}
+        isLoading={createKeyMutation.isPending}
+        showOwner={false}
+        allowModification={false}
+        spendMap={spendMap}
+        onLoadSpend={loadSpend}
+        onUpdateBudget={updateBudget}
+        isDeleting={isDeleting}
+        isUpdatingBudget={isUpdatingBudget}
+      />
 
       {privateAIKeys.length === 0 && (
         <Card>

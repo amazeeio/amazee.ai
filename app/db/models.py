@@ -70,13 +70,13 @@ class DBPrivateAIKey(Base):
     __tablename__ = "ai_tokens"
 
     id = Column(Integer, primary_key=True, index=True)
-    database_name = Column(String, unique=True, index=True)
+    database_name = Column(String, unique=True, index=True, nullable=True)
     name = Column(String, nullable=True)  # User-friendly display name
-    database_host = Column(String)
+    database_host = Column(String, nullable=True)
     database_username = Column(String)
-    database_password = Column(String)
-    litellm_token = Column(String)
-    litellm_api_url = Column(String)
+    database_password = Column(String, nullable=True)
+    litellm_token = Column(String, nullable=True)
+    litellm_api_url = Column(String, nullable=True)
     owner_id = Column(Integer, ForeignKey("users.id"))
     region_id = Column(Integer, ForeignKey("regions.id"))
     created_at = Column(DateTime(timezone=True), default=func.now())
@@ -89,7 +89,7 @@ class DBPrivateAIKey(Base):
 
     def to_dict(self):
         return {
-            "id": self.id,
+            "id": self.id or -1,
             "name": self.name,
             "database_name": self.database_name,
             "database_host": self.database_host,
@@ -99,6 +99,7 @@ class DBPrivateAIKey(Base):
             "litellm_api_url": self.litellm_api_url or "",
             "region": self.region.name if self.region else None,
             "owner_id": self.owner_id,
+            "team_id": self.team_id,
             "created_at": self.created_at
         }
 

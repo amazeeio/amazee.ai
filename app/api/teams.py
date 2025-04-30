@@ -1,16 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List
 from datetime import datetime, UTC
 
 from app.db.database import get_db
-from app.db.models import DBTeam, DBUser
+from app.db.models import DBTeam
 from app.core.security import check_system_admin, check_specific_team_admin
 from app.schemas.models import (
     Team, TeamCreate, TeamUpdate,
     TeamWithUsers
 )
-from app.api.auth import get_current_user_from_auth
 
 router = APIRouter()
 
@@ -50,7 +49,6 @@ async def register_team(
 @router.get("", response_model=List[Team], dependencies=[Depends(check_system_admin)])
 @router.get("/", response_model=List[Team], dependencies=[Depends(check_system_admin)])
 async def list_teams(
-    current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
     """
@@ -61,7 +59,6 @@ async def list_teams(
 @router.get("/{team_id}", response_model=TeamWithUsers, dependencies=[Depends(check_specific_team_admin)])
 async def get_team(
     team_id: int,
-    current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
     """
@@ -79,7 +76,6 @@ async def get_team(
 async def update_team(
     team_id: int,
     team_update: TeamUpdate,
-    current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
     """
@@ -103,7 +99,6 @@ async def update_team(
 @router.delete("/{team_id}", dependencies=[Depends(check_system_admin)])
 async def delete_team(
     team_id: int,
-    current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
     """

@@ -1,5 +1,4 @@
 import asyncpg
-from typing import Dict
 import uuid
 import logging
 from app.db.models import DBRegion
@@ -13,11 +12,10 @@ class PostgresManager:
             self.admin_user = region.postgres_admin_user
             self.admin_password = region.postgres_admin_password
             self.port = region.postgres_port
-            self.litellm_api_url = region.litellm_api_url
         else:
             raise ValueError("Region is required for PostgresManager")
 
-    async def create_database(self, owner: str, litellm_token: str, name: str = None, user_id: int = None) -> Dict:
+    async def create_database(self) -> dict:
         # Generate unique database name and credentials
         db_name = f"db_{uuid.uuid4().hex[:8]}"
         db_user = f"user_{uuid.uuid4().hex[:8]}"
@@ -75,9 +73,7 @@ class PostgresManager:
                 "database_name": db_name,
                 "database_username": db_user,
                 "database_password": db_password,
-                "database_host": self.host,
-                "litellm_token": litellm_token,
-                "litellm_api_url": self.litellm_api_url
+                "database_host": self.host
             }
         except Exception as e:
             logger.error(f"Error creating database: {str(e)}")

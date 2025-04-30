@@ -67,6 +67,7 @@ export default function TeamUsersPage() {
   const [selectedUser, setSelectedUser] = useState<{ id: string; currentRole: string } | null>(null);
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserPassword, setNewUserPassword] = useState('');
+  const [newUserRole, setNewUserRole] = useState('read_only');
 
   const queryClient = useQueryClient();
 
@@ -82,7 +83,7 @@ export default function TeamUsersPage() {
   });
 
   const createUserMutation = useMutation({
-    mutationFn: async (data: { email: string; password: string }) => {
+    mutationFn: async (data: { email: string; password: string; role: string }) => {
       const response = await post('users', {
         ...data,
         team_id: user?.team_id,
@@ -94,6 +95,7 @@ export default function TeamUsersPage() {
       setIsAddingUser(false);
       setNewUserEmail('');
       setNewUserPassword('');
+      setNewUserRole('read_only');
       toast({
         title: 'Success',
         description: 'User added to team successfully',
@@ -163,6 +165,7 @@ export default function TeamUsersPage() {
     createUserMutation.mutate({
       email: newUserEmail,
       password: newUserPassword,
+      role: newUserRole,
     });
   };
 
@@ -214,6 +217,24 @@ export default function TeamUsersPage() {
                     onChange={(e) => setNewUserPassword(e.target.value)}
                     required
                   />
+                </div>
+                <div className="grid gap-2">
+                  <label htmlFor="role">Role</label>
+                  <Select
+                    value={newUserRole}
+                    onValueChange={setNewUserRole}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a role" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {USER_ROLES.map((role) => (
+                        <SelectItem key={role.value} value={role.value}>
+                          {role.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
               <DialogFooter>
