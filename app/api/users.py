@@ -5,7 +5,7 @@ from typing import List
 from app.db.database import get_db
 from app.schemas.models import User, UserUpdate, UserCreate, TeamOperation, UserRoleUpdate
 from app.db.models import DBUser, DBTeam
-from app.core.security import get_password_hash, check_system_admin, get_current_user_from_auth, VALID_ROLES, get_role_min_team_admin
+from app.core.security import get_password_hash, check_system_admin, get_current_user_from_auth, UserRole, get_role_min_team_admin
 from datetime import datetime, UTC
 
 router = APIRouter()
@@ -71,15 +71,15 @@ async def create_user(
         )
 
     # Validate role if provided
-    if user.role and user.role not in VALID_ROLES:
+    if user.role and user.role not in UserRole:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid role. Must be one of: {', '.join(VALID_ROLES)}"
+            detail=f"Invalid role. Must be one of: {', '.join(UserRole)}"
         )
 
     # Default to the lowest permissions for a user in a team
     if user.role is None and user.team_id is not None:
-        user.role = 'read_only'
+        user.role = "read_only"
 
     # Create the user
     hashed_password = get_password_hash(user.password)
@@ -152,7 +152,6 @@ async def update_user(
 async def add_user_to_team(
     user_id: int,
     team_operation: TeamOperation,
-    current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
     """
@@ -245,10 +244,10 @@ async def update_user_role(
     Update a user's role. Accessible by admin users or team admins for their team members.
     """
     # Validate role
-    if role_update.role not in VALID_ROLES:
+    if role_update.role not in UserRole:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid role. Must be one of: {', '.join(VALID_ROLES)}"
+            detail=f"Invalid role. Must be one of: {', '.join(UserRole)}"
         )
 
     # Get the user to update

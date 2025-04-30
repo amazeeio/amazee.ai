@@ -1,16 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List
 from datetime import datetime, UTC
 
 from app.db.database import get_db
-from app.db.models import DBTeam, DBUser
+from app.db.models import DBTeam
 from app.core.security import check_system_admin, check_specific_team_admin
 from app.schemas.models import (
     Team, TeamCreate, TeamUpdate,
     TeamWithUsers
 )
-from app.api.auth import get_current_user_from_auth
 
 router = APIRouter()
 

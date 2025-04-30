@@ -1,4 +1,3 @@
-import re
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -13,16 +12,19 @@ from app.schemas.models import (
 from app.db.postgres import PostgresManager
 from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
 from app.services.litellm import LiteLLMService
-from app.core.security import get_current_user_from_auth, get_role_min_key_creator, get_role_min_team_admin
+from app.core.security import get_current_user_from_auth, get_role_min_key_creator, get_role_min_team_admin, UserRole
 
 # Set up logging
 logger = logging.getLogger(__name__)
 
-def _get_ownership_info(
+# Fake ID for resources not stored in the database
+FAKE_ID = -1
+
+def _validate_permissions_and_get_ownership_info(
     owner_id: Optional[int],
     team_id: Optional[int],
     current_user: DBUser,
-    user_role: str
+    user_role: UserRole
 ) -> tuple[Optional[int], Optional[int]]:
     """
     Helper function to determine ownership information based on user role and input.
@@ -33,7 +35,8 @@ def _get_ownership_info(
         owner_id = current_user.id
 
     # Fail fast without having to do DB lookups
-    if user_role in ["key_creator", "user"]:
+    personal_users : list[UserRole] = ["key_creator", "user"] # 'user' is the non-admin system user
+    if user_role in personal_users:
         if owner_id != current_user.id or team_id is not None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -62,7 +65,7 @@ router = APIRouter(
 async def create_vector_db(
     vector_db: VectorDBCreate,
     current_user = Depends(get_current_user_from_auth),
-    user_role: str = Depends(get_role_min_key_creator),
+    user_role: UserRole = Depends(get_role_min_key_creator),
     db: Session = Depends(get_db),
     store_result: bool = True
 ):
@@ -91,7 +94,7 @@ async def create_vector_db(
     Only admins can create databases for other users or teams.
     """
     # Get ownership information
-    owner_id, team_id = _get_ownership_info(
+    owner_id, team_id = _validate_permissions_and_get_ownership_info(
         vector_db.owner_id,
         vector_db.team_id,
         current_user,
@@ -135,7 +138,7 @@ async def create_vector_db(
             db.refresh(db_ai_key)
         else:
             db_ai_key.region = region
-            db_ai_key.id = -1
+            db_ai_key.id = FAKE_ID
 
         return VectorDB.model_validate(db_ai_key.to_dict())
     except Exception as e:
@@ -151,7 +154,7 @@ async def create_vector_db(
 async def create_private_ai_key(
     private_ai_key: PrivateAIKeyCreate,
     current_user = Depends(get_current_user_from_auth),
-    user_role: str = Depends(get_role_min_key_creator),
+    user_role: UserRole = Depends(get_role_min_key_creator),
     db: Session = Depends(get_db)
 ):
     """
@@ -215,7 +218,7 @@ async def create_private_ai_key(
 async def create_llm_token(
     private_ai_key: PrivateAIKeyCreate,
     current_user = Depends(get_current_user_from_auth),
-    user_role: str = Depends(get_role_min_key_creator),
+    user_role: UserRole = Depends(get_role_min_key_creator),
     db: Session = Depends(get_db),
     store_result: bool = True
 ):
@@ -242,7 +245,7 @@ async def create_llm_token(
     Only admins can create tokens for other users or teams.
     """
     # Get ownership information
-    owner_id, team_id = _get_ownership_info(
+    owner_id, team_id = _validate_permissions_and_get_ownership_info(
         private_ai_key.owner_id,
         private_ai_key.team_id,
         current_user,
@@ -287,7 +290,7 @@ async def create_llm_token(
         litellm_team = team.id
     else:
         owner_email = owner.email
-        litellm_team = owner.team_id or -1
+        litellm_team = owner.team_id or FAKE_ID
 
     try:
         # Generate LiteLLM token
@@ -319,7 +322,7 @@ async def create_llm_token(
             db.refresh(db_token)
         else:
             db_token.region = region
-            db_token.id = -1
+            db_token.id = FAKE_ID
 
         return LiteLLMToken.model_validate(db_token.to_dict())
     except Exception as e:
@@ -346,7 +349,7 @@ async def list_private_ai_keys(
     If user is team admin:
         - Returns keys owned by users in their team AND keys owned by their team
     If user is not admin:
-        - Returns only their own keys, ignoring owner_id and team_id parameters
+        - Returns their own keys, and keys for their team, ignoring owner_id and team_id parameters
     """
     query = db.query(DBPrivateAIKey)
 
@@ -383,7 +386,7 @@ async def list_private_ai_keys(
     private_ai_keys = query.all()
     return [key.to_dict() for key in private_ai_keys]
 
-def _get_key_if_allowed(key_id: id, current_user: DBUser, user_role: str, db: Session) -> DBPrivateAIKey:
+def _get_key_if_allowed(key_id: int, current_user: DBUser, user_role: UserRole, db: Session) -> DBPrivateAIKey:
     # First try to find the key
     private_ai_key = db.query(DBPrivateAIKey).filter(
         DBPrivateAIKey.id == key_id
@@ -429,7 +432,7 @@ def _get_key_if_allowed(key_id: id, current_user: DBUser, user_role: str, db: Se
 async def delete_private_ai_key(
     key_id: int,
     current_user = Depends(get_current_user_from_auth),
-    user_role: str = Depends(get_role_min_key_creator),
+    user_role: UserRole = Depends(get_role_min_key_creator),
     db: Session = Depends(get_db)
 ):
     private_ai_key = _get_key_if_allowed(key_id, current_user, user_role, db)
@@ -508,7 +511,7 @@ async def update_budget_period(
     key_id: int,
     budget_update: BudgetPeriodUpdate,
     current_user = Depends(get_current_user_from_auth),
-    user_role: str = Depends(get_role_min_team_admin),
+    user_role: UserRole = Depends(get_role_min_team_admin),
     db: Session = Depends(get_db)
 ):
     """

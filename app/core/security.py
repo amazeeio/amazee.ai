@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, UTC
-from typing import Optional, Literal, List
+from typing import Optional, Literal, Dict
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status, Cookie, Header
@@ -19,15 +19,15 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer(auto_error=False)
 
 # Define valid user roles as a Literal type
-UserRole = Literal["admin", "key_creator", "read_only", "user"]
-VALID_ROLES: List[UserRole] = ["admin", "key_creator", "read_only", "user"]
+UserRole = Literal["admin", "key_creator", "read_only", "user", "system_admin"]
 
 # Define a hierarchy for roles
-user_role_hierarchy: dict[UserRole, int] = {
+user_role_hierarchy: Dict[UserRole, int] = {
     "admin": 0,
     "user": 1,
     "key_creator": 2,
     "read_only": 3,
+    "system_admin": 4,
 }
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -136,7 +136,7 @@ async def check_system_admin(current_user: DBUser = Depends(get_current_user_fro
             detail="Not authorized to perform this action"
         )
 
-def get_user_role(minimum_role: str, current_user: DBUser):
+def get_user_role(minimum_role: UserRole, current_user: DBUser):
     if current_user.is_admin:
         return "system_admin"
     elif user_role_hierarchy[current_user.role] > user_role_hierarchy[minimum_role]:

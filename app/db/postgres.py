@@ -1,5 +1,4 @@
 import asyncpg
-from typing import Dict
 import uuid
 import logging
 from app.db.models import DBRegion
@@ -16,7 +15,7 @@ class PostgresManager:
         else:
             raise ValueError("Region is required for PostgresManager")
 
-    async def create_database(self) -> Dict:
+    async def create_database(self) -> dict:
         # Generate unique database name and credentials
         db_name = f"db_{uuid.uuid4().hex[:8]}"
         db_user = f"user_{uuid.uuid4().hex[:8]}"
