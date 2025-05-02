@@ -68,7 +68,10 @@ export default function UsersPage() {
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserPassword, setNewUserPassword] = useState('');
   const [newUserRole, setNewUserRole] = useState('read_only');
+  const [newUserTeamId, setNewUserTeamId] = useState<string>('');
+  const [isSystemUser, setIsSystemUser] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
+  const [teams, setTeams] = useState<{ id: string; name: string }[]>([]);
 
   // Queries
   const { isLoading: isLoadingUsers } = useQuery<User[]>({
@@ -79,6 +82,20 @@ export default function UsersPage() {
       return data;
     },
   });
+
+  // Fetch teams
+  useEffect(() => {
+    const fetchTeams = async () => {
+      try {
+        const response = await get('/teams');
+        const data = await response.json();
+        setTeams(data);
+      } catch (error) {
+        console.error('Error fetching teams:', error);
+      }
+    };
+    fetchTeams();
+  }, []);
 
   // Mutations
   const updateUserMutation = useMutation({
@@ -126,15 +143,14 @@ export default function UsersPage() {
   });
 
   const createUserMutation = useMutation({
-    mutationFn: async (userData: { email: string; password: string; role: string }) => {
-      const response = await fetch('/api/users', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(userData),
-      });
-      if (!response.ok) {
-        throw new Error('Failed to create user');
-      }
+    mutationFn: async (userData: {
+      email: string;
+      password: string;
+      role?: string;
+      team_id?: string;
+      is_system_user?: boolean;
+    }) => {
+      const response = await post('/users', userData);
       return response.json();
     },
     onSuccess: () => {
@@ -143,6 +159,8 @@ export default function UsersPage() {
       setNewUserEmail('');
       setNewUserPassword('');
       setNewUserRole('read_only');
+      setNewUserTeamId('');
+      setIsSystemUser(false);
       toast({
         title: 'Success',
         description: 'User created successfully',
@@ -224,11 +242,27 @@ export default function UsersPage() {
 
   const handleCreateUser = (e: React.FormEvent) => {
     e.preventDefault();
-    createUserMutation.mutate({
+    const userData: {
+      email: string;
+      password: string;
+      role?: string;
+      team_id?: string;
+      is_system_user?: boolean;
+    } = {
       email: newUserEmail,
       password: newUserPassword,
-      role: newUserRole,
-    });
+    };
+
+    if (isSystemUser) {
+      userData.is_system_user = true;
+    } else {
+      userData.role = newUserRole;
+      if (newUserTeamId) {
+        userData.team_id = newUserTeamId;
+      }
+    }
+
+    createUserMutation.mutate(userData);
   };
 
   const handleDeleteUser = (userId: string) => {
@@ -272,23 +306,70 @@ export default function UsersPage() {
                 />
               </div>
               <div className="space-y-2">
-                <label className="text-sm font-medium">Role</label>
-                <Select
-                  value={newUserRole}
-                  onValueChange={setNewUserRole}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a role" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {USER_ROLES.map((role) => (
-                      <SelectItem key={role.value} value={role.value}>
-                        {role.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <label className="text-sm font-medium">User Type</label>
+                <div className="flex items-center space-x-4">
+                  <label className="flex items-center space-x-2">
+                    <input
+                      type="radio"
+                      checked={!isSystemUser}
+                      onChange={() => setIsSystemUser(false)}
+                      className="form-radio"
+                    />
+                    <span>Team User</span>
+                  </label>
+                  <label className="flex items-center space-x-2">
+                    <input
+                      type="radio"
+                      checked={isSystemUser}
+                      onChange={() => setIsSystemUser(true)}
+                      className="form-radio"
+                    />
+                    <span>System User</span>
+                  </label>
+                </div>
               </div>
+              {!isSystemUser && (
+                <>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Team</label>
+                    <p>Selected team ID: {newUserTeamId}</p>
+                    <Select
+                      value={newUserTeamId}
+                      onValueChange={value => setNewUserTeamId(String(value))}
+                      required
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select a team" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {teams.map((team) => (
+                          <SelectItem key={team.id} value={String(team.id)}>
+                            {team.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Role</label>
+                    <Select
+                      value={newUserRole}
+                      onValueChange={setNewUserRole}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select a role" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {USER_ROLES.map((role) => (
+                          <SelectItem key={role.value} value={role.value}>
+                            {role.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </>
+              )}
               <DialogFooter>
                 <Button
                   type="submit"
