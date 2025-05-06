@@ -15,7 +15,7 @@ class LiteLLMService:
         if not self.master_key:
             raise ValueError("LiteLLM API key is required")
 
-    async def create_key(self, email: str, name: str, user_id: int, team_id: int) -> str:
+    async def create_key(self, email: str, name: str, user_id: int, team_id: str) -> str:
         """Create a new API key for LiteLLM"""
         try:
             logger.info(f"Creating new LiteLLM API key for email: {email}, name: {name}, user_id: {user_id}, team_id: {team_id}")
@@ -34,11 +34,11 @@ class LiteLLMService:
 
             # Add user_id to metadata if provided
             metadata["amazeeai_user_id"] = str(user_id or None)
-            metadata["amazeeai_team_id"] = str(team_id)
+            metadata["amazeeai_team_id"] = team_id
 
             request_data["key_alias"] = key_alias
             request_data["metadata"] = metadata
-            request_data["team_id"] = str(team_id)
+            request_data["team_id"] = team_id
             if user_id is not None:
                 request_data["user_id"] = str(user_id)
 

@@ -302,7 +302,7 @@ async def create_llm_token(
             email=owner_email,
             name=private_ai_key.name,
             user_id=owner_id,
-            team_id=litellm_team
+            team_id=f"{region.name.replace(' ', '_')}_{litellm_team}"
         )
 
         # Create response object
