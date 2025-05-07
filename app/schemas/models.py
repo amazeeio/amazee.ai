@@ -21,7 +21,7 @@ class UserBase(BaseModel):
     email: str
 
 class UserCreate(UserBase):
-    password: str
+    password: Optional[str] = None
     team_id: Optional[int] = None
     role: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)

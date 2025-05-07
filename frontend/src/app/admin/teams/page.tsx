@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -39,6 +39,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import React from 'react';
+import { getCachedConfig } from '@/utils/config';
 
 const USER_ROLES = [
   { value: 'admin', label: 'Admin' },
@@ -91,6 +92,12 @@ export default function TeamsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<User[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [isPasswordless, setIsPasswordless] = useState(false);
+
+  useEffect(() => {
+    const config = getCachedConfig();
+    setIsPasswordless(config.PASSWORDLESS_SIGN_IN);
+  }, []);
 
   // Queries
   const { data: teams = [], isLoading: isLoadingTeams } = useQuery<Team[]>({
@@ -194,7 +201,7 @@ export default function TeamsPage() {
   });
 
   const createUserMutation = useMutation({
-    mutationFn: async (userData: { email: string; password: string; team_id?: number; role: string }) => {
+    mutationFn: async (userData: { email: string; password?: string; team_id?: number; role: string }) => {
       try {
         const response = await post('/users', userData);
         return response.json();
@@ -305,14 +312,25 @@ export default function TeamsPage() {
 
   const handleCreateUserInTeam = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedTeamId) return;
-
-    createUserMutation.mutate({
+    const userData: {
+      email: string;
+      password?: string;
+      team_id?: number;
+      role: string;
+    } = {
       email: newUserEmail,
-      password: newUserPassword,
-      team_id: parseInt(selectedTeamId),
       role: newUserRole,
-    });
+    };
+
+    if (!isPasswordless) {
+      userData.password = newUserPassword;
+    }
+
+    if (selectedTeamId) {
+      userData.team_id = parseInt(selectedTeamId);
+    }
+
+    createUserMutation.mutate(userData);
   };
 
   const handleAddUserToTeam = (userId: number, e: React.MouseEvent) => {
@@ -772,36 +790,30 @@ export default function TeamsPage() {
           </DialogHeader>
           <form onSubmit={handleCreateUserInTeam}>
             <div className="grid gap-4 py-4">
-              <div className="grid grid-cols-4 items-center gap-4">
-                <label htmlFor="new-user-email" className="text-right">
-                  Email
-                </label>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Email</label>
                 <Input
-                  id="new-user-email"
                   type="email"
                   value={newUserEmail}
                   onChange={(e) => setNewUserEmail(e.target.value)}
-                  className="col-span-3"
+                  placeholder="user@example.com"
                   required
                 />
               </div>
-              <div className="grid grid-cols-4 items-center gap-4">
-                <label htmlFor="new-user-password" className="text-right">
-                  Password
-                </label>
-                <Input
-                  id="new-user-password"
-                  type="password"
-                  value={newUserPassword}
-                  onChange={(e) => setNewUserPassword(e.target.value)}
-                  className="col-span-3"
-                  required
-                />
-              </div>
-              <div className="grid grid-cols-4 items-center gap-4">
-                <label htmlFor="new-user-role" className="text-right">
-                  Role
-                </label>
+              {!isPasswordless && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Password</label>
+                  <Input
+                    type="password"
+                    value={newUserPassword}
+                    onChange={(e) => setNewUserPassword(e.target.value)}
+                    placeholder="••••••••"
+                    required
+                  />
+                </div>
+              )}
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Role</label>
                 <Select
                   value={newUserRole}
                   onValueChange={setNewUserRole}

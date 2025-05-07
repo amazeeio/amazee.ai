@@ -42,6 +42,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { getCachedConfig } from '@/utils/config';
 
 interface User {
   id: string;
@@ -70,8 +71,14 @@ export default function UsersPage() {
   const [newUserRole, setNewUserRole] = useState('read_only');
   const [newUserTeamId, setNewUserTeamId] = useState<string>('');
   const [isSystemUser, setIsSystemUser] = useState(false);
+  const [isPasswordless, setIsPasswordless] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
   const [teams, setTeams] = useState<{ id: string; name: string }[]>([]);
+
+  useEffect(() => {
+    const config = getCachedConfig();
+    setIsPasswordless(config.PASSWORDLESS_SIGN_IN);
+  }, []);
 
   // Queries
   const { isLoading: isLoadingUsers } = useQuery<User[]>({
@@ -145,7 +152,7 @@ export default function UsersPage() {
   const createUserMutation = useMutation({
     mutationFn: async (userData: {
       email: string;
-      password: string;
+      password?: string;
       role?: string;
       team_id?: string;
       is_system_user?: boolean;
@@ -244,22 +251,22 @@ export default function UsersPage() {
     e.preventDefault();
     const userData: {
       email: string;
-      password: string;
+      password?: string;
       role?: string;
       team_id?: string;
       is_system_user?: boolean;
     } = {
       email: newUserEmail,
-      password: newUserPassword,
+      role: newUserRole,
+      is_system_user: isSystemUser,
     };
 
-    if (isSystemUser) {
-      userData.is_system_user = true;
-    } else {
-      userData.role = newUserRole;
-      if (newUserTeamId) {
-        userData.team_id = newUserTeamId;
-      }
+    if (!isPasswordless) {
+      userData.password = newUserPassword;
+    }
+
+    if (!isSystemUser && newUserTeamId) {
+      userData.team_id = newUserTeamId;
     }
 
     createUserMutation.mutate(userData);
@@ -295,16 +302,18 @@ export default function UsersPage() {
                   required
                 />
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Password</label>
-                <Input
-                  type="password"
-                  value={newUserPassword}
-                  onChange={(e) => setNewUserPassword(e.target.value)}
-                  placeholder="••••••••"
-                  required
-                />
-              </div>
+              {!isPasswordless && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Password</label>
+                  <Input
+                    type="password"
+                    value={newUserPassword}
+                    onChange={(e) => setNewUserPassword(e.target.value)}
+                    placeholder="••••••••"
+                    required
+                  />
+                </div>
+              )}
               <div className="space-y-2">
                 <label className="text-sm font-medium">User Type</label>
                 <div className="flex items-center space-x-4">
