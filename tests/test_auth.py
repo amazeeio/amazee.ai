@@ -10,6 +10,14 @@ def mock_dynamodb():
         mock.return_value = mock_instance
         yield mock_instance
 
+@pytest.fixture
+def mock_ses():
+    """Fixture to mock SES service"""
+    with patch('app.api.auth.SESService') as mock:
+        mock_instance = MagicMock()
+        mock.return_value = mock_instance
+        yield mock_instance
+
 def test_login_success(client, test_user):
     response = client.post(
         "/auth/login",
@@ -193,7 +201,7 @@ def test_generate_validation_token(client, mock_dynamodb):
     assert call_args[0][0] == email  # First argument should be the email
     assert len(call_args[0][1]) == 8  # Second argument should be an 8-character code
 
-def test_validate_email_success_json(client, mock_dynamodb):
+def test_validate_email_success_json(client, mock_dynamodb, mock_ses):
     email = "test@example.com"
 
     # Test with JSON data
@@ -214,7 +222,15 @@ def test_validate_email_success_json(client, mock_dynamodb):
     assert call_args[0][0] == email  # First argument should be the email
     assert len(call_args[0][1]) == 8  # Second argument should be an 8-character code
 
-def test_validate_email_success_form(client, mock_dynamodb):
+    # Verify SES service was called correctly
+    mock_ses.send_email.assert_called_once()
+    ses_call_args = mock_ses.send_email.call_args
+    assert ses_call_args[1]['to_addresses'] == [email]  # Verify recipient
+    assert ses_call_args[1]['template_name'] == 'verification_code'  # Verify template used
+    assert 'code' in ses_call_args[1]['template_data']  # Verify code is included in template data
+    assert len(ses_call_args[1]['template_data']['code']) == 8  # Verify code length
+
+def test_validate_email_success_form(client, mock_dynamodb, mock_ses):
     email = "test@example.com"
 
     # Test with form data
@@ -234,6 +250,14 @@ def test_validate_email_success_form(client, mock_dynamodb):
     call_args = mock_dynamodb.write_validation_code.call_args
     assert call_args[0][0] == email  # First argument should be the email
     assert len(call_args[0][1]) == 8  # Second argument should be an 8-character code
+
+    # Verify SES service was called correctly
+    mock_ses.send_email.assert_called_once()
+    ses_call_args = mock_ses.send_email.call_args
+    assert ses_call_args[1]['to_addresses'] == [email]  # Verify recipient
+    assert ses_call_args[1]['template_name'] == 'verification_code'  # Verify template used
+    assert 'code' in ses_call_args[1]['template_data']  # Verify code is included in template data
+    assert len(ses_call_args[1]['template_data']['code']) == 8  # Verify code length
 
 def test_validate_email_invalid_format(client, mock_dynamodb):
     invalid_emails = [

@@ -1,3 +1,4 @@
+amazeeai Verification Code
 Dear {{user}}
 
 Your verification code for amazeeai is **{{code}}**.

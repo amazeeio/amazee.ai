@@ -32,6 +32,7 @@ from app.core.security import (
     get_current_user_from_auth,
 )
 from app.services.dynamodb import DynamoDBService
+from app.services.ses import SESService
 from app.api.teams import register_team
 
 router = APIRouter(
@@ -323,6 +324,24 @@ async def validate_email(
 
     # Generate and store validation code
     code = generate_validation_token(email)
+
+    # Send the validation code via email
+    ses_service = SESService()
+    email_sent = ses_service.send_email(
+        to_addresses=[email],
+        template_name='verification_code',
+        template_data={
+            'user': email.split('@')[0],  # Use the part before @ as the user's name
+            'code': code
+        }
+    )
+
+    if not email_sent:
+        logger.error(f"Failed to send validation code email to {email}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send validation code email"
+        )
 
     return {
         "message": "Validation code has been generated and stored"

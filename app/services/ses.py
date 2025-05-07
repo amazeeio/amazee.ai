@@ -5,6 +5,7 @@ import os
 import pathlib
 import markdown
 import logging
+import json
 from app.services import aws_auth
 
 # Get role name from environment variable
@@ -50,28 +51,35 @@ class SESService:
             **aws_auth.get_credentials(role_name)
         )
 
-    def _read_template(self, template_name: str) -> Tuple[str, str]:
+    def _read_template(self, template_name: str) -> Tuple[str, str, str]:
         """
         Read a template file from the templates directory and convert markdown to HTML.
         The template file should be written in markdown format.
+        The first line of the file will be used as the email subject.
 
         Args:
             template_name (str): Name of the template file (without extension)
 
         Returns:
-            Tuple[str, str]: A tuple containing (text_content, html_content)
+            Tuple[str, str, str]: A tuple containing (subject, text_content, html_content)
+                - subject: The first line of the template file
                 - text_content: The original markdown content
                 - html_content: The markdown content converted to HTML
 
         Raises:
             FileNotFoundError: If the template file doesn't exist
         """
-        template_path = self.templates_dir / f"{template_name}.txt"
+        template_path = self.templates_dir / f"{template_name}.md"
         if not template_path.exists():
             raise FileNotFoundError(f"Template {template_name} not found")
 
         # Read the markdown content
-        markdown_content = template_path.read_text()
+        content = template_path.read_text()
+
+        # Split into subject and body
+        lines = content.split('\n', 1)
+        subject = lines[0].strip()
+        markdown_content = lines[1].strip() if len(lines) > 1 else ""
 
         # Convert markdown to HTML with necessary extensions
         html_content = markdown.markdown(
@@ -85,7 +93,7 @@ class SESService:
             output_format='html5'
         )
 
-        return markdown_content, html_content
+        return subject, markdown_content, html_content
 
     @aws_auth.ensure_valid_credentials(role_name=role_name)
     def get_template(self, template_name: str) -> Optional[Dict[str, Any]]:
@@ -107,28 +115,29 @@ class SESService:
             raise e
 
     @aws_auth.ensure_valid_credentials(role_name=role_name)
-    def create_or_update_template(self, template_name: str, subject: str) -> bool:
+    def create_or_update_template(self, template_name: str) -> bool:
         """
         Create or update an SES template using the content from the corresponding text file.
         This should be called during system startup to ensure templates are in sync.
-        The template file should be written in markdown format.
+        The template file should be written in markdown format, with the first line being the subject.
 
         Args:
             template_name (str): Name of the template (without extension)
-            subject (str): Subject line for the template
 
         Returns:
             bool: True if template was created/updated successfully, False otherwise
         """
         try:
             # Read template content and convert to HTML
-            text_content, html_content = self._read_template(template_name)
+            subject, text_content, html_content = self._read_template(template_name)
 
             template_data = {
                 'TemplateName': template_name,
-                'Subject': subject,
-                'Text': text_content,
-                'Html': html_content
+                'TemplateContent': {
+                    'Subject': subject,
+                    'Text': text_content,
+                    'Html': html_content
+                }
             }
 
             # Check if template exists
@@ -176,6 +185,9 @@ class SESService:
                 if not from_address:
                     raise ValueError("SES_SENDER_EMAIL environment variable is not set")
 
+            # Convert template_data to JSON string
+            template_data_json = json.dumps(template_data)
+
             # Send the email using the template
             response = self.ses.send_email(
                 FromEmailAddress=from_address,
@@ -185,7 +197,7 @@ class SESService:
                 Content={
                     'Template': {
                         'TemplateName': template_name,
-                        'TemplateData': template_data
+                        'TemplateData': template_data_json
                     }
                 }
             )

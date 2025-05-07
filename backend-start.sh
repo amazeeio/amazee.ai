@@ -105,10 +105,29 @@ try:
             print("DynamoDB validation table created/verified successfully!")
         else:
             print("Failed to create DynamoDB validation table!")
+
+        # Initialize SES templates
+        print("Initializing SES email templates...")
+        from app.services.ses import SESService
+        import glob
+        import os
+
+        ses_service = SESService()
+        templates_dir = os.path.join(os.path.dirname(__file__), "app", "templates")
+
+        # Get all .md files in the templates directory
+        template_files = glob.glob(os.path.join(templates_dir, "*.md"))
+
+        for template_file in template_files:
+            template_name = os.path.splitext(os.path.basename(template_file))[0]
+            if ses_service.create_or_update_template(template_name):
+                print(f"Successfully created/updated SES template: {template_name}")
+            else:
+                print(f"Failed to create/update SES template: {template_name}")
     else:
-        print("PASSWORDLESS_SIGN_IN is disabled - skipping DynamoDB initialization")
+        print("PASSWORDLESS_SIGN_IN is disabled - skipping DynamoDB and SES initialization")
 except Exception as e:
-    print(f"Error initializing DynamoDB: {str(e)}")
+    print(f"Error initializing services: {str(e)}")
 END
 
 # Check if running in production (Lagoon) or development mode

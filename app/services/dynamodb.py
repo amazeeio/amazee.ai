@@ -3,7 +3,11 @@ from botocore.exceptions import ClientError
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta, UTC
 import os
+import logging
 from app.services.aws_auth import ensure_valid_credentials, _region_name, get_credentials
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 VALIDATION_CODE_TABLE_NAME = "verification_codes"
 # Get role name from environment variable
@@ -98,7 +102,7 @@ class DynamoDBService:
                 }
             )
         except ClientError as e:
-            print(f"Warning: Failed to enable TTL: {str(e)}")
+            logger.warning(f"Failed to enable TTL: {str(e)}")
 
     @ensure_valid_credentials(role_name=role_name)
     def verify_validation_code_table(self) -> bool:
@@ -144,7 +148,7 @@ class DynamoDBService:
             )
             return True
         except ClientError as e:
-            print(f"Error writing record: {str(e)}")
+            logger.error(f"Error writing record: {str(e)}")
             return False
 
     @ensure_valid_credentials(role_name=role_name)
