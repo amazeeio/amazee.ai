@@ -262,7 +262,7 @@ def test_validate_email_invalid_format(client, mock_dynamodb):
 def test_sign_in_success(client, test_user, mock_dynamodb):
     # First, generate a validation code
     email = test_user.email
-    code = generate_validation_token(email)
+    code = "TESTCODE"
 
     # Mock the read_validation_code to return our test code
     mock_dynamodb.read_validation_code.return_value = {
@@ -289,7 +289,7 @@ def test_sign_in_success(client, test_user, mock_dynamodb):
 def test_sign_in_success_form(client, test_user, mock_dynamodb):
     # First, generate a validation code
     email = test_user.email
-    code = generate_validation_token(email)
+    code = "TESTCODE"
 
     # Mock the read_validation_code to return our test code
     mock_dynamodb.read_validation_code.return_value = {
@@ -316,7 +316,7 @@ def test_sign_in_success_form(client, test_user, mock_dynamodb):
 def test_sign_in_wrong_code(client, test_user, mock_dynamodb):
     # First, generate a validation code
     email = test_user.email
-    code = generate_validation_token(email)
+    code = "TESTCODE"
 
     # Mock the read_validation_code to return a different code
     mock_dynamodb.read_validation_code.return_value = {
@@ -376,8 +376,10 @@ def test_sign_in_new_user_success(client, mock_dynamodb):
     # Verify DynamoDB service was called correctly
     mock_dynamodb.read_validation_code.assert_called_once_with(email)
 
-    # Verify the user was registered by trying to login with the token
+    # Get the token for subsequent requests
     token = data["access_token"]
+
+    # Verify the user was created and has correct role
     response = client.get(
         "/auth/me",
         headers={"Authorization": f"Bearer {token}"}
@@ -386,4 +388,19 @@ def test_sign_in_new_user_success(client, mock_dynamodb):
     user_data = response.json()
     assert user_data["email"] == email
     assert user_data["is_active"] is True
-    assert user_data["is_admin"] is False
+    assert user_data["role"] == "admin"  # User should have admin role
+    assert user_data["team_id"] is not None  # User should have a team
+
+    # Verify the team was created correctly
+    response = client.get(
+        f"/teams/{user_data['team_id']}",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 200
+    team_data = response.json()
+    assert team_data["admin_email"] == email
+    assert team_data["is_active"] is True
+    assert len(team_data["users"]) == 1
+    team_user = team_data["users"][0]
+    assert team_user["email"] == email
+    assert team_user["role"] == "admin"  # User should have admin role in the team

@@ -17,7 +17,7 @@ This repository contains the backend and frontend services for the amazee.ai app
 - Make (for running convenience commands)
 - Node.js and npm (for local frontend development)
 - Python 3.x (for local backend development)
-- AWS credentials for resource management
+- AWS credentials for passwordless auth
  - Default credentials with `sts:AssumeRole` permissions
  - Role with DDB access
  - Role with SES access

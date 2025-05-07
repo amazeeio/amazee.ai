@@ -19,7 +19,8 @@ from app.schemas.models import (
     UserUpdate,
     EmailValidation,
     LoginData,
-    SignInData
+    SignInData,
+    TeamCreate
 )
 from app.db.models import (
     DBUser, DBAPIToken
@@ -31,6 +32,7 @@ from app.core.security import (
     get_current_user_from_auth,
 )
 from app.services.dynamodb import DynamoDBService
+from app.api.teams import register_team
 
 router = APIRouter(
     tags=["Authentication"]
@@ -413,7 +415,8 @@ async def sign_in(
     On successful sign in, an access token will be set as an HTTP-only cookie and also returned in the response.
     Use this token for subsequent authenticated requests.
 
-    If the user doesn't exist, they will be automatically registered.
+    If the user doesn't exist, they will be automatically registered and a new team will be created
+    with them as the admin.
     """
     if not sign_in_data:
         raise HTTPException(
@@ -434,13 +437,23 @@ async def sign_in(
     # Get user from database after verifying the code
     user = db.query(DBUser).filter(DBUser.email == sign_in_data.username).first()
 
-    # If user doesn't exist, create a new user
+    # If user doesn't exist, create a new user and team
     if not user:
+        # First create the team
+        team_data = TeamCreate(
+            name=f"Team {sign_in_data.username}",
+            admin_email=sign_in_data.username,
+            phone="",  # Required by schema but not used for auto-created teams
+            billing_address=""  # Required by schema but not used for auto-created teams
+        )
+        team = await register_team(team_data, db)
+
         # Create new user without password since they're using verification code
         user = DBUser(
             email=sign_in_data.username,
             hashed_password="",  # Empty password since they'll use verification code
-            is_admin=False  # Force is_admin to be False for all new registrations
+            role="admin",  # Set role to admin for new users
+            team_id=team.id  # Associate user with the team
         )
         db.add(user)
         db.commit()
