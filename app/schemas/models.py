@@ -243,3 +243,7 @@ class TeamOperation(BaseModel):
 class UserRoleUpdate(BaseModel):
     role: str
     model_config = ConfigDict(from_attributes=True)
+
+class SignInData(BaseModel):
+    username: str
+    verification_code: str

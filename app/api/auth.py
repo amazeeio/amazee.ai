@@ -18,7 +18,8 @@ from app.schemas.models import (
     APITokenResponse,
     UserUpdate,
     EmailValidation,
-    LoginData
+    LoginData,
+    SignInData
 )
 from app.db.models import (
     DBUser, DBAPIToken
@@ -65,6 +66,62 @@ async def get_login_data(
             return None
     return None
 
+async def get_sign_in_data(
+    request: Request,
+    username: Optional[str] = Form(None),
+    verification_code: Optional[str] = Form(None),
+) -> Union[SignInData, None]:
+    if username and verification_code:
+        return SignInData(username=username, verification_code=verification_code)
+
+    if request.headers.get("content-type", "").lower() == "application/json":
+        try:
+            body = await request.json()
+            return SignInData(**body)
+        except Exception:
+            return None
+    return None
+
+def create_and_set_access_token(response: Response, user_email: str) -> Token:
+    """
+    Create an access token for the user and set it as a cookie.
+
+    Args:
+        response: The FastAPI response object to set the cookie on
+        user_email: The email of the user to create the token for
+
+    Returns:
+        Token: The created access token
+    """
+    # Create access token
+    access_token = create_access_token(
+        data={"sub": user_email}
+    )
+
+    # Get cookie domain from LAGOON_ROUTES
+    cookie_domain = get_cookie_domain()
+
+    # Prepare cookie settings
+    cookie_settings = {
+        "key": "access_token",
+        "value": access_token,
+        "httponly": True,
+        "max_age": 1800,
+        "expires": 1800,
+        "samesite": 'none',
+        "secure": True,
+        "path": '/',
+    }
+
+    # Only set domain if we got one from LAGOON_ROUTES
+    if cookie_domain:
+        cookie_settings["domain"] = cookie_domain
+
+    # Set cookie with appropriate settings
+    response.set_cookie(**cookie_settings)
+
+    return {"access_token": access_token, "token_type": "bearer"}
+
 @router.post("/login", response_model=Token)
 async def login(
     request: Request,
@@ -101,33 +158,7 @@ async def login(
             detail="Incorrect email or password"
         )
 
-    access_token = create_access_token(
-        data={"sub": user.email}
-    )
-
-    # Get cookie domain from LAGOON_ROUTES
-    cookie_domain = get_cookie_domain()
-
-    # Prepare cookie settings
-    cookie_settings = {
-        "key": "access_token",
-        "value": access_token,
-        "httponly": True,
-        "max_age": 1800,
-        "expires": 1800,
-        "samesite": 'none',
-        "secure": True,
-        "path": '/',
-    }
-
-    # Only set domain if we got one from LAGOON_ROUTES
-    if cookie_domain:
-        cookie_settings["domain"] = cookie_domain
-
-    # Set cookie with appropriate settings
-    response.set_cookie(**cookie_settings)
-
-    return {"access_token": access_token, "token_type": "bearer"}
+    return create_and_set_access_token(response, user.email)
 
 @router.post("/logout")
 async def logout(response: Response):
@@ -358,3 +389,52 @@ async def delete_token(
     db.delete(token)
     db.commit()
     return {"message": "Token deleted successfully"}
+
+@router.post("/sign-in", response_model=Token)
+async def sign_in(
+    request: Request,
+    response: Response,
+    sign_in_data: Optional[SignInData] = Depends(get_sign_in_data),
+    db: Session = Depends(get_db)
+):
+    """
+    Sign in using a verification code instead of a password.
+
+    Accepts both application/x-www-form-urlencoded and application/json formats.
+
+    Form data:
+    - **username**: Your email address
+    - **verification_code**: The verification code sent to your email
+
+    JSON data:
+    - **username**: Your email address
+    - **verification_code**: The verification code sent to your email
+
+    On successful sign in, an access token will be set as an HTTP-only cookie and also returned in the response.
+    Use this token for subsequent authenticated requests.
+    """
+    if not sign_in_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid sign in data. Please provide username and verification code in either form data or JSON format."
+        )
+
+    # Verify the code using DynamoDB first
+    dynamodb_service = DynamoDBService()
+    stored_code = dynamodb_service.read_validation_code(sign_in_data.username)
+
+    if not stored_code or stored_code.get('code') != sign_in_data.verification_code:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or verification code"
+        )
+
+    # Get user from database after verifying the code
+    user = db.query(DBUser).filter(DBUser.email == sign_in_data.username).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or verification code"
+        )
+
+    return create_and_set_access_token(response, user.email)

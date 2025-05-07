@@ -258,3 +258,113 @@ def test_validate_email_invalid_format(client, mock_dynamodb):
 
         # Verify DynamoDB was not called
         mock_dynamodb.write_validation_code.assert_not_called()
+
+def test_sign_in_success(client, test_user, mock_dynamodb):
+    # First, generate a validation code
+    email = test_user.email
+    code = generate_validation_token(email)
+
+    # Mock the read_validation_code to return our test code
+    mock_dynamodb.read_validation_code.return_value = {
+        'email': email,
+        'code': code,
+        'ttl': 1234567890
+    }
+
+    # Test with JSON data
+    response = client.post(
+        "/auth/sign-in",
+        json={"username": email, "verification_code": code}
+    )
+
+    # Verify the response
+    assert response.status_code == 200
+    data = response.json()
+    assert "access_token" in data
+    assert data["token_type"] == "bearer"
+
+    # Verify DynamoDB service was called correctly
+    mock_dynamodb.read_validation_code.assert_called_once_with(email)
+
+def test_sign_in_success_form(client, test_user, mock_dynamodb):
+    # First, generate a validation code
+    email = test_user.email
+    code = generate_validation_token(email)
+
+    # Mock the read_validation_code to return our test code
+    mock_dynamodb.read_validation_code.return_value = {
+        'email': email,
+        'code': code,
+        'ttl': 1234567890
+    }
+
+    # Test with form data
+    response = client.post(
+        "/auth/sign-in",
+        data={"username": email, "verification_code": code}
+    )
+
+    # Verify the response
+    assert response.status_code == 200
+    data = response.json()
+    assert "access_token" in data
+    assert data["token_type"] == "bearer"
+
+    # Verify DynamoDB service was called correctly
+    mock_dynamodb.read_validation_code.assert_called_once_with(email)
+
+def test_sign_in_wrong_code(client, test_user, mock_dynamodb):
+    # First, generate a validation code
+    email = test_user.email
+    code = generate_validation_token(email)
+
+    # Mock the read_validation_code to return a different code
+    mock_dynamodb.read_validation_code.return_value = {
+        'email': email,
+        'code': 'DIFFERENT',
+        'ttl': 1234567890
+    }
+
+    # Test with wrong code
+    response = client.post(
+        "/auth/sign-in",
+        json={"username": email, "verification_code": code}
+    )
+
+    # Verify the response
+    assert response.status_code == 401
+    assert "Incorrect email or verification code" in response.json()["detail"]
+
+    # Verify DynamoDB service was called correctly
+    mock_dynamodb.read_validation_code.assert_called_once_with(email)
+
+def test_sign_in_nonexistent_user(client, mock_dynamodb):
+    email = "nonexistent@example.com"
+    code = "TESTCODE"
+
+    # Mock the read_validation_code to return None (no code found)
+    mock_dynamodb.read_validation_code.return_value = None
+
+    # Test with nonexistent user
+    response = client.post(
+        "/auth/sign-in",
+        json={"username": email, "verification_code": code}
+    )
+
+    # Verify the response
+    assert response.status_code == 401
+    assert "Incorrect email or verification code" in response.json()["detail"]
+
+    # Verify DynamoDB service was called correctly
+    mock_dynamodb.read_validation_code.assert_called_once_with(email)
+
+def test_sign_in_missing_data(client):
+    # Test with missing data
+    response = client.post(
+        "/auth/sign-in",
+        json={}
+    )
+
+    # Verify the response
+    assert response.status_code == 400
+    assert "Invalid sign in data" in response.json()["detail"]
