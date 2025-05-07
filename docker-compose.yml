@@ -51,6 +51,7 @@ services:
       - ./frontend:/app
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8800
+      - PASSWORDLESS_SIGN_IN=true
     # user: '10000'
     labels:
       lagoon.type: node
