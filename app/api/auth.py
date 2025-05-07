@@ -412,6 +412,8 @@ async def sign_in(
 
     On successful sign in, an access token will be set as an HTTP-only cookie and also returned in the response.
     Use this token for subsequent authenticated requests.
+
+    If the user doesn't exist, they will be automatically registered.
     """
     if not sign_in_data:
         raise HTTPException(
@@ -431,10 +433,17 @@ async def sign_in(
 
     # Get user from database after verifying the code
     user = db.query(DBUser).filter(DBUser.email == sign_in_data.username).first()
+
+    # If user doesn't exist, create a new user
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or verification code"
+        # Create new user without password since they're using verification code
+        user = DBUser(
+            email=sign_in_data.username,
+            hashed_password="",  # Empty password since they'll use verification code
+            is_admin=False  # Force is_admin to be False for all new registrations
         )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
 
     return create_and_set_access_token(response, user.email)

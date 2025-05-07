@@ -338,26 +338,6 @@ def test_sign_in_wrong_code(client, test_user, mock_dynamodb):
     # Verify DynamoDB service was called correctly
     mock_dynamodb.read_validation_code.assert_called_once_with(email)
 
-def test_sign_in_nonexistent_user(client, mock_dynamodb):
-    email = "nonexistent@example.com"
-    code = "TESTCODE"
-
-    # Mock the read_validation_code to return None (no code found)
-    mock_dynamodb.read_validation_code.return_value = None
-
-    # Test with nonexistent user
-    response = client.post(
-        "/auth/sign-in",
-        json={"username": email, "verification_code": code}
-    )
-
-    # Verify the response
-    assert response.status_code == 401
-    assert "Incorrect email or verification code" in response.json()["detail"]
-
-    # Verify DynamoDB service was called correctly
-    mock_dynamodb.read_validation_code.assert_called_once_with(email)
-
 def test_sign_in_missing_data(client):
     # Test with missing data
     response = client.post(
@@ -368,3 +348,42 @@ def test_sign_in_missing_data(client):
     # Verify the response
     assert response.status_code == 400
     assert "Invalid sign in data" in response.json()["detail"]
+
+def test_sign_in_new_user_success(client, mock_dynamodb):
+    # Use a hardcoded validation code since we're mocking the response anyway
+    email = "newuser@example.com"
+    code = "TESTCODE"
+
+    # Mock the read_validation_code to return our test code
+    mock_dynamodb.read_validation_code.return_value = {
+        'email': email,
+        'code': code,
+        'ttl': 1234567890
+    }
+
+    # Test with JSON data
+    response = client.post(
+        "/auth/sign-in",
+        json={"username": email, "verification_code": code}
+    )
+
+    # Verify the response
+    assert response.status_code == 200
+    data = response.json()
+    assert "access_token" in data
+    assert data["token_type"] == "bearer"
+
+    # Verify DynamoDB service was called correctly
+    mock_dynamodb.read_validation_code.assert_called_once_with(email)
+
+    # Verify the user was registered by trying to login with the token
+    token = data["access_token"]
+    response = client.get(
+        "/auth/me",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 200
+    user_data = response.json()
+    assert user_data["email"] == email
+    assert user_data["is_active"] is True
+    assert user_data["is_admin"] is False
