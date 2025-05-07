@@ -10,6 +10,9 @@ class Token(BaseModel):
 class TokenData(BaseModel):
     email: Optional[str] = None
 
+class EmailValidation(BaseModel):
+    email: str
+
 class UserBase(BaseModel):
     email: str
 

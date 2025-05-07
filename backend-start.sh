@@ -37,6 +37,7 @@ import os
 from sqlalchemy.orm import sessionmaker
 from app.db.models import DBUser
 from app.core.security import get_password_hash
+from app.services.dynamodb import DynamoDBService
 
 # Check if database is empty (no tables exist)
 inspector = inspect(engine)
@@ -94,6 +95,20 @@ except Exception as e:
     db.rollback()
 finally:
     db.close()
+
+# Initialize DynamoDB validation table
+try:
+    if os.getenv("PASSWORDLESS_SIGN_IN", "").lower() == "true":
+        print("PASSWORDLESS_SIGN_IN is enabled - initializing DynamoDB validation table...")
+        dynamodb_service = DynamoDBService()
+        if dynamodb_service.create_validation_code_table():
+            print("DynamoDB validation table created/verified successfully!")
+        else:
+            print("Failed to create DynamoDB validation table!")
+    else:
+        print("PASSWORDLESS_SIGN_IN is disabled - skipping DynamoDB initialization")
+except Exception as e:
+    print(f"Error initializing DynamoDB: {str(e)}")
 END
 
 # Check if running in production (Lagoon) or development mode

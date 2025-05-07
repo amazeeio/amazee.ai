@@ -12,7 +12,7 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 from app.db.database import get_db
-from app.schemas.models import Token, User, UserCreate, APIToken, APITokenCreate, APITokenResponse, UserUpdate
+from app.schemas.models import Token, User, UserCreate, APIToken, APITokenCreate, APITokenResponse, UserUpdate, EmailValidation
 from app.db.models import DBUser, DBAPIToken
 from app.core.security import (
     verify_password,
@@ -22,6 +22,7 @@ from app.core.security import (
     get_current_user_from_auth,
 )
 from app.core.config import settings
+from app.services.dynamodb import DynamoDBService
 
 router = APIRouter(
     tags=["Authentication"]
@@ -273,8 +274,86 @@ async def register(user: UserCreate, db: Session = Depends(get_db)):
     db.refresh(db_user)
     return db_user
 
+@router.post("/validate-email")
+async def validate_email(
+    request: Request,
+    email_data: Optional[EmailValidation] = None,
+    email: Optional[str] = Form(None)
+):
+    """
+    Validate an email address and generate a validation code.
+
+    Accepts both application/x-www-form-urlencoded and application/json formats.
+
+    Form data:
+    - **email**: The email address to validate
+
+    JSON data:
+    - **email**: The email address to validate
+
+    Returns a success message if the email is valid and a code has been generated.
+    """
+    # Handle both JSON and form data
+    if email_data:
+        email = email_data.email
+    elif not email:
+        if request.headers.get("content-type", "").lower() == "application/json":
+            try:
+                body = await request.json()
+                email = body.get("email")
+            except Exception:
+                pass
+
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email is required"
+        )
+
+    # Basic email format validation
+    if not "@" in email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid email format"
+        )
+
+    _, domain = email.split("@")
+
+    # Validate domain (no special characters except . and -)
+    if not "." in domain or not all(character.isalnum() or character in ".-" for character in domain):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid email format"
+        )
+
+    # Generate and store validation code
+    code = generate_validation_token(email)
+
+    return {
+        "message": "Validation code has been generated and stored"
+    }
+
 def generate_token() -> str:
     return secrets.token_urlsafe(32)
+
+def generate_validation_token(email: str) -> str:
+    """
+    Generate a validation token for the given email and store it in DynamoDB.
+
+    Args:
+        email (str): The email address to generate a token for
+
+    Returns:
+        str: The generated validation token (8 characters, alphanumeric, uppercase)
+    """
+    # Generate an 8-character alphanumeric code in uppercase
+    code = ''.join(secrets.choice('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') for _ in range(8))
+
+    # Store the code in DynamoDB
+    dynamodb_service = DynamoDBService()
+    dynamodb_service.write_validation_code(email, code)
+
+    return code
 
 # API Token routes (as apposed to AI Token routes)
 @router.post("/token", response_model=APIToken)
