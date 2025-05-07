@@ -1,37 +1,39 @@
-from datetime import datetime, timedelta, UTC
 from typing import Optional, List, Union
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie, Header, Request, Form
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HTTPAuthorizationCredentials
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Form
 from sqlalchemy.orm import Session
 import logging
 import secrets
 import os
 from urllib.parse import urlparse
-from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
 from app.db.database import get_db
-from app.schemas.models import Token, User, UserCreate, APIToken, APITokenCreate, APITokenResponse, UserUpdate, EmailValidation
-from app.db.models import DBUser, DBAPIToken
+from app.schemas.models import (
+    Token,
+    User,
+    UserCreate,
+    APIToken,
+    APITokenCreate,
+    APITokenResponse,
+    UserUpdate,
+    EmailValidation,
+    LoginData
+)
+from app.db.models import (
+    DBUser, DBAPIToken
+)
 from app.core.security import (
     verify_password,
     get_password_hash,
     create_access_token,
-    get_current_user,
     get_current_user_from_auth,
 )
-from app.core.config import settings
 from app.services.dynamodb import DynamoDBService
 
 router = APIRouter(
     tags=["Authentication"]
 )
-
-# Add new model for JSON login
-class LoginData(BaseModel):
-    username: str  # Using username to match OAuth2 form field
-    password: str
 
 def get_cookie_domain():
     """Extract domain from LAGOON_ROUTES for cookie settings."""
@@ -46,14 +48,6 @@ def get_cookie_domain():
     # Remove the first part (e.g., 'backend' or 'frontend')
     domain = '.'.join(hostname.split('.')[1:])
     return domain
-
-def authenticate_user(db: Session, email: str, password: str) -> Optional[DBUser]:
-    user = db.query(DBUser).filter(DBUser.email == email).first()
-    if not user:
-        return None
-    if not verify_password(password, user.hashed_password):
-        return None
-    return user
 
 async def get_login_data(
     request: Request,
@@ -100,8 +94,8 @@ async def login(
             detail="Invalid login data. Please provide username and password in either form data or JSON format."
         )
 
-    user = authenticate_user(db, login_data.username, login_data.password)
-    if not user:
+    user = db.query(DBUser).filter(DBUser.email == login_data.username).first()
+    if not user or not verify_password(login_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password"
@@ -155,38 +149,6 @@ async def logout(response: Response):
     # Delete cookie with appropriate settings
     response.delete_cookie(**delete_settings)
     return {"message": "Successfully logged out"}
-
-async def get_current_user_from_token(
-    authorization: str = Header(None),
-    db: Session = Depends(get_db)
-) -> DBUser:
-    if not authorization:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authorization header is missing",
-        )
-
-    # Extract token from Authorization header
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authorization header format. Use 'Bearer <token>'",
-        )
-
-    api_token = parts[1]
-    db_token = db.query(DBAPIToken).filter(DBAPIToken.token == api_token).first()
-    if not db_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API token",
-        )
-
-    # Update last used timestamp
-    db_token.last_used_at = datetime.now(UTC)
-    db.commit()
-
-    return db_token.owner
 
 @router.get("/me", response_model=User)
 async def read_users_me(current_user: DBUser = Depends(get_current_user_from_auth)):

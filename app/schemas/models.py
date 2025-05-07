@@ -13,6 +13,10 @@ class TokenData(BaseModel):
 class EmailValidation(BaseModel):
     email: str
 
+class LoginData(BaseModel):
+    username: str  # Using username to match OAuth2 form field
+    password: str
+
 class UserBase(BaseModel):
     email: str
 
