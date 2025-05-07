@@ -34,10 +34,13 @@ backend-test-regex: test-clean backend-test-build test-postgres
 		-e POSTGRES_USER="postgres" \
 		-e POSTGRES_PASSWORD="postgres" \
 		-e POSTGRES_DB="postgres_service" \
+		-e DYNAMODB_ROLE_NAME="test-role" \
+		-e AWS_REGION="us-east-1" \
+		-e SES_ROLE_NAME="test-role" \
 		-e TESTING="1" \
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
-		amazee-backend-test pytest -v -k "$$regex"
+		amazee-backend-test pytest -vv -k "$$regex"
 
 # Run backend tests in a new container
 backend-test: test-clean backend-test-build test-postgres
@@ -49,6 +52,9 @@ backend-test: test-clean backend-test-build test-postgres
 		-e POSTGRES_USER="postgres" \
 		-e POSTGRES_PASSWORD="postgres" \
 		-e POSTGRES_DB="postgres_service" \
+		-e DYNAMODB_ROLE_NAME="test-role" \
+		-e AWS_REGION="us-east-1" \
+		-e SES_ROLE_NAME="test-role" \
 		-e TESTING="1" \
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
@@ -64,6 +70,9 @@ backend-test-cov: test-clean backend-test-build test-postgres
 		-e POSTGRES_USER="postgres" \
 		-e POSTGRES_PASSWORD="postgres" \
 		-e POSTGRES_DB="postgres_service" \
+		-e DYNAMODB_ROLE_NAME="test-role" \
+		-e AWS_REGION="us-east-1" \
+		-e SES_ROLE_NAME="test-role" \
 		-e TESTING="1" \
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \

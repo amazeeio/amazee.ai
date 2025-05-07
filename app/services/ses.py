@@ -1,0 +1,197 @@
+import boto3
+from botocore.exceptions import ClientError
+from typing import Optional, Dict, Any, Tuple
+import os
+import pathlib
+import markdown
+import logging
+from app.services import aws_auth
+
+# Get role name from environment variable
+role_name = os.getenv('SES_ROLE_NAME')
+
+# Set up logging
+logger = logging.getLogger(__name__)
+
+class SESService:
+    def __init__(
+        self,
+        session_name: str = "SESServiceSession"
+    ):
+        """
+        Initialize the SES service with temporary credentials from STS AssumeRole.
+
+        Args:
+            session_name (str): Name for the assumed role session. Defaults to "SESServiceSession".
+
+        Raises:
+            ValueError: If SES_ROLE_NAME or AWS_REGION environment variables are not set
+        """
+        if not role_name:
+            raise ValueError(
+                "SES_ROLE_NAME environment variable is not set. "
+                "Please set it to the name of the IAM role to assume."
+            )
+
+        # Get region from environment variable
+        region_name = aws_auth._region_name
+        if not region_name:
+            raise ValueError(
+                "AWS_REGION environment variable is not set. "
+                "Please set it to your AWS region (e.g., us-east-1)."
+            )
+
+        self.templates_dir = pathlib.Path(__file__).parent.parent / "templates"
+
+        # Create SESv2 client with temporary credentials
+        self.ses = boto3.client(
+            'sesv2',
+            region_name=region_name,
+            **aws_auth.get_credentials(role_name)
+        )
+
+    def _read_template(self, template_name: str) -> Tuple[str, str]:
+        """
+        Read a template file from the templates directory and convert markdown to HTML.
+        The template file should be written in markdown format.
+
+        Args:
+            template_name (str): Name of the template file (without extension)
+
+        Returns:
+            Tuple[str, str]: A tuple containing (text_content, html_content)
+                - text_content: The original markdown content
+                - html_content: The markdown content converted to HTML
+
+        Raises:
+            FileNotFoundError: If the template file doesn't exist
+        """
+        template_path = self.templates_dir / f"{template_name}.txt"
+        if not template_path.exists():
+            raise FileNotFoundError(f"Template {template_name} not found")
+
+        # Read the markdown content
+        markdown_content = template_path.read_text()
+
+        # Convert markdown to HTML with necessary extensions
+        html_content = markdown.markdown(
+            markdown_content,
+            extensions=[
+                'markdown.extensions.tables',
+                'markdown.extensions.fenced_code',
+                'markdown.extensions.sane_lists',
+                'markdown.extensions.nl2br'
+            ],
+            output_format='html5'
+        )
+
+        return markdown_content, html_content
+
+    @aws_auth.ensure_valid_credentials(role_name=role_name)
+    def get_template(self, template_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get an existing SES template.
+
+        Args:
+            template_name (str): Name of the template to retrieve
+
+        Returns:
+            Optional[Dict[str, Any]]: The template if it exists, None otherwise
+        """
+        try:
+            response = self.ses.get_email_template(TemplateName=template_name)
+            return response
+        except ClientError as e:
+            if e.response['Error']['Code'] == 'NotFoundException':
+                return None
+            raise e
+
+    @aws_auth.ensure_valid_credentials(role_name=role_name)
+    def create_or_update_template(self, template_name: str, subject: str) -> bool:
+        """
+        Create or update an SES template using the content from the corresponding text file.
+        This should be called during system startup to ensure templates are in sync.
+        The template file should be written in markdown format.
+
+        Args:
+            template_name (str): Name of the template (without extension)
+            subject (str): Subject line for the template
+
+        Returns:
+            bool: True if template was created/updated successfully, False otherwise
+        """
+        try:
+            # Read template content and convert to HTML
+            text_content, html_content = self._read_template(template_name)
+
+            template_data = {
+                'TemplateName': template_name,
+                'Subject': subject,
+                'Text': text_content,
+                'Html': html_content
+            }
+
+            # Check if template exists
+            existing_template = self.get_template(template_name)
+
+            if existing_template:
+                # Update existing template
+                self.ses.update_email_template(**template_data)
+                logger.info(f"Updated email template: {template_name}")
+            else:
+                # Create new template
+                self.ses.create_email_template(**template_data)
+                logger.info(f"Created new email template: {template_name}")
+
+            return True
+
+        except (ClientError, FileNotFoundError) as e:
+            logger.error(f"Error managing template {template_name}: {str(e)}", exc_info=True)
+            return False
+
+    @aws_auth.ensure_valid_credentials(role_name=role_name)
+    def send_email(
+        self,
+        to_addresses: list[str],
+        template_name: str,
+        template_data: Dict[str, Any],
+        from_address: Optional[str] = None
+    ) -> bool:
+        """
+        Send an email using an SES template.
+
+        Args:
+            to_addresses (list[str]): List of recipient email addresses
+            template_name (str): Name of the template to use
+            template_data (Dict[str, Any]): Data to populate the template with
+            from_address (Optional[str]): Sender email address. If not provided, uses the verified sender.
+
+        Returns:
+            bool: True if email was sent successfully, False otherwise
+        """
+        try:
+            # Get the sender email address
+            if not from_address:
+                from_address = os.getenv('SES_SENDER_EMAIL')
+                if not from_address:
+                    raise ValueError("SES_SENDER_EMAIL environment variable is not set")
+
+            # Send the email using the template
+            response = self.ses.send_email(
+                FromEmailAddress=from_address,
+                Destination={
+                    'ToAddresses': to_addresses
+                },
+                Content={
+                    'Template': {
+                        'TemplateName': template_name,
+                        'TemplateData': template_data
+                    }
+                }
+            )
+            logger.info(f"Successfully sent email using template {template_name} to {to_addresses}, message ID: {response['MessageId']}")
+            return True
+
+        except ClientError as e:
+            logger.error(f"Error sending email using template {template_name}: {str(e)}", exc_info=True)
+            return False
