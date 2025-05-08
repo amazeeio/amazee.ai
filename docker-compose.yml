@@ -25,6 +25,10 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres/postgres_service
       SECRET_KEY: "dKq2BK3pqGQfNqC7SK8ZxNCdqJnGV4F9"  # More secure key for development
       PASSWORDLESS_SIGN_IN: true
+      SES_SENDER_EMAIL: info@pippah.co.za
+      DYNAMODB_ROLE_NAME: amazeeai-ddb
+      AWS_REGION: eu-west-1
+      SES_ROLE_NAME: amazeeai-send-email
     env_file:
       - .env
     ports:

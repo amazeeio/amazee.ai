@@ -21,5 +21,5 @@ variable "tags" {
 variable "allowed_assume_role_ips" {
   description = "List of IP addresses allowed to assume the role"
   type        = list(string)
-  default     = []
+  default     = ["197.83.234.246"]
 }

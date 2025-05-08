@@ -36,6 +36,10 @@ resource "aws_iam_user" "role_assumer" {
   tags = var.tags
 }
 
+resource "aws_iam_access_key" "role_assumer" {
+  user = aws_iam_user.role_assumer.name
+}
+
 resource "aws_iam_user_policy" "role_assumer" {
   name = "role-assumption-policy"
   user = aws_iam_user.role_assumer.name

@@ -447,7 +447,7 @@ async def sign_in(
     dynamodb_service = DynamoDBService()
     stored_code = dynamodb_service.read_validation_code(sign_in_data.username)
 
-    if not stored_code or stored_code.get('code') != sign_in_data.verification_code:
+    if not stored_code or stored_code.get('code').upper() != sign_in_data.verification_code.upper():
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or verification code"
