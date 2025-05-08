@@ -1,0 +1,1 @@
+aws_account_id = "amazeeio-ai-dev"

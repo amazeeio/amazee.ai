@@ -41,3 +41,8 @@ ENV/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Terraform
+terraform/.terraform/
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
