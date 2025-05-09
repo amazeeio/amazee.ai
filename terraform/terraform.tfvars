@@ -1,1 +1,0 @@
-aws_account_id = "651706762082" # amazeeio-ai-dev

@@ -73,7 +73,7 @@ This is a test template."""
         assert result is True
         mock_ses.create_email_template.assert_called_once()
         call_args = mock_ses.create_email_template.call_args[1]
-        assert call_args['TemplateName'] == 'test_template'
+        assert call_args['TemplateName'] == 'test_template-test'
         assert call_args['TemplateContent']['Subject'] == 'Test Subject'
         assert 'Text' in call_args['TemplateContent']
         assert 'Html' in call_args['TemplateContent']
@@ -84,7 +84,7 @@ def test_create_or_update_template_existing(mock_sts_client):
 This is a test template."""
 
     mock_ses = MagicMock()
-    mock_ses.get_email_template.return_value = {'TemplateName': 'test_template'}
+    mock_ses.get_email_template.return_value = {'TemplateName': 'test_template-test'}
 
     with patch('pathlib.Path.exists', return_value=True), \
          patch('pathlib.Path.read_text', return_value=markdown_content), \
@@ -96,7 +96,7 @@ This is a test template."""
         assert result is True
         mock_ses.update_email_template.assert_called_once()
         call_args = mock_ses.update_email_template.call_args[1]
-        assert call_args['TemplateName'] == 'test_template'
+        assert call_args['TemplateName'] == 'test_template-test'
         assert call_args['TemplateContent']['Subject'] == 'Test Subject'
         assert 'Text' in call_args['TemplateContent']
         assert 'Html' in call_args['TemplateContent']
@@ -126,7 +126,7 @@ def test_send_email_success(mock_sts_client):
         call_args = mock_ses.send_email.call_args[1]
         assert call_args['FromEmailAddress'] == 'test@example.com'
         assert call_args['Destination']['ToAddresses'] == ['recipient@example.com']
-        assert call_args['Content']['Template']['TemplateName'] == 'test_template'
+        assert call_args['Content']['Template']['TemplateName'] == 'test_template-test'
         assert call_args['Content']['Template']['TemplateData'] == json.dumps(template_data)
 
 def test_send_email_failure(mock_sts_client):

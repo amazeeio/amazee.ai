@@ -38,6 +38,7 @@ backend-test-regex: test-clean backend-test-build test-postgres
 		-e AWS_REGION="us-east-1" \
 		-e SES_ROLE_NAME="test-role" \
 		-e TESTING="1" \
+		-e ENV_SUFFIX="test" \
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
 		amazee-backend-test pytest -vv -k "$$regex"
@@ -56,6 +57,7 @@ backend-test: test-clean backend-test-build test-postgres
 		-e AWS_REGION="us-east-1" \
 		-e SES_ROLE_NAME="test-role" \
 		-e TESTING="1" \
+		-e ENV_SUFFIX="test" \
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
 		amazee-backend-test
@@ -74,6 +76,7 @@ backend-test-cov: test-clean backend-test-build test-postgres
 		-e AWS_REGION="us-east-1" \
 		-e SES_ROLE_NAME="test-role" \
 		-e TESTING="1" \
+		-e ENV_SUFFIX="test" \
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
 		amazee-backend-test pytest -v --cov=app tests/
