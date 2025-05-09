@@ -18,8 +18,20 @@ variable "tags" {
   }
 }
 
-variable "allowed_assume_role_ips" {
-  description = "List of IP addresses allowed to assume the role"
-  type        = list(string)
-  default     = ["197.83.234.246"]
+variable "environment_suffix" {
+  description = "Suffix to append to resource names"
+  type        = string
+  default     = "dev"
+}
+
+variable "domain_name" {
+  description = "The domain name to use for SES identity"
+  type        = string
+  default     = "ai.amazee.io"
+}
+
+variable "dkim_private_key" {
+  description = "The private key to use for DKIM signing"
+  type        = string
+  sensitive   = true
 }

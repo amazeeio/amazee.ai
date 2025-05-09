@@ -21,18 +21,15 @@ locals {
           AWS = aws_iam_user.role_assumer.arn
         }
         Action = "sts:AssumeRole"
-        Condition = {
-          IpAddress = {
-            "aws:SourceIp" = var.allowed_assume_role_ips
-          }
-        }
       }
     ]
   })
+
+  is_production_environment = contains(["dev", "main", "prod"], var.environment_suffix)
 }
 
 resource "aws_iam_user" "role_assumer" {
-  name = "amazeeai-role-assumer"
+  name = "amazeeai-role-assumer-${var.environment_suffix}"
   tags = var.tags
 }
 
@@ -41,7 +38,7 @@ resource "aws_iam_access_key" "role_assumer" {
 }
 
 resource "aws_iam_user_policy" "role_assumer" {
-  name = "role-assumption-policy"
+  name = "role-assumption-policy-${var.environment_suffix}"
   user = aws_iam_user.role_assumer.name
 
   policy = jsonencode({
@@ -64,13 +61,13 @@ resource "aws_iam_user_policy" "role_assumer" {
 }
 
 resource "aws_iam_role" "amazeeai_send_email" {
-  name               = "amazeeai-send-email"
+  name               = "amazeeai-send-email-${var.environment_suffix}"
   tags               = var.tags
   assume_role_policy = local.trust_policy
 }
 
 resource "aws_iam_role_policy" "amazeeai_send_email" {
-  name = "amazeeai-send-email-policy"
+  name = "amazeeai-send-email-policy-${var.environment_suffix}"
   role = aws_iam_role.amazeeai_send_email.id
 
   policy = jsonencode({
@@ -105,13 +102,13 @@ resource "aws_iam_role_policy" "amazeeai_send_email" {
 }
 
 resource "aws_iam_role" "amazeeai_ddb" {
-  name               = "amazeeai-ddb"
+  name               = "amazeeai-ddb-${var.environment_suffix}"
   tags               = var.tags
   assume_role_policy = local.trust_policy
 }
 
 resource "aws_iam_role_policy" "amazeeai_ddb" {
-  name = "amazeeai-ddb-policy"
+  name = "amazeeai-ddb-policy-${var.environment_suffix}"
   role = aws_iam_role.amazeeai_ddb.id
 
   policy = jsonencode({
@@ -140,4 +137,21 @@ resource "aws_iam_role_policy" "amazeeai_ddb" {
       }
     ]
   })
+}
+
+resource "aws_sesv2_email_identity" "pippa" {
+  count          = local.is_production_environment ? 0 : 1
+  email_identity = "pippa+pr@pippah.net"
+  tags           = var.tags
+}
+
+resource "aws_sesv2_email_identity" "domain" {
+  count          = local.is_production_environment ? 1 : 0
+  email_identity = var.domain_name
+  tags           = var.tags
+
+  dkim_signing_attributes {
+    domain_signing_selector    = "amazee"
+    domain_signing_private_key = var.dkim_private_key
+  }
 }
