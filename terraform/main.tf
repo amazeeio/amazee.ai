@@ -139,19 +139,31 @@ resource "aws_iam_role_policy" "amazeeai_ddb" {
   })
 }
 
-resource "aws_sesv2_email_identity" "pippa" {
-  count          = local.is_production_environment ? 0 : 1
-  email_identity = "pippa+pr@pippah.net"
-  tags           = var.tags
-}
+# resource "aws_sesv2_email_identity" "domain" {
+#   email_identity = var.domain_name
+#   tags           = var.tags
+#
+#   dkim_signing_attributes {
+#     domain_signing_selector    = "amazee"
+#     domain_signing_private_key = var.tags
+#   }
+# }
 
-resource "aws_sesv2_email_identity" "domain" {
-  count          = local.is_production_environment ? 1 : 0
-  email_identity = var.domain_name
-  tags           = var.tags
+resource "aws_dynamodb_table" "verification_codes" {
+  name                        = "verification-codes-${var.environment_suffix}"
+  billing_mode                = "PAY_PER_REQUEST"
+  deletion_protection_enabled = local.is_production_environment
 
-  dkim_signing_attributes {
-    domain_signing_selector    = "amazee"
-    domain_signing_private_key = var.dkim_private_key
+  hash_key = "email"
+  attribute {
+    name = "email"
+    type = "S"
   }
+
+  ttl {
+    enabled        = true
+    attribute_name = "ttl"
+  }
+
+  tags = var.tags
 }

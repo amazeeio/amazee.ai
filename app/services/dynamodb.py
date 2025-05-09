@@ -9,7 +9,8 @@ from app.services.aws_auth import ensure_valid_credentials, _region_name, get_cr
 # Set up logging
 logger = logging.getLogger(__name__)
 
-VALIDATION_CODE_TABLE_NAME = "verification_codes"
+env_suffix = os.getenv('ENV_SUFFIX')
+VALIDATION_CODE_TABLE_NAME = f"verification-codes-{env_suffix}"
 # Get role name from environment variable
 role_name = os.getenv('DYNAMODB_ROLE_NAME')
 
@@ -45,79 +46,6 @@ class DynamoDBService:
             region_name=_region_name,
             **get_credentials(role_name)
         )
-
-    @ensure_valid_credentials(role_name=role_name)
-    def create_validation_code_table(self) -> bool:
-        """
-        Create a DynamoDB table for storing verification codes.
-        The table will have email as the partition key.
-
-        Returns:
-            bool: True if table creation was successful, False otherwise.
-        """
-        try:
-            table = self.dynamodb.create_table(
-                TableName=VALIDATION_CODE_TABLE_NAME,
-                KeySchema=[
-                    {
-                        'AttributeName': 'email',
-                        'KeyType': 'HASH'  # Partition key
-                    }
-                ],
-                AttributeDefinitions=[
-                    {
-                        'AttributeName': 'email',
-                        'AttributeType': 'S'  # String type
-                    }
-                ],
-                BillingMode='PAY_PER_REQUEST'
-            )
-
-            # Wait for table to be created
-            table.meta.client.get_waiter('table_exists').wait(TableName=VALIDATION_CODE_TABLE_NAME)
-
-            # Enable TTL after table creation
-            self._enable_ttl()
-
-            return True
-
-        except ClientError as e:
-            if e.response['Error']['Code'] == 'ResourceInUseException':
-                # Table already exists, ensure TTL is enabled
-                self._enable_ttl()
-                return True
-            raise e
-
-    def _enable_ttl(self) -> None:
-        """
-        Enable TTL on the validation code table with a 10-minute expiration.
-        """
-        try:
-            table = self.dynamodb.Table(VALIDATION_CODE_TABLE_NAME)
-            table.meta.client.update_time_to_live(
-                TableName=VALIDATION_CODE_TABLE_NAME,
-                TimeToLiveSpecification={
-                    'Enabled': True,
-                    'AttributeName': 'ttl'
-                }
-            )
-        except ClientError as e:
-            logger.warning(f"Failed to enable TTL: {str(e)}")
-
-    @ensure_valid_credentials(role_name=role_name)
-    def verify_validation_code_table(self) -> bool:
-        """
-        Verify that the validation code table exists and is accessible.
-
-        Returns:
-            bool: True if table exists and is accessible, False otherwise.
-        """
-        try:
-            table = self.dynamodb.Table(VALIDATION_CODE_TABLE_NAME)
-            table.table_status
-            return True
-        except ClientError:
-            return False
 
     @ensure_valid_credentials(role_name=role_name)
     def write_validation_code(self, email: str, code: str) -> bool:

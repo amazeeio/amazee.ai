@@ -96,16 +96,9 @@ except Exception as e:
 finally:
     db.close()
 
-# Initialize DynamoDB validation table
+# Initialize SES templates
 try:
     if os.getenv("PASSWORDLESS_SIGN_IN", "").lower() == "true":
-        print("PASSWORDLESS_SIGN_IN is enabled - initializing DynamoDB validation table...")
-        dynamodb_service = DynamoDBService()
-        if dynamodb_service.create_validation_code_table():
-            print("DynamoDB validation table created/verified successfully!")
-        else:
-            print("Failed to create DynamoDB validation table!")
-
         # Initialize SES templates
         print("Initializing SES email templates...")
         from app.services.ses import SESService
@@ -125,7 +118,7 @@ try:
             else:
                 print(f"Failed to create/update SES template: {template_name}")
     else:
-        print("PASSWORDLESS_SIGN_IN is disabled - skipping DynamoDB and SES initialization")
+        print("PASSWORDLESS_SIGN_IN is disabled - skipping SES initialization")
 except Exception as e:
     print(f"Error initializing services: {str(e)}")
 END

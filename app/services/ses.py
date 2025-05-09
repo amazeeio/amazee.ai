@@ -10,6 +10,7 @@ from app.services import aws_auth
 
 # Get role name from environment variable
 role_name = os.getenv('SES_ROLE_NAME')
+env_suffix = os.getenv('ENV_SUFFIX')
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -107,7 +108,7 @@ class SESService:
             Optional[Dict[str, Any]]: The template if it exists, None otherwise
         """
         try:
-            response = self.ses.get_email_template(TemplateName=template_name)
+            response = self.ses.get_email_template(TemplateName=f"{template_name}-{env_suffix}")
             return response
         except ClientError as e:
             if e.response['Error']['Code'] == 'NotFoundException':
@@ -132,7 +133,7 @@ class SESService:
             subject, text_content, html_content = self._read_template(template_name)
 
             template_data = {
-                'TemplateName': template_name,
+                'TemplateName': f"{template_name}-{env_suffix}",
                 'TemplateContent': {
                     'Subject': subject,
                     'Text': text_content,
@@ -141,21 +142,21 @@ class SESService:
             }
 
             # Check if template exists
-            existing_template = self.get_template(template_name)
+            existing_template = self.get_template(f"{template_name}-{env_suffix}")
 
             if existing_template:
                 # Update existing template
                 self.ses.update_email_template(**template_data)
-                logger.info(f"Updated email template: {template_name}")
+                logger.info(f"Updated email template: {template_name}-{env_suffix}")
             else:
                 # Create new template
                 self.ses.create_email_template(**template_data)
-                logger.info(f"Created new email template: {template_name}")
+                logger.info(f"Created new email template: {template_name}-{env_suffix}")
 
             return True
 
         except (ClientError, FileNotFoundError) as e:
-            logger.error(f"Error managing template {template_name}: {str(e)}", exc_info=True)
+            logger.error(f"Error managing template {template_name}-{env_suffix}: {str(e)}", exc_info=True)
             return False
 
     @aws_auth.ensure_valid_credentials(role_name=role_name)
@@ -196,14 +197,14 @@ class SESService:
                 },
                 Content={
                     'Template': {
-                        'TemplateName': template_name,
+                        'TemplateName': f"{template_name}-{env_suffix}",
                         'TemplateData': template_data_json
                     }
                 }
             )
-            logger.info(f"Successfully sent email using template {template_name} to {to_addresses}, message ID: {response['MessageId']}")
+            logger.info(f"Successfully sent email using template {template_name}-{env_suffix} to {to_addresses}, message ID: {response['MessageId']}")
             return True
 
         except ClientError as e:
-            logger.error(f"Error sending email using template {template_name}: {str(e)}", exc_info=True)
+            logger.error(f"Error sending email using template {template_name}-{env_suffix}: {str(e)}", exc_info=True)
             return False

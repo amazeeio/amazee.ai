@@ -150,7 +150,8 @@ Access the services at:
 - `DYNAMODB_ROLE_NAME`: role to assume for accessing DDB resources (created by terraform)
 - `AWS_REGION`: AWS region in which resources are created
 - `SES_ROLE_NAME`: Role to assume for SES access (created by terraform)
-- `SES_SENDER_EMAIL`: validated identity in SES from which emails are sent
+- `SES_SENDER_EMAIL`: Validated identity in SES from which emails are sent
+- `ENV_SUFFIX`: Naming suffix to differentiate resources from different environments. Defaults to `dev`.
 
 ### Frontend
 - `NEXT_PUBLIC_API_URL`: Backend API URL

@@ -1,6 +1,11 @@
 variable "aws_account_id" {
-  description = "The AWS account ID"
+  description = "The AWS account ID - must be the numeric digits and not an alias"
   type        = string
+
+  validation {
+    condition     = can(regex("^[0-9]{12}$", var.aws_account_id))
+    error_message = "The aws_account_id value must be a 12-digit number."
+  }
 }
 
 variable "aws_region" {

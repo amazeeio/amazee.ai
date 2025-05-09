@@ -24,10 +24,7 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres/postgres_service
       SECRET_KEY: "dKq2BK3pqGQfNqC7SK8ZxNCdqJnGV4F9"  # More secure key for development
-      # PASSWORDLESS_SIGN_IN: true
-      SES_SENDER_EMAIL: info@pippah.co.za
-    # env_file:
-    #   - .env
+      ENV_SUFFIX: "local"
     ports:
       - "8800:8800"
     volumes:
@@ -52,8 +49,6 @@ services:
       - ./frontend:/app
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8800
-      # - PASSWORDLESS_SIGN_IN=true
-    # user: '10000'
     labels:
       lagoon.type: node
 
