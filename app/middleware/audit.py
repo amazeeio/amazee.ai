@@ -4,8 +4,10 @@ from sqlalchemy.orm import Session
 from app.db.models import DBAuditLog
 from app.api.auth import get_current_user_from_auth
 from app.db.database import get_db
+from app.middleware.prometheus import audit_events_total, audit_event_duration_seconds
 import json
 import logging
+import time
 from fastapi import Cookie, Header
 from typing import Optional
 
@@ -18,8 +20,10 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         # Skip audit logging for certain paths
-        if request.url.path in ["/health", "/docs", "/openapi.json", "/audit/logs", "/auth/me"]:
+        if request.url.path in ["/health", "/docs", "/openapi.json", "/audit/logs", "/auth/me", "/metrics"]:
             return await call_next(request)
+
+        start_time = time.time()
 
         # Get the response
         response = await call_next(request)
@@ -69,11 +73,14 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                 # If no origin/referer and has auth header, likely direct API call
                 request_source = "api" if auth_header else None
 
+            # Get resource type from path
+            resource_type = request.url.path.split("/")[1]  # First path segment
+
             # Create audit log entry
             audit_log = DBAuditLog(
                 user_id=user_id,
                 event_type=request.method,
-                resource_type=request.url.path.split("/")[1],  # First path segment
+                resource_type=resource_type,
                 resource_id=str(resource_id) if resource_id else None,
                 action=f"{request.method} {request.url.path}",
                 details={
@@ -88,6 +95,21 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
 
             db.add(audit_log)
             db.commit()
+
+            # Record audit metrics
+            audit_events_total.labels(
+                event_type=request.method,
+                resource_type=resource_type,
+                request_source=request_source or "unknown",
+                status_code=response.status_code
+            ).inc()
+
+            # Record audit event duration
+            duration = time.time() - start_time
+            audit_event_duration_seconds.labels(
+                event_type=request.method,
+                resource_type=resource_type
+            ).observe(duration)
 
         except Exception as e:
             logger.error(f"Failed to create audit log: {str(e)}", exc_info=True)

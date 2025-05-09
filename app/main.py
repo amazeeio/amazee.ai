@@ -6,6 +6,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
+from prometheus_fastapi_instrumentator import Instrumentator, metrics
 import os
 import logging
 
@@ -27,6 +28,7 @@ from app.api import auth, private_ai_keys, users, regions, audit, teams
 from app.core.config import settings
 from app.db.database import get_db
 from app.middleware.audit import AuditLogMiddleware
+from app.middleware.prometheus import PrometheusMiddleware
 
 app = FastAPI(
     title="Private AI Keys as a Service",
@@ -79,6 +81,9 @@ allowed_origins = default_origins + [route.strip() for route in lagoon_routes if
 # Add HTTPS redirect middleware first
 app.add_middleware(HTTPSRedirectMiddleware)
 
+# Add Prometheus middleware
+app.add_middleware(PrometheusMiddleware)
+
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
@@ -95,6 +100,24 @@ app.add_middleware(
 )
 
 app.add_middleware(AuditLogMiddleware, db=next(get_db()))
+
+# Setup Prometheus instrumentation
+instrumentator = Instrumentator(
+    should_group_status_codes=False,
+    should_ignore_untemplated=True,
+    should_respect_env_var=True,
+    should_instrument_requests_inprogress=True,
+    excluded_handlers=["/metrics"],
+    env_var_name="ENABLE_METRICS",
+    inprogress_name="fastapi_inprogress",
+    inprogress_labels=True,
+)
+
+# Add default metrics
+instrumentator.add(metrics.default())
+
+# Instrument the app
+instrumentator.instrument(app).expose(app)
 
 @app.get("/health")
 async def health_check():
