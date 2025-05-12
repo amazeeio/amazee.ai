@@ -1,8 +1,7 @@
 amazeeai Verification Code
-Hi {{user}},
+Welcome back to amazee.ai.
 
-Welcome to amazee.ai. We’re excited to have you onboard!
-Here’s your verification code:
+It's great to see you again. For security purposes please use this verification code:
 
 **{{code}}**
 

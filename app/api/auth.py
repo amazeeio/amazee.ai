@@ -276,7 +276,8 @@ async def register(user: UserCreate, db: Session = Depends(get_db)):
 async def validate_email(
     request: Request,
     email_data: Optional[EmailValidation] = None,
-    email: Optional[str] = Form(None)
+    email: Optional[str] = Form(None),
+    db: Session = Depends(get_db)
 ):
     """
     Validate an email address and generate a validation code.
@@ -318,14 +319,18 @@ async def validate_email(
 
     # Generate and store validation code
     code = generate_validation_token(email)
+    user = db.query(DBUser).filter(DBUser.email == email).first()
+    if user:
+        email_template = 'returning-user-code'
+    else:
+        email_template = 'new-user-code'
 
     # Send the validation code via email
     ses_service = SESService()
     email_sent = ses_service.send_email(
         to_addresses=[email],
-        template_name='verification_code',
+        template_name=email_template,
         template_data={
-            'user': email.split('@')[0],  # Use the part before @ as the user's name
             'code': code
         }
     )
