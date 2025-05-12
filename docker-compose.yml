@@ -40,7 +40,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
-    command: 
+    command:
       - "npm"
       - "run"
       - "dev"
@@ -53,7 +53,7 @@ services:
       lagoon.type: node
 
   litellm:
-    image: ghcr.io/berriai/litellm-database:main-v1.63.6-nightly
+    image: ghcr.io/berriai/litellm-database:main-latest
     ports:
       - "4000:4000" # Map the container port to the host, change the host port if necessary
     environment:
@@ -63,14 +63,14 @@ services:
     depends_on:
       - litellm_db  # Indicates that this service depends on the 'db' service, ensuring 'db' starts first
     healthcheck:  # Defines the health check configuration for the container
-      test: [ "CMD", "curl", "-f", "http://localhost:4000/health/liveliness || exit 1" ]  # Command to execute for health check
+      test: [ "CMD", "wget", "--spider", "--quiet", "http://localhost:4000/health/liveliness", "||", "exit", "1" ]  # Command to execute for health check
       interval: 30s  # Perform health check every 30 seconds
       timeout: 10s   # Health check command times out after 10 seconds
       retries: 3     # Retry up to 3 times if health check fails
       start_period: 40s  # Wait 40 seconds after container start before beginning health checks
     labels:
       lagoon.type: none
- 
+
   litellm_db:
     image: postgres:16
     restart: always
@@ -92,4 +92,4 @@ services:
 volumes:
   postgres_data:
   litellm_postgres_data:
-    name: litellm_postgres_data  # Named volume for Postgres data persistence  
+    name: litellm_postgres_data  # Named volume for Postgres data persistence

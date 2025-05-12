@@ -1,8 +1,6 @@
 import asyncpg
-from typing import Dict
 import uuid
 import logging
-from app.services.litellm import LiteLLMService
 from app.db.models import DBRegion
 
 logger = logging.getLogger(__name__)
@@ -14,21 +12,14 @@ class PostgresManager:
             self.admin_user = region.postgres_admin_user
             self.admin_password = region.postgres_admin_password
             self.port = region.postgres_port
-            self.litellm_service = LiteLLMService(
-                api_url=region.litellm_api_url,
-                api_key=region.litellm_api_key
-            )
         else:
             raise ValueError("Region is required for PostgresManager")
 
-    async def create_database(self, owner: str, name: str = None, user_id: int = None) -> Dict:
+    async def create_database(self) -> dict:
         # Generate unique database name and credentials
         db_name = f"db_{uuid.uuid4().hex[:8]}"
         db_user = f"user_{uuid.uuid4().hex[:8]}"
         db_password = uuid.uuid4().hex
-        
-        # Generate LiteLLM token
-        litellm_token = await self.litellm_service.create_key(email=owner, name=name, user_id=user_id)
 
         # Connect to postgres and create database/user
         try:
@@ -57,8 +48,6 @@ class PostgresManager:
             # Close the initial connection
             await conn.close()
 
-            # Connect to the newly created database to grant schema permissions
-            logger.info(f"Connecting to new database {db_name} to grant schema permissions")
             conn = await asyncpg.connect(
                 host=self.host,
                 port=self.port,
@@ -84,15 +73,15 @@ class PostgresManager:
                 "database_name": db_name,
                 "database_username": db_user,
                 "database_password": db_password,
-                "database_host": self.host,
-                "litellm_token": litellm_token,
-                "litellm_api_url": self.litellm_service.api_url
+                "database_host": self.host
             }
         except Exception as e:
             logger.error(f"Error creating database: {str(e)}")
             raise
+        finally:
+            await conn.close()
 
-    async def delete_database(self, database_name: str, litellm_token: str = None):
+    async def delete_database(self, database_name: str):
         conn = await asyncpg.connect(
             host=self.host,
             port=self.port,
@@ -101,16 +90,12 @@ class PostgresManager:
         )
 
         try:
-            # Delete LiteLLM key if provided
-            if litellm_token:
-                await self.litellm_service.delete_key(litellm_token)
-
             # Terminate all connections to the database
             await conn.execute(f'''
                 SELECT pg_terminate_backend(pg_stat_activity.pid)
                 FROM pg_stat_activity
                 WHERE pg_stat_activity.datname = '{database_name}'
             ''')
-            await conn.execute(f'DROP DATABASE IF EXISTS {database_name}')
+            await conn.execute(f'DROP DATABASE IF EXISTS "{database_name}"')
         finally:
             await conn.close()

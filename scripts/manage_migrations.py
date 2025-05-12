@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import os
 import sys
 
@@ -30,6 +29,11 @@ def downgrade_db():
     config = get_alembic_config()
     command.downgrade(config, "-1")
 
+def stamp_db(revision):
+    """Stamp the database with a specific revision without running the migration."""
+    config = get_alembic_config()
+    command.stamp(config, revision)
+
 def main():
     parser = argparse.ArgumentParser(description="Manage database migrations")
     subparsers = parser.add_subparsers(dest="command", help="Commands")
@@ -44,6 +48,10 @@ def main():
     # Downgrade
     subparsers.add_parser("downgrade", help="Downgrade by one version")
 
+    # Stamp
+    stamp_parser = subparsers.add_parser("stamp", help="Stamp the database with a specific revision")
+    stamp_parser.add_argument("revision", help="Revision to stamp")
+
     args = parser.parse_args()
 
     if args.command == "create":
@@ -52,6 +60,8 @@ def main():
         upgrade_db()
     elif args.command == "downgrade":
         downgrade_db()
+    elif args.command == "stamp":
+        stamp_db(args.revision)
     else:
         parser.print_help()
         sys.exit(1)

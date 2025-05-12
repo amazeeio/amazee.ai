@@ -1,9 +1,7 @@
-from pydantic import BaseModel, EmailStr, ConfigDict
+from pydantic import BaseModel, ConfigDict
 from typing import Optional, List, ClassVar
 from datetime import datetime
-from sqlalchemy import Column, Integer, DateTime, String, JSON, ForeignKey
 from sqlalchemy.orm import relationship
-from app.db.database import Base
 
 class Token(BaseModel):
     access_token: str
@@ -17,6 +15,9 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: str
+    team_id: Optional[int] = None
+    role: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
 
 class UserUpdate(BaseModel):
     email: Optional[str] = None
@@ -28,6 +29,9 @@ class User(UserBase):
     id: int
     is_active: bool
     is_admin: bool
+    team_id: Optional[int] = None
+    team_name: Optional[str] = None
+    role: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
     audit_logs: ClassVar = relationship("AuditLog", back_populates="user")
 
@@ -91,13 +95,14 @@ class Region(RegionBase):
     model_config = ConfigDict(from_attributes=True)
 
 class PrivateAIKeyBase(BaseModel):
-    database_name: str
+    id: int
+    database_name: Optional[str] = None
     name: Optional[str] = None
-    database_host: str
-    database_username: str  # This is the database username, not the user's email
-    database_password: str
-    litellm_token: str
-    litellm_api_url: str
+    database_host: Optional[str] = None
+    database_username: Optional[str] = None  # This is the database username, not the user's email
+    database_password: Optional[str] = None
+    litellm_token: Optional[str] = None
+    litellm_api_url: Optional[str] = None
     region: Optional[str] = None
     created_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
@@ -106,9 +111,56 @@ class PrivateAIKeyCreate(BaseModel):
     region_id: int
     name: str
     owner_id: Optional[int] = None
+    team_id: Optional[int] = None
+
+class VectorDBCreate(BaseModel):
+    region_id: int
+    name: str
+    owner_id: Optional[int] = None
+    team_id: Optional[int] = None
+
+class VectorDB(BaseModel):
+    id: int
+    database_name: str
+    database_host: str
+    database_username: str
+    database_password: str
+    owner_id: Optional[int] = None
+    team_id: Optional[int] = None
+    region: str
+    name: str
+    model_config = ConfigDict(from_attributes=True)
+
+class TeamPrivateAIKeyCreate(PrivateAIKeyCreate):
+    team_id: int  # Override to make team_id required
+    owner_id: Optional[int] = None  # Explicitly set to None for team keys
 
 class PrivateAIKey(PrivateAIKeyBase):
-    owner_id: int
+    owner_id: Optional[int] = None
+    team_id: Optional[int] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class BudgetPeriodUpdate(BaseModel):
+    budget_duration: str
+
+class PrivateAIKeySpend(BaseModel):
+    spend: float
+    expires: datetime
+    created_at: datetime
+    updated_at: datetime
+    max_budget: Optional[float] = None
+    budget_duration: Optional[str] = None
+    budget_reset_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class LiteLLMToken(BaseModel):
+    id: int
+    litellm_token: str
+    litellm_api_url: str
+    owner_id: Optional[int] = None
+    team_id: Optional[int] = None
+    region: str
+    name: str
     model_config = ConfigDict(from_attributes=True)
 
 class AuditLog(BaseModel):
@@ -148,4 +200,39 @@ class PaginatedAuditLogResponse(BaseModel):
 class AuditLogMetadata(BaseModel):
     event_types: List[str]
     resource_types: List[str]
+    model_config = ConfigDict(from_attributes=True)
+
+# Team schemas
+class TeamBase(BaseModel):
+    name: str
+    admin_email: str
+    phone: Optional[str] = None
+    billing_address: Optional[str] = None
+
+class TeamCreate(TeamBase):
+    pass
+
+class TeamUpdate(BaseModel):
+    name: Optional[str] = None
+    admin_email: Optional[str] = None
+    phone: Optional[str] = None
+    billing_address: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class Team(TeamBase):
+    id: int
+    is_active: bool
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class TeamWithUsers(Team):
+    users: List[User] = []
+    model_config = ConfigDict(from_attributes=True)
+
+class TeamOperation(BaseModel):
+    team_id: int
+
+class UserRoleUpdate(BaseModel):
+    role: str
     model_config = ConfigDict(from_attributes=True)

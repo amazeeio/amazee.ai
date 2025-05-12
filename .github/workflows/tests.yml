@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, dev ]
 
 jobs:
   frontend-tests:
@@ -38,7 +38,7 @@ jobs:
       run: make test-clean
 
     - name: Run backend tests
-      run: make backend-test
+      run: make backend-test-cov
 
     - name: Clean up test containers
       if: always()

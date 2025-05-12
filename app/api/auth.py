@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from typing import Optional, List, Union
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie, Header, Request, Form
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HTTPAuthorizationCredentials
@@ -182,57 +182,10 @@ async def get_current_user_from_token(
         )
 
     # Update last used timestamp
-    db_token.last_used_at = datetime.utcnow()
+    db_token.last_used_at = datetime.now(UTC)
     db.commit()
 
     return db_token.owner
-
-async def get_current_user_from_auth(
-    access_token: Optional[str] = Cookie(None, alias="access_token"),
-    authorization: Optional[str] = Header(None),
-    db: Session = Depends(get_db)
-) -> DBUser:
-    if not access_token and not authorization:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    # Try JWT token first
-    token_to_try = access_token
-    if authorization:
-        parts = authorization.split()
-        if len(parts) != 2 or parts[0].lower() != "bearer":
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid authorization header format. Use 'Bearer <token>'",
-            )
-        token_to_try = parts[1]
-
-    # First try API token validation since it's simpler
-    try:
-        db_token = db.query(DBAPIToken).filter(DBAPIToken.token == token_to_try).first()
-        if db_token:
-            # Update last used timestamp
-            db_token.last_used_at = datetime.utcnow()
-            db.commit()
-            return db_token.owner
-    except Exception:
-        pass
-
-    # If API token validation fails, try JWT validation
-    try:
-        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_to_try)
-        user = await get_current_user(credentials=credentials, db=db)
-        if user:
-            return user
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
 
 @router.get("/me", response_model=User)
 async def read_users_me(current_user: DBUser = Depends(get_current_user_from_auth)):
@@ -323,7 +276,7 @@ async def register(user: UserCreate, db: Session = Depends(get_db)):
 def generate_token() -> str:
     return secrets.token_urlsafe(32)
 
-# API Token routes
+# API Token routes (as apposed to AI Token routes)
 @router.post("/token", response_model=APIToken)
 async def create_token(
     token_create: APITokenCreate,
@@ -345,6 +298,7 @@ async def list_tokens(
     current_user = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
+    """List all API tokens for the current user"""
     return current_user.api_tokens
 
 @router.delete("/token/{token_id}")
@@ -353,17 +307,13 @@ async def delete_token(
     current_user = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
+    """Delete an API token"""
     token = db.query(DBAPIToken).filter(
         DBAPIToken.id == token_id,
         DBAPIToken.user_id == current_user.id
     ).first()
-
     if not token:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Token not found"
-        )
-
+        raise HTTPException(status_code=404, detail="Token not found")
     db.delete(token)
     db.commit()
     return {"message": "Token deleted successfully"}
