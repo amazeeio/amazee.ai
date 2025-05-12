@@ -17,6 +17,7 @@ This repository contains the backend and frontend services for the amazee.ai app
 - Make (for running convenience commands)
 - Node.js and npm (for local frontend development)
 - Python 3.x (for local backend development)
+- Terraform for creating AWS resources (+default credentials with sufficient permissions)
 
 ## 🛠️ Setup & Installation
 
@@ -26,11 +27,27 @@ This repository contains the backend and frontend services for the amazee.ai app
    cd [repository-name]
    ```
 
-2. Environment Setup:
+1. Run terraform in the dev account you are using locally
+   ```bash
+   cd terraform
+   terraform init
+   terraform apply -var "aws_account_id=your-cool-dev-account"
+   cd ../
+   ```
+
+1. Install node dependencies
+   ```bash
+   cd frontend
+   npm install
+   cd ../
+   ```
+
+1. Environment Setup:
    - Copy any example environment files and configure as needed
    - Ensure all required API keys are set
+   - Ensure you have set the `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` variables
 
-3. Start the services:
+1. Start the services:
    ```bash
    docker-compose up -d
    ```
@@ -39,6 +56,7 @@ This repository contains the backend and frontend services for the amazee.ai app
    - PostgreSQL database (port 5432)
    - Backend service (port 8000)
    - Frontend service (port 3000)
+   - litellm service (port 4000)
 
 ## 🧪 Running Tests
 
@@ -112,14 +130,16 @@ Access the services at:
 
 ```
 .
-├── app/                    # Backend Python code
+├── app/                   # Backend Python code
+├── docs/                  # Documentation around design decisions
 ├── frontend/              # React frontend application
 ├── tests/                 # Backend tests
+├── terraform/             # Terraform configuration for remote resources
 ├── scripts/               # Utility scripts
 ├── docker-compose.yml     # Docker services configuration
-├── Dockerfile            # Backend service Dockerfile
-├── Dockerfile.test       # Test environment Dockerfile
-└── Makefile             # Development and test commands
+├── Dockerfile             # Backend service Dockerfile
+├── Dockerfile.test        # Test environment Dockerfile
+└── Makefile               # Development and test commands
 ```
 
 ## 🔑 Environment Variables
@@ -127,6 +147,12 @@ Access the services at:
 ### Backend
 - `DATABASE_URL`: PostgreSQL connection string
 - `SECRET_KEY`: Application secret key
+- `DYNAMODB_ROLE_NAME`: role to assume for accessing DDB resources (created by terraform)
+- `SES_ROLE_NAME`: Role to assume for SES access (created by terraform)
+- `SES_SENDER_EMAIL`: Validated identity in SES from which emails are sent
+- `ENV_SUFFIX`: Naming suffix to differentiate resources from different environments. Defaults to `dev`.
+- `SES_REGION`: Optional, defaults to eu-central-1
+- `DYNAMODB_REGION`: Optional, defaults to eu-central-2
 
 ### Frontend
 - `NEXT_PUBLIC_API_URL`: Backend API URL

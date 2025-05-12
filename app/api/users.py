@@ -82,7 +82,10 @@ async def create_user(
         user.role = "read_only"
 
     # Create the user
-    hashed_password = get_password_hash(user.password)
+    if user.password:
+            hashed_password = get_password_hash(user.password)
+    else:
+        hashed_password = None
     db_user = DBUser(
         email=user.email,
         hashed_password=hashed_password,

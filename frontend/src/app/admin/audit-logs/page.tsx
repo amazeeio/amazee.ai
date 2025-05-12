@@ -76,7 +76,6 @@ export default function AuditLogsPage() {
         }));
 
       setEventTypeOptions(eventOptions);
-      console.log('Event Type Options:', eventOptions);
 
       setResourceTypeOptions(
         (data.resource_types || [])
