@@ -1,5 +1,7 @@
 from typing import Optional, List, Union
+import email_validator
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Form
+from email_validator import validate_email, EmailNotValidError
 from sqlalchemy.orm import Session
 import logging
 import secrets
@@ -306,20 +308,12 @@ async def validate_email(
             detail="Email is required"
         )
 
-    # Basic email format validation
-    if not "@" in email:
+    try:
+        email_validator.validate_email(email, check_deliverability=False)
+    except EmailNotValidError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid email format"
-        )
-
-    _, domain = email.split("@")
-
-    # Validate domain (no special characters except . and -)
-    if not "." in domain or not all(character.isalnum() or character in ".-" for character in domain):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid email format"
+            detail=f"Invalid email format: {e}"
         )
 
     # Generate and store validation code
@@ -344,7 +338,7 @@ async def validate_email(
         )
 
     return {
-        "message": "Validation code has been generated and stored"
+        "message": "Validation code has been generated and sent"
     }
 
 def generate_token() -> str:

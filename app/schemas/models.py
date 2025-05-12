@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, EmailStr
 from typing import Optional, List, ClassVar
 from datetime import datetime
 from sqlalchemy.orm import relationship
@@ -8,17 +8,17 @@ class Token(BaseModel):
     token_type: str
 
 class TokenData(BaseModel):
-    email: Optional[str] = None
+    email: Optional[EmailStr] = None
 
 class EmailValidation(BaseModel):
-    email: str
+    email: EmailStr
 
 class LoginData(BaseModel):
-    username: str  # Using username to match OAuth2 form field
+    username: EmailStr  # Using username to match OAuth2 form field
     password: str
 
 class UserBase(BaseModel):
-    email: str
+    email: EmailStr
 
 class UserCreate(UserBase):
     password: Optional[str] = None
@@ -27,7 +27,7 @@ class UserCreate(UserBase):
     model_config = ConfigDict(from_attributes=True)
 
 class UserUpdate(BaseModel):
-    email: Optional[str] = None
+    email: Optional[EmailStr] = None
     is_admin: Optional[bool] = None
     current_password: Optional[str] = None
     new_password: Optional[str] = None
@@ -212,7 +212,7 @@ class AuditLogMetadata(BaseModel):
 # Team schemas
 class TeamBase(BaseModel):
     name: str
-    admin_email: str
+    admin_email: EmailStr
     phone: Optional[str] = None
     billing_address: Optional[str] = None
 
@@ -221,7 +221,7 @@ class TeamCreate(TeamBase):
 
 class TeamUpdate(BaseModel):
     name: Optional[str] = None
-    admin_email: Optional[str] = None
+    admin_email: Optional[EmailStr] = None
     phone: Optional[str] = None
     billing_address: Optional[str] = None
     is_active: Optional[bool] = None
@@ -245,5 +245,5 @@ class UserRoleUpdate(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class SignInData(BaseModel):
-    username: str
+    username: EmailStr
     verification_code: str
