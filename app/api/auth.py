@@ -36,6 +36,7 @@ from app.core.security import (
 from app.services.dynamodb import DynamoDBService
 from app.services.ses import SESService
 from app.api.teams import register_team
+from app.metrics.auth import track_auth_attempt
 
 router = APIRouter(
     tags=["Authentication"]
@@ -127,43 +128,19 @@ def create_and_set_access_token(response: Response, user_email: str) -> Token:
 
     return {"access_token": access_token, "token_type": "bearer"}
 
-@router.post("/login", response_model=Token)
-async def login(
-    request: Request,
-    response: Response,
-    login_data: Optional[LoginData] = Depends(get_login_data),
-    db: Session = Depends(get_db)
-):
-    """
-    Login to get access to the API.
+@router.post("/login")
+async def login(request: Request, user_data: LoginData, db: Session = Depends(get_db)):
+    try:
+        user = db.query(DBUser).filter(DBUser.email == user_data.username).first()
+        if not user or not verify_password(user_data.password, user.hashed_password):
+            await track_auth_attempt(request, user_data.username, "failure")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
 
-    Accepts both application/x-www-form-urlencoded and application/json formats.
-
-    Form data:
-    - **username**: Your email address
-    - **password**: Your password
-
-    JSON data:
-    - **username**: Your email address
-    - **password**: Your password
-
-    On successful login, an access token will be set as an HTTP-only cookie and also returned in the response.
-    Use this token for subsequent authenticated requests.
-    """
-    if not login_data:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid login data. Please provide username and password in either form data or JSON format."
-        )
-
-    user = db.query(DBUser).filter(DBUser.email == login_data.username).first()
-    if not user or not verify_password(login_data.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password"
-        )
-
-    return create_and_set_access_token(response, user.email)
+        await track_auth_attempt(request, user_data.username, "success")
+        return create_and_set_access_token(request.response, user.email)
+    except Exception as e:
+        await track_auth_attempt(request, user_data.username, "failure")
+        raise e
 
 @router.post("/logout")
 async def logout(response: Response):
@@ -242,35 +219,28 @@ async def update_user_me(
     db.refresh(current_user)
     return current_user
 
-@router.post("/register", response_model=User)
-async def register(user: UserCreate, db: Session = Depends(get_db)):
-    """
-    Register a new user account.
+@router.post("/register")
+async def register(request: Request, user_data: UserCreate, db: Session = Depends(get_db)):
+    try:
+        db_user = db.query(DBUser).filter(DBUser.email == user_data.email).first()
+        if db_user:
+            await track_auth_attempt(request, user_data.email, "failure")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
 
-    - **email**: Your email address
-    - **password**: A secure password (minimum 8 characters)
-
-    After registration, you'll need to login to get an access token.
-    """
-    # Check if user with this email exists
-    db_user = db.query(DBUser).filter(DBUser.email == user.email).first()
-    if db_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
+        hashed_password = get_password_hash(user_data.password)
+        db_user = DBUser(
+            email=user_data.email,
+            hashed_password=hashed_password,
+            is_admin=False  # Force is_admin to be False for all new registrations
         )
-
-    # Create new user
-    hashed_password = get_password_hash(user.password)
-    db_user = DBUser(
-        email=user.email,
-        hashed_password=hashed_password,
-        is_admin=False  # Force is_admin to be False for all new registrations
-    )
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
-    return db_user
+        db.add(db_user)
+        db.commit()
+        db.refresh(db_user)
+        await track_auth_attempt(request, user_data.email, "success")
+        return db_user
+    except Exception as e:
+        await track_auth_attempt(request, user_data.email, "failure")
+        raise e
 
 @router.post("/validate-email")
 async def validate_email(
@@ -410,71 +380,47 @@ async def delete_token(
     db.commit()
     return {"message": "Token deleted successfully"}
 
-@router.post("/sign-in", response_model=Token)
-async def sign_in(
-    request: Request,
-    response: Response,
-    sign_in_data: Optional[SignInData] = Depends(get_sign_in_data),
-    db: Session = Depends(get_db)
-):
-    """
-    Sign in using a verification code instead of a password.
+@router.post("/sign-in")
+async def sign_in(request: Request, user_data: SignInData, db: Session = Depends(get_db)):
+    try:
+        # Verify the code using DynamoDB first
+        dynamodb_service = DynamoDBService()
+        stored_code = dynamodb_service.read_validation_code(user_data.username)
 
-    Accepts both application/x-www-form-urlencoded and application/json formats.
+        if not stored_code or stored_code.get('code').upper() != user_data.verification_code.upper():
+            await track_auth_attempt(request, user_data.username, "failure")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or verification code"
+            )
 
-    Form data:
-    - **username**: Your email address
-    - **verification_code**: The verification code sent to your email
+        # Get user from database after verifying the code
+        user = db.query(DBUser).filter(DBUser.email == user_data.username).first()
 
-    JSON data:
-    - **username**: Your email address
-    - **verification_code**: The verification code sent to your email
+        # If user doesn't exist, create a new user and team
+        if not user:
+            # First create the team
+            team_data = TeamCreate(
+                name=f"Team {user_data.username}",
+                admin_email=user_data.username,
+                phone="",  # Required by schema but not used for auto-created teams
+                billing_address=""  # Required by schema but not used for auto-created teams
+            )
+            team = await register_team(team_data, db)
 
-    On successful sign in, an access token will be set as an HTTP-only cookie and also returned in the response.
-    Use this token for subsequent authenticated requests.
+            # Create new user without password since they're using verification code
+            user = DBUser(
+                email=user_data.username,
+                hashed_password="",  # Empty password since they'll use verification code
+                role="admin",  # Set role to admin for new users
+                team_id=team.id  # Associate user with the team
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
 
-    If the user doesn't exist, they will be automatically registered and a new team will be created
-    with them as the admin.
-    """
-    if not sign_in_data:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid sign in data. Please provide username and verification code in either form data or JSON format."
-        )
-
-    # Verify the code using DynamoDB first
-    dynamodb_service = DynamoDBService()
-    stored_code = dynamodb_service.read_validation_code(sign_in_data.username)
-
-    if not stored_code or stored_code.get('code').upper() != sign_in_data.verification_code.upper():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or verification code"
-        )
-
-    # Get user from database after verifying the code
-    user = db.query(DBUser).filter(DBUser.email == sign_in_data.username).first()
-
-    # If user doesn't exist, create a new user and team
-    if not user:
-        # First create the team
-        team_data = TeamCreate(
-            name=f"Team {sign_in_data.username}",
-            admin_email=sign_in_data.username,
-            phone="",  # Required by schema but not used for auto-created teams
-            billing_address=""  # Required by schema but not used for auto-created teams
-        )
-        team = await register_team(team_data, db)
-
-        # Create new user without password since they're using verification code
-        user = DBUser(
-            email=sign_in_data.username,
-            hashed_password="",  # Empty password since they'll use verification code
-            role="admin",  # Set role to admin for new users
-            team_id=team.id  # Associate user with the team
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-
-    return create_and_set_access_token(response, user.email)
+        await track_auth_attempt(request, user_data.username, "success")
+        return create_and_set_access_token(request.response, user.email)
+    except Exception as e:
+        await track_auth_attempt(request, user_data.username, "failure")
+        raise e

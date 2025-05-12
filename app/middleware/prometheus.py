@@ -3,6 +3,8 @@ from prometheus_fastapi_instrumentator import Instrumentator, metrics
 from prometheus_fastapi_instrumentator.metrics import Info
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
+from app.core.security import get_current_user_from_auth
+from app.db.database import get_db
 import time
 import logging
 
@@ -84,8 +86,6 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
                     access_token = parts[1]
 
             if access_token:
-                from app.api.auth import get_current_user_from_auth
-                from app.db.database import get_db
                 db = next(get_db())
                 user = await get_current_user_from_auth(
                     access_token=access_token if access_token else None,
