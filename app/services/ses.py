@@ -142,21 +142,22 @@ class SESService:
             }
 
             # Check if template exists
-            existing_template = self.get_template(f"{template_name}-{env_suffix}")
+            existing_template = self.get_template(f"{template_name}")
 
             if existing_template:
                 # Update existing template
                 self.ses.update_email_template(**template_data)
-                logger.info(f"Updated email template: {template_name}-{env_suffix}")
+                print(f"Updated email template: {template_name}-{env_suffix}")
             else:
                 # Create new template
                 self.ses.create_email_template(**template_data)
-                logger.info(f"Created new email template: {template_name}-{env_suffix}")
+                print(f"Created new email template: {template_name}-{env_suffix}")
 
             return True
 
         except (ClientError, FileNotFoundError) as e:
-            logger.error(f"Error managing template {template_name}-{env_suffix}: {str(e)}", exc_info=True)
+            print(f"Error managing template {template_name}-{env_suffix}: {str(e)}")
+            # logger.error(f"Error managing template {template_name}-{env_suffix}: {str(e)}", exc_info=True)
             return False
 
     @aws_auth.ensure_valid_credentials(role_name=role_name, region_name=ses_region)

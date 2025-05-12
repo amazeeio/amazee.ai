@@ -6,9 +6,6 @@ python << END
 import sys
 import psycopg2
 import os
-import alembic
-import alembic.config
-import alembic.command
 try:
     psycopg2.connect(
         os.getenv("DATABASE_URL", "postgres://postgres:postgres@postgres:5432/postgres_service")
@@ -27,101 +24,8 @@ done
 
 >&2 echo "PostgreSQL is up - initializing database"
 
-# Initialize the database
-python << END
-from app.db.database import engine
-from app.db.models import Base
-from sqlalchemy import inspect
-import alembic.config
-import os
-from sqlalchemy.orm import sessionmaker
-from app.db.models import DBUser
-from app.core.security import get_password_hash
-from app.services.dynamodb import DynamoDBService
-
-# Check if database is empty (no tables exist)
-inspector = inspect(engine)
-existing_tables = inspector.get_table_names()
-print(f"Existing tables: {existing_tables}")
-
-alembic_cfg = alembic.config.Config(os.path.join(os.path.dirname(__file__), "app", "migrations", "alembic.ini"))
-alembic_cfg.set_main_option("script_location", "app/migrations")
-if not "alembic_version" in existing_tables:
-    alembic.command.ensure_version(alembic_cfg)
-if not existing_tables:
-    print("No tables found - creating database schema from models...")
-    # Create all tables from models
-    Base.metadata.create_all(bind=engine)
-    print("Database tables created successfully!")
-    alembic.command.stamp(alembic_cfg, "head")
-    print("Stamped alembic version for future migrations")
-else:
-    print("Tables already exist - running migrations...")
-    # Run database migrations
-    try:
-        alembic.command.upgrade(alembic_cfg, "head")
-        print("Database migrations completed successfully!")
-    except Exception as e:
-        print(f"Migration failed: {str(e)}")
-        print("Attempting to stamp current version and continue...")
-        # If migration fails, stamp the current version
-        alembic.command.stamp(alembic_cfg, "head")
-        print("Database version stamped successfully!")
-
-# Create initial admin user if none exists
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-db = SessionLocal()
-
-try:
-    admin_exists = db.query(DBUser).filter(DBUser.is_admin == True).first()
-    if not admin_exists:
-        print("Creating initial admin user...")
-        admin_user = DBUser(
-            email="admin@example.com",
-            hashed_password=get_password_hash("admin"),
-            is_active=True,
-            is_admin=True
-        )
-        db.add(admin_user)
-        db.commit()
-        print("Initial admin user created with credentials:")
-        print("Email: admin@example.com")
-        print("Password: admin")
-        print("Please change these credentials after first login!")
-    else:
-        print("Admin user already exists")
-except Exception as e:
-    print(f"Error creating admin user: {str(e)}")
-    db.rollback()
-finally:
-    db.close()
-
-# Initialize SES templates
-try:
-    if os.getenv("PASSWORDLESS_SIGN_IN", "").lower() == "true":
-        # Initialize SES templates
-        print("Initializing SES email templates...")
-        from app.services.ses import SESService
-        import glob
-        import os
-
-        ses_service = SESService()
-        templates_dir = os.path.join(os.path.dirname(__file__), "app", "templates")
-
-        # Get all .md files in the templates directory
-        template_files = glob.glob(os.path.join(templates_dir, "*.md"))
-
-        for template_file in template_files:
-            template_name = os.path.splitext(os.path.basename(template_file))[0]
-            if ses_service.create_or_update_template(template_name):
-                print(f"Successfully created/updated SES template: {template_name}")
-            else:
-                print(f"Failed to create/update SES template: {template_name}")
-    else:
-        print("PASSWORDLESS_SIGN_IN is disabled - skipping SES initialization")
-except Exception as e:
-    print(f"Error initializing services: {str(e)}")
-END
+# Initialize the database using the Python script
+python /app/scripts/initialise_resources.py
 
 # Check if running in production (Lagoon) or development mode
 if [ -n "${LAGOON_ENVIRONMENT}" ]; then
