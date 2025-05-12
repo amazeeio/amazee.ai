@@ -5,9 +5,8 @@ from datetime import datetime, timedelta, UTC
 import os
 
 _credentials_map: Dict[str, Dict[str, Any]] = {}
-_region_name: str = os.getenv('AWS_REGION')
 
-def _get_account_id(region_name: str) -> str:
+def _get_account_id(region_name: str = "eu-central-2") -> str:
     """
     Get the AWS account ID using GetCallerIdentity.
 
@@ -25,13 +24,13 @@ def _get_account_id(region_name: str) -> str:
     except ClientError as e:
         raise Exception(f"Failed to get account ID: {str(e)}")
 
-def _check_credentials(role_name: str) -> None:
+def _check_credentials(role_name: str, region_name: str = "eu-central-2") -> None:
     """
     Check if credentials are valid and refresh if necessary.
     Raises an exception if credentials cannot be refreshed.
     """
     if role_name not in _credentials_map:
-        _assume_role(role_name)
+        _assume_role(role_name, region_name)
         return
 
     credentials = _credentials_map[role_name]
@@ -39,9 +38,9 @@ def _check_credentials(role_name: str) -> None:
 
     # Refresh if credentials expire in less than 5 minutes
     if datetime.now(UTC) + timedelta(minutes=5) >= expiry:
-        _assume_role(role_name)
+        _assume_role(role_name, region_name)
 
-def _assume_role(role_name: str, session_name: str = "AWSServiceSession") -> None:
+def _assume_role(role_name: str, region_name: str = "eu-central-2", session_name: str = "AWSServiceSession") -> None:
     """
     Assume the specified IAM role and get temporary credentials.
     Updates the credentials map with the new credentials.
@@ -54,11 +53,11 @@ def _assume_role(role_name: str, session_name: str = "AWSServiceSession") -> Non
     """
     try:
         # Get account ID and construct role ARN
-        account_id = _get_account_id(_region_name)
+        account_id = _get_account_id(region_name)
         role_arn = f"arn:aws:iam::{account_id}:role/{role_name}"
 
         # Create STS client with default credentials
-        sts_client = boto3.client('sts', region_name=_region_name)
+        sts_client = boto3.client('sts', region_name=region_name)
 
         # Assume the role
         response = sts_client.assume_role(
@@ -78,14 +77,14 @@ def _assume_role(role_name: str, session_name: str = "AWSServiceSession") -> Non
     except ClientError as e:
         raise Exception(f"Failed to assume role: {str(e)}")
 
-def get_credentials(role_name: str) -> Dict[str, str]:
+def get_credentials(role_name: str, region_name: str = "eu-central-2") -> Dict[str, str]:
     """
     Get the current AWS credentials.
 
     Returns:
         Dict[str, str]: Dictionary containing AccessKeyId, SecretAccessKey, and SessionToken
     """
-    _check_credentials(role_name)
+    _check_credentials(role_name, region_name)
     credentials = _credentials_map[role_name]
     return {
         'aws_access_key_id': credentials['AccessKeyId'],
@@ -93,7 +92,7 @@ def get_credentials(role_name: str) -> Dict[str, str]:
         'aws_session_token': credentials['SessionToken']
     }
 
-def ensure_valid_credentials(role_name: str) -> Callable:
+def ensure_valid_credentials(role_name: str, region_name: str = "eu-central-2") -> Callable:
     """
     Decorator to ensure valid credentials before executing AWS operations.
 
@@ -105,7 +104,7 @@ def ensure_valid_credentials(role_name: str) -> Callable:
     """
     def inner(func: Callable) -> Callable:
         def wrapper(*args, **kwargs):
-            _check_credentials(role_name)
+            _check_credentials(role_name, region_name)
             return func(*args, **kwargs)
         return wrapper
     return inner

@@ -1,11 +1,16 @@
 amazeeai Verification Code
-Dear {{user}}
+Hi {{user}},
 
-Your verification code for amazeeai is **{{code}}**.
+Welcome to amazee.ai. We’re excited to have you onboard!
+Here’s your verification code:
 
-This code is valid for ten minutes.
+**{{code}}**
 
-If you did not request a sign in code, there is no need to take any action.
+This code is valid for the next 10 minutes.
 
-Regards,
-amazeeai team
+If you didn’t request this code, feel free to ignore this message.
+Need help? Reach out to us at [ai.support@amazee.io](mailto:ai.support@amazee.io).
+Want to learn more? Visit [www.amazee.ai](https://try.amazee.ai)
+
+Cheers,
+The amazee.ai team

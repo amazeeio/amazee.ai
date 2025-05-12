@@ -11,7 +11,7 @@ variable "aws_account_id" {
 variable "aws_region" {
   description = "The AWS region to deploy resources"
   type        = string
-  default     = "eu-west-1"
+  default     = "eu-central-2"
 }
 
 variable "tags" {
@@ -27,16 +27,4 @@ variable "environment_suffix" {
   description = "Suffix to append to resource names"
   type        = string
   default     = "dev"
-}
-
-variable "domain_name" {
-  description = "The domain name to use for SES identity"
-  type        = string
-  default     = "ai.amazee.io"
-}
-
-variable "dkim_private_key" {
-  description = "The private key to use for DKIM signing"
-  type        = string
-  sensitive   = true
 }

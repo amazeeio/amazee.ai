@@ -11,6 +11,7 @@ from app.services import aws_auth
 # Get role name from environment variable
 role_name = os.getenv('SES_ROLE_NAME')
 env_suffix = os.getenv('ENV_SUFFIX')
+ses_region = os.getenv('SES_REGION', "eu-central-1") # SES defaults to Frankfurt as Zurich is not available
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -36,11 +37,10 @@ class SESService:
             )
 
         # Get region from environment variable
-        region_name = aws_auth._region_name
-        if not region_name:
+        if not ses_region:
             raise ValueError(
-                "AWS_REGION environment variable is not set. "
-                "Please set it to your AWS region (e.g., us-east-1)."
+                "SES_REGION environment variable is not set. "
+                "Please set it to your AWS region (e.g., eu-central-1)."
             )
 
         self.templates_dir = pathlib.Path(__file__).parent.parent / "templates"
@@ -48,8 +48,8 @@ class SESService:
         # Create SESv2 client with temporary credentials
         self.ses = boto3.client(
             'sesv2',
-            region_name=region_name,
-            **aws_auth.get_credentials(role_name)
+            region_name=ses_region,
+            **aws_auth.get_credentials(role_name, ses_region)
         )
 
     def _read_template(self, template_name: str) -> Tuple[str, str, str]:
@@ -96,7 +96,7 @@ class SESService:
 
         return subject, markdown_content, html_content
 
-    @aws_auth.ensure_valid_credentials(role_name=role_name)
+    @aws_auth.ensure_valid_credentials(role_name=role_name, region_name=ses_region)
     def get_template(self, template_name: str) -> Optional[Dict[str, Any]]:
         """
         Get an existing SES template.
@@ -115,7 +115,7 @@ class SESService:
                 return None
             raise e
 
-    @aws_auth.ensure_valid_credentials(role_name=role_name)
+    @aws_auth.ensure_valid_credentials(role_name=role_name, region_name=ses_region)
     def create_or_update_template(self, template_name: str) -> bool:
         """
         Create or update an SES template using the content from the corresponding text file.
@@ -159,7 +159,7 @@ class SESService:
             logger.error(f"Error managing template {template_name}-{env_suffix}: {str(e)}", exc_info=True)
             return False
 
-    @aws_auth.ensure_valid_credentials(role_name=role_name)
+    @aws_auth.ensure_valid_credentials(role_name=role_name, region_name=ses_region)
     def send_email(
         self,
         to_addresses: list[str],

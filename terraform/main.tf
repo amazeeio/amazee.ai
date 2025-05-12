@@ -139,16 +139,6 @@ resource "aws_iam_role_policy" "amazeeai_ddb" {
   })
 }
 
-# resource "aws_sesv2_email_identity" "domain" {
-#   email_identity = var.domain_name
-#   tags           = var.tags
-#
-#   dkim_signing_attributes {
-#     domain_signing_selector    = "amazee"
-#     domain_signing_private_key = var.tags
-#   }
-# }
-
 resource "aws_dynamodb_table" "verification_codes" {
   name                        = "verification-codes-${var.environment_suffix}"
   billing_mode                = "PAY_PER_REQUEST"

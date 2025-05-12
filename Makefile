@@ -35,7 +35,6 @@ backend-test-regex: test-clean backend-test-build test-postgres
 		-e POSTGRES_PASSWORD="postgres" \
 		-e POSTGRES_DB="postgres_service" \
 		-e DYNAMODB_ROLE_NAME="test-role" \
-		-e AWS_REGION="us-east-1" \
 		-e SES_ROLE_NAME="test-role" \
 		-e TESTING="1" \
 		-e ENV_SUFFIX="test" \
@@ -54,7 +53,6 @@ backend-test: test-clean backend-test-build test-postgres
 		-e POSTGRES_PASSWORD="postgres" \
 		-e POSTGRES_DB="postgres_service" \
 		-e DYNAMODB_ROLE_NAME="test-role" \
-		-e AWS_REGION="us-east-1" \
 		-e SES_ROLE_NAME="test-role" \
 		-e TESTING="1" \
 		-e ENV_SUFFIX="test" \
@@ -73,7 +71,6 @@ backend-test-cov: test-clean backend-test-build test-postgres
 		-e POSTGRES_PASSWORD="postgres" \
 		-e POSTGRES_DB="postgres_service" \
 		-e DYNAMODB_ROLE_NAME="test-role" \
-		-e AWS_REGION="us-east-1" \
 		-e SES_ROLE_NAME="test-role" \
 		-e TESTING="1" \
 		-e ENV_SUFFIX="test" \

@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any
 from datetime import datetime, timedelta, UTC
 import os
 import logging
-from app.services.aws_auth import ensure_valid_credentials, _region_name, get_credentials
+from app.services.aws_auth import ensure_valid_credentials, get_credentials
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -13,6 +13,7 @@ env_suffix = os.getenv('ENV_SUFFIX')
 VALIDATION_CODE_TABLE_NAME = f"verification-codes-{env_suffix}"
 # Get role name from environment variable
 role_name = os.getenv('DYNAMODB_ROLE_NAME')
+dynamodb_region = os.getenv('DYNAMODB_REGION', "eu-central-2")
 
 class DynamoDBService:
     def __init__(
@@ -34,20 +35,20 @@ class DynamoDBService:
                 "Please set it to the name of the IAM role to assume."
             )
 
-        if not _region_name:
+        if not dynamodb_region:
             raise ValueError(
-                "AWS_REGION environment variable is not set. "
-                "Please set it to your AWS region (e.g., us-east-1)."
+                "DYNAMODB_REGION environment variable is not set. "
+                "Please set it to your AWS region (e.g., eu-central-2)."
             )
 
         # Create DynamoDB resource with temporary credentials
         self.dynamodb = boto3.resource(
             'dynamodb',
-            region_name=_region_name,
-            **get_credentials(role_name)
+            region_name=dynamodb_region,
+            **get_credentials(role_name, dynamodb_region)
         )
 
-    @ensure_valid_credentials(role_name=role_name)
+    @ensure_valid_credentials(role_name=role_name, region_name=dynamodb_region)
     def write_validation_code(self, email: str, code: str) -> bool:
         """
         Write or update a verification code record to the table.
@@ -79,7 +80,7 @@ class DynamoDBService:
             logger.error(f"Error writing record: {str(e)}")
             return False
 
-    @ensure_valid_credentials(role_name=role_name)
+    @ensure_valid_credentials(role_name=role_name, region_name=dynamodb_region)
     def read_validation_code(self, email: str) -> Optional[Dict[str, Any]]:
         """
         Read a verification code record from the table.

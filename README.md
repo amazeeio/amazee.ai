@@ -148,10 +148,11 @@ Access the services at:
 - `DATABASE_URL`: PostgreSQL connection string
 - `SECRET_KEY`: Application secret key
 - `DYNAMODB_ROLE_NAME`: role to assume for accessing DDB resources (created by terraform)
-- `AWS_REGION`: AWS region in which resources are created
 - `SES_ROLE_NAME`: Role to assume for SES access (created by terraform)
 - `SES_SENDER_EMAIL`: Validated identity in SES from which emails are sent
 - `ENV_SUFFIX`: Naming suffix to differentiate resources from different environments. Defaults to `dev`.
+- `SES_REGION`: Optional, defaults to eu-central-1
+- `DYNAMODB_REGION`: Optional, defaults to eu-central-2
 
 ### Frontend
 - `NEXT_PUBLIC_API_URL`: Backend API URL
