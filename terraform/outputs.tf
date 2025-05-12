@@ -28,3 +28,15 @@ output "role_assumer_secret_key" {
   value       = aws_iam_access_key.role_assumer.secret
   sensitive   = true
 }
+
+output "litellm_access_key_id" {
+  description = "The access key ID for the LiteLLM IAM user"
+  value       = aws_iam_access_key.litellm.id
+  sensitive   = false
+}
+
+output "litellm_access_key_secret" {
+  description = "The access key secret for the LiteLLM IAM user"
+  value       = aws_iam_access_key.litellm.secret
+  sensitive   = true
+}

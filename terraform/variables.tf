@@ -26,5 +26,4 @@ variable "tags" {
 variable "environment_suffix" {
   description = "Suffix to append to resource names"
   type        = string
-  default     = "dev"
 }

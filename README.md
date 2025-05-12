@@ -157,6 +157,10 @@ Access the services at:
 ### Frontend
 - `NEXT_PUBLIC_API_URL`: Backend API URL
 
+## 🌍 Terraform
+
+This project includes the default terraform details needed to set up remote AWS resources (IAM roles and users, DDB tables, etc).
+
 ## 👥 Contributing
 
 1. Create a new branch for your feature
