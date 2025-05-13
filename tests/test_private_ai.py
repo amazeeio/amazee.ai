@@ -1186,7 +1186,7 @@ def test_list_private_ai_keys_as_read_only_user_includes_team_keys(mock_post, cl
     assert any(key["name"] == "team-owned-key" and key["team_id"] == test_team.id for key in data)
 
 @patch("app.services.litellm.requests.post")
-def test_list_private_ai_keys_as_non_team_user(mock_post, client, admin_token, test_token, test_region, test_user, test_team, db):
+def test_list_private_ai_keys_as_non_team_user(mock_post, client, admin_token, test_token, test_region, test_user, test_team, test_team_user, db):
     """Test that a user who is not an admin or team member can only see their own keys"""
     # Mock the LiteLLM API response
     mock_post.return_value.status_code = 200
@@ -1207,6 +1207,12 @@ def test_list_private_ai_keys_as_non_team_user(mock_post, client, admin_token, t
         "team_id": test_team.id
     }
 
+    other_user_key_data = {
+        "name": "other-user-key",
+        "region_id": test_region.id,
+        "owner_id": test_team_user.id
+    }
+
     # Create user's key
     response = client.post(
         "/private-ai-keys/",
@@ -1223,6 +1229,14 @@ def test_list_private_ai_keys_as_non_team_user(mock_post, client, admin_token, t
     )
     assert response.status_code == 200
 
+    # Create other user's key
+    response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json=other_user_key_data
+    )
+    assert response.status_code == 200
+
     # List keys as non-team user
     response = client.get(
         "/private-ai-keys/",
@@ -1231,6 +1245,7 @@ def test_list_private_ai_keys_as_non_team_user(mock_post, client, admin_token, t
     assert response.status_code == 200
     data = response.json()
 
+    print(f"data: {data}")
     # Verify that only the user's own key is returned
     assert len(data) == 1
     assert data[0]["name"] == "user-owned-key"

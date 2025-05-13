@@ -226,7 +226,7 @@ def test_validate_email_success_json(client, mock_dynamodb, mock_ses):
     mock_ses.send_email.assert_called_once()
     ses_call_args = mock_ses.send_email.call_args
     assert ses_call_args[1]['to_addresses'] == [email]  # Verify recipient
-    assert ses_call_args[1]['template_name'] == 'verification_code'  # Verify template used
+    assert ses_call_args[1]['template_name'] == 'new-user-code'  # Verify template used
     assert 'code' in ses_call_args[1]['template_data']  # Verify code is included in template data
     assert len(ses_call_args[1]['template_data']['code']) == 8  # Verify code length
 
@@ -255,7 +255,7 @@ def test_validate_email_success_form(client, mock_dynamodb, mock_ses):
     mock_ses.send_email.assert_called_once()
     ses_call_args = mock_ses.send_email.call_args
     assert ses_call_args[1]['to_addresses'] == [email]  # Verify recipient
-    assert ses_call_args[1]['template_name'] == 'verification_code'  # Verify template used
+    assert ses_call_args[1]['template_name'] == 'new-user-code'  # Verify template used
     assert 'code' in ses_call_args[1]['template_data']  # Verify code is included in template data
     assert len(ses_call_args[1]['template_data']['code']) == 8  # Verify code length
 

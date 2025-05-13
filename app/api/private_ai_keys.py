@@ -367,21 +367,25 @@ async def list_private_ai_keys(
             )
     else:
         # Check if user is a team admin
-        if current_user.team_id is not None and current_user.role == "admin":
-            # Get all users in the team
-            team_users = db.query(DBUser).filter(DBUser.team_id == current_user.team_id).all()
-            team_user_ids = [user.id for user in team_users]
-            # Return keys owned by any user in the team OR owned by the team
-            query = query.filter(
-                (DBPrivateAIKey.owner_id.in_(team_user_ids)) |
-                (DBPrivateAIKey.team_id == current_user.team_id)
-            )
+        if current_user.team_id is not None:
+            if current_user.role == "admin":
+                # Get all users in the team
+                team_users = db.query(DBUser).filter(DBUser.team_id == current_user.team_id).all()
+                team_user_ids = [user.id for user in team_users]
+                # Return keys owned by any user in the team OR owned by the team
+                query = query.filter(
+                    (DBPrivateAIKey.owner_id.in_(team_user_ids)) |
+                    (DBPrivateAIKey.team_id == current_user.team_id)
+                )
+            else:
+                # Non-admin users can see their own keys and team-owned keys
+                query = query.filter(
+                    (DBPrivateAIKey.owner_id == current_user.id) |
+                    (DBPrivateAIKey.team_id == current_user.team_id)
+                )
         else:
-            # Non-admin users can see their own keys and team-owned keys
-            query = query.filter(
-                (DBPrivateAIKey.owner_id == current_user.id) |
-                (DBPrivateAIKey.team_id == current_user.team_id)
-            )
+            # Regular users can only see their own keys
+            query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
 
     private_ai_keys = query.all()
     return [key.to_dict() for key in private_ai_keys]
