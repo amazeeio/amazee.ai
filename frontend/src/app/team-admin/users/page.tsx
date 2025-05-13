@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -43,6 +43,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { getCachedConfig } from '@/utils/config';
 
 const USER_ROLES = [
   { value: 'admin', label: 'Admin' },
@@ -68,6 +69,12 @@ export default function TeamUsersPage() {
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserPassword, setNewUserPassword] = useState('');
   const [newUserRole, setNewUserRole] = useState('read_only');
+  const [isPasswordless, setIsPasswordless] = useState(false);
+
+  useEffect(() => {
+    const config = getCachedConfig();
+    setIsPasswordless(config.PASSWORDLESS_SIGN_IN);
+  }, []);
 
   const queryClient = useQueryClient();
 
@@ -83,7 +90,7 @@ export default function TeamUsersPage() {
   });
 
   const createUserMutation = useMutation({
-    mutationFn: async (data: { email: string; password: string; role: string }) => {
+    mutationFn: async (data: { email: string; password?: string; role: string }) => {
       const response = await post('users', {
         ...data,
         team_id: user?.team_id,
@@ -164,7 +171,7 @@ export default function TeamUsersPage() {
     e.preventDefault();
     createUserMutation.mutate({
       email: newUserEmail,
-      password: newUserPassword,
+      password: isPasswordless ? undefined : newUserPassword,
       role: newUserRole,
     });
   };
@@ -208,16 +215,18 @@ export default function TeamUsersPage() {
                     required
                   />
                 </div>
-                <div className="grid gap-2">
-                  <label htmlFor="password">Password</label>
-                  <Input
-                    id="password"
-                    type="password"
-                    value={newUserPassword}
-                    onChange={(e) => setNewUserPassword(e.target.value)}
-                    required
-                  />
-                </div>
+                {!isPasswordless && (
+                  <div className="grid gap-2">
+                    <label htmlFor="password">Password</label>
+                    <Input
+                      id="password"
+                      type="password"
+                      value={newUserPassword}
+                      onChange={(e) => setNewUserPassword(e.target.value)}
+                      required
+                    />
+                  </div>
+                )}
                 <div className="grid gap-2">
                   <label htmlFor="role">Role</label>
                   <Select

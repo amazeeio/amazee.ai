@@ -2,14 +2,13 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 from app.main import app
 from app.db.database import get_db
 from app.db.models import Base, DBRegion, DBUser, DBTeam
-from app.core.config import settings
 import os
 from app.core.security import get_password_hash
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timedelta
+from unittest.mock import patch, MagicMock
 
 # Get database URL from environment
 DATABASE_URL = os.getenv(
@@ -223,3 +222,24 @@ def team_read_only_token(client, test_team_read_only):
         data={"username": test_team_read_only.email, "password": "password123"}
     )
     return response.json()["access_token"]
+
+@pytest.fixture
+def mock_sts_client():
+    """Fixture to mock STS client responses."""
+    with patch('boto3.client') as mock_client:
+        # Mock get_caller_identity response
+        mock_sts = MagicMock()
+        mock_sts.get_caller_identity.return_value = {'Account': '123456789012'}
+
+        # Mock assume_role response
+        mock_sts.assume_role.return_value = {
+            'Credentials': {
+                'AccessKeyId': 'test-access-key',
+                'SecretAccessKey': 'test-secret-key',
+                'SessionToken': 'test-session-token',
+                'Expiration': datetime.now(UTC) + timedelta(hours=1)
+            }
+        }
+
+        mock_client.return_value = mock_sts
+        yield mock_sts

@@ -1,36 +1,45 @@
-from datetime import datetime, timedelta, UTC
 from typing import Optional, List, Union
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Cookie, Header, Request, Form
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HTTPAuthorizationCredentials
+import email_validator
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Form
+from email_validator import validate_email, EmailNotValidError
 from sqlalchemy.orm import Session
 import logging
 import secrets
 import os
 from urllib.parse import urlparse
-from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
 from app.db.database import get_db
-from app.schemas.models import Token, User, UserCreate, APIToken, APITokenCreate, APITokenResponse, UserUpdate
-from app.db.models import DBUser, DBAPIToken
+from app.schemas.models import (
+    Token,
+    User,
+    UserCreate,
+    APIToken,
+    APITokenCreate,
+    APITokenResponse,
+    UserUpdate,
+    EmailValidation,
+    LoginData,
+    SignInData,
+    TeamCreate
+)
+from app.db.models import (
+    DBUser, DBAPIToken
+)
 from app.core.security import (
     verify_password,
     get_password_hash,
     create_access_token,
-    get_current_user,
     get_current_user_from_auth,
 )
-from app.core.config import settings
+from app.services.dynamodb import DynamoDBService
+from app.services.ses import SESService
+from app.api.teams import register_team
 
 router = APIRouter(
     tags=["Authentication"]
 )
-
-# Add new model for JSON login
-class LoginData(BaseModel):
-    username: str  # Using username to match OAuth2 form field
-    password: str
 
 def get_cookie_domain():
     """Extract domain from LAGOON_ROUTES for cookie settings."""
@@ -45,14 +54,6 @@ def get_cookie_domain():
     # Remove the first part (e.g., 'backend' or 'frontend')
     domain = '.'.join(hostname.split('.')[1:])
     return domain
-
-def authenticate_user(db: Session, email: str, password: str) -> Optional[DBUser]:
-    user = db.query(DBUser).filter(DBUser.email == email).first()
-    if not user:
-        return None
-    if not verify_password(password, user.hashed_password):
-        return None
-    return user
 
 async def get_login_data(
     request: Request,
@@ -69,6 +70,62 @@ async def get_login_data(
         except Exception:
             return None
     return None
+
+async def get_sign_in_data(
+    request: Request,
+    username: Optional[str] = Form(None),
+    verification_code: Optional[str] = Form(None),
+) -> Union[SignInData, None]:
+    if username and verification_code:
+        return SignInData(username=username, verification_code=verification_code)
+
+    if request.headers.get("content-type", "").lower() == "application/json":
+        try:
+            body = await request.json()
+            return SignInData(**body)
+        except Exception:
+            return None
+    return None
+
+def create_and_set_access_token(response: Response, user_email: str) -> Token:
+    """
+    Create an access token for the user and set it as a cookie.
+
+    Args:
+        response: The FastAPI response object to set the cookie on
+        user_email: The email of the user to create the token for
+
+    Returns:
+        Token: The created access token
+    """
+    # Create access token
+    access_token = create_access_token(
+        data={"sub": user_email}
+    )
+
+    # Get cookie domain from LAGOON_ROUTES
+    cookie_domain = get_cookie_domain()
+
+    # Prepare cookie settings
+    cookie_settings = {
+        "key": "access_token",
+        "value": access_token,
+        "httponly": True,
+        "max_age": 1800,
+        "expires": 1800,
+        "samesite": 'none',
+        "secure": True,
+        "path": '/',
+    }
+
+    # Only set domain if we got one from LAGOON_ROUTES
+    if cookie_domain:
+        cookie_settings["domain"] = cookie_domain
+
+    # Set cookie with appropriate settings
+    response.set_cookie(**cookie_settings)
+
+    return {"access_token": access_token, "token_type": "bearer"}
 
 @router.post("/login", response_model=Token)
 async def login(
@@ -99,40 +156,14 @@ async def login(
             detail="Invalid login data. Please provide username and password in either form data or JSON format."
         )
 
-    user = authenticate_user(db, login_data.username, login_data.password)
-    if not user:
+    user = db.query(DBUser).filter(DBUser.email == login_data.username).first()
+    if not user or not verify_password(login_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password"
         )
 
-    access_token = create_access_token(
-        data={"sub": user.email}
-    )
-
-    # Get cookie domain from LAGOON_ROUTES
-    cookie_domain = get_cookie_domain()
-
-    # Prepare cookie settings
-    cookie_settings = {
-        "key": "access_token",
-        "value": access_token,
-        "httponly": True,
-        "max_age": 1800,
-        "expires": 1800,
-        "samesite": 'none',
-        "secure": True,
-        "path": '/',
-    }
-
-    # Only set domain if we got one from LAGOON_ROUTES
-    if cookie_domain:
-        cookie_settings["domain"] = cookie_domain
-
-    # Set cookie with appropriate settings
-    response.set_cookie(**cookie_settings)
-
-    return {"access_token": access_token, "token_type": "bearer"}
+    return create_and_set_access_token(response, user.email)
 
 @router.post("/logout")
 async def logout(response: Response):
@@ -154,38 +185,6 @@ async def logout(response: Response):
     # Delete cookie with appropriate settings
     response.delete_cookie(**delete_settings)
     return {"message": "Successfully logged out"}
-
-async def get_current_user_from_token(
-    authorization: str = Header(None),
-    db: Session = Depends(get_db)
-) -> DBUser:
-    if not authorization:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authorization header is missing",
-        )
-
-    # Extract token from Authorization header
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authorization header format. Use 'Bearer <token>'",
-        )
-
-    api_token = parts[1]
-    db_token = db.query(DBAPIToken).filter(DBAPIToken.token == api_token).first()
-    if not db_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API token",
-        )
-
-    # Update last used timestamp
-    db_token.last_used_at = datetime.now(UTC)
-    db.commit()
-
-    return db_token.owner
 
 @router.get("/me", response_model=User)
 async def read_users_me(current_user: DBUser = Depends(get_current_user_from_auth)):
@@ -273,8 +272,101 @@ async def register(user: UserCreate, db: Session = Depends(get_db)):
     db.refresh(db_user)
     return db_user
 
+@router.post("/validate-email")
+async def validate_email(
+    request: Request,
+    email_data: Optional[EmailValidation] = None,
+    email: Optional[str] = Form(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Validate an email address and generate a validation code.
+
+    Accepts both application/x-www-form-urlencoded and application/json formats.
+
+    Form data:
+    - **email**: The email address to validate
+
+    JSON data:
+    - **email**: The email address to validate
+
+    Returns a success message if the email is valid and a code has been generated.
+    """
+    # Handle both JSON and form data
+    if email_data:
+        email = email_data.email
+    elif not email:
+        if request.headers.get("content-type", "").lower() == "application/json":
+            try:
+                body = await request.json()
+                email = body.get("email")
+            except Exception:
+                pass
+
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email is required"
+        )
+
+    try:
+        email_validator.validate_email(email, check_deliverability=False)
+    except EmailNotValidError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid email format: {e}"
+        )
+
+    # Generate and store validation code
+    code = generate_validation_token(email)
+    user = db.query(DBUser).filter(DBUser.email == email).first()
+    if user:
+        email_template = 'returning-user-code'
+    else:
+        email_template = 'new-user-code'
+
+    # Send the validation code via email
+    ses_service = SESService()
+    email_sent = ses_service.send_email(
+        to_addresses=[email],
+        template_name=email_template,
+        template_data={
+            'code': code
+        }
+    )
+
+    if not email_sent:
+        logger.error(f"Failed to send validation code email to {email}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send validation code email"
+        )
+
+    return {
+        "message": "Validation code has been generated and sent"
+    }
+
 def generate_token() -> str:
     return secrets.token_urlsafe(32)
+
+def generate_validation_token(email: str) -> str:
+    """
+    Generate a validation token for the given email and store it in DynamoDB.
+
+    Args:
+        email (str): The email address to generate a token for
+
+    Returns:
+        str: The generated validation token (8 characters, alphanumeric, uppercase)
+    """
+    # Generate an 8-character alphanumeric code in uppercase
+    code = ''.join(secrets.choice('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') for _ in range(8))
+
+    # Store the code in DynamoDB
+    dynamodb_service = DynamoDBService()
+    dynamodb_service.write_validation_code(email, code)
+
+    return code
 
 # API Token routes (as apposed to AI Token routes)
 @router.post("/token", response_model=APIToken)
@@ -317,3 +409,72 @@ async def delete_token(
     db.delete(token)
     db.commit()
     return {"message": "Token deleted successfully"}
+
+@router.post("/sign-in", response_model=Token)
+async def sign_in(
+    request: Request,
+    response: Response,
+    sign_in_data: Optional[SignInData] = Depends(get_sign_in_data),
+    db: Session = Depends(get_db)
+):
+    """
+    Sign in using a verification code instead of a password.
+
+    Accepts both application/x-www-form-urlencoded and application/json formats.
+
+    Form data:
+    - **username**: Your email address
+    - **verification_code**: The verification code sent to your email
+
+    JSON data:
+    - **username**: Your email address
+    - **verification_code**: The verification code sent to your email
+
+    On successful sign in, an access token will be set as an HTTP-only cookie and also returned in the response.
+    Use this token for subsequent authenticated requests.
+
+    If the user doesn't exist, they will be automatically registered and a new team will be created
+    with them as the admin.
+    """
+    if not sign_in_data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid sign in data. Please provide username and verification code in either form data or JSON format."
+        )
+
+    # Verify the code using DynamoDB first
+    dynamodb_service = DynamoDBService()
+    stored_code = dynamodb_service.read_validation_code(sign_in_data.username)
+
+    if not stored_code or stored_code.get('code').upper() != sign_in_data.verification_code.upper():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or verification code"
+        )
+
+    # Get user from database after verifying the code
+    user = db.query(DBUser).filter(DBUser.email == sign_in_data.username).first()
+
+    # If user doesn't exist, create a new user and team
+    if not user:
+        # First create the team
+        team_data = TeamCreate(
+            name=f"Team {sign_in_data.username}",
+            admin_email=sign_in_data.username,
+            phone="",  # Required by schema but not used for auto-created teams
+            billing_address=""  # Required by schema but not used for auto-created teams
+        )
+        team = await register_team(team_data, db)
+
+        # Create new user without password since they're using verification code
+        user = DBUser(
+            email=sign_in_data.username,
+            hashed_password="",  # Empty password since they'll use verification code
+            role="admin",  # Set role to admin for new users
+            team_id=team.id  # Associate user with the team
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    return create_and_set_access_token(response, user.email)

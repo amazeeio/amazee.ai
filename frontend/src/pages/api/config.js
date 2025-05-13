@@ -7,6 +7,7 @@ export default function handler(req, res) {
   // Return the public configuration
   res.status(200).json({
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8800',
+    PASSWORDLESS_SIGN_IN: process.env.PASSWORDLESS_SIGN_IN === 'true',
     // Add any other public environment variables here
   });
 }
