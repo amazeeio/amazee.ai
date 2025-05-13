@@ -36,6 +36,38 @@ from app.core.security import (
 from app.services.dynamodb import DynamoDBService
 from app.services.ses import SESService
 from app.api.teams import register_team
+from app.middleware.prometheus import auth_requests_total
+
+def track_auth_request(request: Request, identifier: Optional[str] = None) -> None:
+    """
+    Track authentication requests using Prometheus metrics.
+
+    Args:
+        request: The FastAPI request object
+        identifier: Optional identifier (username/email) for the request
+    """
+    # Get the path from the request
+    path = request.url.path
+
+    # If no identifier provided, try to extract from request
+    if not identifier:
+        try:
+            # Try to get from form data
+            form_data = request.form()
+            identifier = form_data.get("username") or form_data.get("email")
+        except:
+            try:
+                # Try to get from JSON body
+                body = request.json()
+                identifier = body.get("username") or body.get("email")
+            except:
+                identifier = "unknown"
+
+    # Increment the counter
+    auth_requests_total.labels(
+        endpoint=path,
+        identifier=identifier or "unknown"
+    ).inc()
 
 router = APIRouter(
     tags=["Authentication"]
@@ -156,6 +188,9 @@ async def login(
             detail="Invalid login data. Please provide username and password in either form data or JSON format."
         )
 
+    # Track the auth request
+    track_auth_request(request, login_data.username)
+
     user = db.query(DBUser).filter(DBUser.email == login_data.username).first()
     if not user or not verify_password(login_data.password, user.hashed_password):
         raise HTTPException(
@@ -243,7 +278,11 @@ async def update_user_me(
     return current_user
 
 @router.post("/register", response_model=User)
-async def register(user: UserCreate, db: Session = Depends(get_db)):
+async def register(
+    request: Request,
+    user: UserCreate,
+    db: Session = Depends(get_db)
+):
     """
     Register a new user account.
 
@@ -252,6 +291,9 @@ async def register(user: UserCreate, db: Session = Depends(get_db)):
 
     After registration, you'll need to login to get an access token.
     """
+    # Track the auth request
+    track_auth_request(request, user.email)
+
     # Check if user with this email exists
     db_user = db.query(DBUser).filter(DBUser.email == user.email).first()
     if db_user:
@@ -308,6 +350,9 @@ async def validate_email(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email is required"
         )
+
+    # Track the auth request
+    track_auth_request(request, email)
 
     try:
         email_validator.validate_email(email, check_deliverability=False)
@@ -441,6 +486,9 @@ async def sign_in(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid sign in data. Please provide username and verification code in either form data or JSON format."
         )
+
+    # Track the auth request
+    track_auth_request(request, sign_in_data.username)
 
     # Verify the code using DynamoDB first
     dynamodb_service = DynamoDBService()

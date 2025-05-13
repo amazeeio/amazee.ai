@@ -621,8 +621,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(auth_attempts_total[5m])",
-          "legendFormat": "{{action}} - {{endpoint}} ({{status}})",
+          "expr": "rate(auth_requests_total[5m])",
+          "legendFormat": "{{endpoint}} - {{identifier}} ({{status_code}})",
           "refId": "A"
         }
       ],
@@ -643,8 +643,8 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "FastAPI Dashboard",
-  "uid": "fastapi",
+  "title": "amazee.ai Backend",
+  "uid": "amazeeai-backend",
   "version": 1,
   "weekStart": ""
 }

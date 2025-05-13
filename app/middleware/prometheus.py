@@ -1,7 +1,7 @@
 from prometheus_client import Counter, Histogram, Gauge
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
 from prometheus_fastapi_instrumentator.metrics import Info
-from fastapi import Request
+from fastapi import Request, HTTPException, status
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.security import get_current_user_from_auth
 from app.db.database import get_db
@@ -45,6 +45,13 @@ requests_per_user = Counter(
     ["user_id", "method", "endpoint"]
 )
 
+# Auth Metrics
+auth_requests_total = Counter(
+    "auth_requests_total",
+    "Total number of authentication requests",
+    ["endpoint", "identifier"]
+)
+
 class PrometheusMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # Skip metrics for certain paths
@@ -52,18 +59,33 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         start_time = time.time()
+        response = None
+        duration = 0
+        is_error = False
 
-        # Process the request
-        response = await call_next(request)
-
-        # Calculate duration
-        duration = time.time() - start_time
+        try:
+            # Process the request
+            response = await call_next(request)
+            duration = time.time() - start_time
+        except Exception as e:
+            logger.warning(f"Request failed: {e}")
+            # Record the actual duration of the failed request
+            duration = time.time() - start_time
+            # Capture the error response to be raised later
+            is_error = True
+            if not isinstance(e, HTTPException):
+                error_response = HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=str(e)
+                )
+            else:
+                error_response = e
 
         # Record RED metrics
         http_requests_total.labels(
             method=request.method,
             endpoint=request.url.path,
-            status_code=response.status_code
+            status_code=response.status_code if response else 500
         ).inc()
 
         http_request_duration_seconds.labels(
@@ -86,14 +108,19 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
                     access_token = parts[1]
 
             if access_token:
-                db = next(get_db())
-                user = await get_current_user_from_auth(
-                    access_token=access_token if access_token else None,
-                    authorization=auth_header if auth_header else None,
-                    db=db
-                )
-                user_id = str(user.id) if user else "anonymous"
-                db.close()
+                try:
+                    db = next(get_db())
+                    user = await get_current_user_from_auth(
+                        access_token=access_token if access_token else None,
+                        authorization=auth_header if auth_header else None,
+                        db=db
+                    )
+                    user_id = str(user.id) if user else "anonymous"
+                except Exception as e:
+                    logger.debug(f"Could not get user for metrics: {str(e)}")
+                    user_id = "anonymous"
+                finally:
+                    db.close()
         except Exception as e:
             logger.debug(f"Could not get user for metrics: {str(e)}")
             user_id = "anonymous"
@@ -105,4 +132,7 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
             endpoint=request.url.path
         ).inc()
 
-        return response
+        if is_error:
+            raise error_response
+        else:
+            return response
