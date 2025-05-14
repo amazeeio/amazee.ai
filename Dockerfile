@@ -14,7 +14,9 @@ COPY scripts scripts/
 COPY .lagoon.env .
 
 # Script to initialize the database and start the server
-RUN mkdir -p /app/logs && chmod 666 /app/logs
+RUN mkdir -p /app/logs && \
+    chown -R 1000:1000 /app/logs && \
+    chmod -R 664 /app/logs
 COPY backend-start.sh .
 RUN chmod +x /app/backend-start.sh
 
