@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, UTC
 from typing import Optional, Literal, Dict
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi import Depends, HTTPException, status, Cookie, Header
+from fastapi import Depends, HTTPException, status, Cookie, Header, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import logging
 from app.core.config import settings
@@ -83,9 +83,20 @@ async def get_current_user(
 async def get_current_user_from_auth(
     access_token: Optional[str] = Cookie(None, alias="access_token"),
     authorization: Optional[str] = Header(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    request: Request = None
 ) -> DBUser:
     """Get current user from either JWT token (in cookie or Authorization header) or API token."""
+    # First check if user is already in request state (set by AuthMiddleware)
+    if request and hasattr(request.state, 'user') and request.state.user is not None:
+        # If we have a dict from middleware, load the full user object
+        if isinstance(request.state.user, dict):
+            user = db.query(DBUser).filter(DBUser.id == request.state.user["id"]).first()
+            if user:
+                return user
+        else:
+            return request.state.user
+
     if not access_token and not authorization:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

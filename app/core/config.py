@@ -19,6 +19,7 @@ class Settings(BaseSettings):
         "http://localhost:8800"
     ]
     ALLOWED_HOSTS: list[str] = ["*"]  # In production, restrict this
+    PUBLIC_PATHS: list[str] = ["/health", "/docs", "/openapi.json", "/metrics"]
 
     model_config = ConfigDict(env_file=".env")
 
