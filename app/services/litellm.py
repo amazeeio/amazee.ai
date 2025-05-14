@@ -20,7 +20,7 @@ class LiteLLMService:
         try:
             logger.info(f"Creating new LiteLLM API key for email: {email}, name: {name}, user_id: {user_id}, team_id: {team_id}")
             request_data = {
-                "duration": "8760h",  # Set token duration to 1 year (365 days * 24 hours)
+                "duration": "14d" if os.getenv("EXPIRE_KEYS", "").lower() == "true" else "365d",  # 14 days if EXPIRE_KEYS is true, otherwise 1 year
                 "models": ["all-team-models"],   # Allow access to all models
                 "aliases": {},
                 "config": {},
@@ -140,4 +140,31 @@ class LiteLLMService:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to update LiteLLM budget: {error_msg}"
+            )
+
+    async def update_key_duration(self, litellm_token: str, duration: str):
+        """Update the duration for a LiteLLM API key"""
+        try:
+            response = requests.post(
+                f"{self.api_url}/key/update",
+                headers={
+                    "Authorization": f"Bearer {self.master_key}"
+                },
+                json={
+                    "key": litellm_token,
+                    "duration": duration
+                }
+            )
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            error_msg = str(e)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update LiteLLM key duration: {error_msg}"
             )

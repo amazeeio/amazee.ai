@@ -5,6 +5,7 @@ from app.db.models import DBPrivateAIKey, DBTeam, DBUser
 import logging
 from datetime import datetime, UTC
 from app.core.security import get_password_hash
+import os
 
 @pytest.fixture
 def mock_litellm_response():
@@ -980,7 +981,6 @@ def test_update_budget_period_as_key_creator(mock_post, client, team_key_creator
     db.commit()
 
 @patch("app.services.litellm.requests.post")
-@patch("app.services.litellm.requests.get")
 def test_update_budget_duration_as_team_admin(mock_get, mock_post, client, team_admin_token, test_region, mock_litellm_response, db, test_team):
     """Test that a team admin can update the budget duration for a team-owned key"""
     # Mock the LiteLLM API responses
@@ -1095,6 +1095,38 @@ def test_create_llm_token_as_system_admin(mock_post, client, admin_token, test_r
         key["name"] == "Test LLM Token"
         for key in list_data
     )
+
+@patch("app.services.litellm.requests.post")
+@patch.dict(os.environ, {"EXPIRE_KEYS": "true"})
+def test_create_llm_token_with_expiration(mock_post, client, admin_token, test_region, mock_litellm_response):
+    """Test that when EXPIRE_KEYS is true, new LiteLLM tokens are created with a 14-day expiration duration"""
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Create LLM token
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Test LLM Token with Expiration"
+        }
+    )
+
+    # Verify the create response
+    assert response.status_code == 200
+    data = response.json()
+    assert data["litellm_token"] == "test-private-key-123"
+    assert data["litellm_api_url"] == test_region.litellm_api_url
+    assert data["region"] == test_region.name
+    assert data["name"] == "Test LLM Token with Expiration"
+
+    # Verify that the LiteLLM API was called with the correct duration
+    mock_post.assert_called_once()
+    call_args = mock_post.call_args[1]
+    assert call_args["json"]["duration"] == "14d"  # Verify 14-day duration format
 
 def test_create_vector_db_as_system_admin(client, admin_token, test_region):
     """Test that a system admin can create a vector database for themselves"""

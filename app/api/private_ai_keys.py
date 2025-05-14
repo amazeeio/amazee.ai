@@ -7,7 +7,8 @@ import logging
 from app.db.database import get_db
 from app.schemas.models import (
     PrivateAIKey, PrivateAIKeyCreate, PrivateAIKeySpend,
-    BudgetPeriodUpdate, LiteLLMToken, VectorDBCreate, VectorDB
+    BudgetPeriodUpdate, LiteLLMToken, VectorDBCreate, VectorDB,
+    TokenDurationUpdate
 )
 from app.db.postgres import PostgresManager
 from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
@@ -570,4 +571,57 @@ async def update_budget_period(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update budget period: {str(e)}"
+        )
+
+@router.put("/{key_id}/extend-token-life")
+async def extend_token_life(
+    key_id: int,
+    duration_update: TokenDurationUpdate,
+    current_user = Depends(get_current_user_from_auth),
+    user_role: UserRole = Depends(get_role_min_team_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Extend the life of a private AI key.
+
+    This endpoint will:
+    1. Verify the user has access to the key
+    2. Update the key's duration in LiteLLM
+    3. Return the updated key information
+
+    Required parameters:
+    - **duration**: The amount of time to add to the key's life (e.g. "30d" for 30 days, "1y" for 1 year)
+
+    Note: You must be authenticated to use this endpoint.
+    Only the owner of the key or an admin can update it.
+    """
+    private_ai_key = _get_key_if_allowed(key_id, current_user, user_role, db)
+
+    # Get the region
+    region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
+    if not region:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Region not found"
+        )
+
+    litellm_service = LiteLLMService(
+        api_url=region.litellm_api_url,
+        api_key=region.litellm_api_key
+    )
+
+    try:
+        # Update key duration in LiteLLM
+        await litellm_service.update_key_duration(
+            litellm_token=private_ai_key.litellm_token,
+            duration=duration_update.duration
+        )
+
+        # Get updated key information
+        key_data = await litellm_service.get_key_info(private_ai_key.litellm_token)
+        return key_data
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to extend token life: {str(e)}"
         )

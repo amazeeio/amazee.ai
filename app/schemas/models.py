@@ -150,6 +150,10 @@ class PrivateAIKey(PrivateAIKeyBase):
 class BudgetPeriodUpdate(BaseModel):
     budget_duration: str
 
+class TokenDurationUpdate(BaseModel):
+    """Schema for updating a token's duration"""
+    duration: str  # e.g. "30d" for 30 days, "1y" for 1 year
+
 class PrivateAIKeySpend(BaseModel):
     spend: float
     expires: datetime
