@@ -4,11 +4,38 @@ from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from email_validator import validate_email, EmailNotValidError
 from sqlalchemy.orm import Session
 import logging
+from logging.handlers import TimedRotatingFileHandler
 import secrets
 import os
 from urllib.parse import urlparse
+from pathlib import Path
 
-logger = logging.getLogger(__name__)
+# Configure auth logger
+auth_logger = logging.getLogger("auth")
+auth_logger.setLevel(logging.INFO)
+
+# Create logs directory if it doesn't exist
+log_dir = Path("logs")
+log_dir.mkdir(exist_ok=True)
+
+# Configure file handler with daily rotation
+file_handler = TimedRotatingFileHandler(
+    filename=log_dir / "auth.log",
+    when="midnight",
+    interval=1,
+    backupCount=30,  # Keep logs for 30 days
+    encoding="utf-8"
+)
+
+# Configure formatter
+formatter = logging.Formatter(
+    "%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+file_handler.setFormatter(formatter)
+
+# Add handler to logger
+auth_logger.addHandler(file_handler)
 
 from app.db.database import get_db
 from app.schemas.models import (
@@ -156,13 +183,16 @@ async def login(
             detail="Invalid login data. Please provide username and password in either form data or JSON format."
         )
 
+    auth_logger.info(f"Login attempt for user: {login_data.username}")
     user = db.query(DBUser).filter(DBUser.email == login_data.username).first()
     if not user or not verify_password(login_data.password, user.hashed_password):
+        auth_logger.warning(f"Failed login attempt for user: {login_data.username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password"
         )
 
+    auth_logger.info(f"Successful login for user: {login_data.username}")
     return create_and_set_access_token(response, user.email)
 
 @router.post("/logout")
@@ -243,7 +273,11 @@ async def update_user_me(
     return current_user
 
 @router.post("/register", response_model=User)
-async def register(user: UserCreate, db: Session = Depends(get_db)):
+async def register(
+    request: Request,
+    user: UserCreate,
+    db: Session = Depends(get_db)
+):
     """
     Register a new user account.
 
@@ -252,9 +286,11 @@ async def register(user: UserCreate, db: Session = Depends(get_db)):
 
     After registration, you'll need to login to get an access token.
     """
+    auth_logger.info(f"Registration attempt for user: {user.email}")
     # Check if user with this email exists
     db_user = db.query(DBUser).filter(DBUser.email == user.email).first()
     if db_user:
+        auth_logger.warning(f"Registration failed - email already exists: {user.email}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
@@ -270,6 +306,7 @@ async def register(user: UserCreate, db: Session = Depends(get_db)):
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+    auth_logger.info(f"Successfully registered new user: {user.email}")
     return db_user
 
 @router.post("/validate-email")
@@ -304,14 +341,17 @@ async def validate_email(
                 pass
 
     if not email:
+        auth_logger.warning("Email validation attempt with no email provided")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email is required"
         )
 
+    auth_logger.info(f"Email validation attempt for: {email}")
     try:
         email_validator.validate_email(email, check_deliverability=False)
     except EmailNotValidError as e:
+        auth_logger.warning(f"Invalid email format for {email}: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid email format: {e}"
@@ -322,8 +362,10 @@ async def validate_email(
     user = db.query(DBUser).filter(DBUser.email == email).first()
     if user:
         email_template = 'returning-user-code'
+        auth_logger.info(f"Sending validation code to existing user: {email}")
     else:
         email_template = 'new-user-code'
+        auth_logger.info(f"Sending validation code to new user: {email}")
 
     # Send the validation code via email
     ses_service = SESService()
@@ -336,12 +378,13 @@ async def validate_email(
     )
 
     if not email_sent:
-        logger.error(f"Failed to send validation code email to {email}")
+        auth_logger.error(f"Failed to send validation code email to {email}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to send validation code email"
         )
 
+    auth_logger.info(f"Successfully sent validation code to: {email}")
     return {
         "message": "Validation code has been generated and sent"
     }
@@ -437,16 +480,19 @@ async def sign_in(
     with them as the admin.
     """
     if not sign_in_data:
+        auth_logger.warning("Sign-in attempt with invalid data format")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid sign in data. Please provide username and verification code in either form data or JSON format."
         )
 
+    auth_logger.info(f"Sign-in attempt for user: {sign_in_data.username}")
     # Verify the code using DynamoDB first
     dynamodb_service = DynamoDBService()
     stored_code = dynamodb_service.read_validation_code(sign_in_data.username)
 
     if not stored_code or stored_code.get('code').upper() != sign_in_data.verification_code.upper():
+        auth_logger.warning(f"Invalid verification code for user: {sign_in_data.username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or verification code"
@@ -457,6 +503,7 @@ async def sign_in(
 
     # If user doesn't exist, create a new user and team
     if not user:
+        auth_logger.info(f"Creating new user and team for: {sign_in_data.username}")
         # First create the team
         team_data = TeamCreate(
             name=f"Team {sign_in_data.username}",
@@ -476,5 +523,7 @@ async def sign_in(
         db.add(user)
         db.commit()
         db.refresh(user)
+        auth_logger.info(f"Successfully created new user and team for: {sign_in_data.username}")
 
+    auth_logger.info(f"Successful sign-in for user: {sign_in_data.username}")
     return create_and_set_access_token(response, user.email)

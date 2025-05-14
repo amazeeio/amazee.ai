@@ -980,6 +980,79 @@ def test_update_budget_period_as_key_creator(mock_post, client, team_key_creator
     db.commit()
 
 @patch("app.services.litellm.requests.post")
+@patch("app.services.litellm.requests.get")
+def test_update_budget_duration_as_team_admin(mock_get, mock_post, client, team_admin_token, test_region, mock_litellm_response, db, test_team):
+    """Test that a team admin can update the budget duration for a team-owned key"""
+    # Mock the LiteLLM API responses
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Mock the key info response
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = {
+        "info": {
+            "spend": 0.0,
+            "expires": "2024-12-31T23:59:59Z",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-02T00:00:00Z",
+            "max_budget": 100.0,
+            "budget_duration": "monthly",
+            "budget_reset_at": "2024-02-01T00:00:00Z"
+        }
+    }
+    mock_get.return_value.raise_for_status.return_value = None
+
+    # Create a test key owned by the team
+    test_key = DBPrivateAIKey(
+        database_name="test-db-team",
+        name="Test Team Key",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="test-token-team",
+        litellm_api_url="https://test-litellm.com",
+        team_id=test_team.id,
+        region_id=test_region.id
+    )
+    db.add(test_key)
+    db.commit()
+    db.refresh(test_key)
+
+    # Update the budget duration as team admin
+    response = client.put(
+        f"/private-ai-keys/{test_key.id}/budget-period",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"budget_duration": "monthly"}
+    )
+
+    # Verify the response
+    assert response.status_code == 200
+    data = response.json()
+    assert data["budget_duration"] == "monthly"
+
+    # Verify that the LiteLLM API was called with the correct parameters
+    mock_post.assert_called_with(
+        f"{test_region.litellm_api_url}/key/update",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={
+            "key": test_key.litellm_token,
+            "budget_duration": "monthly"
+        }
+    )
+
+    # Verify that the key info was checked
+    mock_get.assert_called_with(
+        f"{test_region.litellm_api_url}/key/info",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        params={"key": test_key.litellm_token}
+    )
+
+    # Clean up the test key
+    db.delete(test_key)
+    db.commit()
+
+@patch("app.services.litellm.requests.post")
 def test_create_llm_token_as_system_admin(mock_post, client, admin_token, test_region, mock_litellm_response):
     """Test that a system admin can create an LLM token for themselves"""
     # Mock the LiteLLM API response
