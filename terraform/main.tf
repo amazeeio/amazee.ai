@@ -157,3 +157,75 @@ resource "aws_dynamodb_table" "verification_codes" {
 
   tags = var.tags
 }
+
+resource "aws_dynamodb_table" "lite_llm_usage" {
+  name                        = "amazeeai-litellm-usage-${var.environment_suffix}"
+  billing_mode                = "PAY_PER_REQUEST"
+  deletion_protection_enabled = local.is_production_environment
+
+  hash_key  = "id"
+  range_key = "startTime"
+
+  attribute {
+    name = "id"
+    type = "S"
+  }
+
+  attribute {
+    name = "startTime"
+    type = "S"
+  }
+
+  attribute {
+    name = "model"
+    type = "S"
+  }
+
+  global_secondary_index {
+    name            = "ModelIndex"
+    hash_key        = "model"
+    range_key       = "startTime"
+    projection_type = "ALL"
+  }
+
+  tags = var.tags
+}
+
+resource "aws_iam_user" "litellm" {
+  name = "amazeeai-litellm-${var.environment_suffix}"
+  tags = var.tags
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_iam_access_key" "litellm" {
+  user = aws_iam_user.litellm.name
+}
+
+resource "aws_iam_user_policy" "litellm" {
+  name = "amazeeai-litellm-ddb-${var.environment_suffix}"
+  user = aws_iam_user.litellm.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "DynamoDBPutItemOnly"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem"
+        ]
+        Resource = [
+          aws_dynamodb_table.lite_llm_usage.arn
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_user_policy_attachment" "litellm_bedrock" {
+  user       = aws_iam_user.litellm.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonBedrockFullAccess"
+}
