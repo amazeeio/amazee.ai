@@ -61,37 +61,11 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
                 status="success"
             ).inc()
 
-        # Get user type from request if available
+        # Get user type from request state (set by AuthMiddleware)
         user_type = "anonymous"
-        try:
-            # Get access token from cookie or authorization header
-            cookies = request.cookies
-            headers = request.headers
-            access_token = cookies.get("access_token")
-            auth_header = headers.get("authorization")
-
-            if auth_header:
-                parts = auth_header.split()
-                if len(parts) == 2 and parts[0].lower() == "bearer":
-                    access_token = parts[1]
-
-            if access_token:
-                try:
-                    db = next(get_db())
-                    user = await get_current_user_from_auth(
-                        access_token=access_token if access_token else None,
-                        authorization=auth_header if auth_header else None,
-                        db=db
-                    )
-                    if user:
-                        # Group users by their role or type
-                        user_type = user.role if hasattr(user, 'role') else "authenticated"
-                except Exception as e:
-                    logger.debug(f"Could not get user for metrics: {str(e)}")
-                finally:
-                    db.close()
-        except Exception as e:
-            logger.debug(f"Could not get user for metrics: {str(e)}")
+        if hasattr(request.state, 'user') and request.state.user:
+            # Group users by their role or type
+            user_type = request.state.user.role if hasattr(request.state.user, 'role') else "authenticated"
 
         # Record requests by user type with normalized path
         normalized_path = normalize_path(request.url.path)

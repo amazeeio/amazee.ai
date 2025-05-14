@@ -27,6 +27,7 @@ from app.core.config import settings
 from app.db.database import get_db
 from app.middleware.audit import AuditLogMiddleware
 from app.middleware.prometheus import PrometheusMiddleware
+from app.middleware.auth import AuthMiddleware
 
 app = FastAPI(
     title="Private AI Keys as a Service",
@@ -78,6 +79,9 @@ allowed_origins = default_origins + [route.strip() for route in lagoon_routes if
 
 # Add HTTPS redirect middleware first
 app.add_middleware(HTTPSRedirectMiddleware)
+
+# Add Auth middleware (must be before Prometheus and Audit middleware)
+app.add_middleware(AuthMiddleware)
 
 # Add Prometheus middleware
 app.add_middleware(PrometheusMiddleware)

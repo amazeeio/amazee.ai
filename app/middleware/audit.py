@@ -32,30 +32,8 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
             # Get a fresh database session for each request
             db = next(get_db())
 
-            # Try to get the current user from cookies or authorization header
-            user_id = None
-            try:
-                # Get access token from cookie or authorization header
-                cookies = request.cookies
-                headers = request.headers
-                access_token = cookies.get("access_token")
-                auth_header = headers.get("authorization")
-
-                if auth_header:
-                    parts = auth_header.split()
-                    if len(parts) == 2 and parts[0].lower() == "bearer":
-                        access_token = parts[1]
-
-                if access_token:
-                    user = await get_current_user_from_auth(
-                        access_token=access_token if access_token else None,
-                        authorization=auth_header if auth_header else None,
-                        db=db
-                    )
-                    user_id = user.id if user else None
-            except Exception as e:
-                logger.debug(f"Could not get user for audit log: {str(e)}")
-                user_id = None
+            # Get user_id from request state (set by AuthMiddleware)
+            user_id = request.state.user.id if hasattr(request.state, 'user') and request.state.user else None
 
             # Extract path parameters
             path_params = request.path_params
@@ -71,7 +49,7 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                 request_source = "frontend"
             else:
                 # If no origin/referer and has auth header, likely direct API call
-                request_source = "api" if auth_header else None
+                request_source = "api" if request.headers.get("authorization") else None
 
             # Get resource type from path
             resource_type = request.url.path.split("/")[1]  # First path segment
