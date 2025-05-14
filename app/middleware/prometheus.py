@@ -1,28 +1,15 @@
-from prometheus_client import Counter, Histogram, Gauge
-from prometheus_fastapi_instrumentator import Instrumentator, metrics
-from prometheus_fastapi_instrumentator.metrics import Info
-from fastapi import Request, HTTPException, status
+from prometheus_client import Counter, Histogram
+from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.security import get_current_user_from_auth
 from app.db.database import get_db
-import time
 import logging
 
 logger = logging.getLogger(__name__)
 
-# RED Metrics
-http_requests_total = Counter(
-    "http_requests_total",
-    "Total number of HTTP requests",
-    ["method", "endpoint", "status_code"]
-)
-
-http_request_duration_seconds = Histogram(
-    "http_request_duration_seconds",
-    "HTTP request duration in seconds",
-    ["method", "endpoint"],
-    buckets=(0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, float("inf"))
-)
+def normalize_path(path: str) -> str:
+    """Replace numeric segments in path with {id}."""
+    return '/'.join('{id}' if segment.isdigit() else segment for segment in path.split('/'))
 
 # Audit Metrics
 audit_events_total = Counter(
@@ -38,18 +25,18 @@ audit_event_duration_seconds = Histogram(
     buckets=(0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, float("inf"))
 )
 
-# User Metrics
-requests_per_user = Counter(
-    "requests_per_user",
-    "Number of requests per user",
-    ["user_id", "method", "endpoint"]
+# User Metrics - grouped by user type and endpoint
+requests_by_user_type = Counter(
+    "requests_by_user_type",
+    "Number of requests grouped by user type",
+    ["user_type", "endpoint", "method"]
 )
 
-# Auth Metrics
+# Auth Metrics - simplified to track success/failure
 auth_requests_total = Counter(
     "auth_requests_total",
     "Total number of authentication requests",
-    ["endpoint", "identifier"]
+    ["endpoint", "status"]  # status will be "success" or "failure"
 )
 
 class PrometheusMiddleware(BaseHTTPMiddleware):
@@ -58,43 +45,24 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
         if request.url.path in ["/metrics", "/health", "/docs", "/openapi.json"]:
             return await call_next(request)
 
-        start_time = time.time()
-        response = None
-        duration = 0
-        is_error = False
+        # Track auth requests for specific endpoints
+        is_auth_endpoint = request.url.path in [
+            "/auth/login",
+            "/auth/register",
+            "/auth/validate-email",
+            "/auth/sign-in"
+        ]
 
-        try:
-            # Process the request
-            response = await call_next(request)
-            duration = time.time() - start_time
-        except Exception as e:
-            logger.warning(f"Request failed: {e}")
-            # Record the actual duration of the failed request
-            duration = time.time() - start_time
-            # Capture the error response to be raised later
-            is_error = True
-            if not isinstance(e, HTTPException):
-                error_response = HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=str(e)
-                )
-            else:
-                error_response = e
+        response = await call_next(request)
 
-        # Record RED metrics
-        http_requests_total.labels(
-            method=request.method,
-            endpoint=request.url.path,
-            status_code=response.status_code if response else 500
-        ).inc()
+        if is_auth_endpoint:
+            auth_requests_total.labels(
+                endpoint=request.url.path,
+                status="success"
+            ).inc()
 
-        http_request_duration_seconds.labels(
-            method=request.method,
-            endpoint=request.url.path
-        ).observe(duration)
-
-        # Get user ID from request if available
-        user_id = None
+        # Get user type from request if available
+        user_type = "anonymous"
         try:
             # Get access token from cookie or authorization header
             cookies = request.cookies
@@ -115,24 +83,22 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
                         authorization=auth_header if auth_header else None,
                         db=db
                     )
-                    user_id = str(user.id) if user else "anonymous"
+                    if user:
+                        # Group users by their role or type
+                        user_type = user.role if hasattr(user, 'role') else "authenticated"
                 except Exception as e:
                     logger.debug(f"Could not get user for metrics: {str(e)}")
-                    user_id = "anonymous"
                 finally:
                     db.close()
         except Exception as e:
             logger.debug(f"Could not get user for metrics: {str(e)}")
-            user_id = "anonymous"
 
-        # Record requests per user
-        requests_per_user.labels(
-            user_id=user_id,
-            method=request.method,
-            endpoint=request.url.path
+        # Record requests by user type with normalized path
+        normalized_path = normalize_path(request.url.path)
+        requests_by_user_type.labels(
+            user_type=user_type,
+            endpoint=normalized_path,
+            method=request.method
         ).inc()
 
-        if is_error:
-            raise error_response
-        else:
-            return response
+        return response
