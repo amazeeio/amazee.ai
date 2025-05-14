@@ -2,14 +2,11 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy.orm import Session
 from app.db.models import DBAuditLog
-from app.api.auth import get_current_user_from_auth
 from app.db.database import get_db
 from app.middleware.prometheus import audit_events_total, audit_event_duration_seconds
-import json
 import logging
 import time
-from fastapi import Cookie, Header
-from typing import Optional
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +17,7 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         # Skip audit logging for certain paths
-        if request.url.path in ["/health", "/docs", "/openapi.json", "/audit/logs", "/auth/me", "/metrics"]:
+        if request.url.path in {*settings.PUBLIC_PATHS, "/audit/logs", "/auth/me"}:
             return await call_next(request)
 
         start_time = time.time()

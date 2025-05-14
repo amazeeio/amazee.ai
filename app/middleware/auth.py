@@ -3,14 +3,14 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.security import get_current_user_from_auth
 from app.db.database import get_db
 import logging
-from typing import Optional, Dict, Any
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # Skip auth for certain paths
-        if request.url.path in ["/health", "/docs", "/openapi.json", "/metrics"]:
+        if request.url.path in settings.PUBLIC_PATHS:
             return await call_next(request)
 
         # Initialize user as None

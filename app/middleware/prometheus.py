@@ -1,9 +1,8 @@
 from prometheus_client import Counter, Histogram
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
-from app.core.security import get_current_user_from_auth
-from app.db.database import get_db
 import logging
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +41,7 @@ auth_requests_total = Counter(
 class PrometheusMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # Skip metrics for certain paths
-        if request.url.path in ["/metrics", "/health", "/docs", "/openapi.json"]:
+        if request.url.path in settings.PUBLIC_PATHS:
             return await call_next(request)
 
         # Track auth requests for specific endpoints
