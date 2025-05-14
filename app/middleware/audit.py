@@ -33,7 +33,12 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
             db = next(get_db())
 
             # Get user_id from request state (set by AuthMiddleware)
-            user_id = request.state.user.id if hasattr(request.state, 'user') and request.state.user else None
+            user_id = None
+            if hasattr(request.state, 'user') and request.state.user:
+                if isinstance(request.state.user, dict):
+                    user_id = request.state.user.get('id')
+                else:
+                    user_id = request.state.user.id
 
             # Extract path parameters
             path_params = request.path_params

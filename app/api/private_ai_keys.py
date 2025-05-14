@@ -556,14 +556,17 @@ async def update_budget_period(
 
         # Get updated spend information
         spend_data = await litellm_service.get_key_info(private_ai_key.litellm_token)
+        info = spend_data.get("info", {})
+
         # Only set default for spend field
         spend_info = {
-            "spend": spend_data.get("spend", 0.0),
-            **spend_data
+            "spend": info.get("spend", 0.0),
+            **info
         }
 
         return PrivateAIKeySpend.model_validate(spend_info)
     except Exception as e:
+        logger.error(f"Failed to update budget period: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update budget period: {str(e)}"
