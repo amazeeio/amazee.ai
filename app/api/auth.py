@@ -10,33 +10,6 @@ import os
 from urllib.parse import urlparse
 from pathlib import Path
 
-# Configure auth logger
-auth_logger = logging.getLogger("auth")
-auth_logger.setLevel(logging.INFO)
-
-# Create logs directory if it doesn't exist
-log_dir = Path("logs")
-log_dir.mkdir(exist_ok=True)
-
-# Configure file handler with daily rotation
-file_handler = TimedRotatingFileHandler(
-    filename=log_dir / "auth.log",
-    when="midnight",
-    interval=1,
-    backupCount=30,  # Keep logs for 30 days
-    encoding="utf-8"
-)
-
-# Configure formatter
-formatter = logging.Formatter(
-    "%(asctime)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
-file_handler.setFormatter(formatter)
-
-# Add handler to logger
-auth_logger.addHandler(file_handler)
-
 from app.db.database import get_db
 from app.schemas.models import (
     Token,
@@ -63,6 +36,35 @@ from app.core.security import (
 from app.services.dynamodb import DynamoDBService
 from app.services.ses import SESService
 from app.api.teams import register_team
+
+# # Configure auth logger - disabled until we make it work in lagoon
+# auth_logger = logging.getLogger("auth")
+# auth_logger.setLevel(logging.INFO)
+#
+# # Create logs directory if it doesn't exist
+# log_dir = Path("logs")
+# log_dir.mkdir(exist_ok=True)
+#
+# # Configure file handler with daily rotation
+# file_handler = TimedRotatingFileHandler(
+#     filename=log_dir / "auth.log",
+#     when="midnight",
+#     interval=1,
+#     backupCount=30,  # Keep logs for 30 days
+#     encoding="utf-8"
+# )
+#
+# # Configure formatter
+# formatter = logging.Formatter(
+#     "%(asctime)s - %(levelname)s - %(message)s",
+#     datefmt="%Y-%m-%d %H:%M:%S"
+# )
+# file_handler.setFormatter(formatter)
+#
+# # Add handler to logger
+# auth_logger.addHandler(file_handler)
+
+auth_logger = logging.getLogger(__name__)
 
 router = APIRouter(
     tags=["Authentication"]
