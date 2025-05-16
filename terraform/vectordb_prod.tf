@@ -1,5 +1,4 @@
-
-module "vectordb_main_eu_central_1" {
+module "vectordb_prod_eu_central_1" {
   source = "./modules/vectordb_region"
   count  = terraform.workspace == "prod" ? 1 : 0
 
@@ -23,7 +22,7 @@ module "vectordb_main_eu_central_1" {
 }
 
 
-module "vectordb_main_eu_central_2" {
+module "vectordb_prod_eu_central_2" {
   source = "./modules/vectordb_region"
   count  = terraform.workspace == "prod" ? 1 : 0
 
@@ -46,7 +45,7 @@ module "vectordb_main_eu_central_2" {
   tags      = var.tags
 }
 
-module "vectordb_main_us_east_1" {
+module "vectordb_prod_us_east_1" {
   source = "./modules/vectordb_region"
   count  = terraform.workspace == "prod" ? 1 : 0
 
@@ -69,7 +68,7 @@ module "vectordb_main_us_east_1" {
   tags      = var.tags
 }
 
-module "vectordb_main_eu_west_2" {
+module "vectordb_prod_eu_west_2" {
   source = "./modules/vectordb_region"
   count  = terraform.workspace == "prod" ? 1 : 0
 
@@ -93,7 +92,7 @@ module "vectordb_main_eu_west_2" {
 }
 
 
-module "vectordb_main_ap_southeast_2" {
+module "vectordb_prod_ap_southeast_2" {
   source = "./modules/vectordb_region"
   count  = terraform.workspace == "prod" ? 1 : 0
 
