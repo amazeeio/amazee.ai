@@ -8,12 +8,12 @@ from app.db.database import get_db
 from app.schemas.models import (
     PrivateAIKey, PrivateAIKeyCreate, PrivateAIKeySpend,
     BudgetPeriodUpdate, LiteLLMToken, VectorDBCreate, VectorDB,
-    TokenDurationUpdate
+    TokenDurationUpdate, PrivateAIKeyDetail
 )
 from app.db.postgres import PostgresManager
 from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
 from app.services.litellm import LiteLLMService
-from app.core.security import get_current_user_from_auth, get_role_min_key_creator, get_role_min_team_admin, UserRole
+from app.core.security import get_current_user_from_auth, get_role_min_key_creator, get_role_min_team_admin, UserRole, check_system_admin
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -390,6 +390,83 @@ async def list_private_ai_keys(
 
     private_ai_keys = query.all()
     return [key.to_dict() for key in private_ai_keys]
+
+@router.get("/{key_id}", response_model=PrivateAIKeyDetail, dependencies=[Depends(check_system_admin)])
+async def get_private_ai_key(
+    key_id: int,
+    current_user = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db)
+):
+    """
+    Get details of a specific private AI key.
+
+    This endpoint will:
+    1. Verify the user has access to the key
+    2. Return the full details of the key including LiteLLM-specific data
+
+    Required parameters:
+    - **key_id**: The ID of the private AI key to retrieve
+
+    The response will include:
+    - Database connection details (host, database name, username, password)
+    - LiteLLM API token for authentication
+    - LiteLLM API URL for making requests
+    - Owner and team information
+    - Region information
+    - LiteLLM-specific data (spend, duration, budget, etc.)
+
+    Note: You must be authenticated to use this endpoint.
+    Only system administrators can access this endpoint.
+    """
+    private_ai_key = _get_key_if_allowed(key_id, current_user, "system_admin", db)
+
+    # Get the region
+    region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
+    if not region:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Region not found"
+        )
+
+    # Create LiteLLM service instance
+    litellm_service = LiteLLMService(
+        api_url=region.litellm_api_url,
+        api_key=region.litellm_api_key
+    )
+
+    try:
+        # Get LiteLLM key info
+        litellm_data = await litellm_service.get_key_info(private_ai_key.litellm_token)
+        info = litellm_data.get("info", {})
+        logger.info(f"LiteLLM key info: {info}")
+
+        # Combine database key info with LiteLLM info
+        key_data = private_ai_key.to_dict()
+        key_data.update({
+            "spend": info.get("spend", 0.0),
+            "key_name": info.get("key_name"),
+            "key_alias": info.get("key_alias"),
+            "soft_budget_cooldown": info.get("soft_budget_cooldown"),
+            "models": info.get("models"),
+            "max_parallel_requests": info.get("max_parallel_requests"),
+            "tpm_limit": info.get("tpm_limit"),
+            "rpm_limit": info.get("rpm_limit"),
+            "max_budget": info.get("max_budget"),
+            "budget_duration": info.get("budget_duration"),
+            "budget_reset_at": info.get("budget_reset_at"),
+            "expires_at": info.get("expires"),
+            "created_at": info.get("created_at"),
+            "updated_at": info.get("updated_at"),
+            "metadata": info.get("metadata")
+        })
+
+        return PrivateAIKeyDetail.model_validate(key_data)
+    except Exception as e:
+        logger.error(f"Failed to get Private AI Key details: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get Private AI Key details: {str(e)}"
+        )
 
 def _get_key_if_allowed(key_id: int, current_user: DBUser, user_role: UserRole, db: Session) -> DBPrivateAIKey:
     # First try to find the key

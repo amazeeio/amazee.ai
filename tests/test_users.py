@@ -319,6 +319,35 @@ def test_create_user_with_invalid_role_by_team_admin(client, team_admin_token, t
     assert response.status_code == 400
     assert "Invalid role" in response.json()["detail"]
 
+def test_make_non_team_user_admin(client, admin_token, test_user, db):
+    """
+    Test that a system admin can make a non-team user an admin.
+
+    GIVEN: The authenticated user is a system admin
+    WHEN: They try to make a non-team user an admin
+    THEN: A 200 success is returned and the user is updated
+    """
+    # Ensure test_user is not an admin and not in a team
+    test_user = db.merge(test_user)
+    test_user.is_admin = False
+    test_user.team_id = None
+    db.commit()
+    db.refresh(test_user)
+
+    # Update the user to make them an admin
+    response = client.put(
+        f"/users/{test_user.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "email": test_user.email,
+            "is_admin": True,
+            "is_active": True
+        }
+    )
+    assert response.status_code == 200
+    user_data = response.json()
+    assert user_data["is_admin"] is True
+
 def test_make_team_member_admin_by_team_admin(client, team_admin_token, admin_token):
     """
     Test that a team admin cannot make a user an admin.

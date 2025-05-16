@@ -147,6 +147,24 @@ class PrivateAIKey(PrivateAIKeyBase):
     team_id: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
 
+class PrivateAIKeyDetail(PrivateAIKey):
+    spend: Optional[float] = None
+    key_name: Optional[str] = None
+    key_alias: Optional[str] = None
+    soft_budget_cooldown: Optional[bool] = None
+    models: Optional[List[str]] = None
+    max_parallel_requests: Optional[int] = None
+    tpm_limit: Optional[int] = None
+    rpm_limit: Optional[int] = None
+    max_budget: Optional[float] = None
+    budget_duration: Optional[str] = None
+    budget_reset_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    metadata: Optional[dict] = None
+    model_config = ConfigDict(from_attributes=True)
+
 class BudgetPeriodUpdate(BaseModel):
     budget_duration: str
 

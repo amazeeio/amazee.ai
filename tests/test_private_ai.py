@@ -980,8 +980,9 @@ def test_update_budget_period_as_key_creator(mock_post, client, team_key_creator
     db.delete(test_key)
     db.commit()
 
+@patch("app.services.litellm.requests.get")
 @patch("app.services.litellm.requests.post")
-def test_update_budget_duration_as_team_admin(mock_get, mock_post, client, team_admin_token, test_region, mock_litellm_response, db, test_team):
+def test_update_budget_duration_as_team_admin(mock_post, mock_get, client, team_admin_token, test_region, mock_litellm_response, db, test_team):
     """Test that a team admin can update the budget duration for a team-owned key"""
     # Mock the LiteLLM API responses
     mock_post.return_value.status_code = 200
@@ -1356,3 +1357,122 @@ def test_list_private_ai_keys_as_non_team_user(mock_post, client, admin_token, t
     assert data[0]["name"] == "user-owned-key"
     assert data[0]["owner_id"] == test_user.id
     assert data[0].get("team_id") is None
+
+@patch("app.services.litellm.requests.get")
+def test_get_private_ai_key_success(mock_get, client, admin_token, test_region, db, test_team):
+    """Test successfully retrieving a private AI key"""
+    region_id = test_region.id
+    region_name = test_region.name
+    # Create a test key owned by the team
+    test_key = DBPrivateAIKey(
+        database_name="test-db-get",
+        name="Test Key for Get",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="test-token-get",
+        litellm_api_url="https://test-litellm.com",
+        team_id=test_team.id,
+        region_id=region_id
+    )
+    db.add(test_key)
+    db.commit()
+    db.refresh(test_key)
+
+    # Mock the LiteLLM API response for key info
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = {
+        "info": {
+            "key_name": "Test Key for Get",
+            "key_alias": "test-key-alias",
+            "spend": 0.0,
+            "expires": "2024-12-31T23:59:59Z",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-02T00:00:00Z",
+            "max_budget": 100.0,
+            "budget_duration": "monthly",
+            "budget_reset_at": "2024-02-01T00:00:00Z",
+            "metadata": {
+                "team_id": str(test_team.id),
+                "region_id": str(test_region.id)
+            }
+        }
+    }
+    mock_get.return_value.raise_for_status.return_value = None
+
+    # Get the key as admin
+    response = client.get(
+        f"/private-ai-keys/{test_key.id}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    # Verify the response
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == test_key.id
+    assert data["name"] == "Test Key for Get"
+    assert data["database_name"] == "test-db-get"
+    assert data["database_host"] == "test-host"
+    assert data["database_username"] == "test-user"
+    assert data["database_password"] == "test-pass"
+    assert data["litellm_token"] == "test-token-get"
+    assert data["litellm_api_url"] == "https://test-litellm.com"
+    assert data["team_id"] == test_team.id
+    assert data["region"] == region_name
+
+    # Verify the LiteLLM API was called correctly
+    mock_get.assert_called_with(
+        f"{test_region.litellm_api_url}/key/info",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        params={"key": test_key.litellm_token}
+    )
+
+    # Clean up
+    db.delete(test_key)
+    db.commit()
+
+@patch("app.services.litellm.requests.get")
+def test_get_private_ai_key_not_found(mock_get, client, admin_token):
+    """Test getting a non-existent private AI key"""
+    # Try to get a non-existent key
+    response = client.get(
+        "/private-ai-keys/99999",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    # Verify the response
+    assert response.status_code == 404
+    assert "Private AI Key not found" in response.json()["detail"]
+
+@patch("app.services.litellm.requests.get")
+def test_get_private_ai_key_unauthorized(mock_get, client, test_token, test_region, db, test_team):
+    """Test getting a private AI key without proper authorization"""
+    # Create a test key owned by the team
+    test_key = DBPrivateAIKey(
+        database_name="test-db-unauthorized",
+        name="Test Key for Unauthorized",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="test-token-unauthorized",
+        litellm_api_url="https://test-litellm.com",
+        team_id=test_team.id,
+        region_id=test_region.id
+    )
+    db.add(test_key)
+    db.commit()
+    db.refresh(test_key)
+
+    # Try to get the key as a regular user
+    response = client.get(
+        f"/private-ai-keys/{test_key.id}",
+        headers={"Authorization": f"Bearer {test_token}"}
+    )
+
+    # Verify the response
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
+
+    # Clean up
+    db.delete(test_key)
+    db.commit()
