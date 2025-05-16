@@ -7,9 +7,36 @@ terraform {
   }
 }
 
+# Default provider configuration region used resources not specific to a region
 provider "aws" {
-  region = var.aws_region
+  region = var.aws_innodb_region
 }
+
+provider "aws" {
+  alias  = "eu_central_2"
+  region = "eu-central-2"
+}
+
+provider "aws" {
+  alias  = "eu_central_1"
+  region = "eu-central-1"
+}
+
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+}
+
+provider "aws" {
+  alias  = "eu_west_2"
+  region = "eu-west-2"
+}
+
+provider "aws" {
+  alias  = "ap_southeast_2"
+  region = "ap-southeast-2"
+}
+
 
 locals {
   trust_policy = jsonencode({
