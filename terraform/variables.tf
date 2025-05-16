@@ -8,7 +8,7 @@ variable "aws_account_id" {
   }
 }
 
-variable "aws_region" {
+variable "aws_innodb_region" {
   description = "The AWS region to deploy resources"
   type        = string
   default     = "eu-central-2"
