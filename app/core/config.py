@@ -21,6 +21,15 @@ class Settings(BaseSettings):
     ALLOWED_HOSTS: list[str] = ["*"]  # In production, restrict this
     PUBLIC_PATHS: list[str] = ["/health", "/docs", "/openapi.json", "/metrics"]
 
+    AWS_ACCESS_KEY_ID: str = "AKIATEST"
+    AWS_SECRET_ACCESS_KEY: str = "sk-string"
+    SES_SENDER_EMAIL: str = "info@example.com"
+    PASSWORDLESS_SIGN_IN: str = "true"
+    ENV_SUFFIX: str = "local"
+    DYNAMODB_REGION: str = "eu-west-1"
+    SES_REGION: str = "eu-west-1"
+    EXPIRE_KEYS: str = "true"
+
     model_config = ConfigDict(env_file=".env")
 
     def model_post_init(self, values):

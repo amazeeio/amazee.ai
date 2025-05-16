@@ -269,3 +269,6 @@ class UserRoleUpdate(BaseModel):
 class SignInData(BaseModel):
     username: EmailStr
     verification_code: str
+
+class CheckoutSessionCreate(BaseModel):
+    price_lookup_token: str

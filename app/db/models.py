@@ -119,3 +119,13 @@ class DBAuditLog(Base):
     request_source = Column(String, nullable=True)  # Values: 'frontend', 'api', or None
 
     user = relationship("DBUser", back_populates="audit_logs")
+
+class DBSystemSecret(Base):
+    __tablename__ = "system_secrets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String, unique=True, index=True, nullable=False)
+    value = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())

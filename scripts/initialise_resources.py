@@ -15,6 +15,7 @@ from app.db.database import engine
 from app.db.models import Base, DBUser
 from app.core.security import get_password_hash
 from app.services.ses import SESService
+from app.services.stripe import setup_stripe_webhook
 import glob
 
 def init_database():
@@ -74,8 +75,21 @@ def init_database():
     except Exception as e:
         print(f"Error creating admin user: {str(e)}")
         db.rollback()
-    finally:
-        db.close()
+
+    # Only set up Stripe webhook in specific environments
+    env_suffix = os.getenv("ENV_SUFFIX", "").lower()
+    if env_suffix in ["dev", "main", "prod"]:
+        try:
+            # Set up Stripe webhook
+            print("Setting up Stripe webhook...")
+            setup_stripe_webhook(db)
+            print("Stripe webhook set up successfully")
+        except Exception as e:
+            print(f"Warning: Failed to set up Stripe webhook: {str(e)}")
+    else:
+        print(f"Skipping Stripe webhook setup for environment: {env_suffix}")
+
+    db.close()
 
 def init_ses_templates():
     if os.getenv("PASSWORDLESS_SIGN_IN", "").lower() == "true":
