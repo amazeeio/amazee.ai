@@ -62,6 +62,7 @@ class DBTeam(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    stripe_customer_id = Column(String, nullable=True, unique=True, index=True)
 
     users = relationship("DBUser", back_populates="team")
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="team")
@@ -127,5 +128,15 @@ class DBSystemSecret(Base):
     key = Column(String, unique=True, index=True, nullable=False)
     value = Column(String, nullable=False)
     description = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+class DBProduct(Base):
+    __tablename__ = "products"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    stripe_lookup_key = Column(String, unique=True, index=True, nullable=False)
+    active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

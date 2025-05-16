@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     DYNAMODB_REGION: str = "eu-west-1"
     SES_REGION: str = "eu-west-1"
     EXPIRE_KEYS: str = "true"
+    STRIPE_KEY: str = "sk_test_string"
 
     model_config = ConfigDict(env_file=".env")
 

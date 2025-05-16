@@ -272,3 +272,22 @@ class SignInData(BaseModel):
 
 class CheckoutSessionCreate(BaseModel):
     price_lookup_token: str
+
+class ProductBase(BaseModel):
+    name: str
+    stripe_lookup_key: str
+    active: bool = True
+
+class ProductCreate(ProductBase):
+    pass
+
+class ProductUpdate(BaseModel):
+    name: Optional[str] = None
+    stripe_lookup_key: Optional[str] = None
+    active: Optional[bool] = None
+
+class Product(ProductBase):
+    id: int
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)

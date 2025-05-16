@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Union
 import stripe
 import os
 import logging
@@ -222,4 +222,49 @@ async def setup_stripe_webhook(db: Session) -> None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error setting up Stripe webhook"
+        )
+
+async def create_stripe_customer(
+    team: DBTeam,
+    db: Session
+) -> str:
+    """
+    Create a Stripe customer for a team and save the customer ID.
+
+    Args:
+        team: The team to create a Stripe customer for
+        db: Database session
+
+    Returns:
+        str: The Stripe customer ID
+
+    Raises:
+        HTTPException: If error creating customer
+    """
+    try:
+        # Check if team already has a Stripe customer
+        if team.stripe_customer_id:
+            return team.stripe_customer_id
+
+        # Create Stripe customer
+        customer = stripe.Customer.create(
+            email=team.admin_email,
+            name=team.name,
+            metadata={
+                "team_id": team.id,
+                "team_name": team.name
+            }
+        )
+
+        # Save customer ID to team
+        team.stripe_customer_id = customer.id
+        db.commit()
+
+        return customer.id
+
+    except Exception as e:
+        stripe_logger.error(f"Error creating Stripe customer: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error creating Stripe customer"
         )
