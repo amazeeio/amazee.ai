@@ -15,6 +15,10 @@ from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
 from app.services.litellm import LiteLLMService
 from app.core.security import get_current_user_from_auth, get_role_min_key_creator, get_role_min_team_admin, UserRole, check_system_admin
 
+router = APIRouter(
+    tags=["private-ai-keys"]
+)
+
 # Set up logging
 logger = logging.getLogger(__name__)
 
@@ -57,10 +61,6 @@ def _validate_permissions_and_get_ownership_info(
         )
 
     return owner_id, team_id
-
-router = APIRouter(
-    tags=["Private AI Keys"]
-)
 
 @router.post("/vector-db", response_model=VectorDB)
 async def create_vector_db(

@@ -8,7 +8,9 @@ from app.db.models import DBUser, DBTeam
 from app.core.security import get_password_hash, check_system_admin, get_current_user_from_auth, UserRole, get_role_min_team_admin
 from datetime import datetime, UTC
 
-router = APIRouter()
+router = APIRouter(
+    tags=["users"]
+)
 
 @router.get("/search", response_model=List[User], dependencies=[Depends(check_system_admin)])
 async def search_users(
