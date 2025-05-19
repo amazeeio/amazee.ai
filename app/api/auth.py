@@ -71,7 +71,13 @@ router = APIRouter(
 )
 
 def get_cookie_domain():
-    """Extract domain from LAGOON_ROUTES for cookie settings."""
+    """Extract domain from COOKIE_DOMAIN or LAGOON_ROUTES for cookie settings."""
+    # First check for explicit cookie domain setting
+    cookie_domain = os.getenv("COOKIE_DOMAIN")
+    if cookie_domain:
+        return cookie_domain
+
+    # Fall back to extracting from LAGOON_ROUTES
     lagoon_routes = os.getenv("LAGOON_ROUTES")
     if not lagoon_routes:
         return None
