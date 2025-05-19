@@ -68,13 +68,32 @@ export function PasswordlessLoginForm({ onSwitchToPassword }: PasswordlessLoginF
 
   // Handler for code input change
   const handleCodeChange = (index: number, value: string) => {
-    if (!/^[a-zA-Z0-9]?$/.test(value)) return; // Only allow single alphanumeric char
-    const newChars = [...codeChars];
-    newChars[index] = value;
-    setCodeChars(newChars);
-    if (value && index < 7) {
-      inputRefs.current[index + 1]?.focus();
+    if (value.length > 1) {
+      // Handle pasting of full code
+      const chars = value.slice(0, 8).split('').map(char => {
+        return /[a-zA-Z0-9]/.test(char) ? char : '';
+      });
+      setCodeChars(chars.concat(Array(8 - chars.length).fill('')));
+      // Focus the last filled input or the next empty one
+      const lastIndex = Math.min(chars.length, 7);
+      inputRefs.current[lastIndex]?.focus();
+    } else {
+      // Handle single character input
+      if (!/^[a-zA-Z0-9]?$/.test(value)) return;
+      const newChars = [...codeChars];
+      newChars[index] = value;
+      setCodeChars(newChars);
+      if (value && index < 7) {
+        inputRefs.current[index + 1]?.focus();
+      }
     }
+  };
+
+  // Handler for paste event
+  const handlePaste = (e: React.ClipboardEvent) => {
+    e.preventDefault();
+    const pastedData = e.clipboardData.getData('text');
+    handleCodeChange(0, pastedData);
   };
 
   // Handler for backspace
@@ -219,6 +238,7 @@ export function PasswordlessLoginForm({ onSwitchToPassword }: PasswordlessLoginF
                   value={char}
                   onChange={e => handleCodeChange(idx, e.target.value)}
                   onKeyDown={e => handleCodeKeyDown(idx, e)}
+                  onPaste={idx === 0 ? handlePaste : undefined}
                   ref={el => { inputRefs.current[idx] = el; }}
                   style={{ width: '2.5rem', textAlign: 'center', fontSize: '1.5rem' }}
                   autoComplete="off"
