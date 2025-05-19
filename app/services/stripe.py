@@ -71,45 +71,23 @@ async def create_checkout_session(
             detail="Error creating checkout session"
         )
 
-async def handle_stripe_event(
-    payload: bytes,
-    sig_header: str,
-    webhook_secret: str,
-    db: Session
-) -> None:
+def get_stripe_event( payload: bytes, signature: str, webhook_secret: str) -> stripe.Event:
     """
     Handle Stripe webhook events.
 
     Args:
         payload: The raw request body
-        sig_header: The Stripe signature header
+        signature: The Stripe signature header
         webhook_secret: The webhook signing secret
-        db: Database session
+
+    Returns:
+        stripe.Event: The Stripe event
     """
     try:
         event = stripe.Webhook.construct_event(
-            payload, sig_header, webhook_secret
+            payload, signature, webhook_secret
         )
-
-        # Handle the event
-        if event.type == "checkout.session.completed":
-            session = event.data.object
-            # Handle successful checkout
-            # Update team's subscription status in database
-            team = db.query(DBTeam).filter(DBTeam.id == session.metadata.get("team_id")).first()
-            if team:
-                team.is_subscribed = True
-                team.stripe_customer_id = session.customer
-                db.commit()
-
-        elif event.type == "customer.subscription.deleted":
-            subscription = event.data.object
-            # Handle subscription cancellation
-            # Update team's subscription status in database
-            team = db.query(DBTeam).filter(DBTeam.stripe_customer_id == subscription.customer).first()
-            if team:
-                team.is_subscribed = False
-                db.commit()
+        return event
 
     except ValueError as e:
         raise HTTPException(
@@ -163,17 +141,18 @@ async def create_portal_session(
             detail="Error creating portal session"
         )
 
-async def setup_stripe_webhook(db: Session) -> None:
+async def setup_stripe_webhook(webhook_key: str, db: Session) -> None:
     """
     Set up the Stripe webhook endpoint if it doesn't exist and store its signing secret.
 
     Args:
+        webhook_key: The key to store the webhook secret under
         db: Database session
     """
     try:
         # Check if we already have a webhook secret stored
         existing_secret = db.query(DBSystemSecret).filter(
-            DBSystemSecret.key == "stripe_webhook_secret"
+            DBSystemSecret.key == webhook_key
         ).first()
 
         if existing_secret:

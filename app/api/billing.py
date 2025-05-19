@@ -1,9 +1,10 @@
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response, BackgroundTasks
 from sqlalchemy.orm import Session
 import logging
 import os
 from pydantic import BaseModel
+import threading
 
 from app.db.database import get_db
 from app.core.security import get_current_user_from_auth, check_specific_team_admin
@@ -11,12 +12,13 @@ from app.db.models import DBUser, DBTeam, DBSystemSecret
 from app.schemas.models import CheckoutSessionCreate
 from app.services.stripe import (
     create_checkout_session,
-    handle_stripe_event,
+    get_stripe_event,
     create_portal_session
 )
 
 # Configure logger
 logger = logging.getLogger(__name__)
+BILLING_WEBHOOK_KEY = "stripe_webhook_secret"
 
 router = APIRouter(
     tags=["billing"]
@@ -66,21 +68,50 @@ async def checkout(
             detail="Error creating checkout session"
         )
 
+async def handle_stripe_event_background(event, db: Session):
+    """
+    Background task to handle Stripe webhook events.
+    This runs in a separate thread to avoid blocking the webhook response.
+    """
+    try:
+        event_type = event.type
+
+        if event_type == "checkout.session.completed":
+            session = event.data.object
+            # Handle successful checkout
+            # Update team's subscription status in database
+            team = db.query(DBTeam).filter(DBTeam.id == session.metadata.get("team_id")).first()
+            if team:
+                team.stripe_customer_id = session.customer
+                db.commit()
+
+        elif event_type == "customer.subscription.deleted":
+            subscription = event.data.object
+            # Handle subscription cancellation
+            # Update team's subscription status in database
+            team = db.query(DBTeam).filter(DBTeam.stripe_customer_id == subscription.customer).first()
+            if team:
+                team.stripe_customer_id = None
+                db.commit()
+    except Exception as e:
+        logger.error(f"Error in background event handler: {str(e)}")
+
 @router.post("/events")
 async def handle_events(
     request: Request,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
     """
     Handle Stripe webhook events.
 
     This endpoint processes various Stripe events like subscription updates,
-    payment successes, and failures.
+    payment successes, and failures. Events are processed asynchronously in the background.
     """
     try:
         # Get the webhook secret from database
         webhook_secret = db.query(DBSystemSecret).filter(
-            DBSystemSecret.key == "stripe_webhook_secret"
+            DBSystemSecret.key == BILLING_WEBHOOK_KEY
         ).first()
 
         if not webhook_secret:
@@ -91,14 +122,16 @@ async def handle_events(
 
         # Get the raw request body
         payload = await request.body()
-        sig_header = request.headers.get("stripe-signature")
+        signature = request.headers.get("stripe-signature")
 
-        # Handle the event using the service
-        await handle_stripe_event(payload, sig_header, webhook_secret.value, db)
+        event = get_stripe_event(payload, signature, webhook_secret.value)
+
+        # Add the event handling to background tasks
+        background_tasks.add_task(handle_stripe_event_background, event, db)
 
         return Response(
             status_code=status.HTTP_200_OK,
-            content="Webhook processed successfully"
+            content="Webhook received and processing started"
         )
 
     except Exception as e:

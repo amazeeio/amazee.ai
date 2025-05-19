@@ -1,0 +1,22 @@
+actor #green:0.5 Lauren
+actor #blue Customer
+participant #green amazee.ai
+rparticipant #red Stripe
+
+Lauren -> Stripe: Create Products & Prices
+Lauren -> amazee.ai: createPricingOptions
+
+Customer -> amazee.ai: chooseProduct
+amazee.ai -> Stripe: createCustomer
+amazee.ai <-- Stripe: customerID
+amazee.ai -> Stripe: createCheckoutSession
+amazee.ai <-- Stripe: redirectURL
+Customer <-- amazee.ai: redirectURL
+Customer -> Stripe: makePayment
+Stripe -> amazee.ai: paymentSucceeded
+activate amazee.ai
+amazee.ai -> amazee.ai: extendKey
+amazee.ai -> amazee.ai: setPaymentDate
+deactivateafter amazee.ai
+Customer <-- amazee.ai: Success
+

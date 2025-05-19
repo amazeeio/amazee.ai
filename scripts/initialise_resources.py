@@ -16,6 +16,7 @@ from app.db.models import Base, DBUser
 from app.core.security import get_password_hash
 from app.services.ses import SESService
 from app.services.stripe import setup_stripe_webhook
+from app.api.billing import BILLING_WEBHOOK_KEY
 import glob
 
 def init_database():
@@ -81,11 +82,11 @@ def init_database():
     if env_suffix in ["dev", "main", "prod"]:
         try:
             # Set up Stripe webhook
-            print("Setting up Stripe webhook...")
-            setup_stripe_webhook(db)
-            print("Stripe webhook set up successfully")
+            print("Setting up Stripe Billing webhook...")
+            setup_stripe_webhook(BILLING_WEBHOOK_KEY, db)
+            print("Stripe Billing webhook set up successfully")
         except Exception as e:
-            print(f"Warning: Failed to set up Stripe webhook: {str(e)}")
+            print(f"Warning: Failed to set up Stripe Billing webhook: {str(e)}")
     else:
         print(f"Skipping Stripe webhook setup for environment: {env_suffix}")
 
