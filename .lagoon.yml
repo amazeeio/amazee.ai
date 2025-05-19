@@ -1,1 +1,17 @@
 docker-compose-yaml: docker-compose.yml
+
+environments:
+  prod:
+    routes:
+      - backend:
+        - api.amazee.ai:
+            tls-acme: true
+            insecure: Redirect
+            hstsEnabled: true
+
+      - frontend:
+        - dashboard.amazee.ai:
+            tls-acme: true
+            insecure: Redirect
+            hstsEnabled: true
+
