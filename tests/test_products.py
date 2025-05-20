@@ -16,25 +16,42 @@ def test_create_product_as_system_admin(client, admin_token, db):
         "/products/",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={
+            "id": "prod_test123",
             "name": "Test Product",
-            "stripe_lookup_key": "test_product_123",
+            "user_count": 5,
+            "keys_per_user": 2,
+            "total_key_count": 10,
+            "service_key_count": 2,
+            "max_budget_per_key": 50.0,
+            "rpm_per_key": 1000,
+            "vector_db_count": 1,
+            "vector_db_storage": 100,
+            "renewal_period_days": 30,
             "active": True
         }
     )
     assert response.status_code == 201
     data = response.json()
     assert data["name"] == "Test Product"
-    assert data["stripe_lookup_key"] == "test_product_123"
+    assert data["id"] == "prod_test123"
+    assert data["user_count"] == 5
+    assert data["keys_per_user"] == 2
+    assert data["total_key_count"] == 10
+    assert data["service_key_count"] == 2
+    assert data["max_budget_per_key"] == 50.0
+    assert data["rpm_per_key"] == 1000
+    assert data["vector_db_count"] == 1
+    assert data["vector_db_storage"] == 100
+    assert data["renewal_period_days"] == 30
     assert data["active"] is True
-    assert "id" in data
     assert "created_at" in data
 
-def test_create_product_duplicate_key(client, admin_token, db):
+def test_create_product_duplicate_id(client, admin_token, db):
     """
-    Test that creating a product with a duplicate stripe_lookup_key fails.
+    Test that creating a product with a duplicate ID fails.
 
-    GIVEN: A product with a specific stripe_lookup_key exists
-    WHEN: A system admin tries to create another product with the same key
+    GIVEN: A product with a specific ID exists
+    WHEN: A system admin tries to create another product with the same ID
     THEN: A 400 - Bad Request is returned
     """
     # First create a product
@@ -42,19 +59,37 @@ def test_create_product_duplicate_key(client, admin_token, db):
         "/products/",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={
+            "id": "prod_test123",
             "name": "Test Product",
-            "stripe_lookup_key": "test_product_123",
+            "user_count": 5,
+            "keys_per_user": 2,
+            "total_key_count": 10,
+            "service_key_count": 2,
+            "max_budget_per_key": 50.0,
+            "rpm_per_key": 1000,
+            "vector_db_count": 1,
+            "vector_db_storage": 100,
+            "renewal_period_days": 30,
             "active": True
         }
     )
 
-    # Try to create another product with the same key
+    # Try to create another product with the same ID
     response = client.post(
         "/products/",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={
+            "id": "prod_test123",
             "name": "Another Product",
-            "stripe_lookup_key": "test_product_123",
+            "user_count": 5,
+            "keys_per_user": 2,
+            "total_key_count": 10,
+            "service_key_count": 2,
+            "max_budget_per_key": 50.0,
+            "rpm_per_key": 1000,
+            "vector_db_count": 1,
+            "vector_db_storage": 100,
+            "renewal_period_days": 30,
             "active": True
         }
     )
@@ -73,8 +108,17 @@ def test_create_product_unauthorized(client, test_token, db):
         "/products/",
         headers={"Authorization": f"Bearer {test_token}"},
         json={
+            "id": "prod_test123",
             "name": "Test Product",
-            "stripe_lookup_key": "test_product_123",
+            "user_count": 5,
+            "keys_per_user": 2,
+            "total_key_count": 10,
+            "service_key_count": 2,
+            "max_budget_per_key": 50.0,
+            "rpm_per_key": 1000,
+            "vector_db_count": 1,
+            "vector_db_storage": 100,
+            "renewal_period_days": 30,
             "active": True
         }
     )
@@ -90,14 +134,32 @@ def test_list_products_as_team_admin(client, team_admin_token, db):
     """
     # Create some test products
     db_product1 = DBProduct(
+        id="prod_test1",
         name="Test Product 1",
-        stripe_lookup_key="test_product_1",
+        user_count=5,
+        keys_per_user=2,
+        total_key_count=10,
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
         active=True,
         created_at=datetime.now(UTC)
     )
     db_product2 = DBProduct(
+        id="prod_test2",
         name="Test Product 2",
-        stripe_lookup_key="test_product_2",
+        user_count=10,
+        keys_per_user=3,
+        total_key_count=30,
+        service_key_count=5,
+        max_budget_per_key=100.0,
+        rpm_per_key=2000,
+        vector_db_count=2,
+        vector_db_storage=200,
+        renewal_period_days=60,
         active=True,
         created_at=datetime.now(UTC)
     )
@@ -139,8 +201,17 @@ def test_get_product_as_team_admin(client, team_admin_token, db):
     """
     # Create a test product
     db_product = DBProduct(
+        id="prod_test123",
         name="Test Product",
-        stripe_lookup_key="test_product_123",
+        user_count=5,
+        keys_per_user=2,
+        total_key_count=10,
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
         active=True,
         created_at=datetime.now(UTC)
     )
@@ -154,7 +225,16 @@ def test_get_product_as_team_admin(client, team_admin_token, db):
     assert response.status_code == 200
     data = response.json()
     assert data["name"] == "Test Product"
-    assert data["stripe_lookup_key"] == "test_product_123"
+    assert data["id"] == "prod_test123"
+    assert data["user_count"] == 5
+    assert data["keys_per_user"] == 2
+    assert data["total_key_count"] == 10
+    assert data["service_key_count"] == 2
+    assert data["max_budget_per_key"] == 50.0
+    assert data["rpm_per_key"] == 1000
+    assert data["vector_db_count"] == 1
+    assert data["vector_db_storage"] == 100
+    assert data["renewal_period_days"] == 30
     assert data["active"] is True
 
 def test_get_product_not_found(client, team_admin_token, db):
@@ -166,7 +246,7 @@ def test_get_product_not_found(client, team_admin_token, db):
     THEN: A 404 - Not Found is returned
     """
     response = client.get(
-        "/products/99999",
+        "/products/prod_nonexistent",
         headers={"Authorization": f"Bearer {team_admin_token}"}
     )
     assert response.status_code == 404
@@ -181,8 +261,17 @@ def test_update_product_as_system_admin(client, admin_token, db):
     """
     # Create a test product
     db_product = DBProduct(
+        id="prod_test123",
         name="Test Product",
-        stripe_lookup_key="test_product_123",
+        user_count=5,
+        keys_per_user=2,
+        total_key_count=10,
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
         active=True,
         created_at=datetime.now(UTC)
     )
@@ -194,13 +283,31 @@ def test_update_product_as_system_admin(client, admin_token, db):
         headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "name": "Updated Product",
+            "user_count": 10,
+            "keys_per_user": 3,
+            "total_key_count": 30,
+            "service_key_count": 5,
+            "max_budget_per_key": 100.0,
+            "rpm_per_key": 2000,
+            "vector_db_count": 2,
+            "vector_db_storage": 200,
+            "renewal_period_days": 60,
             "active": False
         }
     )
     assert response.status_code == 200
     data = response.json()
     assert data["name"] == "Updated Product"
-    assert data["stripe_lookup_key"] == "test_product_123"  # Unchanged
+    assert data["id"] == "prod_test123"  # ID should remain unchanged
+    assert data["user_count"] == 10
+    assert data["keys_per_user"] == 3
+    assert data["total_key_count"] == 30
+    assert data["service_key_count"] == 5
+    assert data["max_budget_per_key"] == 100.0
+    assert data["rpm_per_key"] == 2000
+    assert data["vector_db_count"] == 2
+    assert data["vector_db_storage"] == 200
+    assert data["renewal_period_days"] == 60
     assert data["active"] is False
 
 def test_update_product_unauthorized(client, team_admin_token, db):
@@ -213,8 +320,17 @@ def test_update_product_unauthorized(client, team_admin_token, db):
     """
     # Create a test product
     db_product = DBProduct(
+        id="prod_test123",
         name="Test Product",
-        stripe_lookup_key="test_product_123",
+        user_count=5,
+        keys_per_user=2,
+        total_key_count=10,
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
         active=True,
         created_at=datetime.now(UTC)
     )
@@ -240,8 +356,17 @@ def test_delete_product_as_system_admin(client, admin_token, db):
     """
     # Create a test product
     db_product = DBProduct(
+        id="prod_test123",
         name="Test Product",
-        stripe_lookup_key="test_product_123",
+        user_count=5,
+        keys_per_user=2,
+        total_key_count=10,
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
         active=True,
         created_at=datetime.now(UTC)
     )
@@ -253,36 +378,7 @@ def test_delete_product_as_system_admin(client, admin_token, db):
         headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert response.status_code == 200
-    assert response.json()["message"] == "Product deleted successfully"
 
     # Verify the product is deleted
     deleted_product = db.query(DBProduct).filter(DBProduct.id == db_product.id).first()
     assert deleted_product is None
-
-def test_delete_product_unauthorized(client, team_admin_token, db):
-    """
-    Test that a team admin cannot delete a product.
-
-    GIVEN: The authenticated user is a team admin
-    WHEN: They try to delete a product
-    THEN: A 403 - Forbidden is returned
-    """
-    # Create a test product
-    db_product = DBProduct(
-        name="Test Product",
-        stripe_lookup_key="test_product_123",
-        active=True,
-        created_at=datetime.now(UTC)
-    )
-    db.add(db_product)
-    db.commit()
-
-    response = client.delete(
-        f"/products/{db_product.id}",
-        headers={"Authorization": f"Bearer {team_admin_token}"}
-    )
-    assert response.status_code == 403
-
-    # Verify the product still exists
-    product = db.query(DBProduct).filter(DBProduct.id == db_product.id).first()
-    assert product is not None

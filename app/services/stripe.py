@@ -5,11 +5,11 @@ import logging
 from urllib.parse import urljoin
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
-
+from stripe._list_object import ListObject
 from app.db.models import DBTeam, DBSystemSecret
 
 # Configure logger
-stripe_logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 # Initialize Stripe
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
@@ -65,7 +65,7 @@ async def create_checkout_session(
 
         return checkout_session.url
     except Exception as e:
-        stripe_logger.error(f"Error creating checkout session: {str(e)}")
+        logger.error(f"Error creating checkout session: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error creating checkout session"
@@ -84,6 +84,7 @@ def get_stripe_event( payload: bytes, signature: str, webhook_secret: str) -> st
         stripe.Event: The Stripe event
     """
     try:
+        logger.info(f"Trying to decode event")
         event = stripe.Webhook.construct_event(
             payload, signature, webhook_secret
         )
@@ -100,7 +101,7 @@ def get_stripe_event( payload: bytes, signature: str, webhook_secret: str) -> st
             detail="Invalid signature"
         )
     except Exception as e:
-        stripe_logger.error(f"Error handling Stripe event: {str(e)}")
+        logger.error(f"Error handling Stripe event: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error processing webhook"
@@ -135,13 +136,13 @@ async def create_portal_session(
 
         return portal_session.url
     except Exception as e:
-        stripe_logger.error(f"Error creating portal session: {str(e)}")
+        logger.error(f"Error creating portal session: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error creating portal session"
         )
 
-async def setup_stripe_webhook(webhook_key: str, db: Session) -> None:
+async def setup_stripe_webhook(webhook_key: str, webhook_route: str, db: Session) -> None:
     """
     Set up the Stripe webhook endpoint if it doesn't exist and store its signing secret.
 
@@ -160,7 +161,7 @@ async def setup_stripe_webhook(webhook_key: str, db: Session) -> None:
 
         # Get the base URL from environment
         base_url = os.getenv("BACKEND_URL", "http://localhost:8800")
-        webhook_url = urljoin(base_url, "/api/stripe/handle-event")
+        webhook_url = urljoin(base_url, webhook_route)
 
         # List existing webhook endpoints
         endpoints = stripe.WebhookEndpoint.list()
@@ -176,7 +177,7 @@ async def setup_stripe_webhook(webhook_key: str, db: Session) -> None:
             # For existing endpoints, we need to create a new one to get the secret
             # First delete the old endpoint
             stripe.WebhookEndpoint.delete(existing_endpoint.id)
-            stripe_logger.info(f"Deleted existing webhook endpoint: {existing_endpoint.id}")
+            logger.info(f"Deleted existing webhook endpoint: {existing_endpoint.id}")
 
         # Create new webhook endpoint
         endpoint = stripe.WebhookEndpoint.create(
@@ -197,10 +198,10 @@ async def setup_stripe_webhook(webhook_key: str, db: Session) -> None:
         db.commit()
 
     except Exception as e:
-        stripe_logger.error(f"Error setting up Stripe webhook: {str(e)}")
+        logger.error(f"Error setting up Stripe webhook: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error setting up Stripe webhook"
+            detail=f"Error setting up Stripe webhook, {str(e)}"
         )
 
 async def create_stripe_customer(
@@ -242,8 +243,42 @@ async def create_stripe_customer(
         return customer.id
 
     except Exception as e:
-        stripe_logger.error(f"Error creating Stripe customer: {str(e)}")
+        logger.error(f"Error creating Stripe customer: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error creating Stripe customer"
         )
+
+async def get_product_id_from_sub(subscription_id: str) -> str:
+    """
+    Get the Stripe product ID for the team's subscription.
+
+    Args:
+        subscription_id: The Stripe subscription ID
+
+    Returns:
+        str: The Stripe product ID
+    """
+    # Get the list of subscription items
+    subscription_items = stripe.SubscriptionItem.list(
+        subscription=subscription_id,
+        expand=['data.price.product']
+    )
+
+    if not subscription_items.data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No items found in subscription"
+        )
+
+    return subscription_items.data[0].price.product.id
+
+async def get_product_id_from_session(session_id: str) -> str:
+    """
+    Get the Stripe product ID for the team's subscription from a checkout session.
+
+    Args:
+        session_id: The Stripe checkout session ID
+    """
+    line_items = stripe.checkout.Session.list_line_items(session_id)
+    return line_items.data[0].price.product

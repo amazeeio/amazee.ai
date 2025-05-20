@@ -21,18 +21,27 @@ async def create_product(
     """
     Create a new product. Only accessible by system admin users.
     """
-    # Check if stripe_lookup_key already exists
-    existing_product = db.query(DBProduct).filter(DBProduct.stripe_lookup_key == product.stripe_lookup_key).first()
+    # Check if product ID already exists
+    existing_product = db.query(DBProduct).filter(DBProduct.id == product.id).first()
     if existing_product:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Product with this stripe_lookup_key already exists"
+            detail="Product with this ID already exists"
         )
 
-    # Create the product
+    # Create the product with all fields
     db_product = DBProduct(
+        id=product.id,
         name=product.name,
-        stripe_lookup_key=product.stripe_lookup_key,
+        user_count=product.user_count,
+        keys_per_user=product.keys_per_user,
+        total_key_count=product.total_key_count,
+        service_key_count=product.service_key_count,
+        max_budget_per_key=product.max_budget_per_key,
+        rpm_per_key=product.rpm_per_key,
+        vector_db_count=product.vector_db_count,
+        vector_db_storage=product.vector_db_storage,
+        renewal_period_days=product.renewal_period_days,
         active=product.active,
         created_at=datetime.now(UTC)
     )
@@ -54,7 +63,7 @@ async def list_products(
 
 @router.get("/{product_id}", response_model=Product, dependencies=[Depends(get_role_min_team_admin)])
 async def get_product(
-    product_id: int,
+    product_id: str,
     db: Session = Depends(get_db)
 ):
     """
@@ -70,7 +79,7 @@ async def get_product(
 
 @router.put("/{product_id}", response_model=Product, dependencies=[Depends(check_system_admin)])
 async def update_product(
-    product_id: int,
+    product_id: str,
     product_update: ProductUpdate,
     db: Session = Depends(get_db)
 ):
@@ -84,22 +93,12 @@ async def update_product(
             detail="Product not found"
         )
 
-    # If updating stripe_lookup_key, check if it already exists
-    if product_update.stripe_lookup_key and product_update.stripe_lookup_key != product.stripe_lookup_key:
-        existing_product = db.query(DBProduct).filter(
-            DBProduct.stripe_lookup_key == product_update.stripe_lookup_key,
-            DBProduct.id != product_id
-        ).first()
-        if existing_product:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Product with this stripe_lookup_key already exists"
-            )
-
-    # Update the product
-    for key, value in product_update.model_dump(exclude_unset=True).items():
+    # Update the product with all provided fields
+    update_data = product_update.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
         setattr(product, key, value)
 
+    product.updated_at = datetime.now(UTC)
     db.commit()
     db.refresh(product)
 
@@ -107,7 +106,7 @@ async def update_product(
 
 @router.delete("/{product_id}", dependencies=[Depends(check_system_admin)])
 async def delete_product(
-    product_id: int,
+    product_id: str,
     db: Session = Depends(get_db)
 ):
     """

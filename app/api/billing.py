@@ -1,11 +1,7 @@
-from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response, BackgroundTasks
 from sqlalchemy.orm import Session
 import logging
 import os
-from pydantic import BaseModel
-import threading
-
 from app.db.database import get_db
 from app.core.security import get_current_user_from_auth, check_specific_team_admin
 from app.db.models import DBUser, DBTeam, DBSystemSecret
@@ -13,12 +9,16 @@ from app.schemas.models import CheckoutSessionCreate
 from app.services.stripe import (
     create_checkout_session,
     get_stripe_event,
-    create_portal_session
+    create_portal_session,
+    get_product_id_from_sub,
+    get_product_id_from_session
 )
+from app.core.worker import apply_product_for_team
 
 # Configure logger
 logger = logging.getLogger(__name__)
 BILLING_WEBHOOK_KEY = "stripe_webhook_secret"
+BILLING_WEBHOOK_ROUTE = "/billing/events"
 
 router = APIRouter(
     tags=["billing"]
@@ -73,26 +73,29 @@ async def handle_stripe_event_background(event, db: Session):
     Background task to handle Stripe webhook events.
     This runs in a separate thread to avoid blocking the webhook response.
     """
+    checkout_session_success = ["checkout.session.async_payment_succeeded", "checkout.session.completed"]
+    invoice_success = ["invoice.payment_succeeded"]
+    failure_events = ["checkout.session.async_payment_failed", "checkout.session.expired", "subscription.payment_failed", "customer.subscription.deleted"]
     try:
         event_type = event.type
-
-        if event_type == "checkout.session.completed":
-            session = event.data.object
-            # Handle successful checkout
-            # Update team's subscription status in database
-            team = db.query(DBTeam).filter(DBTeam.id == session.metadata.get("team_id")).first()
-            if team:
-                team.stripe_customer_id = session.customer
-                db.commit()
-
-        elif event_type == "customer.subscription.deleted":
-            subscription = event.data.object
-            # Handle subscription cancellation
-            # Update team's subscription status in database
-            team = db.query(DBTeam).filter(DBTeam.stripe_customer_id == subscription.customer).first()
-            if team:
-                team.stripe_customer_id = None
-                db.commit()
+        if not event_type in checkout_session_success + invoice_success + failure_events:
+            logger.info(f"Unknown event type: {event_type}")
+            return
+        event_object = event.data.object
+        customer_id = event_object.customer
+        if event_type in invoice_success:
+            subscription = event_object.parent.subscription_details.subscription
+            product_id = await get_product_id_from_sub(subscription)
+            await apply_product_for_team(db, customer_id, product_id)
+        elif event_type in checkout_session_success:
+            product_id = await get_product_id_from_session(event_object.id)
+            await apply_product_for_team(db, customer_id, product_id)
+        elif event_type in failure_events:
+            logger.info(f"Checkout session failed")
+            event_object = event.data.object
+            logger.info(f"ID: {event_object.id}")
+            logger.info(f"Full object: {event_object}")
+            # Handle failed checkout
     except Exception as e:
         logger.error(f"Error in background event handler: {str(e)}")
 
@@ -110,9 +113,12 @@ async def handle_events(
     """
     try:
         # Get the webhook secret from database
-        webhook_secret = db.query(DBSystemSecret).filter(
-            DBSystemSecret.key == BILLING_WEBHOOK_KEY
-        ).first()
+        if os.getenv("WEBHOOK_SIG"):
+            webhook_secret = os.getenv("WEBHOOK_SIG")
+        else:
+            webhook_secret = db.query(DBSystemSecret).filter(
+                DBSystemSecret.key == BILLING_WEBHOOK_KEY
+            ).first().value
 
         if not webhook_secret:
             raise HTTPException(
@@ -124,7 +130,7 @@ async def handle_events(
         payload = await request.body()
         signature = request.headers.get("stripe-signature")
 
-        event = get_stripe_event(payload, signature, webhook_secret.value)
+        event = get_stripe_event(payload, signature, webhook_secret)
 
         # Add the event handling to background tasks
         background_tasks.add_task(handle_stripe_event_background, event, db)

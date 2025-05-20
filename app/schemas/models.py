@@ -275,7 +275,16 @@ class CheckoutSessionCreate(BaseModel):
 
 class ProductBase(BaseModel):
     name: str
-    stripe_lookup_key: str
+    id: str # This is the Stripe product ID, format should be prod_XXX
+    user_count: int = 1
+    keys_per_user: int = 1
+    total_key_count: int = 6
+    service_key_count: int = 5
+    max_budget_per_key: float = 20.0
+    rpm_per_key: int = 500
+    vector_db_count: int = 1
+    vector_db_storage: int = 50 # Not used yet, should be a number in GiB
+    renewal_period_days: int = 30
     active: bool = True
 
 class ProductCreate(ProductBase):
@@ -283,11 +292,19 @@ class ProductCreate(ProductBase):
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
-    stripe_lookup_key: Optional[str] = None
+    user_count: Optional[int] = None
+    keys_per_user: Optional[int] = None
+    total_key_count: Optional[int] = None
+    service_key_count: Optional[int] = None
+    max_budget_per_key: Optional[float] = None
+    rpm_per_key: Optional[int] = None
+    vector_db_count: Optional[int] = None
+    vector_db_storage: Optional[int] = None
+    renewal_period_days: Optional[int] = None
     active: Optional[bool] = None
+    model_config = ConfigDict(from_attributes=True)
 
 class Product(ProductBase):
-    id: int
     created_at: datetime
     updated_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)

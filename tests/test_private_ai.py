@@ -1127,7 +1127,10 @@ def test_create_llm_token_with_expiration(mock_post, client, admin_token, test_r
     # Verify that the LiteLLM API was called with the correct duration
     mock_post.assert_called_once()
     call_args = mock_post.call_args[1]
-    assert call_args["json"]["duration"] == "14d"  # Verify 14-day duration format
+    assert call_args["json"]["duration"] == "30d"  # Verify 1 month
+    assert call_args["json"]["budget_duration"] == "30d"  # Verify 1 month
+    assert call_args["json"]["max_budget"] == 20.0  # Verify 20.0
+    assert call_args["json"]["rpm_limit"] == 500  # Verify 500
 
 def test_create_vector_db_as_system_admin(client, admin_token, test_region):
     """Test that a system admin can create a vector database for themselves"""

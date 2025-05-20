@@ -20,7 +20,6 @@ class LiteLLMService:
         try:
             logger.info(f"Creating new LiteLLM API key for email: {email}, name: {name}, user_id: {user_id}, team_id: {team_id}")
             request_data = {
-                "duration": "14d" if os.getenv("EXPIRE_KEYS", "").lower() == "true" else "365d",  # 14 days if EXPIRE_KEYS is true, otherwise 1 year
                 "models": ["all-team-models"],   # Allow access to all models
                 "aliases": {},
                 "config": {},
@@ -39,6 +38,15 @@ class LiteLLMService:
             request_data["key_alias"] = key_alias
             request_data["metadata"] = metadata
             request_data["team_id"] = team_id
+
+            if os.getenv("EXPIRE_KEYS", "").lower() == "true":
+                request_data["duration"] = "30d"
+                request_data["budget_duration"] = "30d"
+                request_data["max_budget"] = 20.0
+                request_data["rpm_limit"] = 500
+            else:
+                request_data["duration"] = "365d"
+
             if user_id is not None:
                 request_data["user_id"] = str(user_id)
 
