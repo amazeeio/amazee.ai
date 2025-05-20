@@ -318,3 +318,62 @@ def test_create_user_with_invalid_role_by_team_admin(client, team_admin_token, t
     )
     assert response.status_code == 400
     assert "Invalid role" in response.json()["detail"]
+
+def test_make_team_member_admin_by_team_admin(client, team_admin_token, admin_token):
+    """
+    Test that a team admin cannot make a user an admin.
+
+    GIVEN: A user is created not in a team
+    WHEN: A team admin tries to make that user an admin
+    THEN: A 403 - Forbidden is returned
+    """
+    # First create a user not in any team
+    response = client.post(
+        "/users/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "email": "nonteamuser@example.com",
+            "password": "newpassword"
+        }
+    )
+    assert response.status_code == 201
+    user_data = response.json()
+    user_id = user_data["id"]
+
+    # Try to make the user an admin
+    response = client.put(
+        f"/users/{user_id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={
+            "is_admin": True
+        }
+    )
+    assert response.status_code == 404
+    assert "User not found" in response.json()["detail"]
+
+def test_user_privilege_escalation(client, team_admin_token):
+    """
+    Test that a team admin cannot make a user an admin.
+
+    GIVEN: A user is created not in a team
+    WHEN: A team admin tries to make that user an admin
+    THEN: A 403 - Forbidden is returned
+    """
+    user = client.post("/auth/register", json={
+        "email": "testuser@example.com",
+        "password": "testpassword"
+    })
+    assert user.status_code == 200
+    user_data = user.json()
+    user_id = user_data["id"]
+
+    # Make the user an admin
+    response = client.put(
+        f"/users/{user_id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={
+            "is_admin": True
+        }
+    )
+    assert response.status_code == 404
+    assert "User not found" in response.json()["detail"]
