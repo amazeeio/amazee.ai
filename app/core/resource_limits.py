@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from app.db.models import DBTeam, DBUser, DBProduct, DBPrivateAIKey
+from app.db.models import DBTeam, DBUser, DBPrivateAIKey
 from fastapi import HTTPException, status
 from typing import Optional
 
@@ -107,3 +107,43 @@ def check_key_limits(db: Session, team_id: int, owner_id: Optional[int] = None) 
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Team has reached the maximum service LLM token limit of {max_service_keys} tokens"
             )
+
+def check_vector_db_limits(db: Session, team_id: int) -> None:
+    """
+    Check if creating a new vector DB would exceed the team's vector DB limits.
+    Raises HTTPException if the limit would be exceeded.
+
+    Args:
+        db: Database session
+        team_id: ID of the team to check
+    """
+    # Get the team and its active products
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    # Find the maximum vector DB count across all active products
+    max_vector_db_count = max(
+        (product.vector_db_count for team_product in team.active_products
+         for product in [team_product.product] if product.vector_db_count),
+        default=1  # Default to 1 if no products have vector_db_count set
+    )
+
+    # Get all users in the team
+    team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
+    user_ids = [user.id for user in team_users]
+
+    # Get current vector DB count for the team (both team-owned and user-owned)
+    current_vector_db_count = db.query(DBPrivateAIKey).filter(
+        (
+            (DBPrivateAIKey.team_id == team_id) |  # Team-owned vector DBs
+            (DBPrivateAIKey.owner_id.in_(user_ids))  # User-owned vector DBs
+        ),
+        DBPrivateAIKey.database_name.isnot(None)  # Only count keys with database_name set
+    ).count()
+
+    if current_vector_db_count >= max_vector_db_count:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Team has reached the maximum vector DB limit of {max_vector_db_count} databases"
+        )

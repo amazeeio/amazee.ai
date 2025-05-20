@@ -1,8 +1,7 @@
-from datetime import datetime, timedelta, UTC
+from datetime import datetime, UTC
 from sqlalchemy.orm import Session
-from app.db.models import DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey, DBRegion, DBUser
+from app.db.models import DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey, DBUser
 from app.services.litellm import LiteLLMService
-from app.core.config import settings
 import logging
 from collections import defaultdict
 
