@@ -11,7 +11,8 @@ from app.services.stripe import (
     get_stripe_event,
     create_portal_session,
     get_product_id_from_sub,
-    get_product_id_from_session
+    get_product_id_from_session,
+    create_stripe_customer
 )
 from app.core.worker import apply_product_for_team
 
@@ -28,8 +29,6 @@ router = APIRouter(
 async def checkout(
     team_id: int,
     request_data: CheckoutSessionCreate,
-    request: Request,
-    current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
     """
@@ -42,15 +41,15 @@ async def checkout(
     Returns:
         redirect to the checkout session
     """
-    try:
-        # Get the team
-        team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
-        if not team:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Team not found"
-            )
+    # Get the team
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if not team:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Team not found"
+        )
 
+    try:
         # Get the frontend URL from environment
         frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
@@ -150,12 +149,11 @@ async def handle_events(
 @router.post("/teams/{team_id}/portal", dependencies=[Depends(check_specific_team_admin)])
 async def get_portal(
     team_id: int,
-    request: Request,
-    current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
     """
     Create a Stripe Customer Portal session for team subscription management and redirect to it.
+    If the team doesn't have a Stripe customer ID, one will be created first.
 
     Args:
         team_id: The ID of the team to create the portal session for
@@ -163,20 +161,25 @@ async def get_portal(
     Returns:
         Redirects to the Stripe Customer Portal URL
     """
+    # Get the team
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if not team:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Team not found"
+        )
+
     try:
-        # Get the team
-        team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
-        if not team:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Team not found"
-            )
+        # Create Stripe customer if one doesn't exist
+        if not team.stripe_customer_id:
+            team.stripe_customer_id = await create_stripe_customer(team, db)
 
         # Get the frontend URL from environment
         frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+        return_url = f"{frontend_url}/teams/{team.id}/dashboard"
 
         # Create portal session using the service
-        portal_url = await create_portal_session(team, frontend_url)
+        portal_url = await create_portal_session(team.stripe_customer_id, return_url)
 
         return Response(
             status_code=status.HTTP_303_SEE_OTHER,

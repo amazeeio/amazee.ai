@@ -108,30 +108,24 @@ def get_stripe_event( payload: bytes, signature: str, webhook_secret: str) -> st
         )
 
 async def create_portal_session(
-    team: DBTeam,
-    frontend_url: str
+    stripe_customer_id: str,
+    return_url: str
 ) -> str:
     """
     Create a Stripe Customer Portal session for team subscription management.
 
     Args:
-        team: The team to create the portal session for
+        stripe_customer_id: The Stripe customer ID to create the portal session for
         frontend_url: The frontend URL for return redirect
 
     Returns:
         str: The portal session URL
     """
     try:
-        if not team.stripe_customer_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Team has no active Stripe subscription"
-            )
-
         # Create the portal session
         portal_session = stripe.billing_portal.Session.create(
-            customer=team.stripe_customer_id,
-            return_url=f"{frontend_url}/teams/{team.id}/dashboard"
+            customer=stripe_customer_id,
+            return_url=return_url
         )
 
         return portal_session.url
