@@ -11,7 +11,7 @@ psycopg2-binary==2.9.9
 requests==2.32.2
 python-dotenv==1.0.1
 alembic==1.15.2
-boto3==1.35.1
+boto3==1.38.20
 markdown==3.5.2
 email-validator==2.1.2
 prometheus-client==0.19.0
