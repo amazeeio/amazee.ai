@@ -7,7 +7,7 @@ from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
-async def apply_product_for_team(db: Session, customer_id: str, product_id: str) -> bool:
+async def apply_product_for_team(db: Session, customer_id: str, product_id: str):
     """
     Apply a product to a team and update their last payment date.
     Also extends all team keys and sets their max budgets via LiteLLM service.
@@ -20,6 +20,7 @@ async def apply_product_for_team(db: Session, customer_id: str, product_id: str)
     Returns:
         bool: True if update was successful, False otherwise
     """
+    logger.info(f"Applying product {product_id} to team {customer_id}")
     try:
         # Find the team and product
         team = db.query(DBTeam).filter(DBTeam.stripe_customer_id == customer_id).first()
@@ -27,10 +28,10 @@ async def apply_product_for_team(db: Session, customer_id: str, product_id: str)
 
         if not team:
             logger.error(f"Team not found for customer ID: {customer_id}")
-            return False
+            return
         if not product:
             logger.error(f"Product not found for ID: {product_id}")
-            return False
+            return
 
         # Update the last payment date
         team.last_payment = datetime.now(UTC)
@@ -98,9 +99,40 @@ async def apply_product_for_team(db: Session, customer_id: str, product_id: str)
                     continue
 
         db.commit()
-        return True
 
     except Exception as e:
         db.rollback()
         logger.error(f"Error applying product to team: {str(e)}")
+        raise e
+
+async def remove_product_from_team(db: Session, customer_id: str, product_id: str):
+    logger.info(f"Removing product {product_id} from team {customer_id}")
+    try:
+        # Find the team and product
+        team = db.query(DBTeam).filter(DBTeam.stripe_customer_id == customer_id).first()
+        product = db.query(DBProduct).filter(DBProduct.id == product_id).first()
+
+        if not team:
+            logger.error(f"Team not found for customer ID: {customer_id}")
+            return
+        if not product:
+            logger.error(f"Product not found for ID: {product_id}")
+            return
+        # Check if the product is already active for the team
+        existing_association = db.query(DBTeamProduct).filter(
+            DBTeamProduct.team_id == team.id,
+            DBTeamProduct.product_id == product.id
+        ).first()
+        if not existing_association:
+            logger.error(f"Product {product_id} not found for team {customer_id}")
+            return
+        # Remove the product association
+        db.delete(existing_association)
+
+    # TODO: Send notification
+    # TODO: Expire keys if applicable
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error removing product from team: {str(e)}")
         raise e

@@ -71,9 +71,9 @@ async def create_checkout_session(
             detail="Error creating checkout session"
         )
 
-def get_stripe_event( payload: bytes, signature: str, webhook_secret: str) -> stripe.Event:
+def decode_stripe_event( payload: bytes, signature: str, webhook_secret: str) -> stripe.Event:
     """
-    Handle Stripe webhook events.
+    Decode Stripe webhook events.
 
     Args:
         payload: The raw request body
@@ -84,21 +84,22 @@ def get_stripe_event( payload: bytes, signature: str, webhook_secret: str) -> st
         stripe.Event: The Stripe event
     """
     try:
-        logger.info(f"Trying to decode event")
         event = stripe.Webhook.construct_event(
             payload, signature, webhook_secret
         )
+        logger.info(f"Decoded event of type: {event.type}")
         return event
 
+    # If the signature doesn't match, assume bad intent
+    except stripe.error.SignatureVerificationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Not found"
+        )
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid payload"
-        )
-    except stripe.error.SignatureVerificationError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid signature"
         )
     except Exception as e:
         logger.error(f"Error handling Stripe event: {str(e)}")
@@ -243,7 +244,7 @@ async def create_stripe_customer(
             detail="Error creating Stripe customer"
         )
 
-async def get_product_id_from_sub(subscription_id: str) -> str:
+async def get_product_id_from_subscription(subscription_id: str) -> str:
     """
     Get the Stripe product ID for the team's subscription.
 

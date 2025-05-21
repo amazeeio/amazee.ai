@@ -2,11 +2,16 @@ import pytest
 from unittest.mock import Mock, patch, AsyncMock
 from fastapi import HTTPException
 from app.api.billing import handle_stripe_event_background, get_portal
-from app.db.models import DBTeam
+from app.db.models import DBTeam, DBTeamProduct
 
 @pytest.mark.asyncio
-async def test_handle_checkout_session_completed(db, test_team):
+@patch('app.api.billing.get_product_id_from_session', new_callable=AsyncMock)
+async def test_handle_checkout_session_completed(mock_get_product, db, test_team, test_product):
     # Arrange
+    test_team.stripe_customer_id = "cus_123"
+    db.add(test_team)
+    db.commit()
+
     mock_event = Mock()
     mock_event.type = "checkout.session.completed"
     mock_session = Mock()
@@ -15,19 +20,30 @@ async def test_handle_checkout_session_completed(db, test_team):
     mock_session.id = "cs_123"
     mock_event.data.object = mock_session
 
-    with patch('app.api.billing.get_product_id_from_session', new_callable=AsyncMock) as mock_get_product:
-        mock_get_product.return_value = "prod_123"
-        with patch('app.api.billing.apply_product_for_team', new_callable=AsyncMock) as mock_apply:
-            # Act
-            await handle_stripe_event_background(mock_event, db)
+    mock_get_product.return_value = test_product.id
+    # Act
+    await handle_stripe_event_background(mock_event, db)
 
-            # Assert
-            mock_get_product.assert_called_once_with("cs_123")
-            mock_apply.assert_called_once_with(db, "cus_123", "prod_123")
+    # Assert
+    mock_get_product.assert_called_once_with("cs_123")
+    # Verify team-product association was created
+    team_product = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == test_team.id,
+        DBTeamProduct.product_id == test_product.id
+    ).first()
+    assert team_product is not None
+    # Verify last payment was updated
+    db.refresh(test_team)
+    assert test_team.last_payment is not None
 
 @pytest.mark.asyncio
-async def test_handle_invoice_payment_succeeded(db, test_team):
+@patch('app.api.billing.get_product_id_from_subscription', new_callable=AsyncMock)
+async def test_handle_invoice_payment_succeeded(mock_get_product, db, test_team, test_product):
     # Arrange
+    test_team.stripe_customer_id = "cus_123"
+    db.add(test_team)
+    db.commit()
+
     mock_event = Mock()
     mock_event.type = "invoice.payment_succeeded"
     mock_invoice = Mock()
@@ -39,34 +55,62 @@ async def test_handle_invoice_payment_succeeded(db, test_team):
     mock_invoice.parent.subscription_details.subscription = "sub_123"
     mock_event.data.object = mock_invoice
 
-    with patch('app.api.billing.get_product_id_from_sub', new_callable=AsyncMock) as mock_get_product:
-        mock_get_product.return_value = "prod_123"
-        with patch('app.api.billing.apply_product_for_team', new_callable=AsyncMock) as mock_apply:
-            # Act
-            await handle_stripe_event_background(mock_event, db)
+    mock_get_product.return_value = test_product.id
+    # Act
+    await handle_stripe_event_background(mock_event, db)
 
-            # Assert
-            mock_get_product.assert_called_once_with("sub_123")
-            mock_apply.assert_called_once_with(db, "cus_123", "prod_123")
+    # Assert
+    mock_get_product.assert_called_once_with("sub_123")
+    # Verify team-product association was created
+    team_product = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == test_team.id,
+        DBTeamProduct.product_id == test_product.id
+    ).first()
+    assert team_product is not None
+    # Verify last payment was updated
+    db.refresh(test_team)
+    assert test_team.last_payment is not None
 
 @pytest.mark.asyncio
-async def test_handle_subscription_deleted(db, test_team):
+@patch('app.api.billing.get_product_id_from_subscription', new_callable=AsyncMock)
+async def test_handle_subscription_deleted(mock_get_product, db, test_team, test_product):
     # Arrange
+    test_team.stripe_customer_id = "cus_123"
+    db.add(test_team)
+    db.commit()
+
     mock_event = Mock()
     mock_event.type = "customer.subscription.deleted"
     mock_subscription = Mock()
     mock_subscription.customer = "cus_123"
+    mock_subscription.id = "sub_123"
     mock_event.data.object = mock_subscription
+
+    mock_get_product.return_value = test_product.id
+
+    # Set up initial team-product association
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
 
     # Act
     await handle_stripe_event_background(mock_event, db)
 
     # Assert
-    # No assertions needed as we're just verifying no error occurs
-    # The function now only logs the event
+    mock_get_product.assert_called_once_with("sub_123")
+    # Verify team-product association was removed
+    team_product = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == test_team.id,
+        DBTeamProduct.product_id == test_product.id
+    ).first()
+    assert team_product is None
 
 @pytest.mark.asyncio
-async def test_handle_checkout_session_completed_team_not_found(db):
+@patch('app.api.billing.get_product_id_from_session', new_callable=AsyncMock)
+async def test_handle_checkout_session_completed_team_not_found(mock_get_product, db, test_product):
     # Arrange
     mock_event = Mock()
     mock_event.type = "checkout.session.completed"
@@ -76,15 +120,17 @@ async def test_handle_checkout_session_completed_team_not_found(db):
     mock_session.id = "cs_123"
     mock_event.data.object = mock_session
 
-    with patch('app.api.billing.get_product_id_from_session', new_callable=AsyncMock) as mock_get_product:
-        mock_get_product.return_value = "prod_123"
-        with patch('app.api.billing.apply_product_for_team', new_callable=AsyncMock) as mock_apply:
-            # Act
-            await handle_stripe_event_background(mock_event, db)
+    mock_get_product.return_value = test_product.id
+    # Act
+    await handle_stripe_event_background(mock_event, db)
 
-            # Assert
-            mock_get_product.assert_called_once_with("cs_123")
-            mock_apply.assert_called_once_with(db, "cus_123", "prod_123")
+    # Assert
+    mock_get_product.assert_called_once_with("cs_123")
+    # Verify no team-product association was created
+    team_product = db.query(DBTeamProduct).filter(
+        DBTeamProduct.product_id == test_product.id
+    ).first()
+    assert team_product is None
 
 @pytest.mark.asyncio
 async def test_handle_unknown_event_type(db):
@@ -299,3 +345,186 @@ def test_checkout_stripe_error(mock_create_checkout, client, db, test_team, team
 
     # Assert
     assert response.status_code == 500
+
+@patch('app.api.billing.get_product_id_from_session', new_callable=AsyncMock)
+@pytest.mark.asyncio
+async def test_handle_checkout_session_async_payment_succeeded(mock_get_product, db, test_team, test_product):
+    # Arrange
+    test_team.stripe_customer_id = "cus_123"
+    db.add(test_team)
+    db.commit()
+
+    mock_event = Mock()
+    mock_event.type = "checkout.session.async_payment_succeeded"
+    mock_session = Mock()
+    mock_session.metadata = {"team_id": str(test_team.id)}
+    mock_session.customer = "cus_123"
+    mock_session.id = "cs_123"
+    mock_event.data.object = mock_session
+
+    mock_get_product.return_value = test_product.id
+
+    # Act
+    await handle_stripe_event_background(mock_event, db)
+
+    # Assert
+    mock_get_product.assert_called_once_with("cs_123")
+    # Verify team-product association was created
+    team_product = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == test_team.id,
+        DBTeamProduct.product_id == test_product.id
+    ).first()
+    assert team_product is not None
+    # Verify last payment was updated
+    db.refresh(test_team)
+    assert test_team.last_payment is not None
+
+@patch('app.api.billing.get_product_id_from_session', new_callable=AsyncMock)
+@pytest.mark.asyncio
+async def test_handle_checkout_session_async_payment_failed(mock_get_product, db, test_team, test_product):
+    # Arrange
+    test_team.stripe_customer_id = "cus_123"
+    db.add(test_team)
+    db.commit()
+
+    mock_event = Mock()
+    mock_event.type = "checkout.session.async_payment_failed"
+    mock_session = Mock()
+    mock_session.metadata = {"team_id": str(test_team.id)}
+    mock_session.customer = "cus_123"
+    mock_session.id = "cs_123"
+    mock_event.data.object = mock_session
+
+    mock_get_product.return_value = test_product.id
+
+    # Set up initial team-product association
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Act
+    await handle_stripe_event_background(mock_event, db)
+
+    # Assert
+    mock_get_product.assert_called_once_with("cs_123")
+    # Verify team-product association was removed
+    team_product = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == test_team.id,
+        DBTeamProduct.product_id == test_product.id
+    ).first()
+    assert team_product is None
+
+@patch('app.api.billing.get_product_id_from_session', new_callable=AsyncMock)
+@pytest.mark.asyncio
+async def test_handle_checkout_session_expired(mock_get_product, db, test_team, test_product):
+    # Arrange
+    test_team.stripe_customer_id = "cus_123"
+    db.add(test_team)
+    db.commit()
+
+    mock_event = Mock()
+    mock_event.type = "checkout.session.expired"
+    mock_session = Mock()
+    mock_session.metadata = {"team_id": str(test_team.id)}
+    mock_session.customer = "cus_123"
+    mock_session.id = "cs_123"
+    mock_event.data.object = mock_session
+
+    mock_get_product.return_value = test_product.id
+
+    # Set up initial team-product association
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Act
+    await handle_stripe_event_background(mock_event, db)
+
+    # Assert
+    mock_get_product.assert_called_once_with("cs_123")
+    # Verify team-product association was removed
+    team_product = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == test_team.id,
+        DBTeamProduct.product_id == test_product.id
+    ).first()
+    assert team_product is None
+
+@patch('app.api.billing.get_product_id_from_subscription', new_callable=AsyncMock)
+@pytest.mark.asyncio
+async def test_handle_subscription_payment_failed(mock_get_product, db, test_team, test_product):
+    # Arrange
+    test_team.stripe_customer_id = "cus_123"
+    db.add(test_team)
+    db.commit()
+
+    mock_event = Mock()
+    mock_event.type = "subscription.payment_failed"
+    mock_subscription = Mock()
+    mock_subscription.customer = "cus_123"
+    mock_subscription.id = "sub_123"
+    mock_event.data.object = mock_subscription
+
+    mock_get_product.return_value = test_product.id
+
+    # Set up initial team-product association
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Act
+    await handle_stripe_event_background(mock_event, db)
+
+    # Assert
+    mock_get_product.assert_called_once_with("sub_123")
+    # Verify team-product association was removed
+    team_product = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == test_team.id,
+        DBTeamProduct.product_id == test_product.id
+    ).first()
+    assert team_product is None
+
+@patch('app.api.billing.get_product_id_from_subscription', new_callable=AsyncMock)
+@pytest.mark.asyncio
+async def test_handle_subscription_paused(mock_get_product, db, test_team, test_product):
+    # Arrange
+    test_team.stripe_customer_id = "cus_123"
+    db.add(test_team)
+    db.commit()
+
+    mock_event = Mock()
+    mock_event.type = "customer.subscription.paused"
+    mock_subscription = Mock()
+    mock_subscription.customer = "cus_123"
+    mock_subscription.id = "sub_123"
+    mock_event.data.object = mock_subscription
+
+    mock_get_product.return_value = test_product.id
+
+    # Set up initial team-product association
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Act
+    await handle_stripe_event_background(mock_event, db)
+
+    # Assert
+    mock_get_product.assert_called_once_with("sub_123")
+    # Verify team-product association was removed
+    team_product = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == test_team.id,
+        DBTeamProduct.product_id == test_product.id
+    ).first()
+    assert team_product is None

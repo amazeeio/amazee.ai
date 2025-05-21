@@ -3,18 +3,18 @@ from sqlalchemy.orm import Session
 import logging
 import os
 from app.db.database import get_db
-from app.core.security import get_current_user_from_auth, check_specific_team_admin
-from app.db.models import DBUser, DBTeam, DBSystemSecret
+from app.core.security import check_specific_team_admin
+from app.db.models import DBTeam, DBSystemSecret
 from app.schemas.models import CheckoutSessionCreate
 from app.services.stripe import (
     create_checkout_session,
-    get_stripe_event,
+    decode_stripe_event,
     create_portal_session,
-    get_product_id_from_sub,
+    get_product_id_from_subscription,
     get_product_id_from_session,
     create_stripe_customer
 )
-from app.core.worker import apply_product_for_team
+from app.core.worker import apply_product_for_team, remove_product_from_team
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -72,29 +72,48 @@ async def handle_stripe_event_background(event, db: Session):
     Background task to handle Stripe webhook events.
     This runs in a separate thread to avoid blocking the webhook response.
     """
-    checkout_session_success = ["checkout.session.async_payment_succeeded", "checkout.session.completed"]
-    invoice_success = ["invoice.payment_succeeded"]
-    failure_events = ["checkout.session.async_payment_failed", "checkout.session.expired", "subscription.payment_failed", "customer.subscription.deleted"]
+    # Full list of possible events: https://docs.stripe.com/api/events/types
+    session_success_events = ["checkout.session.async_payment_succeeded", "checkout.session.completed"]
+    invoice_success_events = ["invoice.payment_succeeded"]
+    subscription_success_events = ["customer.subscription.created", "invoice.payment_succeeded"]
+    session_failure_events = ["checkout.session.async_payment_failed", "checkout.session.expired"]
+    subscription_failure_events = ["subscription.payment_failed", "customer.subscription.deleted", "customer.subscription.paused"]
+    invoice_failure_events = ["invoice.payment_failed"]
+
+    success_events = session_success_events + invoice_success_events + subscription_success_events
+    failure_events = session_failure_events + subscription_failure_events + invoice_failure_events
+    known_events = success_events + failure_events
     try:
         event_type = event.type
-        if not event_type in checkout_session_success + invoice_success + failure_events:
+        if not event_type in known_events:
             logger.info(f"Unknown event type: {event_type}")
             return
         event_object = event.data.object
         customer_id = event_object.customer
-        if event_type in invoice_success:
+        # Success Events
+        if event_type in invoice_success_events:
+            # We assume that the invoice is related to a subscription
             subscription = event_object.parent.subscription_details.subscription
-            product_id = await get_product_id_from_sub(subscription)
+            product_id = await get_product_id_from_subscription(subscription)
             await apply_product_for_team(db, customer_id, product_id)
-        elif event_type in checkout_session_success:
+        elif event_type in subscription_success_events:
+            product_id = await get_product_id_from_subscription(event_object.id)
+            await apply_product_for_team(db, customer_id, product_id)
+        elif event_type in session_success_events:
             product_id = await get_product_id_from_session(event_object.id)
             await apply_product_for_team(db, customer_id, product_id)
-        elif event_type in failure_events:
-            logger.info(f"Checkout session failed")
-            event_object = event.data.object
-            logger.info(f"ID: {event_object.id}")
-            logger.info(f"Full object: {event_object}")
-            # Handle failed checkout
+        # Failure Events
+        elif event_type in session_failure_events:
+            product_id = await get_product_id_from_session(event_object.id)
+            await remove_product_from_team(db, customer_id, product_id)
+        elif event_type in subscription_failure_events:
+            product_id = await get_product_id_from_subscription(event_object.id)
+            await remove_product_from_team(db, customer_id, product_id)
+        elif event_type in invoice_failure_events:
+            # We assume that the invoice is related to a subscription
+            subscription = event_object.parent.subscription_details.subscription
+            product_id = await get_product_id_from_subscription(subscription)
+            await remove_product_from_team(db, customer_id, product_id)
     except Exception as e:
         logger.error(f"Error in background event handler: {str(e)}")
 
@@ -129,7 +148,7 @@ async def handle_events(
         payload = await request.body()
         signature = request.headers.get("stripe-signature")
 
-        event = get_stripe_event(payload, signature, webhook_secret)
+        event = decode_stripe_event(payload, signature, webhook_secret)
 
         # Add the event handling to background tasks
         background_tasks.add_task(handle_stripe_event_background, event, db)

@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 from app.db.models import DBProduct, DBTeam, DBUser, DBPrivateAIKey
 from datetime import datetime, UTC, timedelta
-from app.core.worker import apply_product_for_team
+from app.core.worker import apply_product_for_team, remove_product_from_team
 from unittest.mock import AsyncMock, patch
 
 @pytest.mark.asyncio
@@ -20,10 +20,7 @@ async def test_apply_product_success(db, test_team, test_product):
     db.commit()
 
     # Apply product to team
-    result = await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id)
-
-    # Verify the result
-    assert result is True
+    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id)
 
     # Refresh team from database
     db.refresh(test_team)
@@ -40,11 +37,11 @@ async def test_apply_product_team_not_found(db, test_product):
 
     GIVEN: A product exists but team does not
     WHEN: Attempting to apply the product
-    THEN: The operation returns False
+    THEN: The operation completes without error
     """
     # Try to apply product to non-existent team
-    result = await apply_product_for_team(db, "cus_nonexistent", test_product.id)
-    assert result is False
+    await apply_product_for_team(db, "cus_nonexistent", test_product.id)
+    # No assertions needed as function should complete without error
 
 @pytest.mark.asyncio
 async def test_apply_product_product_not_found(db, test_team):
@@ -53,15 +50,15 @@ async def test_apply_product_product_not_found(db, test_team):
 
     GIVEN: A team exists but product does not
     WHEN: Attempting to apply the product
-    THEN: The operation returns False
+    THEN: The operation completes without error
     """
     # Set stripe customer ID for the test team
     test_team.stripe_customer_id = "cus_test123"
     db.commit()
 
     # Try to apply non-existent product
-    result = await apply_product_for_team(db, test_team.stripe_customer_id, "prod_nonexistent")
-    assert result is False
+    await apply_product_for_team(db, test_team.stripe_customer_id, "prod_nonexistent")
+    # No assertions needed as function should complete without error
 
 @pytest.mark.asyncio
 async def test_apply_product_multiple_products(db, test_team, test_product):
@@ -100,8 +97,7 @@ async def test_apply_product_multiple_products(db, test_team, test_product):
 
     # Apply each product to the team
     for product in products:
-        result = await apply_product_for_team(db, test_team.stripe_customer_id, product.id)
-        assert result is True
+        await apply_product_for_team(db, test_team.stripe_customer_id, product.id)
 
     # Refresh team from database
     db.refresh(test_team)
@@ -127,16 +123,14 @@ async def test_apply_product_already_active(db, test_team, test_product):
     db.refresh(test_team)  # Refresh to ensure we have the latest data
 
     # First apply the product
-    result = await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id)
-    assert result is True
+    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id)
 
     # Get the initial last payment date
     db.refresh(test_team)
     initial_last_payment = test_team.last_payment
 
     # Apply the same product again
-    result = await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id)
-    assert result is True
+    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id)
 
     # Refresh team from database
     db.refresh(test_team)
@@ -204,8 +198,7 @@ async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, db, test
     mock_instance.update_budget = AsyncMock()
 
     # Apply product to team
-    result = await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id)
-    assert result is True
+    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id)
 
     # Verify LiteLLM service was initialized with correct region settings
     mock_litellm.assert_called_once_with(
@@ -238,3 +231,121 @@ async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, db, test
     assert len(test_team.active_products) == 1
     assert test_team.active_products[0].product.id == test_product.id
     assert test_team.last_payment is not None
+
+@pytest.mark.asyncio
+async def test_remove_product_success(db, test_team, test_product):
+    """
+    Test successful removal of a product from a team.
+
+    GIVEN: A team with an active product
+    WHEN: The product is removed from the team
+    THEN: The product association is removed from the team's active products
+    """
+    # Set stripe customer ID for the test team
+    test_team.stripe_customer_id = "cus_test123"
+    db.commit()
+
+    # First apply the product to ensure it exists
+    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id)
+
+    # Remove the product
+    await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
+
+    # Refresh team from database
+    db.refresh(test_team)
+
+    # Verify product was removed
+    assert len(test_team.active_products) == 0
+
+@pytest.mark.asyncio
+async def test_remove_product_team_not_found(db, test_product):
+    """
+    Test removing a product when team is not found.
+
+    GIVEN: A product exists but team does not
+    WHEN: Attempting to remove the product
+    THEN: The operation returns None
+    """
+    # Try to remove product from non-existent team
+    result = await remove_product_from_team(db, "cus_nonexistent", test_product.id)
+    assert result is None
+
+@pytest.mark.asyncio
+async def test_remove_product_product_not_found(db, test_team):
+    """
+    Test removing a non-existent product from a team.
+
+    GIVEN: A team exists but product does not
+    WHEN: Attempting to remove the product
+    THEN: The operation returns None
+    """
+    # Set stripe customer ID for the test team
+    test_team.stripe_customer_id = "cus_test123"
+    db.commit()
+
+    # Try to remove non-existent product
+    result = await remove_product_from_team(db, test_team.stripe_customer_id, "prod_nonexistent")
+    assert result is None
+
+@pytest.mark.asyncio
+async def test_remove_product_not_active(db, test_team, test_product):
+    """
+    Test removing a product that is not active for a team.
+
+    GIVEN: A team exists but does not have the specified product active
+    WHEN: Attempting to remove the product
+    THEN: The operation returns None
+    """
+    # Set stripe customer ID for the test team
+    test_team.stripe_customer_id = "cus_test123"
+    db.commit()
+
+    # Try to remove product that was never added
+    result = await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
+    assert result is None
+
+@pytest.mark.asyncio
+async def test_remove_product_multiple_products(db, test_team, test_product):
+    """
+    Test removing one product while keeping others active.
+
+    GIVEN: A team with multiple active products
+    WHEN: One product is removed
+    THEN: Only the specified product is removed, others remain active
+    """
+    # Set stripe customer ID for the test team
+    test_team.stripe_customer_id = "cus_test123"
+    db.commit()
+
+    # Create additional test product
+    second_product = DBProduct(
+        id="prod_test456",
+        name="Test Product 2",
+        user_count=5,
+        keys_per_user=2,
+        total_key_count=10,
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(second_product)
+    db.commit()
+
+    # Apply both products to the team
+    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id)
+    await apply_product_for_team(db, test_team.stripe_customer_id, second_product.id)
+
+    # Remove only the first product
+    await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
+
+    # Refresh team from database
+    db.refresh(test_team)
+
+    # Verify only the first product was removed
+    assert len(test_team.active_products) == 1
+    assert test_team.active_products[0].product.id == second_product.id
