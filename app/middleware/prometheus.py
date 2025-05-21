@@ -64,7 +64,12 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
         user_type = "anonymous"
         if hasattr(request.state, 'user') and request.state.user:
             # Group users by their role or type
-            user_type = request.state.user.role if hasattr(request.state.user, 'role') else "authenticated"
+            if hasattr(request.state.user, 'role'):
+                user_type = request.state.user.role
+            elif hasattr(request.state.user, 'is_admin') and request.state.user.is_admin:
+                user_type = "system_admin"
+            else:
+                user_type = "authenticated"
 
         # Record requests by user type with normalized path
         normalized_path = normalize_path(request.url.path)

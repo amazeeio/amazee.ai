@@ -134,15 +134,18 @@ async def update_user(
     Update a user. Accessible by admin users or team admins.
     """
     db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
-    if not db_user:
+    if not db_user or (db_user.team_id != current_user.team_id and not current_user.is_admin):
         raise HTTPException(status_code=404, detail="User not found")
 
     # Check if trying to make a team member an admin
-    if user_update.is_admin is True and db_user.team_id is not None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Team members cannot be made administrators"
-        )
+    if user_update.is_admin is True:
+        if not current_user.is_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to perform this action")
+        elif db_user.team_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Team members cannot be made administrators"
+            )
 
     for key, value in user_update.model_dump(exclude_unset=True).items():
         setattr(db_user, key, value)
