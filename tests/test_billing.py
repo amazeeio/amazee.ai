@@ -528,3 +528,102 @@ async def test_handle_subscription_paused(mock_get_product, db, test_team, test_
         DBTeamProduct.product_id == test_product.id
     ).first()
     assert team_product is None
+
+@patch('app.api.billing.get_pricing_table_session', new_callable=AsyncMock)
+def test_get_pricing_table_session_existing_customer(mock_get_session, client, db, test_team, team_admin_token):
+    # Arrange
+    test_team.stripe_customer_id = "cus_123"
+    db.add(test_team)
+    db.commit()
+
+    mock_client_secret = "cs_test_123"
+    mock_get_session.return_value = mock_client_secret
+
+    # Act
+    response = client.get(
+        f"/billing/teams/{test_team.id}/pricing-table-session",
+        headers={"Authorization": f"Bearer {team_admin_token}"}
+    )
+
+    # Assert
+    assert response.status_code == 200
+    assert response.json()["client_secret"] == mock_client_secret
+    mock_get_session.assert_called_once_with("cus_123")
+
+@patch('app.api.billing.get_pricing_table_session', new_callable=AsyncMock)
+@patch('app.api.billing.create_stripe_customer', new_callable=AsyncMock)
+def test_get_pricing_table_session_create_customer(mock_create_customer, mock_get_session, client, db, test_team, team_admin_token):
+    # Arrange
+    test_team.stripe_customer_id = None
+    db.add(test_team)
+    db.commit()
+
+    mock_client_secret = "cs_test_123"
+    mock_create_customer.return_value = "cus_new_123"
+    mock_get_session.return_value = mock_client_secret
+
+    # Act
+    response = client.get(
+        f"/billing/teams/{test_team.id}/pricing-table-session",
+        headers={"Authorization": f"Bearer {team_admin_token}"}
+    )
+
+    # Assert
+    assert response.status_code == 200
+    assert response.json()["client_secret"] == mock_client_secret
+    mock_create_customer.assert_called_once()
+    mock_get_session.assert_called_once_with("cus_new_123")
+
+def test_get_pricing_table_session_team_not_found(client, db, admin_token):
+    # Arrange
+    non_existent_team_id = 999
+
+    # Act
+    response = client.get(
+        f"/billing/teams/{non_existent_team_id}/pricing-table-session",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    # Assert
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Team not found"
+
+@patch('app.api.billing.get_pricing_table_session', new_callable=AsyncMock)
+def test_get_pricing_table_session_as_system_admin(mock_get_session, client, db, test_team, admin_token):
+    # Arrange
+    test_team.stripe_customer_id = "cus_123"
+    db.add(test_team)
+    db.commit()
+
+    mock_client_secret = "cs_test_123"
+    mock_get_session.return_value = mock_client_secret
+
+    # Act
+    response = client.get(
+        f"/billing/teams/{test_team.id}/pricing-table-session",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    # Assert
+    assert response.status_code == 200
+    assert response.json()["client_secret"] == mock_client_secret
+    mock_get_session.assert_called_once_with("cus_123")
+
+@patch('app.api.billing.get_pricing_table_session', new_callable=AsyncMock)
+def test_get_pricing_table_session_stripe_error(mock_get_session, client, db, test_team, team_admin_token):
+    # Arrange
+    test_team.stripe_customer_id = "cus_123"
+    db.add(test_team)
+    db.commit()
+
+    mock_get_session.side_effect = Exception("Stripe API error")
+
+    # Act
+    response = client.get(
+        f"/billing/teams/{test_team.id}/pricing-table-session",
+        headers={"Authorization": f"Bearer {team_admin_token}"}
+    )
+
+    # Assert
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Error creating customer session"

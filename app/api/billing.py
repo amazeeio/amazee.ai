@@ -12,7 +12,8 @@ from app.services.stripe import (
     create_portal_session,
     get_product_id_from_subscription,
     get_product_id_from_session,
-    create_stripe_customer
+    create_stripe_customer,
+    get_pricing_table_session
 )
 from app.core.worker import apply_product_for_team, remove_product_from_team
 
@@ -75,10 +76,13 @@ async def handle_stripe_event_background(event, db: Session):
     # Full list of possible events: https://docs.stripe.com/api/events/types
     session_success_events = ["checkout.session.async_payment_succeeded", "checkout.session.completed"]
     invoice_success_events = ["invoice.payment_succeeded"]
-    subscription_success_events = ["customer.subscription.created", "invoice.payment_succeeded"]
+    subscription_success_events = ["customer.subscription.resumed", "customer.subscription.created", "invoice.payment_succeeded"]
     session_failure_events = ["checkout.session.async_payment_failed", "checkout.session.expired"]
     subscription_failure_events = ["subscription.payment_failed", "customer.subscription.deleted", "customer.subscription.paused"]
     invoice_failure_events = ["invoice.payment_failed"]
+
+    # TODO: Manage invoicing
+    # invoice_respose_needed_events = ["invoice.created", "invoice.upcoming"]
 
     success_events = session_success_events + invoice_success_events + subscription_success_events
     failure_events = session_failure_events + subscription_failure_events + invoice_failure_events
@@ -130,7 +134,7 @@ async def handle_events(
     payment successes, and failures. Events are processed asynchronously in the background.
     """
     try:
-        # Get the webhook secret from database
+        # Get the webhook secret from database or environment variable
         if os.getenv("WEBHOOK_SIG"):
             webhook_secret = os.getenv("WEBHOOK_SIG")
         else:
@@ -139,9 +143,11 @@ async def handle_events(
             ).first().value
 
         if not webhook_secret:
+            logger.error("Stripe webhook secret not configured")
+            # 404 for security reasons - if we're not accepting traffic here, then it doesn't exist
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Stripe webhook secret not configured"
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Not found"
             )
 
         # Get the raw request body
@@ -209,4 +215,43 @@ async def get_portal(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error creating portal session"
+        )
+
+@router.get("/teams/{team_id}/pricing-table-session", dependencies=[Depends(check_specific_team_admin)])
+async def get_pricing_table_session(
+    team_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Create a Stripe Customer Session client secret for team subscription management.
+    If the team doesn't have a Stripe customer ID, one will be created first.
+
+    Args:
+        team_id: The ID of the team to create the customer session for
+
+    Returns:
+        JSON response containing the client secret
+    """
+    # Get the team
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if not team:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Team not found"
+        )
+
+    try:
+        # Create Stripe customer if one doesn't exist
+        if not team.stripe_customer_id:
+            team.stripe_customer_id = await create_stripe_customer(team, db)
+
+        # Create customer session using the service
+        client_secret = await get_pricing_table_session(team.stripe_customer_id)
+
+        return {"client_secret": client_secret}
+    except Exception as e:
+        logger.error(f"Error creating customer session: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error creating customer session"
         )
