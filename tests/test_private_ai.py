@@ -1098,9 +1098,9 @@ def test_create_llm_token_as_system_admin(mock_post, client, admin_token, test_r
     )
 
 @patch("app.services.litellm.requests.post")
-@patch.dict(os.environ, {"EXPIRE_KEYS": "true"})
+@patch.dict(os.environ, {"ENABLE_LIMITS": "true"})
 def test_create_llm_token_with_expiration(mock_post, client, admin_token, test_region, mock_litellm_response):
-    """Test that when EXPIRE_KEYS is true, new LiteLLM tokens are created with a 14-day expiration duration"""
+    """Test that when ENABLE_LIMITS is true, new LiteLLM tokens are created with a 14-day expiration duration"""
     # Mock the LiteLLM API response
     mock_post.return_value.status_code = 200
     mock_post.return_value.json.return_value = mock_litellm_response

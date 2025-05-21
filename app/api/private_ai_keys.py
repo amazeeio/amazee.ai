@@ -14,6 +14,8 @@ from app.db.postgres import PostgresManager
 from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
 from app.services.litellm import LiteLLMService
 from app.core.security import get_current_user_from_auth, get_role_min_key_creator, get_role_min_team_admin, UserRole, check_system_admin
+from app.core.config import settings
+from app.core.resource_limits import check_key_limits, check_vector_db_limits
 
 router = APIRouter(
     tags=["private-ai-keys"]
@@ -112,6 +114,12 @@ async def create_vector_db(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Region not found or inactive"
         )
+
+    if settings.ENABLE_LIMITS:
+        if not team_id: # if the team_id is not set we have already validated the owner_id
+            user = db.query(DBUser).filter(DBUser.id == owner_id).first()
+            team_id = user.team_id or FAKE_ID
+        check_vector_db_limits(db, team_id)
 
     try:
         # Create new postgres database
@@ -294,6 +302,9 @@ async def create_llm_token(
         litellm_team = owner.team_id or FAKE_ID
 
     try:
+        if settings.ENABLE_LIMITS: # Have to do this check so late since we always need the team ID
+            check_key_limits(db, litellm_team, owner_id)
+
         # Generate LiteLLM token
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url,

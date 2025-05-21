@@ -1,7 +1,8 @@
 import requests
 from fastapi import HTTPException, status
-import os
 import logging
+from app.core.resource_limits import DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +40,11 @@ class LiteLLMService:
             request_data["metadata"] = metadata
             request_data["team_id"] = team_id
 
-            if os.getenv("EXPIRE_KEYS", "").lower() == "true":
-                request_data["duration"] = "30d"
-                request_data["budget_duration"] = "30d"
-                request_data["max_budget"] = 20.0
-                request_data["rpm_limit"] = 500
+            if settings.ENABLE_LIMITS:
+                request_data["duration"] = DEFAULT_KEY_DURATION
+                request_data["budget_duration"] = DEFAULT_KEY_DURATION
+                request_data["max_budget"] = DEFAULT_MAX_SPEND
+                request_data["rpm_limit"] = DEFAULT_RPM_PER_KEY
             else:
                 request_data["duration"] = "365d"
 

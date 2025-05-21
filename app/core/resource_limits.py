@@ -3,6 +3,16 @@ from app.db.models import DBTeam, DBUser, DBPrivateAIKey
 from fastapi import HTTPException, status
 from typing import Optional
 
+# Default limits across all customers and products
+DEFAULT_USER_COUNT = 2
+DEFAULT_KEYS_PER_USER = 1
+DEFAULT_TOTAL_KEYS = 2
+DEFAULT_SERVICE_KEYS = 1
+DEFAULT_VECTOR_DB_COUNT = 1
+DEFAULT_KEY_DURATION = "30d"
+DEFAULT_MAX_SPEND = 20.0
+DEFAULT_RPM_PER_KEY = 500
+
 def check_team_user_limit(db: Session, team_id: int) -> None:
     """
     Check if adding a user would exceed the team's product limits.
@@ -18,18 +28,18 @@ def check_team_user_limit(db: Session, team_id: int) -> None:
     # Get all active products for the team
     team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not team:
-        raise HTTPException(status_code=404, detail="Team not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
 
     # Find the maximum user count allowed across all active products
     max_user_count = max(
         (product.user_count for team_product in team.active_products
          for product in [team_product.product] if product.user_count),
-        default=2  # Default to 2 if no products have user_count set
+        default=DEFAULT_USER_COUNT  # Default to 2 if no products have user_count set
     )
 
     if current_user_count >= max_user_count:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=f"Team has reached the maximum user limit of {max_user_count} users"
         )
 
@@ -46,23 +56,23 @@ def check_key_limits(db: Session, team_id: int, owner_id: Optional[int] = None) 
     # Get the team and its active products
     team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not team:
-        raise HTTPException(status_code=404, detail="Team not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
 
     # Find the maximum limits across all active products, using defaults if no products
     max_total_keys = max(
         (product.total_key_count for team_product in team.active_products
          for product in [team_product.product] if product.total_key_count),
-        default=2  # Default to 2 if no products have total_key_count set
+        default=DEFAULT_TOTAL_KEYS  # Default to 2 if no products have total_key_count set
     )
     max_keys_per_user = max(
         (product.keys_per_user for team_product in team.active_products
          for product in [team_product.product] if product.keys_per_user),
-        default=1  # Default to 1 if no products have keys_per_user set
+        default=DEFAULT_KEYS_PER_USER  # Default to 1 if no products have keys_per_user set
     )
     max_service_keys = max(
         (product.service_key_count for team_product in team.active_products
          for product in [team_product.product] if product.service_key_count),
-        default=1  # Default to 1 if no products have service_key_count set
+        default=DEFAULT_SERVICE_KEYS  # Default to 1 if no products have service_key_count set
     )
 
     # Get all users in the team
@@ -79,7 +89,7 @@ def check_key_limits(db: Session, team_id: int, owner_id: Optional[int] = None) 
     ).count()
     if current_team_tokens >= max_total_keys:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=f"Team has reached the maximum LLM token limit of {max_total_keys} tokens"
         )
 
@@ -91,7 +101,7 @@ def check_key_limits(db: Session, team_id: int, owner_id: Optional[int] = None) 
         ).count()
         if current_user_tokens >= max_keys_per_user:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail=f"User has reached the maximum LLM token limit of {max_keys_per_user} tokens"
             )
 
@@ -104,7 +114,7 @@ def check_key_limits(db: Session, team_id: int, owner_id: Optional[int] = None) 
         ).count()
         if current_service_tokens >= max_service_keys:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail=f"Team has reached the maximum service LLM token limit of {max_service_keys} tokens"
             )
 
@@ -120,13 +130,13 @@ def check_vector_db_limits(db: Session, team_id: int) -> None:
     # Get the team and its active products
     team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not team:
-        raise HTTPException(status_code=404, detail="Team not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
 
     # Find the maximum vector DB count across all active products
     max_vector_db_count = max(
         (product.vector_db_count for team_product in team.active_products
          for product in [team_product.product] if product.vector_db_count),
-        default=1  # Default to 1 if no products have vector_db_count set
+        default=DEFAULT_VECTOR_DB_COUNT  # Default to 1 if no products have vector_db_count set
     )
 
     # Get all users in the team
@@ -144,6 +154,6 @@ def check_vector_db_limits(db: Session, team_id: int) -> None:
 
     if current_vector_db_count >= max_vector_db_count:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=f"Team has reached the maximum vector DB limit of {max_vector_db_count} databases"
         )

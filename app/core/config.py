@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     ENV_SUFFIX: str = "local"
     DYNAMODB_REGION: str = "eu-west-1"
     SES_REGION: str = "eu-west-1"
-    EXPIRE_KEYS: str = "true"
+    ENABLE_LIMITS: bool = True
     STRIPE_SECRET_KEY: str = "sk_test_string"
     WEBHOOK_SIG: str = "whsec_test_1234567890"
 

@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, get_args
-
+from app.core.config import settings
+from app.core.resource_limits import check_team_user_limit
 from app.db.database import get_db
 from app.schemas.models import User, UserUpdate, UserCreate, TeamOperation, UserRoleUpdate
 from app.db.models import DBUser, DBTeam
@@ -71,6 +72,9 @@ async def create_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to perform this action"
         )
+
+    if settings.ENABLE_LIMITS and user.team_id is not None:
+        check_team_user_limit(db, user.team_id)
 
     # Validate role if provided
     if user.role and user.role not in get_args(UserRole):
