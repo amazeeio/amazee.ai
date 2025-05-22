@@ -294,6 +294,10 @@ async def create_llm_token(
                 detail="Team not found"
             )
 
+    if owner.team_id or team_id:
+        if settings.ENABLE_LIMITS:
+            check_key_limits(db, owner.team_id or team_id, owner_id)
+
     if team is not None:
         owner_email = team.admin_email
         litellm_team = team.id
@@ -302,9 +306,6 @@ async def create_llm_token(
         litellm_team = owner.team_id or FAKE_ID
 
     try:
-        if settings.ENABLE_LIMITS: # Have to do this check so late since we always need the team ID
-            check_key_limits(db, litellm_team, owner_id)
-
         # Generate LiteLLM token
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url,

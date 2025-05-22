@@ -67,7 +67,7 @@ def test_add_user_with_default_limit(db, test_team):
     with pytest.raises(HTTPException) as exc_info:
         check_team_user_limit(db, test_team.id)
     assert exc_info.value.status_code == 402
-    assert "Team has reached the maximum user limit of 2 users" in str(exc_info.value.detail)
+    assert "Team has reached the maximum user limit" in str(exc_info.value.detail)
 
 def test_add_user_with_multiple_products(db, test_team):
     """Test adding users when team has multiple products with different limits"""

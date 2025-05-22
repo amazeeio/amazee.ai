@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from app.db.models import DBUser, DBTeam
 from datetime import datetime, UTC
 from unittest.mock import patch
+import os
 
 def test_create_user(client, test_admin, admin_token):
     response = client.post(
@@ -406,3 +407,25 @@ def test_user_privilege_escalation(client, team_admin_token):
     )
     assert response.status_code == 404
     assert "User not found" in response.json()["detail"]
+
+@patch('app.api.users.settings.ENABLE_LIMITS', True)
+def test_create_user_with_limits_enabled(client, team_admin_token, test_team, db):
+    """
+    Test that a team cannot create more users when ENABLE_LIMITS is true and they have reached their limit.
+
+    GIVEN: a team with one user, and ENABLE_LIMITS is true
+    WHEN: the team tries to create another user
+    THEN: a 402 payment required is returned
+    """
+    # Create a new user in the team
+    response = client.post(
+        "/users/",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={
+            "email": "newteamuser@example.com",
+            "password": "newpassword",
+            "team_id": test_team.id
+        }
+    )
+    assert response.status_code == 402
+    assert "Team has reached the maximum user limit" in response.json()["detail"]

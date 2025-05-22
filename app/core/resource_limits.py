@@ -4,7 +4,7 @@ from fastapi import HTTPException, status
 from typing import Optional
 
 # Default limits across all customers and products
-DEFAULT_USER_COUNT = 2
+DEFAULT_USER_COUNT = 1
 DEFAULT_KEYS_PER_USER = 1
 DEFAULT_TOTAL_KEYS = 2
 DEFAULT_SERVICE_KEYS = 1

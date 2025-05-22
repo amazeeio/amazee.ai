@@ -1098,9 +1098,9 @@ def test_create_llm_token_as_system_admin(mock_post, client, admin_token, test_r
     )
 
 @patch("app.services.litellm.requests.post")
-@patch.dict(os.environ, {"ENABLE_LIMITS": "true"})
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
 def test_create_llm_token_with_expiration(mock_post, client, admin_token, test_region, mock_litellm_response):
-    """Test that when ENABLE_LIMITS is true, new LiteLLM tokens are created with a 14-day expiration duration"""
+    """Test that when ENABLE_LIMITS is true, new LiteLLM tokens are created with a 30-day expiration duration"""
     # Mock the LiteLLM API response
     mock_post.return_value.status_code = 200
     mock_post.return_value.json.return_value = mock_litellm_response
@@ -1479,3 +1479,151 @@ def test_get_private_ai_key_unauthorized(mock_get, client, test_token, test_regi
     # Clean up
     db.delete(test_key)
     db.commit()
+
+@patch("app.services.litellm.requests.post")
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
+def test_create_too_many_service_keys(mock_post, client, admin_token, test_region, mock_litellm_response, db, test_team):
+    """Test that when ENABLE_LIMITS is true, creating too many service keys fails"""
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    team_id = test_team.id
+    # Create first service key
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "First Service Key",
+            "team_id": team_id
+        }
+    )
+    assert response.status_code == 200
+
+    # Try to create second service key
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Second Service Key",
+            "team_id": team_id
+        }
+    )
+    assert response.status_code == 402
+    assert "Team has reached the maximum service LLM token limit of 1 tokens" in response.json()["detail"]
+
+@patch("app.services.litellm.requests.post")
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
+def test_create_too_many_user_keys(mock_post, client, admin_token, test_region, mock_litellm_response, db, test_team_user):
+    """Test that when ENABLE_LIMITS is true, creating too many user keys fails"""
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    user_id = test_team_user.id
+    # Create first user key
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "First User Key",
+            "owner_id": user_id
+        }
+    )
+    assert response.status_code == 200
+
+    # Try to create second user key
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Second User Key",
+            "owner_id": user_id
+        }
+    )
+    assert response.status_code == 402
+    assert "User has reached the maximum LLM token limit of 1 tokens" in response.json()["detail"]
+
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
+def test_create_too_many_vector_dbs(client, admin_token, test_region, db, test_team):
+    """Test that when ENABLE_LIMITS is true, creating too many vector DBs fails"""
+    # Create first vector DB
+    team_id = test_team.id
+    response = client.post(
+        "/private-ai-keys/vector-db",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "First Vector DB",
+            "team_id": team_id
+        }
+    )
+    assert response.status_code == 200
+
+    # Try to create second vector DB
+    response = client.post(
+        "/private-ai-keys/vector-db",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Second Vector DB",
+            "team_id": team_id
+        }
+    )
+    assert response.status_code == 402
+    assert "Team has reached the maximum vector DB limit of 1 databases" in response.json()["detail"]
+
+@patch("app.services.litellm.requests.post")
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
+def test_create_too_many_total_keys(mock_post, client, admin_token, test_region, mock_litellm_response, db, test_team, test_team_user):
+    """Test that when ENABLE_LIMITS is true, creating too many total keys fails"""
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    team_id = test_team.id
+    user_id = test_team_user.id
+    region_id = test_region.id
+    # Create first key (service key)
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": region_id,
+            "name": "First Key",
+            "team_id": team_id
+        }
+    )
+    assert response.status_code == 200
+
+    # Create second key (user key)
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": region_id,
+            "name": "Second Key",
+            "owner_id": user_id
+        }
+    )
+    assert response.status_code == 200
+
+    # Try to create third key
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": region_id,
+            "name": "Third Key",
+            "owner_id": user_id
+        }
+    )
+    assert response.status_code == 402
+    assert "Team has reached the maximum LLM token limit of 2 tokens" in response.json()["detail"]
