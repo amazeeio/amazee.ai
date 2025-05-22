@@ -13,7 +13,8 @@ from app.services.stripe import (
     get_product_id_from_subscription,
     get_product_id_from_session,
     create_stripe_customer,
-    get_pricing_table_session
+    get_pricing_table_session,
+    get_customer_from_pi
 )
 from app.core.worker import apply_product_for_team, remove_product_from_team
 
@@ -94,6 +95,9 @@ async def handle_stripe_event_background(event, db: Session):
             return
         event_object = event.data.object
         customer_id = event_object.customer
+        if not customer_id:
+            logger.warning(f"No customer ID found in event, cannot complete processing")
+            return
         # Success Events
         if event_type in invoice_success_events:
             # We assume that the invoice is related to a subscription

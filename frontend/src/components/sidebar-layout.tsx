@@ -10,7 +10,8 @@ import {
   ChevronDown,
   PanelLeftClose,
   PanelLeft,
-  Users2
+  Users2,
+  Package
 } from 'lucide-react';
 import { Sidebar, SidebarProvider } from '@/components/ui/sidebar';
 import { NavUser } from '@/components/nav-user';
@@ -45,6 +46,7 @@ const navigation = [
       { name: 'Teams', href: '/admin/teams', icon: <Users2 size={16} /> },
       { name: 'Users', href: '/admin/users', icon: <Users size={16} /> },
       { name: 'Regions', href: '/admin/regions', icon: <Globe size={16} /> },
+      { name: 'Products', href: '/admin/products', icon: <Package size={16} /> },
       { name: 'Private AI Keys', href: '/admin/private-ai-keys', icon: <Key size={16} /> },
       { name: 'Audit Logs', href: '/admin/audit-logs', icon: <ScrollText size={16} /> },
     ],

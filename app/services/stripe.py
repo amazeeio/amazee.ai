@@ -278,6 +278,14 @@ async def get_product_id_from_session(session_id: str) -> str:
     line_items = stripe.checkout.Session.list_line_items(session_id)
     return line_items.data[0].price.product
 
+async def get_customer_from_pi(payment_intent: str) -> str:
+    """
+    Get the Stripe customer ID from a payment intent.
+    """
+    payment_intent = stripe.PaymentIntent.retrieve(payment_intent)
+    logger.info(f"Payment intent is:\n{payment_intent}")
+    return payment_intent.customer
+
 async def get_pricing_table_session(customer_id: str) -> str:
     """
     Create a Stripe Customer Session client secret for a customer.

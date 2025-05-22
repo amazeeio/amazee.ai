@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
-from app.db.models import DBProduct, DBUser, DBTeam
+from app.db.models import DBProduct, DBUser, DBTeam, DBTeamProduct
 from datetime import datetime, UTC
 
 def test_create_product_as_system_admin(client, admin_token, db):
@@ -95,6 +95,35 @@ def test_create_product_duplicate_id(client, admin_token, db):
     )
     assert response.status_code == 400
     assert "already exists" in response.json()["detail"]
+
+def test_create_product_inconsistent_key_counts(client, admin_token, db):
+    """
+    Test that creating a product with inconsistent key counts fails.
+
+    GIVEN: The authenticated user is a system admin
+    WHEN: They create a product with user_count = 5, keys_per_user = 2, service_key_count = 2, and total_key_count = 6
+    THEN: A 400 - Bad Request is returned
+    """
+    response = client.post(
+        "/products/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "id": "prod_test123",
+            "name": "Test Product",
+            "user_count": 5,
+            "keys_per_user": 2,
+            "total_key_count": 6,  # Should be 12 (5 * 2 + 2)
+            "service_key_count": 2,
+            "max_budget_per_key": 50.0,
+            "rpm_per_key": 1000,
+            "vector_db_count": 1,
+            "vector_db_storage": 100,
+            "renewal_period_days": 30,
+            "active": True
+        }
+    )
+    assert response.status_code == 400
+    assert "inconsistent" in response.json()["detail"].lower()
 
 def test_create_product_unauthorized(client, test_token, db):
     """
@@ -382,3 +411,31 @@ def test_delete_product_as_system_admin(client, admin_token, db):
     # Verify the product is deleted
     deleted_product = db.query(DBProduct).filter(DBProduct.id == db_product.id).first()
     assert deleted_product is None
+
+def test_delete_product_with_team_association(client, admin_token, db, test_team, test_product):
+    """
+    Test that a product cannot be deleted if it's associated with a team.
+
+    GIVEN: A product which has been applied to a team
+    WHEN: An authorised user tries to delete the product
+    THEN: An error is returned
+    """
+    # Associate the product with a team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Try to delete the product
+    response = client.delete(
+        f"/products/{test_product.id}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 400
+    assert "cannot be deleted" in response.json()["detail"].lower()
+
+    # Verify the product still exists
+    existing_product = db.query(DBProduct).filter(DBProduct.id == test_product.id).first()
+    assert existing_product is not None

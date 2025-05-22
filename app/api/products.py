@@ -4,7 +4,7 @@ from typing import List
 from datetime import datetime, UTC
 
 from app.db.database import get_db
-from app.db.models import DBProduct
+from app.db.models import DBProduct, DBTeamProduct
 from app.core.security import check_system_admin, get_current_user_from_auth, get_role_min_team_admin
 from app.schemas.models import Product, ProductCreate, ProductUpdate
 
@@ -52,6 +52,7 @@ async def create_product(
 
     return db_product
 
+@router.get("", response_model=List[Product], dependencies=[Depends(get_role_min_team_admin)])
 @router.get("/", response_model=List[Product], dependencies=[Depends(get_role_min_team_admin)])
 async def list_products(
     db: Session = Depends(get_db)
@@ -117,6 +118,14 @@ async def delete_product(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Product not found"
+        )
+
+    # Check if the product is associated with any teams
+    team_association = db.query(DBTeamProduct).filter(DBTeamProduct.product_id == product_id).first()
+    if team_association:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete product that is associated with one or more teams"
         )
 
     db.delete(product)
