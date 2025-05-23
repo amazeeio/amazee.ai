@@ -148,7 +148,7 @@ async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, db, test
     """
     Test that applying a product extends keys and sets max budget correctly.
 
-    GIVEN: A team with users and keys (both team-owned and user-owned), and a product which specifies a max_budget of $20 per key
+    GIVEN: A team with users and keys (both team-owned and user-owned), and a product which specifies a max_budget of $50 per key
           with a renewal period of 30 days
     WHEN: The product is applied to the team
     THEN: All keys for the team and users in the team are extended and the max_budget is set correctly
@@ -194,8 +194,7 @@ async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, db, test
 
     # Setup mock instance
     mock_instance = mock_litellm.return_value
-    mock_instance.update_key_duration = AsyncMock()
-    mock_instance.update_budget = AsyncMock()
+    mock_instance.set_key_restrictions = AsyncMock()
 
     # Apply product to team
     await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id)
@@ -208,23 +207,18 @@ async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, db, test
 
     # Verify LiteLLM service was called for all keys (both team and user owned)
     all_keys = team_keys + user_keys
-    assert mock_instance.update_key_duration.call_count == len(all_keys)
-    assert mock_instance.update_budget.call_count == len(all_keys)
+    assert mock_instance.set_key_restrictions.call_count == len(all_keys)
 
     # Verify each key was updated with correct duration and budget
     for key in all_keys:
-        # Verify duration update
-        duration_calls = [call for call in mock_instance.update_key_duration.call_args_list
+        # Verify key restrictions update
+        restriction_calls = [call for call in mock_instance.set_key_restrictions.call_args_list
                         if call[1]['litellm_token'] == key.litellm_token]
-        assert len(duration_calls) == 1
-        assert duration_calls[0][1]['duration'] == f"{test_product.renewal_period_days}d"
-
-        # Verify budget update
-        budget_calls = [call for call in mock_instance.update_budget.call_args_list
-                      if call[1]['litellm_token'] == key.litellm_token]
-        assert len(budget_calls) == 1
-        assert budget_calls[0][1]['budget_duration'] == f"{test_product.renewal_period_days}d"
-        assert budget_calls[0][1]['budget_amount'] == test_product.max_budget_per_key
+        assert len(restriction_calls) == 1
+        assert restriction_calls[0][1]['duration'] == f"{test_product.renewal_period_days}d"
+        assert restriction_calls[0][1]['budget_duration'] == f"{test_product.renewal_period_days}d"
+        assert restriction_calls[0][1]['budget_amount'] == test_product.max_budget_per_key
+        assert restriction_calls[0][1]['rpm_limit'] == test_product.rpm_per_key
 
     # Verify team was updated correctly
     db.refresh(test_team)

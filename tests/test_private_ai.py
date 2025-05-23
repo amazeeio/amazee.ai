@@ -224,6 +224,9 @@ def test_create_private_ai_key_without_owner_or_team(mock_post, client, admin_to
     data = response.json()
     assert data["region"] == test_region.name
     assert data["litellm_token"] == "test-private-key-123"
+    assert data["owner_id"] is not None  # Should be set to admin's ID
+    assert data["team_id"] is None
+
     # Verify that the LiteLLM API was called
     mock_post.assert_called_once()
 

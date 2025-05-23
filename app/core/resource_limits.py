@@ -2,6 +2,10 @@ from sqlalchemy.orm import Session
 from app.db.models import DBTeam, DBUser, DBPrivateAIKey
 from fastapi import HTTPException, status
 from typing import Optional
+from datetime import datetime, UTC
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Default limits across all customers and products
 DEFAULT_USER_COUNT = 1
@@ -9,7 +13,7 @@ DEFAULT_KEYS_PER_USER = 1
 DEFAULT_TOTAL_KEYS = 2
 DEFAULT_SERVICE_KEYS = 1
 DEFAULT_VECTOR_DB_COUNT = 1
-DEFAULT_KEY_DURATION = "30d"
+DEFAULT_KEY_DURATION = 30
 DEFAULT_MAX_SPEND = 20.0
 DEFAULT_RPM_PER_KEY = 500
 
@@ -157,3 +161,34 @@ def check_vector_db_limits(db: Session, team_id: int) -> None:
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=f"Team has reached the maximum vector DB limit of {max_vector_db_count} databases"
         )
+
+def get_token_restrictions(db: Session, team_id: int) -> tuple[int, float, int]:
+    """
+    Get the token restrictions for a team.
+    """
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if not team:
+        logger.error(f"Team not found for team_id: {team_id}")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
+
+    max_key_duration = max(
+        (product.renewal_period_days for team_product in team.active_products
+         for product in [team_product.product] if product.renewal_period_days),
+        default=DEFAULT_KEY_DURATION
+    )
+    if team.last_payment is None:
+        days_left_in_period = max_key_duration
+    else:
+        days_left_in_period = max_key_duration - (datetime.now(UTC) - max(team.created_at, team.last_payment)).days
+    max_max_spend = max(
+        (product.max_budget_per_key for team_product in team.active_products
+         for product in [team_product.product] if product.max_budget_per_key),
+        default=DEFAULT_MAX_SPEND
+    )
+    max_rpm_limit = max(
+        (product.rpm_per_key for team_product in team.active_products
+         for product in [team_product.product] if product.rpm_per_key),
+        default=DEFAULT_RPM_PER_KEY
+    )
+
+    return days_left_in_period, max_max_spend, max_rpm_limit

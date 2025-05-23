@@ -15,7 +15,7 @@ from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
 from app.services.litellm import LiteLLMService
 from app.core.security import get_current_user_from_auth, get_role_min_key_creator, get_role_min_team_admin, UserRole, check_system_admin
 from app.core.config import settings
-from app.core.resource_limits import check_key_limits, check_vector_db_limits
+from app.core.resource_limits import check_key_limits, check_vector_db_limits, get_token_restrictions, DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
 
 router = APIRouter(
     tags=["private-ai-keys"]
@@ -297,6 +297,12 @@ async def create_llm_token(
     if owner.team_id or team_id:
         if settings.ENABLE_LIMITS:
             check_key_limits(db, owner.team_id or team_id, owner_id)
+        # Limits are conditionally applied in LiteLLM service
+        days_left_in_period, max_max_spend, max_rpm_limit = get_token_restrictions(db, owner.team_id or team_id)
+    else: # Super system users...
+        days_left_in_period = DEFAULT_KEY_DURATION
+        max_max_spend = DEFAULT_MAX_SPEND
+        max_rpm_limit = DEFAULT_RPM_PER_KEY
 
     if team is not None:
         owner_email = team.admin_email
@@ -315,7 +321,10 @@ async def create_llm_token(
             email=owner_email,
             name=private_ai_key.name,
             user_id=owner_id,
-            team_id=f"{region.name.replace(' ', '_')}_{litellm_team}"
+            team_id=f"{region.name.replace(' ', '_')}_{litellm_team}",
+            duration=f"{days_left_in_period}d",
+            max_budget=max_max_spend,
+            rpm_limit=max_rpm_limit
         )
 
         # Create response object

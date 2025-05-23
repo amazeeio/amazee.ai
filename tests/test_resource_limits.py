@@ -1,8 +1,8 @@
 import pytest
 from app.db.models import DBUser, DBProduct, DBTeamProduct, DBPrivateAIKey
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timedelta
 from fastapi import HTTPException
-from app.core.resource_limits import check_key_limits, check_team_user_limit, check_vector_db_limits
+from app.core.resource_limits import check_key_limits, check_team_user_limit, check_vector_db_limits, get_token_restrictions, DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
 
 def test_add_user_within_product_limit(db, test_team, test_product):
     """Test adding a user when within product user limit"""
@@ -569,3 +569,119 @@ def test_create_vector_db_with_user_owned_key(db, test_team, test_region, test_t
         check_vector_db_limits(db, test_team.id)
     assert exc_info.value.status_code == 402
     assert "Team has reached the maximum vector DB limit of 1 databases" in str(exc_info.value.detail)
+
+def test_get_token_restrictions_default_limits(db, test_team):
+    """Test getting token restrictions when team has no products (using default limits)"""
+    days_left, max_spend, rpm_limit = get_token_restrictions(db, test_team.id)
+
+    # Should use default values since team has no products
+    assert days_left == DEFAULT_KEY_DURATION  # 30 days
+    assert max_spend == DEFAULT_MAX_SPEND  # 20.0
+    assert rpm_limit == DEFAULT_RPM_PER_KEY  # 500
+
+def test_get_token_restrictions_with_product(db, test_team, test_product):
+    """Test getting token restrictions when team has a product"""
+    # Add product to team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    days_left, max_spend, rpm_limit = get_token_restrictions(db, test_team.id)
+
+    # Should use product values
+    assert days_left == test_product.renewal_period_days  # 30 days
+    assert max_spend == test_product.max_budget_per_key  # 50.0
+    assert rpm_limit == test_product.rpm_per_key  # 1000
+
+def test_get_token_restrictions_with_multiple_products(db, test_team):
+    """Test getting token restrictions when team has multiple products with different limits"""
+    # Create two products with different limits
+    product1 = DBProduct(
+        id="prod_test1",
+        name="Test Product 1",
+        user_count=3,
+        keys_per_user=2,
+        total_key_count=10,
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC)
+    )
+    product2 = DBProduct(
+        id="prod_test2",
+        name="Test Product 2",
+        user_count=3,
+        keys_per_user=2,
+        total_key_count=10,
+        service_key_count=2,
+        max_budget_per_key=75.0,  # Higher budget
+        rpm_per_key=2000,  # Higher RPM
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=60,  # Longer duration
+        active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(product1)
+    db.add(product2)
+    db.commit()
+
+    # Add both products to team
+    team_product1 = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=product1.id
+    )
+    team_product2 = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=product2.id
+    )
+    db.add(team_product1)
+    db.add(team_product2)
+    db.commit()
+
+    days_left, max_spend, rpm_limit = get_token_restrictions(db, test_team.id)
+
+    # Should use the maximum values from both products
+    assert days_left == product2.renewal_period_days  # 60 days
+    assert max_spend == product2.max_budget_per_key  # 75.0
+    assert rpm_limit == product2.rpm_per_key  # 2000
+
+def test_get_token_restrictions_with_payment_history(db, test_team, test_product):
+    """Test getting token restrictions when team has payment history"""
+    # Add product to team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Set created_at to 30 days ago and last_payment to 15 days ago
+    now = datetime.now(UTC)
+    test_team.created_at = now - timedelta(days=30)
+    test_team.last_payment = now - timedelta(days=15)
+    db.commit()
+
+    days_left, max_spend, rpm_limit = get_token_restrictions(db, test_team.id)
+
+    # Should have 15 days left (30 - 15)
+    assert days_left == 15
+    assert max_spend == test_product.max_budget_per_key
+    assert rpm_limit == test_product.rpm_per_key
+
+def test_get_token_restrictions_team_not_found(db):
+    """Test getting token restrictions for non-existent team"""
+    from app.core.resource_limits import get_token_restrictions
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc_info:
+        get_token_restrictions(db, 99999)  # Non-existent team ID
+    assert exc_info.value.status_code == 404
+    assert "Team not found" in str(exc_info.value.detail)

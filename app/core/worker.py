@@ -4,6 +4,7 @@ from app.db.models import DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey, DBUs
 from app.services.litellm import LiteLLMService
 import logging
 from collections import defaultdict
+from app.core.resource_limits import get_token_restrictions
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,9 @@ async def apply_product_for_team(db: Session, customer_id: str, product_id: str)
                 product_id=product.id
             )
             db.add(team_product)
+            db.commit()  # Commit the product association
+
+        days_left_in_period, max_max_spend, max_rpm_limit = get_token_restrictions(db, team.id)
 
         # Get all keys for the team with their regions
         team_users = db.query(DBUser).filter(DBUser.team_id == team.id).all()
@@ -81,17 +85,12 @@ async def apply_product_for_team(db: Session, customer_id: str, product_id: str)
             # Update each key's duration and budget via LiteLLM
             for key in keys:
                 try:
-                    # Update key duration
-                    await litellm_service.update_key_duration(
+                    await litellm_service.set_key_restrictions(
                         litellm_token=key.litellm_token,
-                        duration=f"{product.renewal_period_days}d"
-                    )
-
-                    # Update key budget
-                    await litellm_service.update_budget(
-                        litellm_token=key.litellm_token,
-                        budget_duration=f"{product.renewal_period_days}d",
-                        budget_amount=product.max_budget_per_key
+                        duration=f"{days_left_in_period}d",
+                        budget_duration=f"{days_left_in_period}d",
+                        budget_amount=max_max_spend,
+                        rpm_limit=max_rpm_limit
                     )
                 except Exception as e:
                     logger.error(f"Failed to update key {key.id} via LiteLLM: {str(e)}")
