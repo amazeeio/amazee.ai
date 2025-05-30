@@ -58,12 +58,13 @@ const navigation = [
     subItems: [
       { name: 'Users', href: '/team-admin/users', icon: <Users size={16} /> },
       { name: 'Private AI Keys', href: '/team-admin/private-ai-keys', icon: <Key size={16} /> },
+      { name: 'Pricing', href: '/team-admin/pricing', icon: <Package size={16} /> },
     ],
   },
 ];
 
 function NavMain({ navigation, pathname, collapsed }: { navigation: NavItem[]; pathname: string; collapsed: boolean }) {
-  const [expandedItems, setExpandedItems] = useState<string[]>(['/admin']);
+  const [expandedItems, setExpandedItems] = useState<string[]>(['/admin', '/team-admin']);
 
   const toggleExpanded = (href: string) => {
     if (!collapsed) {

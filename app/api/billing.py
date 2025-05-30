@@ -5,7 +5,7 @@ import os
 from app.db.database import get_db
 from app.core.security import check_specific_team_admin
 from app.db.models import DBTeam, DBSystemSecret
-from app.schemas.models import CheckoutSessionCreate
+from app.schemas.models import CheckoutSessionCreate, PricingTableSession
 from app.services.stripe import (
     create_checkout_session,
     decode_stripe_event,
@@ -13,8 +13,7 @@ from app.services.stripe import (
     get_product_id_from_subscription,
     get_product_id_from_session,
     create_stripe_customer,
-    get_pricing_table_session,
-    get_customer_from_pi
+    get_pricing_table_secret,
 )
 from app.core.worker import apply_product_for_team, remove_product_from_team
 
@@ -52,6 +51,11 @@ async def checkout(
         )
 
     try:
+        if not team.stripe_customer_id:
+            team.stripe_customer_id = await create_stripe_customer(team)
+            db.add(team)
+            db.commit()
+
         # Get the frontend URL from environment
         frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
@@ -201,7 +205,9 @@ async def get_portal(
     try:
         # Create Stripe customer if one doesn't exist
         if not team.stripe_customer_id:
-            team.stripe_customer_id = await create_stripe_customer(team, db)
+            team.stripe_customer_id = await create_stripe_customer(team)
+            db.add(team)
+            db.commit()
 
         # Get the frontend URL from environment
         frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
@@ -221,7 +227,7 @@ async def get_portal(
             detail="Error creating portal session"
         )
 
-@router.get("/teams/{team_id}/pricing-table-session", dependencies=[Depends(check_specific_team_admin)])
+@router.get("/teams/{team_id}/pricing-table-session", dependencies=[Depends(check_specific_team_admin)], response_model=PricingTableSession)
 async def get_pricing_table_session(
     team_id: int,
     db: Session = Depends(get_db)
@@ -247,12 +253,16 @@ async def get_pricing_table_session(
     try:
         # Create Stripe customer if one doesn't exist
         if not team.stripe_customer_id:
-            team.stripe_customer_id = await create_stripe_customer(team, db)
+            logger.info(f"Creating Stripe customer for team {team.id}")
+            team.stripe_customer_id = await create_stripe_customer(team)
+            db.add(team)
+            db.commit()
 
+        logger.info(f"Stripe ID is {team.stripe_customer_id}")
         # Create customer session using the service
-        client_secret = await get_pricing_table_session(team.stripe_customer_id)
+        client_secret = await get_pricing_table_secret(team.stripe_customer_id)
 
-        return {"client_secret": client_secret}
+        return PricingTableSession(client_secret=client_secret)
     except Exception as e:
         logger.error(f"Error creating customer session: {str(e)}")
         raise HTTPException(

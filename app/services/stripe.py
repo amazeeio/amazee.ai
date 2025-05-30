@@ -15,7 +15,9 @@ logger = logging.getLogger(__name__)
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
 async def create_checkout_session(
-    team: DBTeam,
+    team_name: str,
+    admin_email: str,
+    team_id: int,
     price_lookup_token: str,
     frontend_url: str
 ) -> str:
@@ -48,18 +50,18 @@ async def create_checkout_session(
 
         # Create the checkout session
         checkout_session = stripe.checkout.Session.create(
-            customer_email=team.admin_email,
-            success_url=f"{frontend_url}/teams/{team.id}/dashboard?session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"{frontend_url}/teams/{team.id}/pricing",
+            customer_email=admin_email,
+            success_url=f"{frontend_url}/teams/{team_id}/dashboard?session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{frontend_url}/teams/{team_id}/pricing",
             mode="subscription",
             line_items=[{
                 "price": subscription_price.id,
                 "quantity": 1,
             }],
             metadata={
-                "team_id": team.id,
-                "team_name": team.name,
-                "admin_email": team.admin_email
+                "team_id": team_id,
+                "team_name": team_name,
+                "admin_email": admin_email
             }
         )
 
@@ -200,15 +202,13 @@ async def setup_stripe_webhook(webhook_key: str, webhook_route: str, db: Session
         )
 
 async def create_stripe_customer(
-    team: DBTeam,
-    db: Session
+    team: DBTeam
 ) -> str:
     """
-    Create a Stripe customer for a team and save the customer ID.
+    Create a Stripe customer for a team.
 
     Args:
         team: The team to create a Stripe customer for
-        db: Database session
 
     Returns:
         str: The Stripe customer ID
@@ -230,10 +230,6 @@ async def create_stripe_customer(
                 "team_name": team.name
             }
         )
-
-        # Save customer ID to team
-        team.stripe_customer_id = customer.id
-        db.commit()
 
         return customer.id
 
@@ -286,7 +282,7 @@ async def get_customer_from_pi(payment_intent: str) -> str:
     logger.info(f"Payment intent is:\n{payment_intent}")
     return payment_intent.customer
 
-async def get_pricing_table_session(customer_id: str) -> str:
+async def get_pricing_table_secret(customer_id: str) -> str:
     """
     Create a Stripe Customer Session client secret for a customer.
 

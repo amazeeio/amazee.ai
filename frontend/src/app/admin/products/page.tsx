@@ -53,7 +53,7 @@ export default function ProductsPage() {
   };
 
   // Queries
-  const { data: products = [], isLoading } = useQuery<Product[]>({
+  const { data: products = [] } = useQuery<Product[]>({
     queryKey: ['products'],
     queryFn: async () => {
       const response = await get('/products');

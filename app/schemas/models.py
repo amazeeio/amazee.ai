@@ -308,3 +308,7 @@ class Product(ProductBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
+
+class PricingTableSession(BaseModel):
+    client_secret: str
+    model_config = ConfigDict(from_attributes=True)

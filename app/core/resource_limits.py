@@ -179,7 +179,7 @@ def get_token_restrictions(db: Session, team_id: int) -> tuple[int, float, int]:
     if team.last_payment is None:
         days_left_in_period = max_key_duration
     else:
-        days_left_in_period = max_key_duration - (datetime.now(UTC) - max(team.created_at, team.last_payment)).days
+        days_left_in_period = max_key_duration - (datetime.now(UTC) - max(team.created_at.replace(tzinfo=UTC), team.last_payment.replace(tzinfo=UTC))).days
     max_max_spend = max(
         (product.max_budget_per_key for team_product in team.active_products
          for product in [team_product.product] if product.max_budget_per_key),
@@ -192,3 +192,7 @@ def get_token_restrictions(db: Session, team_id: int) -> tuple[int, float, int]:
     )
 
     return days_left_in_period, max_max_spend, max_rpm_limit
+
+def get_team_limits(db: Session, team_id: int):
+    # TODO: Go through all products, and create a master list of the limits on all fields for this team.
+    pass
