@@ -410,3 +410,101 @@ def test_delete_product_with_team_association(client, admin_token, db, test_team
     # Verify the product still exists
     existing_product = db.query(DBProduct).filter(DBProduct.id == test_product.id).first()
     assert existing_product is not None
+
+def test_list_products_by_team_as_system_admin(client, admin_token, db, test_team, test_product):
+    """
+    Test that a system admin can list products for any team.
+
+    GIVEN: The authenticated user is a system admin
+    WHEN: They request products for a specific team
+    THEN: A 200 - OK is returned with the team's products
+    """
+    # Associate the product with the team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    response = client.get(
+        f"/products/?team_id={test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["id"] == test_product.id
+    assert data[0]["name"] == test_product.name
+
+def test_list_products_by_team_as_team_admin(client, team_admin_token, db, test_team, test_product):
+    """
+    Test that a team admin can list products for their own team.
+
+    GIVEN: The authenticated user is a team admin
+    WHEN: They request products for their own team
+    THEN: A 200 - OK is returned with their team's products
+    """
+    # Associate the product with the team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    response = client.get(
+        f"/products/?team_id={test_team.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["id"] == test_product.id
+    assert data[0]["name"] == test_product.name
+
+def test_list_products_by_other_team_as_team_admin(client, team_admin_token, db, test_team, test_product):
+    """
+    Test that a team admin cannot list products for another team.
+
+    GIVEN: The authenticated user is a team admin
+    WHEN: They request products for another team
+    THEN: A 403 - Forbidden is returned
+    """
+    # Create another team
+    other_team = DBTeam(
+        name="Other Team",
+        admin_email="other@example.com"
+    )
+    db.add(other_team)
+    db.commit()
+
+    # Associate the product with the other team
+    team_product = DBTeamProduct(
+        team_id=other_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    response = client.get(
+        f"/products/?team_id={other_team.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"}
+    )
+    assert response.status_code == 403
+    assert "own team" in response.json()["detail"].lower()
+
+def test_list_products_by_nonexistent_team(client, admin_token, db):
+    """
+    Test that listing products for a nonexistent team returns 404.
+
+    GIVEN: The authenticated user is a system admin
+    WHEN: They request products for a nonexistent team
+    THEN: A 404 - Not Found is returned
+    """
+    response = client.get(
+        "/products/?team_id=999999",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 404
+    assert "Team not found" in response.json()["detail"]

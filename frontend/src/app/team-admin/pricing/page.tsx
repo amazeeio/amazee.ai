@@ -15,7 +15,7 @@ declare module 'react' {
 
 declare module 'react/jsx-runtime' {
   interface Element {
-    'stripe-pricing-table': any;
+    'stripe-pricing-table': HTMLElement;
   }
 }
 
@@ -74,7 +74,7 @@ export default function PricingPage() {
       </div>
       <Script src="https://js.stripe.com/v3/pricing-table.js" strategy="afterInteractive" />
       {clientSecret && (
-        // @ts-ignore
+        // @ts-expect-error - Stripe pricing table is a custom element
         <stripe-pricing-table
           pricing-table-id="prctbl_1RRqUhPszKsC9PNiI6av2bXK"
           publishable-key="pk_test_51RRqG1PszKsC9PNicexnqtXn94fTB1MQXbGxApaEojDe81ZtouhTXDzN8Jgg44DBiHvMjGA5aQSvTZ1Q4N4uLl9i00rhEbJpHm"

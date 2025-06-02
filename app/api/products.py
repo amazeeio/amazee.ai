@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from datetime import datetime, UTC
 
 from app.db.database import get_db
-from app.db.models import DBProduct, DBTeamProduct
+from app.db.models import DBProduct, DBTeamProduct, DBTeam
 from app.core.security import check_system_admin, get_current_user_from_auth, get_role_min_team_admin
 from app.schemas.models import Product, ProductCreate, ProductUpdate
 
@@ -55,11 +55,38 @@ async def create_product(
 @router.get("", response_model=List[Product], dependencies=[Depends(get_role_min_team_admin)])
 @router.get("/", response_model=List[Product], dependencies=[Depends(get_role_min_team_admin)])
 async def list_products(
-    db: Session = Depends(get_db)
+    team_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_from_auth)
 ):
     """
     List all products. Only accessible by team admin users or higher privileges.
+    If team_id is provided, only returns products associated with that team.
+    Team admins can only view products for their own team.
     """
+    # If team_id is provided, verify the user has access to that team
+    if team_id is not None:
+        # First check if the team exists
+        team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+        if not team:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Team not found"
+            )
+
+        # System admins can view any team's products
+        if not current_user.is_admin:
+            # Team admins can only view their own team's products
+            if current_user.team_id != team_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You can only view products for your own team"
+                )
+
+        # Get products associated with the team
+        return db.query(DBProduct).join(DBTeamProduct).filter(DBTeamProduct.team_id == team_id).all()
+
+    # If no team_id provided, return all products
     return db.query(DBProduct).all()
 
 @router.get("/{product_id}", response_model=Product, dependencies=[Depends(get_role_min_team_admin)])
