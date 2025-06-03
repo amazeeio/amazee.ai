@@ -8,12 +8,12 @@ from app.core.resource_limits import get_token_restrictions
 from app.services.stripe import (
     get_product_id_from_session,
     get_product_id_from_subscription,
-    known_events,
-    subscription_success_events,
-    session_failure_events,
-    subscription_failure_events,
-    invoice_failure_events,
-    invoice_success_events
+    KNOWN_EVENTS,
+    SUBSCRIPTION_SUCCESS_EVENTS,
+    SESSION_FAILURE_EVENTS,
+    SUBSCRIPTION_FAILURE_EVENTS,
+    INVOICE_FAILURE_EVENTS,
+    INVOICE_SUCCESS_EVENTS
 )
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ async def handle_stripe_event_background(event, db: Session):
     """
     try:
         event_type = event.type
-        if not event_type in known_events:
+        if not event_type in KNOWN_EVENTS:
             logger.info(f"Unknown event type: {event_type}")
             return
         event_object = event.data.object
@@ -34,25 +34,25 @@ async def handle_stripe_event_background(event, db: Session):
             logger.warning(f"No customer ID found in event, cannot complete processing")
             return
         # Success Events
-        if event_type in subscription_success_events:
+        if event_type in SUBSCRIPTION_SUCCESS_EVENTS:
             # new subscription
             product_id = await get_product_id_from_subscription(event_object.id)
             start_date = datetime.fromtimestamp(event_object.start_date, tz=UTC)
             await apply_product_for_team(db, customer_id, product_id, start_date)
-        elif event_type in invoice_success_events:
+        elif event_type in INVOICE_SUCCESS_EVENTS:
             # subscription renewed
             subscription = event_object.parent.subscription_details.subscription
             product_id = await get_product_id_from_subscription(subscription)
             start_date = datetime.fromtimestamp(event_object.period_start, tz=UTC)
             await apply_product_for_team(db, customer_id, product_id, start_date)
         # Failure Events
-        elif event_type in session_failure_events:
+        elif event_type in SESSION_FAILURE_EVENTS:
             product_id = await get_product_id_from_session(event_object.id)
             await remove_product_from_team(db, customer_id, product_id)
-        elif event_type in subscription_failure_events:
+        elif event_type in SUBSCRIPTION_FAILURE_EVENTS:
             product_id = await get_product_id_from_subscription(event_object.id)
             await remove_product_from_team(db, customer_id, product_id)
-        elif event_type in invoice_failure_events:
+        elif event_type in INVOICE_FAILURE_EVENTS:
             # We assume that the invoice is related to a subscription
             subscription = event_object.parent.subscription_details.subscription
             product_id = await get_product_id_from_subscription(subscription)

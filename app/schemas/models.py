@@ -159,7 +159,7 @@ class PrivateAIKeyDetail(PrivateAIKey):
     max_budget: Optional[float] = None
     budget_duration: Optional[str] = None
     budget_reset_at: Optional[datetime] = None
-    expires_at: Optional[datetime] = None
+    expires: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     metadata: Optional[dict] = None

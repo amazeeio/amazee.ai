@@ -13,15 +13,15 @@ logger = logging.getLogger(__name__)
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
 # Full list of possible events: https://docs.stripe.com/api/events/types
-invoice_success_events = ["invoice.paid"] # Renewal
-subscription_success_events = ["customer.subscription.resumed", "customer.subscription.created"] # New subscription
-session_failure_events = ["checkout.session.async_payment_failed", "checkout.session.expired"] # Checkout failure
-subscription_failure_events = ["customer.subscription.deleted", "customer.subscription.paused"] # Subscription failure
-invoice_failure_events = ["invoice.payment_failed"] # Invoice failure
+INVOICE_SUCCESS_EVENTS = ["invoice.paid"] # Renewal
+SUBSCRIPTION_SUCCESS_EVENTS = ["customer.subscription.resumed", "customer.subscription.created"] # New subscription
+SESSION_FAILURE_EVENTS = ["checkout.session.async_payment_failed", "checkout.session.expired"] # Checkout failure
+SUBSCRIPTION_FAILURE_EVENTS = ["customer.subscription.deleted", "customer.subscription.paused"] # Subscription failure
+INVOICE_FAILURE_EVENTS = ["invoice.payment_failed"] # Invoice failure
 
-success_events = invoice_success_events + subscription_success_events
-failure_events = session_failure_events + subscription_failure_events + invoice_failure_events
-known_events = success_events + failure_events
+SUCCESS_EVENTS = INVOICE_SUCCESS_EVENTS + SUBSCRIPTION_SUCCESS_EVENTS
+FAILURE_EVENTS = SESSION_FAILURE_EVENTS + SUBSCRIPTION_FAILURE_EVENTS + INVOICE_FAILURE_EVENTS
+KNOWN_EVENTS = SUCCESS_EVENTS + FAILURE_EVENTS
 
 def decode_stripe_event( payload: bytes, signature: str, webhook_secret: str) -> stripe.Event:
     """
@@ -129,7 +129,7 @@ async def setup_stripe_webhook(webhook_key: str, webhook_route: str, db: Session
         # Create new webhook endpoint
         endpoint = stripe.WebhookEndpoint.create(
             url=webhook_url,
-            enabled_events=known_events
+            enabled_events=KNOWN_EVENTS
         )
 
         # Store the signing secret
