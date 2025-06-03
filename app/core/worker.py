@@ -5,8 +5,50 @@ from app.services.litellm import LiteLLMService
 import logging
 from collections import defaultdict
 from app.core.resource_limits import get_token_restrictions
+from app.services.stripe import get_product_id_from_session, get_product_id_from_subscription, known_events, subscription_success_events, session_failure_events, subscription_failure_events, invoice_failure_events, invoice_success_events
 
 logger = logging.getLogger(__name__)
+
+async def handle_stripe_event_background(event, db: Session):
+    """
+    Background task to handle Stripe webhook events.
+    This runs in a separate thread to avoid blocking the webhook response.
+    """
+    try:
+        event_type = event.type
+        if not event_type in known_events:
+            logger.info(f"Unknown event type: {event_type}")
+            return
+        event_object = event.data.object
+        customer_id = event_object.customer
+        if not customer_id:
+            logger.warning(f"No customer ID found in event, cannot complete processing")
+            return
+        # Success Events
+        if event_type in subscription_success_events:
+            # new subscription
+            product_id = await get_product_id_from_subscription(event_object.id)
+            await apply_product_for_team(db, customer_id, product_id)
+        elif event_type in invoice_success_events:
+            # subscription renewed
+            subscription = event_object.parent.subscription_details.subscription
+            product_id = await get_product_id_from_subscription(subscription)
+            await apply_product_for_team(db, customer_id, product_id)
+        # Failure Events
+        elif event_type in session_failure_events:
+            product_id = await get_product_id_from_session(event_object.id)
+            await remove_product_from_team(db, customer_id, product_id)
+        elif event_type in subscription_failure_events:
+            product_id = await get_product_id_from_subscription(event_object.id)
+            await remove_product_from_team(db, customer_id, product_id)
+        elif event_type in invoice_failure_events:
+            # We assume that the invoice is related to a subscription
+            subscription = event_object.parent.subscription_details.subscription
+            product_id = await get_product_id_from_subscription(subscription)
+            await remove_product_from_team(db, customer_id, product_id)
+    except Exception as e:
+        logger.error(f"Error in background event handler: {str(e)}")
+
 
 async def apply_product_for_team(db: Session, customer_id: str, product_id: str):
     """

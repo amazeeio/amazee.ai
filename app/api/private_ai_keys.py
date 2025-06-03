@@ -463,23 +463,7 @@ async def get_private_ai_key(
 
         # Combine database key info with LiteLLM info
         key_data = private_ai_key.to_dict()
-        key_data.update({
-            "spend": info.get("spend", 0.0),
-            "key_name": info.get("key_name"),
-            "key_alias": info.get("key_alias"),
-            "soft_budget_cooldown": info.get("soft_budget_cooldown"),
-            "models": info.get("models"),
-            "max_parallel_requests": info.get("max_parallel_requests"),
-            "tpm_limit": info.get("tpm_limit"),
-            "rpm_limit": info.get("rpm_limit"),
-            "max_budget": info.get("max_budget"),
-            "budget_duration": info.get("budget_duration"),
-            "budget_reset_at": info.get("budget_reset_at"),
-            "expires_at": info.get("expires"),
-            "created_at": info.get("created_at"),
-            "updated_at": info.get("updated_at"),
-            "metadata": info.get("metadata")
-        })
+        key_data.update(info)
 
         return PrivateAIKeyDetail.model_validate(key_data)
     except Exception as e:

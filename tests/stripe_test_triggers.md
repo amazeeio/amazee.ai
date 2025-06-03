@@ -28,9 +28,9 @@ Each of these triggers will initiate a different flow in the backend. USe them t
 
 Add a product
 ```sh
-stripe trigger checkout.session.completed --override checkout_session:customer=cus_SLpVFWQFHmls9T # forces a customer ID to be set
-stripe trigger checkout.session.async_payment_succeeded --override checkout_session:customer=cus_SLpVFWQFHmls9T # will succeed twice
-stripe trigger subscription.payment_succeeded # Will succeed twice
+stripe trigger checkout.session.completed --override checkout_session:customer=ccus_SQN5TNT4NxFgWW # forces a customer ID to be set
+stripe trigger checkout.session.async_payment_succeeded --override checkout_session:customer=cus_SQN5TNT4NxFgWW
+stripe trigger subscription.payment_succeeded --override subscription:customer=cus_SQN5TNT4NxFgWW
 ```
 
 Remove a product

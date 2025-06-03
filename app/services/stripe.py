@@ -14,64 +14,16 @@ logger = logging.getLogger(__name__)
 # Initialize Stripe
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
-async def create_checkout_session(
-    team_name: str,
-    admin_email: str,
-    team_id: int,
-    price_lookup_token: str,
-    frontend_url: str
-) -> str:
-    """
-    Create a Stripe Checkout Session for team subscription.
+# Full list of possible events: https://docs.stripe.com/api/events/types
+invoice_success_events = ["invoice.paid"] # Renewal
+subscription_success_events = ["customer.subscription.resumed", "customer.subscription.created"] # New subscription
+session_failure_events = ["checkout.session.async_payment_failed", "checkout.session.expired"] # Checkout failure
+subscription_failure_events = ["customer.subscription.deleted", "customer.subscription.paused"] # Subscription failure
+invoice_failure_events = ["invoice.payment_failed"] # Invoice failure
 
-    Args:
-        team: The team to create the subscription for
-        price_lookup_token: Token to identify the specific price
-        frontend_url: The frontend URL for success/cancel redirects
-
-    Returns:
-        str: The checkout session URL
-    """
-    try:
-        # Fetch the specific price using lookup_keys
-        prices = stripe.Price.list(
-            active=True,
-            lookup_keys=[price_lookup_token],
-            expand=['data.product']
-        )
-
-        if not prices.data:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"No active subscription price found for token: {price_lookup_token}"
-            )
-
-        subscription_price = prices.data[0]
-
-        # Create the checkout session
-        checkout_session = stripe.checkout.Session.create(
-            customer_email=admin_email,
-            success_url=f"{frontend_url}/teams/{team_id}/dashboard?session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"{frontend_url}/teams/{team_id}/pricing",
-            mode="subscription",
-            line_items=[{
-                "price": subscription_price.id,
-                "quantity": 1,
-            }],
-            metadata={
-                "team_id": team_id,
-                "team_name": team_name,
-                "admin_email": admin_email
-            }
-        )
-
-        return checkout_session.url
-    except Exception as e:
-        logger.error(f"Error creating checkout session: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error creating checkout session"
-        )
+success_events = invoice_success_events + subscription_success_events
+failure_events = session_failure_events + subscription_failure_events + invoice_failure_events
+known_events = success_events + failure_events
 
 def decode_stripe_event( payload: bytes, signature: str, webhook_secret: str) -> stripe.Event:
     """
@@ -179,10 +131,7 @@ async def setup_stripe_webhook(webhook_key: str, webhook_route: str, db: Session
         # Create new webhook endpoint
         endpoint = stripe.WebhookEndpoint.create(
             url=webhook_url,
-            enabled_events=[
-                "checkout.session.completed",
-                "customer.subscription.deleted"
-            ]
+            enabled_events=known_events
         )
 
         # Store the signing secret

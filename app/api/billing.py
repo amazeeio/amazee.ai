@@ -5,17 +5,14 @@ import os
 from app.db.database import get_db
 from app.core.security import check_specific_team_admin
 from app.db.models import DBTeam, DBSystemSecret
-from app.schemas.models import CheckoutSessionCreate, PricingTableSession
+from app.schemas.models import PricingTableSession
 from app.services.stripe import (
-    create_checkout_session,
     decode_stripe_event,
     create_portal_session,
-    get_product_id_from_subscription,
-    get_product_id_from_session,
     create_stripe_customer,
     get_pricing_table_secret,
 )
-from app.core.worker import apply_product_for_team, remove_product_from_team
+from app.core.worker import handle_stripe_event_background
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -26,108 +23,21 @@ router = APIRouter(
     tags=["billing"]
 )
 
-@router.post("/teams/{team_id}/checkout", dependencies=[Depends(check_specific_team_admin)])
-async def checkout(
-    team_id: int,
-    request_data: CheckoutSessionCreate,
-    db: Session = Depends(get_db)
-):
+# TODO: Verify where we want this to be
+def get_return_url(team_id: int) -> str:
     """
-    Create a Stripe Checkout Session for team subscription.
+    Get the return URL for the team dashboard.
 
     Args:
-        team_id: The ID of the team to create the subscription for
-        request_data: Contains the price_lookup_token to identify the specific price
+        team_id: The ID of the team to get the return URL for
 
     Returns:
-        redirect to the checkout session
+        The return URL for the team dashboard
     """
-    # Get the team
-    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
-    if not team:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Team not found"
-        )
+    # Get the frontend URL from environment
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+    return f"{frontend_url}/teams/{team_id}/dashboard"
 
-    try:
-        if not team.stripe_customer_id:
-            team.stripe_customer_id = await create_stripe_customer(team)
-            db.add(team)
-            db.commit()
-
-        # Get the frontend URL from environment
-        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
-
-        # Create checkout session using the service
-        checkout_url = await create_checkout_session(team, request_data.price_lookup_token, frontend_url)
-
-        return Response(
-            status_code=status.HTTP_303_SEE_OTHER,
-            headers={"Location": checkout_url}
-        )
-    except Exception as e:
-        logger.error(f"Error creating checkout session: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error creating checkout session"
-        )
-
-async def handle_stripe_event_background(event, db: Session):
-    """
-    Background task to handle Stripe webhook events.
-    This runs in a separate thread to avoid blocking the webhook response.
-    """
-    # Full list of possible events: https://docs.stripe.com/api/events/types
-    session_success_events = ["checkout.session.async_payment_succeeded", "checkout.session.completed"]
-    invoice_success_events = ["invoice.payment_succeeded"]
-    subscription_success_events = ["customer.subscription.resumed", "customer.subscription.created", "invoice.payment_succeeded"]
-    session_failure_events = ["checkout.session.async_payment_failed", "checkout.session.expired"]
-    subscription_failure_events = ["subscription.payment_failed", "customer.subscription.deleted", "customer.subscription.paused"]
-    invoice_failure_events = ["invoice.payment_failed"]
-
-    # TODO: Manage invoicing
-    # invoice_respose_needed_events = ["invoice.created", "invoice.upcoming"]
-
-    success_events = session_success_events + invoice_success_events + subscription_success_events
-    failure_events = session_failure_events + subscription_failure_events + invoice_failure_events
-    known_events = success_events + failure_events
-    try:
-        event_type = event.type
-        if not event_type in known_events:
-            logger.info(f"Unknown event type: {event_type}")
-            return
-        event_object = event.data.object
-        customer_id = event_object.customer
-        if not customer_id:
-            logger.warning(f"No customer ID found in event, cannot complete processing")
-            return
-        # Success Events
-        if event_type in invoice_success_events:
-            # We assume that the invoice is related to a subscription
-            subscription = event_object.parent.subscription_details.subscription
-            product_id = await get_product_id_from_subscription(subscription)
-            await apply_product_for_team(db, customer_id, product_id)
-        elif event_type in subscription_success_events:
-            product_id = await get_product_id_from_subscription(event_object.id)
-            await apply_product_for_team(db, customer_id, product_id)
-        elif event_type in session_success_events:
-            product_id = await get_product_id_from_session(event_object.id)
-            await apply_product_for_team(db, customer_id, product_id)
-        # Failure Events
-        elif event_type in session_failure_events:
-            product_id = await get_product_id_from_session(event_object.id)
-            await remove_product_from_team(db, customer_id, product_id)
-        elif event_type in subscription_failure_events:
-            product_id = await get_product_id_from_subscription(event_object.id)
-            await remove_product_from_team(db, customer_id, product_id)
-        elif event_type in invoice_failure_events:
-            # We assume that the invoice is related to a subscription
-            subscription = event_object.parent.subscription_details.subscription
-            product_id = await get_product_id_from_subscription(subscription)
-            await remove_product_from_team(db, customer_id, product_id)
-    except Exception as e:
-        logger.error(f"Error in background event handler: {str(e)}")
 
 @router.post("/events")
 async def handle_events(
@@ -201,18 +111,14 @@ async def get_portal(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Team not found"
         )
+    if not team.stripe_customer_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Team has not been registered with Stripe"
+        )
 
     try:
-        # Create Stripe customer if one doesn't exist
-        if not team.stripe_customer_id:
-            team.stripe_customer_id = await create_stripe_customer(team)
-            db.add(team)
-            db.commit()
-
-        # Get the frontend URL from environment
-        frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
-        return_url = f"{frontend_url}/teams/{team.id}/dashboard"
-
+        return_url = get_return_url(team_id)
         # Create portal session using the service
         portal_url = await create_portal_session(team.stripe_customer_id, return_url)
 
