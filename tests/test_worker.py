@@ -180,7 +180,7 @@ async def test_apply_product_success(db, test_team, test_product):
     db.commit()
 
     # Apply product to team
-    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id)
+    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
 
     # Refresh team from database
     db.refresh(test_team)
@@ -200,7 +200,7 @@ async def test_apply_product_team_not_found(db, test_product):
     THEN: The operation completes without error
     """
     # Try to apply product to non-existent team
-    await apply_product_for_team(db, "cus_nonexistent", test_product.id)
+    await apply_product_for_team(db, "cus_nonexistent", test_product.id, datetime.now(UTC))
     # No assertions needed as function should complete without error
 
 @pytest.mark.asyncio
@@ -217,7 +217,7 @@ async def test_apply_product_product_not_found(db, test_team):
     db.commit()
 
     # Try to apply non-existent product
-    await apply_product_for_team(db, test_team.stripe_customer_id, "prod_nonexistent")
+    await apply_product_for_team(db, test_team.stripe_customer_id, "prod_nonexistent", datetime.now(UTC))
     # No assertions needed as function should complete without error
 
 @pytest.mark.asyncio
@@ -257,7 +257,7 @@ async def test_apply_product_multiple_products(db, test_team, test_product):
 
     # Apply each product to the team
     for product in products:
-        await apply_product_for_team(db, test_team.stripe_customer_id, product.id)
+        await apply_product_for_team(db, test_team.stripe_customer_id, product.id, datetime.now(UTC))
 
     # Refresh team from database
     db.refresh(test_team)
@@ -283,14 +283,14 @@ async def test_apply_product_already_active(db, test_team, test_product):
     db.refresh(test_team)  # Refresh to ensure we have the latest data
 
     # First apply the product
-    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id)
+    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
 
     # Get the initial last payment date
     db.refresh(test_team)
     initial_last_payment = test_team.last_payment
 
     # Apply the same product again
-    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id)
+    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
 
     # Refresh team from database
     db.refresh(test_team)
@@ -357,7 +357,7 @@ async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, db, test
     mock_instance.set_key_restrictions = AsyncMock()
 
     # Apply product to team
-    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id)
+    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
 
     # Verify LiteLLM service was initialized with correct region settings
     mock_litellm.assert_called_once_with(
@@ -400,7 +400,7 @@ async def test_remove_product_success(db, test_team, test_product):
     db.commit()
 
     # First apply the product to ensure it exists
-    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id)
+    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
 
     # Remove the product
     await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
@@ -491,8 +491,8 @@ async def test_remove_product_multiple_products(db, test_team, test_product):
     db.commit()
 
     # Apply both products to the team
-    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id)
-    await apply_product_for_team(db, test_team.stripe_customer_id, second_product.id)
+    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
+    await apply_product_for_team(db, test_team.stripe_customer_id, second_product.id, datetime.now(UTC))
 
     # Remove only the first product
     await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)

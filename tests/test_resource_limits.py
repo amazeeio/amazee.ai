@@ -2,7 +2,15 @@ import pytest
 from app.db.models import DBUser, DBProduct, DBTeamProduct, DBPrivateAIKey
 from datetime import datetime, UTC, timedelta
 from fastapi import HTTPException
-from app.core.resource_limits import check_key_limits, check_team_user_limit, check_vector_db_limits, get_token_restrictions, DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
+from app.core.resource_limits import (
+    check_key_limits,
+    check_team_user_limit,
+    check_vector_db_limits,
+    get_token_restrictions,
+    DEFAULT_KEY_DURATION,
+    DEFAULT_MAX_SPEND,
+    DEFAULT_RPM_PER_KEY
+)
 
 def test_add_user_within_product_limit(db, test_team, test_product):
     """Test adding a user when within product user limit"""

@@ -5,7 +5,16 @@ from app.services.litellm import LiteLLMService
 import logging
 from collections import defaultdict
 from app.core.resource_limits import get_token_restrictions
-from app.services.stripe import get_product_id_from_session, get_product_id_from_subscription, known_events, subscription_success_events, session_failure_events, subscription_failure_events, invoice_failure_events, invoice_success_events
+from app.services.stripe import (
+    get_product_id_from_session,
+    get_product_id_from_subscription,
+    known_events,
+    subscription_success_events,
+    session_failure_events,
+    subscription_failure_events,
+    invoice_failure_events,
+    invoice_success_events
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,12 +37,14 @@ async def handle_stripe_event_background(event, db: Session):
         if event_type in subscription_success_events:
             # new subscription
             product_id = await get_product_id_from_subscription(event_object.id)
-            await apply_product_for_team(db, customer_id, product_id)
+            start_date = datetime.fromtimestamp(event_object.start_date, tz=UTC)
+            await apply_product_for_team(db, customer_id, product_id, start_date)
         elif event_type in invoice_success_events:
             # subscription renewed
             subscription = event_object.parent.subscription_details.subscription
             product_id = await get_product_id_from_subscription(subscription)
-            await apply_product_for_team(db, customer_id, product_id)
+            start_date = datetime.fromtimestamp(event_object.period_start, tz=UTC)
+            await apply_product_for_team(db, customer_id, product_id, start_date)
         # Failure Events
         elif event_type in session_failure_events:
             product_id = await get_product_id_from_session(event_object.id)
@@ -50,7 +61,7 @@ async def handle_stripe_event_background(event, db: Session):
         logger.error(f"Error in background event handler: {str(e)}")
 
 
-async def apply_product_for_team(db: Session, customer_id: str, product_id: str):
+async def apply_product_for_team(db: Session, customer_id: str, product_id: str, start_date: datetime):
     """
     Apply a product to a team and update their last payment date.
     Also extends all team keys and sets their max budgets via LiteLLM service.
@@ -77,7 +88,7 @@ async def apply_product_for_team(db: Session, customer_id: str, product_id: str)
             return
 
         # Update the last payment date
-        team.last_payment = datetime.now(UTC)
+        team.last_payment = start_date
 
         # Check if the product is already active for the team
         existing_association = db.query(DBTeamProduct).filter(

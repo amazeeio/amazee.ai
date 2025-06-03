@@ -1,11 +1,9 @@
-from typing import Optional, Union
 import stripe
 import os
 import logging
 from urllib.parse import urljoin
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
-from stripe._list_object import ListObject
 from app.db.models import DBTeam, DBSystemSecret
 
 # Configure logger

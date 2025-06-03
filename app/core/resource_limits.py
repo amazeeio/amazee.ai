@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_, or_
+from sqlalchemy import func, or_
 from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBTeamProduct, DBProduct
 from fastapi import HTTPException, status
 from typing import Optional
