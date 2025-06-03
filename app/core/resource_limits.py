@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
-from app.db.models import DBTeam, DBUser, DBPrivateAIKey
+from sqlalchemy import func, and_, or_
+from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBTeamProduct, DBProduct
 from fastapi import HTTPException, status
 from typing import Optional
 from datetime import datetime, UTC
@@ -26,25 +27,27 @@ def check_team_user_limit(db: Session, team_id: int) -> None:
         db: Database session
         team_id: ID of the team to check
     """
-    # Get current user count for the team
-    current_user_count = db.query(DBUser).filter(DBUser.team_id == team_id).count()
+    # Get current user count and max allowed users in a single query
+    result = db.query(
+        func.count(DBUser.id).label('current_user_count'),
+        func.coalesce(func.max(DBProduct.user_count), DEFAULT_USER_COUNT).label('max_users')
+    ).select_from(DBUser).filter(
+        DBUser.team_id == team_id
+    ).outerjoin(
+        DBTeamProduct,
+        DBTeamProduct.team_id == team_id
+    ).outerjoin(
+        DBProduct,
+        DBProduct.id == DBTeamProduct.product_id
+    ).first()
 
-    # Get all active products for the team
-    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
-    if not team:
+    if not result:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
 
-    # Find the maximum user count allowed across all active products
-    max_user_count = max(
-        (product.user_count for team_product in team.active_products
-         for product in [team_product.product] if product.user_count),
-        default=DEFAULT_USER_COUNT  # Default to 2 if no products have user_count set
-    )
-
-    if current_user_count >= max_user_count:
+    if result.current_user_count >= result.max_users:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=f"Team has reached the maximum user limit of {max_user_count} users"
+            detail=f"Team has reached the maximum user limit of {result.max_users} users"
         )
 
 def check_key_limits(db: Session, team_id: int, owner_id: Optional[int] = None) -> None:
@@ -57,70 +60,60 @@ def check_key_limits(db: Session, team_id: int, owner_id: Optional[int] = None) 
         team_id: ID of the team to check
         owner_id: Optional ID of the user who will own the key
     """
-    # Get the team and its active products
-    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
-    if not team:
+    # Get all limits and current counts in a single query
+    result = db.query(
+        func.coalesce(func.max(DBProduct.total_key_count), DEFAULT_TOTAL_KEYS).label('max_total_keys'),
+        func.coalesce(func.max(DBProduct.keys_per_user), DEFAULT_KEYS_PER_USER).label('max_keys_per_user'),
+        func.coalesce(func.max(DBProduct.service_key_count), DEFAULT_SERVICE_KEYS).label('max_service_keys'),
+        func.count(DBPrivateAIKey.id).filter(
+            DBPrivateAIKey.litellm_token.isnot(None)
+        ).label('current_team_keys'),
+        func.count(DBPrivateAIKey.id).filter(
+            DBPrivateAIKey.owner_id == owner_id,
+            DBPrivateAIKey.litellm_token.isnot(None)
+        ).label('current_user_keys') if owner_id else None,
+        func.count(DBPrivateAIKey.id).filter(
+            DBPrivateAIKey.owner_id.is_(None),
+            DBPrivateAIKey.litellm_token.isnot(None)
+        ).label('current_service_keys')
+    ).select_from(DBTeam).filter( # Have to use Teams table as the base because not every team has a product
+        DBTeam.id == team_id
+    ).outerjoin(
+        DBTeamProduct,
+        DBTeamProduct.team_id == DBTeam.id
+    ).outerjoin(
+        DBProduct,
+        DBProduct.id == DBTeamProduct.product_id
+    ).outerjoin(
+        DBPrivateAIKey,
+        or_(
+            DBPrivateAIKey.team_id == DBTeam.id,
+            DBPrivateAIKey.owner_id.in_(
+                db.query(DBUser.id).filter(DBUser.team_id == DBTeam.id)
+            )
+        )
+    ).first()
+
+    if not result:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
 
-    # Find the maximum limits across all active products, using defaults if no products
-    max_total_keys = max(
-        (product.total_key_count for team_product in team.active_products
-         for product in [team_product.product] if product.total_key_count),
-        default=DEFAULT_TOTAL_KEYS  # Default to 2 if no products have total_key_count set
-    )
-    max_keys_per_user = max(
-        (product.keys_per_user for team_product in team.active_products
-         for product in [team_product.product] if product.keys_per_user),
-        default=DEFAULT_KEYS_PER_USER  # Default to 1 if no products have keys_per_user set
-    )
-    max_service_keys = max(
-        (product.service_key_count for team_product in team.active_products
-         for product in [team_product.product] if product.service_key_count),
-        default=DEFAULT_SERVICE_KEYS  # Default to 1 if no products have service_key_count set
-    )
-
-    # Get all users in the team
-    team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
-    user_ids = [user.id for user in team_users]
-
-    # Check total team LLM tokens (both team-owned and user-owned)
-    current_team_tokens = db.query(DBPrivateAIKey).filter(
-        (
-            (DBPrivateAIKey.team_id == team_id) |  # Team-owned tokens
-            (DBPrivateAIKey.owner_id.in_(user_ids))  # User-owned tokens
-        ),
-        DBPrivateAIKey.litellm_token.isnot(None)  # Only count LLM tokens
-    ).count()
-    if current_team_tokens >= max_total_keys:
+    if result.current_team_keys >= result.max_total_keys:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=f"Team has reached the maximum LLM token limit of {max_total_keys} tokens"
+            detail=f"Team has reached the maximum LLM token limit of {result.max_total_keys} tokens"
         )
 
-    # Check user LLM tokens if owner_id is provided
-    if owner_id is not None:
-        current_user_tokens = db.query(DBPrivateAIKey).filter(
-            DBPrivateAIKey.owner_id == owner_id,
-            DBPrivateAIKey.litellm_token.isnot(None)  # Only count LLM tokens
-        ).count()
-        if current_user_tokens >= max_keys_per_user:
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=f"User has reached the maximum LLM token limit of {max_keys_per_user} tokens"
-            )
+    if owner_id is not None and result.current_user_keys >= result.max_keys_per_user:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"User has reached the maximum LLM token limit of {result.max_keys_per_user} tokens"
+        )
 
-    # Check service LLM tokens (team-owned tokens)
-    if owner_id is None:  # This is a team-owned token
-        current_service_tokens = db.query(DBPrivateAIKey).filter(
-            DBPrivateAIKey.team_id == team_id,
-            DBPrivateAIKey.owner_id.is_(None),
-            DBPrivateAIKey.litellm_token.isnot(None)  # Only count LLM tokens
-        ).count()
-        if current_service_tokens >= max_service_keys:
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=f"Team has reached the maximum service LLM token limit of {max_service_keys} tokens"
-            )
+    if owner_id is None and result.current_service_keys >= result.max_service_keys:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"Team has reached the maximum service LLM token limit of {result.max_service_keys} tokens"
+        )
 
 def check_vector_db_limits(db: Session, team_id: int) -> None:
     """
@@ -131,67 +124,75 @@ def check_vector_db_limits(db: Session, team_id: int) -> None:
         db: Database session
         team_id: ID of the team to check
     """
-    # Get the team and its active products
-    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
-    if not team:
+    # Get vector DB limits and current count in a single query
+    result = db.query(
+        func.coalesce(func.max(DBProduct.vector_db_count), DEFAULT_VECTOR_DB_COUNT).label('max_vector_db_count'),
+        func.count(DBPrivateAIKey.id).filter(
+            DBPrivateAIKey.database_name.isnot(None)
+        ).label('current_vector_db_count')
+    ).select_from(DBTeam).filter(
+        DBTeam.id == team_id
+    ).outerjoin(
+        DBTeamProduct,
+        DBTeamProduct.team_id == DBTeam.id
+    ).outerjoin(
+        DBProduct,
+        DBProduct.id == DBTeamProduct.product_id
+    ).outerjoin(
+        DBPrivateAIKey,
+        or_(
+            DBPrivateAIKey.team_id == DBTeam.id,
+            DBPrivateAIKey.owner_id.in_(
+                db.query(DBUser.id).filter(DBUser.team_id == DBTeam.id)
+            )
+        )
+    ).first()
+
+    if not result:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
 
-    # Find the maximum vector DB count across all active products
-    max_vector_db_count = max(
-        (product.vector_db_count for team_product in team.active_products
-         for product in [team_product.product] if product.vector_db_count),
-        default=DEFAULT_VECTOR_DB_COUNT  # Default to 1 if no products have vector_db_count set
-    )
-
-    # Get all users in the team
-    team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
-    user_ids = [user.id for user in team_users]
-
-    # Get current vector DB count for the team (both team-owned and user-owned)
-    current_vector_db_count = db.query(DBPrivateAIKey).filter(
-        (
-            (DBPrivateAIKey.team_id == team_id) |  # Team-owned vector DBs
-            (DBPrivateAIKey.owner_id.in_(user_ids))  # User-owned vector DBs
-        ),
-        DBPrivateAIKey.database_name.isnot(None)  # Only count keys with database_name set
-    ).count()
-
-    if current_vector_db_count >= max_vector_db_count:
+    if result.current_vector_db_count >= result.max_vector_db_count:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=f"Team has reached the maximum vector DB limit of {max_vector_db_count} databases"
+            detail=f"Team has reached the maximum vector DB limit of {result.max_vector_db_count} databases"
         )
 
 def get_token_restrictions(db: Session, team_id: int) -> tuple[int, float, int]:
     """
     Get the token restrictions for a team.
     """
-    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
-    if not team:
+    # Get all token restrictions in a single query
+    result = db.query(
+        func.coalesce(func.max(DBProduct.renewal_period_days), DEFAULT_KEY_DURATION).label('max_key_duration'),
+        func.coalesce(func.max(DBProduct.max_budget_per_key), DEFAULT_MAX_SPEND).label('max_max_spend'),
+        func.coalesce(func.max(DBProduct.rpm_per_key), DEFAULT_RPM_PER_KEY).label('max_rpm_limit'),
+        DBTeam.created_at,
+        DBTeam.last_payment
+    ).select_from(DBTeam).filter(
+        DBTeam.id == team_id
+    ).outerjoin(
+        DBTeamProduct,
+        DBTeamProduct.team_id == DBTeam.id
+    ).outerjoin(
+        DBProduct,
+        DBProduct.id == DBTeamProduct.product_id
+    ).group_by(
+        DBTeam.created_at,
+        DBTeam.last_payment
+    ).first()
+
+    if not result:
         logger.error(f"Team not found for team_id: {team_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
 
-    max_key_duration = max(
-        (product.renewal_period_days for team_product in team.active_products
-         for product in [team_product.product] if product.renewal_period_days),
-        default=DEFAULT_KEY_DURATION
-    )
-    if team.last_payment is None:
-        days_left_in_period = max_key_duration
+    if result.last_payment is None:
+        days_left_in_period = result.max_key_duration
     else:
-        days_left_in_period = max_key_duration - (datetime.now(UTC) - max(team.created_at.replace(tzinfo=UTC), team.last_payment.replace(tzinfo=UTC))).days
-    max_max_spend = max(
-        (product.max_budget_per_key for team_product in team.active_products
-         for product in [team_product.product] if product.max_budget_per_key),
-        default=DEFAULT_MAX_SPEND
-    )
-    max_rpm_limit = max(
-        (product.rpm_per_key for team_product in team.active_products
-         for product in [team_product.product] if product.rpm_per_key),
-        default=DEFAULT_RPM_PER_KEY
-    )
+        days_left_in_period = result.max_key_duration - (
+            datetime.now(UTC) - max(result.created_at.replace(tzinfo=UTC), result.last_payment.replace(tzinfo=UTC))
+        ).days
 
-    return days_left_in_period, max_max_spend, max_rpm_limit
+    return days_left_in_period, result.max_max_spend, result.max_rpm_limit
 
 def get_team_limits(db: Session, team_id: int):
     # TODO: Go through all products, and create a master list of the limits on all fields for this team.

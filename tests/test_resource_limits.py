@@ -69,6 +69,71 @@ def test_add_user_with_default_limit(db, test_team):
     assert exc_info.value.status_code == 402
     assert "Team has reached the maximum user limit" in str(exc_info.value.detail)
 
+def test_add_user_with_one_product(db, test_team):
+    """Test adding users when team has multiple products with different limits"""
+    # Create two products with different user limits
+    product1 = DBProduct(
+        id="prod_test1",
+        name="Test Product 1",
+        user_count=3,
+        keys_per_user=2,
+        total_key_count=10,
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC)
+    )
+    product2 = DBProduct(
+        id="prod_test2",
+        name="Test Product 2",
+        user_count=5,
+        keys_per_user=2,
+        total_key_count=10,
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(product1)
+    db.add(product2)
+    db.commit()
+
+    # Add product to team
+    team_product1 = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=product1.id
+    )
+    db.add(team_product1)
+    db.commit()
+
+    # Create and add users up to the higher limit (5)
+    for i in range(3):
+        user = DBUser(
+            email=f"user{i}@example.com",
+            hashed_password="hashed_password",
+            is_active=True,
+            is_admin=False,
+            role="user",
+            team_id=test_team.id,
+            created_at=datetime.now(UTC)
+        )
+        db.add(user)
+    db.commit()
+
+    # Test that check_team_user_limit raises an exception
+    with pytest.raises(HTTPException) as exc_info:
+        check_team_user_limit(db, test_team.id)
+    assert exc_info.value.status_code == 402
+    assert f"Team has reached the maximum user limit of {product1.user_count} users" in str(exc_info.value.detail)
+
 def test_add_user_with_multiple_products(db, test_team):
     """Test adding users when team has multiple products with different limits"""
     # Create two products with different user limits
@@ -409,6 +474,96 @@ def test_create_key_with_multiple_users_default_limits(db, test_team, test_regio
         check_key_limits(db, test_team.id, None)
     assert exc_info.value.status_code == 402
     assert "Team has reached the maximum LLM token limit of 2 tokens" in str(exc_info.value.detail)
+
+def test_create_key_with_mixed_service_and_user_keys(db, test_team, test_region):
+    """Test creating keys when team has a mix of service and user keys"""
+    # Create a product with a total key limit of 3
+    product = DBProduct(
+        id="prod_test",
+        name="Test Product",
+        user_count=3,
+        keys_per_user=2,
+        total_key_count=3,  # Total key limit of 3
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(product)
+    db.commit()
+
+    # Add product to team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Create two users
+    user1 = DBUser(
+        email="user1@example.com",
+        hashed_password="hashed_password",
+        is_active=True,
+        is_admin=False,
+        role="user",
+        team_id=test_team.id,
+        created_at=datetime.now(UTC)
+    )
+    user2 = DBUser(
+        email="user2@example.com",
+        hashed_password="hashed_password",
+        is_active=True,
+        is_admin=False,
+        role="user",
+        team_id=test_team.id,
+        created_at=datetime.now(UTC)
+    )
+    db.add(user1)
+    db.add(user2)
+    db.commit()
+
+    # Create one service key
+    service_key = DBPrivateAIKey(
+        name="Test Service Key",
+        database_name="test_service_db",
+        database_host="localhost",
+        database_username="test_user",
+        database_password="test_pass",
+        litellm_token="test_service_token",
+        owner_id=None,  # Service key has no owner
+        team_id=test_team.id,
+        region_id=test_region.id,
+        created_at=datetime.now(UTC)
+    )
+    db.add(service_key)
+
+    # Create one key for each user
+    for user in [user1, user2]:
+        key = DBPrivateAIKey(
+            name=f"Test Token for {user.email}",
+            database_name=f"test_db_{user.id}",
+            database_host="localhost",
+            database_username="test_user",
+            database_password="test_pass",
+            litellm_token=f"test_token_{user.id}",
+            owner_id=user.id,
+            team_id=None,  # Keys with owner_id should not have team_id
+            region_id=test_region.id,
+            created_at=datetime.now(UTC)
+        )
+        db.add(key)
+    db.commit()
+
+    # Test that check_key_limits raises an exception when trying to create another key
+    with pytest.raises(HTTPException) as exc_info:
+        check_key_limits(db, test_team.id, None)
+    assert exc_info.value.status_code == 402
+    assert f"Team has reached the maximum LLM token limit of {product.total_key_count} tokens" in str(exc_info.value.detail)
 
 def test_create_vector_db_within_limits(db, test_team, test_product):
     """Test creating a vector DB when within product limits"""
