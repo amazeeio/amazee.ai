@@ -147,8 +147,30 @@ class PrivateAIKey(PrivateAIKeyBase):
     team_id: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
 
+class PrivateAIKeyDetail(PrivateAIKey):
+    spend: Optional[float] = None
+    key_name: Optional[str] = None
+    key_alias: Optional[str] = None
+    soft_budget_cooldown: Optional[bool] = None
+    models: Optional[List[str]] = None
+    max_parallel_requests: Optional[int] = None
+    tpm_limit: Optional[int] = None
+    rpm_limit: Optional[int] = None
+    max_budget: Optional[float] = None
+    budget_duration: Optional[str] = None
+    budget_reset_at: Optional[datetime] = None
+    expires: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    metadata: Optional[dict] = None
+    model_config = ConfigDict(from_attributes=True)
+
 class BudgetPeriodUpdate(BaseModel):
     budget_duration: str
+
+class TokenDurationUpdate(BaseModel):
+    """Schema for updating a token's duration"""
+    duration: str  # e.g. "30d" for 30 days, "1y" for 1 year
 
 class PrivateAIKeySpend(BaseModel):
     spend: float
@@ -247,3 +269,46 @@ class UserRoleUpdate(BaseModel):
 class SignInData(BaseModel):
     username: EmailStr
     verification_code: str
+
+class CheckoutSessionCreate(BaseModel):
+    price_lookup_token: str
+
+class ProductBase(BaseModel):
+    name: str
+    id: str # This is the Stripe product ID, format should be prod_XXX
+    user_count: Optional[int] = 1
+    keys_per_user: Optional[int] = 1
+    total_key_count: Optional[int] = 6
+    service_key_count: Optional[int] = 5
+    max_budget_per_key: Optional[float] = 20.0
+    rpm_per_key: Optional[int] = 500
+    vector_db_count: Optional[int] = 1
+    vector_db_storage: Optional[int] = 50 # Not used yet, should be a number in GiB
+    renewal_period_days: int = 30
+    active: bool = True
+
+class ProductCreate(ProductBase):
+    pass
+
+class ProductUpdate(BaseModel):
+    name: Optional[str] = None
+    user_count: Optional[int] = None
+    keys_per_user: Optional[int] = None
+    total_key_count: Optional[int] = None
+    service_key_count: Optional[int] = None
+    max_budget_per_key: Optional[float] = None
+    rpm_per_key: Optional[int] = None
+    vector_db_count: Optional[int] = None
+    vector_db_storage: Optional[int] = None
+    renewal_period_days: Optional[int] = None
+    active: Optional[bool] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class Product(ProductBase):
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class PricingTableSession(BaseModel):
+    client_secret: str
+    model_config = ConfigDict(from_attributes=True)

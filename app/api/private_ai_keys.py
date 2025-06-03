@@ -7,12 +7,19 @@ import logging
 from app.db.database import get_db
 from app.schemas.models import (
     PrivateAIKey, PrivateAIKeyCreate, PrivateAIKeySpend,
-    BudgetPeriodUpdate, LiteLLMToken, VectorDBCreate, VectorDB
+    BudgetPeriodUpdate, LiteLLMToken, VectorDBCreate, VectorDB,
+    TokenDurationUpdate, PrivateAIKeyDetail
 )
 from app.db.postgres import PostgresManager
 from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
 from app.services.litellm import LiteLLMService
-from app.core.security import get_current_user_from_auth, get_role_min_key_creator, get_role_min_team_admin, UserRole
+from app.core.security import get_current_user_from_auth, get_role_min_key_creator, get_role_min_team_admin, UserRole, check_system_admin
+from app.core.config import settings
+from app.core.resource_limits import check_key_limits, check_vector_db_limits, get_token_restrictions, DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
+
+router = APIRouter(
+    tags=["private-ai-keys"]
+)
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -56,10 +63,6 @@ def _validate_permissions_and_get_ownership_info(
         )
 
     return owner_id, team_id
-
-router = APIRouter(
-    tags=["Private AI Keys"]
-)
 
 @router.post("/vector-db", response_model=VectorDB)
 async def create_vector_db(
@@ -111,6 +114,12 @@ async def create_vector_db(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Region not found or inactive"
         )
+
+    if settings.ENABLE_LIMITS:
+        if not team_id: # if the team_id is not set we have already validated the owner_id
+            user = db.query(DBUser).filter(DBUser.id == owner_id).first()
+            team_id = user.team_id or FAKE_ID
+        check_vector_db_limits(db, team_id)
 
     try:
         # Create new postgres database
@@ -285,6 +294,16 @@ async def create_llm_token(
                 detail="Team not found"
             )
 
+    if owner.team_id or team_id:
+        if settings.ENABLE_LIMITS:
+            check_key_limits(db, owner.team_id or team_id, owner_id)
+        # Limits are conditionally applied in LiteLLM service
+        days_left_in_period, max_max_spend, max_rpm_limit = get_token_restrictions(db, owner.team_id or team_id)
+    else: # Super system users...
+        days_left_in_period = DEFAULT_KEY_DURATION
+        max_max_spend = DEFAULT_MAX_SPEND
+        max_rpm_limit = DEFAULT_RPM_PER_KEY
+
     if team is not None:
         owner_email = team.admin_email
         litellm_team = team.id
@@ -302,7 +321,10 @@ async def create_llm_token(
             email=owner_email,
             name=private_ai_key.name,
             user_id=owner_id,
-            team_id=f"{region.name.replace(' ', '_')}_{litellm_team}"
+            team_id=f"{region.name.replace(' ', '_')}_{litellm_team}",
+            duration=f"{days_left_in_period}d",
+            max_budget=max_max_spend,
+            rpm_limit=max_rpm_limit
         )
 
         # Create response object
@@ -389,6 +411,67 @@ async def list_private_ai_keys(
 
     private_ai_keys = query.all()
     return [key.to_dict() for key in private_ai_keys]
+
+@router.get("/{key_id}", response_model=PrivateAIKeyDetail, dependencies=[Depends(check_system_admin)])
+async def get_private_ai_key(
+    key_id: int,
+    current_user = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db)
+):
+    """
+    Get details of a specific private AI key.
+
+    This endpoint will:
+    1. Verify the user has access to the key
+    2. Return the full details of the key including LiteLLM-specific data
+
+    Required parameters:
+    - **key_id**: The ID of the private AI key to retrieve
+
+    The response will include:
+    - Database connection details (host, database name, username, password)
+    - LiteLLM API token for authentication
+    - LiteLLM API URL for making requests
+    - Owner and team information
+    - Region information
+    - LiteLLM-specific data (spend, duration, budget, etc.)
+
+    Note: You must be authenticated to use this endpoint.
+    Only system administrators can access this endpoint.
+    """
+    private_ai_key = _get_key_if_allowed(key_id, current_user, "system_admin", db)
+
+    # Get the region
+    region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
+    if not region:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Region not found"
+        )
+
+    # Create LiteLLM service instance
+    litellm_service = LiteLLMService(
+        api_url=region.litellm_api_url,
+        api_key=region.litellm_api_key
+    )
+
+    try:
+        # Get LiteLLM key info
+        litellm_data = await litellm_service.get_key_info(private_ai_key.litellm_token)
+        info = litellm_data.get("info", {})
+        logger.info(f"LiteLLM key info: {info}")
+
+        # Combine database key info with LiteLLM info
+        key_data = private_ai_key.to_dict()
+        key_data.update(info)
+
+        return PrivateAIKeyDetail.model_validate(key_data)
+    except Exception as e:
+        logger.error(f"Failed to get Private AI Key details: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get Private AI Key details: {str(e)}"
+        )
 
 def _get_key_if_allowed(key_id: int, current_user: DBUser, user_role: UserRole, db: Session) -> DBPrivateAIKey:
     # First try to find the key
@@ -570,4 +653,57 @@ async def update_budget_period(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update budget period: {str(e)}"
+        )
+
+@router.put("/{key_id}/extend-token-life")
+async def extend_token_life(
+    key_id: int,
+    duration_update: TokenDurationUpdate,
+    current_user = Depends(get_current_user_from_auth),
+    user_role: UserRole = Depends(get_role_min_team_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Extend the life of a private AI key.
+
+    This endpoint will:
+    1. Verify the user has access to the key
+    2. Update the key's duration in LiteLLM
+    3. Return the updated key information
+
+    Required parameters:
+    - **duration**: The amount of time to add to the key's life (e.g. "30d" for 30 days, "1y" for 1 year)
+
+    Note: You must be authenticated to use this endpoint.
+    Only the owner of the key or an admin can update it.
+    """
+    private_ai_key = _get_key_if_allowed(key_id, current_user, user_role, db)
+
+    # Get the region
+    region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
+    if not region:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Region not found"
+        )
+
+    litellm_service = LiteLLMService(
+        api_url=region.litellm_api_url,
+        api_key=region.litellm_api_key
+    )
+
+    try:
+        # Update key duration in LiteLLM
+        await litellm_service.update_key_duration(
+            litellm_token=private_ai_key.litellm_token,
+            duration=duration_update.duration
+        )
+
+        # Get updated key information
+        key_data = await litellm_service.get_key_info(private_ai_key.litellm_token)
+        return key_data
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to extend token life: {str(e)}"
         )

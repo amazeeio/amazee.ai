@@ -6,18 +6,20 @@ import sys
 # Add the parent directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import psycopg2
 import alembic.config
 import alembic.command
+import asyncio
+import glob
 from sqlalchemy import inspect
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, Session
 from app.db.database import engine
 from app.db.models import Base, DBUser
 from app.core.security import get_password_hash
 from app.services.ses import SESService
-import glob
+from app.services.stripe import setup_stripe_webhook
+from app.api.billing import BILLING_WEBHOOK_KEY, BILLING_WEBHOOK_ROUTE
 
-def init_database():
+def init_database() -> Session:
     # Check if database is empty (no tables exist)
     inspector = inspect(engine)
     existing_tables = inspector.get_table_names()
@@ -75,7 +77,21 @@ def init_database():
         print(f"Error creating admin user: {str(e)}")
         db.rollback()
     finally:
-        db.close()
+        return db
+
+def init_webhooks(db: Session):
+    # Only set up Stripe webhook in specific environments
+    env_suffix = os.getenv("ENV_SUFFIX", "").lower()
+    if env_suffix in ["dev", "main", "prod"]:
+        try:
+            # Set up Stripe webhook
+            print("Setting up Stripe Billing webhook...")
+            asyncio.run(setup_stripe_webhook(BILLING_WEBHOOK_KEY, BILLING_WEBHOOK_ROUTE, db))
+            print("Stripe Billing webhook set up successfully")
+        except Exception as e:
+            print(f"Warning: Failed to set up Stripe Billing webhook: {str(e)}")
+    else:
+        print(f"Skipping Stripe webhook setup for environment: {env_suffix}")
 
 def init_ses_templates():
     if os.getenv("PASSWORDLESS_SIGN_IN", "").lower() == "true":
@@ -98,8 +114,10 @@ def init_ses_templates():
 
 def main():
     try:
-        init_database()
+        db = init_database()
+        init_webhooks(db)
         init_ses_templates()
+        db.close()
     except Exception as e:
         print(f"Error during initialization: {str(e)}")
         sys.exit(1)

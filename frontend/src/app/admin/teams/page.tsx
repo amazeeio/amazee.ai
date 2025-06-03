@@ -55,6 +55,22 @@ interface TeamUser {
   role: string;
 }
 
+interface Product {
+  id: string;
+  name: string;
+  user_count: number;
+  keys_per_user: number;
+  total_key_count: number;
+  service_key_count: number;
+  max_budget_per_key: number;
+  rpm_per_key: number;
+  vector_db_count: number;
+  vector_db_storage: number;
+  renewal_period_days: number;
+  active: boolean;
+  created_at: string;
+}
+
 interface Team {
   id: string;
   name: string;
@@ -65,6 +81,7 @@ interface Team {
   created_at: string;
   updated_at: string;
   users?: TeamUser[];
+  products?: Product[];
 }
 
 interface User {
@@ -115,6 +132,17 @@ export default function TeamsPage() {
     queryFn: async () => {
       if (!expandedTeamId) return null;
       const response = await get(`/teams/${expandedTeamId}`);
+      return response.json();
+    },
+    enabled: !!expandedTeamId,
+  });
+
+  // Get products for expanded team
+  const { data: teamProducts = [], isLoading: isLoadingTeamProducts } = useQuery<Product[]>({
+    queryKey: ['team-products', expandedTeamId],
+    queryFn: async () => {
+      if (!expandedTeamId) return [];
+      const response = await get(`/products?team_id=${expandedTeamId}`);
       return response.json();
     },
     enabled: !!expandedTeamId,
@@ -540,6 +568,7 @@ export default function TeamsPage() {
                                     <TabsList>
                                       <TabsTrigger value="details">Team Details</TabsTrigger>
                                       <TabsTrigger value="users">Users</TabsTrigger>
+                                      <TabsTrigger value="products">Products</TabsTrigger>
                                     </TabsList>
                                     <TabsContent value="details" className="mt-4">
                                       <Card>
@@ -658,6 +687,60 @@ export default function TeamsPage() {
                                           </p>
                                         </div>
                                       )}
+                                    </TabsContent>
+                                    <TabsContent value="products" className="mt-4">
+                                      <div className="space-y-4">
+                                        {isLoadingTeamProducts ? (
+                                          <div className="flex justify-center items-center py-8">
+                                            <Loader2 className="h-8 w-8 animate-spin" />
+                                          </div>
+                                        ) : teamProducts.length > 0 ? (
+                                          <div className="rounded-md border">
+                                            <Table>
+                                              <TableHeader>
+                                                <TableRow>
+                                                  <TableHead>Name</TableHead>
+                                                  <TableHead>User Count</TableHead>
+                                                  <TableHead>Keys/User</TableHead>
+                                                  <TableHead>Total Keys</TableHead>
+                                                  <TableHead>Service Keys</TableHead>
+                                                  <TableHead>Budget/Key</TableHead>
+                                                  <TableHead>RPM/Key</TableHead>
+                                                  <TableHead>Vector DBs</TableHead>
+                                                  <TableHead>Storage (GiB)</TableHead>
+                                                  <TableHead>Renewal (Days)</TableHead>
+                                                  <TableHead>Status</TableHead>
+                                                </TableRow>
+                                              </TableHeader>
+                                              <TableBody>
+                                                {teamProducts.map((product) => (
+                                                  <TableRow key={product.id}>
+                                                    <TableCell>{product.name}</TableCell>
+                                                    <TableCell>{product.user_count}</TableCell>
+                                                    <TableCell>{product.keys_per_user}</TableCell>
+                                                    <TableCell>{product.total_key_count}</TableCell>
+                                                    <TableCell>{product.service_key_count}</TableCell>
+                                                    <TableCell>${product.max_budget_per_key.toFixed(2)}</TableCell>
+                                                    <TableCell>{product.rpm_per_key}</TableCell>
+                                                    <TableCell>{product.vector_db_count}</TableCell>
+                                                    <TableCell>{product.vector_db_storage}</TableCell>
+                                                    <TableCell>{product.renewal_period_days}</TableCell>
+                                                    <TableCell>
+                                                      <Badge variant={product.active ? "default" : "destructive"}>
+                                                        {product.active ? "Active" : "Inactive"}
+                                                      </Badge>
+                                                    </TableCell>
+                                                  </TableRow>
+                                                ))}
+                                              </TableBody>
+                                            </Table>
+                                          </div>
+                                        ) : (
+                                          <div className="text-center py-8 border rounded-md">
+                                            <p className="text-muted-foreground">No products associated with this team.</p>
+                                          </div>
+                                        )}
+                                      </div>
                                     </TabsContent>
                                   </Tabs>
                                 </div>

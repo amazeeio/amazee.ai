@@ -7,7 +7,9 @@ from app.api.auth import get_current_user_from_auth
 from app.schemas.models import Region, RegionCreate, RegionResponse, User, RegionUpdate
 from app.db.models import DBRegion, DBPrivateAIKey
 
-router = APIRouter()
+router = APIRouter(
+    tags=["regions"]
+)
 
 @router.post("", response_model=Region)
 @router.post("/", response_model=Region)

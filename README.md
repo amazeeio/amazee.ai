@@ -67,6 +67,9 @@ make backend-test-cov   # Run backend tests with coverage report
 make backend-test-regex # Waits for a string which pytest will parse to only collect a subset of tests
 ```
 
+### 💳 Testing Stripe
+See [[tests/stripe_test_trigger.md]] for detailed instructions on testing integration with Stripe for billing purposes.
+
 ### Frontend Tests
 ```bash
 make frontend-test    # Run frontend tests

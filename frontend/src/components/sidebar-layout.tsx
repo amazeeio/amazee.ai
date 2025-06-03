@@ -10,7 +10,8 @@ import {
   ChevronDown,
   PanelLeftClose,
   PanelLeft,
-  Users2
+  Users2,
+  Package
 } from 'lucide-react';
 import { Sidebar, SidebarProvider } from '@/components/ui/sidebar';
 import { NavUser } from '@/components/nav-user';
@@ -45,6 +46,7 @@ const navigation = [
       { name: 'Teams', href: '/admin/teams', icon: <Users2 size={16} /> },
       { name: 'Users', href: '/admin/users', icon: <Users size={16} /> },
       { name: 'Regions', href: '/admin/regions', icon: <Globe size={16} /> },
+      { name: 'Products', href: '/admin/products', icon: <Package size={16} /> },
       { name: 'Private AI Keys', href: '/admin/private-ai-keys', icon: <Key size={16} /> },
       { name: 'Audit Logs', href: '/admin/audit-logs', icon: <ScrollText size={16} /> },
     ],
@@ -56,12 +58,13 @@ const navigation = [
     subItems: [
       { name: 'Users', href: '/team-admin/users', icon: <Users size={16} /> },
       { name: 'Private AI Keys', href: '/team-admin/private-ai-keys', icon: <Key size={16} /> },
+      { name: 'Pricing', href: '/team-admin/pricing', icon: <Package size={16} /> },
     ],
   },
 ];
 
 function NavMain({ navigation, pathname, collapsed }: { navigation: NavItem[]; pathname: string; collapsed: boolean }) {
-  const [expandedItems, setExpandedItems] = useState<string[]>(['/admin']);
+  const [expandedItems, setExpandedItems] = useState<string[]>(['/admin', '/team-admin']);
 
   const toggleExpanded = (href: string) => {
     if (!collapsed) {

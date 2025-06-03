@@ -5,6 +5,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
+from app.api import auth, private_ai_keys, users, regions, audit, teams, billing, products
+from app.core.config import settings
+from app.db.database import get_db
+from app.middleware.audit import AuditLogMiddleware
+from app.middleware.prometheus import PrometheusMiddleware
+from app.middleware.auth import AuthMiddleware
+
 import os
 import logging
 
@@ -21,13 +28,6 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
         if request.headers.get("X-Forwarded-Proto") == "https":
             request.scope["scheme"] = "https"
         return await call_next(request)
-
-from app.api import auth, private_ai_keys, users, regions, audit, teams
-from app.core.config import settings
-from app.db.database import get_db
-from app.middleware.audit import AuditLogMiddleware
-from app.middleware.prometheus import PrometheusMiddleware
-from app.middleware.auth import AuthMiddleware
 
 app = FastAPI(
     title="Private AI Keys as a Service",
@@ -132,6 +132,8 @@ app.include_router(users.router, prefix="/users", tags=["users"])
 app.include_router(regions.router, prefix="/regions", tags=["regions"])
 app.include_router(audit.router, prefix="/audit", tags=["audit"])
 app.include_router(teams.router, prefix="/teams", tags=["teams"])
+app.include_router(billing.router, prefix="/billing", tags=["billing"])
+app.include_router(products.router, prefix="/products", tags=["products"])
 
 @app.get("/", include_in_schema=False)
 async def custom_swagger_ui_html():

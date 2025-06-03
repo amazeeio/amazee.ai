@@ -1,9 +1,29 @@
-from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime, JSON
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime, JSON, Float, Table
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime, UTC
 from sqlalchemy.sql import func
 
 Base = declarative_base()
+
+class DBTeamProduct(Base):
+    """
+    Association table for team-product relationship.
+    This model is required to implement a many-to-many relationship between teams and products.
+    It allows:
+    - Teams to subscribe to multiple products
+    - Products to be used by multiple teams
+    - Tracking when products were added to teams
+    - Maintaining referential integrity between teams and products
+    """
+    __tablename__ = "team_products"
+
+    team_id = Column(Integer, ForeignKey('teams.id', ondelete='CASCADE'), primary_key=True, nullable=False)
+    product_id = Column(String, ForeignKey('products.id', ondelete='CASCADE'), primary_key=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+    team = relationship("DBTeam", back_populates="active_products")
+    product = relationship("DBProduct", back_populates="teams")
 
 class DBRegion(Base):
     __tablename__ = "regions"
@@ -62,9 +82,12 @@ class DBTeam(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    stripe_customer_id = Column(String, nullable=True, unique=True, index=True)
+    last_payment = Column(DateTime(timezone=True), nullable=True)
 
     users = relationship("DBUser", back_populates="team")
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="team")
+    active_products = relationship("DBTeamProduct", back_populates="team")
 
 class DBPrivateAIKey(Base):
     __tablename__ = "ai_tokens"
@@ -119,3 +142,33 @@ class DBAuditLog(Base):
     request_source = Column(String, nullable=True)  # Values: 'frontend', 'api', or None
 
     user = relationship("DBUser", back_populates="audit_logs")
+
+class DBSystemSecret(Base):
+    __tablename__ = "system_secrets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String, unique=True, index=True, nullable=False)
+    value = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+class DBProduct(Base):
+    __tablename__ = "products"
+
+    id = Column(String, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    user_count = Column(Integer, default=0)
+    keys_per_user = Column(Integer, default=0)
+    total_key_count = Column(Integer, default=0)
+    service_key_count = Column(Integer, default=0)
+    max_budget_per_key = Column(Float, default=0.0)
+    rpm_per_key = Column(Integer, default=0)
+    vector_db_count = Column(Integer, default=0)
+    vector_db_storage = Column(Integer, default=0)
+    renewal_period_days = Column(Integer, default=30)
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    teams = relationship("DBTeamProduct", back_populates="product")
