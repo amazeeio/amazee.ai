@@ -5,6 +5,7 @@ from urllib.parse import urljoin
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 from app.db.models import DBTeam, DBSystemSecret
+from app.core.config import settings
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -107,7 +108,7 @@ async def setup_stripe_webhook(webhook_key: str, webhook_route: str, db: Session
             return
 
         # Get the base URL from environment
-        base_url = os.getenv("BACKEND_URL", "http://localhost:8800")
+        base_url = settings.main_route
         webhook_url = urljoin(base_url, webhook_route)
 
         # List existing webhook endpoints

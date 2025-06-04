@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     WEBHOOK_SIG: str = os.getenv("WEBHOOK_SIG", "whsec_test_1234567890")
 
     model_config = ConfigDict(env_file=".env")
+    main_route: str = os.getenv("LAGOON_ROUTE", "http://localhost:8800")
 
     def model_post_init(self, values):
         # Add Lagoon routes to CORS origins if available

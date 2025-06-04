@@ -14,6 +14,7 @@ from sqlalchemy import inspect
 from sqlalchemy.orm import sessionmaker, Session
 from app.db.database import engine
 from app.db.models import Base, DBUser
+from app.core.config import settings
 from app.core.security import get_password_hash
 from app.services.ses import SESService
 from app.services.stripe import setup_stripe_webhook
@@ -114,6 +115,8 @@ def init_ses_templates():
 
 def main():
     try:
+        print(f"Initialising resources for environment: {os.getenv('ENV_SUFFIX', 'local')}")
+        print(f"Main route: {settings.main_route}")
         db = init_database()
         init_webhooks(db)
         init_ses_templates()
