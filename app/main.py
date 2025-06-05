@@ -11,9 +11,14 @@ from app.db.database import get_db
 from app.middleware.audit import AuditLogMiddleware
 from app.middleware.prometheus import PrometheusMiddleware
 from app.middleware.auth import AuthMiddleware
+from app.core.worker import monitor_teams
+from contextlib import asynccontextmanager
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 import os
 import logging
+from datetime import UTC
 
 # Configure logging
 logging.basicConfig(
@@ -28,6 +33,41 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
         if request.headers.get("X-Forwarded-Proto") == "https":
             request.scope["scheme"] = "https"
         return await call_next(request)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Create scheduler
+    scheduler = AsyncIOScheduler()
+
+    async def monitor_teams_job():
+        try:
+            db = next(get_db())
+            await monitor_teams(db)
+        except Exception as e:
+            logger.error(f"Error in monitor_teams background task: {str(e)}")
+
+    # Set schedule based on environment
+    if settings.ENV_SUFFIX == "local":
+        # Run every 10 minutes in local environment
+        cron_trigger = CronTrigger(minute='*/1', timezone=UTC)
+    else:
+        # Run at 8 AM UTC in other environments
+        cron_trigger = CronTrigger(hour=8, minute=0, timezone=UTC)
+
+    scheduler.add_job(
+        monitor_teams_job,
+        trigger=cron_trigger,
+        id='monitor_teams',
+        replace_existing=True
+    )
+
+    # Start the scheduler
+    scheduler.start()
+
+    yield
+
+    # Shutdown the scheduler
+    scheduler.shutdown()
 
 app = FastAPI(
     title="Private AI Keys as a Service",
@@ -69,7 +109,8 @@ app = FastAPI(
             "name": "Private AI Keys",
             "description": "Operations for managing your private AI keys"
         }
-    ]
+    ],
+    lifespan=lifespan
 )
 
 # Get allowed origins from environment
