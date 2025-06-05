@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useAuth } from '@/hooks/use-auth';
 import { get, post } from '@/utils/api';
 import Script from 'next/script';
+import { useQuery } from '@tanstack/react-query';
 
 declare module 'react' {
   interface HTMLAttributes<T> extends AriaAttributes, DOMAttributes<T> {
@@ -25,10 +26,24 @@ declare global {
   }
 }
 
+interface PricingTable {
+  pricing_table_id: string;
+  updated_at: string;
+}
+
 export default function PricingPage() {
   const { user } = useAuth();
   const [clientSecret, setClientSecret] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Fetch pricing table ID
+  const { data: pricingTable, error: pricingTableError } = useQuery<PricingTable>({
+    queryKey: ['pricing-table'],
+    queryFn: async () => {
+      const response = await get('/pricing-tables');
+      return response.json();
+    },
+  });
 
   useEffect(() => {
     const fetchSessionToken = async () => {
@@ -57,8 +72,12 @@ export default function PricingPage() {
     }
   };
 
-  if (error) {
-    return <div className="text-red-500">{error}</div>;
+  if (error || pricingTableError) {
+    return <div className="text-red-500">{error || 'Failed to load pricing table. Please try again later.'}</div>;
+  }
+
+  if (!process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY) {
+    return <div className="text-red-500">Stripe configuration is missing. Please contact support.</div>;
   }
 
   return (
@@ -73,11 +92,11 @@ export default function PricingPage() {
         </button>
       </div>
       <Script src="https://js.stripe.com/v3/pricing-table.js" strategy="afterInteractive" />
-      {clientSecret && (
+      {clientSecret && pricingTable && (
         // @ts-expect-error - Stripe pricing table is a custom element
         <stripe-pricing-table
-          pricing-table-id="prctbl_1RRqUhPszKsC9PNiI6av2bXK"
-          publishable-key="pk_test_51RRqG1PszKsC9PNicexnqtXn94fTB1MQXbGxApaEojDe81ZtouhTXDzN8Jgg44DBiHvMjGA5aQSvTZ1Q4N4uLl9i00rhEbJpHm"
+          pricing-table-id={pricingTable.pricing_table_id}
+          publishable-key={process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}
           customer-session-client-secret={clientSecret}
         />
       )}
