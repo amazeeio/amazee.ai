@@ -2,6 +2,7 @@ from datetime import datetime, UTC
 from sqlalchemy.orm import Session
 from app.db.models import DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey, DBUser, DBRegion
 from app.services.litellm import LiteLLMService
+from app.services.ses import SESService
 import logging
 from collections import defaultdict
 from app.core.resource_limits import get_token_restrictions
@@ -245,6 +246,9 @@ async def monitor_teams(db: Session):
     """
     logger.info("Monitoring teams")
     try:
+        # Initialize SES service
+        ses_service = SESService()
+
         # Get all teams
         teams = db.query(DBTeam).all()
         current_time = datetime.now(UTC)
@@ -281,8 +285,29 @@ async def monitor_teams(db: Session):
             # Check for notification conditions for teams without products
             if not has_products:
                 if 25 <= team_age <= 30:
-                    # TODO: Send notification for approaching expiration
-                    logger.warning(f"Team {team.name} (ID: {team.id}) is approaching expiration in {30 - team_age} days")
+                    days_remaining = 30 - team_age
+                    logger.warning(f"Team {team.name} (ID: {team.id}) is approaching expiration in {days_remaining} days")
+
+                    # Send expiration notification email
+                    try:
+                        template_data = {
+                            "team_name": team.name,
+                            "days_remaining": days_remaining,
+                            # TODO: Fix this to be a JWT thing
+                            "dashboard_url": f"https://app.amazee.ai/team/{team.id}/billing"
+                        }
+
+                        if team.email:
+                            await ses_service.send_email(
+                                to_addresses=[team.email],
+                                template_name="team-expiring",
+                                template_data=template_data
+                            )
+                            logger.info(f"Sent expiration notification email to team {team.name} (ID: {team.id})")
+                        else:
+                            logger.warning(f"No email found for team {team.name} (ID: {team.id})")
+                    except Exception as e:
+                        logger.error(f"Failed to send expiration notification email to team {team.name}: {str(e)}")
                 elif team_age > 30:
                     # Post expired metric
                     team_expired_metric.labels(
