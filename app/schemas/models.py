@@ -312,3 +312,12 @@ class Product(ProductBase):
 class PricingTableSession(BaseModel):
     client_secret: str
     model_config = ConfigDict(from_attributes=True)
+
+class PricingTableCreate(BaseModel):
+    pricing_table_id: str
+    model_config = ConfigDict(from_attributes=True)
+
+class PricingTableResponse(BaseModel):
+    pricing_table_id: str
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
