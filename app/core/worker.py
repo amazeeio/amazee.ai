@@ -39,6 +39,12 @@ key_spend_percentage = Gauge(
     ["team_id", "team_name", "key_alias"]
 )
 
+team_total_spend = Gauge(
+    "team_total_spend",
+    "Total spend across all keys in a team for the current budget period",
+    ["team_id", "team_name"]
+)
+
 # Track active team labels to zero out metrics for inactive teams
 active_team_labels = set()
 
@@ -288,6 +294,9 @@ async def monitor_teams(db: Session):
             # Get all keys for the team grouped by region
             keys_by_region = await get_team_keys_by_region(db, team.id)
 
+            # Track total spend across all keys for this team
+            team_total = 0
+
             # Monitor keys for each region
             for region, keys in keys_by_region.items():
                 try:
@@ -306,6 +315,9 @@ async def monitor_teams(db: Session):
                             current_spend = info.get("spend", 0)
                             budget = info.get("max_budget", 0)
                             key_alias = info.get("key_alias", f"key-{key.id}")  # Fallback to key-{id} if no alias
+
+                            # Add to team total
+                            team_total += current_spend
 
                             # Calculate and post percentage used
                             if budget > 0:
@@ -337,6 +349,12 @@ async def monitor_teams(db: Session):
                 except Exception as e:
                     logger.error(f"Error initializing LiteLLM service for region {region.name}: {str(e)}")
                     continue
+
+            # Set the total spend metric for the team
+            team_total_spend.labels(
+                team_id=str(team.id),
+                team_name=team.name
+            ).set(team_total)
 
         # Zero out metrics for teams that are no longer active
         for old_label in active_team_labels - current_team_labels:
