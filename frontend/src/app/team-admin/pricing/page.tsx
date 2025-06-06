@@ -5,6 +5,7 @@ import { useAuth } from '@/hooks/use-auth';
 import { get, post } from '@/utils/api';
 import Script from 'next/script';
 import { useQuery } from '@tanstack/react-query';
+import { getConfig } from '@/utils/config';
 
 declare module 'react' {
   interface HTMLAttributes<T> extends AriaAttributes, DOMAttributes<T> {
@@ -35,6 +36,12 @@ export default function PricingPage() {
   const { user } = useAuth();
   const [clientSecret, setClientSecret] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Fetch config using React Query
+  const { data: config, isLoading: isLoadingConfig } = useQuery({
+    queryKey: ['config'],
+    queryFn: getConfig,
+  });
 
   // Fetch pricing table ID
   const { data: pricingTable, error: pricingTableError } = useQuery<PricingTable>({
@@ -72,11 +79,15 @@ export default function PricingPage() {
     }
   };
 
+  if (isLoadingConfig) {
+    return <div>Loading configuration...</div>;
+  }
+
   if (error || pricingTableError) {
     return <div className="text-red-500">{error || 'Failed to load pricing table. Please try again later.'}</div>;
   }
 
-  if (!process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY) {
+  if (!config?.STRIPE_PUBLISHABLE_KEY) {
     return <div className="text-red-500">Stripe configuration is missing. Please contact support.</div>;
   }
 
@@ -96,7 +107,7 @@ export default function PricingPage() {
         // @ts-expect-error - Stripe pricing table is a custom element
         <stripe-pricing-table
           pricing-table-id={pricingTable.pricing_table_id}
-          publishable-key={process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY}
+          publishable-key={config.STRIPE_PUBLISHABLE_KEY}
           customer-session-client-secret={clientSecret}
         />
       )}
