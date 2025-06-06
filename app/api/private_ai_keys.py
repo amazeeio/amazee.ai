@@ -118,8 +118,9 @@ async def create_vector_db(
     if settings.ENABLE_LIMITS:
         if not team_id: # if the team_id is not set we have already validated the owner_id
             user = db.query(DBUser).filter(DBUser.id == owner_id).first()
-            team_id = user.team_id or FAKE_ID
-        check_vector_db_limits(db, team_id)
+            team_id = user.team_id  # Remove the FAKE_ID fallback
+        if team_id:  # Only check limits if we have a valid team_id
+            check_vector_db_limits(db, team_id)
 
     try:
         # Create new postgres database
@@ -332,7 +333,7 @@ async def create_llm_token(
             litellm_token=litellm_token,
             litellm_api_url=region.litellm_api_url,
             owner_id=owner_id,
-            team_id=team_id,
+            team_id=None if team_id is None else team_id,
             name=private_ai_key.name,
             region_id = private_ai_key.region_id
         )
