@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app.main import app
 from app.db.database import get_db
-from app.db.models import Base, DBRegion, DBUser, DBTeam
+from app.db.models import Base, DBRegion, DBUser, DBTeam, DBProduct
 import os
 from app.core.security import get_password_hash
 from datetime import datetime, UTC, timedelta
@@ -109,6 +109,28 @@ def test_team(db):
     db.commit()
     db.refresh(team)
     return team
+
+@pytest.fixture
+def test_product(db):
+    product = DBProduct(
+        id="prod_test123",
+        name="Test Product",
+        user_count=5,
+        keys_per_user=2,
+        total_key_count=10,
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(product)
+    db.commit()
+    db.refresh(product)
+    return product
 
 @pytest.fixture
 def test_team_id(test_team):

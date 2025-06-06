@@ -67,7 +67,7 @@ from app.api.teams import register_team
 auth_logger = logging.getLogger(__name__)
 
 router = APIRouter(
-    tags=["Authentication"]
+    tags=["auth"]
 )
 
 def get_cookie_domain():

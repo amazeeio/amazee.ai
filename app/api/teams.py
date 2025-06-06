@@ -11,7 +11,9 @@ from app.schemas.models import (
     TeamWithUsers
 )
 
-router = APIRouter()
+router = APIRouter(
+    tags=["teams"]
+)
 
 @router.post("", response_model=Team, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=Team, status_code=status.HTTP_201_CREATED)

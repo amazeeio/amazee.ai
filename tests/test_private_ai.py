@@ -5,6 +5,7 @@ from app.db.models import DBPrivateAIKey, DBTeam, DBUser
 import logging
 from datetime import datetime, UTC
 from app.core.security import get_password_hash
+import os
 
 @pytest.fixture
 def mock_litellm_response():
@@ -223,6 +224,9 @@ def test_create_private_ai_key_without_owner_or_team(mock_post, client, admin_to
     data = response.json()
     assert data["region"] == test_region.name
     assert data["litellm_token"] == "test-private-key-123"
+    assert data["owner_id"] is not None  # Should be set to admin's ID
+    assert data["team_id"] is None
+
     # Verify that the LiteLLM API was called
     mock_post.assert_called_once()
 
@@ -979,9 +983,9 @@ def test_update_budget_period_as_key_creator(mock_post, client, team_key_creator
     db.delete(test_key)
     db.commit()
 
-@patch("app.services.litellm.requests.post")
 @patch("app.services.litellm.requests.get")
-def test_update_budget_duration_as_team_admin(mock_get, mock_post, client, team_admin_token, test_region, mock_litellm_response, db, test_team):
+@patch("app.services.litellm.requests.post")
+def test_update_budget_duration_as_team_admin(mock_post, mock_get, client, team_admin_token, test_region, mock_litellm_response, db, test_team):
     """Test that a team admin can update the budget duration for a team-owned key"""
     # Mock the LiteLLM API responses
     mock_post.return_value.status_code = 200
@@ -1095,6 +1099,41 @@ def test_create_llm_token_as_system_admin(mock_post, client, admin_token, test_r
         key["name"] == "Test LLM Token"
         for key in list_data
     )
+
+@patch("app.services.litellm.requests.post")
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
+def test_create_llm_token_with_expiration(mock_post, client, admin_token, test_region, mock_litellm_response):
+    """Test that when ENABLE_LIMITS is true, new LiteLLM tokens are created with a 30-day expiration duration"""
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Create LLM token
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Test LLM Token with Expiration"
+        }
+    )
+
+    # Verify the create response
+    assert response.status_code == 200
+    data = response.json()
+    assert data["litellm_token"] == "test-private-key-123"
+    assert data["litellm_api_url"] == test_region.litellm_api_url
+    assert data["region"] == test_region.name
+    assert data["name"] == "Test LLM Token with Expiration"
+
+    # Verify that the LiteLLM API was called with the correct duration
+    mock_post.assert_called_once()
+    call_args = mock_post.call_args[1]
+    assert call_args["json"]["duration"] == "30d"  # Verify 1 month
+    assert call_args["json"]["budget_duration"] == "30d"  # Verify 1 month
+    assert call_args["json"]["max_budget"] == 20.0  # Verify 20.0
+    assert call_args["json"]["rpm_limit"] == 500  # Verify 500
 
 def test_create_vector_db_as_system_admin(client, admin_token, test_region):
     """Test that a system admin can create a vector database for themselves"""
@@ -1324,3 +1363,270 @@ def test_list_private_ai_keys_as_non_team_user(mock_post, client, admin_token, t
     assert data[0]["name"] == "user-owned-key"
     assert data[0]["owner_id"] == test_user.id
     assert data[0].get("team_id") is None
+
+@patch("app.services.litellm.requests.get")
+def test_get_private_ai_key_success(mock_get, client, admin_token, test_region, db, test_team):
+    """Test successfully retrieving a private AI key"""
+    region_id = test_region.id
+    region_name = test_region.name
+    # Create a test key owned by the team
+    test_key = DBPrivateAIKey(
+        database_name="test-db-get",
+        name="Test Key for Get",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="test-token-get",
+        litellm_api_url="https://test-litellm.com",
+        team_id=test_team.id,
+        region_id=region_id
+    )
+    db.add(test_key)
+    db.commit()
+    db.refresh(test_key)
+
+    # Mock the LiteLLM API response for key info
+    mock_get.return_value.status_code = 200
+    mock_get.return_value.json.return_value = {
+        "info": {
+            "key_name": "Test Key for Get",
+            "key_alias": "test-key-alias",
+            "spend": 0.0,
+            "expires": "2024-12-31T23:59:59Z",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-02T00:00:00Z",
+            "max_budget": 100.0,
+            "budget_duration": "monthly",
+            "budget_reset_at": "2024-02-01T00:00:00Z",
+            "metadata": {
+                "team_id": str(test_team.id),
+                "region_id": str(test_region.id)
+            }
+        }
+    }
+    mock_get.return_value.raise_for_status.return_value = None
+
+    # Get the key as admin
+    response = client.get(
+        f"/private-ai-keys/{test_key.id}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    # Verify the response
+    assert response.status_code == 200
+    data = response.json()
+    assert data["id"] == test_key.id
+    assert data["name"] == "Test Key for Get"
+    assert data["database_name"] == "test-db-get"
+    assert data["database_host"] == "test-host"
+    assert data["database_username"] == "test-user"
+    assert data["database_password"] == "test-pass"
+    assert data["litellm_token"] == "test-token-get"
+    assert data["litellm_api_url"] == "https://test-litellm.com"
+    assert data["team_id"] == test_team.id
+    assert data["region"] == region_name
+
+    # Verify the LiteLLM API was called correctly
+    mock_get.assert_called_with(
+        f"{test_region.litellm_api_url}/key/info",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        params={"key": test_key.litellm_token}
+    )
+
+    # Clean up
+    db.delete(test_key)
+    db.commit()
+
+@patch("app.services.litellm.requests.get")
+def test_get_private_ai_key_not_found(mock_get, client, admin_token):
+    """Test getting a non-existent private AI key"""
+    # Try to get a non-existent key
+    response = client.get(
+        "/private-ai-keys/99999",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    # Verify the response
+    assert response.status_code == 404
+    assert "Private AI Key not found" in response.json()["detail"]
+
+@patch("app.services.litellm.requests.get")
+def test_get_private_ai_key_unauthorized(mock_get, client, test_token, test_region, db, test_team):
+    """Test getting a private AI key without proper authorization"""
+    # Create a test key owned by the team
+    test_key = DBPrivateAIKey(
+        database_name="test-db-unauthorized",
+        name="Test Key for Unauthorized",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="test-token-unauthorized",
+        litellm_api_url="https://test-litellm.com",
+        team_id=test_team.id,
+        region_id=test_region.id
+    )
+    db.add(test_key)
+    db.commit()
+    db.refresh(test_key)
+
+    # Try to get the key as a regular user
+    response = client.get(
+        f"/private-ai-keys/{test_key.id}",
+        headers={"Authorization": f"Bearer {test_token}"}
+    )
+
+    # Verify the response
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
+
+    # Clean up
+    db.delete(test_key)
+    db.commit()
+
+@patch("app.services.litellm.requests.post")
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
+def test_create_too_many_service_keys(mock_post, client, admin_token, test_region, mock_litellm_response, db, test_team):
+    """Test that when ENABLE_LIMITS is true, creating too many service keys fails"""
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    team_id = test_team.id
+    # Create first service key
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "First Service Key",
+            "team_id": team_id
+        }
+    )
+    assert response.status_code == 200
+
+    # Try to create second service key
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Second Service Key",
+            "team_id": team_id
+        }
+    )
+    assert response.status_code == 402
+    assert "Team has reached the maximum service LLM token limit of 1 tokens" in response.json()["detail"]
+
+@patch("app.services.litellm.requests.post")
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
+def test_create_too_many_user_keys(mock_post, client, admin_token, test_region, mock_litellm_response, db, test_team_user):
+    """Test that when ENABLE_LIMITS is true, creating too many user keys fails"""
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    user_id = test_team_user.id
+    # Create first user key
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "First User Key",
+            "owner_id": user_id
+        }
+    )
+    assert response.status_code == 200
+
+    # Try to create second user key
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Second User Key",
+            "owner_id": user_id
+        }
+    )
+    assert response.status_code == 402
+    assert "User has reached the maximum LLM token limit of 1 tokens" in response.json()["detail"]
+
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
+def test_create_too_many_vector_dbs(client, admin_token, test_region, db, test_team):
+    """Test that when ENABLE_LIMITS is true, creating too many vector DBs fails"""
+    # Create first vector DB
+    team_id = test_team.id
+    response = client.post(
+        "/private-ai-keys/vector-db",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "First Vector DB",
+            "team_id": team_id
+        }
+    )
+    assert response.status_code == 200
+
+    # Try to create second vector DB
+    response = client.post(
+        "/private-ai-keys/vector-db",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Second Vector DB",
+            "team_id": team_id
+        }
+    )
+    assert response.status_code == 402
+    assert "Team has reached the maximum vector DB limit of 1 databases" in response.json()["detail"]
+
+@patch("app.services.litellm.requests.post")
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
+def test_create_too_many_total_keys(mock_post, client, admin_token, test_region, mock_litellm_response, db, test_team, test_team_user):
+    """Test that when ENABLE_LIMITS is true, creating too many total keys fails"""
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = mock_litellm_response
+    mock_post.return_value.raise_for_status.return_value = None
+
+    team_id = test_team.id
+    user_id = test_team_user.id
+    region_id = test_region.id
+    # Create first key (service key)
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": region_id,
+            "name": "First Key",
+            "team_id": team_id
+        }
+    )
+    assert response.status_code == 200
+
+    # Create second key (user key)
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": region_id,
+            "name": "Second Key",
+            "owner_id": user_id
+        }
+    )
+    assert response.status_code == 200
+
+    # Try to create third key
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": region_id,
+            "name": "Third Key",
+            "owner_id": user_id
+        }
+    )
+    assert response.status_code == 402
+    assert "Team has reached the maximum LLM token limit of 2 tokens" in response.json()["detail"]

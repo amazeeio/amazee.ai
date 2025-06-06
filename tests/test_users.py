@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from app.db.models import DBUser, DBTeam
 from datetime import datetime, UTC
 from unittest.mock import patch
+import os
 
 def test_create_user(client, test_admin, admin_token):
     response = client.post(
@@ -319,6 +320,35 @@ def test_create_user_with_invalid_role_by_team_admin(client, team_admin_token, t
     assert response.status_code == 400
     assert "Invalid role" in response.json()["detail"]
 
+def test_make_non_team_user_admin(client, admin_token, test_user, db):
+    """
+    Test that a system admin can make a non-team user an admin.
+
+    GIVEN: The authenticated user is a system admin
+    WHEN: They try to make a non-team user an admin
+    THEN: A 200 success is returned and the user is updated
+    """
+    # Ensure test_user is not an admin and not in a team
+    test_user = db.merge(test_user)
+    test_user.is_admin = False
+    test_user.team_id = None
+    db.commit()
+    db.refresh(test_user)
+
+    # Update the user to make them an admin
+    response = client.put(
+        f"/users/{test_user.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "email": test_user.email,
+            "is_admin": True,
+            "is_active": True
+        }
+    )
+    assert response.status_code == 200
+    user_data = response.json()
+    assert user_data["is_admin"] is True
+
 def test_make_team_member_admin_by_team_admin(client, team_admin_token, admin_token):
     """
     Test that a team admin cannot make a user an admin.
@@ -377,3 +407,25 @@ def test_user_privilege_escalation(client, team_admin_token):
     )
     assert response.status_code == 404
     assert "User not found" in response.json()["detail"]
+
+@patch('app.api.users.settings.ENABLE_LIMITS', True)
+def test_create_user_with_limits_enabled(client, team_admin_token, test_team, db):
+    """
+    Test that a team cannot create more users when ENABLE_LIMITS is true and they have reached their limit.
+
+    GIVEN: a team with one user, and ENABLE_LIMITS is true
+    WHEN: the team tries to create another user
+    THEN: a 402 payment required is returned
+    """
+    # Create a new user in the team
+    response = client.post(
+        "/users/",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={
+            "email": "newteamuser@example.com",
+            "password": "newpassword",
+            "team_id": test_team.id
+        }
+    )
+    assert response.status_code == 402
+    assert "Team has reached the maximum user limit" in response.json()["detail"]
