@@ -1,4 +1,4 @@
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timedelta
 from sqlalchemy.orm import Session
 from app.db.models import DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey, DBUser, DBRegion
 from app.services.litellm import LiteLLMService
@@ -18,6 +18,9 @@ from app.services.stripe import (
 )
 from prometheus_client import Gauge, Counter
 from typing import Dict, List
+from app.core.security import create_access_token
+from app.core.config import settings
+from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
 
@@ -283,6 +286,7 @@ async def monitor_teams(db: Session):
             ).set(team_age)
 
             # Check for notification conditions for teams without products
+            logger.info(f"Team {team.name} (ID: {team.id}) has products: {has_products}")
             if not has_products:
                 if 25 <= team_age <= 30:
                     days_remaining = 30 - team_age
@@ -293,13 +297,12 @@ async def monitor_teams(db: Session):
                         template_data = {
                             "team_name": team.name,
                             "days_remaining": days_remaining,
-                            # TODO: Fix this to be a JWT thing
-                            "dashboard_url": f"https://app.amazee.ai/team/{team.id}/billing"
+                            "dashboard_url": generate_team_admin_pricing_url(db, team)
                         }
 
-                        if team.email:
-                            await ses_service.send_email(
-                                to_addresses=[team.email],
+                        if team.admin_email:
+                            ses_service.send_email(
+                                to_addresses=[team.admin_email],
                                 template_name="team-expiring",
                                 template_data=template_data
                             )
@@ -395,4 +398,64 @@ async def monitor_teams(db: Session):
     except Exception as e:
         logger.error(f"Error in team monitoring task: {str(e)}")
         raise e
+
+def generate_team_admin_token(db: Session, team: DBTeam) -> str:
+    """
+    Generate a JWT token that authorizes the bearer as an administrator of the team.
+    The token is valid for 2 days.
+
+    Args:
+        db: Database session
+        team: The team object to generate the token for
+
+    Returns:
+        str: The generated JWT token
+
+    Raises:
+        ValueError: If no admin user is found for the team
+    """
+    # Find a team admin user
+    admin_user = db.query(DBUser).filter(
+        DBUser.team_id == team.id,
+        DBUser.role == "admin"
+    ).first()
+
+    if not admin_user:
+        raise ValueError(f"No admin user found for team {team.name} (ID: {team.id})")
+
+    # Create token payload with team admin claims
+    payload = {
+        "sub": admin_user.email,  # Subject is the admin user's email
+        "exp": datetime.now(UTC) + timedelta(days=2)  # Valid for 2 days
+    }
+
+    # Generate the token
+    token = create_access_token(
+        data=payload,
+        expires_delta=timedelta(days=2)
+    )
+
+    return token
+
+def generate_team_admin_pricing_url(db: Session, team: DBTeam) -> str:
+    """
+    Generate a URL for the team admin pricing page with a JWT token.
+
+    Args:
+        db: Database session
+        team: The team object to generate the URL for
+
+    Returns:
+        str: The generated URL with the JWT token
+    """
+    # Generate the token
+    token = generate_team_admin_token(db, team)
+
+    # Get the frontend URL from settings
+    base_url = "http://localhost:3000" #TODO: Fix this
+    path = '/team-admin/pricing'
+    url = urljoin(base_url, path)
+
+    # Add the token as a query parameter
+    return f"{url}?token={token}"
 
