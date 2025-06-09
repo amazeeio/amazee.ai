@@ -1,7 +1,17 @@
 import pytest
-from app.db.models import DBProduct, DBTeamProduct, DBPrivateAIKey
-from datetime import datetime, UTC
-from app.core.worker import apply_product_for_team, remove_product_from_team, handle_stripe_event_background
+from app.db.models import DBProduct, DBTeamProduct, DBPrivateAIKey, DBTeam, DBUser
+from datetime import datetime, UTC, timedelta
+from app.core.worker import (
+    apply_product_for_team,
+    remove_product_from_team,
+    handle_stripe_event_background,
+    monitor_teams,
+    team_freshness_days,
+    team_expired_metric,
+    key_spend_percentage,
+    team_total_spend,
+    active_team_labels
+)
 from unittest.mock import AsyncMock, patch, Mock
 
 @pytest.mark.asyncio
@@ -503,3 +513,208 @@ async def test_remove_product_multiple_products(db, test_team, test_product):
     # Verify only the first product was removed
     assert len(test_team.active_products) == 1
     assert test_team.active_products[0].product.id == second_product.id
+
+@pytest.mark.asyncio
+@patch('app.core.worker.SESService')
+@patch('app.core.worker.LiteLLMService')
+async def test_monitor_teams_basic_metrics(mock_litellm, mock_ses, db, test_team, test_product):
+    """
+    Test basic team monitoring metrics for teams with and without products.
+    """
+    # Setup test data
+    test_team.created_at = datetime.now(UTC) - timedelta(days=15)  # 15 days old
+    db.add(test_team)
+    db.commit()
+
+    # Create a second team with a product
+    team_with_product = DBTeam(
+        name="Team With Product",
+        stripe_customer_id="cus_456",
+        created_at=datetime.now(UTC) - timedelta(days=20),  # 20 days old
+        last_payment=datetime.now(UTC) - timedelta(days=10)  # Last payment 10 days ago
+    )
+    db.add(team_with_product)
+    db.commit()
+
+    # Add product to second team
+    team_product = DBTeamProduct(
+        team_id=team_with_product.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Run monitoring
+    await monitor_teams(db)
+
+    # Verify metrics for team without product (age since creation)
+    assert team_freshness_days.labels(
+        team_id=str(test_team.id),
+        team_name=test_team.name
+    )._value.get() == 15
+
+    # Verify metrics for team with product (age since last payment)
+    assert team_freshness_days.labels(
+        team_id=str(team_with_product.id),
+        team_name=team_with_product.name
+    )._value.get() == 10
+
+@pytest.mark.asyncio
+@patch('app.core.worker.SESService')
+@patch('app.core.worker.LiteLLMService')
+async def test_monitor_teams_expiration_notification(mock_litellm, mock_ses, db, test_team, test_team_admin):
+    """
+    Test expiration notification for teams approaching expiration.
+    """
+    # Setup test team approaching expiration (26 days old)
+    test_team.created_at = datetime.now(UTC) - timedelta(days=26)
+    test_team.admin_email = test_team_admin.email  # Use the admin fixture's email
+    db.add(test_team)
+    db.commit()
+
+    # Setup mock SES service
+    mock_ses_instance = mock_ses.return_value
+    mock_ses_instance.send_email = Mock()
+
+    # Run monitoring
+    await monitor_teams(db)
+
+    # Verify email was sent
+    mock_ses_instance.send_email.assert_called_once()
+    call_args = mock_ses_instance.send_email.call_args[1]
+    assert call_args['to_addresses'] == [test_team.admin_email]
+    assert call_args['template_name'] == "team-expiring"
+    assert call_args['template_data']['team_name'] == test_team.name
+    assert call_args['template_data']['days_remaining'] == 4  # 30 - 26
+
+@pytest.mark.asyncio
+@patch('app.core.worker.SESService')
+@patch('app.core.worker.LiteLLMService')
+async def test_monitor_teams_expired_metric(mock_litellm, mock_ses, db, test_team):
+    """
+    Test expired team metric for teams past expiration.
+    """
+    # Setup expired test team (31 days old)
+    test_team.created_at = datetime.now(UTC) - timedelta(days=31)
+    db.add(test_team)
+    db.commit()
+
+    # Run monitoring
+    await monitor_teams(db)
+
+    # Verify expired metric was incremented
+    assert team_expired_metric.labels(
+        team_id=str(test_team.id),
+        team_name=test_team.name
+    )._value.get() == 1
+
+@pytest.mark.asyncio
+@patch('app.core.worker.SESService')
+@patch('app.core.worker.LiteLLMService')
+async def test_monitor_teams_key_spend(mock_litellm, mock_ses, db, test_team, test_region, test_team_key_creator):
+    """
+    Test key spend monitoring and metrics.
+    """
+    # Setup test key
+    test_key = DBPrivateAIKey(
+        name="Test Key",
+        database_name="test_db",
+        database_username="test_user",
+        database_password="test_pass",
+        owner_id=test_team_key_creator.id,
+        team_id=test_team.id,
+        region_id=test_region.id,
+        litellm_token="test_token",
+        created_at=datetime.now(UTC)
+    )
+    db.add(test_key)
+    db.commit()
+
+    # Setup mock LiteLLM service
+    mock_litellm_instance = mock_litellm.return_value
+    mock_litellm_instance.get_key_info = AsyncMock(return_value={
+        "info": {
+            "spend": 40.0,
+            "max_budget": 50.0,
+            "key_alias": "test-key"
+        }
+    })
+
+    # Run monitoring
+    await monitor_teams(db)
+
+    # Verify key spend metrics
+    assert key_spend_percentage.labels(
+        team_id=str(test_team.id),
+        team_name=test_team.name,
+        key_alias="test-key"
+    )._value.get() == 80.0  # 40/50 * 100
+
+    # Verify team total spend
+    assert team_total_spend.labels(
+        team_id=str(test_team.id),
+        team_name=test_team.name
+    )._value.get() == 40.0
+
+@pytest.mark.asyncio
+@patch('app.core.worker.SESService')
+@patch('app.core.worker.LiteLLMService')
+async def test_monitor_teams_active_labels(mock_litellm, mock_ses, db, test_team):
+    """
+    Test handling of active team labels.
+    """
+    # First run with test team
+    await monitor_teams(db)
+
+    # Verify test team is tracked
+    assert (str(test_team.id), test_team.name) in active_team_labels
+
+    # Remove test team
+    db.delete(test_team)
+    db.commit()
+
+    # Run monitoring again
+    await monitor_teams(db)
+
+    # Verify test team metrics are zeroed out
+    assert team_freshness_days.labels(
+        team_id=str(test_team.id),
+        team_name=test_team.name
+    )._value.get() == 0
+
+    # Verify test team is no longer in active labels
+    assert (str(test_team.id), test_team.name) not in active_team_labels
+
+@pytest.mark.asyncio
+@patch('app.core.worker.SESService')
+@patch('app.core.worker.LiteLLMService')
+async def test_monitor_teams_error_handling(mock_litellm, mock_ses, db, test_team, test_region):
+    """
+    Test error handling in team monitoring.
+    """
+    # Setup test key with invalid token
+    test_key = DBPrivateAIKey(
+        name="Test Key",
+        database_name="test_db",
+        database_username="test_user",
+        database_password="test_pass",
+        team_id=test_team.id,
+        region_id=test_region.id,
+        litellm_token="invalid_token",
+        created_at=datetime.now(UTC)
+    )
+    db.add(test_key)
+    db.commit()
+
+    # Setup mock LiteLLM service to raise error
+    mock_litellm_instance = mock_litellm.return_value
+    mock_litellm_instance.get_key_info = AsyncMock(side_effect=Exception("API Error"))
+
+    # Run monitoring - should not raise exception
+    await monitor_teams(db)
+
+    # Verify team metrics are still set
+    assert team_freshness_days.labels(
+        team_id=str(test_team.id),
+        team_name=test_team.name
+    )._value.get() is not None
