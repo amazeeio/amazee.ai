@@ -531,20 +531,23 @@ async def delete_private_ai_key(
             detail="Region not found"
         )
 
-    # Delete database and remove from user's list
-    postgres_manager = PostgresManager(region=region)
-
     # Delete LiteLLM token first
     litellm_service = LiteLLMService(
         api_url=region.litellm_api_url,
         api_key=region.litellm_api_key
     )
-    await litellm_service.delete_key(private_ai_key.litellm_token)
+    try:
+        await litellm_service.delete_key(private_ai_key.litellm_token)
+    except HTTPException as e:
+        # Propagate the HTTP exception with its status code
+        raise e
 
-    # Delete the database
-    await postgres_manager.delete_database(
-        private_ai_key.database_name
-    )
+    # Only delete the database if it exists
+    if private_ai_key.database_name:
+        postgres_manager = PostgresManager(region=region)
+        await postgres_manager.delete_database(
+            private_ai_key.database_name
+        )
 
     # Remove the private AI key record from the application database
     db.delete(private_ai_key)

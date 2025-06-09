@@ -90,11 +90,25 @@ class LiteLLMService:
                 }
             )
 
+            # Treat 404 (key not found) as success
+            if response.status_code == 404:
+                return True
+
             response.raise_for_status()
             return True
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error deleting LiteLLM key: {str(e)}")
-            return False
+            error_msg = str(e)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            logger.error(f"Error deleting LiteLLM key: {error_msg}")
+            raise HTTPException(
+                status_code=e.response.status_code if hasattr(e, 'response') and e.response is not None else status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to delete LiteLLM key: {error_msg}"
+            )
 
     async def get_key_info(self, litellm_token: str) -> dict:
         """Get information about a LiteLLM API key"""
