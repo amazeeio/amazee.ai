@@ -1,12 +1,10 @@
 import pytest
-from fastapi.testclient import TestClient
 from unittest.mock import patch
 from app.db.models import DBPrivateAIKey, DBTeam, DBUser
-import logging
 from datetime import datetime, UTC
 from app.core.security import get_password_hash
-import os
 from requests.exceptions import HTTPError
+from app.core.resource_limits import DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
 
 @pytest.fixture
 def mock_litellm_response():
@@ -1133,8 +1131,8 @@ def test_create_llm_token_with_expiration(mock_post, client, admin_token, test_r
     call_args = mock_post.call_args[1]
     assert call_args["json"]["duration"] == "30d"  # Verify 1 month
     assert call_args["json"]["budget_duration"] == "30d"  # Verify 1 month
-    assert call_args["json"]["max_budget"] == 20.0  # Verify 20.0
-    assert call_args["json"]["rpm_limit"] == 500  # Verify 500
+    assert call_args["json"]["max_budget"] == DEFAULT_MAX_SPEND
+    assert call_args["json"]["rpm_limit"] == DEFAULT_RPM_PER_KEY
 
 def test_create_vector_db_as_system_admin(client, admin_token, test_region):
     """Test that a system admin can create a vector database for themselves"""
