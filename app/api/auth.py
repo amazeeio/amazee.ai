@@ -1,14 +1,16 @@
-from typing import Optional, List, Union
-import email_validator
-from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Form
-from email_validator import validate_email, EmailNotValidError
-from sqlalchemy.orm import Session
 import logging
-from logging.handlers import TimedRotatingFileHandler
 import secrets
 import os
+import email_validator
+
+from typing import Optional, List, Union
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Form
+from sqlalchemy.orm import Session
 from urllib.parse import urlparse
-from pathlib import Path
+from fastapi import HTTPException, status, Response, Request, Form
+from fastapi.security import HTTPAuthorizationCredentials
+from jose import JWTError, jwt
+from app.core.config import settings
 
 from app.db.database import get_db
 from app.schemas.models import (
@@ -32,37 +34,11 @@ from app.core.security import (
     get_password_hash,
     create_access_token,
     get_current_user_from_auth,
+    get_current_user,
 )
 from app.services.dynamodb import DynamoDBService
 from app.services.ses import SESService
 from app.api.teams import register_team
-
-# # Configure auth logger - disabled until we make it work in lagoon
-# auth_logger = logging.getLogger("auth")
-# auth_logger.setLevel(logging.INFO)
-#
-# # Create logs directory if it doesn't exist
-# log_dir = Path("logs")
-# log_dir.mkdir(exist_ok=True)
-#
-# # Configure file handler with daily rotation
-# file_handler = TimedRotatingFileHandler(
-#     filename=log_dir / "auth.log",
-#     when="midnight",
-#     interval=1,
-#     backupCount=30,  # Keep logs for 30 days
-#     encoding="utf-8"
-# )
-#
-# # Configure formatter
-# formatter = logging.Formatter(
-#     "%(asctime)s - %(levelname)s - %(message)s",
-#     datefmt="%Y-%m-%d %H:%M:%S"
-# )
-# file_handler.setFormatter(formatter)
-#
-# # Add handler to logger
-# auth_logger.addHandler(file_handler)
 
 auth_logger = logging.getLogger(__name__)
 
@@ -160,7 +136,7 @@ def create_and_set_access_token(response: Response, user_email: str) -> Token:
     # Set cookie with appropriate settings
     response.set_cookie(**cookie_settings)
 
-    return {"access_token": access_token, "token_type": "bearer"}
+    return Token(access_token=access_token, token_type="bearer")
 
 @router.post("/login", response_model=Token)
 async def login(
@@ -317,6 +293,64 @@ async def register(
     auth_logger.info(f"Successfully registered new user: {user.email}")
     return db_user
 
+def generate_validation_token(email: str) -> str:
+    """
+    Generate a validation token for the given email and store it in DynamoDB.
+
+    Args:
+        email (str): The email address to generate a token for
+
+    Returns:
+        str: The generated validation token (8 characters, alphanumeric, uppercase)
+    """
+    # Generate an 8-character alphanumeric code in uppercase
+    code = ''.join(secrets.choice('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') for _ in range(8))
+
+    # Store the code in DynamoDB
+    dynamodb_service = DynamoDBService()
+    dynamodb_service.write_validation_code(email, code)
+
+    return code
+
+def send_validation_code(email: str, db: Session) -> None:
+    """
+    Generate and send a validation code to the specified email address.
+
+    Args:
+        email (str): The email address to send the code to
+        db (Session): Database session to check if user exists
+
+    Raises:
+        HTTPException: If email sending fails
+    """
+    # Generate and store validation code
+    code = generate_validation_token(email)
+
+    # Determine if user exists to choose appropriate template
+    user = db.query(DBUser).filter(DBUser.email == email).first()
+    email_template = 'returning-user-code' if user else 'new-user-code'
+
+    auth_logger.info(f"Sending validation code to {'existing' if user else 'new'} user: {email}")
+
+    # Send the validation code via email
+    ses_service = SESService()
+    email_sent = ses_service.send_email(
+        to_addresses=[email],
+        template_name=email_template,
+        template_data={
+            'code': code
+        }
+    )
+
+    if not email_sent:
+        auth_logger.error(f"Failed to send validation code email to {email}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send validation code email"
+        )
+
+    auth_logger.info(f"Successfully sent validation code to: {email}")
+
 @router.post("/validate-email")
 async def validate_email(
     request: Request,
@@ -358,108 +392,17 @@ async def validate_email(
     auth_logger.info(f"Email validation attempt for: {email}")
     try:
         email_validator.validate_email(email, check_deliverability=False)
-    except EmailNotValidError as e:
+    except email_validator.EmailNotValidError as e:
         auth_logger.warning(f"Invalid email format for {email}: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid email format: {e}"
         )
 
-    # Generate and store validation code
-    code = generate_validation_token(email)
-    user = db.query(DBUser).filter(DBUser.email == email).first()
-    if user:
-        email_template = 'returning-user-code'
-        auth_logger.info(f"Sending validation code to existing user: {email}")
-    else:
-        email_template = 'new-user-code'
-        auth_logger.info(f"Sending validation code to new user: {email}")
-
-    # Send the validation code via email
-    ses_service = SESService()
-    email_sent = ses_service.send_email(
-        to_addresses=[email],
-        template_name=email_template,
-        template_data={
-            'code': code
-        }
-    )
-
-    if not email_sent:
-        auth_logger.error(f"Failed to send validation code email to {email}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send validation code email"
-        )
-
-    auth_logger.info(f"Successfully sent validation code to: {email}")
+    send_validation_code(email, db)
     return {
         "message": "Validation code has been generated and sent"
     }
-
-def generate_token() -> str:
-    return secrets.token_urlsafe(32)
-
-def generate_validation_token(email: str) -> str:
-    """
-    Generate a validation token for the given email and store it in DynamoDB.
-
-    Args:
-        email (str): The email address to generate a token for
-
-    Returns:
-        str: The generated validation token (8 characters, alphanumeric, uppercase)
-    """
-    # Generate an 8-character alphanumeric code in uppercase
-    code = ''.join(secrets.choice('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') for _ in range(8))
-
-    # Store the code in DynamoDB
-    dynamodb_service = DynamoDBService()
-    dynamodb_service.write_validation_code(email, code)
-
-    return code
-
-# API Token routes (as apposed to AI Token routes)
-@router.post("/token", response_model=APIToken)
-async def create_token(
-    token_create: APITokenCreate,
-    current_user = Depends(get_current_user_from_auth),
-    db: Session = Depends(get_db)
-):
-    db_token = DBAPIToken(
-        name=token_create.name,
-        token=generate_token(),
-        user_id=current_user.id
-    )
-    db.add(db_token)
-    db.commit()
-    db.refresh(db_token)
-    return db_token
-
-@router.get("/token", response_model=List[APITokenResponse])
-async def list_tokens(
-    current_user = Depends(get_current_user_from_auth),
-    db: Session = Depends(get_db)
-):
-    """List all API tokens for the current user"""
-    return current_user.api_tokens
-
-@router.delete("/token/{token_id}")
-async def delete_token(
-    token_id: int,
-    current_user = Depends(get_current_user_from_auth),
-    db: Session = Depends(get_db)
-):
-    """Delete an API token"""
-    token = db.query(DBAPIToken).filter(
-        DBAPIToken.id == token_id,
-        DBAPIToken.user_id == current_user.id
-    ).first()
-    if not token:
-        raise HTTPException(status_code=404, detail="Token not found")
-    db.delete(token)
-    db.commit()
-    return {"message": "Token deleted successfully"}
 
 @router.post("/sign-in", response_model=Token)
 async def sign_in(
@@ -535,3 +478,114 @@ async def sign_in(
 
     auth_logger.info(f"Successful sign-in for user: {sign_in_data.username}")
     return create_and_set_access_token(response, user.email)
+
+# API Token routes (as apposed to AI Token routes)
+def generate_api_token() -> str:
+    return secrets.token_urlsafe(32)
+
+@router.post("/token", response_model=APIToken)
+async def create_token(
+    token_create: APITokenCreate,
+    current_user = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db)
+):
+    db_token = DBAPIToken(
+        name=token_create.name,
+        token=generate_api_token(),
+        user_id=current_user.id
+    )
+    db.add(db_token)
+    db.commit()
+    db.refresh(db_token)
+    return db_token
+
+@router.get("/token", response_model=List[APITokenResponse])
+async def list_tokens(
+    current_user = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db)
+):
+    """List all API tokens for the current user"""
+    return current_user.api_tokens
+
+@router.delete("/token/{token_id}")
+async def delete_token(
+    token_id: int,
+    current_user = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db)
+):
+    """Delete an API token"""
+    token = db.query(DBAPIToken).filter(
+        DBAPIToken.id == token_id,
+        DBAPIToken.user_id == current_user.id
+    ).first()
+    if not token:
+        raise HTTPException(status_code=404, detail="Token not found")
+    db.delete(token)
+    db.commit()
+    return {"message": "Token deleted successfully"}
+
+@router.get("/validate-jwt", response_model=Token)
+async def validate_jwt(
+    request: Request,
+    response: Response,
+    token: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Validate a JWT token and either refresh it or send a new validation code.
+
+    Query parameters:
+    - **token**: The JWT token to validate
+
+    Returns:
+    - If token is valid: A new access token with cookies set
+    - If token is expired: 401 with message about validation code being sent
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    try:
+        # Try to validate the token
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM]
+        )
+        email: str = payload.get("sub")
+        user = db.query(DBUser).filter(DBUser.email == email).first()
+        if not user:
+            raise credentials_exception
+
+        # Token is valid, create new access token
+        auth_logger.info(f"Successfully validated JWT for user: {user.email}")
+        return create_and_set_access_token(response, user.email)
+
+    except JWTError as e:
+        if isinstance(e, jwt.ExpiredSignatureError):
+            # Token is expired, try to get email from expired token
+            try:
+                # Decode without verifying expiration
+                payload = jwt.decode(
+                    token,
+                    settings.SECRET_KEY,
+                    algorithms=[settings.ALGORITHM],
+                    options={"verify_exp": False}
+                )
+                email = payload.get("sub")
+
+                if not email:
+                    raise credentials_exception
+
+                send_validation_code(email, db)
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token expired. A new validation code has been sent to your email."
+                )
+
+            except JWTError:
+                raise credentials_exception
+        else:
+            raise credentials_exception
