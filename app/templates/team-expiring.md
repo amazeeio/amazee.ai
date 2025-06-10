@@ -1,18 +1,17 @@
-Your Amazee.ai Free Trial is Expiring Soon
+Your amazee.ai trial is ending - Let's keep going!
 
-Dear {{team_name}} Team,
+Hi {{name}},
+Your free trial of amazee.ai is ending soon, and we hope you've enjoyed
+building with private AI for Drupal.
 
-We noticed that your free trial period on Amazee.ai will expire in {{days_remaining}} days. To continue using our services and maintain uninterrupted access to your AI capabilities, we recommend upgrading to one of our paid plans.
+Ready to keep going?
+Select your subscription plan to continue using amazee.ai
+without interruption. All your configurations will remain exactly as
+they are.
 
-Here's what you'll get with our paid plans:
-- Unlimited API access
-- Higher rate limits
-- Priority support
-- Advanced features and capabilities
+{{dashboard_url}}
 
-To upgrade your account, simply visit your dashboard at {{dashboard_url}} and select a plan that best fits your needs.
+Questions about plans or pricing? Please email ai.support@amazee.io.
 
-If you have any questions or need assistance choosing the right plan, our team is here to help. Just reply to this email or contact our support team.
-
-Best regards,
-The Amazee.ai Team
+Thanks for trying amazee.ai!
+The amazee.ai Team

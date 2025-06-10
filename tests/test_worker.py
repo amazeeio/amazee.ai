@@ -566,8 +566,8 @@ async def test_monitor_teams_expiration_notification(mock_litellm, mock_ses, db,
     """
     Test expiration notification for teams approaching expiration.
     """
-    # Setup test team approaching expiration (26 days old)
-    test_team.created_at = datetime.now(UTC) - timedelta(days=26)
+    # Setup test team approaching expiration (23 days old, 7 days remaining)
+    test_team.created_at = datetime.now(UTC) - timedelta(days=23)
     test_team.admin_email = test_team_admin.email  # Use the admin fixture's email
     db.add(test_team)
     db.commit()
@@ -585,7 +585,35 @@ async def test_monitor_teams_expiration_notification(mock_litellm, mock_ses, db,
     assert call_args['to_addresses'] == [test_team.admin_email]
     assert call_args['template_name'] == "team-expiring"
     assert call_args['template_data']['team_name'] == test_team.name
-    assert call_args['template_data']['days_remaining'] == 4  # 30 - 26
+    assert call_args['template_data']['days_remaining'] == 7  # 30 - 23
+
+@pytest.mark.asyncio
+@patch('app.core.worker.SESService')
+@patch('app.core.worker.LiteLLMService')
+async def test_monitor_teams_expiration_notification_second(mock_litellm, mock_ses, db, test_team, test_team_admin):
+    """
+    Test second expiration notification for teams approaching expiration.
+    """
+    # Setup test team approaching expiration (25 days old, 5 days remaining)
+    test_team.created_at = datetime.now(UTC) - timedelta(days=25)
+    test_team.admin_email = test_team_admin.email  # Use the admin fixture's email
+    db.add(test_team)
+    db.commit()
+
+    # Setup mock SES service
+    mock_ses_instance = mock_ses.return_value
+    mock_ses_instance.send_email = Mock()
+
+    # Run monitoring
+    await monitor_teams(db)
+
+    # Verify email was sent
+    mock_ses_instance.send_email.assert_called_once()
+    call_args = mock_ses_instance.send_email.call_args[1]
+    assert call_args['to_addresses'] == [test_team.admin_email]
+    assert call_args['template_name'] == "team-expiring"
+    assert call_args['template_data']['team_name'] == test_team.name
+    assert call_args['template_data']['days_remaining'] == 5  # 30 - 25
 
 @pytest.mark.asyncio
 @patch('app.core.worker.SESService')

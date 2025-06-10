@@ -24,6 +24,10 @@ from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
 
+FIRST_EMAIL_DAYS_LEFT = 7
+SECOND_EMAIL_DAYS_LEFT = 5
+TRIAL_OVER_DAYS = 30
+
 # Prometheus metrics
 team_freshness_days = Gauge(
     "team_freshness_days",
@@ -126,7 +130,6 @@ async def handle_stripe_event_background(event, db: Session):
             await remove_product_from_team(db, customer_id, product_id)
     except Exception as e:
         logger.error(f"Error in background event handler: {str(e)}")
-
 
 async def apply_product_for_team(db: Session, customer_id: str, product_id: str, start_date: datetime):
     """
@@ -288,16 +291,15 @@ async def monitor_teams(db: Session):
             # Check for notification conditions for teams without products
             logger.info(f"Team {team.name} (ID: {team.id}) has products: {has_products}")
             if not has_products:
-                if 25 <= team_age <= 30:
-                    days_remaining = 30 - team_age
+                days_remaining = TRIAL_OVER_DAYS - team_age
+                if days_remaining == FIRST_EMAIL_DAYS_LEFT or days_remaining == SECOND_EMAIL_DAYS_LEFT:
                     logger.warning(f"Team {team.name} (ID: {team.id}) is approaching expiration in {days_remaining} days")
-
                     # Send expiration notification email
                     try:
                         template_data = {
                             "team_name": team.name,
                             "days_remaining": days_remaining,
-                            "dashboard_url": generate_team_admin_pricing_url(db, team)
+                            "dashboard_url": generate_pricing_url(db, team)
                         }
 
                         if team.admin_email:
@@ -311,13 +313,19 @@ async def monitor_teams(db: Session):
                             logger.warning(f"No email found for team {team.name} (ID: {team.id})")
                     except Exception as e:
                         logger.error(f"Failed to send expiration notification email to team {team.name}: {str(e)}")
-                elif team_age > 30:
+                elif days_remaining == 0:
+                    logger.warning(f"Team {team.name} (ID: {team.id}) has expired without products")
                     # Post expired metric
                     team_expired_metric.labels(
                         team_id=str(team.id),
                         team_name=team.name
                     ).inc()
-                    logger.warning(f"Team {team.name} (ID: {team.id}) has expired without products")
+                elif days_remaining < 0:
+                    # Post expired metric
+                    team_expired_metric.labels(
+                        team_id=str(team.id),
+                        team_name=team.name
+                    ).inc()
 
             # Get all keys for the team grouped by region
             keys_by_region = await get_team_keys_by_region(db, team.id)
@@ -402,7 +410,6 @@ async def monitor_teams(db: Session):
 def generate_team_admin_token(db: Session, team: DBTeam) -> str:
     """
     Generate a JWT token that authorizes the bearer as an administrator of the team.
-    The token is valid for 2 days.
 
     Args:
         db: Database session
@@ -414,6 +421,7 @@ def generate_team_admin_token(db: Session, team: DBTeam) -> str:
     Raises:
         ValueError: If no admin user is found for the team
     """
+    token_validity_days = 1
     # Find a team admin user
     admin_user = db.query(DBUser).filter(
         DBUser.team_id == team.id,
@@ -425,19 +433,19 @@ def generate_team_admin_token(db: Session, team: DBTeam) -> str:
 
     # Create token payload with team admin claims
     payload = {
-        "sub": admin_user.email,  # Subject is the admin user's email
-        "exp": datetime.now(UTC) + timedelta(days=2)  # Valid for 2 days
+        "sub": admin_user.email,
+        "exp": datetime.now(UTC) + timedelta(days=token_validity_days)
     }
 
     # Generate the token
     token = create_access_token(
         data=payload,
-        expires_delta=timedelta(days=2)
+        expires_delta=timedelta(days=token_validity_days)
     )
 
     return token
 
-def generate_team_admin_pricing_url(db: Session, team: DBTeam) -> str:
+def generate_pricing_url(db: Session, team: DBTeam) -> str:
     """
     Generate a URL for the team admin pricing page with a JWT token.
 
@@ -452,8 +460,8 @@ def generate_team_admin_pricing_url(db: Session, team: DBTeam) -> str:
     token = generate_team_admin_token(db, team)
 
     # Get the frontend URL from settings
-    base_url = "http://localhost:3000" #TODO: Fix this
-    path = '/team-admin/pricing'
+    base_url = settings.frontend_route
+    path = '/pricing'
     url = urljoin(base_url, path)
 
     # Add the token as a query parameter

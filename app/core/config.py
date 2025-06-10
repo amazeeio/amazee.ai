@@ -34,6 +34,7 @@ class Settings(BaseSettings):
 
     model_config = ConfigDict(env_file=".env")
     main_route: str = os.getenv("LAGOON_ROUTE", "http://localhost:8800")
+    frontend_route: str = os.getenv("FRONTEND_ROUTE", "http://localhost:3000")
 
     def model_post_init(self, values):
         # Add Lagoon routes to CORS origins if available
