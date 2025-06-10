@@ -46,20 +46,22 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Error in monitor_teams background task: {str(e)}")
 
-    # Set schedule based on environment
-    if settings.ENV_SUFFIX == "local":
-        # Run every 10 minutes in local environment
-        cron_trigger = CronTrigger(minute='*/1', timezone=UTC)
-    else:
-        # Run at 8 AM UTC in other environments
-        cron_trigger = CronTrigger(hour=8, minute=0, timezone=UTC)
+    # Only add the monitoring job if limits are enabled
+    if settings.ENABLE_LIMITS:
+        # Set schedule based on environment
+        if settings.ENV_SUFFIX == "local":
+            # Run every 1 minute in local environment
+            cron_trigger = CronTrigger(minute='*/1', timezone=UTC)
+        else:
+            # Run at 8 AM UTC in other environments
+            cron_trigger = CronTrigger(hour=8, minute=0, timezone=UTC)
 
-    scheduler.add_job(
-        monitor_teams_job,
-        trigger=cron_trigger,
-        id='monitor_teams',
-        replace_existing=True
-    )
+        scheduler.add_job(
+            monitor_teams_job,
+            trigger=cron_trigger,
+            id='monitor_teams',
+            replace_existing=True
+        )
 
     # Start the scheduler
     scheduler.start()

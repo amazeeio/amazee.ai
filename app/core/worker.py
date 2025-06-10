@@ -31,7 +31,7 @@ TRIAL_OVER_DAYS = 30
 # Prometheus metrics
 team_freshness_days = Gauge(
     "team_freshness_days",
-    "Age of teams in days (since creation for teams without products, since last payment for teams with products)",
+    "Freshness of teams in days (since creation for teams without products, since last payment for teams with products)",
     ["team_id", "team_name"]
 )
 
@@ -56,7 +56,7 @@ team_total_spend = Gauge(
 # Track active team labels to zero out metrics for inactive teams
 active_team_labels = set()
 
-async def get_team_keys_by_region(db: Session, team_id: int) -> Dict[DBRegion, List[DBPrivateAIKey]]:
+def get_team_keys_by_region(db: Session, team_id: int) -> Dict[DBRegion, List[DBPrivateAIKey]]:
     """
     Get all keys for a team grouped by region.
 
@@ -178,7 +178,7 @@ async def apply_product_for_team(db: Session, customer_id: str, product_id: str,
         days_left_in_period, max_max_spend, max_rpm_limit = get_token_restrictions(db, team.id)
 
         # Get all keys for the team grouped by region
-        keys_by_region = await get_team_keys_by_region(db, team.id)
+        keys_by_region = get_team_keys_by_region(db, team.id)
 
         # Update keys for each region
         for region, keys in keys_by_region.items():
@@ -274,35 +274,33 @@ async def monitor_teams(db: Session):
 
             # Calculate team age based on whether they have products
             if has_products and team.last_payment:
-                team_age = (current_time - team.last_payment).days
-            else:
-                team_age = (current_time - team.created_at).days
+                team_freshness = (current_time - team.last_payment).days
+            else: # If a subscription is cancelled this will jump dramatically.
+                team_freshness = (current_time - team.created_at).days
 
-            if team_age < 0:
-                logger.warning(f"Team {team.name} (ID: {team.id}) has a negative age: {team_age} days")
-                team_age = 0
+            if team_freshness < 0:
+                logger.warning(f"Team {team.name} (ID: {team.id}) has a negative age: {team_freshness} days")
+                team_freshness = 0
 
-            # Post age metric
+            # Post freshness metric
             team_freshness_days.labels(
                 team_id=str(team.id),
                 team_name=team.name
-            ).set(team_age)
+            ).set(team_freshness)
 
             # Check for notification conditions for teams without products
-            logger.info(f"Team {team.name} (ID: {team.id}) has products: {has_products}")
             if not has_products:
-                days_remaining = TRIAL_OVER_DAYS - team_age
+                days_remaining = TRIAL_OVER_DAYS - team_freshness
                 if days_remaining == FIRST_EMAIL_DAYS_LEFT or days_remaining == SECOND_EMAIL_DAYS_LEFT:
                     logger.warning(f"Team {team.name} (ID: {team.id}) is approaching expiration in {days_remaining} days")
                     # Send expiration notification email
                     try:
-                        template_data = {
-                            "team_name": team.name,
-                            "days_remaining": days_remaining,
-                            "dashboard_url": generate_pricing_url(db, team)
-                        }
-
                         if team.admin_email:
+                            template_data = {
+                                "team_name": team.name,
+                                "days_remaining": days_remaining,
+                                "dashboard_url": generate_pricing_url(db, team)
+                            }
                             ses_service.send_email(
                                 to_addresses=[team.admin_email],
                                 template_name="team-expiring",
@@ -313,14 +311,7 @@ async def monitor_teams(db: Session):
                             logger.warning(f"No email found for team {team.name} (ID: {team.id})")
                     except Exception as e:
                         logger.error(f"Failed to send expiration notification email to team {team.name}: {str(e)}")
-                elif days_remaining == 0:
-                    logger.warning(f"Team {team.name} (ID: {team.id}) has expired without products")
-                    # Post expired metric
-                    team_expired_metric.labels(
-                        team_id=str(team.id),
-                        team_name=team.name
-                    ).inc()
-                elif days_remaining < 0:
+                elif days_remaining <= 0:
                     # Post expired metric
                     team_expired_metric.labels(
                         team_id=str(team.id),
@@ -328,7 +319,7 @@ async def monitor_teams(db: Session):
                     ).inc()
 
             # Get all keys for the team grouped by region
-            keys_by_region = await get_team_keys_by_region(db, team.id)
+            keys_by_region = get_team_keys_by_region(db, team.id)
 
             # Track total spend across all keys for this team
             team_total = 0
