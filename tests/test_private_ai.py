@@ -1,11 +1,10 @@
 import pytest
-from fastapi.testclient import TestClient
 from unittest.mock import patch
 from app.db.models import DBPrivateAIKey, DBTeam, DBUser
-import logging
 from datetime import datetime, UTC
 from app.core.security import get_password_hash
-import os
+from requests.exceptions import HTTPError
+from app.core.resource_limits import DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
 
 @pytest.fixture
 def mock_litellm_response():
@@ -1132,8 +1131,8 @@ def test_create_llm_token_with_expiration(mock_post, client, admin_token, test_r
     call_args = mock_post.call_args[1]
     assert call_args["json"]["duration"] == "30d"  # Verify 1 month
     assert call_args["json"]["budget_duration"] == "30d"  # Verify 1 month
-    assert call_args["json"]["max_budget"] == 20.0  # Verify 20.0
-    assert call_args["json"]["rpm_limit"] == 500  # Verify 500
+    assert call_args["json"]["max_budget"] == DEFAULT_MAX_SPEND
+    assert call_args["json"]["rpm_limit"] == DEFAULT_RPM_PER_KEY
 
 def test_create_vector_db_as_system_admin(client, admin_token, test_region):
     """Test that a system admin can create a vector database for themselves"""
@@ -1216,8 +1215,14 @@ def test_delete_llm_token_as_system_admin(mock_post, client, admin_token, test_r
         json={"keys": [created_token["litellm_token"]]}
     )
 
-def test_delete_vector_db_as_system_admin(client, admin_token, test_region, db):
+@patch("app.services.litellm.requests.post")
+def test_delete_vector_db_as_system_admin(mock_post, client, admin_token, test_region, db):
     """Test that a system admin can delete their own vector database"""
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 404
+    mock_post.return_value.json.return_value = {"error": "Key not found"}
+    mock_post.return_value.raise_for_status.side_effect = HTTPError("Key not found")
+
     # First create a vector database
     create_response = client.post(
         "/private-ai-keys/vector-db",
@@ -1630,3 +1635,147 @@ def test_create_too_many_total_keys(mock_post, client, admin_token, test_region,
     )
     assert response.status_code == 402
     assert "Team has reached the maximum LLM token limit of 2 tokens" in response.json()["detail"]
+
+@patch("app.services.litellm.requests.post")
+def test_delete_private_ai_key_with_only_vector_db(mock_post, client, admin_token, test_region, db):
+    """Test deleting a private AI key that only has a vector database (no LLM token)"""
+    litellm_api_url = test_region.litellm_api_url
+    litellm_api_key = test_region.litellm_api_key
+    # Create a test key with only vector DB
+    test_key = DBPrivateAIKey(
+        database_name="test-db-vector-only",
+        name="Test Vector DB Only",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token=None,  # No LLM token
+        litellm_api_url=None,  # No LLM API URL
+        owner_id=None,
+        region_id=test_region.id
+    )
+    db.add(test_key)
+    db.commit()
+    db.refresh(test_key)
+
+    # Mock the LiteLLM API response for the None token case
+    mock_post.return_value.status_code = 404
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Delete the key
+    delete_response = client.delete(
+        f"/private-ai-keys/{test_key.id}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    # Verify the delete response
+    assert delete_response.status_code == 200
+    assert delete_response.json()["message"] == "Private AI Key deleted successfully"
+
+    # Verify the key was removed from the database
+    deleted_key = db.query(DBPrivateAIKey).filter(
+        DBPrivateAIKey.id == test_key.id
+    ).first()
+    assert deleted_key is None
+
+    # Verify that LiteLLM API was called with None token
+    mock_post.assert_called_with(
+        f"{litellm_api_url}/key/delete",
+        headers={"Authorization": f"Bearer {litellm_api_key}"},
+        json={"keys": [None]}
+    )
+
+@patch("app.services.litellm.requests.post")
+def test_delete_private_ai_key_with_only_llm_token(mock_post, client, admin_token, test_region, db):
+    """Test deleting a private AI key that only has an LLM token (no vector DB)"""
+    # Create a test key with only LLM token
+    api_key = test_region.litellm_api_key
+    litellm_api_url = test_region.litellm_api_url
+    test_key = DBPrivateAIKey(
+        database_name=None,  # No vector DB
+        name="Test LLM Token Only",
+        database_host=None,
+        database_username=None,
+        database_password=None,
+        litellm_token="test-token-llm-only",
+        litellm_api_url="https://test-litellm.com",
+        owner_id=None,
+        region_id=test_region.id
+    )
+    db.add(test_key)
+    db.commit()
+    db.refresh(test_key)
+
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Delete the key
+    delete_response = client.delete(
+        f"/private-ai-keys/{test_key.id}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    # Verify the delete response
+    assert delete_response.status_code == 200
+    assert delete_response.json()["message"] == "Private AI Key deleted successfully"
+
+    # Verify the key was removed from the database
+    deleted_key = db.query(DBPrivateAIKey).filter(
+        DBPrivateAIKey.id == test_key.id
+    ).first()
+    assert deleted_key is None
+
+    # Verify the LiteLLM token was deleted
+    mock_post.assert_called_with(
+        f"{litellm_api_url}/key/delete",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={"keys": [test_key.litellm_token]}
+    )
+
+@patch("app.services.litellm.requests.post")
+def test_delete_private_ai_key_litellm_service_unavailable(mock_post, client, admin_token, test_region, db):
+    """Test deleting a private AI key when LiteLLM service returns 503"""
+    # Create a test key
+    test_key = DBPrivateAIKey(
+        database_name="test-db-service-unavailable",
+        name="Test Key Service Unavailable",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="test-token-service-unavailable",
+        litellm_api_url="https://test-litellm.com",
+        owner_id=None,
+        region_id=test_region.id
+    )
+    db.add(test_key)
+    db.commit()
+    db.refresh(test_key)
+
+    # Mock the LiteLLM API response to return 503
+    mock_post.return_value.status_code = 503
+    mock_post.return_value.raise_for_status.side_effect = HTTPError("Service Unavailable")
+
+    # Try to delete the key
+    delete_response = client.delete(
+        f"/private-ai-keys/{test_key.id}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    # Verify the delete response
+    assert delete_response.status_code == 500
+    assert "Failed to delete LiteLLM key" in delete_response.json()["detail"]
+
+    # Verify the key was not removed from the database
+    existing_key = db.query(DBPrivateAIKey).filter(
+        DBPrivateAIKey.id == test_key.id
+    ).first()
+    assert existing_key is not None
+    assert existing_key.id == test_key.id
+
+    # Verify the LiteLLM API was called
+    mock_post.assert_called_with(
+        f"{test_region.litellm_api_url}/key/delete",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={"keys": [test_key.litellm_token]}
+    )
+    db.commit()

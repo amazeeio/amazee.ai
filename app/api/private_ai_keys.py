@@ -118,8 +118,9 @@ async def create_vector_db(
     if settings.ENABLE_LIMITS:
         if not team_id: # if the team_id is not set we have already validated the owner_id
             user = db.query(DBUser).filter(DBUser.id == owner_id).first()
-            team_id = user.team_id or FAKE_ID
-        check_vector_db_limits(db, team_id)
+            team_id = user.team_id  # Remove the FAKE_ID fallback
+        if team_id:  # Only check limits if we have a valid team_id
+            check_vector_db_limits(db, team_id)
 
     try:
         # Create new postgres database
@@ -332,7 +333,7 @@ async def create_llm_token(
             litellm_token=litellm_token,
             litellm_api_url=region.litellm_api_url,
             owner_id=owner_id,
-            team_id=team_id,
+            team_id=None if team_id is None else team_id,
             name=private_ai_key.name,
             region_id = private_ai_key.region_id
         )
@@ -531,20 +532,23 @@ async def delete_private_ai_key(
             detail="Region not found"
         )
 
-    # Delete database and remove from user's list
-    postgres_manager = PostgresManager(region=region)
-
     # Delete LiteLLM token first
     litellm_service = LiteLLMService(
         api_url=region.litellm_api_url,
         api_key=region.litellm_api_key
     )
-    await litellm_service.delete_key(private_ai_key.litellm_token)
+    try:
+        await litellm_service.delete_key(private_ai_key.litellm_token)
+    except HTTPException as e:
+        # Propagate the HTTP exception with its status code
+        raise e
 
-    # Delete the database
-    await postgres_manager.delete_database(
-        private_ai_key.database_name
-    )
+    # Only delete the database if it exists
+    if private_ai_key.database_name:
+        postgres_manager = PostgresManager(region=region)
+        await postgres_manager.delete_database(
+            private_ai_key.database_name
+        )
 
     # Remove the private AI key record from the application database
     db.delete(private_ai_key)
