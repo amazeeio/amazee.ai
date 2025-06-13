@@ -23,7 +23,7 @@ import {
 } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Plus, ChevronDown, ChevronRight, UserPlus } from 'lucide-react';
-import { get, post, del } from '@/utils/api';
+import { get, post } from '@/utils/api';
 import {
   Collapsible,
   CollapsibleContent,
@@ -80,7 +80,6 @@ interface Team {
   is_active: boolean;
   created_at: string;
   updated_at: string;
-  last_payment?: string;
   users?: TeamUser[];
   products?: Product[];
 }
@@ -318,68 +317,6 @@ export default function TeamsPage() {
       toast({
         title: 'Success',
         description: 'User removed from team successfully',
-      });
-    },
-    onError: (error: Error) => {
-      toast({
-        title: 'Error',
-        description: error.message,
-        variant: 'destructive',
-      });
-    },
-  });
-
-  const extendTrialMutation = useMutation({
-    mutationFn: async (teamId: string) => {
-      try {
-        const response = await post(`/teams/${teamId}/extend-trial`, {});
-        return response.json();
-      } catch (error) {
-        if (error instanceof Error) {
-          throw new Error(`Failed to extend trial: ${error.message}`);
-        } else {
-          throw new Error('An unexpected error occurred while extending the trial.');
-        }
-      }
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId] });
-      queryClient.invalidateQueries({ queryKey: ['teams'] });
-
-      toast({
-        title: 'Success',
-        description: 'Trial extended successfully',
-      });
-    },
-    onError: (error: Error) => {
-      toast({
-        title: 'Error',
-        description: error.message,
-        variant: 'destructive',
-      });
-    },
-  });
-
-  const deleteTeamMutation = useMutation({
-    mutationFn: async (teamId: string) => {
-      try {
-        const response = await del(`/teams/${teamId}`);
-        return response.json();
-      } catch (error) {
-        if (error instanceof Error) {
-          throw new Error(`Failed to delete team: ${error.message}`);
-        } else {
-          throw new Error('An unexpected error occurred while deleting the team.');
-        }
-      }
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['teams'] });
-      setExpandedTeamId(null);
-
-      toast({
-        title: 'Success',
-        description: 'Team deleted successfully',
       });
     },
     onError: (error: Error) => {
@@ -674,40 +611,6 @@ export default function TeamsPage() {
                                                 <p className="text-sm font-medium text-muted-foreground">Updated At</p>
                                                 <p>{new Date(expandedTeam.updated_at).toLocaleString()}</p>
                                               </div>
-                                            )}
-                                            {expandedTeam.last_payment && (
-                                              <div>
-                                                <p className="text-sm font-medium text-muted-foreground">Last Payment</p>
-                                                <p>{new Date(expandedTeam.last_payment).toLocaleString()}</p>
-                                              </div>
-                                            )}
-                                          </div>
-                                          <div className="flex justify-end space-x-2 mt-4">
-                                            <Button
-                                              variant="outline"
-                                              onClick={() => extendTrialMutation.mutate(expandedTeam.id)}
-                                              disabled={extendTrialMutation.isPending}
-                                            >
-                                              {extendTrialMutation.isPending ? (
-                                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                              ) : null}
-                                              Extend Trial
-                                            </Button>
-                                            {(!expandedTeam.users || expandedTeam.users.length === 0) && (
-                                              <Button
-                                                variant="destructive"
-                                                onClick={() => {
-                                                  if (window.confirm('Are you sure you want to delete this team? This action cannot be undone.')) {
-                                                    deleteTeamMutation.mutate(expandedTeam.id);
-                                                  }
-                                                }}
-                                                disabled={deleteTeamMutation.isPending}
-                                              >
-                                                {deleteTeamMutation.isPending ? (
-                                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                                ) : null}
-                                                Delete Team
-                                              </Button>
                                             )}
                                           </div>
                                         </CardContent>
