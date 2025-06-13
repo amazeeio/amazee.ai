@@ -1,8 +1,9 @@
 from fastapi.testclient import TestClient
-from app.db.models import DBTeam, DBUser
+from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBProduct, DBTeamProduct
 from app.main import app
 from app.core.security import get_password_hash
 from datetime import datetime, UTC
+from unittest.mock import patch, AsyncMock, MagicMock
 
 client = TestClient(app)
 
@@ -251,6 +252,40 @@ def test_delete_team(client, admin_token, test_team, db):
     db_team = db.query(DBTeam).filter(DBTeam.id == test_team.id).first()
     assert db_team is None
 
+def test_delete_team_with_products(client, admin_token, db, test_team, test_product):
+    """Test deleting a team that has associated products"""
+    product_id = test_product.id
+    # Associate the product with the team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=product_id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Delete the team
+    response = client.delete(
+        f"/teams/{test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200
+    assert response.json()["message"] == "Team deleted successfully"
+
+    # Verify the team is deleted
+    db_team = db.query(DBTeam).filter(DBTeam.id == test_team.id).first()
+    assert db_team is None
+
+    # Verify the product association is removed
+    db_team_product = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == test_team.id,
+        DBTeamProduct.product_id == product_id
+    ).first()
+    assert db_team_product is None
+
+    # Verify the product still exists (should not be deleted)
+    db_product = db.query(DBProduct).filter(DBProduct.id == product_id).first()
+    assert db_product is not None
+
 def test_delete_team_unauthorized(client, test_token, test_team):
     """Test deleting a team as a non-admin user"""
     # Try to delete the team as a non-admin user
@@ -408,3 +443,159 @@ def test_team_admin_cannot_remove_user_from_team(client, team_admin_token, test_
     assert response.status_code == 200
     user_data = response.json()
     assert user_data["team_id"] == test_team_user.team_id
+
+@patch("app.services.litellm.requests.post")
+@patch("app.api.teams.SESService")
+def test_extend_team_trial_success(mock_ses_class, mock_litellm_post, client, admin_token, test_team, test_region, db):
+    """Test successfully extending a team's trial period"""
+    # Mock SES service
+    mock_ses_instance = MagicMock()
+    mock_ses_class.return_value = mock_ses_instance
+
+    # Ensure team is attached to session
+    db.add(test_team)
+    db.commit()
+
+    # Mock LiteLLM API response
+    mock_litellm_post.return_value.status_code = 200
+    mock_litellm_post.return_value.json.return_value = {"key": "test-private-key-123"}
+    mock_litellm_post.return_value.raise_for_status.return_value = None
+
+    # Create a test key for the team
+    test_key = DBPrivateAIKey(
+        name="Test Key",
+        database_name="test_db",
+        database_username="test_user",
+        database_password="test_pass",
+        team_id=test_team.id,
+        region_id=test_region.id,
+        litellm_token="test-private-key-123",
+        created_at=datetime.now(UTC)
+    )
+    db.add(test_key)
+    db.commit()
+
+    # Extend the team's trial
+    response = client.post(
+        f"/teams/{test_team.id}/extend-trial",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200
+    assert response.json()["message"] == "Team trial extended successfully"
+
+    # Verify the team's last payment was updated
+    updated_team = db.query(DBTeam).filter(DBTeam.id == test_team.id).first()
+    assert updated_team.last_payment is not None
+    assert (datetime.now(UTC) - updated_team.last_payment).total_seconds() < 5  # Within last 5 seconds
+
+    # Verify LiteLLM API was called to update key restrictions
+    mock_litellm_post.assert_called_with(
+        f"{test_region.litellm_api_url}/key/update",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={
+            "key": test_key.litellm_token,
+            "duration": "30d",
+            "budget_duration": "30d",
+            "max_budget": 27.0,
+            "rpm_limit": 500
+        }
+    )
+
+    # Verify email was sent
+    mock_ses_instance.send_email.assert_called_once()
+    call_args = mock_ses_instance.send_email.call_args[1]
+    assert call_args["to_addresses"] == [test_team.admin_email]
+    assert call_args["template_name"] == "trial-extended"
+    assert call_args["template_data"]["team_name"] == test_team.name
+
+@patch("app.services.litellm.requests.post")
+@patch("app.api.teams.SESService")
+def test_extend_team_trial_litellm_error(mock_ses_class, mock_litellm_post, client, admin_token, test_team, test_region, db):
+    """Test extending a team's trial when LiteLLM API fails"""
+    # Mock SES service
+    mock_ses_instance = MagicMock()
+    mock_ses_class.return_value = mock_ses_instance
+
+    # Ensure team is attached to session
+    db.add(test_team)
+    db.commit()
+
+    # Mock LiteLLM API error
+    mock_litellm_post.return_value.status_code = 500
+    mock_litellm_post.return_value.raise_for_status.side_effect = Exception("API Error")
+
+    # Create a test key for the team
+    test_key = DBPrivateAIKey(
+        name="Test Key",
+        database_name="test_db",
+        database_username="test_user",
+        database_password="test_pass",
+        team_id=test_team.id,
+        region_id=test_region.id,
+        litellm_token="test-private-key-123",
+        created_at=datetime.now(UTC)
+    )
+    db.add(test_key)
+    db.commit()
+
+    # Extend the team's trial
+    response = client.post(
+        f"/teams/{test_team.id}/extend-trial",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200  # Should still succeed despite LiteLLM error
+    assert response.json()["message"] == "Team trial extended successfully"
+
+    # Verify the team's last payment was updated
+    updated_team = db.query(DBTeam).filter(DBTeam.id == test_team.id).first()
+    assert updated_team.last_payment is not None
+
+    # Verify email was still sent
+    mock_ses_instance.send_email.assert_called_once()
+
+@patch("app.services.litellm.requests.post")
+@patch("app.api.teams.SESService")
+def test_extend_team_trial_email_error(mock_ses_class, mock_litellm_post, client, admin_token, test_team, test_region, db):
+    """Test extending a team's trial when email sending fails"""
+    # Mock SES service with error
+    mock_ses_instance = MagicMock()
+    mock_ses_instance.send_email.side_effect = Exception("Email Error")
+    mock_ses_class.return_value = mock_ses_instance
+
+    # Ensure team is attached to session
+    db.add(test_team)
+    db.commit()
+
+    # Mock LiteLLM API success
+    mock_litellm_post.return_value.status_code = 200
+    mock_litellm_post.return_value.json.return_value = {"key": "test-private-key-123"}
+    mock_litellm_post.return_value.raise_for_status.return_value = None
+
+    # Create a test key for the team
+    test_key = DBPrivateAIKey(
+        name="Test Key",
+        database_name="test_db",
+        database_username="test_user",
+        database_password="test_pass",
+        team_id=test_team.id,
+        region_id=test_region.id,
+        litellm_token="test-private-key-123",
+        created_at=datetime.now(UTC)
+    )
+    db.add(test_key)
+    db.commit()
+
+    # Extend the team's trial
+    response = client.post(
+        f"/teams/{test_team.id}/extend-trial",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200  # Should still succeed despite email error
+    assert response.json()["message"] == "Team trial extended successfully"
+
+    # Verify the team's last payment was updated
+    updated_team = db.query(DBTeam).filter(DBTeam.id == test_team.id).first()
+    assert updated_team.last_payment is not None
+
+    # Verify LiteLLM API was called
+    mock_litellm_post.assert_called()
