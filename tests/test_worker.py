@@ -584,7 +584,7 @@ async def test_monitor_teams_expiration_notification(mock_litellm, mock_ses, db,
     call_args = mock_ses_instance.send_email.call_args[1]
     assert call_args['to_addresses'] == [test_team.admin_email]
     assert call_args['template_name'] == "team-expiring"
-    assert call_args['template_data']['team_name'] == test_team.name
+    assert call_args['template_data']['name'] == test_team.name
     assert call_args['template_data']['days_remaining'] == 7  # 30 - 23
 
 @pytest.mark.asyncio
@@ -612,7 +612,7 @@ async def test_monitor_teams_expiration_notification_second(mock_litellm, mock_s
     call_args = mock_ses_instance.send_email.call_args[1]
     assert call_args['to_addresses'] == [test_team.admin_email]
     assert call_args['template_name'] == "team-expiring"
-    assert call_args['template_data']['team_name'] == test_team.name
+    assert call_args['template_data']['name'] == test_team.name
     assert call_args['template_data']['days_remaining'] == 5  # 30 - 25
 
 @pytest.mark.asyncio
@@ -640,7 +640,7 @@ async def test_monitor_teams_trial_expired_notification(mock_litellm, mock_ses, 
     call_args = mock_ses_instance.send_email.call_args[1]
     assert call_args['to_addresses'] == [test_team.admin_email]
     assert call_args['template_name'] == "trial-expired"
-    assert call_args['template_data']['team_name'] == test_team.name
+    assert call_args['template_data']['name'] == test_team.name
 
 @pytest.mark.asyncio
 @patch('app.core.worker.SESService')
