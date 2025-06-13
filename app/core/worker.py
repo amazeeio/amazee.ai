@@ -234,84 +234,13 @@ async def remove_product_from_team(db: Session, customer_id: str, product_id: st
         # Remove the product association
         db.delete(existing_association)
 
+    # TODO: Send notification
+    # TODO: Expire keys if applicable
         db.commit()
     except Exception as e:
         db.rollback()
         logger.error(f"Error removing product from team: {str(e)}")
         raise e
-
-async def monitor_team_keys(team: DBTeam, keys_by_region: Dict[DBRegion, List[DBPrivateAIKey]], expire_keys: bool) -> float:
-    """
-    Monitor spend for all keys in a team across different regions.
-
-    Args:
-        db: Database session
-        team: The team to monitor keys for
-        keys_by_region: Dictionary mapping regions to lists of keys
-
-    Returns:
-        float: Total spend across all keys for the team
-    """
-    team_total = 0
-
-    # Monitor keys for each region
-    for region, keys in keys_by_region.items():
-        try:
-            # Initialize LiteLLM service for this region
-            litellm_service = LiteLLMService(
-                api_url=region.litellm_api_url,
-                api_key=region.litellm_api_key
-            )
-
-            # Check spend for each key in this region
-            for key in keys:
-                try:
-                    # Get current spend using get_key_info
-                    key_info = await litellm_service.get_key_info(key.litellm_token)
-                    info = key_info.get("info", {})
-                    current_spend = info.get("spend", 0)
-                    budget = info.get("max_budget", 0)
-                    key_alias = info.get("key_alias", f"key-{key.id}")  # Fallback to key-{id} if no alias
-
-                    # Set the key duration to 0 days to end its usability.
-                    if expire_keys:
-                        await litellm_service.update_key_duration(key.litellm_token, "0d")
-
-                    # Add to team total
-                    team_total += current_spend
-
-                    # Calculate and post percentage used
-                    if budget > 0:
-                        percentage_used = (current_spend / budget) * 100
-                        key_spend_percentage.labels(
-                            team_id=str(team.id),
-                            team_name=team.name,
-                            key_alias=key_alias
-                        ).set(percentage_used)
-
-                        # Log warning if approaching limit
-                        if percentage_used >= 80:
-                            logger.warning(
-                                f"Key {key_alias} for team {team.name} is approaching spend limit: "
-                                f"${current_spend:.2f} of ${budget:.2f} ({percentage_used:.1f}%)"
-                            )
-                    else:
-                        # Set to 0 if no budget is set
-                        key_spend_percentage.labels(
-                            team_id=str(team.id),
-                            team_name=team.name,
-                            key_alias=key_alias
-                        ).set(0)
-
-                except Exception as e:
-                    logger.error(f"Error monitoring key {key.id} spend: {str(e)}")
-                    continue
-
-        except Exception as e:
-            logger.error(f"Error initializing LiteLLM service for region {region.name}: {str(e)}")
-            continue
-
-    return team_total
 
 async def monitor_teams(db: Session):
     """
@@ -343,6 +272,7 @@ async def monitor_teams(db: Session):
                 DBTeamProduct.team_id == team.id
             ).first() is not None
 
+
             # Calculate team age based on whether they have made a payment
             if team.last_payment:
                 team_freshness = (current_time - team.last_payment.replace(tzinfo=UTC)).days
@@ -359,9 +289,9 @@ async def monitor_teams(db: Session):
                 team_name=team.name
             ).set(team_freshness)
 
-            # Check for notification conditions for teams still in the trial
-            days_remaining = TRIAL_OVER_DAYS - team_freshness
-            if not has_products and not team.last_payment:
+            # Check for notification conditions for teams without products
+            if not has_products:
+                days_remaining = TRIAL_OVER_DAYS - team_freshness
                 if days_remaining == FIRST_EMAIL_DAYS_LEFT or days_remaining == SECOND_EMAIL_DAYS_LEFT:
                     logger.warning(f"Team {team.name} (ID: {team.id}) is approaching expiration in {days_remaining} days")
                     # Send expiration notification email
@@ -409,12 +339,62 @@ async def monitor_teams(db: Session):
 
             # Get all keys for the team grouped by region
             keys_by_region = get_team_keys_by_region(db, team.id)
-            expire_keys = False
-            if days_remaining <= 0:
-                expire_keys = True
 
-            # Monitor keys and get total spend
-            team_total = await monitor_team_keys(team, keys_by_region, expire_keys)
+            # Track total spend across all keys for this team
+            team_total = 0
+
+            # Monitor keys for each region
+            for region, keys in keys_by_region.items():
+                try:
+                    # Initialize LiteLLM service for this region
+                    litellm_service = LiteLLMService(
+                        api_url=region.litellm_api_url,
+                        api_key=region.litellm_api_key
+                    )
+
+                    # Check spend for each key in this region
+                    for key in keys:
+                        try:
+                            # Get current spend using get_key_info
+                            key_info = await litellm_service.get_key_info(key.litellm_token)
+                            info = key_info.get("info", {})
+                            current_spend = info.get("spend", 0)
+                            budget = info.get("max_budget", 0)
+                            key_alias = info.get("key_alias", f"key-{key.id}")  # Fallback to key-{id} if no alias
+
+                            # Add to team total
+                            team_total += current_spend
+
+                            # Calculate and post percentage used
+                            if budget > 0:
+                                percentage_used = (current_spend / budget) * 100
+                                key_spend_percentage.labels(
+                                    team_id=str(team.id),
+                                    team_name=team.name,
+                                    key_alias=key_alias
+                                ).set(percentage_used)
+
+                                # Log warning if approaching limit
+                                if percentage_used >= 80:
+                                    logger.warning(
+                                        f"Key {key_alias} for team {team.name} is approaching spend limit: "
+                                        f"${current_spend:.2f} of ${budget:.2f} ({percentage_used:.1f}%)"
+                                    )
+                            else:
+                                # Set to 0 if no budget is set
+                                key_spend_percentage.labels(
+                                    team_id=str(team.id),
+                                    team_name=team.name,
+                                    key_alias=key_alias
+                                ).set(0)
+
+                        except Exception as e:
+                            logger.error(f"Error monitoring key {key.id} spend: {str(e)}")
+                            continue
+
+                except Exception as e:
+                    logger.error(f"Error initializing LiteLLM service for region {region.name}: {str(e)}")
+                    continue
 
             # Set the total spend metric for the team
             team_total_spend.labels(

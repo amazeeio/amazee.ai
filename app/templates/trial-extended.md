@@ -1,4 +1,5 @@
 Another month to explore amazee.ai - Our gift to you
+
 Hi {{name}},
 
 Your amazee.ai trial period is ending, but we're extending it for another

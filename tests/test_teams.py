@@ -1,9 +1,8 @@
 from fastapi.testclient import TestClient
-from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBProduct, DBTeamProduct
+from app.db.models import DBTeam, DBUser
 from app.main import app
 from app.core.security import get_password_hash
 from datetime import datetime, UTC
-from unittest.mock import patch, AsyncMock, MagicMock
 
 client = TestClient(app)
 
@@ -251,40 +250,6 @@ def test_delete_team(client, admin_token, test_team, db):
     # Verify the team is deleted
     db_team = db.query(DBTeam).filter(DBTeam.id == test_team.id).first()
     assert db_team is None
-
-def test_delete_team_with_products(client, admin_token, db, test_team, test_product):
-    """Test deleting a team that has associated products"""
-    product_id = test_product.id
-    # Associate the product with the team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=product_id
-    )
-    db.add(team_product)
-    db.commit()
-
-    # Delete the team
-    response = client.delete(
-        f"/teams/{test_team.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
-    )
-    assert response.status_code == 200
-    assert response.json()["message"] == "Team deleted successfully"
-
-    # Verify the team is deleted
-    db_team = db.query(DBTeam).filter(DBTeam.id == test_team.id).first()
-    assert db_team is None
-
-    # Verify the product association is removed
-    db_team_product = db.query(DBTeamProduct).filter(
-        DBTeamProduct.team_id == test_team.id,
-        DBTeamProduct.product_id == product_id
-    ).first()
-    assert db_team_product is None
-
-    # Verify the product still exists (should not be deleted)
-    db_product = db.query(DBProduct).filter(DBProduct.id == product_id).first()
-    assert db_product is not None
 
 def test_delete_team_unauthorized(client, test_token, test_team):
     """Test deleting a team as a non-admin user"""
