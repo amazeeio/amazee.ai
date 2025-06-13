@@ -2,14 +2,25 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 from datetime import datetime, UTC
+import logging
 
 from app.db.database import get_db
-from app.db.models import DBTeam
+from app.db.models import DBTeam, DBTeamProduct
 from app.core.security import check_system_admin, check_specific_team_admin
 from app.schemas.models import (
     Team, TeamCreate, TeamUpdate,
     TeamWithUsers
 )
+from app.core.resource_limits import (
+    DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY,
+    get_token_restrictions
+)
+from app.services.litellm import LiteLLMService
+from app.services.ses import SESService
+from app.core.config import settings
+from app.core.worker import get_team_keys_by_region
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     tags=["teams"]
@@ -105,11 +116,15 @@ async def delete_team(
 ):
     """
     Delete a team. Only accessible by admin users.
+    First removes all product associations, then deletes the team.
     """
     # Check if team exists
     db_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not db_team:
         raise HTTPException(status_code=404, detail="Team not found")
+
+    # Remove all product associations
+    db.query(DBTeamProduct).filter(DBTeamProduct.team_id == team_id).delete()
 
     # Delete the team
     db.delete(db_team)
