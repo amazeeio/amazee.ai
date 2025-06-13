@@ -345,9 +345,9 @@ async def monitor_teams(db: Session):
 
             # Calculate team age based on whether they have made a payment
             if team.last_payment:
-                team_freshness = (current_time - team.last_payment).days
+                team_freshness = (current_time - team.last_payment.replace(tzinfo=UTC)).days
             else:
-                team_freshness = (current_time - team.created_at).days
+                team_freshness = (current_time - team.created_at.replace(tzinfo=UTC)).days
 
             if team_freshness < 0:
                 logger.warning(f"Team {team.name} (ID: {team.id}) has a negative age: {team_freshness} days")
@@ -368,7 +368,7 @@ async def monitor_teams(db: Session):
                     try:
                         if team.admin_email:
                             template_data = {
-                                "team_name": team.name,
+                                "name": team.name,
                                 "days_remaining": days_remaining,
                                 "dashboard_url": generate_pricing_url(db, team)
                             }
@@ -387,7 +387,7 @@ async def monitor_teams(db: Session):
                     try:
                         if team.admin_email:
                             template_data = {
-                                "team_name": team.name,
+                                "name": team.name,
                                 "dashboard_url": generate_pricing_url(db, team)
                             }
                             ses_service.send_email(

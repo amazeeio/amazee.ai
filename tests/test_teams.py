@@ -506,7 +506,7 @@ def test_extend_team_trial_success(mock_ses_class, mock_litellm_post, client, ad
     call_args = mock_ses_instance.send_email.call_args[1]
     assert call_args["to_addresses"] == [test_team.admin_email]
     assert call_args["template_name"] == "trial-extended"
-    assert call_args["template_data"]["team_name"] == test_team.name
+    assert call_args["template_data"]["name"] == test_team.name
 
 @patch("app.services.litellm.requests.post")
 @patch("app.api.teams.SESService")

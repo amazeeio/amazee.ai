@@ -184,7 +184,7 @@ async def extend_team_trial(
     try:
         ses_service = SESService()
         template_data = {
-            "team_name": db_team.name,
+            "name": db_team.name,
         }
         ses_service.send_email(
             to_addresses=[db_team.admin_email],
