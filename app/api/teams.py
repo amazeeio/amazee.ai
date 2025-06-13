@@ -2,14 +2,25 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 from datetime import datetime, UTC
+import logging
 
 from app.db.database import get_db
-from app.db.models import DBTeam
+from app.db.models import DBTeam, DBTeamProduct
 from app.core.security import check_system_admin, check_specific_team_admin
 from app.schemas.models import (
     Team, TeamCreate, TeamUpdate,
     TeamWithUsers
 )
+from app.core.resource_limits import (
+    DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY,
+    get_token_restrictions
+)
+from app.services.litellm import LiteLLMService
+from app.services.ses import SESService
+from app.core.config import settings
+from app.core.worker import get_team_keys_by_region
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     tags=["teams"]
@@ -105,14 +116,83 @@ async def delete_team(
 ):
     """
     Delete a team. Only accessible by admin users.
+    First removes all product associations, then deletes the team.
     """
     # Check if team exists
     db_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not db_team:
         raise HTTPException(status_code=404, detail="Team not found")
 
+    # Remove all product associations
+    db.query(DBTeamProduct).filter(DBTeamProduct.team_id == team_id).delete()
+
     # Delete the team
     db.delete(db_team)
     db.commit()
 
     return {"message": "Team deleted successfully"}
+
+@router.post("/{team_id}/extend-trial", dependencies=[Depends(check_system_admin)])
+async def extend_team_trial(
+    team_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Extend a team's trial period. This will:
+    1. Update the team's last payment date to now
+    2. Reset all resource limits to default values
+    3. Send a trial extension email notification
+
+    Only accessible by system admin users.
+    """
+    # Check if team exists
+    db_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if not db_team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    # Update the last payment date to now
+    db_team.last_payment = datetime.now(UTC)
+    db.commit()
+
+    # Get all keys for the team grouped by region
+    keys_by_region = get_team_keys_by_region(db, team_id)
+
+    # Update keys for each region
+    for region, keys in keys_by_region.items():
+        # Initialize LiteLLM service for this region
+        litellm_service = LiteLLMService(
+            api_url=region.litellm_api_url,
+            api_key=region.litellm_api_key
+        )
+
+        # Update each key's duration and budget via LiteLLM
+        for key in keys:
+            try:
+                await litellm_service.set_key_restrictions(
+                    litellm_token=key.litellm_token,
+                    duration=f"{DEFAULT_KEY_DURATION}d",
+                    budget_duration=f"{DEFAULT_KEY_DURATION}d",
+                    budget_amount=DEFAULT_MAX_SPEND,
+                    rpm_limit=DEFAULT_RPM_PER_KEY
+                )
+            except Exception as e:
+                logger.error(f"Failed to update key {key.id} via LiteLLM: {str(e)}")
+                # Continue with other keys even if one fails
+                continue
+
+    # Send trial extension email
+    try:
+        ses_service = SESService()
+        template_data = {
+            "team_name": db_team.name,
+        }
+        ses_service.send_email(
+            to_addresses=[db_team.admin_email],
+            template_name="trial-extended",
+            template_data=template_data
+        )
+    except Exception as e:
+        logger.error(f"Failed to send trial extension email to team {db_team.name}: {str(e)}")
+        # Don't fail the request if email fails
+
+    return {"message": "Team trial extended successfully"}
