@@ -122,8 +122,8 @@ async def update_team(
         try:
             ses_service = SESService()
             template_data = {
-                "team_name": db_team.name,
-                "pricing_url": generate_pricing_url(db, db_team)
+                "name": db_team.name,
+                "dashboard_url": generate_pricing_url(db, db_team)
             }
             ses_service.send_email(
                 to_addresses=[db_team.admin_email],

@@ -697,6 +697,31 @@ export default function TeamsPage() {
                                                 {expandedTeam.is_active ? "Active" : "Inactive"}
                                               </Badge>
                                             </div>
+                                            {expandedTeam.is_always_free && (
+                                              <div>
+                                                <p className="text-sm font-medium text-muted-foreground">Always Free Status</p>
+                                                <div className="flex items-center gap-2">
+                                                  <Badge variant="default" className="bg-green-500 hover:bg-green-600">
+                                                    Always Free
+                                                  </Badge>
+                                                  <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    onClick={() => {
+                                                      if (window.confirm('Are you sure you want to resend the always-free request email?')) {
+                                                        setAlwaysFreeMutation.mutate(expandedTeam.id);
+                                                      }
+                                                    }}
+                                                    disabled={setAlwaysFreeMutation.isPending}
+                                                  >
+                                                    {setAlwaysFreeMutation.isPending ? (
+                                                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                    ) : null}
+                                                    Resend Request
+                                                  </Button>
+                                                </div>
+                                              </div>
+                                            )}
                                             <div>
                                               <p className="text-sm font-medium text-muted-foreground">Created At</p>
                                               <p>{new Date(expandedTeam.created_at).toLocaleString()}</p>
