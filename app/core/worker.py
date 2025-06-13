@@ -368,7 +368,7 @@ async def monitor_teams(db: Session):
                     try:
                         if team.admin_email:
                             template_data = {
-                                "team_name": team.name,
+                                "name": team.name,
                                 "days_remaining": days_remaining,
                                 "dashboard_url": generate_pricing_url(db, team)
                             }
@@ -387,7 +387,7 @@ async def monitor_teams(db: Session):
                     try:
                         if team.admin_email:
                             template_data = {
-                                "team_name": team.name,
+                                "name": team.name,
                                 "dashboard_url": generate_pricing_url(db, team)
                             }
                             ses_service.send_email(
