@@ -127,7 +127,7 @@ async def update_team(
             }
             ses_service.send_email(
                 to_addresses=[db_team.admin_email],
-                template_name="always-free-status-updated",
+                template_name="always-free",
                 template_data=template_data
             )
         except Exception as e:

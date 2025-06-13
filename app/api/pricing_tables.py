@@ -5,7 +5,7 @@ from datetime import datetime, UTC
 from app.db.database import get_db
 from app.db.models import DBSystemSecret, DBTeam
 from app.core.security import check_system_admin, get_role_min_team_admin, get_current_user_from_auth
-from app.schemas.models import PricingTableCreate, PricingTableResponse
+from app.schemas.models import PricingTableCreate, PricingTableResponse, PricingTablesResponse
 
 # Constants for pricing table keys
 STANDARD_PRICING_TABLE_KEY = "CurrentPricingTable"
@@ -120,3 +120,25 @@ async def delete_pricing_table(
     db.commit()
 
     return {"message": "Pricing table deleted successfully"}
+
+@router.get("/list", response_model=PricingTablesResponse, dependencies=[Depends(check_system_admin)])
+async def get_all_pricing_tables(
+    db: Session = Depends(get_db)
+):
+    """
+    Get all pricing tables. Only accessible by system admin users.
+    Returns both the standard and always-free pricing tables.
+    """
+    standard_table = db.query(DBSystemSecret).filter(DBSystemSecret.key == STANDARD_PRICING_TABLE_KEY).first()
+    always_free_table = db.query(DBSystemSecret).filter(DBSystemSecret.key == ALWAYS_FREE_PRICING_TABLE_KEY).first()
+
+    return PricingTablesResponse(
+        standard=PricingTableResponse(
+            pricing_table_id=standard_table.value if standard_table else None,
+            updated_at=standard_table.updated_at or standard_table.created_at if standard_table else None
+        ) if standard_table else None,
+        always_free=PricingTableResponse(
+            pricing_table_id=always_free_table.value if always_free_table else None,
+            updated_at=always_free_table.updated_at or always_free_table.created_at if always_free_table else None
+        ) if always_free_table else None
+    )

@@ -325,3 +325,8 @@ class PricingTableResponse(BaseModel):
     pricing_table_id: str
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+class PricingTablesResponse(BaseModel):
+    standard: PricingTableResponse | None
+    always_free: PricingTableResponse | None
+    model_config = ConfigDict(from_attributes=True)

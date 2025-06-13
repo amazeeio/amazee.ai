@@ -23,7 +23,7 @@ import {
 } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Plus, ChevronDown, ChevronRight, UserPlus } from 'lucide-react';
-import { get, post, del } from '@/utils/api';
+import { get, post, del, put } from '@/utils/api';
 import {
   Collapsible,
   CollapsibleContent,
@@ -83,6 +83,7 @@ interface Team {
   last_payment?: string;
   users?: TeamUser[];
   products?: Product[];
+  is_always_free: boolean;
 }
 
 interface User {
@@ -380,6 +381,37 @@ export default function TeamsPage() {
       toast({
         title: 'Success',
         description: 'Team deleted successfully',
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const setAlwaysFreeMutation = useMutation({
+    mutationFn: async (teamId: string) => {
+      try {
+        const response = await put(`/teams/${teamId}`, { is_always_free: true });
+        return response.json();
+      } catch (error) {
+        if (error instanceof Error) {
+          throw new Error(`Failed to set always-free status: ${error.message}`);
+        } else {
+          throw new Error('An unexpected error occurred while updating the team.');
+        }
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId] });
+      queryClient.invalidateQueries({ queryKey: ['teams'] });
+
+      toast({
+        title: 'Success',
+        description: 'Team set to always-free successfully',
       });
     },
     onError: (error: Error) => {
@@ -693,6 +725,22 @@ export default function TeamsPage() {
                                               ) : null}
                                               Extend Trial
                                             </Button>
+                                            {!expandedTeam.is_always_free && (
+                                              <Button
+                                                variant="outline"
+                                                onClick={() => {
+                                                  if (window.confirm('Are you sure you want to set this team to always-free? This will give them permanent free access.')) {
+                                                    setAlwaysFreeMutation.mutate(expandedTeam.id);
+                                                  }
+                                                }}
+                                                disabled={setAlwaysFreeMutation.isPending}
+                                              >
+                                                {setAlwaysFreeMutation.isPending ? (
+                                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                ) : null}
+                                                Set Always Free
+                                              </Button>
+                                            )}
                                             {(!expandedTeam.users || expandedTeam.users.length === 0) && (
                                               <Button
                                                 variant="destructive"
