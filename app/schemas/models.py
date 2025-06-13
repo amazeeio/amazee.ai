@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, EmailStr
-from typing import Optional, List, ClassVar
+from typing import Optional, List, ClassVar, Literal
 from datetime import datetime
 from sqlalchemy.orm import relationship
 
@@ -247,10 +247,12 @@ class TeamUpdate(BaseModel):
     phone: Optional[str] = None
     billing_address: Optional[str] = None
     is_active: Optional[bool] = None
+    is_always_free: Optional[bool] = None
 
 class Team(TeamBase):
     id: int
     is_active: bool
+    is_always_free: bool
     created_at: datetime
     updated_at: Optional[datetime] = None
     last_payment: Optional[datetime] = None
@@ -316,6 +318,7 @@ class PricingTableSession(BaseModel):
 
 class PricingTableCreate(BaseModel):
     pricing_table_id: str
+    table_type: Literal["standard", "always_free"] = "standard"
     model_config = ConfigDict(from_attributes=True)
 
 class PricingTableResponse(BaseModel):
