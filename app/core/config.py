@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     SES_REGION: str = "eu-west-1"
     ENABLE_LIMITS: bool = os.getenv("ENABLE_LIMITS", "false") == "true"
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "sk_test_string")
+    STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "pk_test_string")
     WEBHOOK_SIG: str = os.getenv("WEBHOOK_SIG", "whsec_test_1234567890")
 
     model_config = ConfigDict(env_file=".env")

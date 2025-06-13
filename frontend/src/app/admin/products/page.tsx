@@ -22,6 +22,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from '@/hooks/use-toast';
 import { get, post, put, del } from '@/utils/api';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 interface Product {
   id: string;
@@ -44,6 +51,11 @@ interface PricingTable {
   updated_at: string;
 }
 
+interface PricingTables {
+  standard: PricingTable | null;
+  always_free: PricingTable | null;
+}
+
 export default function ProductsPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -53,6 +65,7 @@ export default function ProductsPage() {
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [formData, setFormData] = useState<Partial<Product>>({});
   const [pricingTableId, setPricingTableId] = useState('');
+  const [pricingTableType, setPricingTableType] = useState<'standard' | 'always_free'>('standard');
 
   // Update form data
   const updateFormData = (newData: Partial<Product>) => {
@@ -68,11 +81,11 @@ export default function ProductsPage() {
     },
   });
 
-  // Pricing Table Queries
-  const { data: pricingTable } = useQuery<PricingTable>({
-    queryKey: ['pricing-table'],
+  // Pricing Table Query
+  const { data: pricingTables } = useQuery<PricingTables>({
+    queryKey: ['pricing-tables'],
     queryFn: async () => {
-      const response = await get('/pricing-tables');
+      const response = await get('/pricing-tables/list');
       return response.json();
     },
   });
@@ -147,14 +160,15 @@ export default function ProductsPage() {
 
   // Pricing Table Mutations
   const updatePricingTableMutation = useMutation({
-    mutationFn: async (pricingTableId: string) => {
-      const response = await post('/pricing-tables', { pricing_table_id: pricingTableId });
+    mutationFn: async (data: { pricing_table_id: string; table_type: 'standard' | 'always_free' }) => {
+      const response = await post('/pricing-tables', data);
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pricing-table'] });
+      queryClient.invalidateQueries({ queryKey: ['pricing-tables'] });
       setIsPricingTableDialogOpen(false);
       setPricingTableId('');
+      setPricingTableType('standard');
       toast({
         title: "Success",
         description: "Pricing table updated successfully"
@@ -174,7 +188,7 @@ export default function ProductsPage() {
       await del('/pricing-tables');
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pricing-table'] });
+      queryClient.invalidateQueries({ queryKey: ['pricing-tables'] });
       toast({
         title: "Success",
         description: "Pricing table deleted successfully"
@@ -204,7 +218,10 @@ export default function ProductsPage() {
   };
 
   const handleUpdatePricingTable = () => {
-    updatePricingTableMutation.mutate(pricingTableId);
+    updatePricingTableMutation.mutate({
+      pricing_table_id: pricingTableId,
+      table_type: pricingTableType
+    });
   };
 
   const handleDeletePricingTable = () => {
@@ -227,6 +244,21 @@ export default function ProductsPage() {
               </DialogHeader>
               <div className="space-y-4">
                 <div>
+                  <Label htmlFor="pricing-table-type">Table Type</Label>
+                  <Select
+                    value={pricingTableType}
+                    onValueChange={(value: 'standard' | 'always_free') => setPricingTableType(value)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select table type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="standard">Standard</SelectItem>
+                      <SelectItem value="always_free">Always Free</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
                   <Label htmlFor="pricing-table-id">Stripe Pricing Table ID</Label>
                   <Input
                     id="pricing-table-id"
@@ -235,18 +267,44 @@ export default function ProductsPage() {
                     onChange={(e) => setPricingTableId(e.target.value)}
                   />
                 </div>
-                {pricingTable && (
-                  <div className="text-sm text-muted-foreground">
-                    Current pricing table: {pricingTable.pricing_table_id}
-                    <br />
-                    Last updated: {new Date(pricingTable.updated_at).toLocaleString()}
+                <div className="space-y-2">
+                  <div className="text-sm font-medium">Current Pricing Tables</div>
+                  <div className="grid gap-2">
+                    <div className="text-sm">
+                      <span className="font-medium">Standard:</span>{' '}
+                      {pricingTables?.standard ? (
+                        <span className="text-muted-foreground">
+                          {pricingTables.standard.pricing_table_id}
+                          <br />
+                          <span className="text-xs">
+                            Last updated: {new Date(pricingTables.standard.updated_at).toLocaleString()}
+                          </span>
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">Not set</span>
+                      )}
+                    </div>
+                    <div className="text-sm">
+                      <span className="font-medium">Always Free:</span>{' '}
+                      {pricingTables?.always_free ? (
+                        <span className="text-muted-foreground">
+                          {pricingTables.always_free.pricing_table_id}
+                          <br />
+                          <span className="text-xs">
+                            Last updated: {new Date(pricingTables.always_free.updated_at).toLocaleString()}
+                          </span>
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">Not set</span>
+                      )}
+                    </div>
                   </div>
-                )}
+                </div>
                 <div className="flex justify-between">
                   <Button
                     variant="destructive"
                     onClick={handleDeletePricingTable}
-                    disabled={!pricingTable}
+                    disabled={!pricingTables?.standard && !pricingTables?.always_free}
                   >
                     Delete Current Table
                   </Button>
