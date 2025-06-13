@@ -50,8 +50,8 @@ async def lifespan(app: FastAPI):
     if settings.ENABLE_LIMITS:
         # Set schedule based on environment
         if settings.ENV_SUFFIX == "local":
-            # Run every 10 minutes in local environment
-            cron_trigger = CronTrigger(minute='*/10', timezone=UTC)
+            # Run every 1 minute in local environment
+            cron_trigger = CronTrigger(minute='*/1', timezone=UTC)
         else:
             # Run at 8 AM UTC in other environments
             cron_trigger = CronTrigger(hour=8, minute=0, timezone=UTC)

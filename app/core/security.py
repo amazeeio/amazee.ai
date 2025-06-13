@@ -69,10 +69,12 @@ async def get_current_user(
             settings.SECRET_KEY,
             algorithms=[settings.ALGORITHM]
         )
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
     except JWTError:
         raise credentials_exception
 
-    email: str = payload.get("sub")
     user = db.query(DBUser).filter(DBUser.email == email).first()
     if user is None:
         raise credentials_exception

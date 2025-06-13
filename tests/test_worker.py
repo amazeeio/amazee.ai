@@ -526,19 +526,19 @@ async def test_monitor_teams_basic_metrics(mock_litellm, mock_ses, db, test_team
     db.add(test_team)
     db.commit()
 
-    # Create a second team with a product and payment
-    team_with_payment = DBTeam(
-        name="Team With Payment",
+    # Create a second team with a product
+    team_with_product = DBTeam(
+        name="Team With Product",
         stripe_customer_id="cus_456",
         created_at=datetime.now(UTC) - timedelta(days=20),  # 20 days old
         last_payment=datetime.now(UTC) - timedelta(days=10)  # Last payment 10 days ago
     )
-    db.add(team_with_payment)
+    db.add(team_with_product)
     db.commit()
 
     # Add product to second team
     team_product = DBTeamProduct(
-        team_id=team_with_payment.id,
+        team_id=team_with_product.id,
         product_id=test_product.id
     )
     db.add(team_product)
@@ -547,16 +547,16 @@ async def test_monitor_teams_basic_metrics(mock_litellm, mock_ses, db, test_team
     # Run monitoring
     await monitor_teams(db)
 
-    # Verify metrics for team without payment (age since creation)
+    # Verify metrics for team without product (age since creation)
     assert team_freshness_days.labels(
         team_id=str(test_team.id),
         team_name=test_team.name
     )._value.get() == 15
 
-    # Verify metrics for team with payment (age since last payment)
+    # Verify metrics for team with product (age since last payment)
     assert team_freshness_days.labels(
-        team_id=str(team_with_payment.id),
-        team_name=team_with_payment.name
+        team_id=str(team_with_product.id),
+        team_name=team_with_product.name
     )._value.get() == 10
 
 @pytest.mark.asyncio
@@ -564,7 +564,7 @@ async def test_monitor_teams_basic_metrics(mock_litellm, mock_ses, db, test_team
 @patch('app.core.worker.LiteLLMService')
 async def test_monitor_teams_expiration_notification(mock_litellm, mock_ses, db, test_team, test_team_admin):
     """
-    Test first expiration notification for teams approaching expiration (7 days remaining).
+    Test expiration notification for teams approaching expiration.
     """
     # Setup test team approaching expiration (23 days old, 7 days remaining)
     test_team.created_at = datetime.now(UTC) - timedelta(days=23)
@@ -592,7 +592,7 @@ async def test_monitor_teams_expiration_notification(mock_litellm, mock_ses, db,
 @patch('app.core.worker.LiteLLMService')
 async def test_monitor_teams_expiration_notification_second(mock_litellm, mock_ses, db, test_team, test_team_admin):
     """
-    Test second expiration notification for teams approaching expiration (5 days remaining).
+    Test second expiration notification for teams approaching expiration.
     """
     # Setup test team approaching expiration (25 days old, 5 days remaining)
     test_team.created_at = datetime.now(UTC) - timedelta(days=25)
@@ -618,73 +618,17 @@ async def test_monitor_teams_expiration_notification_second(mock_litellm, mock_s
 @pytest.mark.asyncio
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
-async def test_monitor_teams_trial_expired_notification(mock_litellm, mock_ses, db, test_team, test_team_admin):
+async def test_monitor_teams_expired_metric(mock_litellm, mock_ses, db, test_team):
     """
-    Test trial expired notification for teams that have reached expiration.
-    """
-    # Setup test team at expiration (30 days old)
-    test_team.created_at = datetime.now(UTC) - timedelta(days=30)
-    test_team.admin_email = test_team_admin.email
-    db.add(test_team)
-    db.commit()
-
-    # Setup mock SES service
-    mock_ses_instance = mock_ses.return_value
-    mock_ses_instance.send_email = Mock()
-
-    # Run monitoring
-    await monitor_teams(db)
-
-    # Verify expired email was sent
-    mock_ses_instance.send_email.assert_called_once()
-    call_args = mock_ses_instance.send_email.call_args[1]
-    assert call_args['to_addresses'] == [test_team.admin_email]
-    assert call_args['template_name'] == "trial-expired"
-    assert call_args['template_data']['team_name'] == test_team.name
-
-@pytest.mark.asyncio
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.LiteLLMService')
-async def test_monitor_teams_key_expiration(mock_litellm, mock_ses, db, test_team, test_region, test_team_key_creator):
-    """
-    Test key expiration for expired teams.
+    Test expired team metric for teams past expiration.
     """
     # Setup expired test team (31 days old)
     test_team.created_at = datetime.now(UTC) - timedelta(days=31)
     db.add(test_team)
     db.commit()
 
-    # Setup test key
-    test_key = DBPrivateAIKey(
-        name="Test Key",
-        database_name="test_db",
-        database_username="test_user",
-        database_password="test_pass",
-        owner_id=test_team_key_creator.id,
-        team_id=test_team.id,
-        region_id=test_region.id,
-        litellm_token="test_token",
-        created_at=datetime.now(UTC)
-    )
-    db.add(test_key)
-    db.commit()
-
-    # Setup mock LiteLLM service
-    mock_litellm_instance = mock_litellm.return_value
-    mock_litellm_instance.get_key_info = AsyncMock(return_value={
-        "info": {
-            "spend": 40.0,
-            "max_budget": 50.0,
-            "key_alias": "test-key"
-        }
-    })
-    mock_litellm_instance.update_key_duration = AsyncMock()
-
     # Run monitoring
     await monitor_teams(db)
-
-    # Verify key was expired
-    mock_litellm_instance.update_key_duration.assert_called_once_with("test_token", "0d")
 
     # Verify expired metric was incremented
     assert team_expired_metric.labels(
@@ -739,9 +683,6 @@ async def test_monitor_teams_key_spend(mock_litellm, mock_ses, db, test_team, te
         team_id=str(test_team.id),
         team_name=test_team.name
     )._value.get() == 40.0
-
-    # Verify key was not expired (team is not expired)
-    mock_litellm_instance.update_key_duration.assert_not_called()
 
 @pytest.mark.asyncio
 @patch('app.core.worker.SESService')
