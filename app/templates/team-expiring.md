@@ -1,5 +1,4 @@
 Your amazee.ai trial is ending - Let's keep going!
-
 Hi {{name}},
 Your free trial of amazee.ai is ending soon, and we hope you've enjoyed
 building with private AI for Drupal.

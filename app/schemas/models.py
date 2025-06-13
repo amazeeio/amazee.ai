@@ -253,6 +253,7 @@ class Team(TeamBase):
     is_active: bool
     created_at: datetime
     updated_at: Optional[datetime] = None
+    last_payment: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
 class TeamWithUsers(Team):
