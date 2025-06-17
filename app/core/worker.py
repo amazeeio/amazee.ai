@@ -269,8 +269,9 @@ async def monitor_team_keys(team: DBTeam, keys_by_region: Dict[DBRegion, List[DB
                     # Get current spend using get_key_info
                     key_info = await litellm_service.get_key_info(key.litellm_token)
                     info = key_info.get("info", {})
-                    current_spend = info.get("spend", 0)
-                    budget = info.get("max_budget", 0)
+                    # Ensure that even if LiteLLM returns `None` we have a value
+                    current_spend = info.get("spend", 0) or 0.0
+                    budget = info.get("max_budget", 0) or 0.0
                     key_alias = info.get("key_alias", f"key-{key.id}")  # Fallback to key-{id} if no alias
 
                     # Set the key duration to 0 days to end its usability.
