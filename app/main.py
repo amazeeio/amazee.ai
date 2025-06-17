@@ -15,10 +15,14 @@ from app.core.worker import monitor_teams
 from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-
 import os
 import logging
+import fcntl
+import tempfile
 from datetime import UTC
+
+# Set timezone environment variable to prevent tzlocal warning
+os.environ['TZ'] = 'UTC'
 
 # Configure logging
 logging.basicConfig(
@@ -40,11 +44,30 @@ async def lifespan(app: FastAPI):
     scheduler = AsyncIOScheduler()
 
     async def monitor_teams_job():
+        # Create a lock file in the temp directory
+        lock_file = os.path.join(tempfile.gettempdir(), 'monitor_teams.lock')
+
         try:
-            db = next(get_db())
-            await monitor_teams(db)
-        except Exception as e:
-            logger.error(f"Error in monitor_teams background task: {str(e)}")
+            # Try to acquire the lock
+            with open(lock_file, 'w') as f:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    # If we get here, we have the lock
+                    logger.info("Acquired monitor_teams lock, executing job")
+                    try:
+                        db = next(get_db())
+                        await monitor_teams(db)
+                    except Exception as e:
+                        logger.error(f"Error in monitor_teams background task: {str(e)}")
+                except IOError:
+                    # Another process has the lock
+                    logger.info("Another process has the monitor_teams lock, skipping execution")
+        finally:
+            # Clean up the lock file
+            try:
+                os.remove(lock_file)
+            except OSError:
+                pass
 
     # Only add the monitoring job if limits are enabled
     if settings.ENABLE_LIMITS:
