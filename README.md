@@ -72,7 +72,7 @@ See [[tests/stripe_test_trigger.md]] for detailed instructions on testing integr
 
 ### Frontend Tests
 ```bash
-make frontend-test    # Run frontend tests
+make frontend-test    # Run frontend tests if they exist
 ```
 
 ### All Tests
