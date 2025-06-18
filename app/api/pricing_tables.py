@@ -79,22 +79,13 @@ async def get_pricing_table(
     # Check if the team is always-free
     if team.is_always_free:
         pricing_table = db.query(DBSystemSecret).filter(DBSystemSecret.key == ALWAYS_FREE_PRICING_TABLE_KEY).first()
-        if not pricing_table:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Always-free pricing table not found"
-            )
-        return PricingTableResponse(
-            pricing_table_id=pricing_table.value,
-            updated_at=pricing_table.updated_at or pricing_table.created_at
-        )
-
-    # For non-always-free teams, return the standard pricing table
-    pricing_table = db.query(DBSystemSecret).filter(DBSystemSecret.key == STANDARD_PRICING_TABLE_KEY).first()
+    else:
+        # For non-always-free teams, return the standard pricing table
+        pricing_table = db.query(DBSystemSecret).filter(DBSystemSecret.key == STANDARD_PRICING_TABLE_KEY).first()
     if not pricing_table:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No pricing table found"
+            detail="Pricing table ID not found"
         )
     return PricingTableResponse(
         pricing_table_id=pricing_table.value,

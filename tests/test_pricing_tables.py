@@ -284,7 +284,7 @@ def test_get_pricing_table_always_free_not_found(client, db, team_admin_token, t
     # Try to get pricing table
     response = client.get("/pricing-tables", headers={"Authorization": f"Bearer {team_admin_token}"})
     assert response.status_code == status.HTTP_404_NOT_FOUND
-    assert response.json()["detail"] == "Always-free pricing table not found"
+    assert response.json()["detail"] == "Pricing table ID not found"
 
 def test_update_always_free_pricing_table(client, db, admin_token):
     """Test updating an existing always-free pricing table"""
