@@ -22,7 +22,8 @@ import tempfile
 from datetime import UTC
 
 # Set timezone environment variable to prevent tzlocal warning
-os.environ['TZ'] = 'UTC'
+if not os.environ.get('TZ'):
+    os.environ['TZ'] = 'UTC'
 
 # Configure logging
 logging.basicConfig(
