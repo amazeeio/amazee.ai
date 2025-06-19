@@ -362,9 +362,9 @@ async def monitor_teams(db: Session):
 
             # Check for notification conditions for teams still in the trial
             days_remaining = TRIAL_OVER_DAYS - team_freshness
-            if not has_products and not team.last_payment:
+            if not has_products:
                 if days_remaining == FIRST_EMAIL_DAYS_LEFT or days_remaining == SECOND_EMAIL_DAYS_LEFT:
-                    logger.warning(f"Team {team.name} (ID: {team.id}) is approaching expiration in {days_remaining} days")
+                    logger.info(f"Team {team.name} (ID: {team.id}) is approaching expiration in {days_remaining} days")
                     # Send expiration notification email
                     try:
                         if team.admin_email:
@@ -492,7 +492,7 @@ def generate_pricing_url(db: Session, team: DBTeam) -> str:
 
     # Get the frontend URL from settings
     base_url = settings.frontend_route
-    path = '/pricing'
+    path = '/upgrade'
     url = urljoin(base_url, path)
 
     # Add the token as a query parameter

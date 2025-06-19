@@ -45,7 +45,7 @@ def test_generate_pricing_url(db, test_team, test_team_admin):
 
     # Verify URL structure
     assert url.startswith(settings.frontend_route)
-    assert "/pricing" in url
+    assert "/upgrade" in url
     assert "token=" in url
 
     # Extract and verify token
