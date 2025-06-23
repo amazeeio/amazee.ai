@@ -1,22 +1,22 @@
-{{- if .Values.ingress.enabled -}}
+{{- if .Values.frontendIngress.enabled -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ include "amazee-ai.fullname" . }}-backend
+  name: {{ include "amazee-ai.fullname" . }}-frontend
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "amazee-ai.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
+  {{- with .Values.frontendIngress.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  {{- if .Values.ingress.className }}
-  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.frontendIngress.className }}
+  ingressClassName: {{ .Values.frontendIngress.className }}
   {{- end }}
-  {{- if .Values.ingress.tls }}
+  {{- if .Values.frontendIngress.tls }}
   tls:
-    {{- range .Values.ingress.tls }}
+    {{- range .Values.frontendIngress.tls }}
     - hosts:
         {{- range .hosts }}
         - {{ . | quote }}
@@ -25,7 +25,7 @@ spec:
     {{- end }}
   {{- end }}
   rules:
-    {{- range .Values.ingress.hosts }}
+    {{- range .Values.frontendIngress.hosts }}
     - host: {{ .host | quote }}
       http:
         paths:
@@ -34,9 +34,9 @@ spec:
             pathType: {{ .pathType }}
             backend:
               service:
-                name: {{ include "backend.fullname" $ }}-service
+                name: {{ include "frontend.fullname" $ }}-service
                 port:
-                  number: {{ .port | default 8800 }}
+                  number: {{ .port | default 3000 }}
           {{- end }}
     {{- end }}
 {{- end }}

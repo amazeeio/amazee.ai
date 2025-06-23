@@ -18,6 +18,7 @@ Each subchart can be deployed independently or together.
 - Helm 3.0+
 - Docker images for backend and frontend services
 - PostgreSQL with pgvector extension support (either self-hosted or managed)
+- Ingress controller (e.g., nginx-ingress) for external access
 
 ## Installation Options
 
@@ -110,6 +111,55 @@ frontend:
   passwordlessSignIn: "true"
 ```
 
+### Ingress Configuration
+
+The chart supports separate ingress configurations for backend API and frontend web interface:
+
+#### Backend API Ingress
+```yaml
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization"
+  hosts:
+    - host: api.amazee-ai.local
+      paths:
+        - path: /
+          pathType: Prefix
+          port: 8800
+  tls:
+    - secretName: amazee-ai-api-tls
+      hosts:
+        - api.amazee-ai.local
+```
+
+#### Frontend Web Interface Ingress
+```yaml
+frontendIngress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+  hosts:
+    - host: amazee-ai.local
+      paths:
+        - path: /
+          pathType: Prefix
+          port: 3000
+  tls:
+    - secretName: amazee-ai-frontend-tls
+      hosts:
+        - amazee-ai.local
+```
+
 ## Configuration Parameters
 
 | Parameter | Description | Default |
@@ -145,8 +195,10 @@ frontend:
 | `frontend.apiUrl` | Backend API URL | `"http://backend:8800"` |
 | `frontend.stripePublishableKey` | Stripe publishable key | `"pk_test_your_stripe_publishable_key"` |
 | `frontend.passwordlessSignIn` | Enable passwordless sign-in | `"true"` |
-| `ingress.enabled` | Enable ingress | `false` |
-| `ingress.className` | Ingress class name | `"nginx"` |
+| `ingress.enabled` | Enable backend API ingress | `false` |
+| `ingress.className` | Backend ingress class name | `"nginx"` |
+| `frontendIngress.enabled` | Enable frontend web interface ingress | `false` |
+| `frontendIngress.className` | Frontend ingress class name | `"nginx"` |
 
 ## Environment Variables
 
@@ -182,7 +234,7 @@ The chart can deploy the following services based on configuration:
 
 ## Accessing the Application
 
-### Without Ingress
+### Without Ingress (Development)
 ```bash
 # Port forward frontend
 kubectl port-forward -n amazee-ai svc/frontend 3000:3000
@@ -193,8 +245,25 @@ kubectl port-forward -n amazee-ai svc/backend 8800:8800
 
 Then visit http://localhost:3000
 
-### With Ingress
-Enable ingress in values.yaml and configure your domain name.
+### With Ingress (Production)
+Enable ingress in values.yaml and configure your domain name:
+
+```bash
+# Enable backend API ingress
+helm upgrade amazee-ai . -n amazee-ai \
+  --set ingress.enabled=true \
+  --set ingress.hosts[0].host=api.yourdomain.com
+
+# Enable frontend web interface ingress
+helm upgrade amazee-ai . -n amazee-ai \
+  --set frontendIngress.enabled=true \
+  --set frontendIngress.hosts[0].host=yourdomain.com
+```
+
+Make sure to:
+1. Configure your DNS to point to your ingress controller
+2. Create TLS secrets for HTTPS
+3. Update the frontend's `apiUrl` to point to your backend ingress URL
 
 ## Upgrading
 
