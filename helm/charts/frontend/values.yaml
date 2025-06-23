@@ -7,14 +7,14 @@ image:
   tag: "latest"
 
 # Application configuration
-apiUrl: "http://backend:8800"
+apiUrl: "http://localhost:8800"
 stripePublishableKey: "pk_test_your_stripe_publishable_key"
 passwordlessSignIn: "true"
 
 resources:
   requests:
-    memory: "256Mi"
+    memory: "512Mi"
     cpu: "250m"
   limits:
-    memory: "512Mi"
+    memory: "1Gi"
     cpu: "500m"

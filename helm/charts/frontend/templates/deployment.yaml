@@ -21,13 +21,13 @@ spec:
       containers:
         - name: frontend
           image: {{ .Values.image.repository }}:{{ .Values.image.tag | default "latest" }}
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 3000
               protocol: TCP
           command:
             - "npm"
-            - "run"
-            - "dev"
+            - "start"
           env:
             - name: NEXT_PUBLIC_API_URL
               valueFrom:
