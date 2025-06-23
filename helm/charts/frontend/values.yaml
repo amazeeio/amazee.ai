@@ -1,0 +1,20 @@
+# Frontend configuration
+enabled: true
+
+replicas: 1
+image:
+  repository: amazee-ai-frontend
+  tag: "latest"
+
+# Application configuration
+apiUrl: "http://backend:8800"
+stripePublishableKey: "pk_test_your_stripe_publishable_key"
+passwordlessSignIn: "true"
+
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "250m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"

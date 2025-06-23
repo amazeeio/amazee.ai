@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "backend.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "backend.labels" . | nindent 4 }}
+data:
+  DATABASE_URL: {{ .Values.database.url | quote }}
+  ENABLE_METRICS: "{{ .Values.enableMetrics }}"
+  DYNAMODB_REGION: "{{ .Values.dynamodbRegion }}"
+  SES_REGION: "{{ .Values.sesRegion }}"
+  SES_SENDER_EMAIL: "{{ .Values.sesSenderEmail }}"
+  ENABLE_LIMITS: "{{ .Values.enableLimits }}"
+  ENV_SUFFIX: "{{ .Values.envSuffix }}"
+  PASSWORDLESS_SIGN_IN: "{{ .Values.passwordlessSignIn }}"

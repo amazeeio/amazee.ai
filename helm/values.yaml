@@ -1,0 +1,93 @@
+# Default values for amazee.ai
+# This is a YAML-formatted file.
+
+# Global configuration
+global:
+  environment: production
+
+# PostgreSQL subchart configuration
+postgres:
+  enabled: true
+  # Set to true to use external managed PostgreSQL
+  external:
+    enabled: false
+    url: "postgresql://user:password@host:port/database"
+  # Self-hosted PostgreSQL configuration (used when external.enabled = false)
+  internal:
+    enabled: true
+    password: "postgres"
+    storageClass: "standard"
+    storageSize: "10Gi"
+
+# Backend subchart configuration
+backend:
+  enabled: true
+  replicas: 1
+  image:
+    repository: amazee-ai-backend
+    tag: "latest"
+  # Database configuration - set based on postgres configuration
+  database:
+    url: "postgresql://postgres:postgres@postgres:5432/postgres_service"  # Default for internal postgres
+  # Application configuration
+  secretKey: "my-secret-key"  # Key used to hash passwords stored in the database
+  stripeSecretKey: "sk_test_your_stripe_secret_key"
+  webhookSig: ""  # Only needed for local development with Stripe CLI
+  awsAccessKeyId: "your_aws_access_key"
+  awsSecretAccessKey: "your_aws_secret_key"
+  enableMetrics: "true"
+  dynamodbRegion: "us-east-1"
+  sesRegion: "us-east-1"
+  sesSenderEmail: "noreply@amazee.ai"
+  enableLimits: "true"
+  envSuffix: ""
+  passwordlessSignIn: "true"
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+# Frontend subchart configuration
+frontend:
+  enabled: true
+  replicas: 1
+  image:
+    repository: amazee-ai-frontend
+    tag: "latest"
+  apiUrl: "http://backend:8800"
+  stripePublishableKey: "pk_test_your_stripe_publishable_key"
+  passwordlessSignIn: "true"
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+# Ingress configuration
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+  hosts:
+    - host: amazee-ai.local
+      paths:
+        - path: /
+          pathType: Prefix
+          serviceName: amazee-ai-frontend
+          servicePort: 3000
+        - path: /api
+          pathType: Prefix
+          serviceName: amazee-ai-backend
+          servicePort: 8800
+  tls:
+    - secretName: amazee-ai-tls
+      hosts:
+        - amazee-ai.local

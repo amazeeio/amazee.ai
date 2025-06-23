@@ -1,0 +1,23 @@
+name: amazee-ai
+description: A Helm Chart for amazee.ai with independent frontend and backend services
+version: 0.0.1
+apiVersion: v2
+appVersion: "0.0.1"
+keywords:
+  - amazee.ai
+  - frontend
+  - backend
+  - postgresql
+
+dependencies:
+  - name: postgres
+    version: 0.0.1
+    condition: postgres.enabled
+  - name: backend
+    version: 0.0.1
+    condition: backend.enabled
+    dependsOn:
+      - postgres
+  - name: frontend
+    version: 0.0.1
+    condition: frontend.enabled

@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "frontend.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "frontend.labels" . | nindent 4 }}
+    component: web
+spec:
+  replicas: {{ .Values.replicas | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "frontend.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        {{- include "frontend.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: frontend
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag | default "latest" }}
+          ports:
+            - containerPort: 3000
+              protocol: TCP
+          command:
+            - "npm"
+            - "run"
+            - "dev"
+          env:
+            - name: NEXT_PUBLIC_API_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "frontend.fullname" . }}-config
+                  key: NEXT_PUBLIC_API_URL
+            - name: STRIPE_PUBLISHABLE_KEY
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "frontend.fullname" . }}-config
+                  key: STRIPE_PUBLISHABLE_KEY
+            - name: PASSWORDLESS_SIGN_IN
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "frontend.fullname" . }}-config
+                  key: PASSWORDLESS_SIGN_IN
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: {{ .Values.resources.requests.memory | default "256Mi" }}
+              cpu: {{ .Values.resources.requests.cpu | default "250m" }}
+            limits:
+              memory: {{ .Values.resources.limits.memory | default "512Mi" }}
+              cpu: {{ .Values.resources.limits.cpu | default "500m" }}
+      restartPolicy: Always

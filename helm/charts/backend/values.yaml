@@ -1,0 +1,33 @@
+# Backend configuration
+enabled: true
+
+replicas: 1
+image:
+  repository: amazee-ai-backend
+  tag: "latest"
+
+# Database configuration
+database:
+  url: ""  # Will be set automatically based on postgres configuration
+
+# Application configuration
+secretKey: "my-secret-key"  # Key used to hash passwords stored in the database
+stripeSecretKey: "sk_test_your_stripe_secret_key"
+webhookSig: ""  # Only needed for local development with Stripe CLI
+awsAccessKeyId: "your_aws_access_key"
+awsSecretAccessKey: "your_aws_secret_key"
+enableMetrics: "true"
+dynamodbRegion: "us-east-1"
+sesRegion: "us-east-1"
+sesSenderEmail: "noreply@amazee.ai"
+enableLimits: "true"
+envSuffix: ""
+passwordlessSignIn: "true"
+
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "250m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
