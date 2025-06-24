@@ -53,6 +53,12 @@ helm install amazee-ai . -n amazee-ai --create-namespace \
   --set backend.database.url="postgresql://user:pass@external-host:5432/db"
 ```
 
+### 4. Local deployment with kind
+```bash
+kind create cluster --name amazee-ai-local
+
+```
+
 ## Configuration
 
 ### PostgreSQL Configuration

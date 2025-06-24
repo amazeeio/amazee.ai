@@ -34,7 +34,7 @@ spec:
             pathType: {{ .pathType }}
             backend:
               service:
-                name: {{ include "frontend.fullname" $ }}-service
+                name: amazee-ai-frontend
                 port:
                   number: {{ .port | default 3000 }}
           {{- end }}
