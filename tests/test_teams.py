@@ -620,7 +620,7 @@ def test_toggle_always_free_as_admin(mock_ses, client, admin_token, test_team, t
     # Verify email was sent
     mock_ses_instance.send_email.assert_called_once()
     call_args = mock_ses_instance.send_email.call_args[1]
-    assert call_args["to_addresses"] == [test_team.admin_email]
+    assert call_args["to_addresses"] == [test_team_admin.email]
     assert call_args["template_name"] == "always-free"
     assert call_args["template_data"]["name"] == test_team.name
     assert "dashboard_url" in call_args["template_data"]
