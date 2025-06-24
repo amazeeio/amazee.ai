@@ -2,14 +2,12 @@ import logging
 import secrets
 import os
 import email_validator
-from datetime import datetime, timedelta
 
 from typing import Optional, List, Union
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Form
 from sqlalchemy.orm import Session
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 from fastapi import HTTPException, status, Response, Request, Form
-from fastapi.security import HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from app.core.config import settings
 
@@ -28,14 +26,13 @@ from app.schemas.models import (
     TeamCreate
 )
 from app.db.models import (
-    DBUser, DBAPIToken, DBTeam
+    DBUser, DBAPIToken
 )
 from app.core.security import (
     verify_password,
     get_password_hash,
     create_access_token,
     get_current_user_from_auth,
-    get_current_user,
 )
 from app.services.dynamodb import DynamoDBService
 from app.services.ses import SESService
