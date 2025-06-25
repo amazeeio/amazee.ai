@@ -85,6 +85,7 @@ class DBTeam(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     stripe_customer_id = Column(String, nullable=True, unique=True, index=True)
     last_payment = Column(DateTime(timezone=True), nullable=True)
+    last_monitored = Column(DateTime(timezone=True), nullable=True)
 
     users = relationship("DBUser", back_populates="team")
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="team")

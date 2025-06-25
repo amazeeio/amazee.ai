@@ -16,7 +16,7 @@ from app.services.stripe import (
     INVOICE_FAILURE_EVENTS,
     INVOICE_SUCCESS_EVENTS
 )
-from prometheus_client import Gauge, Counter
+from prometheus_client import Gauge, Counter, Summary
 from typing import Dict, List
 from app.core.security import create_access_token
 from app.core.config import settings
@@ -51,6 +51,11 @@ team_total_spend = Gauge(
     "team_total_spend",
     "Total spend across all keys in a team for the current budget period",
     ["team_id", "team_name"]
+)
+
+monitor_teams_duration = Summary(
+    "monitor_teams_duration_seconds",
+    "Time taken to complete the monitor_teams task"
 )
 
 # Track active team labels to zero out metrics for inactive teams
@@ -314,6 +319,7 @@ async def monitor_team_keys(team: DBTeam, keys_by_region: Dict[DBRegion, List[DB
 
     return team_total
 
+@monitor_teams_duration.time()
 async def monitor_teams(db: Session):
     """
     Daily monitoring task for teams that:
@@ -354,15 +360,21 @@ async def monitor_teams(db: Session):
                 logger.warning(f"Team {team.name} (ID: {team.id}) has a negative age: {team_freshness} days")
                 team_freshness = 0
 
-            # Post freshness metric
+            # Post freshness metric (always emit metrics)
             team_freshness_days.labels(
                 team_id=str(team.id),
                 team_name=team.name
             ).set(team_freshness)
 
-            # Check for notification conditions for teams still in the trial
+            # Check if team was monitored within 24 hours
+            should_send_notifications = settings.ENABLE_LIMITS
+            if team.last_monitored:
+                hours_since_monitored = (current_time - team.last_monitored.replace(tzinfo=UTC)).total_seconds() / 3600
+                should_send_notifications = hours_since_monitored >= 24
+
+            # Check for notification conditions for teams still in the trial (only if not recently monitored)
             days_remaining = TRIAL_OVER_DAYS - team_freshness
-            if not has_products:
+            if not has_products and should_send_notifications:
                 # Find the admin email for the team
                 try:
                     admin_email = get_team_admin_email(db, team)
@@ -418,17 +430,24 @@ async def monitor_teams(db: Session):
             # Get all keys for the team grouped by region
             keys_by_region = get_team_keys_by_region(db, team.id)
             expire_keys = False
-            if days_remaining <= 0:
+            if days_remaining <= 0 and should_send_notifications:
                 expire_keys = True
 
             # Monitor keys and get total spend
             team_total = await monitor_team_keys(team, keys_by_region, expire_keys)
 
-            # Set the total spend metric for the team
+            # Set the total spend metric for the team (always emit metrics)
             team_total_spend.labels(
                 team_id=str(team.id),
                 team_name=team.name
             ).set(team_total)
+
+            # Update last_monitored timestamp only if notifications were sent
+            if should_send_notifications:
+                team.last_monitored = current_time
+
+        # Commit the database changes
+        db.commit()
 
         # Zero out metrics for teams that are no longer active
         for old_label in active_team_labels - current_team_labels:
