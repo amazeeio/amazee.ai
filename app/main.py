@@ -71,10 +71,10 @@ async def lifespan(app: FastAPI):
     # Set schedule based on environment
     if settings.ENV_SUFFIX == "local":
         # Run every 10 minutes in local environment
-        cron_trigger = CronTrigger(minute='*/10', timezone=UTC)
+        cron_trigger = CronTrigger(minute='*/10', timezone=UTC, jitter=5)
     else:
         # Run every hour in other environments with jitter
-        cron_trigger = CronTrigger(hour='*', minute=0, timezone=UTC, jitter=300)
+        cron_trigger = CronTrigger(hour='*', minute=0, timezone=UTC, jitter=60)
 
     scheduler.add_job(
         monitor_teams_job,
