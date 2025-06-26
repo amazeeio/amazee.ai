@@ -1,0 +1,21 @@
+# Frontend configuration
+enabled: true
+
+replicas: 1
+image:
+  repository: ghcr.io/amazeeio/amazee.ai-frontend
+  tag: "dev"
+  pullPolicy: IfNotPresent
+
+# Application configuration
+apiUrl: "http://localhost:8800"
+stripePublishableKey: "pk_test_your_stripe_publishable_key"
+passwordlessSignIn: "true"
+
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "250m"
+  limits:
+    memory: "1Gi"
+    cpu: "500m"

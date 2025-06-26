@@ -1,0 +1,9 @@
+name: postgres
+description: PostgreSQL database with pgvector extension for amazee.ai
+version: 0.0.1
+apiVersion: v2
+appVersion: "16"
+keywords:
+  - postgresql
+  - database
+  - pgvector

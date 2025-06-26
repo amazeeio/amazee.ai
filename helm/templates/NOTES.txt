@@ -1,0 +1,49 @@
+Thank you for installing {{ .Chart.Name }}.
+
+Your release is named {{ .Release.Name }}.
+
+To learn more about the release, try:
+
+  $ helm status {{ .Release.Name }}
+  $ helm get all {{ .Release.Name }}
+
+The following services may be deployed based on your configuration:
+
+- PostgreSQL Database (if postgres.enabled = true)
+- Backend API (if backend.enabled = true)
+- Frontend Web App (if frontend.enabled = true)
+
+{{- if .Values.ingress.enabled }}
+The application is accessible via Ingress at:
+{{- range .Values.ingress.hosts }}
+  - {{ .host }}
+{{- end }}
+{{- else }}
+To access the application, you can:
+
+1. Port forward the frontend service:
+   kubectl port-forward -n amazee-ai svc/frontend 3000:3000
+
+2. Port forward the backend service:
+   kubectl port-forward -n amazee-ai svc/backend 8800:8800
+
+Then visit http://localhost:3000 in your browser.
+{{- end }}
+
+IMPORTANT: Before using this deployment, make sure to:
+
+1. Update the values.yaml file with your actual configuration:
+   - Database configuration (internal or external PostgreSQL)
+   - AWS credentials
+   - Stripe API keys
+   - SES configuration
+   - Domain names for ingress
+
+2. Build and push your Docker images:
+   - Backend: {{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}
+   - Frontend: {{ .Values.frontend.image.repository }}:{{ .Values.frontend.image.tag }}
+
+3. If using ingress, create the TLS secret:
+   kubectl create secret tls amazee-ai-tls --cert=path/to/cert.pem --key=path/to/key.pem -n amazee-ai
+
+For more information about deployment options, see the README.md file.
