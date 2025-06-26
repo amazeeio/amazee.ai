@@ -21,7 +21,7 @@ spec:
       containers:
         - name: frontend
           image: {{ .Values.image.repository }}:{{ .Values.image.tag | default "latest" }}
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
           ports:
             - containerPort: 3000
               protocol: TCP

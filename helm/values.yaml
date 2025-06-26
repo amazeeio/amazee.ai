@@ -24,8 +24,9 @@ backend:
   enabled: true
   replicas: 1
   image:
-    repository: amazee-ai-backend
-    tag: "latest"
+    repository: ghcr.io/amazeeio/amazee.ai-backend
+    tag: "dev"
+    pullPolicy: IfNotPresent
   # Database configuration - set based on postgres configuration
   database:
     url: "postgresql://postgres:postgres@amazee-ai-postgres:5432/postgres_service"  # Updated hostname to match service name
@@ -55,8 +56,9 @@ frontend:
   enabled: true
   replicas: 1
   image:
-    repository: amazee-ai-frontend
-    tag: "latest"
+    repository: ghcr.io/amazeeio/amazee.ai-frontend
+    tag: "dev"
+    pullPolicy: IfNotPresent
   apiUrl: "http://backend:8800"
   stripePublishableKey: "pk_test_your_stripe_publishable_key"
   passwordlessSignIn: "true"

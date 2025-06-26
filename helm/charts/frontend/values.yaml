@@ -3,8 +3,9 @@ enabled: true
 
 replicas: 1
 image:
-  repository: amazee-ai-frontend
-  tag: "latest"
+  repository: ghcr.io/amazeeio/amazee.ai-frontend
+  tag: "dev"
+  pullPolicy: IfNotPresent
 
 # Application configuration
 apiUrl: "http://localhost:8800"

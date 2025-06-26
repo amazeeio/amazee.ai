@@ -3,8 +3,9 @@ enabled: true
 
 replicas: 1
 image:
-  repository: amazee-ai-backend
-  tag: "latest"
+  repository: ghcr.io/amazeeio/amazee.ai-backend
+  tag: "dev"
+  pullPolicy: IfNotPresent
 
 # Database configuration
 database:
