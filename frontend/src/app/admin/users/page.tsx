@@ -23,7 +23,7 @@ import {
 } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2 } from 'lucide-react';
-import { get, post, del } from '@/utils/api';
+import { get, post, del, put } from '@/utils/api';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -42,7 +42,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { getCachedConfig } from '@/utils/config';
 
 interface User {
   id: string;
@@ -71,14 +70,8 @@ export default function UsersPage() {
   const [newUserRole, setNewUserRole] = useState('read_only');
   const [newUserTeamId, setNewUserTeamId] = useState<string>('');
   const [isSystemUser, setIsSystemUser] = useState(false);
-  const [isPasswordless, setIsPasswordless] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
   const [teams, setTeams] = useState<{ id: string; name: string }[]>([]);
-
-  useEffect(() => {
-    const config = getCachedConfig();
-    setIsPasswordless(config.PASSWORDLESS_SIGN_IN);
-  }, []);
 
   // Queries
   const { isLoading: isLoadingUsers } = useQuery<User[]>({
@@ -107,7 +100,7 @@ export default function UsersPage() {
   // Mutations
   const updateUserMutation = useMutation({
     mutationFn: async ({ userId, isAdmin }: { userId: string; isAdmin: boolean }) => {
-      const response = await post(`/users/${userId}`, { is_admin: isAdmin });
+      const response = await put(`/users/${userId}`, { is_admin: isAdmin });
       const data = await response.json();
       return data;
     },
@@ -257,16 +250,18 @@ export default function UsersPage() {
       is_system_user?: boolean;
     } = {
       email: newUserEmail,
-      role: newUserRole,
       is_system_user: isSystemUser,
     };
 
-    if (!isPasswordless) {
+    if (newUserPassword.trim()) {
       userData.password = newUserPassword;
     }
 
-    if (!isSystemUser && newUserTeamId) {
-      userData.team_id = newUserTeamId;
+    if (!isSystemUser) {
+      userData.role = newUserRole;
+      if (newUserTeamId) {
+        userData.team_id = newUserTeamId;
+      }
     }
 
     createUserMutation.mutate(userData);
@@ -302,18 +297,18 @@ export default function UsersPage() {
                   required
                 />
               </div>
-              {!isPasswordless && (
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Password</label>
-                  <Input
-                    type="password"
-                    value={newUserPassword}
-                    onChange={(e) => setNewUserPassword(e.target.value)}
-                    placeholder="••••••••"
-                    required
-                  />
-                </div>
-              )}
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Password</label>
+                <Input
+                  type="password"
+                  value={newUserPassword}
+                  onChange={(e) => setNewUserPassword(e.target.value)}
+                  placeholder="••••••••"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Leave empty to allow passwordless sign-in (if enabled)
+                </p>
+              </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">User Type</label>
                 <div className="flex items-center space-x-4">
