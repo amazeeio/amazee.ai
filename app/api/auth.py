@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from sqlalchemy.orm import Session
 from urllib.parse import urlparse
 from fastapi import HTTPException, status, Response, Request, Form
-from fastapi.security import HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from app.core.config import settings
 
@@ -34,11 +33,11 @@ from app.core.security import (
     get_password_hash,
     create_access_token,
     get_current_user_from_auth,
-    get_current_user,
 )
 from app.services.dynamodb import DynamoDBService
 from app.services.ses import SESService
 from app.api.teams import register_team
+from app.core.worker import generate_pricing_url
 
 auth_logger = logging.getLogger(__name__)
 
@@ -532,7 +531,7 @@ async def validate_jwt(
     db: Session = Depends(get_db)
 ):
     """
-    Validate a JWT token and either refresh it or send a new validation code.
+    Validate a JWT token and either refresh it or send a new validation URL.
 
     The token can be provided either:
     - As a query parameter: ?token=your_token
@@ -540,7 +539,7 @@ async def validate_jwt(
 
     Returns:
     - If token is valid: A new access token with cookies set
-    - If token is expired: 401 with message about validation code being sent
+    - If token is expired: 401 with message about validation URL being sent
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -587,13 +586,47 @@ async def validate_jwt(
                 if not email:
                     raise credentials_exception
 
-                send_validation_code(email, db)
+                send_validation_url(email)
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Token expired. A new validation code has been sent to your email."
+                    detail="Token expired. A new validation URL has been sent to your email."
                 )
 
             except JWTError:
                 raise credentials_exception
         else:
             raise credentials_exception
+
+def send_validation_url(email: str) -> None:
+    """
+    Generate and send a validation URL to the specified email address.
+
+    Args:
+        email (str): The email address to send the URL to
+
+    Raises:
+        HTTPException: If email sending fails
+    """
+    # Generate validation URL using the existing function
+    validation_url = generate_pricing_url(email, validity_hours=1)
+
+    auth_logger.info(f"Sending validation URL to user: {email}")
+
+    # Send the validation URL via email
+    ses_service = SESService()
+    email_sent = ses_service.send_email(
+        to_addresses=[email],
+        template_name='returning-user-url',
+        template_data={
+            'validation_url': validation_url
+        }
+    )
+
+    if not email_sent:
+        auth_logger.error(f"Failed to send validation URL email to {email}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send validation URL email"
+        )
+
+    auth_logger.info(f"Successfully sent validation URL to: {email}")

@@ -16,7 +16,7 @@ from app.services.stripe import (
     INVOICE_FAILURE_EVENTS,
     INVOICE_SUCCESS_EVENTS
 )
-from prometheus_client import Gauge, Counter
+from prometheus_client import Gauge, Counter, Summary
 from typing import Dict, List
 from app.core.security import create_access_token
 from app.core.config import settings
@@ -51,6 +51,11 @@ team_total_spend = Gauge(
     "team_total_spend",
     "Total spend across all keys in a team for the current budget period",
     ["team_id", "team_name"]
+)
+
+monitor_teams_duration = Summary(
+    "monitor_teams_duration_seconds",
+    "Time taken to complete the monitor_teams task"
 )
 
 # Track active team labels to zero out metrics for inactive teams
@@ -314,6 +319,7 @@ async def monitor_team_keys(team: DBTeam, keys_by_region: Dict[DBRegion, List[DB
 
     return team_total
 
+@monitor_teams_duration.time()
 async def monitor_teams(db: Session):
     """
     Daily monitoring task for teams that:
@@ -354,27 +360,40 @@ async def monitor_teams(db: Session):
                 logger.warning(f"Team {team.name} (ID: {team.id}) has a negative age: {team_freshness} days")
                 team_freshness = 0
 
-            # Post freshness metric
+            # Post freshness metric (always emit metrics)
             team_freshness_days.labels(
                 team_id=str(team.id),
                 team_name=team.name
             ).set(team_freshness)
 
-            # Check for notification conditions for teams still in the trial
+            # Check if team was monitored within 24 hours
+            should_send_notifications = settings.ENABLE_LIMITS
+            if team.last_monitored:
+                hours_since_monitored = (current_time - team.last_monitored.replace(tzinfo=UTC)).total_seconds() / 3600
+                should_send_notifications = hours_since_monitored >= 24
+
+            # Check for notification conditions for teams still in the trial (only if not recently monitored)
             days_remaining = TRIAL_OVER_DAYS - team_freshness
-            if not has_products:
+            if not has_products and should_send_notifications:
+                # Find the admin email for the team
+                try:
+                    admin_email = get_team_admin_email(db, team)
+                except ValueError:
+                    logger.warning(f"No admin user found for team {team.name} (ID: {team.id}), skipping email notifications")
+                    admin_email = None
+
                 if days_remaining == FIRST_EMAIL_DAYS_LEFT or days_remaining == SECOND_EMAIL_DAYS_LEFT:
                     logger.info(f"Team {team.name} (ID: {team.id}) is approaching expiration in {days_remaining} days")
                     # Send expiration notification email
                     try:
-                        if team.admin_email:
+                        if admin_email:
                             template_data = {
                                 "name": team.name,
                                 "days_remaining": days_remaining,
-                                "dashboard_url": generate_pricing_url(db, team)
+                                "dashboard_url": generate_pricing_url(admin_email)
                             }
                             ses_service.send_email(
-                                to_addresses=[team.admin_email],
+                                to_addresses=[admin_email],
                                 template_name="team-expiring",
                                 template_data=template_data
                             )
@@ -386,13 +405,13 @@ async def monitor_teams(db: Session):
                 elif days_remaining == 0:
                     # Send expired email
                     try:
-                        if team.admin_email:
+                        if admin_email:
                             template_data = {
                                 "name": team.name,
-                                "dashboard_url": generate_pricing_url(db, team)
+                                "dashboard_url": generate_pricing_url(admin_email)
                             }
                             ses_service.send_email(
-                                to_addresses=[team.admin_email],
+                                to_addresses=[admin_email],
                                 template_name="trial-expired",
                                 template_data=template_data
                             )
@@ -411,17 +430,24 @@ async def monitor_teams(db: Session):
             # Get all keys for the team grouped by region
             keys_by_region = get_team_keys_by_region(db, team.id)
             expire_keys = False
-            if days_remaining <= 0:
+            if days_remaining <= 0 and should_send_notifications:
                 expire_keys = True
 
             # Monitor keys and get total spend
             team_total = await monitor_team_keys(team, keys_by_region, expire_keys)
 
-            # Set the total spend metric for the team
+            # Set the total spend metric for the team (always emit metrics)
             team_total_spend.labels(
                 team_id=str(team.id),
                 team_name=team.name
             ).set(team_total)
+
+            # Update last_monitored timestamp only if notifications were sent
+            if should_send_notifications:
+                team.last_monitored = current_time
+
+        # Commit the database changes
+        db.commit()
 
         # Zero out metrics for teams that are no longer active
         for old_label in active_team_labels - current_team_labels:
@@ -438,21 +464,20 @@ async def monitor_teams(db: Session):
         logger.error(f"Error in team monitoring task: {str(e)}")
         raise e
 
-def generate_team_admin_token(db: Session, team: DBTeam) -> str:
+def get_team_admin_email(db: Session, team: DBTeam) -> str:
     """
-    Generate a JWT token that authorizes the bearer as an administrator of the team.
+    Find the admin user for a team and return their email.
 
     Args:
         db: Database session
-        team: The team object to generate the token for
+        team: The team object to find the admin for
 
     Returns:
-        str: The generated JWT token
+        str: The email of the admin user
 
     Raises:
         ValueError: If no admin user is found for the team
     """
-    token_validity_days = 1
     # Find a team admin user
     admin_user = db.query(DBUser).filter(
         DBUser.team_id == team.id,
@@ -462,23 +487,36 @@ def generate_team_admin_token(db: Session, team: DBTeam) -> str:
     if not admin_user:
         raise ValueError(f"No admin user found for team {team.name} (ID: {team.id})")
 
-    # Create token payload with team admin claims
+    return admin_user.email
+
+def generate_token(email: str, validity_hours: int = 24) -> str:
+    """
+    Generate a JWT token that authorizes the bearer as an administrator.
+
+    Args:
+        email: The email address to generate the token for
+
+    Returns:
+        str: The generated JWT token
+    """
+
+    # Create token payload with admin claims
     payload = {
-        "sub": admin_user.email,
-        "exp": datetime.now(UTC) + timedelta(days=token_validity_days)
+        "sub": email,
+        "exp": datetime.now(UTC) + timedelta(hours=validity_hours)
     }
 
     # Generate the token
     token = create_access_token(
         data=payload,
-        expires_delta=timedelta(days=token_validity_days)
+        expires_delta=timedelta(hours=validity_hours)
     )
 
     return token
 
-def generate_pricing_url(db: Session, team: DBTeam) -> str:
+def generate_pricing_url(admin_email: str, validity_hours: int = 24) -> str:
     """
-    Generate a URL for the team admin pricing page with a JWT token.
+    Generate a URL for the pricing page with a JWT token.
 
     Args:
         db: Database session
@@ -488,7 +526,7 @@ def generate_pricing_url(db: Session, team: DBTeam) -> str:
         str: The generated URL with the JWT token
     """
     # Generate the token
-    token = generate_team_admin_token(db, team)
+    token = generate_token(admin_email, validity_hours)
 
     # Get the frontend URL from settings
     base_url = settings.frontend_route

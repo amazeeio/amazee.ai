@@ -118,6 +118,24 @@ export default function TeamsPage() {
     setIsPasswordless(config.PASSWORDLESS_SIGN_IN);
   }, []);
 
+  // Helper function to determine if a team is expired
+  const isTeamExpired = (team: Team): boolean => {
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const createdAt = new Date(team.created_at);
+
+    // If no last_payment, team is not expired
+    if (!team.last_payment) {
+      return false;
+    }
+
+    const lastPayment = new Date(team.last_payment);
+
+    // Team is expired if both created_at and last_payment are more than 30 days ago
+    return createdAt < thirtyDaysAgo && lastPayment < thirtyDaysAgo;
+  };
+
   // Queries
   const { data: teams = [], isLoading: isLoadingTeams } = useQuery<Team[]>({
     queryKey: ['teams'],
@@ -634,15 +652,22 @@ export default function TeamsPage() {
                       <TableCell>{team.phone}</TableCell>
                       <TableCell>{team.billing_address}</TableCell>
                       <TableCell>
-                        <span
-                          className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                            team.is_active
-                              ? 'bg-green-100 text-green-800'
-                              : 'bg-red-100 text-red-800'
-                          }`}
-                        >
-                          {team.is_active ? 'Active' : 'Inactive'}
-                        </span>
+                        <div className="flex flex-col gap-1">
+                          <span
+                            className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                              team.is_active
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-red-100 text-red-800'
+                            }`}
+                          >
+                            {team.is_active ? 'Active' : 'Inactive'}
+                          </span>
+                          {isTeamExpired(team) && (
+                            <span className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-600 text-white">
+                              Expired
+                            </span>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell>
                         {new Date(team.created_at).toLocaleDateString()}
@@ -697,6 +722,14 @@ export default function TeamsPage() {
                                                 {expandedTeam.is_active ? "Active" : "Inactive"}
                                               </Badge>
                                             </div>
+                                            {isTeamExpired(expandedTeam) && (
+                                              <div>
+                                                <p className="text-sm font-medium text-muted-foreground">Expiration Status</p>
+                                                <Badge variant="destructive" className="bg-red-600 hover:bg-red-700">
+                                                  Expired
+                                                </Badge>
+                                              </div>
+                                            )}
                                             {expandedTeam.is_always_free && (
                                               <div>
                                                 <p className="text-sm font-medium text-muted-foreground">Always Free Status</p>

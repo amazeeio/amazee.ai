@@ -11,15 +11,10 @@ from app.schemas.models import (
     Team, TeamCreate, TeamUpdate,
     TeamWithUsers
 )
-from app.core.resource_limits import (
-    DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY,
-    get_token_restrictions
-)
+from app.core.resource_limits import DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
-from app.core.config import settings
-from app.core.worker import get_team_keys_by_region, generate_pricing_url
-from app.core.security import create_access_token
+from app.core.worker import get_team_keys_by_region, generate_pricing_url, get_team_admin_email
 
 logger = logging.getLogger(__name__)
 
@@ -120,13 +115,14 @@ async def update_team(
     # Only send email when turning always-free on
     if team_update.is_always_free:
         try:
+            admin_email = get_team_admin_email(db, db_team)
             ses_service = SESService()
             template_data = {
                 "name": db_team.name,
-                "dashboard_url": generate_pricing_url(db, db_team)
+                "dashboard_url": generate_pricing_url(admin_email)
             }
             ses_service.send_email(
-                to_addresses=[db_team.admin_email],
+                to_addresses=[admin_email],
                 template_name="always-free",
                 template_data=template_data
             )

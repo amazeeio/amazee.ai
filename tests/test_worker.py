@@ -517,6 +517,7 @@ async def test_remove_product_multiple_products(db, test_team, test_product):
 @pytest.mark.asyncio
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
 async def test_monitor_teams_basic_metrics(mock_litellm, mock_ses, db, test_team, test_product):
     """
     Test basic team monitoring metrics for teams with and without products.
@@ -562,6 +563,7 @@ async def test_monitor_teams_basic_metrics(mock_litellm, mock_ses, db, test_team
 @pytest.mark.asyncio
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
 async def test_monitor_teams_expiration_notification(mock_litellm, mock_ses, db, test_team, test_team_admin):
     """
     Test first expiration notification for teams approaching expiration (7 days remaining).
@@ -590,6 +592,7 @@ async def test_monitor_teams_expiration_notification(mock_litellm, mock_ses, db,
 @pytest.mark.asyncio
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
 async def test_monitor_teams_expiration_notification_second(mock_litellm, mock_ses, db, test_team, test_team_admin):
     """
     Test second expiration notification for teams approaching expiration (5 days remaining).
@@ -618,6 +621,7 @@ async def test_monitor_teams_expiration_notification_second(mock_litellm, mock_s
 @pytest.mark.asyncio
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
 async def test_monitor_teams_trial_expired_notification(mock_litellm, mock_ses, db, test_team, test_team_admin):
     """
     Test trial expired notification for teams that have reached expiration.
@@ -645,6 +649,7 @@ async def test_monitor_teams_trial_expired_notification(mock_litellm, mock_ses, 
 @pytest.mark.asyncio
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
 async def test_monitor_teams_key_expiration(mock_litellm, mock_ses, db, test_team, test_region, test_team_key_creator):
     """
     Test key expiration for expired teams.
@@ -695,6 +700,7 @@ async def test_monitor_teams_key_expiration(mock_litellm, mock_ses, db, test_tea
 @pytest.mark.asyncio
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
 async def test_monitor_teams_key_spend(mock_litellm, mock_ses, db, test_team, test_region, test_team_key_creator):
     """
     Test key spend monitoring and metrics.
@@ -805,3 +811,134 @@ async def test_monitor_teams_error_handling(mock_litellm, mock_ses, db, test_tea
         team_id=str(test_team.id),
         team_name=test_team.name
     )._value.get() is not None
+
+@pytest.mark.asyncio
+@patch('app.core.worker.SESService')
+@patch('app.core.worker.LiteLLMService')
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
+async def test_monitor_teams_last_monitored_recently(mock_litellm, mock_ses, db, test_team, test_team_admin):
+    """
+    Test that notifications are not sent when team was monitored recently (within 24 hours).
+    """
+    # Setup test team approaching expiration (23 days old, 7 days remaining)
+    test_team.created_at = datetime.now(UTC) - timedelta(days=23)
+    test_team.admin_email = test_team_admin.email
+    # Set last_monitored to 12 hours ago (within 24-hour window)
+    expected_last_monitored = datetime.now(UTC) - timedelta(hours=12)
+    test_team.last_monitored = expected_last_monitored
+    db.add(test_team)
+    db.commit()
+
+    # Setup mock SES service
+    mock_ses_instance = mock_ses.return_value
+    mock_ses_instance.send_email = Mock()
+
+    # Run monitoring
+    await monitor_teams(db)
+
+    # Verify no email was sent (team was recently monitored)
+    mock_ses_instance.send_email.assert_not_called()
+
+    # Verify last_monitored was not updated (since no notifications were sent)
+    db.refresh(test_team)
+    # Use approximate comparison due to timestamp precision differences
+    assert abs((test_team.last_monitored - expected_last_monitored).total_seconds()) < 1
+
+@pytest.mark.asyncio
+@patch('app.core.worker.SESService')
+@patch('app.core.worker.LiteLLMService')
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
+async def test_monitor_teams_last_monitored_old(mock_litellm, mock_ses, db, test_team, test_team_admin):
+    """
+    Test that notifications are sent when team was last monitored more than 24 hours ago.
+    """
+    # Setup test team approaching expiration (23 days old, 7 days remaining)
+    test_team.created_at = datetime.now(UTC) - timedelta(days=23)
+    test_team.admin_email = test_team_admin.email
+    # Set last_monitored to 25 hours ago (outside 24-hour window)
+    old_last_monitored = datetime.now(UTC) - timedelta(hours=25)
+    test_team.last_monitored = old_last_monitored
+    db.add(test_team)
+    db.commit()
+
+    # Setup mock SES service
+    mock_ses_instance = mock_ses.return_value
+    mock_ses_instance.send_email = Mock()
+
+    # Run monitoring
+    await monitor_teams(db)
+
+    # Verify email was sent (team was not recently monitored)
+    mock_ses_instance.send_email.assert_called_once()
+    call_args = mock_ses_instance.send_email.call_args[1]
+    assert call_args['to_addresses'] == [test_team.admin_email]
+    assert call_args['template_name'] == "team-expiring"
+    assert call_args['template_data']['days_remaining'] == 7
+
+    # Verify last_monitored was updated (since notifications were sent)
+    db.refresh(test_team)
+    assert test_team.last_monitored is not None
+    assert test_team.last_monitored > old_last_monitored
+
+@pytest.mark.asyncio
+@patch('app.core.worker.SESService')
+@patch('app.core.worker.LiteLLMService')
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
+async def test_monitor_teams_last_monitored_none(mock_litellm, mock_ses, db, test_team, test_team_admin):
+    """
+    Test that notifications are sent when team has never been monitored (last_monitored is None).
+    """
+    # Setup test team approaching expiration (23 days old, 7 days remaining)
+    test_team.created_at = datetime.now(UTC) - timedelta(days=23)
+    test_team.admin_email = test_team_admin.email
+    # Ensure last_monitored is None (never monitored)
+    test_team.last_monitored = None
+    db.add(test_team)
+    db.commit()
+
+    # Setup mock SES service
+    mock_ses_instance = mock_ses.return_value
+    mock_ses_instance.send_email = Mock()
+
+    # Run monitoring
+    await monitor_teams(db)
+
+    # Verify email was sent (team was never monitored)
+    mock_ses_instance.send_email.assert_called_once()
+    call_args = mock_ses_instance.send_email.call_args[1]
+    assert call_args['to_addresses'] == [test_team.admin_email]
+    assert call_args['template_name'] == "team-expiring"
+    assert call_args['template_data']['days_remaining'] == 7
+
+    # Verify last_monitored was updated (since notifications were sent)
+    db.refresh(test_team)
+    assert test_team.last_monitored is not None
+
+@pytest.mark.asyncio
+@patch('app.core.worker.SESService')
+@patch('app.core.worker.LiteLLMService')
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
+async def test_monitor_teams_metrics_always_emitted(mock_litellm, mock_ses, db, test_team):
+    """
+    Test that metrics are always emitted regardless of last_monitored status.
+    """
+    # Setup test team with recent monitoring
+    test_team.created_at = datetime.now(UTC) - timedelta(days=15)
+    expected_last_monitored = datetime.now(UTC) - timedelta(hours=12)  # Recently monitored
+    test_team.last_monitored = expected_last_monitored
+    db.add(test_team)
+    db.commit()
+
+    # Run monitoring
+    await monitor_teams(db)
+
+    # Verify metrics are still emitted even though team was recently monitored
+    assert team_freshness_days.labels(
+        team_id=str(test_team.id),
+        team_name=test_team.name
+    )._value.get() == 15
+
+    # Verify last_monitored was not updated (no notifications sent)
+    db.refresh(test_team)
+    # Use approximate comparison due to timestamp precision differences
+    assert abs((test_team.last_monitored - expected_last_monitored).total_seconds()) < 1

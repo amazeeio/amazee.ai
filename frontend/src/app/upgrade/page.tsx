@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import Script from "next/script";
 import { Card, CardContent } from "@/components/ui/card";
@@ -31,6 +31,7 @@ declare global {
 export default function PricingTokenPage() {
   const searchParams = useSearchParams();
   const token = searchParams?.get("token");
+  const initializedRef = useRef<string | null>(null);
 
   // Use the upgrade store
   const {
@@ -47,10 +48,17 @@ export default function PricingTokenPage() {
 
   // Initialize upgrade flow when component mounts or token changes
   useEffect(() => {
-    if (token) {
+    // Reset the initialized flag when token changes
+    if (token !== initializedRef.current) {
+      initializedRef.current = null;
+    }
+
+    if (token && !initializedRef.current) {
       initializeUpgrade(token);
-    } else {
+      initializedRef.current = token;
+    } else if (!token) {
       reset();
+      initializedRef.current = null;
     }
   }, [token, initializeUpgrade, reset]);
 
