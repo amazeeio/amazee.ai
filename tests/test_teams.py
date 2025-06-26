@@ -599,3 +599,81 @@ def test_extend_team_trial_email_error(mock_ses_class, mock_litellm_post, client
 
     # Verify LiteLLM API was called
     mock_litellm_post.assert_called()
+
+@patch("app.api.teams.SESService")
+def test_toggle_always_free_as_admin(mock_ses, client, admin_token, test_team, test_team_admin, db):
+    """Test toggling always-free status as an admin"""
+    # Mock SES service
+    mock_ses_instance = mock_ses.return_value
+    mock_ses_instance.send_email.return_value = True
+
+    # Toggle always-free on
+    response = client.put(
+        f"/teams/{test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"is_always_free": True}
+    )
+    assert response.status_code == 200
+    team_data = response.json()
+    assert team_data["is_always_free"] is True
+
+    # Verify email was sent
+    mock_ses_instance.send_email.assert_called_once()
+    call_args = mock_ses_instance.send_email.call_args[1]
+    assert call_args["to_addresses"] == [test_team_admin.email]
+    assert call_args["template_name"] == "always-free"
+    assert call_args["template_data"]["name"] == test_team.name
+    assert "dashboard_url" in call_args["template_data"]
+
+    # Toggle always-free off
+    response = client.put(
+        f"/teams/{test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"is_always_free": False}
+    )
+    assert response.status_code == 200
+    team_data = response.json()
+    assert team_data["is_always_free"] is False
+
+    # Verify no additional email was sent
+    assert mock_ses_instance.send_email.call_count == 1
+
+def test_toggle_always_free_as_team_admin(client, team_admin_token, test_team):
+    """Test that team admins cannot toggle always-free status"""
+    response = client.put(
+        f"/teams/{test_team.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"is_always_free": True}
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Only system administrators can toggle always-free status"
+
+def test_toggle_always_free_as_team_user(client, test_token, test_team):
+    """Test that regular team users cannot toggle always-free status"""
+    response = client.put(
+        f"/teams/{test_team.id}",
+        headers={"Authorization": f"Bearer {test_token}"},
+        json={"is_always_free": True}
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Not authorized to perform this action"
+
+@patch("app.api.teams.SESService")
+def test_toggle_always_free_email_error(mock_ses, client, admin_token, test_team, test_team_admin):
+    """Test that team update succeeds even if email sending fails"""
+    # Mock SES service with error
+    mock_ses_instance = mock_ses.return_value
+    mock_ses_instance.send_email.side_effect = Exception("Email Error")
+
+    # Toggle always-free on
+    response = client.put(
+        f"/teams/{test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"is_always_free": True}
+    )
+    assert response.status_code == 200
+    team_data = response.json()
+    assert team_data["is_always_free"] is True
+
+    # Verify email was attempted
+    mock_ses_instance.send_email.assert_called_once()

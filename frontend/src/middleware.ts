@@ -9,7 +9,7 @@ export function middleware(request: NextRequest) {
   const authPaths = ['/auth/login', '/auth/register'];
 
   // Public paths that don't require authentication
-  const publicPaths = [...authPaths, '/api/config'];
+  const publicPaths = [...authPaths, '/api/config', '/upgrade'];
 
   // Check if the path is public
   const isPublicPath = publicPaths.some(path => pathname.startsWith(path));

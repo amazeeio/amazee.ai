@@ -80,10 +80,12 @@ class DBTeam(Base):
     phone = Column(String, nullable=True)
     billing_address = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
+    is_always_free = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     stripe_customer_id = Column(String, nullable=True, unique=True, index=True)
     last_payment = Column(DateTime(timezone=True), nullable=True)
+    last_monitored = Column(DateTime(timezone=True), nullable=True)
 
     users = relationship("DBUser", back_populates="team")
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="team")

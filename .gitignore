@@ -49,3 +49,8 @@ Thumbs.db
 terraform/.terraform/
 **/*.tfstate
 **/*.tfstate.backup
+
+# Claude Code files
+.claude/
+CLAUDE.local.md
+CLAUDE.md

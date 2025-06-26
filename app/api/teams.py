@@ -5,20 +5,16 @@ from datetime import datetime, UTC
 import logging
 
 from app.db.database import get_db
-from app.db.models import DBTeam, DBTeamProduct
-from app.core.security import check_system_admin, check_specific_team_admin
+from app.db.models import DBTeam, DBTeamProduct, DBUser
+from app.core.security import check_system_admin, check_specific_team_admin, get_current_user_from_auth
 from app.schemas.models import (
     Team, TeamCreate, TeamUpdate,
     TeamWithUsers
 )
-from app.core.resource_limits import (
-    DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY,
-    get_token_restrictions
-)
+from app.core.resource_limits import DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
-from app.core.config import settings
-from app.core.worker import get_team_keys_by_region
+from app.core.worker import get_team_keys_by_region, generate_pricing_url, get_team_admin_email
 
 logger = logging.getLogger(__name__)
 
@@ -89,15 +85,24 @@ async def get_team(
 async def update_team(
     team_id: int,
     team_update: TeamUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user_from_auth)
 ):
     """
     Update a team. Accessible by admin users or team admins.
+    Only system admins can toggle the always-free status.
     """
     # Check if team exists
     db_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not db_team:
         raise HTTPException(status_code=404, detail="Team not found")
+
+    # Check if trying to update is_always_free without system admin privileges
+    if team_update.is_always_free is not None and not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only system administrators can toggle always-free status"
+        )
 
     # Update team fields
     for key, value in team_update.model_dump(exclude_unset=True).items():
@@ -106,6 +111,24 @@ async def update_team(
     db_team.updated_at = datetime.now(UTC)
     db.commit()
     db.refresh(db_team)
+
+    # Only send email when turning always-free on
+    if team_update.is_always_free:
+        try:
+            admin_email = get_team_admin_email(db, db_team)
+            ses_service = SESService()
+            template_data = {
+                "name": db_team.name,
+                "dashboard_url": generate_pricing_url(admin_email)
+            }
+            ses_service.send_email(
+                to_addresses=[admin_email],
+                template_name="always-free",
+                template_data=template_data
+            )
+        except Exception as e:
+            logger.error(f"Failed to send always-free status update email to team {db_team.name}: {str(e)}")
+            # Don't fail the request if email fails
 
     return db_team
 

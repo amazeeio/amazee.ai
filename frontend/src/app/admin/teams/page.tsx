@@ -23,7 +23,7 @@ import {
 } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Plus, ChevronDown, ChevronRight, UserPlus } from 'lucide-react';
-import { get, post, del } from '@/utils/api';
+import { get, post, del, put } from '@/utils/api';
 import {
   Collapsible,
   CollapsibleContent,
@@ -83,6 +83,7 @@ interface Team {
   last_payment?: string;
   users?: TeamUser[];
   products?: Product[];
+  is_always_free: boolean;
 }
 
 interface User {
@@ -116,6 +117,24 @@ export default function TeamsPage() {
     const config = getCachedConfig();
     setIsPasswordless(config.PASSWORDLESS_SIGN_IN);
   }, []);
+
+  // Helper function to determine if a team is expired
+  const isTeamExpired = (team: Team): boolean => {
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const createdAt = new Date(team.created_at);
+
+    // If no last_payment, team is not expired
+    if (!team.last_payment) {
+      return false;
+    }
+
+    const lastPayment = new Date(team.last_payment);
+
+    // Team is expired if both created_at and last_payment are more than 30 days ago
+    return createdAt < thirtyDaysAgo && lastPayment < thirtyDaysAgo;
+  };
 
   // Queries
   const { data: teams = [], isLoading: isLoadingTeams } = useQuery<Team[]>({
@@ -391,6 +410,37 @@ export default function TeamsPage() {
     },
   });
 
+  const setAlwaysFreeMutation = useMutation({
+    mutationFn: async (teamId: string) => {
+      try {
+        const response = await put(`/teams/${teamId}`, { is_always_free: true });
+        return response.json();
+      } catch (error) {
+        if (error instanceof Error) {
+          throw new Error(`Failed to set always-free status: ${error.message}`);
+        } else {
+          throw new Error('An unexpected error occurred while updating the team.');
+        }
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId] });
+      queryClient.invalidateQueries({ queryKey: ['teams'] });
+
+      toast({
+        title: 'Success',
+        description: 'Team set to always-free successfully',
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
   const handleCreateTeam = (e: React.FormEvent) => {
     e.preventDefault();
     createTeamMutation.mutate({
@@ -602,15 +652,22 @@ export default function TeamsPage() {
                       <TableCell>{team.phone}</TableCell>
                       <TableCell>{team.billing_address}</TableCell>
                       <TableCell>
-                        <span
-                          className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                            team.is_active
-                              ? 'bg-green-100 text-green-800'
-                              : 'bg-red-100 text-red-800'
-                          }`}
-                        >
-                          {team.is_active ? 'Active' : 'Inactive'}
-                        </span>
+                        <div className="flex flex-col gap-1">
+                          <span
+                            className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                              team.is_active
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-red-100 text-red-800'
+                            }`}
+                          >
+                            {team.is_active ? 'Active' : 'Inactive'}
+                          </span>
+                          {isTeamExpired(team) && (
+                            <span className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-600 text-white">
+                              Expired
+                            </span>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell>
                         {new Date(team.created_at).toLocaleDateString()}
@@ -665,6 +722,39 @@ export default function TeamsPage() {
                                                 {expandedTeam.is_active ? "Active" : "Inactive"}
                                               </Badge>
                                             </div>
+                                            {isTeamExpired(expandedTeam) && (
+                                              <div>
+                                                <p className="text-sm font-medium text-muted-foreground">Expiration Status</p>
+                                                <Badge variant="destructive" className="bg-red-600 hover:bg-red-700">
+                                                  Expired
+                                                </Badge>
+                                              </div>
+                                            )}
+                                            {expandedTeam.is_always_free && (
+                                              <div>
+                                                <p className="text-sm font-medium text-muted-foreground">Always Free Status</p>
+                                                <div className="flex items-center gap-2">
+                                                  <Badge variant="default" className="bg-green-500 hover:bg-green-600">
+                                                    Always Free
+                                                  </Badge>
+                                                  <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    onClick={() => {
+                                                      if (window.confirm('Are you sure you want to resend the always-free request email?')) {
+                                                        setAlwaysFreeMutation.mutate(expandedTeam.id);
+                                                      }
+                                                    }}
+                                                    disabled={setAlwaysFreeMutation.isPending}
+                                                  >
+                                                    {setAlwaysFreeMutation.isPending ? (
+                                                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                    ) : null}
+                                                    Resend Request
+                                                  </Button>
+                                                </div>
+                                              </div>
+                                            )}
                                             <div>
                                               <p className="text-sm font-medium text-muted-foreground">Created At</p>
                                               <p>{new Date(expandedTeam.created_at).toLocaleString()}</p>
@@ -693,6 +783,22 @@ export default function TeamsPage() {
                                               ) : null}
                                               Extend Trial
                                             </Button>
+                                            {!expandedTeam.is_always_free && (
+                                              <Button
+                                                variant="outline"
+                                                onClick={() => {
+                                                  if (window.confirm('Are you sure you want to set this team to always-free? This will give them permanent free access.')) {
+                                                    setAlwaysFreeMutation.mutate(expandedTeam.id);
+                                                  }
+                                                }}
+                                                disabled={setAlwaysFreeMutation.isPending}
+                                              >
+                                                {setAlwaysFreeMutation.isPending ? (
+                                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                ) : null}
+                                                Set Always Free
+                                              </Button>
+                                            )}
                                             {(!expandedTeam.users || expandedTeam.users.length === 0) && (
                                               <Button
                                                 variant="destructive"

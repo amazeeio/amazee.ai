@@ -12,13 +12,17 @@ from app.middleware.audit import AuditLogMiddleware
 from app.middleware.prometheus import PrometheusMiddleware
 from app.middleware.auth import AuthMiddleware
 from app.core.worker import monitor_teams
+from app.core.locking import try_acquire_lock, release_lock
 from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-
 import os
 import logging
 from datetime import UTC
+
+# Set timezone environment variable to prevent tzlocal warning
+if not os.environ.get('TZ'):
+    os.environ['TZ'] = 'UTC'
 
 # Configure logging
 logging.basicConfig(
@@ -40,28 +44,44 @@ async def lifespan(app: FastAPI):
     scheduler = AsyncIOScheduler()
 
     async def monitor_teams_job():
+        db = next(get_db())
+        lock_name = "monitor_teams"
+
         try:
-            db = next(get_db())
-            await monitor_teams(db)
+            # Try to acquire the lock
+            if try_acquire_lock(lock_name, db, lock_timeout=10):
+                logger.info("Acquired monitor_teams lock, executing job")
+                try:
+                    await monitor_teams(db)
+                except Exception as e:
+                    logger.error(f"Error in monitor_teams background task: {str(e)}")
+                finally:
+                    # Always release the lock when done
+                    release_lock(lock_name, db)
+            else:
+                logger.info("Another process has the monitor_teams lock, skipping execution")
         except Exception as e:
-            logger.error(f"Error in monitor_teams background task: {str(e)}")
+            logger.error(f"Error in monitor_teams job: {str(e)}")
+            # Try to release lock in case of error
+            try:
+                release_lock(lock_name, db)
+            except Exception as release_error:
+                logger.error(f"Error releasing lock: {str(release_error)}")
 
-    # Only add the monitoring job if limits are enabled
-    if settings.ENABLE_LIMITS:
-        # Set schedule based on environment
-        if settings.ENV_SUFFIX == "local":
-            # Run every 10 minutes in local environment
-            cron_trigger = CronTrigger(minute='*/10', timezone=UTC)
-        else:
-            # Run at 8 AM UTC in other environments
-            cron_trigger = CronTrigger(hour=8, minute=0, timezone=UTC)
+    # Set schedule based on environment
+    if settings.ENV_SUFFIX == "local":
+        # Run every 10 minutes in local environment
+        cron_trigger = CronTrigger(minute='*/10', timezone=UTC, jitter=5)
+    else:
+        # Run every hour in other environments with jitter
+        cron_trigger = CronTrigger(hour='*', minute=0, timezone=UTC, jitter=60)
 
-        scheduler.add_job(
-            monitor_teams_job,
-            trigger=cron_trigger,
-            id='monitor_teams',
-            replace_existing=True
-        )
+    scheduler.add_job(
+        monitor_teams_job,
+        trigger=cron_trigger,
+        id='monitor_teams',
+        replace_existing=True
+    )
 
     # Start the scheduler
     scheduler.start()

@@ -65,3 +65,36 @@ export async function put<T extends Record<string, unknown>>(
 export async function del(endpoint: string, options: RequestInit = {}) {
   return fetchApi(endpoint, { ...options, method: 'DELETE' });
 }
+
+// API functions that use Bearer token instead of cookies
+export async function fetchApiWithToken(endpoint: string, token: string, options: RequestInit = {}) {
+  const apiUrl = await getApiUrl();
+  const url = `${apiUrl}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
+
+  // Merge headers with Bearer token
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${token}`,
+    ...options.headers,
+  };
+
+  const fetchOptions: RequestInit = {
+    ...options,
+    headers,
+    // Don't include credentials when using Bearer token
+    credentials: undefined,
+  };
+
+  const response = await fetch(url, fetchOptions);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ message: response.statusText }));
+    throw new Error(error.detail || error.message || 'API call failed');
+  }
+
+  return response;
+}
+
+export async function getWithToken(endpoint: string, token: string, options: RequestInit = {}) {
+  return fetchApiWithToken(endpoint, token, { ...options, method: 'GET' });
+}

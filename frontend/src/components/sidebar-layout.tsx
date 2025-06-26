@@ -185,8 +185,8 @@ export function SidebarLayout({
     return null;
   }
 
-  // Don't show the sidebar on the auth login/register pages
-  if (pathname === '/auth/login' || pathname === '/auth/register') {
+  // Don't show the sidebar on the auth login/register pages and upgrade page
+  if (pathname === '/auth/login' || pathname === '/auth/register' || pathname === '/upgrade') {
     return <>{children}</>;
   }
 
