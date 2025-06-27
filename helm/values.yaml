@@ -5,19 +5,38 @@
 global:
   environment: production
 
-# PostgreSQL subchart configuration
-postgres:
+# PostgreSQL configuration (using Bitnami chart)
+postgresql:
   enabled: true
   # Set to true to use external managed PostgreSQL
   external:
     enabled: false
     url: "postgresql://user:password@host:port/database"
   # Self-hosted PostgreSQL configuration (used when external.enabled = false)
-  internal:
-    enabled: true
-    password: "postgres"
-    storageClass: "standard"
-    storageSize: "10Gi"
+  auth:
+    postgresPassword: "postgres"
+    database: "postgres_service"
+  primary:
+    persistence:
+      enabled: true
+      storageClass: "standard"
+      size: "10Gi"
+    extraEnvVars:
+      - name: POSTGRES_INITDB_ARGS
+        value: "--data-checksums"
+    extraVolumes:
+      - name: pgvector-extension
+        emptyDir: {}
+    extraVolumeMounts:
+      - name: pgvector-extension
+        mountPath: /docker-entrypoint-initdb.d
+    initContainers:
+      - name: install-pgvector
+        image: pgvector/pgvector:pg16
+        command: ['sh', '-c', 'cp /usr/share/postgresql/16/extension/pgvector* /docker-entrypoint-initdb.d/']
+        volumeMounts:
+          - name: pgvector-extension
+            mountPath: /docker-entrypoint-initdb.d
 
 # Backend subchart configuration
 backend:
@@ -27,9 +46,9 @@ backend:
     repository: ghcr.io/amazeeio/amazee.ai-backend
     tag: "dev"
     pullPolicy: IfNotPresent
-  # Database configuration - set based on postgres configuration
+  # Database configuration - set based on postgresql configuration
   database:
-    url: "postgresql://postgres:postgres@amazee-ai-postgres:5432/postgres_service"  # Updated hostname to match service name
+    url: "postgresql://postgres:postgres@amazee-ai-postgresql:5432/postgres_service"  # Updated hostname to match Bitnami service name
   # Application configuration
   secretKey: "my-secret-key"  # Key used to hash passwords stored in the database
   stripeSecretKey: "sk_test_your_stripe_secret_key"

@@ -10,14 +10,15 @@ keywords:
   - postgresql
 
 dependencies:
-  - name: postgres
-    version: 0.0.1
-    condition: postgres.enabled
+  - name: postgresql
+    version: 16.7.12
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled
   - name: backend
     version: 0.0.1
     condition: backend.enabled
     dependsOn:
-      - postgres
+      - postgresql
   - name: frontend
     version: 0.0.1
     condition: frontend.enabled

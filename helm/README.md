@@ -4,11 +4,12 @@ This Helm chart deploys the Amazee.ai application stack to Kubernetes with indep
 
 ## Chart Structure
 
-The chart is organized as a parent chart with three subcharts:
+The chart is organized as a parent chart with two subcharts:
 
-- **postgres**: PostgreSQL database with pgvector extension
 - **backend**: FastAPI backend service
 - **frontend**: Next.js frontend application
+
+**PostgreSQL is provided by the official Bitnami PostgreSQL chart (version 16.7.12) as a dependency.**
 
 Each subchart can be deployed independently or together.
 
@@ -17,7 +18,7 @@ Each subchart can be deployed independently or together.
 - Kubernetes 1.19+
 - Helm 3.0+
 - Docker images for backend and frontend services
-- PostgreSQL with pgvector extension support (either self-hosted or managed)
+- Bitnami PostgreSQL chart (16.7.12) for database
 - Ingress controller (e.g., nginx-ingress) for external access
 
 ## Installation Options
@@ -29,15 +30,10 @@ helm install amazee-ai . -n amazee-ai --create-namespace
 
 ### 2. Deploy Individual Services
 
-#### Deploy Only PostgreSQL:
-```bash
-helm install postgres ./charts/postgres -n amazee-ai --create-namespace
-```
-
 #### Deploy Only Backend (requires PostgreSQL):
 ```bash
 helm install backend ./charts/backend -n amazee-ai \
-  --set database.url="postgresql://postgres:password@postgres-host:5432/postgres_service"
+  --set database.url="postgresql://postgres:password@amazee-ai-postgresql:5432/postgres_service"
 ```
 
 #### Deploy Only Frontend:
@@ -49,268 +45,134 @@ helm install frontend ./charts/frontend -n amazee-ai \
 ### 3. Deploy Backend and Frontend (with external PostgreSQL):
 ```bash
 helm install amazee-ai . -n amazee-ai --create-namespace \
-  --set postgres.enabled=false \
+  --set postgresql.enabled=false \
   --set backend.database.url="postgresql://user:pass@external-host:5432/db"
 ```
 
 ### 4. Local deployment with kind
 ```bash
 kind create cluster --name amazee-ai-local
-
 ```
 
 ## Configuration
 
-### PostgreSQL Configuration
+### PostgreSQL Configuration (Bitnami)
 
-The chart supports both self-hosted and managed PostgreSQL databases:
+The chart uses the Bitnami PostgreSQL chart as a dependency:
 
-#### Self-hosted PostgreSQL (Default)
 ```yaml
-postgres:
+postgresql:
   enabled: true
-  external:
-    enabled: false
-  internal:
-    enabled: true
-    password: "your-secure-password"
-    storageClass: "standard"
-    storageSize: "10Gi"
+  auth:
+    postgresPassword: "your-secure-password"
+    database: "postgres_service"
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
 ```
 
-#### Managed PostgreSQL (External)
-```yaml
-postgres:
-  enabled: false  # Don't deploy internal postgres
-backend:
-  database:
-    url: "postgresql://user:password@host:port/database"
-```
+### Backend and Frontend Configuration
 
-### Service-Specific Configuration
+See the `values.yaml` for all available configuration options for backend and frontend.
 
-#### Backend Configuration
-```yaml
-backend:
-  enabled: true
-  replicas: 1
-  image:
-    repository: amazee-ai-backend
-    tag: "latest"
-  database:
-    url: "postgresql://postgres:postgres@postgres:5432/postgres_service"
-  secretKey: "my-secret-key"
-  stripeSecretKey: "sk_live_..."
-  # ... other backend configuration
-```
-
-#### Frontend Configuration
-```yaml
-frontend:
-  enabled: true
-  replicas: 1
-  image:
-    repository: amazee-ai-frontend
-    tag: "latest"
-  apiUrl: "http://backend:8800"
-  stripePublishableKey: "pk_live_..."
-  passwordlessSignIn: "true"
-```
-
-### Ingress Configuration
-
-The chart supports separate ingress configurations for backend API and frontend web interface:
-
-#### Backend API Ingress
-```yaml
-ingress:
-  enabled: true
-  className: "nginx"
-  annotations:
-    kubernetes.io/ingress.class: nginx
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
-    nginx.ingress.kubernetes.io/cors-allow-origin: "*"
-    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
-    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization"
-  hosts:
-    - host: api.amazee-ai.local
-      paths:
-        - path: /
-          pathType: Prefix
-          port: 8800
-  tls:
-    - secretName: amazee-ai-api-tls
-      hosts:
-        - api.amazee-ai.local
-```
-
-#### Frontend Web Interface Ingress
-```yaml
-frontendIngress:
-  enabled: true
-  className: "nginx"
-  annotations:
-    kubernetes.io/ingress.class: nginx
-    nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
-  hosts:
-    - host: amazee-ai.local
-      paths:
-        - path: /
-          pathType: Prefix
-          port: 3000
-  tls:
-    - secretName: amazee-ai-frontend-tls
-      hosts:
-        - amazee-ai.local
-```
-
-## Configuration Parameters
+## Parameters
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `postgres.enabled` | Deploy PostgreSQL subchart | `true` |
-| `postgres.external.enabled` | Use external PostgreSQL | `false` |
-| `postgres.external.url` | External PostgreSQL URL | `"postgresql://user:password@host:port/database"` |
-| `postgres.internal.enabled` | Use self-hosted PostgreSQL | `true` |
-| `postgres.internal.password` | PostgreSQL password | `"postgres"` |
-| `postgres.internal.storageClass` | Storage class for PostgreSQL PVC | `"standard"` |
-| `postgres.internal.storageSize` | Storage size for PostgreSQL | `"10Gi"` |
+| `postgresql.enabled` | Deploy Bitnami PostgreSQL chart | `true` |
+| `postgresql.auth.postgresPassword` | PostgreSQL password | `postgres` |
+| `postgresql.auth.database` | PostgreSQL database name | `postgres_service` |
+| `postgresql.primary.persistence.enabled` | Enable persistence for PostgreSQL | `true` |
+| `postgresql.primary.persistence.size` | Storage size for PostgreSQL | `10Gi` |
 | `backend.enabled` | Deploy backend subchart | `true` |
 | `backend.replicas` | Number of backend replicas | `1` |
-| `backend.image.repository` | Backend image repository | `"amazee-ai-backend"` |
-| `backend.image.tag` | Backend image tag | `"latest"` |
-| `backend.database.url` | Database connection URL | `"postgresql://postgres:postgres@postgres:5432/postgres_service"` |
-| `backend.secretKey` | Key used to hash passwords stored in the database | `"my-secret-key"` |
-| `backend.stripeSecretKey` | Stripe secret key | `"sk_test_your_stripe_secret_key"` |
+| `backend.image.repository` | Backend image repository | `ghcr.io/amazeeio/amazee.ai-backend` |
+| `backend.image.tag` | Backend image tag | `dev` |
+| `backend.database.url` | Database connection URL | `postgresql://postgres:postgres@amazee-ai-postgresql:5432/postgres_service` |
+| `backend.secretKey` | Key used to hash passwords stored in the database | `my-secret-key` |
+| `backend.stripeSecretKey` | Stripe secret key | `sk_test_your_stripe_secret_key` |
 | `backend.webhookSig` | Webhook signature (only needed for local development with Stripe CLI) | `""` |
-| `backend.awsAccessKeyId` | AWS access key ID | `"your_aws_access_key"` |
-| `backend.awsSecretAccessKey` | AWS secret access key | `"your_aws_secret_key"` |
-| `backend.enableMetrics` | Enable metrics collection | `"true"` |
-| `backend.dynamodbRegion` | AWS DynamoDB region | `"us-east-1"` |
-| `backend.sesRegion` | AWS SES region | `"us-east-1"` |
-| `backend.sesSenderEmail` | SES sender email | `"noreply@amazee.ai"` |
-| `backend.enableLimits` | Enable resource limits | `"true"` |
+| `backend.awsAccessKeyId` | AWS access key ID | `your_aws_access_key` |
+| `backend.awsSecretAccessKey` | AWS secret access key | `your_aws_secret_key` |
+| `backend.enableMetrics` | Enable metrics collection | `true` |
+| `backend.dynamodbRegion` | AWS DynamoDB region | `us-east-1` |
+| `backend.sesRegion` | AWS SES region | `us-east-1` |
+| `backend.sesSenderEmail` | SES sender email | `noreply@amazee.ai` |
+| `backend.enableLimits` | Enable resource limits | `true` |
 | `backend.envSuffix` | Environment suffix | `""` |
-| `backend.passwordlessSignIn` | Enable passwordless sign-in | `"true"` |
+| `backend.passwordlessSignIn` | Enable passwordless sign-in | `true` |
+| `backend.resources.requests.memory` | Backend memory request | `256Mi` |
+| `backend.resources.requests.cpu` | Backend CPU request | `250m` |
+| `backend.resources.limits.memory` | Backend memory limit | `512Mi` |
+| `backend.resources.limits.cpu` | Backend CPU limit | `500m` |
 | `frontend.enabled` | Deploy frontend subchart | `true` |
 | `frontend.replicas` | Number of frontend replicas | `1` |
-| `frontend.image.repository` | Frontend image repository | `"amazee-ai-frontend"` |
-| `frontend.image.tag` | Frontend image tag | `"latest"` |
-| `frontend.apiUrl` | Backend API URL | `"http://backend:8800"` |
-| `frontend.stripePublishableKey` | Stripe publishable key | `"pk_test_your_stripe_publishable_key"` |
-| `frontend.passwordlessSignIn` | Enable passwordless sign-in | `"true"` |
-| `ingress.enabled` | Enable backend API ingress | `false` |
-| `ingress.className` | Backend ingress class name | `"nginx"` |
-| `frontendIngress.enabled` | Enable frontend web interface ingress | `false` |
-| `frontendIngress.className` | Frontend ingress class name | `"nginx"` |
-
-## Environment Variables
-
-### Backend Environment Variables
-The backend service receives the following environment variables:
-- `DATABASE_URL` - PostgreSQL connection string
-- `SECRET_KEY` - Key used to hash passwords stored in the database
-- `ENABLE_METRICS` - Enable metrics collection
-- `DYNAMODB_REGION` - AWS DynamoDB region
-- `SES_REGION` - AWS SES region
-- `SES_SENDER_EMAIL` - SES sender email
-- `STRIPE_SECRET_KEY` - Stripe secret key
-- `WEBHOOK_SIG` - Webhook signature (only set if webhookSig is provided)
-- `ENABLE_LIMITS` - Enable resource limits
-- `ENV_SUFFIX` - Environment suffix
-- `PASSWORDLESS_SIGN_IN` - Enable passwordless sign-in
-- `AWS_ACCESS_KEY_ID` - AWS access key ID
-- `AWS_SECRET_ACCESS_KEY` - AWS secret access key
-
-### Frontend Environment Variables
-The frontend service receives the following environment variables:
-- `NEXT_PUBLIC_API_URL` - Backend API URL
-- `STRIPE_PUBLISHABLE_KEY` - Stripe publishable key
-- `PASSWORDLESS_SIGN_IN` - Enable passwordless sign-in
-
-## Services
-
-The chart can deploy the following services based on configuration:
-
-- **PostgreSQL**: Database with pgvector extension (self-hosted or external)
-- **Backend**: FastAPI application
-- **Frontend**: Next.js application
-
-## Accessing the Application
-
-### Without Ingress (Development)
-```bash
-# Port forward frontend
-kubectl port-forward -n amazee-ai svc/frontend 3000:3000
-
-# Port forward backend
-kubectl port-forward -n amazee-ai svc/backend 8800:8800
-```
-
-Then visit http://localhost:3000
-
-### With Ingress (Production)
-Enable ingress in values.yaml and configure your domain name:
-
-```bash
-# Enable backend API ingress
-helm upgrade amazee-ai . -n amazee-ai \
-  --set ingress.enabled=true \
-  --set ingress.hosts[0].host=api.yourdomain.com
-
-# Enable frontend web interface ingress
-helm upgrade amazee-ai . -n amazee-ai \
-  --set frontendIngress.enabled=true \
-  --set frontendIngress.hosts[0].host=yourdomain.com
-```
-
-Make sure to:
-1. Configure your DNS to point to your ingress controller
-2. Create TLS secrets for HTTPS
-3. Update the frontend's `apiUrl` to point to your backend ingress URL
+| `frontend.image.repository` | Frontend image repository | `ghcr.io/amazeeio/amazee.ai-frontend` |
+| `frontend.image.tag` | Frontend image tag | `dev` |
+| `frontend.apiUrl` | Backend API URL | `http://backend:8800` |
+| `frontend.stripePublishableKey` | Stripe publishable key | `pk_test_your_stripe_publishable_key` |
+| `frontend.passwordlessSignIn` | Enable passwordless sign-in | `true` |
+| `frontend.resources.requests.memory` | Frontend memory request | `256Mi` |
+| `frontend.resources.requests.cpu` | Frontend CPU request | `250m` |
+| `frontend.resources.limits.memory` | Frontend memory limit | `512Mi` |
+| `frontend.resources.limits.cpu` | Frontend CPU limit | `500m` |
+| `ingress.enabled` | Enable backend API ingress | `true` |
+| `ingress.className` | Backend ingress class name | `nginx` |
+| `frontendIngress.enabled` | Enable frontend web interface ingress | `true` |
+| `frontendIngress.className` | Frontend ingress class name | `nginx` |
 
 ## Upgrading
 
+To upgrade to a newer version:
+
 ```bash
-helm upgrade amazee-ai . -n amazee-ai
+helm upgrade amazee-ai . -n amazee-ai --values values.yaml
 ```
 
 ## Uninstalling
 
 ```bash
 helm uninstall amazee-ai -n amazee-ai
+helm uninstall postgresql -n amazee-ai
 ```
 
 ## Troubleshooting
 
-1. **Check pod status:**
-   ```bash
-   kubectl get pods -n amazee-ai
-   ```
+### Check Chart Status
+```bash
+helm list -n amazee-ai
+helm status amazee-ai -n amazee-ai
+```
 
-2. **View logs:**
-   ```bash
-   kubectl logs -n amazee-ai deployment/backend
-   kubectl logs -n amazee-ai deployment/frontend
-   ```
+### View Logs
+```bash
+# Frontend logs
+kubectl logs -n amazee-ai deployment/frontend
 
-3. **Check services:**
-   ```bash
-   kubectl get svc -n amazee-ai
-   ```
+# Backend logs
+kubectl logs -n amazee-ai deployment/backend
 
-4. **Database connectivity (external PostgreSQL):**
-   ```bash
-   kubectl exec -n amazee-ai deployment/backend -- pg_isready -h <host> -p <port>
-   ```
+# PostgreSQL logs
+kubectl logs -n amazee-ai deployment/postgresql
+```
 
-## Security Notes
+### Debug Installation
+```bash
+helm install amazee-ai . -n amazee-ai --values values.yaml --dry-run --debug
+```
 
-- Change all default passwords in production
+## Security Considerations
+
 - Use proper secrets management for sensitive data
 - Enable TLS for ingress in production
 - Configure proper resource limits
 - For external PostgreSQL, ensure secure connection strings and network access
 - The `webhookSig` is only needed for local development with Stripe CLI and can be left empty in production
+
+## Support
+
+For issues and questions:
+- Check the [GitHub repository](https://github.com/amazeeio/amazee.ai)
+- Review the Helm chart documentation
+- Open an issue for bugs or feature requests

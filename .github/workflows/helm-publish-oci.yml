@@ -1,0 +1,180 @@
+name: Publish Helm Charts to GHCR (OCI)
+
+on:
+  push:
+    branches: [ main, dev ]
+    paths:
+      - 'helm/**'
+      - '.github/workflows/helm-publish-oci.yml'
+  release:
+    types: [ published ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  publish-charts:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: v3.12.0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish subcharts to GHCR
+        run: |
+          cd helm/charts
+          for chart in */; do
+            chart_name=$(basename "$chart")
+            echo "Publishing chart: $chart_name"
+            version=$(grep '^version:' "$chart_name/Chart.yaml" | awk '{print $2}')
+            echo "Chart version: $version"
+            helm chart save "$chart_name" ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$chart_name:$version
+            helm chart save "$chart_name" ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$chart_name:latest
+            helm chart push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$chart_name:$version
+            helm chart push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$chart_name:latest
+            echo "✅ Published $chart_name:$version to GHCR"
+          done
+
+      - name: Create OCI Chart.yaml for main chart
+        run: |
+          cd helm
+
+          # Create a temporary Chart.yaml with OCI dependencies
+          cat > Chart.yaml.oci << EOF
+          name: amazee-ai
+          description: A Helm Chart for amazee.ai with independent frontend and backend services
+          version: 0.0.1
+          apiVersion: v2
+          appVersion: "0.0.1"
+          keywords:
+            - amazee.ai
+            - frontend
+            - backend
+            - postgresql
+
+          dependencies:
+            - name: postgresql
+              version: 16.7.12
+              repository: https://charts.bitnami.com/bitnami
+              condition: postgresql.enabled
+            - name: backend
+              version: 0.0.1
+              condition: backend.enabled
+              dependsOn:
+                - postgresql
+              repository: oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            - name: frontend
+              version: 0.0.1
+              condition: frontend.enabled
+              repository: oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          EOF
+
+          # Backup original and use OCI version
+          cp Chart.yaml Chart.yaml.original
+          cp Chart.yaml.oci Chart.yaml
+
+          # Update dependencies
+          helm dependency update
+
+          echo "✅ Created OCI Chart.yaml with proper dependencies"
+
+      - name: Publish main chart to GHCR
+        run: |
+          cd helm
+
+          # Get chart version
+          version=$(grep '^version:' Chart.yaml | awk '{print $2}')
+          echo "Main chart version: $version"
+
+          # Save chart to OCI registry
+          helm chart save . ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/amazee-ai:$version
+          helm chart save . ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/amazee-ai:latest
+
+          # Push to registry
+          helm chart push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/amazee-ai:$version
+          helm chart push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/amazee-ai:latest
+
+          echo "✅ Published amazee-ai:$version to GHCR"
+
+          # Restore original Chart.yaml
+          mv Chart.yaml.original Chart.yaml
+
+      - name: Create Release Tag
+        if: github.event_name == 'release'
+        run: |
+          cd helm
+          version=$(grep '^version:' Chart.yaml | awk '{print $2}')
+          echo "Creating release tag: v$version"
+          git tag -a "v$version" -m "Release Helm charts version $version"
+          git push origin "v$version"
+
+  test-charts:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: v3.12.0
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Test chart templates
+        run: |
+          # Test the main chart with minimal values
+          cd helm
+          helm dependency update
+          helm template amazee-ai . --set frontend.enabled=false --set backend.enabled=false --set postgresql.enabled=false > /dev/null
+          echo "✅ Main chart template test passed"
+
+          # Test individual subcharts
+          cd charts
+          for chart in */; do
+            chart_name=$(basename "$chart")
+            echo "Testing chart: $chart_name"
+            helm template test-$chart_name "$chart_name" > /dev/null
+            echo "✅ $chart_name chart template test passed"
+          done
+
+      - name: Lint charts
+        run: |
+          cd helm
+          helm lint . --strict
+          cd charts
+          for chart in */; do
+            chart_name=$(basename "$chart")
+            echo "Linting chart: $chart_name"
+            helm lint "$chart_name" --strict
+          done
