@@ -34,12 +34,10 @@ helm repo update
 ### 2. Deploy the Complete Stack
 
 ```bash
-# Create a namespace
-kubectl create namespace amazee-ai
-
-# Deploy the complete application
-helm install amazee-ai oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
+# Deploy the complete application (Helm will create the namespace automatically)
+helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
   --namespace amazee-ai \
+  --create-namespace \
   --version 0.0.1
 ```
 
@@ -49,6 +47,7 @@ helm install amazee-ai oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
 ```bash
 helm install frontend oci://ghcr.io/amazeeio/amazee.ai/frontend \
   --namespace amazee-ai \
+  --create-namespace \
   --version 0.0.1
 ```
 
@@ -56,6 +55,7 @@ helm install frontend oci://ghcr.io/amazeeio/amazee.ai/frontend \
 ```bash
 helm install backend oci://ghcr.io/amazeeio/amazee.ai/backend \
   --namespace amazee-ai \
+  --create-namespace \
   --version 0.0.1
 ```
 
@@ -63,6 +63,7 @@ helm install backend oci://ghcr.io/amazeeio/amazee.ai/backend \
 ```bash
 helm install postgresql bitnami/postgresql \
   --namespace amazee-ai \
+  --create-namespace \
   --set auth.postgresPassword="your-password" \
   --set auth.database="postgres_service"
 ```
@@ -106,8 +107,9 @@ backend:
 Deploy with custom values:
 
 ```bash
-helm install amazee-ai oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
+helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
   --namespace amazee-ai \
+  --create-namespace \
   --version 0.0.1 \
   --values values.yaml
 ```
@@ -115,8 +117,9 @@ helm install amazee-ai oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
 ### Using Command Line Overrides
 
 ```bash
-helm install amazee-ai oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
+helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
   --namespace amazee-ai \
+  --create-namespace \
   --version 0.0.1 \
   --set frontend.enabled=true \
   --set backend.enabled=true \
@@ -151,7 +154,7 @@ To upgrade to a newer version:
 helm search repo oci://ghcr.io/amazeeio/amazee.ai/amazee-ai --versions
 
 # Upgrade to a specific version
-helm upgrade amazee-ai oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
+helm upgrade amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
   --namespace amazee-ai \
   --version 0.0.2
 ```
@@ -160,7 +163,7 @@ helm upgrade amazee-ai oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
 
 ```bash
 # Uninstall the complete stack
-helm uninstall amazee-ai -n amazee-ai
+helm uninstall amazee-ai-app -n amazee-ai
 
 # Or uninstall individual components
 helm uninstall frontend -n amazee-ai
@@ -173,7 +176,7 @@ helm uninstall postgresql -n amazee-ai
 ### Check Chart Status
 ```bash
 helm list -n amazee-ai
-helm status amazee-ai -n amazee-ai
+helm status amazee-ai-app -n amazee-ai
 ```
 
 ### View Logs
@@ -191,10 +194,35 @@ kubectl logs -n amazee-ai deployment/postgresql
 ### Debug Installation
 ```bash
 # Dry run to see what would be installed
-helm install amazee-ai oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
+helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
   --namespace amazee-ai \
+  --create-namespace \
   --version 0.0.1 \
   --dry-run --debug
+```
+
+### Namespace Conflicts
+
+If you encounter namespace ownership errors like:
+```
+Error: INSTALLATION FAILED: Unable to continue with install: Namespace "amazee-ai" in namespace "" exists and cannot be imported into the current release: invalid ownership metadata
+```
+
+This happens when the namespace was created manually with `kubectl create namespace` instead of by Helm. To fix this:
+
+```bash
+# Option 1: Delete the existing namespace and let Helm recreate it
+kubectl delete namespace amazee-ai
+helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
+  --namespace amazee-ai \
+  --create-namespace \
+  --version 0.0.1
+
+# Option 2: Use a different namespace name
+helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
+  --namespace amazee-ai-new \
+  --create-namespace \
+  --version 0.0.1
 ```
 
 ## Security Considerations
