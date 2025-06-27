@@ -19,7 +19,7 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  package-charts:
+  package-and-publish:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -35,62 +35,12 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v3
         with:
-          version: v3.12.0
+          version: v3.18.0
 
       - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Package subcharts
-        run: |
-          cd helm/charts
-          for chart in */; do
-            chart_name=$(basename "$chart")
-            echo "Packaging chart: $chart_name"
-            helm package "$chart_name"
-          done
-
-      - name: Package main chart
-        run: |
-          cd helm
-          helm dependency update
-          helm package .
-
-      - name: Create Helm repository index
-        run: |
-          cd helm
-          helm repo index . --url https://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/charts
-
-      - name: Upload chart packages as artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: helm-charts
-          path: |
-            helm/*.tgz
-            helm/charts/*.tgz
-            helm/index.yaml
-
-  publish-charts:
-    needs: package-charts
-    runs-on: ubuntu-latest
-    if: github.event_name == 'release' || (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
-    permissions:
-      contents: read
-      packages: write
-      security-events: write
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download chart packages
-        uses: actions/download-artifact@v4
-        with:
-          name: helm-charts
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
 
       - name: Log in to Container Registry
         uses: docker/login-action@v3
@@ -99,60 +49,61 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push charts to GHCR
+      - name: Package and publish subcharts
         run: |
-          # Create a temporary directory for the chart museum
-          mkdir -p chart-museum
+          cd helm/charts
+          for chart in */; do
+            chart_name=$(basename "$chart")
+            echo "Processing chart: $chart_name"
 
-          # Copy all chart packages to the chart museum directory
-          cp *.tgz chart-museum/
-          cp index.yaml chart-museum/
+            # Get chart version
+            version=$(grep '^version:' "$chart_name/Chart.yaml" | awk '{print $2}')
+            echo "Chart version: $version"
 
-          # Create a simple chart museum server configuration
-          cat > chart-museum/chartmuseum.yaml << EOF
-          debug: true
-          port: 8080
-          storage: local
-          storage_local_rootdir: ./chart-museum
-          chart_url: https://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/charts
-          EOF
+            # Package the chart
+            helm package "$chart_name"
 
-          # Build and push chart museum image
-          docker build -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/chart-museum:${{ github.sha }} \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/chart-museum:latest \
-            -f - . << EOF
-          FROM alpine:latest
-          RUN apk add --no-cache curl
-          COPY chart-museum/ /chart-museum/
-          EXPOSE 8080
-          CMD ["sh", "-c", "cd /chart-museum && python3 -m http.server 8080"]
-          EOF
+            # Push to OCI registry with version tag
+            helm push "$chart_name-$version.tgz" oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
-          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/chart-museum:${{ github.sha }}
-          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/chart-museum:latest
+            # Also push with latest tag
+            helm push "$chart_name-$version.tgz" oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} --destination-app-version latest
 
-      - name: Create Release
+            echo "✅ Published $chart_name:$version to GHCR via OCI"
+          done
+
+      - name: Package and publish main chart
+        run: |
+          cd helm
+
+          # Update dependencies
+          helm dependency update
+
+          # Package the main chart
+          helm package .
+
+          # Get chart version
+          version=$(grep '^version:' Chart.yaml | awk '{print $2}')
+          echo "Main chart version: $version"
+
+          # Push to OCI registry with version tag
+          helm push "amazee-ai-$version.tgz" oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+          # Also push with latest tag
+          helm push "amazee-ai-$version.tgz" oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} --destination-app-version latest
+
+          echo "✅ Published amazee-ai:$version to GHCR via OCI"
+
+      - name: Create Release Tag
         if: github.event_name == 'release'
         run: |
-          # Tag the release with the chart versions
           cd helm
-          MAIN_VERSION=$(grep '^version:' Chart.yaml | awk '{print $2}')
-          echo "Main chart version: $MAIN_VERSION"
-
-          # Create a release tag
-          git tag -a "v$MAIN_VERSION" -m "Release version $MAIN_VERSION"
-          git push origin "v$MAIN_VERSION"
-
-      - name: Update repository with chart index
-        if: github.event_name == 'release' || (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
-        run: |
-          # Update the repository with the latest chart index
-          git add helm/index.yaml
-          git commit -m "Update Helm chart index" || exit 0
-          git push
+          version=$(grep '^version:' Chart.yaml | awk '{print $2}')
+          echo "Creating release tag: v$version"
+          git tag -a "v$version" -m "Release Helm charts version $version"
+          git push origin "v$version"
 
   test-charts:
-    needs: package-charts
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -161,26 +112,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Download chart packages
-        uses: actions/download-artifact@v4
-        with:
-          name: helm-charts
-
       - name: Set up Helm
         uses: azure/setup-helm@v3
         with:
-          version: v3.12.0
+          version: v3.18.0
 
       - name: Install kubectl
         uses: azure/setup-kubectl@v3
         with:
           version: 'latest'
 
-      - name: Test chart installation
+      - name: Test chart templates
         run: |
           # Test the main chart with minimal values
           cd helm
-          helm template amazee-ai . --set frontend.enabled=false --set backend.enabled=false --set postgres.enabled=false > /dev/null
+          helm dependency update
+          helm template amazee-ai . --set frontend.enabled=false --set backend.enabled=false --set postgresql.enabled=false > /dev/null
           echo "✅ Main chart template test passed"
 
           # Test individual subcharts
