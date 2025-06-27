@@ -24,25 +24,6 @@ postgresql:
     extraEnvVars:
       - name: POSTGRES_INITDB_ARGS
         value: "--data-checksums"
-    extraVolumes:
-      - name: pgvector-extension
-        emptyDir: {}
-      - name: pgvector-lib
-        emptyDir: {}
-    extraVolumeMounts:
-      - name: pgvector-extension
-        mountPath: /docker-entrypoint-initdb.d
-      - name: pgvector-lib
-        mountPath: /usr/lib/postgresql/16/lib
-    initContainers:
-      - name: install-pgvector
-        image: pgvector/pgvector:pg16
-        command: ['sh', '-c', 'cp /usr/share/postgresql/16/extension/vector* /docker-entrypoint-initdb.d/ && cp /usr/lib/postgresql/16/lib/vector.so /usr/lib/postgresql/16/lib/']
-        volumeMounts:
-          - name: pgvector-extension
-            mountPath: /docker-entrypoint-initdb.d
-          - name: pgvector-lib
-            mountPath: /usr/lib/postgresql/16/lib
 
 # Backend subchart configuration
 backend:
