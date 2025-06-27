@@ -66,8 +66,9 @@ jobs:
             # Push to OCI registry with version tag
             helm push "$chart_name-$version.tgz" oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
-            # Also push with latest tag
-            helm push "$chart_name-$version.tgz" oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} --destination-app-version latest
+            # Also push with latest tag by copying the chart and updating its version
+            cp "$chart_name-$version.tgz" "$chart_name-latest.tgz"
+            helm push "$chart_name-latest.tgz" oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
             echo "✅ Published $chart_name:$version to GHCR via OCI"
           done
@@ -89,8 +90,9 @@ jobs:
           # Push to OCI registry with version tag
           helm push "amazee-ai-$version.tgz" oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
-          # Also push with latest tag
-          helm push "amazee-ai-$version.tgz" oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} --destination-app-version latest
+          # Also push with latest tag by copying the chart
+          cp "amazee-ai-$version.tgz" "amazee-ai-latest.tgz"
+          helm push "amazee-ai-latest.tgz" oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
           echo "✅ Published amazee-ai:$version to GHCR via OCI"
 
