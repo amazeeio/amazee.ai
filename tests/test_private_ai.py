@@ -1,10 +1,17 @@
 import pytest
 from unittest.mock import patch
-from app.db.models import DBPrivateAIKey, DBTeam, DBUser
+from app.db.models import DBPrivateAIKey, DBTeam, DBUser, DBProduct, DBTeamProduct
 from datetime import datetime, UTC
 from app.core.security import get_password_hash
 from requests.exceptions import HTTPError
-from app.core.resource_limits import DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
+from app.core.resource_limits import (
+    DEFAULT_MAX_SPEND,
+    DEFAULT_RPM_PER_KEY,
+    DEFAULT_SERVICE_KEYS,
+    DEFAULT_KEYS_PER_USER,
+    DEFAULT_TOTAL_KEYS,
+    DEFAULT_VECTOR_DB_COUNT
+)
 
 @pytest.fixture
 def mock_litellm_response():
@@ -1492,105 +1499,221 @@ def test_get_private_ai_key_unauthorized(mock_get, client, test_token, test_regi
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
 def test_create_too_many_service_keys(mock_post, client, admin_token, test_region, mock_litellm_response, db, test_team):
     """Test that when ENABLE_LIMITS is true, creating too many service keys fails"""
+    # Create a product with a specific service key limit for testing
+    key_count = 2
+    test_product = DBProduct(
+        id="prod_test_service_limit",
+        name="Test Product Service Limit",
+        user_count=3,
+        keys_per_user=2,
+        total_key_count=10,
+        service_key_count=key_count,  # Specific limit for testing
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(test_product)
+    product_id = test_product.id
+
+    # Associate the product with the team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=product_id
+    )
+    db.add(team_product)
+    db.commit()
+
     # Mock the LiteLLM API response
     mock_post.return_value.status_code = 200
     mock_post.return_value.json.return_value = mock_litellm_response
     mock_post.return_value.raise_for_status.return_value = None
 
     team_id = test_team.id
-    # Create first service key
-    response = client.post(
-        "/private-ai-keys/token",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "region_id": test_region.id,
-            "name": "First Service Key",
-            "team_id": team_id
-        }
-    )
-    assert response.status_code == 200
+    # Create service keys up to the limit
+    for i in range(key_count):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": test_region.id,
+                "name": f"Service Key {i+1}",
+                "team_id": team_id
+            }
+        )
+        assert response.status_code == 200
 
-    # Try to create second service key
+    # Try to create one more service key
     response = client.post(
         "/private-ai-keys/token",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "region_id": test_region.id,
-            "name": "Second Service Key",
+            "name": "Extra Service Key",
             "team_id": team_id
         }
     )
     assert response.status_code == 402
-    assert "Team has reached the maximum service LLM token limit of 1 tokens" in response.json()["detail"]
+    assert f"Team has reached the maximum service LLM token limit of {key_count} tokens" in response.json()["detail"]
 
 @patch("app.services.litellm.requests.post")
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
 def test_create_too_many_user_keys(mock_post, client, admin_token, test_region, mock_litellm_response, db, test_team_user):
     """Test that when ENABLE_LIMITS is true, creating too many user keys fails"""
+    # Get the team from the team user
+    team_id = test_team_user.team_id
+    key_count = 2
+
+    # Create a product with a specific user key limit for testing
+    test_product = DBProduct(
+        id="prod_test_user_key_limit",
+        name="Test Product User Key Limit",
+        user_count=3,
+        keys_per_user=key_count,  # Specific limit for testing
+        total_key_count=10,
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(test_product)
+
+    # Associate the product with the team
+    team_product = DBTeamProduct(
+        team_id=team_id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
     # Mock the LiteLLM API response
     mock_post.return_value.status_code = 200
     mock_post.return_value.json.return_value = mock_litellm_response
     mock_post.return_value.raise_for_status.return_value = None
 
     user_id = test_team_user.id
-    # Create first user key
-    response = client.post(
-        "/private-ai-keys/token",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "region_id": test_region.id,
-            "name": "First User Key",
-            "owner_id": user_id
-        }
-    )
-    assert response.status_code == 200
+    # Create user keys up to the limit
+    for i in range(key_count):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": test_region.id,
+                "name": f"User Key {i+1}",
+                "owner_id": user_id
+            }
+        )
+        assert response.status_code == 200
 
-    # Try to create second user key
+    # Try to create one more user key
     response = client.post(
         "/private-ai-keys/token",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "region_id": test_region.id,
-            "name": "Second User Key",
+            "name": "Extra User Key",
             "owner_id": user_id
         }
     )
     assert response.status_code == 402
-    assert "User has reached the maximum LLM token limit of 1 tokens" in response.json()["detail"]
+    assert f"User has reached the maximum LLM token limit of {key_count} tokens" in response.json()["detail"]
 
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
 def test_create_too_many_vector_dbs(client, admin_token, test_region, db, test_team):
     """Test that when ENABLE_LIMITS is true, creating too many vector DBs fails"""
-    # Create first vector DB
-    team_id = test_team.id
-    response = client.post(
-        "/private-ai-keys/vector-db",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "region_id": test_region.id,
-            "name": "First Vector DB",
-            "team_id": team_id
-        }
+    # Create a product with a specific vector DB limit for testing
+    vector_db_count = 2
+    test_product = DBProduct(
+        id="prod_test_vector_db_limit",
+        name="Test Product Vector DB Limit",
+        user_count=3,
+        keys_per_user=2,
+        total_key_count=10,
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=vector_db_count,  # Specific limit for testing
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC)
     )
-    assert response.status_code == 200
+    db.add(test_product)
 
-    # Try to create second vector DB
+    # Associate the product with the team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+    db.refresh(test_product)
+
+    # Create vector DBs up to the limit
+    team_id = test_team.id
+    for i in range(vector_db_count):
+        response = client.post(
+            "/private-ai-keys/vector-db",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": test_region.id,
+                "name": f"Vector DB {i+1}",
+                "team_id": team_id
+            }
+        )
+        assert response.status_code == 200
+
+    # Try to create one more vector DB
     response = client.post(
         "/private-ai-keys/vector-db",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "region_id": test_region.id,
-            "name": "Second Vector DB",
+            "name": "Extra Vector DB",
             "team_id": team_id
         }
     )
     assert response.status_code == 402
-    assert "Team has reached the maximum vector DB limit of 1 databases" in response.json()["detail"]
+    assert f"Team has reached the maximum vector DB limit of {vector_db_count} databases" in response.json()["detail"]
 
 @patch("app.services.litellm.requests.post")
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
 def test_create_too_many_total_keys(mock_post, client, admin_token, test_region, mock_litellm_response, db, test_team, test_team_user):
     """Test that when ENABLE_LIMITS is true, creating too many total keys fails"""
+    # Create a product with a specific total key limit for testing
+    key_count = 5
+    test_product = DBProduct(
+        id="prod_test_total_limit",
+        name="Test Product Total Limit",
+        user_count=5,
+        keys_per_user=3,
+        total_key_count=key_count,  # Specific limit for testing
+        service_key_count=3,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(test_product)
+
+    # Associate the product with the team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
     # Mock the LiteLLM API response
     mock_post.return_value.status_code = 200
     mock_post.return_value.json.return_value = mock_litellm_response
@@ -1599,42 +1722,45 @@ def test_create_too_many_total_keys(mock_post, client, admin_token, test_region,
     team_id = test_team.id
     user_id = test_team_user.id
     region_id = test_region.id
-    # Create first key (service key)
-    response = client.post(
-        "/private-ai-keys/token",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "region_id": region_id,
-            "name": "First Key",
-            "team_id": team_id
-        }
-    )
-    assert response.status_code == 200
 
-    # Create second key (user key)
-    response = client.post(
-        "/private-ai-keys/token",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "region_id": region_id,
-            "name": "Second Key",
-            "owner_id": user_id
-        }
-    )
-    assert response.status_code == 200
+    # Create keys up to the limit (5 keys)
+    for i in range(key_count):
+        if i % 2 == 0:
+            # Create service key
+            response = client.post(
+                "/private-ai-keys/token",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={
+                    "region_id": region_id,
+                    "name": f"Service Key {i//2 + 1}",
+                    "team_id": team_id
+                }
+            )
+        else:
+            # Create user key
+            response = client.post(
+                "/private-ai-keys/token",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={
+                    "region_id": region_id,
+                    "name": f"User Key {(i//2) + 1}",
+                    "owner_id": user_id
+                }
+            )
+        assert response.status_code == 200
 
-    # Try to create third key
+    # Try to create one more key
     response = client.post(
         "/private-ai-keys/token",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "region_id": region_id,
-            "name": "Third Key",
+            "name": "Extra Key",
             "owner_id": user_id
         }
     )
     assert response.status_code == 402
-    assert "Team has reached the maximum LLM token limit of 2 tokens" in response.json()["detail"]
+    assert f"Team has reached the maximum LLM token limit of {key_count} tokens" in response.json()["detail"]
 
 @patch("app.services.litellm.requests.post")
 def test_delete_private_ai_key_with_only_vector_db(mock_post, client, admin_token, test_region, db):
