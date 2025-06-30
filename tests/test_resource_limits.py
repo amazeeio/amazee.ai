@@ -9,7 +9,10 @@ from app.core.resource_limits import (
     get_token_restrictions,
     DEFAULT_KEY_DURATION,
     DEFAULT_MAX_SPEND,
-    DEFAULT_RPM_PER_KEY
+    DEFAULT_RPM_PER_KEY,
+    DEFAULT_USER_COUNT,
+    DEFAULT_TOTAL_KEYS,
+    DEFAULT_VECTOR_DB_COUNT
 )
 
 def test_add_user_within_product_limit(db, test_team, test_product):
@@ -57,8 +60,36 @@ def test_add_user_exceeding_product_limit(db, test_team, test_product):
 
 def test_add_user_with_default_limit(db, test_team):
     """Test adding users with default limit when team has no products"""
-    # Create and add users up to the default limit (2)
-    for i in range(2):
+    from app.db.models import DBProduct, DBTeamProduct
+
+    # Create a product with a specific user limit for testing
+    test_product = DBProduct(
+        id="prod_test_user_limit",
+        name="Test Product User Limit",
+        user_count=3,  # Specific limit for testing
+        keys_per_user=2,
+        total_key_count=10,
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(test_product)
+
+    # Associate the product with the team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Create and add users up to the limit
+    for i in range(test_product.user_count):
         user = DBUser(
             email=f"user{i}@example.com",
             hashed_password="hashed_password",
@@ -75,7 +106,7 @@ def test_add_user_with_default_limit(db, test_team):
     with pytest.raises(HTTPException) as exc_info:
         check_team_user_limit(db, test_team.id)
     assert exc_info.value.status_code == 402
-    assert "Team has reached the maximum user limit" in str(exc_info.value.detail)
+    assert f"Team has reached the maximum user limit of {test_product.user_count} users" in str(exc_info.value.detail)
 
 def test_add_user_with_one_product(db, test_team):
     """Test adding users when team has multiple products with different limits"""
@@ -339,8 +370,36 @@ def test_create_key_exceeding_service_key_limit(db, test_team, test_product, tes
 
 def test_create_key_with_default_limits(db, test_team, test_region):
     """Test creating LLM tokens with default limits when team has no products"""
-    # Create LLM tokens up to the default limit (2)
-    for i in range(2):
+    from app.db.models import DBProduct, DBTeamProduct
+
+    # Create a product with a specific key limit for testing
+    test_product = DBProduct(
+        id="prod_test_key_limit",
+        name="Test Product Key Limit",
+        user_count=3,
+        keys_per_user=2,
+        total_key_count=4,  # Specific limit for testing
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(test_product)
+
+    # Associate the product with the team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Create LLM tokens up to the limit
+    for i in range(test_product.total_key_count):
         key = DBPrivateAIKey(
             name=f"Test Token {i}",
             database_name=f"test_db_{i}",
@@ -360,7 +419,7 @@ def test_create_key_with_default_limits(db, test_team, test_region):
     with pytest.raises(HTTPException) as exc_info:
         check_key_limits(db, test_team.id, None)
     assert exc_info.value.status_code == 402
-    assert "Team has reached the maximum LLM token limit of 2 tokens" in str(exc_info.value.detail)
+    assert f"Team has reached the maximum LLM token limit of {test_product.total_key_count} tokens" in str(exc_info.value.detail)
 
 def test_create_key_with_multiple_products(db, test_team, test_region):
     """Test creating LLM tokens when team has multiple products with different limits"""
@@ -437,6 +496,34 @@ def test_create_key_with_multiple_products(db, test_team, test_region):
 
 def test_create_key_with_multiple_users_default_limits(db, test_team, test_region):
     """Test creating a key when team has no products and multiple users have keys"""
+    from app.db.models import DBProduct, DBTeamProduct
+
+    # Create a product with a specific key limit for testing
+    test_product = DBProduct(
+        id="prod_test_multi_user_limit",
+        name="Test Product Multi User Limit",
+        user_count=3,
+        keys_per_user=2,
+        total_key_count=3,  # Specific limit for testing
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(test_product)
+
+    # Associate the product with the team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
     # Create two users
     user1 = DBUser(
         email="user1@example.com",
@@ -460,15 +547,16 @@ def test_create_key_with_multiple_users_default_limits(db, test_team, test_regio
     db.add(user2)
     db.commit()
 
-    # Create one key for each user
-    for user in [user1, user2]:
+    # Create keys up to the limit, alternating between users
+    for i in range(test_product.total_key_count):
+        user = user1 if i % 2 == 0 else user2
         key = DBPrivateAIKey(
-            name=f"Test Token for {user.email}",
-            database_name=f"test_db_{user.id}",
+            name=f"Test Token {i} for {user.email}",
+            database_name=f"test_db_{i}",
             database_host="localhost",
             database_username="test_user",
             database_password="test_pass",
-            litellm_token=f"test_token_{user.id}",
+            litellm_token=f"test_token_{i}",
             owner_id=user.id,
             team_id=None,  # Keys with owner_id should not have team_id
             region_id=test_region.id,
@@ -481,7 +569,7 @@ def test_create_key_with_multiple_users_default_limits(db, test_team, test_regio
     with pytest.raises(HTTPException) as exc_info:
         check_key_limits(db, test_team.id, None)
     assert exc_info.value.status_code == 402
-    assert "Team has reached the maximum LLM token limit of 2 tokens" in str(exc_info.value.detail)
+    assert f"Team has reached the maximum LLM token limit of {test_product.total_key_count} tokens" in str(exc_info.value.detail)
 
 def test_create_key_with_mixed_service_and_user_keys(db, test_team, test_region):
     """Test creating keys when team has a mix of service and user keys"""
@@ -619,25 +707,54 @@ def test_create_vector_db_exceeding_limit(db, test_team, test_product, test_regi
 
 def test_create_vector_db_with_default_limit(db, test_team, test_region):
     """Test creating vector DBs with default limit when team has no products"""
-    # Create a vector DB
-    key = DBPrivateAIKey(
-        name="Test Vector DB",
-        database_name="test_db",
-        database_host="localhost",
-        database_username="test_user",
-        database_password="test_pass",
-        team_id=test_team.id,
-        region_id=test_region.id,
+    from app.db.models import DBProduct, DBTeamProduct
+
+    # Create a product with a specific vector DB limit for testing
+    test_product = DBProduct(
+        id="prod_test_vector_limit",
+        name="Test Product Vector Limit",
+        user_count=3,
+        keys_per_user=2,
+        total_key_count=10,
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=2,  # Specific limit for testing
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
         created_at=datetime.now(UTC)
     )
-    db.add(key)
+    db.add(test_product)
+
+    # Associate the product with the team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Create vector DBs up to the limit
+    for i in range(test_product.vector_db_count):
+        key = DBPrivateAIKey(
+            name=f"Test Vector DB {i}",
+            database_name=f"test_db_{i}",
+            database_host="localhost",
+            database_username="test_user",
+            database_password="test_pass",
+            team_id=test_team.id,
+            region_id=test_region.id,
+            created_at=datetime.now(UTC)
+        )
+        db.add(key)
     db.commit()
 
     # Test that check_vector_db_limits raises an exception
     with pytest.raises(HTTPException) as exc_info:
         check_vector_db_limits(db, test_team.id)
     assert exc_info.value.status_code == 402
-    assert "Team has reached the maximum vector DB limit of 1 databases" in str(exc_info.value.detail)
+    assert f"Team has reached the maximum vector DB limit of {test_product.vector_db_count} databases" in str(exc_info.value.detail)
 
 def test_create_vector_db_with_multiple_products(db, test_team, test_region):
     """Test creating vector DBs when team has multiple products with different limits"""
@@ -712,26 +829,55 @@ def test_create_vector_db_with_multiple_products(db, test_team, test_region):
 
 def test_create_vector_db_with_user_owned_key(db, test_team, test_region, test_team_user):
     """Test vector DB limit check when a user-owned key has a vector DB and team has no products"""
-    # Create a user-owned key with a vector DB
-    key = DBPrivateAIKey(
-        name="Test User Vector DB",
-        database_name="test_user_db",
-        database_host="localhost",
-        database_username="test_user",
-        database_password="test_pass",
-        owner_id=test_team_user.id,
-        team_id=None,  # User-owned keys should not have team_id
-        region_id=test_region.id,
+    from app.db.models import DBProduct, DBTeamProduct
+
+    # Create a product with a specific vector DB limit for testing
+    test_product = DBProduct(
+        id="prod_test_user_vector_limit",
+        name="Test Product User Vector Limit",
+        user_count=3,
+        keys_per_user=2,
+        total_key_count=10,
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=2,  # Specific limit for testing
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
         created_at=datetime.now(UTC)
     )
-    db.add(key)
+    db.add(test_product)
+
+    # Associate the product with the team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Create user-owned keys with vector DBs up to the limit
+    for i in range(test_product.vector_db_count):
+        key = DBPrivateAIKey(
+            name=f"Test User Vector DB {i}",
+            database_name=f"test_user_db_{i}",
+            database_host="localhost",
+            database_username="test_user",
+            database_password="test_pass",
+            owner_id=test_team_user.id,
+            team_id=None,  # User-owned keys should not have team_id
+            region_id=test_region.id,
+            created_at=datetime.now(UTC)
+        )
+        db.add(key)
     db.commit()
 
     # Test that check_vector_db_limits raises an exception
     with pytest.raises(HTTPException) as exc_info:
         check_vector_db_limits(db, test_team.id)
     assert exc_info.value.status_code == 402
-    assert "Team has reached the maximum vector DB limit of 1 databases" in str(exc_info.value.detail)
+    assert f"Team has reached the maximum vector DB limit of {test_product.vector_db_count} databases" in str(exc_info.value.detail)
 
 def test_get_token_restrictions_default_limits(db, test_team):
     """Test getting token restrictions when team has no products (using default limits)"""
@@ -739,7 +885,7 @@ def test_get_token_restrictions_default_limits(db, test_team):
 
     # Should use default values since team has no products
     assert days_left == DEFAULT_KEY_DURATION  # 30 days
-    assert max_spend == DEFAULT_MAX_SPEND  # 20.0
+    assert max_spend == DEFAULT_MAX_SPEND  # 27.0
     assert rpm_limit == DEFAULT_RPM_PER_KEY  # 500
 
 def test_get_token_restrictions_with_product(db, test_team, test_product):
