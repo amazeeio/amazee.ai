@@ -15,3 +15,18 @@ environments:
             insecure: Redirect
             hstsEnabled: true
 
+tasks:
+  post-rollout:
+    - run:
+        name: purge fastly
+        command: |
+          # Extract service ID (remove ":true" if present)
+          SERVICE_ID="${LAGOON_FASTLY_SERVICE_ID%%:*}"
+
+          # Purge all cache for the service using Fastly API
+          curl -X POST "https://api.fastly.com/service/$SERVICE_ID/purge_all" \
+            -H "Fastly-Key: $FASTLY_TOKEN" \
+            -H "Accept: application/json"
+        service: backend
+        shell: bash
+        when: LAGOON_ENVIRONMENT == "prod"
