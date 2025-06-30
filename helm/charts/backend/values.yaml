@@ -9,7 +9,11 @@ image:
 
 # Database configuration
 database:
-  url: ""  # Will be auto-generated using release name and PostgreSQL config
+  url: ""  # If set, used directly
+  user: "postgres"
+  password: "postgres"
+  host: "localhost"
+  name: "postgres_service"
 
 # Application configuration
 secretKey: "my-secret-key"  # Key used to hash passwords stored in the database

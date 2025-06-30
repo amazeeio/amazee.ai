@@ -9,7 +9,7 @@ data:
   {{- if .Values.database.url }}
   DATABASE_URL: {{ .Values.database.url | quote }}
   {{- else }}
-  DATABASE_URL: "postgresql://postgres:{{ .Values.postgresql.auth.postgresPassword }}@{{ .Release.Name }}-postgresql:5432/{{ .Values.postgresql.auth.database }}"
+  DATABASE_URL: "postgresql://{{ .Values.database.user }}:{{ .Values.database.password }}@{{ .Values.database.host }}:5432/{{ .Values.database.name }}"
   {{- end }}
   ENABLE_METRICS: "{{ .Values.enableMetrics }}"
   DYNAMODB_REGION: "{{ .Values.dynamodbRegion }}"
