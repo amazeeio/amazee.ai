@@ -62,8 +62,8 @@ update_chart_version() {
     local new_version=$2
 
     if [ -f "$chart_path/Chart.yaml" ]; then
-        # Update version in Chart.yaml
-        sed -i "s/^version: .*/version: $new_version/" "$chart_path/Chart.yaml"
+        # Update version in Chart.yaml - be more precise to avoid dependency versions
+        sed -i "/^name:/,/^apiVersion:/ s/^version: .*/version: $new_version/" "$chart_path/Chart.yaml"
 
         # Update appVersion if it matches the old version pattern
         local current_app_version=$(grep '^appVersion:' "$chart_path/Chart.yaml" | awk '{print $2}' | tr -d '"')
@@ -83,15 +83,15 @@ update_dependency_versions() {
     local new_version=$2
 
     if [ -f "$helm_dir/Chart.yaml" ]; then
-        # Update backend dependency version
+        # Update backend dependency version - use more precise pattern
         if grep -q "name: backend" "$helm_dir/Chart.yaml"; then
-            sed -i "/name: backend/,/condition: backend.enabled/ s/version: [0-9]\+\.[0-9]\+\.[0-9]\+/version: $new_version/" "$helm_dir/Chart.yaml"
+            sed -i "/^  - name: backend$/,/^  - name:/ s/^    version: .*/    version: $new_version/" "$helm_dir/Chart.yaml"
             print_status "Updated backend dependency version to $new_version"
         fi
 
-        # Update frontend dependency version
+        # Update frontend dependency version - use more precise pattern
         if grep -q "name: frontend" "$helm_dir/Chart.yaml"; then
-            sed -i "/name: frontend/,/condition: frontend.enabled/ s/version: [0-9]\+\.[0-9]\+\.[0-9]\+/version: $new_version/" "$helm_dir/Chart.yaml"
+            sed -i "/^  - name: frontend$/,/^  - name:/ s/^    version: .*/    version: $new_version/" "$helm_dir/Chart.yaml"
             print_status "Updated frontend dependency version to $new_version"
         fi
     fi
@@ -132,18 +132,23 @@ process_chart() {
     fi
 
     if [ -f "$chart_path/Chart.yaml" ]; then
-        local current_version=$(grep '^version:' "$chart_path/Chart.yaml" | awk '{print $2}')
+        # Read version more precisely - get the main version field, not dependency versions
+        local current_version=$(sed -n '/^name:/,/^apiVersion:/p' "$chart_path/Chart.yaml" | grep '^version:' | awk '{print $2}')
         local new_version=$(bump_version "$current_version" "$BUMP_TYPE")
 
         print_status "Processing $chart_name: $current_version -> $new_version"
         update_chart_version "$chart_path" "$new_version"
+
+        # Only update dependencies for the main chart
+        if [ "$chart_path" = "$HELM_DIR" ]; then
+            update_dependency_versions "$chart_path" "$new_version"
+        fi
     fi
 }
 
 # Process main chart
 if [ -z "$CHART_NAME" ] || [ "$CHART_NAME" = "amazee-ai" ]; then
     process_chart "$HELM_DIR"
-    update_dependency_versions "$HELM_DIR" "$new_version"
 fi
 
 # Process subcharts
@@ -151,7 +156,6 @@ if [ -d "$HELM_DIR/charts" ]; then
     for chart_dir in "$HELM_DIR/charts"/*/; do
         if [ -d "$chart_dir" ]; then
             process_chart "$chart_dir"
-            update_dependency_versions "$chart_dir" "$new_version"
         fi
     done
 fi
