@@ -6,6 +6,10 @@ metadata:
   labels:
     {{- include "frontend.labels" . | nindent 4 }}
 data:
+  {{- if .Values.apiUrl }}
   NEXT_PUBLIC_API_URL: "{{ .Values.apiUrl }}"
+  {{- else }}
+  NEXT_PUBLIC_API_URL: "http://{{ .Release.Name }}-backend:8800"
+  {{- end }}
   STRIPE_PUBLISHABLE_KEY: "{{ .Values.stripePublishableKey }}"
   PASSWORDLESS_SIGN_IN: "{{ .Values.passwordlessSignIn }}"

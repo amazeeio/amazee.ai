@@ -15,52 +15,112 @@ Each subchart can be deployed independently or together.
 
 ## Prerequisites
 
-- Kubernetes 1.19+
-- Helm 3.0+
-- Docker images for backend and frontend services
-- Bitnami PostgreSQL chart (16.7.12) for database
+- Kubernetes 1.20+
+- Helm 3.12.0+
+- kubectl configured to access your cluster
 - Ingress controller (e.g., nginx-ingress) for external access
 
-## Installation Options
+## Available Charts
 
-### 1. Deploy All Services Together
+The following Helm charts are available in GitHub Container Registry (GHCR):
+
+- **Main Chart**: `ghcr.io/amazeeio/amazee.ai/amazee-ai` - Complete application stack
+- **Frontend**: `ghcr.io/amazeeio/amazee.ai/frontend` - Next.js web application
+- **Backend**: `ghcr.io/amazeeio/amazee.ai/backend` - FastAPI backend service
+
+## Deployment Methods
+
+### Method 1: Deploy from OCI Registry (Recommended)
+
+#### 1. Add the Helm Repository
+
+```bash
+# Add the OCI registry as a Helm repository
+helm registry login ghcr.io -u YOUR_GITHUB_USERNAME -p YOUR_GITHUB_TOKEN
+
+# Add Bitnami repository for PostgreSQL
+helm repo add bitnami https://charts.bitnami.com/bitnami
+helm repo update
+```
+
+#### 2. Deploy the Complete Stack
+
+```bash
+# Deploy the complete application (Helm will create the namespace automatically)
+helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
+  --namespace amazee-ai \
+  --create-namespace \
+  --version 0.0.1
+```
+
+#### 3. Deploy Individual Components
+
+**Frontend Only:**
+```bash
+helm install frontend oci://ghcr.io/amazeeio/amazee.ai/frontend \
+  --namespace amazee-ai \
+  --create-namespace \
+  --version 0.0.1
+```
+
+**Backend Only:**
+```bash
+helm install backend oci://ghcr.io/amazeeio/amazee.ai/backend \
+  --namespace amazee-ai \
+  --create-namespace \
+  --version 0.0.1
+```
+
+**PostgreSQL Only (using Bitnami):**
+```bash
+helm install postgresql bitnami/postgresql \
+  --namespace amazee-ai \
+  --create-namespace \
+  --set auth.postgresPassword="your-password" \
+  --set auth.database="postgres_service"
+```
+
+### Method 2: Deploy from Local Chart
+
+#### 1. Deploy All Services Together
 ```bash
 helm install amazee-ai . -n amazee-ai --create-namespace
 ```
 
-### 2. Deploy Individual Services
+#### 2. Deploy Individual Services
 
-#### Deploy Only Backend (requires PostgreSQL):
+**Deploy Only Backend (requires PostgreSQL):**
 ```bash
 helm install backend ./charts/backend -n amazee-ai \
   --set database.url="postgresql://postgres:password@amazee-ai-postgresql:5432/postgres_service"
 ```
 
-#### Deploy Only Frontend:
+**Deploy Only Frontend:**
 ```bash
 helm install frontend ./charts/frontend -n amazee-ai \
   --set apiUrl="http://backend-service:8800"
 ```
 
-### 3. Deploy Backend and Frontend (with external PostgreSQL):
+#### 3. Deploy Backend and Frontend (with external PostgreSQL):
 ```bash
 helm install amazee-ai . -n amazee-ai --create-namespace \
   --set postgresql.enabled=false \
   --set backend.database.url="postgresql://user:pass@external-host:5432/db"
 ```
 
-### 4. Local deployment with kind
+#### 4. Local deployment with kind
 ```bash
 kind create cluster --name amazee-ai-local
 ```
 
 ## Configuration
 
-### PostgreSQL Configuration (Bitnami)
+### Using Values File
 
-The chart uses the Bitnami PostgreSQL chart as a dependency:
+Create a `values.yaml` file with your configuration:
 
 ```yaml
+# values.yaml
 postgresql:
   enabled: true
   auth:
@@ -70,11 +130,59 @@ postgresql:
     persistence:
       enabled: true
       size: 10Gi
+
+frontend:
+  enabled: true
+  image:
+    repository: ghcr.io/amazeeio/amazee.ai-frontend
+    tag: dev
+  ingress:
+    enabled: true
+    host: your-domain.com
+
+backend:
+  enabled: true
+  image:
+    repository: ghcr.io/amazeeio/amazee.ai-backend
+    tag: dev
+  config:
+    database_url: "postgresql://user:pass@postgresql:5432/postgres_service"
 ```
 
-### Backend and Frontend Configuration
+Deploy with custom values:
 
-See the `values.yaml` for all available configuration options for backend and frontend.
+```bash
+# For OCI deployment
+helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
+  --namespace amazee-ai \
+  --create-namespace \
+  --version 0.0.1 \
+  --values values.yaml
+
+# For local deployment
+helm install amazee-ai . -n amazee-ai --create-namespace --values values.yaml
+```
+
+### Using Command Line Overrides
+
+```bash
+# For OCI deployment
+helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
+  --namespace amazee-ai \
+  --create-namespace \
+  --version 0.0.1 \
+  --set frontend.enabled=true \
+  --set backend.enabled=true \
+  --set postgresql.enabled=false \
+  --set postgresql.auth.postgresPassword="your-password"
+
+# For local deployment
+helm install amazee-ai . -n amazee-ai --create-namespace \
+  --set frontend.enabled=true \
+  --set backend.enabled=true \
+  --set postgresql.enabled=false \
+  --set postgresql.auth.postgresPassword="your-password"
+```
 
 ## Parameters
 
@@ -122,18 +230,50 @@ See the `values.yaml` for all available configuration options for backend and fr
 | `frontendIngress.enabled` | Enable frontend web interface ingress | `true` |
 | `frontendIngress.className` | Frontend ingress class name | `nginx` |
 
+## Environment Variables
+
+### Frontend Configuration
+
+The frontend requires the following environment variables:
+
+- `NEXT_PUBLIC_API_URL`: Backend API URL
+- `STRIPE_PUBLISHABLE_KEY`: Stripe publishable key
+- `PASSWORDLESS_SIGN_IN`: Passwordless authentication configuration
+
+### Backend Configuration
+
+The backend requires:
+
+- Database connection string
+- API keys and secrets
+- Authentication configuration
+
 ## Upgrading
 
 To upgrade to a newer version:
 
 ```bash
+# Check available versions (OCI deployment)
+helm search repo oci://ghcr.io/amazeeio/amazee.ai/amazee-ai --versions
+
+# Upgrade to a specific version (OCI deployment)
+helm upgrade amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
+  --namespace amazee-ai \
+  --version 0.0.2
+
+# Upgrade (local deployment)
 helm upgrade amazee-ai . -n amazee-ai --values values.yaml
 ```
 
 ## Uninstalling
 
 ```bash
-helm uninstall amazee-ai -n amazee-ai
+# Uninstall the complete stack
+helm uninstall amazee-ai-app -n amazee-ai
+
+# Or uninstall individual components
+helm uninstall frontend -n amazee-ai
+helm uninstall backend -n amazee-ai
 helm uninstall postgresql -n amazee-ai
 ```
 
@@ -142,7 +282,7 @@ helm uninstall postgresql -n amazee-ai
 ### Check Chart Status
 ```bash
 helm list -n amazee-ai
-helm status amazee-ai -n amazee-ai
+helm status amazee-ai-app -n amazee-ai
 ```
 
 ### View Logs
@@ -159,16 +299,51 @@ kubectl logs -n amazee-ai deployment/postgresql
 
 ### Debug Installation
 ```bash
+# Dry run to see what would be installed (OCI deployment)
+helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
+  --namespace amazee-ai \
+  --create-namespace \
+  --version 0.0.1 \
+  --dry-run --debug
+
+# Dry run (local deployment)
 helm install amazee-ai . -n amazee-ai --values values.yaml --dry-run --debug
+```
+
+### Namespace Conflicts
+
+If you encounter namespace ownership errors like:
+```
+Error: INSTALLATION FAILED: Unable to continue with install: Namespace "amazee-ai" in namespace "" exists and cannot be imported into the current release: invalid ownership metadata
+```
+
+This happens when the namespace was created manually with `kubectl create namespace` instead of by Helm. To fix this:
+
+```bash
+# Option 1: Delete the existing namespace and let Helm recreate it
+kubectl delete namespace amazee-ai
+helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
+  --namespace amazee-ai \
+  --create-namespace \
+  --version 0.0.1
+
+# Option 2: Use a different namespace name
+helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
+  --namespace amazee-ai-new \
+  --create-namespace \
+  --version 0.0.1
 ```
 
 ## Security Considerations
 
-- Use proper secrets management for sensitive data
-- Enable TLS for ingress in production
-- Configure proper resource limits
-- For external PostgreSQL, ensure secure connection strings and network access
-- The `webhookSig` is only needed for local development with Stripe CLI and can be left empty in production
+1. **Secrets Management**: Use Kubernetes secrets or external secret managers for sensitive data
+2. **Network Policies**: Implement network policies to restrict pod-to-pod communication
+3. **RBAC**: Configure appropriate RBAC rules for your deployment
+4. **Image Security**: Use signed images and scan for vulnerabilities
+5. **TLS**: Enable TLS for ingress in production
+6. **Resource Limits**: Configure proper resource limits
+7. **External PostgreSQL**: For external PostgreSQL, ensure secure connection strings and network access
+8. **Webhook Signature**: The `webhookSig` is only needed for local development with Stripe CLI and can be left empty in production
 
 ## Support
 

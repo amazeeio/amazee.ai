@@ -6,7 +6,11 @@ metadata:
   labels:
     {{- include "backend.labels" . | nindent 4 }}
 data:
+  {{- if .Values.database.url }}
   DATABASE_URL: {{ .Values.database.url | quote }}
+  {{- else }}
+  DATABASE_URL: "postgresql://postgres:{{ .Values.postgresql.auth.postgresPassword }}@{{ .Release.Name }}-postgresql:5432/{{ .Values.postgresql.auth.database }}"
+  {{- end }}
   ENABLE_METRICS: "{{ .Values.enableMetrics }}"
   DYNAMODB_REGION: "{{ .Values.dynamodbRegion }}"
   SES_REGION: "{{ .Values.sesRegion }}"

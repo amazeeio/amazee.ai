@@ -34,8 +34,10 @@ backend:
     tag: "dev"
     pullPolicy: IfNotPresent
   # Database configuration - set based on postgresql configuration
+  # The DATABASE_URL will be automatically generated using the release name
+  # Format: postgresql://postgres:{password}@{release-name}-postgresql:5432/{database}
   database:
-    url: "postgresql://postgres:postgres@amazee-ai-postgresql:5432/postgres_service"  # Updated hostname to match Bitnami service name
+    url: ""  # Leave empty to auto-generate based on release name and PostgreSQL config
   # Application configuration
   secretKey: "my-secret-key"  # Key used to hash passwords stored in the database
   stripeSecretKey: "sk_test_your_stripe_secret_key"
@@ -65,7 +67,7 @@ frontend:
     repository: ghcr.io/amazeeio/amazee.ai-frontend
     tag: "dev"
     pullPolicy: IfNotPresent
-  apiUrl: "http://backend:8800"
+  apiUrl: ""  # Will be auto-generated using release name and backend service
   stripePublishableKey: "pk_test_your_stripe_publishable_key"
   passwordlessSignIn: "true"
   resources:
