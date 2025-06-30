@@ -77,6 +77,26 @@ update_chart_version() {
     fi
 }
 
+# Function to update dependency versions in main chart
+update_dependency_versions() {
+    local helm_dir=$1
+    local new_version=$2
+
+    if [ -f "$helm_dir/Chart.yaml" ]; then
+        # Update backend dependency version
+        if grep -q "name: backend" "$helm_dir/Chart.yaml"; then
+            sed -i "/name: backend/,/condition: backend.enabled/ s/version: [0-9]\+\.[0-9]\+\.[0-9]\+/version: $new_version/" "$helm_dir/Chart.yaml"
+            print_status "Updated backend dependency version to $new_version"
+        fi
+
+        # Update frontend dependency version
+        if grep -q "name: frontend" "$helm_dir/Chart.yaml"; then
+            sed -i "/name: frontend/,/condition: frontend.enabled/ s/version: [0-9]\+\.[0-9]\+\.[0-9]\+/version: $new_version/" "$helm_dir/Chart.yaml"
+            print_status "Updated frontend dependency version to $new_version"
+        fi
+    fi
+}
+
 # Main script logic
 if [ $# -lt 1 ]; then
     print_error "Usage: $0 [major|minor|patch] [chart-name]"
@@ -123,6 +143,7 @@ process_chart() {
 # Process main chart
 if [ -z "$CHART_NAME" ] || [ "$CHART_NAME" = "amazee-ai" ]; then
     process_chart "$HELM_DIR"
+    update_dependency_versions "$HELM_DIR" "$new_version"
 fi
 
 # Process subcharts
@@ -130,6 +151,7 @@ if [ -d "$HELM_DIR/charts" ]; then
     for chart_dir in "$HELM_DIR/charts"/*/; do
         if [ -d "$chart_dir" ]; then
             process_chart "$chart_dir"
+            update_dependency_versions "$chart_dir" "$new_version"
         fi
     done
 fi
