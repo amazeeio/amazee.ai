@@ -1,6 +1,7 @@
 FROM uselagoon/python-3.12:latest
 
 RUN apk add bash --no-cache
+RUN apk add curl --no-cache
 
 WORKDIR /app
 
