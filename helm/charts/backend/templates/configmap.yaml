@@ -6,7 +6,7 @@ metadata:
   labels:
     {{- include "backend.labels" . | nindent 4 }}
 data:
-  DATABASE_URL: {{ include "amazee-ai.backendDatabaseUrl" . }}
+  DATABASE_URL: {{ include "backend.databaseUrl" . }}
   ENABLE_METRICS: "{{ .Values.enableMetrics }}"
   DYNAMODB_REGION: "{{ .Values.dynamodbRegion }}"
   SES_REGION: "{{ .Values.sesRegion }}"

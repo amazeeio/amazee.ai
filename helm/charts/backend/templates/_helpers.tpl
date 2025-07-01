@@ -55,7 +55,26 @@ Backend-specific database URL generation.
 This provides a backend-specific override if needed.
 */}}
 {{- define "backend.databaseUrl" -}}
-{{- include "amazee-ai.backendDatabaseUrl" . }}
+{{- $backend := .Values.backend | default dict -}}
+{{- $database := $backend.database | default dict -}}
+{{- if $database.url }}
+{{- $database.url | quote }}
+{{- else }}
+{{- /* Generate database URL using PostgreSQL configuration */ -}}
+{{- $postgresql := .Values.postgresql | default dict -}}
+{{- $external := $postgresql.external | default dict -}}
+{{- if $external.enabled }}
+{{- $external.url | quote }}
+{{- else }}
+{{- $host := printf "%s-postgresql" .Release.Name }}
+{{- $user := "postgres" }}
+{{- $auth := $postgresql.auth | default dict -}}
+{{- $password := $auth.postgresPassword | default "postgres" }}
+{{- $database_name := $auth.database | default "postgres_service" }}
+{{- $port := "5432" }}
+{{- printf "postgresql://%s:%s@%s:%s/%s" $user $password $host $port $database_name | quote }}
+{{- end }}
+{{- end }}
 {{- end }}
 
 {{/*
@@ -70,7 +89,7 @@ Generate database host for backend service.
 {{- $host := regexReplaceAll "postgresql://[^:]+:[^@]+@([^:]+):[^/]+/[^?]*" $url "${1}" }}
 {{- $host }}
 {{- else }}
-{{- include "amazee-ai.postgresqlServiceName" . }}
+{{- printf "%s-postgresql" .Release.Name }}
 {{- end }}
 {{- end }}
 
@@ -86,7 +105,7 @@ Generate database port for backend service.
 {{- $port := regexReplaceAll "postgresql://[^:]+:[^@]+@[^:]+:([^/]+)/[^?]*" $url "${1}" }}
 {{- $port }}
 {{- else }}
-{{- include "amazee-ai.postgresqlPort" . }}
+{{- "5432" }}
 {{- end }}
 {{- end }}
 
@@ -102,7 +121,8 @@ Generate database name for backend service.
 {{- $db := regexReplaceAll "postgresql://[^:]+:[^@]+@[^:]+:[^/]+/([^?]*)" $url "${1}" }}
 {{- $db }}
 {{- else }}
-{{- include "amazee-ai.postgresqlDatabase" . }}
+{{- $auth := $postgresql.auth | default dict -}}
+{{- $auth.database | default "postgres_service" }}
 {{- end }}
 {{- end }}
 
@@ -118,7 +138,7 @@ Generate database username for backend service.
 {{- $user := regexReplaceAll "postgresql://([^:]+):[^@]+@[^:]+:[^/]+/[^?]*" $url "${1}" }}
 {{- $user }}
 {{- else }}
-{{- include "amazee-ai.postgresqlUsername" . }}
+{{- "postgres" }}
 {{- end }}
 {{- end }}
 
@@ -134,6 +154,7 @@ Generate database password for backend service.
 {{- $pass := regexReplaceAll "postgresql://[^:]+:([^@]+)@[^:]+:[^/]+/[^?]*" $url "${1}" }}
 {{- $pass }}
 {{- else }}
-{{- include "amazee-ai.postgresqlPassword" . }}
+{{- $auth := $postgresql.auth | default dict -}}
+{{- $auth.postgresPassword | default "postgres" }}
 {{- end }}
 {{- end }}
