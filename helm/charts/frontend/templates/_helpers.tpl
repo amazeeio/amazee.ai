@@ -55,7 +55,14 @@ Frontend-specific API URL generation.
 This provides a frontend-specific override if needed.
 */}}
 {{- define "frontend.apiUrl" -}}
-{{- include "amazee-ai.apiUrl" . }}
+{{- $frontend := .Values.frontend | default dict -}}
+{{- if $frontend.apiUrl }}
+{{- $frontend.apiUrl | quote }}
+{{- else }}
+{{- $backendService := printf "%s-backend" .Release.Name }}
+{{- $port := "8800" }}
+{{- printf "http://%s:%s" $backendService $port | quote }}
+{{- end }}
 {{- end }}
 
 {{/*

@@ -6,6 +6,6 @@ metadata:
   labels:
     {{- include "frontend.labels" . | nindent 4 }}
 data:
-  NEXT_PUBLIC_API_URL: {{ include "amazee-ai.apiUrl" . }}
+  NEXT_PUBLIC_API_URL: {{ include "frontend.apiUrl" . }}
   STRIPE_PUBLISHABLE_KEY: "{{ .Values.stripePublishableKey }}"
   PASSWORDLESS_SIGN_IN: "{{ .Values.passwordlessSignIn }}"
