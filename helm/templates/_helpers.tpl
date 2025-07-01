@@ -49,3 +49,94 @@ Selector labels
 app.kubernetes.io/name: {{ include "amazee-ai.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+
+{{/*
+Generate database connection string for PostgreSQL.
+If external database is enabled, use the provided URL.
+Otherwise, generate a connection string using the internal PostgreSQL service.
+*/}}
+{{- define "amazee-ai.databaseUrl" -}}
+{{- $postgresql := .Values.postgresql | default dict -}}
+{{- $external := $postgresql.external | default dict -}}
+{{- if $external.enabled }}
+{{- $external.url | quote }}
+{{- else }}
+{{- $host := printf "%s-postgresql" .Release.Name }}
+{{- $user := "postgres" }}
+{{- $auth := $postgresql.auth | default dict -}}
+{{- $password := $auth.postgresPassword | default "postgres" }}
+{{- $database := $auth.database | default "postgres_service" }}
+{{- $port := "5432" }}
+{{- printf "postgresql://%s:%s@%s:%s/%s" $user $password $host $port $database | quote }}
+{{- end }}
+{{- end }}
+
+{{/*
+Generate database connection string for backend service.
+This function checks if a specific database URL is provided in backend.database.url,
+and if not, falls back to the main database URL generation.
+*/}}
+{{- define "amazee-ai.backendDatabaseUrl" -}}
+{{- $backend := .Values.backend | default dict -}}
+{{- $database := $backend.database | default dict -}}
+{{- if $database.url }}
+{{- $database.url | quote }}
+{{- else }}
+{{- include "amazee-ai.databaseUrl" . }}
+{{- end }}
+{{- end }}
+
+{{/*
+Generate API URL for frontend service.
+If a specific API URL is provided, use it.
+Otherwise, generate a URL using the backend service name.
+*/}}
+{{- define "amazee-ai.apiUrl" -}}
+{{- $frontend := .Values.frontend | default dict -}}
+{{- if $frontend.apiUrl }}
+{{- $frontend.apiUrl | quote }}
+{{- else }}
+{{- $backendService := printf "%s-backend" .Release.Name }}
+{{- $port := "8800" }}
+{{- printf "http://%s:%s" $backendService $port | quote }}
+{{- end }}
+{{- end }}
+
+{{/*
+Generate PostgreSQL service name for internal database.
+*/}}
+{{- define "amazee-ai.postgresqlServiceName" -}}
+{{- printf "%s-postgresql" .Release.Name }}
+{{- end }}
+
+{{/*
+Generate PostgreSQL service port.
+*/}}
+{{- define "amazee-ai.postgresqlPort" -}}
+{{- "5432" }}
+{{- end }}
+
+{{/*
+Generate PostgreSQL database name.
+*/}}
+{{- define "amazee-ai.postgresqlDatabase" -}}
+{{- $postgresql := .Values.postgresql | default dict -}}
+{{- $auth := $postgresql.auth | default dict -}}
+{{- $auth.database | default "postgres_service" }}
+{{- end }}
+
+{{/*
+Generate PostgreSQL username.
+*/}}
+{{- define "amazee-ai.postgresqlUsername" -}}
+{{- "postgres" }}
+{{- end }}
+
+{{/*
+Generate PostgreSQL password.
+*/}}
+{{- define "amazee-ai.postgresqlPassword" -}}
+{{- $postgresql := .Values.postgresql | default dict -}}
+{{- $auth := $postgresql.auth | default dict -}}
+{{- $auth.postgresPassword | default "postgres" }}
+{{- end }}

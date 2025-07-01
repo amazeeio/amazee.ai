@@ -49,3 +49,34 @@ Selector labels
 app.kubernetes.io/name: {{ include "frontend.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+
+{{/*
+Frontend-specific API URL generation.
+This provides a frontend-specific override if needed.
+*/}}
+{{- define "frontend.apiUrl" -}}
+{{- include "amazee-ai.apiUrl" . }}
+{{- end }}
+
+{{/*
+Generate backend service name for frontend.
+*/}}
+{{- define "frontend.backendServiceName" -}}
+{{- printf "%s-backend" .Release.Name }}
+{{- end }}
+
+{{/*
+Generate backend service port for frontend.
+*/}}
+{{- define "frontend.backendServicePort" -}}
+{{- "8800" }}
+{{- end }}
+
+{{/*
+Generate backend service URL for frontend.
+*/}}
+{{- define "frontend.backendServiceUrl" -}}
+{{- $service := include "frontend.backendServiceName" . }}
+{{- $port := include "frontend.backendServicePort" . }}
+{{- printf "http://%s:%s" $service $port | quote }}
+{{- end }}

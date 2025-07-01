@@ -49,3 +49,91 @@ Selector labels
 app.kubernetes.io/name: {{ include "backend.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+
+{{/*
+Backend-specific database URL generation.
+This provides a backend-specific override if needed.
+*/}}
+{{- define "backend.databaseUrl" -}}
+{{- include "amazee-ai.backendDatabaseUrl" . }}
+{{- end }}
+
+{{/*
+Generate database host for backend service.
+*/}}
+{{- define "backend.databaseHost" -}}
+{{- $postgresql := .Values.postgresql | default dict -}}
+{{- $external := $postgresql.external | default dict -}}
+{{- if $external.enabled }}
+{{- /* Extract host from external URL - simplified approach */ -}}
+{{- $url := $external.url }}
+{{- $host := regexReplaceAll "postgresql://[^:]+:[^@]+@([^:]+):[^/]+/[^?]*" $url "${1}" }}
+{{- $host }}
+{{- else }}
+{{- include "amazee-ai.postgresqlServiceName" . }}
+{{- end }}
+{{- end }}
+
+{{/*
+Generate database port for backend service.
+*/}}
+{{- define "backend.databasePort" -}}
+{{- $postgresql := .Values.postgresql | default dict -}}
+{{- $external := $postgresql.external | default dict -}}
+{{- if $external.enabled }}
+{{- /* Extract port from external URL - simplified approach */ -}}
+{{- $url := $external.url }}
+{{- $port := regexReplaceAll "postgresql://[^:]+:[^@]+@[^:]+:([^/]+)/[^?]*" $url "${1}" }}
+{{- $port }}
+{{- else }}
+{{- include "amazee-ai.postgresqlPort" . }}
+{{- end }}
+{{- end }}
+
+{{/*
+Generate database name for backend service.
+*/}}
+{{- define "backend.databaseName" -}}
+{{- $postgresql := .Values.postgresql | default dict -}}
+{{- $external := $postgresql.external | default dict -}}
+{{- if $external.enabled }}
+{{- /* Extract database name from external URL - simplified approach */ -}}
+{{- $url := $external.url }}
+{{- $db := regexReplaceAll "postgresql://[^:]+:[^@]+@[^:]+:[^/]+/([^?]*)" $url "${1}" }}
+{{- $db }}
+{{- else }}
+{{- include "amazee-ai.postgresqlDatabase" . }}
+{{- end }}
+{{- end }}
+
+{{/*
+Generate database username for backend service.
+*/}}
+{{- define "backend.databaseUsername" -}}
+{{- $postgresql := .Values.postgresql | default dict -}}
+{{- $external := $postgresql.external | default dict -}}
+{{- if $external.enabled }}
+{{- /* Extract username from external URL - simplified approach */ -}}
+{{- $url := $external.url }}
+{{- $user := regexReplaceAll "postgresql://([^:]+):[^@]+@[^:]+:[^/]+/[^?]*" $url "${1}" }}
+{{- $user }}
+{{- else }}
+{{- include "amazee-ai.postgresqlUsername" . }}
+{{- end }}
+{{- end }}
+
+{{/*
+Generate database password for backend service.
+*/}}
+{{- define "backend.databasePassword" -}}
+{{- $postgresql := .Values.postgresql | default dict -}}
+{{- $external := $postgresql.external | default dict -}}
+{{- if $external.enabled }}
+{{- /* Extract password from external URL - simplified approach */ -}}
+{{- $url := $external.url }}
+{{- $pass := regexReplaceAll "postgresql://[^:]+:([^@]+)@[^:]+:[^/]+/[^?]*" $url "${1}" }}
+{{- $pass }}
+{{- else }}
+{{- include "amazee-ai.postgresqlPassword" . }}
+{{- end }}
+{{- end }}
