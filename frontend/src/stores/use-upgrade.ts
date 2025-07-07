@@ -99,6 +99,7 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
       // Get the config from the config store after loading
       const updatedConfigStore = useConfig.getState();
       const config = updatedConfigStore.config;
+      console.log('load config', config);
       
       if (config) {
         set({ config, error: null });
