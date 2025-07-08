@@ -34,33 +34,25 @@ export const useConfig = create<ConfigState>((set, get) => ({
   setIsLoaded: (isLoaded) => set({ isLoaded }),
   
   loadConfig: async () => {
-    console.log('loadConfig called');
     const state = get();
-    console.log('current state loading:', state.loading, 'isLoaded:', state.isLoaded);
     
     if (state.isLoaded && state.config) {
-      console.log('loadConfig: already loaded successfully, returning cached config');
       return state.config; // Return cached config if already loaded successfully
     }
     
     if (state.loading) {
-      console.log('loadConfig: already loading, returning early');
       return null; // Return null if already loading
     }
     
-    console.log('loadConfig: setting loading to true');
     set({ loading: true, error: null });
     
     try {
-      console.log('loadConfig: about to fetch /api/config');
       const response = await fetch('/api/config');
-      console.log('config response', response);
       if (!response.ok) {
         throw new Error('Failed to load configuration');
       }
       
       const config: Config = await response.json();
-      console.log('parsed', config);
       set({ config, loading: false, error: null, isLoaded: true });
       return config;
     } catch (error) {
@@ -81,4 +73,3 @@ export const useConfig = create<ConfigState>((set, get) => ({
   },
 }));
 
-// Config is loaded on-demand when needed, not automatically on window init

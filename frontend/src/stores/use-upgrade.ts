@@ -88,21 +88,16 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
 
   // Complex actions
   loadConfig: async () => {
-    console.log('useUpgrade loadConfig called');
     try {
       const configStore = useConfig.getState();
-      console.log('configStore state before load:', configStore);
       
       // Load config and get it directly from the return value
-      console.log('calling configStore.loadConfig()');
       const config = await configStore.loadConfig();
-      console.log('loadConfig returned:', config);
       
       if (config && config.STRIPE_PUBLISHABLE_KEY) {
-        console.log('Setting config in upgrade store:', config);
         set({ config, error: null });
       } else {
-        console.log('Config missing or invalid:', config);
+        console.error('Config missing or invalid:', config);
         set({ 
           error: 'Failed to load configuration. Please try again later.',
           config: null 

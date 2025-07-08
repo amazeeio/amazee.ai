@@ -45,22 +45,18 @@ export default function PricingTokenPage() {
     isConfigLoading,
     reset,
   } = useUpgrade();
-  console.log('upgrade page', config);
 
   // Initialize upgrade flow when component mounts or token changes
   useEffect(() => {
-    console.log('Upgrade page useEffect - token:', token, 'initializedRef:', initializedRef.current);
     // Reset the initialized flag when token changes
     if (token !== initializedRef.current) {
       initializedRef.current = null;
     }
 
     if (token && !initializedRef.current) {
-      console.log('Calling initializeUpgrade with token:', token);
       initializeUpgrade(token);
       initializedRef.current = token;
     } else if (!token) {
-      console.log('No token, calling reset');
       reset();
       initializedRef.current = null;
     }
