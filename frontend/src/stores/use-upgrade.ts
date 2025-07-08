@@ -91,10 +91,8 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
     try {
       const configStore = useConfig.getState();
       
-      // If config store doesn't have config yet, try to load it
-      if (!configStore.config) {
-        await configStore.loadConfig();
-      }
+      // Always try to load config from API to ensure we have the latest
+      await configStore.loadConfig();
       
       // Get the config from the config store after loading
       const updatedConfigStore = useConfig.getState();
