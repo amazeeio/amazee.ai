@@ -35,12 +35,19 @@ export const useConfig = create<ConfigState>((set, get) => ({
   setError: (error) => set({ error, loading: false }),
   
   loadConfig: async () => {
+    console.log('loadConfig called');
     const state = get();
-    if (state.loading) return; // Prevent multiple simultaneous requests
+    console.log('current state loading:', state.loading);
+    if (state.loading) {
+      console.log('loadConfig: already loading, returning early');
+      return; // Prevent multiple simultaneous requests
+    }
     
+    console.log('loadConfig: setting loading to true');
     set({ loading: true, error: null });
     
     try {
+      console.log('loadConfig: about to fetch /api/config');
       const response = await fetch('/api/config');
       console.log('config response', response);
       if (!response.ok) {
@@ -69,5 +76,6 @@ export const useConfig = create<ConfigState>((set, get) => ({
 
 // Initialize config on store creation (only in browser environment)
 if (typeof window !== 'undefined') {
+  console.log('Initializing config store in browser');
   useConfig.getState().loadConfig();
 }

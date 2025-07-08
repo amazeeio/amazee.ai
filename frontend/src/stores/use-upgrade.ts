@@ -88,10 +88,13 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
 
   // Complex actions
   loadConfig: async () => {
+    console.log('useUpgrade loadConfig called');
     try {
       const configStore = useConfig.getState();
+      console.log('configStore state before load:', configStore);
       
       // Always try to load config from API to ensure we have the latest
+      console.log('calling configStore.loadConfig()');
       await configStore.loadConfig();
       
       // Get the config from the config store after loading
