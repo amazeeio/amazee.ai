@@ -42,14 +42,17 @@ export const useConfig = create<ConfigState>((set, get) => ({
     
     try {
       const response = await fetch('/api/config');
+      console.log(response);
       if (!response.ok) {
         throw new Error('Failed to load configuration');
       }
       
       const config: Config = await response.json();
+      console.log(config);
       set({ config, loading: false, error: null });
     } catch (error) {
       console.error('Error loading configuration:', error);
+      console.log('error', fallbackConfig);
       set({ 
         config: fallbackConfig, 
         loading: false, 
