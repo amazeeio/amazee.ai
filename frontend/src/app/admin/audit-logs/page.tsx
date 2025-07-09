@@ -45,9 +45,36 @@ interface AuditLogFilters {
   user_email?: string;
   from_date?: string;
   to_date?: string;
+  status_code?: string[];
 }
 
 const ITEMS_PER_PAGE = 20;
+
+const getStatusCodeDescription = (code: number): string => {
+  const descriptions: Record<number, string> = {
+    200: 'OK',
+    201: 'Created',
+    204: 'No Content',
+    301: 'Moved Permanently',
+    302: 'Found',
+    304: 'Not Modified',
+    307: 'Temporary Redirect',
+    308: 'Permanent Redirect',
+    400: 'Bad Request',
+    401: 'Unauthorized',
+    403: 'Forbidden',
+    404: 'Not Found',
+    405: 'Method Not Allowed',
+    409: 'Conflict',
+    422: 'Unprocessable Entity',
+    429: 'Too Many Requests',
+    500: 'Internal Server Error',
+    502: 'Bad Gateway',
+    503: 'Service Unavailable',
+    504: 'Gateway Timeout',
+  };
+  return descriptions[code] || 'Unknown';
+};
 
 export default function AuditLogsPage() {
   const { toast } = useToast();
@@ -61,6 +88,7 @@ export default function AuditLogsPage() {
   const [itemsPerPage] = useState<number>(ITEMS_PER_PAGE);
   const [eventTypeOptions, setEventTypeOptions] = useState<{ value: string; label: string }[]>([]);
   const [resourceTypeOptions, setResourceTypeOptions] = useState<{ value: string; label: string }[]>([]);
+  const [statusCodeOptions, setStatusCodeOptions] = useState<{ value: string; label: string }[]>([]);
 
   const fetchMetadata = useCallback(async () => {
     try {
@@ -85,6 +113,15 @@ export default function AuditLogsPage() {
             label: type.charAt(0).toUpperCase() + type.slice(1).toLowerCase(),
           }))
       );
+
+      setStatusCodeOptions(
+        (data.status_codes || [])
+          .filter(Boolean)
+          .map((code: string) => ({
+            value: code,
+            label: `${code} - ${getStatusCodeDescription(parseInt(code))}`,
+          }))
+      );
     } catch (error) {
       console.error('Error fetching audit logs metadata:', error);
       toast({
@@ -107,6 +144,7 @@ export default function AuditLogsPage() {
         ...(filters.event_type?.length && { event_type: filters.event_type.join(',') }),
         ...(filters.resource_type?.length && { resource_type: filters.resource_type.join(',') }),
         ...(filters.user_email && { user_email: filters.user_email }),
+        ...(filters.status_code?.length && { status_code: filters.status_code.join(',') }),
       }).toString();
 
       const response = await get(`audit/logs?${queryParams}`, { credentials: 'include' });
@@ -179,7 +217,7 @@ export default function AuditLogsPage() {
           <CardTitle>Filters</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
             <div className="space-y-2">
               <label className="text-sm font-medium">Event Type</label>
               <MultiSelect
@@ -197,6 +235,18 @@ export default function AuditLogsPage() {
                 onValueChange={(value) => handleFilterChange('resource_type', value)}
                 defaultValue={filters.resource_type || []}
                 placeholder="Select Resources"
+                variant="default"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Status Code</label>
+              <MultiSelect
+                options={statusCodeOptions}
+                onValueChange={(value) => handleFilterChange('status_code', value)}
+                defaultValue={filters.status_code || []}
+                placeholder="Select Status Codes"
+                variant="default"
               />
             </div>
 

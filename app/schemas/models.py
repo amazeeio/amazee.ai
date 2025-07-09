@@ -229,6 +229,7 @@ class PaginatedAuditLogResponse(BaseModel):
 class AuditLogMetadata(BaseModel):
     event_types: List[str]
     resource_types: List[str]
+    status_codes: List[str]
     model_config = ConfigDict(from_attributes=True)
 
 # Team schemas
