@@ -45,7 +45,6 @@ export default function PricingTokenPage() {
     isConfigLoading,
     reset,
   } = useUpgrade();
-  console.log('upgrade page', config);
 
   // Initialize upgrade flow when component mounts or token changes
   useEffect(() => {

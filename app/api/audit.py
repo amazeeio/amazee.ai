@@ -2,11 +2,11 @@ from fastapi import APIRouter, Depends, Query, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime
+from sqlalchemy import distinct, text, cast, String
 from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
 from app.schemas.models import AuditLogResponse, PaginatedAuditLogResponse, AuditLogMetadata
 from app.db.models import DBAuditLog, DBUser
-from sqlalchemy import distinct
 import logging
 
 logger = logging.getLogger(__name__)
@@ -25,11 +25,12 @@ async def get_audit_logs(
     user_email: Optional[str] = None,
     from_date: Optional[datetime] = None,
     to_date: Optional[datetime] = None,
+    status_code: Optional[str] = None,
 ):
     """
     Retrieve audit logs with optional filtering.
     Only accessible by admin users.
-    event_type and resource_type can be comma-separated lists for multiple values.
+    event_type, resource_type, and status_code can be comma-separated lists for multiple values.
     """
     if not current_user.is_admin:
         logger.warning(f"Non-admin user {current_user.id} attempted to access audit logs")
@@ -56,6 +57,9 @@ async def get_audit_logs(
             query = query.filter(DBAuditLog.timestamp >= from_date)
         if to_date:
             query = query.filter(DBAuditLog.timestamp <= to_date)
+        if status_code:
+            status_codes = [sc.strip() for sc in status_code.split(',')]
+            query = query.filter(cast(DBAuditLog.details['status_code'], String).in_(status_codes))
 
         # Get total count
         total = query.count()
@@ -96,7 +100,7 @@ async def get_audit_logs_metadata(
     current_user: DBUser = Depends(get_current_user_from_auth),
 ):
     """
-    Retrieve distinct event types and resource types from audit logs.
+    Retrieve distinct event types, resource types, and status codes from audit logs.
     Only accessible by admin users.
     """
     if not current_user.is_admin:
@@ -117,9 +121,16 @@ async def get_audit_logs_metadata(
                         .filter(DBAuditLog.resource_type != '')
                         .all()]
 
+        # Get distinct status codes from the details JSON field
+        status_codes = [sc[0] for sc in db.query(distinct(cast(DBAuditLog.details['status_code'], String)))
+                       .filter(cast(DBAuditLog.details['status_code'], String).isnot(None))
+                       .filter(cast(DBAuditLog.details['status_code'], String) != '')
+                       .all()]
+
         return {
             "event_types": sorted(event_types),
-            "resource_types": sorted(resource_types)
+            "resource_types": sorted(resource_types),
+            "status_codes": sorted(status_codes, key=lambda x: int(x) if x.isdigit() else 0)
         }
 
     except Exception as e:

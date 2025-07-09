@@ -194,16 +194,21 @@ helm install amazee-ai . -n amazee-ai --create-namespace \
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
+| `global.environment` | Global environment setting | `production` |
 | `postgresql.enabled` | Deploy Bitnami PostgreSQL chart | `true` |
+| `postgresql.external.enabled` | Use external managed PostgreSQL | `false` |
+| `postgresql.external.url` | External PostgreSQL connection URL | `postgresql://user:password@host:port/database` |
 | `postgresql.auth.postgresPassword` | PostgreSQL password | `postgres` |
 | `postgresql.auth.database` | PostgreSQL database name | `postgres_service` |
 | `postgresql.primary.persistence.enabled` | Enable persistence for PostgreSQL | `true` |
+| `postgresql.primary.persistence.storageClass` | Storage class for PostgreSQL | `standard` |
 | `postgresql.primary.persistence.size` | Storage size for PostgreSQL | `10Gi` |
 | `backend.enabled` | Deploy backend subchart | `true` |
 | `backend.replicas` | Number of backend replicas | `1` |
 | `backend.image.repository` | Backend image repository | `ghcr.io/amazeeio/amazee.ai-backend` |
 | `backend.image.tag` | Backend image tag | `dev` |
-| `backend.database.url` | Database connection URL | `postgresql://postgres:postgres@amazee-ai-postgresql:5432/postgres_service` |
+| `backend.image.pullPolicy` | Backend image pull policy | `IfNotPresent` |
+| `backend.database.url` | Database connection URL (auto-generated if empty) | `""` |
 | `backend.secretKey` | Key used to hash passwords stored in the database | `my-secret-key` |
 | `backend.stripeSecretKey` | Stripe secret key | `sk_test_your_stripe_secret_key` |
 | `backend.webhookSig` | Webhook signature (only needed for local development with Stripe CLI) | `""` |
@@ -224,17 +229,24 @@ helm install amazee-ai . -n amazee-ai --create-namespace \
 | `frontend.replicas` | Number of frontend replicas | `1` |
 | `frontend.image.repository` | Frontend image repository | `ghcr.io/amazeeio/amazee.ai-frontend` |
 | `frontend.image.tag` | Frontend image tag | `dev` |
-| `frontend.apiUrl` | Backend API URL | `http://backend:8800` |
+| `frontend.image.pullPolicy` | Frontend image pull policy | `IfNotPresent` |
+| `frontend.apiUrl` | Backend API URL (auto-generated if empty) | `""` |
 | `frontend.stripePublishableKey` | Stripe publishable key | `pk_test_your_stripe_publishable_key` |
 | `frontend.passwordlessSignIn` | Enable passwordless sign-in | `true` |
-| `frontend.resources.requests.memory` | Frontend memory request | `256Mi` |
+| `frontend.resources.requests.memory` | Frontend memory request | `512Mi` |
 | `frontend.resources.requests.cpu` | Frontend CPU request | `250m` |
-| `frontend.resources.limits.memory` | Frontend memory limit | `512Mi` |
+| `frontend.resources.limits.memory` | Frontend memory limit | `1Gi` |
 | `frontend.resources.limits.cpu` | Frontend CPU limit | `500m` |
 | `ingress.enabled` | Enable backend API ingress | `true` |
 | `ingress.className` | Backend ingress class name | `nginx` |
+| `ingress.annotations` | Backend ingress annotations | See values.yaml |
+| `ingress.hosts` | Backend ingress hosts | `api.amazee-ai.local` |
+| `ingress.tls` | Backend ingress TLS configuration | `[]` |
 | `frontendIngress.enabled` | Enable frontend web interface ingress | `true` |
 | `frontendIngress.className` | Frontend ingress class name | `nginx` |
+| `frontendIngress.annotations` | Frontend ingress annotations | See values.yaml |
+| `frontendIngress.hosts` | Frontend ingress hosts | `amazee-ai.local` |
+| `frontendIngress.tls` | Frontend ingress TLS configuration | `[]` |
 
 ## Environment Variables
 

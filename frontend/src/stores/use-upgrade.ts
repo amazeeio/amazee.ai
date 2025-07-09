@@ -91,17 +91,13 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
     try {
       const configStore = useConfig.getState();
       
-      // Always try to load config from API to ensure we have the latest
-      await configStore.loadConfig();
+      // Load config and get it directly from the return value
+      const config = await configStore.loadConfig();
       
-      // Get the config from the config store after loading
-      const updatedConfigStore = useConfig.getState();
-      const config = updatedConfigStore.config;
-      console.log('load config', config);
-      
-      if (config) {
+      if (config && config.STRIPE_PUBLISHABLE_KEY) {
         set({ config, error: null });
       } else {
+        console.error('Config missing or invalid:', config);
         set({ 
           error: 'Failed to load configuration. Please try again later.',
           config: null 

@@ -12,62 +12,64 @@ interface ConfigState {
   config: Config | null;
   loading: boolean;
   error: string | null;
+  isLoaded: boolean;
   setConfig: (config: Config) => void;
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
-  loadConfig: () => Promise<void>;
+  setIsLoaded: (isLoaded: boolean) => void;
+  loadConfig: () => Promise<Config | null>;
   getApiUrl: () => string;
 }
 
-const fallbackConfig: Config = {
-  NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8800',
-  PASSWORDLESS_SIGN_IN: process.env.PASSWORDLESS_SIGN_IN === 'true',
-  STRIPE_PUBLISHABLE_KEY: process.env.STRIPE_PUBLISHABLE_KEY || '',
-};
 
 export const useConfig = create<ConfigState>((set, get) => ({
-  config: fallbackConfig,
+  config: null,
   loading: false,
   error: null,
+  isLoaded: false,
   
   setConfig: (config) => set({ config, error: null }),
   setLoading: (loading) => set({ loading }),
   setError: (error) => set({ error, loading: false }),
+  setIsLoaded: (isLoaded) => set({ isLoaded }),
   
   loadConfig: async () => {
     const state = get();
-    if (state.loading) return; // Prevent multiple simultaneous requests
+    
+    if (state.isLoaded && state.config) {
+      return state.config; // Return cached config if already loaded successfully
+    }
+    
+    if (state.loading) {
+      return null; // Return null if already loading
+    }
     
     set({ loading: true, error: null });
     
     try {
       const response = await fetch('/api/config');
-      console.log(response);
       if (!response.ok) {
         throw new Error('Failed to load configuration');
       }
       
       const config: Config = await response.json();
-      console.log(config);
-      set({ config, loading: false, error: null });
+      set({ config, loading: false, error: null, isLoaded: true });
+      return config;
     } catch (error) {
       console.error('Error loading configuration:', error);
-      console.log('error', fallbackConfig);
       set({ 
-        config: fallbackConfig, 
+        config: null, 
         loading: false, 
-        error: error instanceof Error ? error.message : 'Failed to load configuration'
+        error: error instanceof Error ? error.message : 'Failed to load configuration',
+        isLoaded: false
       });
+      return null;
     }
   },
   
   getApiUrl: () => {
     const state = get();
-    return state.config?.NEXT_PUBLIC_API_URL || fallbackConfig.NEXT_PUBLIC_API_URL;
+    return state.config?.NEXT_PUBLIC_API_URL || 'http://localhost:8800';
   },
 }));
 
-// Initialize config on store creation (only in browser environment)
-if (typeof window !== 'undefined') {
-  useConfig.getState().loadConfig();
-}
