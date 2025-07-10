@@ -55,8 +55,7 @@ Backend-specific database URL generation.
 This provides a backend-specific override if needed.
 */}}
 {{- define "backend.databaseUrl" -}}
-{{- $backend := .Values.backend | default dict -}}
-{{- $database := $backend.database | default dict -}}
+{{- $database := .Values.database | default dict -}}
 {{- if $database.url }}
 {{- $database.url | quote }}
 {{- else }}
