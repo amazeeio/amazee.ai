@@ -1,4 +1,5 @@
-{{- if .Values.amazee-ai.ingress.enabled -}}
+{{- $amazeeAi := index .Values "amazee-ai" -}}
+{{- if $amazeeAi.ingress.enabled -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -6,17 +7,17 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "amazee-ai.labels" . | nindent 4 }}
-  {{- with .Values.amazee-ai.ingress.annotations }}
+  {{- with $amazeeAi.ingress.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  {{- if .Values.amazee-ai.ingress.className }}
-  ingressClassName: {{ .Values.amazee-ai.ingress.className }}
+  {{- if $amazeeAi.ingress.className }}
+  ingressClassName: {{ $amazeeAi.ingress.className }}
   {{- end }}
-  {{- if .Values.amazee-ai.ingress.tls }}
+  {{- if $amazeeAi.ingress.tls }}
   tls:
-    {{- range .Values.amazee-ai.ingress.tls }}
+    {{- range $amazeeAi.ingress.tls }}
     - hosts:
         {{- range .hosts }}
         - {{ . | quote }}
@@ -25,7 +26,7 @@ spec:
     {{- end }}
   {{- end }}
   rules:
-    {{- range .Values.amazee-ai.ingress.hosts }}
+    {{- range $amazeeAi.ingress.hosts }}
     - host: {{ .host | quote }}
       http:
         paths:

@@ -1,8 +1,8 @@
 name: amazee-ai
 description: A Helm Chart for amazee.ai with independent frontend and backend services
-version: 0.0.9
+version: 0.0.10
 apiVersion: v2
-appVersion: "0.0.9"
+appVersion: "0.0.10"
 keywords:
   - amazee.ai
   - frontend
@@ -15,10 +15,10 @@ dependencies:
     repository: https://charts.bitnami.com/bitnami
     condition: postgresql.enabled
   - name: backend
-    version: 0.0.9
+    version: 0.0.10
     condition: backend.enabled
     dependsOn:
       - postgresql
   - name: frontend
-    version: 0.0.9
+    version: 0.0.10
     condition: frontend.enabled
