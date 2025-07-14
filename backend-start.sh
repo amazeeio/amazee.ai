@@ -1,28 +1,15 @@
 #!/bin/bash
 
-# Function to test database connection
-postgres_ready() {
-python << END
-import sys
-import psycopg2
-import os
-try:
-    psycopg2.connect(
-        os.getenv("DATABASE_URL", "postgres://postgres:postgres@postgres:5432/postgres_service")
-    )
-except psycopg2.OperationalError:
-    sys.exit(-1)
-sys.exit(0)
-END
-}
+# Wait for PostgreSQL to be ready and create database if needed
+echo "Waiting for PostgreSQL to be ready..."
+python /app/scripts/wait_for_database.py
 
-# Wait for PostgreSQL to be ready
-until postgres_ready; do
-  >&2 echo "PostgreSQL is unavailable - sleeping"
-  sleep 1
-done
+if [ $? -ne 0 ]; then
+    echo "Failed to connect to database"
+    exit 1
+fi
 
->&2 echo "PostgreSQL is up - initializing database"
+echo "PostgreSQL is up - initializing database"
 
 # Initialize the database using the Python script
 python /app/scripts/initialise_resources.py
