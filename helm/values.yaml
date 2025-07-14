@@ -7,12 +7,8 @@ global:
 
 # PostgreSQL configuration (using Bitnami chart)
 postgresql:
+  # Set to false to use external managed PostgreSQL
   enabled: true
-  # Set to true to use external managed PostgreSQL
-  external:
-    enabled: false
-    url: "postgresql://user:password@host:port/database"
-  # Self-hosted PostgreSQL configuration (used when external.enabled = false)
   auth:
     postgresPassword: "postgres"
     database: "postgres_service"
