@@ -1,8 +1,8 @@
 name: frontend
 description: Frontend web application for amazee.ai
-version: 0.0.11
+version: 0.1.0
 apiVersion: v2
-appVersion: "0.0.11"
+appVersion: "0.1.0"
 keywords:
   - frontend
   - nextjs
