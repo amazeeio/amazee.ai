@@ -112,6 +112,8 @@ export default function TeamsPage() {
   const [searchResults, setSearchResults] = useState<User[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isPasswordless, setIsPasswordless] = useState(false);
+  const [isSubscribingToProduct, setIsSubscribingToProduct] = useState(false);
+  const [selectedProductId, setSelectedProductId] = useState('');
 
   useEffect(() => {
     const config = getCachedConfig();
@@ -166,6 +168,15 @@ export default function TeamsPage() {
       return response.json();
     },
     enabled: !!expandedTeamId,
+  });
+
+  // Get all products
+  const { data: allProducts = [], isLoading: isLoadingAllProducts } = useQuery<Product[]>({
+    queryKey: ['products'],
+    queryFn: async () => {
+      const response = await get('/products');
+      return response.json();
+    },
   });
 
   // Search users query
@@ -441,6 +452,40 @@ export default function TeamsPage() {
     },
   });
 
+  const createTeamSubscriptionMutation = useMutation({
+    mutationFn: async ({ teamId, productId }: { teamId: string; productId: string }) => {
+      try {
+        const response = await post(`/billing/teams/${teamId}/subscriptions`, { product_id: productId });
+        return response.json();
+      } catch (error) {
+        if (error instanceof Error) {
+          throw new Error(`Failed to create subscription: ${error.message}`);
+        } else {
+          throw new Error('An unexpected error occurred while creating the subscription.');
+        }
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId] });
+      queryClient.invalidateQueries({ queryKey: ['teams'] });
+      queryClient.invalidateQueries({ queryKey: ['team-products', selectedTeamId] });
+
+      toast({
+        title: 'Success',
+        description: 'Team subscribed to product successfully',
+      });
+      setIsSubscribingToProduct(false);
+      setSelectedProductId('');
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
   const handleCreateTeam = (e: React.FormEvent) => {
     e.preventDefault();
     createTeamMutation.mutate({
@@ -513,6 +558,21 @@ export default function TeamsPage() {
   const openCreateUserInTeamDialog = (teamId: string) => {
     setSelectedTeamId(teamId);
     setIsCreatingUserInTeam(true);
+  };
+
+  const openSubscribeToProductDialog = (teamId: string) => {
+    setSelectedTeamId(teamId);
+    setIsSubscribingToProduct(true);
+  };
+
+  const handleCreateTeamSubscription = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedTeamId || !selectedProductId) return;
+
+    createTeamSubscriptionMutation.mutate({
+      teamId: selectedTeamId,
+      productId: selectedProductId,
+    });
   };
 
   return (
@@ -773,6 +833,12 @@ export default function TeamsPage() {
                                             )}
                                           </div>
                                           <div className="flex justify-end space-x-2 mt-4">
+                                            <Button
+                                              variant="outline"
+                                              onClick={() => openSubscribeToProductDialog(expandedTeam.id)}
+                                            >
+                                              Subscribe to Product
+                                            </Button>
                                             <Button
                                               variant="outline"
                                               onClick={() => extendTrialMutation.mutate(expandedTeam.id)}
@@ -1133,6 +1199,71 @@ export default function TeamsPage() {
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 )}
                 Create User
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog for subscribing a team to a product */}
+      <Dialog open={isSubscribingToProduct} onOpenChange={setIsSubscribingToProduct}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Subscribe Team to Product</DialogTitle>
+            <DialogDescription>
+              Select a product to subscribe this team to.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleCreateTeamSubscription}>
+            <div className="grid gap-4 py-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Product</label>
+                <Select
+                  value={selectedProductId}
+                  onValueChange={setSelectedProductId}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a product" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {isLoadingAllProducts ? (
+                      <SelectItem value="" disabled>
+                        Loading products...
+                      </SelectItem>
+                    ) : allProducts.length > 0 ? (
+                      allProducts.map((product) => (
+                        <SelectItem key={product.id} value={product.id}>
+                          {product.name} ({product.id})
+                        </SelectItem>
+                      ))
+                    ) : (
+                      <SelectItem value="" disabled>
+                        No products available
+                      </SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setIsSubscribingToProduct(false);
+                  setSelectedProductId('');
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                disabled={createTeamSubscriptionMutation.isPending || !selectedProductId}
+              >
+                {createTeamSubscriptionMutation.isPending && (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                )}
+                Subscribe
               </Button>
             </DialogFooter>
           </form>

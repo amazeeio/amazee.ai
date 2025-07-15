@@ -5,7 +5,7 @@ import os
 from datetime import datetime, UTC
 from app.db.database import get_db
 from app.core.security import check_specific_team_admin, check_system_admin
-from app.db.models import DBTeam, DBSystemSecret, DBProduct
+from app.db.models import DBTeam, DBSystemSecret, DBProduct, DBTeamProduct
 from app.schemas.models import PricingTableSession, SubscriptionCreate, SubscriptionResponse
 from app.services.stripe import (
     decode_stripe_event,
@@ -208,6 +208,17 @@ async def create_team_subscription(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Product with ID {subscription_data.product_id} not found in database"
+        )
+
+        # Check if the team is already subscribed to any product
+    existing_subscription = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == team_id
+    ).first()
+
+    if existing_subscription:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Team {team_id} is already subscribed to a product"
         )
 
     try:
