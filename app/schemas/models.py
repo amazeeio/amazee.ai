@@ -331,3 +331,14 @@ class PricingTablesResponse(BaseModel):
     standard: PricingTableResponse | None
     always_free: PricingTableResponse | None
     model_config = ConfigDict(from_attributes=True)
+
+class SubscriptionCreate(BaseModel):
+    product_id: str  # Stripe product ID
+    model_config = ConfigDict(from_attributes=True)
+
+class SubscriptionResponse(BaseModel):
+    subscription_id: str
+    product_id: str
+    team_id: int
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
