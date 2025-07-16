@@ -2,15 +2,17 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from sqlalchemy.orm import Session
 import logging
 import os
+from datetime import datetime, UTC
 from app.db.database import get_db
-from app.core.security import check_specific_team_admin
-from app.db.models import DBTeam, DBSystemSecret
-from app.schemas.models import PricingTableSession
+from app.core.security import check_specific_team_admin, check_system_admin
+from app.db.models import DBTeam, DBSystemSecret, DBProduct, DBTeamProduct
+from app.schemas.models import PricingTableSession, SubscriptionCreate, SubscriptionResponse
 from app.services.stripe import (
     decode_stripe_event,
     create_portal_session,
     create_stripe_customer,
     get_pricing_table_secret,
+    create_zero_rated_stripe_subscription,
 )
 from app.core.worker import handle_stripe_event_background
 
@@ -174,4 +176,77 @@ async def get_pricing_table_session(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error creating customer session"
+        )
+
+@router.post("/teams/{team_id}/subscriptions", dependencies=[Depends(check_system_admin)], response_model=SubscriptionResponse, status_code=status.HTTP_201_CREATED)
+async def create_team_subscription(
+    team_id: int,
+    subscription_data: SubscriptionCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Create a subscription for a specific team. Only accessible by system admin users.
+
+    Args:
+        team_id: The ID of the team to create the subscription for
+        subscription_data: The subscription data containing the Stripe product ID
+
+    Returns:
+        JSON response containing the subscription details
+    """
+    # Get the team
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if not team:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Team not found"
+        )
+
+    # Check if the product exists in the database
+    product = db.query(DBProduct).filter(DBProduct.id == subscription_data.product_id).first()
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Product with ID {subscription_data.product_id} not found in database"
+        )
+
+        # Check if the team is already subscribed to any product
+    existing_subscription = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == team_id
+    ).first()
+
+    if existing_subscription:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Team {team_id} is already subscribed to a product"
+        )
+
+    try:
+        # Create Stripe customer if one doesn't exist
+        if not team.stripe_customer_id:
+            logger.info(f"Creating Stripe customer for team {team.id}")
+            team.stripe_customer_id = await create_stripe_customer(team)
+            db.add(team)
+            db.commit()
+
+        # Create the Stripe subscription
+        subscription_id = await create_zero_rated_stripe_subscription(
+            customer_id=team.stripe_customer_id,
+            product_id=subscription_data.product_id
+        )
+
+        logger.info(f"Created subscription {subscription_id} for team {team.id} to product {subscription_data.product_id}")
+
+        return SubscriptionResponse(
+            subscription_id=subscription_id,
+            product_id=subscription_data.product_id,
+            team_id=team_id,
+            created_at=datetime.now(UTC)
+        )
+
+    except Exception as e:
+        logger.error(f"Error creating subscription for team {team_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error creating subscription: {str(e)}"
         )

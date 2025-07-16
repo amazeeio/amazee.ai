@@ -188,6 +188,85 @@ async def create_stripe_customer(
             detail="Error creating Stripe customer"
         )
 
+async def create_zero_rated_stripe_subscription(
+    customer_id: str,
+    product_id: str,
+    price_id: str = None
+) -> str:
+    """
+    Create a Stripe subscription for a customer to a specific free product.
+
+    Args:
+        customer_id: The Stripe customer ID
+        product_id: The Stripe product ID
+        price_id: Optional price ID. If not provided, will use the default price for the product
+
+    Returns:
+        str: The Stripe subscription ID
+
+    Raises:
+        HTTPException: If error creating subscription or if product is not free
+    """
+    try:
+        # If no price_id provided, get the default price for the product
+        if not price_id:
+            prices = stripe.Price.list(
+                product=product_id,
+                active=True
+            )
+
+            if not prices.data:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"No active prices found for product {product_id}"
+                )
+
+            # Validate that there is only one price for free products
+            if len(prices.data) > 1:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Multiple prices found for product {product_id}. Free products should have only one price."
+                )
+
+            price_id = prices.data[0].id
+
+        # Get the price details to validate it's free
+        price = stripe.Price.retrieve(price_id)
+
+        # Validate that the price is zero (free)
+        if price.unit_amount != 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Product {product_id} is not free. Price amount: {price.unit_amount} {price.currency}"
+            )
+
+        # Create the subscription for free product
+        subscription = stripe.Subscription.create(
+            customer=customer_id,
+            items=[{"price": price_id}],
+            payment_behavior="allow_incomplete",
+            expand=["latest_invoice"]
+        )
+
+        logger.info(f"Created free subscription {subscription.id} for customer {customer_id} to product {product_id}")
+        return subscription.id
+
+    except HTTPException:
+        # Re-raise HTTPExceptions as-is (validation errors, etc.)
+        raise
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe error creating subscription: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Error creating subscription: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Error creating Stripe subscription: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error creating subscription"
+        )
+
 async def get_product_id_from_subscription(subscription_id: str) -> str:
     """
     Get the Stripe product ID for the team's subscription.
