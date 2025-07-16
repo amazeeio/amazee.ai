@@ -188,7 +188,7 @@ async def create_stripe_customer(
             detail="Error creating Stripe customer"
         )
 
-async def create_stripe_subscription(
+async def create_zero_rated_stripe_subscription(
     customer_id: str,
     product_id: str,
     price_id: str = None

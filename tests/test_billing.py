@@ -216,7 +216,7 @@ def test_get_pricing_table_session_stripe_error(mock_get_session, client, db, te
     assert response.json()["detail"] == "Error creating customer session"
 
 # Tests for subscription creation endpoint
-@patch('app.api.billing.create_stripe_subscription', new_callable=AsyncMock)
+@patch('app.api.billing.create_zero_rated_stripe_subscription', new_callable=AsyncMock)
 @patch('app.api.billing.create_stripe_customer', new_callable=AsyncMock)
 def test_create_team_subscription_success_existing_customer(mock_create_customer, mock_create_subscription, client, db, test_team, test_product, admin_token):
     """Test successful subscription creation for team with existing Stripe customer"""
@@ -250,7 +250,7 @@ def test_create_team_subscription_success_existing_customer(mock_create_customer
     )
     mock_create_customer.assert_not_called()
 
-@patch('app.api.billing.create_stripe_subscription', new_callable=AsyncMock)
+@patch('app.api.billing.create_zero_rated_stripe_subscription', new_callable=AsyncMock)
 @patch('app.api.billing.create_stripe_customer', new_callable=AsyncMock)
 def test_create_team_subscription_success_new_customer(mock_create_customer, mock_create_subscription, client, db, test_team, test_product, admin_token):
     """Test successful subscription creation for team without existing Stripe customer"""
@@ -342,7 +342,7 @@ def test_create_team_subscription_unauthorized(client, db, test_team, test_produ
     assert response.status_code == 403
     assert response.json()["detail"] == "Not authorized to perform this action"
 
-@patch('app.api.billing.create_stripe_subscription', new_callable=AsyncMock)
+@patch('app.api.billing.create_zero_rated_stripe_subscription', new_callable=AsyncMock)
 @patch('app.api.billing.create_stripe_customer', new_callable=AsyncMock)
 def test_create_team_subscription_stripe_error(mock_create_customer, mock_create_subscription, client, db, test_team, test_product, admin_token):
     """Test subscription creation when Stripe API returns an error"""

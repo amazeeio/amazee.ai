@@ -12,7 +12,7 @@ from app.services.stripe import (
     create_portal_session,
     create_stripe_customer,
     get_pricing_table_secret,
-    create_stripe_subscription,
+    create_zero_rated_stripe_subscription,
 )
 from app.core.worker import handle_stripe_event_background
 
@@ -228,10 +228,9 @@ async def create_team_subscription(
             team.stripe_customer_id = await create_stripe_customer(team)
             db.add(team)
             db.commit()
-            db.refresh(team)
 
         # Create the Stripe subscription
-        subscription_id = await create_stripe_subscription(
+        subscription_id = await create_zero_rated_stripe_subscription(
             customer_id=team.stripe_customer_id,
             product_id=subscription_data.product_id
         )

@@ -1,7 +1,7 @@
 import pytest
 import asyncio
 from unittest.mock import patch, AsyncMock, MagicMock
-from app.services.stripe import create_stripe_subscription
+from app.services.stripe import create_zero_rated_stripe_subscription
 from fastapi import HTTPException
 import stripe
 
@@ -49,7 +49,7 @@ def test_create_stripe_subscription_success_no_price_id(
     mock_subscription_create.return_value = mock_subscription
 
     # Act
-    result = asyncio.run(create_stripe_subscription(customer_id, product_id))
+    result = asyncio.run(create_zero_rated_stripe_subscription(customer_id, product_id))
 
     # Assert
     assert result == "sub_123456789"
@@ -90,7 +90,7 @@ def test_create_stripe_subscription_success_with_price_id(
     mock_subscription_create.return_value = mock_subscription
 
     # Act
-    result = asyncio.run(create_stripe_subscription(customer_id, product_id, price_id))
+    result = asyncio.run(create_zero_rated_stripe_subscription(customer_id, product_id, price_id))
 
     # Assert
     assert result == "sub_987654321"
@@ -120,7 +120,7 @@ def test_create_stripe_subscription_no_active_prices(mock_price_list):
 
     # Act & Assert
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(create_stripe_subscription(customer_id, product_id))
+        asyncio.run(create_zero_rated_stripe_subscription(customer_id, product_id))
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == f"No active prices found for product {product_id}"
@@ -146,7 +146,7 @@ def test_create_stripe_subscription_multiple_prices(mock_price_list):
 
     # Act & Assert
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(create_stripe_subscription(customer_id, product_id))
+        asyncio.run(create_zero_rated_stripe_subscription(customer_id, product_id))
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == f"Multiple prices found for product {product_id}. Free products should have only one price."
@@ -178,7 +178,7 @@ def test_create_stripe_subscription_non_free_product(mock_price_retrieve, mock_p
 
     # Act & Assert
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(create_stripe_subscription(customer_id, product_id))
+        asyncio.run(create_zero_rated_stripe_subscription(customer_id, product_id))
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == f"Product {product_id} is not free. Price amount: 1000 usd"
@@ -203,7 +203,7 @@ def test_create_stripe_subscription_with_price_id_non_free(mock_price_retrieve):
 
     # Act & Assert
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(create_stripe_subscription(customer_id, product_id, price_id))
+        asyncio.run(create_zero_rated_stripe_subscription(customer_id, product_id, price_id))
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == f"Product {product_id} is not free. Price amount: 2000 usd"
@@ -243,7 +243,7 @@ def test_create_stripe_subscription_stripe_error(
 
     # Act & Assert
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(create_stripe_subscription(customer_id, product_id))
+        asyncio.run(create_zero_rated_stripe_subscription(customer_id, product_id))
 
     assert exc_info.value.status_code == 400
     assert "Error creating subscription: Customer not found" in exc_info.value.detail
@@ -283,7 +283,7 @@ def test_create_stripe_subscription_general_exception(
 
     # Act & Assert
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(create_stripe_subscription(customer_id, product_id))
+        asyncio.run(create_zero_rated_stripe_subscription(customer_id, product_id))
 
     assert exc_info.value.status_code == 500
     assert exc_info.value.detail == "Error creating subscription"
@@ -305,7 +305,7 @@ def test_create_stripe_subscription_price_retrieve_error(mock_price_retrieve):
 
     # Act & Assert
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(create_stripe_subscription(customer_id, product_id, price_id))
+        asyncio.run(create_zero_rated_stripe_subscription(customer_id, product_id, price_id))
 
     assert exc_info.value.status_code == 400
     assert "Error creating subscription: Price not found" in exc_info.value.detail
