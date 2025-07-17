@@ -55,3 +55,6 @@ terraform/.terraform/
 .claude/
 CLAUDE.local.md
 CLAUDE.md
+
+# mkdocs
+site/
