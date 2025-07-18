@@ -73,7 +73,7 @@ theme:
 # Navigation structure
 nav:
   - Home: index.md
-  - Installation: installation.md
+  - Development: development.md
   - Configuration: configuration.md
   - User Guide: user-guide.md
   - API Reference: api-reference.md

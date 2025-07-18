@@ -6,7 +6,7 @@ Welcome to the amazee.ai documentation! This guide will help you set up, deploy,
 
 amazee.ai is a comprehensive AI platform that provides:
 
-- **Private AI Keys Management**: Create and manage secure AI API keys with regional deployment
+- **Private AI Key Management**: Create and manage secure AI keys with regional deployment
 - **Vector Database Integration**: Set up and manage vector databases for AI applications
 - **LiteLLM Integration**: Unified interface for multiple AI model providers
 - **Team Management**: Multi-tenant architecture with role-based access control
@@ -15,7 +15,7 @@ amazee.ai is a comprehensive AI platform that provides:
 
 ## Quick Start
 
-1. [Installation Guide](installation.md) - Set up amazee.ai on your infrastructure
+1. [Development Guide](development.md) - Set up amazee.ai development environment
 2. [Configuration](configuration.md) - Configure the platform for your needs
 3. [Deployment](deployment.md) - Deploy to production environments
 4. [User Guide](user-guide.md) - Learn how to use the platform

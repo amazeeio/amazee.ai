@@ -8,7 +8,7 @@ This directory contains the documentation for amazee.ai, configured to be displa
 docs/
 ├── web/                    # Main documentation files
 │   ├── index.md           # Home page
-│   ├── installation.md    # Installation guide
+│   ├── development.md     # Development guide
 │   ├── configuration.md   # Configuration guide
 │   ├── user-guide.md      # User guide
 │   ├── api-reference.md   # API reference

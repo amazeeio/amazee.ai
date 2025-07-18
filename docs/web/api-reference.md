@@ -114,6 +114,44 @@ username=user@example.com&password=secure-password-123
 }
 ```
 
+### POST /auth/validate-email
+
+Request email verification code.
+
+**Request Body:**
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+**Response:**
+```json
+{
+  "message": "Validation code has been generated and sent"
+}
+```
+
+### POST /auth/sign-in
+
+Sign in with verification code.
+
+**Request Body:**
+```json
+{
+  "username": "user@example.com",
+  "verification_code": "123456"
+}
+```
+
+**Response:**
+```json
+{
+  "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
+  "token_type": "bearer"
+}
+```
+
 ### POST /auth/logout
 
 Logout and invalidate session.
@@ -151,44 +189,6 @@ Update current user profile.
   "email": "new-email@example.com",
   "current_password": "current-password",
   "new_password": "new-password"
-}
-```
-
-### POST /auth/validate-email
-
-Request email verification code.
-
-**Request Body:**
-```json
-{
-  "email": "user@example.com"
-}
-```
-
-**Response:**
-```json
-{
-  "message": "Validation code has been generated and sent"
-}
-```
-
-### POST /auth/sign-in
-
-Sign in with verification code.
-
-**Request Body:**
-```json
-{
-  "username": "user@example.com",
-  "verification_code": "123456"
-}
-```
-
-**Response:**
-```json
-{
-  "access_token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...",
-  "token_type": "bearer"
 }
 ```
 
