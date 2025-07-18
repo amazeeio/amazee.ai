@@ -428,3 +428,271 @@ def test_sign_in_new_user_success(client, mock_dynamodb):
     team_user = team_data["users"][0]
     assert team_user["email"] == email
     assert team_user["role"] == "admin"  # User should have admin role in the team
+
+def test_create_token_basic(client, test_user, test_token):
+    """
+    Given a regular user
+    When the user creates an API token
+    Then the token should be created successfully and associated with the user
+    """
+    # Create token
+    response = client.post(
+        "/auth/token",
+        headers={"Authorization": f"Bearer {test_token}"},
+        json={
+            "name": "Test Token"
+        }
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "Test Token"
+    assert data["user_id"] == test_user.id
+    assert "token" in data
+
+def test_list_tokens_basic(client, test_user, test_token):
+    """
+    Given a regular user with existing tokens
+    When the user lists their API tokens
+    Then the tokens should be returned successfully
+    """
+    # Create a token first
+    response = client.post(
+        "/auth/token",
+        headers={"Authorization": f"Bearer {test_token}"},
+        json={
+            "name": "Test Token"
+        }
+    )
+    assert response.status_code == 200
+
+    # List tokens
+    response = client.get(
+        "/auth/token",
+        headers={"Authorization": f"Bearer {test_token}"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "Test Token"
+    assert data[0]["user_id"] == test_user.id
+
+def test_create_token_system_admin_for_other_user(client, test_admin, test_user, admin_token):
+    """
+    Given a system administrator and a regular user
+    When the system admin creates an API token for the regular user
+    Then the token should be created successfully and associated with the regular user
+    """
+    # Create token for another user
+    response = client.post(
+        "/auth/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "name": "Admin Created Token",
+            "user_id": test_user.id
+        }
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "Admin Created Token"
+    assert data["user_id"] == test_user.id
+    assert "token" in data
+
+def test_create_token_system_admin_for_other_user_invalid_user_id(client, test_admin, admin_token):
+    """
+    Given a system administrator
+    When the system admin tries to create an API token for a non-existent user
+    Then the request should fail with a 404 error
+    """
+    # Try to create token for non-existent user
+    response = client.post(
+        "/auth/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "name": "Admin Created Token",
+            "user_id": 99999  # Non-existent user ID
+        }
+    )
+    assert response.status_code == 404
+    assert "User not found" in response.json()["detail"]
+
+def test_create_token_regular_user_for_other_user_fails(client, test_user, test_admin, test_token):
+    """
+    Given a regular user and a system administrator
+    When the regular user tries to create an API token for the system admin
+    Then the request should fail with a 403 error
+    """
+    # Try to create token for another user (should fail)
+    response = client.post(
+        "/auth/token",
+        headers={"Authorization": f"Bearer {test_token}"},
+        json={
+            "name": "User Created Token",
+            "user_id": test_admin.id
+        }
+    )
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
+
+def test_list_tokens_system_admin_for_other_user(client, test_admin, test_user, admin_token):
+    """
+    Given a system administrator and a regular user with existing tokens
+    When the system admin lists API tokens for the regular user
+    Then the tokens should be returned successfully
+    """
+    # First create a token for the user (as admin)
+    response = client.post(
+        "/auth/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "name": "Admin Created Token",
+            "user_id": test_user.id
+        }
+    )
+    assert response.status_code == 200
+
+    # List tokens for the user
+    response = client.get(
+        f"/auth/token?user_id={test_user.id}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "Admin Created Token"
+    assert data[0]["user_id"] == test_user.id
+
+def test_list_tokens_system_admin_for_other_user_invalid_user_id(client, test_admin, admin_token):
+    """
+    Given a system administrator
+    When the system admin tries to list API tokens for a non-existent user
+    Then the request should fail with a 404 error
+    """
+    # Try to list tokens for non-existent user
+    response = client.get(
+        "/auth/token?user_id=99999",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 404
+    assert "User not found" in response.json()["detail"]
+
+def test_list_tokens_regular_user_for_other_user_fails(client, test_user, test_admin, test_token):
+    """
+    Given a regular user and a system administrator
+    When the regular user tries to list API tokens for the system admin
+    Then the request should fail with a 403 error
+    """
+    # Try to list tokens for another user (should fail)
+    response = client.get(
+        f"/auth/token?user_id={test_admin.id}",
+        headers={"Authorization": f"Bearer {test_token}"}
+    )
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
+
+def test_create_token_system_admin_without_user_id_creates_for_self(client, test_admin, admin_token):
+    """
+    Given a system administrator
+    When the system admin creates an API token without specifying user_id
+    Then the token should be created for the system admin themselves
+    """
+    # Create token without user_id (should create for self)
+    response = client.post(
+        "/auth/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "name": "Admin Self Token"
+        }
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["name"] == "Admin Self Token"
+    assert data["user_id"] == test_admin.id
+    assert "token" in data
+
+def test_list_tokens_system_admin_without_user_id_lists_own_tokens(client, test_admin, admin_token):
+    """
+    Given a system administrator with existing tokens
+    When the system admin lists API tokens without specifying user_id
+    Then the system admin's own tokens should be returned
+    """
+    # Create a token for the admin
+    response = client.post(
+        "/auth/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "name": "Admin Self Token"
+        }
+    )
+    assert response.status_code == 200
+
+    # List tokens without user_id (should list own tokens)
+    response = client.get(
+        "/auth/token",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["name"] == "Admin Self Token"
+    assert data[0]["user_id"] == test_admin.id
+
+def test_delete_token_basic(client, test_user, test_token):
+    """
+    Given a regular user with an existing token
+    When the user deletes their API token
+    Then the token should be deleted successfully
+    """
+    # Create a token first
+    response = client.post(
+        "/auth/token",
+        headers={"Authorization": f"Bearer {test_token}"},
+        json={
+            "name": "Test Token"
+        }
+    )
+    assert response.status_code == 200
+    token_data = response.json()
+    token_id = token_data["id"]
+
+    # Delete the token
+    response = client.delete(
+        f"/auth/token/{token_id}",
+        headers={"Authorization": f"Bearer {test_token}"}
+    )
+    assert response.status_code == 200
+    assert response.json()["message"] == "Token deleted successfully"
+
+    # Verify token is deleted by listing tokens
+    response = client.get(
+        "/auth/token",
+        headers={"Authorization": f"Bearer {test_token}"}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 0
+
+def test_delete_token_system_admin_for_other_user(client, test_admin, test_user, admin_token, test_token):
+    """
+    Given a system administrator and a regular user with an existing token
+    When the system admin tries to delete the user's API token
+    Then the request should fail as this functionality is not implemented
+    """
+    # Create a token for the user
+    response = client.post(
+        "/auth/token",
+        headers={"Authorization": f"Bearer {test_token}"},
+        json={
+            "name": "User Token"
+        }
+    )
+    assert response.status_code == 200
+    token_data = response.json()
+    token_id = token_data["id"]
+
+    # Admin tries to delete the user's token (should fail as not implemented)
+    response = client.delete(
+        f"/auth/token/{token_id}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Token not found"

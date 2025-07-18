@@ -46,7 +46,7 @@ class APITokenBase(BaseModel):
     name: str
 
 class APITokenCreate(APITokenBase):
-    pass
+    user_id: Optional[int] = None
 
 class APIToken(APITokenBase):
     id: int
