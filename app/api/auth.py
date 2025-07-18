@@ -488,10 +488,38 @@ async def create_token(
     current_user = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
+    """
+    Create an API token.
+
+    - Regular users can only create tokens for themselves
+    - System administrators can create tokens for any user by specifying user_id
+    """
+    # Determine the target user for the token
+    if token_create.user_id is not None:
+        # System admin is trying to create token for another user
+        if not current_user.is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to perform this action"
+            )
+
+        # Verify the target user exists
+        target_user = db.query(DBUser).filter(DBUser.id == token_create.user_id).first()
+        if not target_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        user_id = token_create.user_id
+    else:
+        # Create token for the current user
+        user_id = current_user.id
+
     db_token = DBAPIToken(
         name=token_create.name,
         token=generate_api_token(),
-        user_id=current_user.id
+        user_id=user_id
     )
     db.add(db_token)
     db.commit()
@@ -500,11 +528,38 @@ async def create_token(
 
 @router.get("/token", response_model=List[APITokenResponse])
 async def list_tokens(
+    user_id: Optional[int] = None,
     current_user = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
-    """List all API tokens for the current user"""
-    return current_user.api_tokens
+    """
+    List API tokens.
+
+    - Regular users can only list their own tokens
+    - System administrators can list tokens for any user by specifying user_id
+    """
+    # Determine the target user for listing tokens
+    if user_id is not None:
+        # System admin is trying to list tokens for another user
+        if not current_user.is_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to perform this action"
+            )
+
+        # Verify the target user exists
+        target_user = db.query(DBUser).filter(DBUser.id == user_id).first()
+        if not target_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        # Return tokens for the specified user
+        return target_user.api_tokens
+    else:
+        # List tokens for the current user
+        return current_user.api_tokens
 
 @router.delete("/token/{token_id}")
 async def delete_token(
