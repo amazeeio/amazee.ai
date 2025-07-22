@@ -92,6 +92,7 @@ def get_team_keys_by_region(db: Session, team_id: int) -> Dict[DBRegion, List[DB
             continue
         keys_by_region[key.region].append(key)
 
+    logger.info(f"Found {len(team_keys)} keys in {len(keys_by_region)} regions for team {team_id}")
     return keys_by_region
 
 async def handle_stripe_event_background(event, db: Session):
@@ -203,8 +204,9 @@ async def apply_product_for_team(db: Session, customer_id: str, product_id: str,
                         budget_amount=max_max_spend,
                         rpm_limit=max_rpm_limit
                     )
+                    logger.info(f"Updated key {key.id} limits in LiteLLM: {days_left_in_period} days, {max_max_spend} budget, {max_rpm_limit} RPM")
                 except Exception as e:
-                    logger.error(f"Failed to update key {key.id} via LiteLLM: {str(e)}")
+                    logger.error(f"Failed to update key {key.id} in LiteLLM: {str(e)}")
                     # Continue with other keys even if one fails
                     continue
 
