@@ -25,6 +25,26 @@ class DBTeamProduct(Base):
     team = relationship("DBTeam", back_populates="active_products")
     product = relationship("DBProduct", back_populates="teams")
 
+class DBTeamRegion(Base):
+    """
+    Association table for team-region relationship.
+    This model is required to implement a many-to-many relationship between teams and dedicated regions.
+    It allows:
+    - Teams to access multiple dedicated regions
+    - Dedicated regions to be used by multiple teams
+    - Tracking when regions were associated with teams
+    - Maintaining referential integrity between teams and regions
+    """
+    __tablename__ = "team_regions"
+
+    team_id = Column(Integer, ForeignKey('teams.id', ondelete='CASCADE'), primary_key=True, nullable=False)
+    region_id = Column(Integer, ForeignKey('regions.id', ondelete='CASCADE'), primary_key=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+    team = relationship("DBTeam", back_populates="dedicated_regions")
+    region = relationship("DBRegion", back_populates="teams")
+
 class DBRegion(Base):
     __tablename__ = "regions"
 
@@ -37,9 +57,11 @@ class DBRegion(Base):
     litellm_api_url = Column(String)
     litellm_api_key = Column(String)
     is_active = Column(Boolean, default=True)
+    is_dedicated = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), default=func.now())
 
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="region")
+    teams = relationship("DBTeamRegion", back_populates="region")
 
 class DBAPIToken(Base):
     __tablename__ = "api_tokens"
@@ -90,6 +112,7 @@ class DBTeam(Base):
     users = relationship("DBUser", back_populates="team")
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="team")
     active_products = relationship("DBTeamProduct", back_populates="team")
+    dedicated_regions = relationship("DBTeamRegion", back_populates="team")
 
 class DBPrivateAIKey(Base):
     __tablename__ = "ai_tokens"
