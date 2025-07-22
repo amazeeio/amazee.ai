@@ -29,7 +29,7 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['team_id'], ['teams.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('team_id', 'region_id')
     )
-    op.add_column('regions', sa.Column('is_dedicated', sa.Boolean(), nullable=True))
+    op.add_column('regions', sa.Column('is_dedicated', sa.Boolean(), nullable=False, server_default='false'))
     op.alter_column('teams', 'is_always_free',
                existing_type=sa.BOOLEAN(),
                nullable=True,

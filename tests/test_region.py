@@ -1,9 +1,20 @@
 import pytest
+from fastapi import HTTPException
 from app.db.models import DBPrivateAIKey, DBTeam, DBRegion
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
-def test_create_region(client, admin_token):
-    """Test creating a new region with private AI key settings"""
+@patch("app.api.regions.validate_litellm_endpoint")
+@patch("app.api.regions.validate_database_connection")
+def test_create_region(mock_validate_db, mock_validate_litellm, client, admin_token):
+    """
+    Given an admin user and valid region data
+    When they create a new region
+    Then the region should be created successfully with validation
+    """
+    # Mock the validation functions
+    mock_validate_litellm.return_value = True
+    mock_validate_db.return_value = True
+
     region_data = {
         "name": "new-region",
         "postgres_host": "new-host",
@@ -27,12 +38,30 @@ def test_create_region(client, admin_token):
     assert data["litellm_api_url"] == region_data["litellm_api_url"]
     assert "id" in data
 
-def test_create_region_duplicate_name(client, admin_token, test_region):
+    # Verify validation functions were called
+    mock_validate_litellm.assert_called_once_with(
+        region_data["litellm_api_url"],
+        region_data["litellm_api_key"]
+    )
+    mock_validate_db.assert_called_once_with(
+        region_data["postgres_host"],
+        region_data["postgres_port"],
+        region_data["postgres_admin_user"],
+        region_data["postgres_admin_password"]
+    )
+
+@patch("app.api.regions.validate_litellm_endpoint")
+@patch("app.api.regions.validate_database_connection")
+def test_create_region_duplicate_name(mock_validate_db, mock_validate_litellm, client, admin_token, test_region):
     """
     Given an admin user and an existing region
     When they try to create a region with the same name
     Then the request should be denied with a 400 error
     """
+    # Mock the validation functions (should not be called due to duplicate name check)
+    mock_validate_litellm.return_value = True
+    mock_validate_db.return_value = True
+
     region_data = {
         "name": test_region.name,  # Use existing region name
         "postgres_host": "new-host",
@@ -51,6 +80,86 @@ def test_create_region_duplicate_name(client, admin_token, test_region):
 
     assert response.status_code == 400
     assert f"A region with the name '{test_region.name}' already exists" in response.json()["detail"]
+
+    # Verify validation functions were not called due to early exit
+    mock_validate_litellm.assert_not_called()
+    mock_validate_db.assert_not_called()
+
+@patch("app.api.regions.validate_litellm_endpoint")
+@patch("app.api.regions.validate_database_connection")
+def test_create_region_litellm_validation_fails(mock_validate_db, mock_validate_litellm, client, admin_token):
+    """
+    Given an admin user and region data with invalid LiteLLM endpoint
+    When they try to create a region
+    Then the request should fail with LiteLLM validation error
+    """
+    # Mock LiteLLM validation to fail with HTTPException
+    mock_validate_litellm.side_effect = HTTPException(
+        status_code=400,
+        detail="LiteLLM endpoint validation failed: Connection timeout"
+    )
+    mock_validate_db.return_value = True
+
+    region_data = {
+        "name": "new-region",
+        "postgres_host": "new-host",
+        "postgres_port": 5432,
+        "postgres_admin_user": "new-admin",
+        "postgres_admin_password": "new-password",
+        "litellm_api_url": "https://invalid-litellm.com",
+        "litellm_api_key": "invalid-litellm-key"
+    }
+
+    response = client.post(
+        "/regions/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json=region_data
+    )
+
+    assert response.status_code == 400
+    assert "LiteLLM endpoint validation failed" in response.json()["detail"]
+
+    # Verify LiteLLM validation was called but database validation was not
+    mock_validate_litellm.assert_called_once()
+    mock_validate_db.assert_not_called()
+
+@patch("app.api.regions.validate_litellm_endpoint")
+@patch("app.api.regions.validate_database_connection")
+def test_create_region_database_validation_fails(mock_validate_db, mock_validate_litellm, client, admin_token):
+    """
+    Given an admin user and region data with invalid database connection
+    When they try to create a region
+    Then the request should fail with database validation error
+    """
+    # Mock LiteLLM validation to succeed, database validation to fail
+    mock_validate_litellm.return_value = True
+    mock_validate_db.side_effect = HTTPException(
+        status_code=400,
+        detail="Database connection validation failed: Connection refused"
+    )
+
+    region_data = {
+        "name": "new-region",
+        "postgres_host": "invalid-host",
+        "postgres_port": 5432,
+        "postgres_admin_user": "invalid-admin",
+        "postgres_admin_password": "invalid-password",
+        "litellm_api_url": "https://valid-litellm.com",
+        "litellm_api_key": "valid-litellm-key"
+    }
+
+    response = client.post(
+        "/regions/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json=region_data
+    )
+
+    assert response.status_code == 400
+    assert "Database connection validation failed" in response.json()["detail"]
+
+    # Verify both validations were called
+    mock_validate_litellm.assert_called_once()
+    mock_validate_db.assert_called_once()
 
 def test_create_region_non_admin(client, test_token):
     """Test that non-admin users cannot create regions"""
@@ -340,8 +449,14 @@ def test_delete_region_with_active_keys(mock_post, client, admin_token, test_reg
     assert "Cannot delete region" in response.json()["detail"]
     assert "keys(s) are currently using this region" in response.json()["detail"]
 
-def test_delete_region_with_active_vector_db(client, admin_token, test_region, db, test_admin):
+@patch("app.services.litellm.requests.post")
+def test_delete_region_with_active_vector_db(mock_post, client, admin_token, test_region, db, test_admin):
     """Test that a region with an active vector database cannot be deleted"""
+    # Mock the LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
+    mock_post.return_value.raise_for_status.return_value = None
+
     # Create a test vector database in the region via API
     response = client.post(
         "/private-ai-keys/vector-db",
@@ -583,12 +698,18 @@ def test_list_regions_team_member_does_not_see_other_team_dedicated_regions(clie
     assert regions[0]["name"] == test_region.name
     assert "other-team-dedicated-region" not in [r["name"] for r in regions]
 
-def test_create_dedicated_region(client, admin_token):
+@patch("app.api.regions.validate_litellm_endpoint")
+@patch("app.api.regions.validate_database_connection")
+def test_create_dedicated_region(mock_validate_db, mock_validate_litellm, client, admin_token):
     """
     Given an admin user
     When they create a region with is_dedicated=True
     Then the region should be created successfully
     """
+    # Mock the validation functions
+    mock_validate_litellm.return_value = True
+    mock_validate_db.return_value = True
+
     region_data = {
         "name": "new-dedicated-region",
         "postgres_host": "new-dedicated-host",
@@ -610,6 +731,18 @@ def test_create_dedicated_region(client, admin_token):
     data = response.json()
     assert data["name"] == region_data["name"]
     assert data["is_dedicated"] == True
+
+    # Verify validation functions were called
+    mock_validate_litellm.assert_called_once_with(
+        region_data["litellm_api_url"],
+        region_data["litellm_api_key"]
+    )
+    mock_validate_db.assert_called_once_with(
+        region_data["postgres_host"],
+        region_data["postgres_port"],
+        region_data["postgres_admin_user"],
+        region_data["postgres_admin_password"]
+    )
 
 def test_create_dedicated_region_non_admin_fails(client, test_token):
     """

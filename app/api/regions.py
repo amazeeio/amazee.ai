@@ -1,6 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
+import requests
+import asyncpg
+import logging
 
 from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
@@ -8,18 +11,90 @@ from app.schemas.models import Region, RegionCreate, RegionResponse, User, Regio
 from app.db.models import DBRegion, DBPrivateAIKey, DBTeamRegion, DBTeam
 from app.core.security import check_system_admin
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(
     tags=["regions"]
 )
 
-@router.post("", response_model=Region)
-@router.post("/", response_model=Region)
+async def validate_litellm_endpoint(api_url: str, api_key: str) -> bool:
+    """
+    Validate LiteLLM endpoint by making a test request to the health endpoint.
+
+    Args:
+        api_url: The LiteLLM API URL
+        api_key: The LiteLLM API key
+
+    Returns:
+        bool: True if validation succeeds, raises HTTPException if it fails
+    """
+    try:
+        # Test the LiteLLM health endpoint
+        response = requests.get(
+            f"{api_url}/health/liveliness",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=10
+        )
+        response.raise_for_status()
+        logger.info(f"LiteLLM endpoint validation successful for {api_url}")
+        return True
+    except requests.exceptions.RequestException as e:
+        error_msg = str(e)
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                error_details = e.response.json()
+                error_msg = f"Status {e.response.status_code}: {error_details}"
+            except ValueError:
+                error_msg = f"Status {e.response.status_code}: {e.response.text}"
+        logger.error(f"LiteLLM endpoint validation failed for {api_url}: {error_msg}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"LiteLLM endpoint validation failed: {error_msg}"
+        )
+
+async def validate_database_connection(host: str, port: int, user: str, password: str) -> bool:
+    """
+    Validate database connection by attempting to connect to PostgreSQL.
+
+    Args:
+        host: Database host
+        port: Database port
+        user: Database admin user
+        password: Database admin password
+
+    Returns:
+        bool: True if validation succeeds, raises HTTPException if it fails
+    """
+    try:
+        # Attempt to connect to the database
+        conn = await asyncpg.connect(
+            host=host,
+            port=port,
+            user=user,
+            password=password
+        )
+        await conn.close()
+        logger.info(f"Database connection validation successful for {host}:{port}")
+        return True
+    except asyncpg.exceptions.PostgresError as e:
+        logger.error(f"Database connection validation failed for {host}:{port}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Database connection validation failed: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error during database validation for {host}:{port}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Database connection validation failed: {str(e)}"
+        )
+
+@router.post("", response_model=Region, dependencies=[Depends(check_system_admin)])
+@router.post("/", response_model=Region, dependencies=[Depends(check_system_admin)])
 async def create_region(
     region: RegionCreate,
-    current_user: User = Depends(check_system_admin),
     db: Session = Depends(get_db)
 ):
-
     # Check if region with this name already exists
     existing_region = db.query(DBRegion).filter(DBRegion.name == region.name).first()
     if existing_region:
@@ -27,6 +102,17 @@ async def create_region(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"A region with the name '{region.name}' already exists"
         )
+
+    # Validate LiteLLM endpoint
+    await validate_litellm_endpoint(region.litellm_api_url, region.litellm_api_key)
+
+    # Validate database connection
+    await validate_database_connection(
+        region.postgres_host,
+        region.postgres_port,
+        region.postgres_admin_user,
+        region.postgres_admin_password
+    )
 
     db_region = DBRegion(**region.model_dump())
     db.add(db_region)
