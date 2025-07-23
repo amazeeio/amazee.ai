@@ -27,7 +27,7 @@ module "aurora" {
   }
 
   engine         = "aurora-postgresql"
-  engine_version = "16.4"
+  engine_version = "16.6"
   engine_mode    = "provisioned"
 
   availability_zones = var.availability_zones
