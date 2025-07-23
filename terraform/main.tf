@@ -37,6 +37,11 @@ provider "aws" {
   region = "ap-southeast-2"
 }
 
+provider "aws" {
+  alias  = "ca_central_1"
+  region = "ca-central-1"
+}
+
 
 locals {
   trust_policy = jsonencode({
