@@ -1,7 +1,7 @@
 import pytest
 from fastapi import HTTPException
-from app.db.models import DBPrivateAIKey, DBTeam, DBRegion
-from unittest.mock import patch, AsyncMock
+from app.db.models import DBTeam, DBRegion
+from unittest.mock import patch
 
 @patch("app.api.regions.validate_litellm_endpoint")
 @patch("app.api.regions.validate_database_connection")

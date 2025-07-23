@@ -7,7 +7,7 @@ import logging
 
 from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
-from app.schemas.models import Region, RegionCreate, RegionResponse, User, RegionUpdate
+from app.schemas.models import Region, RegionCreate, RegionResponse, User, RegionUpdate, TeamSummary
 from app.db.models import DBRegion, DBPrivateAIKey, DBTeamRegion, DBTeam
 from app.core.security import check_system_admin
 
@@ -345,7 +345,7 @@ async def disassociate_team_from_region(
 
     return {"message": "Team disassociated from region successfully"}
 
-@router.get("/{region_id}/teams", response_model=List[dict], dependencies=[Depends(check_system_admin)])
+@router.get("/{region_id}/teams", response_model=List[TeamSummary], dependencies=[Depends(check_system_admin)])
 async def list_teams_for_region(
     region_id: int,
     db: Session = Depends(get_db)
@@ -371,4 +371,4 @@ async def list_teams_for_region(
         DBTeamRegion.region_id == region_id
     ).all()
 
-    return [{"id": team.id, "name": team.name} for team in teams]
+    return teams

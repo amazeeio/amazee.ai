@@ -266,6 +266,11 @@ class TeamWithUsers(Team):
     users: List[User] = []
     model_config = ConfigDict(from_attributes=True)
 
+class TeamSummary(BaseModel):
+    id: int
+    name: str
+    model_config = ConfigDict(from_attributes=True)
+
 class TeamOperation(BaseModel):
     team_id: int
 
