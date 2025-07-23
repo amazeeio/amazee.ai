@@ -72,6 +72,7 @@ class RegionBase(BaseModel):
     litellm_api_url: str
     litellm_api_key: str
     is_active: bool = True
+    is_dedicated: bool = False
 
 class RegionCreate(RegionBase):
     pass
@@ -85,6 +86,7 @@ class RegionUpdate(BaseModel):
     litellm_api_url: str
     litellm_api_key: Optional[str] = None
     is_active: bool
+    is_dedicated: bool
     model_config = ConfigDict(from_attributes=True)
 
 class RegionResponse(BaseModel):
@@ -93,6 +95,7 @@ class RegionResponse(BaseModel):
     postgres_host: str
     litellm_api_url: str
     is_active: bool
+    is_dedicated: bool
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
@@ -261,6 +264,11 @@ class Team(TeamBase):
 
 class TeamWithUsers(Team):
     users: List[User] = []
+    model_config = ConfigDict(from_attributes=True)
+
+class TeamSummary(BaseModel):
+    id: int
+    name: str
     model_config = ConfigDict(from_attributes=True)
 
 class TeamOperation(BaseModel):

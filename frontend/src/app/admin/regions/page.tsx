@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+
 import {
   Table,
   TableBody,
@@ -32,9 +33,22 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Users, X } from 'lucide-react';
 import { get, post, del, put } from '@/utils/api';
+
+interface Team {
+  id: number;
+  name: string;
+}
 
 interface Region {
   id: string;
@@ -46,6 +60,7 @@ interface Region {
   litellm_api_url: string;
   litellm_api_key: string;
   is_active: boolean;
+  is_dedicated: boolean;
 }
 
 export default function RegionsPage() {
@@ -53,7 +68,9 @@ export default function RegionsPage() {
   const queryClient = useQueryClient();
   const [isAddingRegion, setIsAddingRegion] = useState(false);
   const [isEditingRegion, setIsEditingRegion] = useState(false);
+  const [isManagingTeams, setIsManagingTeams] = useState(false);
   const [editingRegion, setEditingRegion] = useState<Region | null>(null);
+  const [selectedRegionForTeams, setSelectedRegionForTeams] = useState<Region | null>(null);
   const [newRegion, setNewRegion] = useState({
     name: '',
     postgres_host: '',
@@ -62,8 +79,10 @@ export default function RegionsPage() {
     postgres_admin_password: '',
     litellm_api_url: '',
     litellm_api_key: '',
+    is_dedicated: false,
   });
   const [regions, setRegions] = useState<Region[]>([]);
+  const [selectedTeamId, setSelectedTeamId] = useState<string>('');
 
   // Queries
   const { isLoading: isLoadingRegions } = useQuery<Region[]>({
@@ -74,6 +93,24 @@ export default function RegionsPage() {
       setRegions(data);
       return data;
     },
+  });
+
+  const { data: teams = [] } = useQuery<Team[]>({
+    queryKey: ['teams'],
+    queryFn: async () => {
+      const response = await get('teams');
+      return response.json();
+    },
+  });
+
+  const { data: regionTeams = [], isLoading: isLoadingRegionTeams } = useQuery<Team[]>({
+    queryKey: ['region-teams', selectedRegionForTeams?.id],
+    queryFn: async () => {
+      if (!selectedRegionForTeams?.id) return [];
+      const response = await get(`regions/${selectedRegionForTeams.id}/teams`);
+      return response.json();
+    },
+    enabled: !!selectedRegionForTeams?.id,
   });
 
   // Mutations
@@ -95,6 +132,7 @@ export default function RegionsPage() {
         postgres_admin_password: '',
         litellm_api_url: '',
         litellm_api_key: '',
+        is_dedicated: false,
       });
       toast({
         title: 'Success',
@@ -139,6 +177,7 @@ export default function RegionsPage() {
         postgres_admin_user: string;
         litellm_api_url: string;
         is_active: boolean;
+        is_dedicated: boolean;
         postgres_admin_password?: string;
         litellm_api_key?: string;
       };
@@ -150,6 +189,7 @@ export default function RegionsPage() {
         postgres_admin_user: regionData.postgres_admin_user,
         litellm_api_url: regionData.litellm_api_url,
         is_active: regionData.is_active,
+        is_dedicated: regionData.is_dedicated,
       };
 
       // Only include passwords if they are not empty
@@ -182,34 +222,50 @@ export default function RegionsPage() {
     },
   });
 
-  const handleCreateRegion = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      const response = await post('regions', newRegion);
-      const data = await response.json();
-      setRegions([...regions, data]);
-      setIsAddingRegion(false);
-      setNewRegion({
-        name: '',
-        postgres_host: '',
-        postgres_port: 5432,
-        postgres_admin_user: '',
-        postgres_admin_password: '',
-        litellm_api_url: '',
-        litellm_api_key: '',
-      });
+  const assignTeamMutation = useMutation({
+    mutationFn: async ({ regionId, teamId }: { regionId: string; teamId: string }) => {
+      await post(`regions/${regionId}/teams/${teamId}`, {});
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['region-teams', selectedRegionForTeams?.id] });
+      setSelectedTeamId('');
       toast({
         title: 'Success',
-        description: 'Region created successfully',
+        description: 'Team assigned to region successfully',
       });
-    } catch (error) {
-      console.error('Error creating region:', error);
+    },
+    onError: (error: Error) => {
       toast({
         title: 'Error',
-        description: 'Failed to create region',
+        description: error.message,
         variant: 'destructive',
       });
-    }
+    },
+  });
+
+  const removeTeamMutation = useMutation({
+    mutationFn: async ({ regionId, teamId }: { regionId: string; teamId: string }) => {
+      await del(`regions/${regionId}/teams/${teamId}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['region-teams', selectedRegionForTeams?.id] });
+      toast({
+        title: 'Success',
+        description: 'Team removed from region successfully',
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const handleCreateRegion = async (e: React.FormEvent) => {
+    e.preventDefault();
+    createRegionMutation.mutate(newRegion);
   };
 
   const fetchRegions = useCallback(async () => {
@@ -241,6 +297,32 @@ export default function RegionsPage() {
     if (!editingRegion) return;
     updateRegionMutation.mutate(editingRegion);
   };
+
+  const handleManageTeams = (region: Region) => {
+    setSelectedRegionForTeams(region);
+    setIsManagingTeams(true);
+  };
+
+  const handleAssignTeam = () => {
+    if (!selectedTeamId || !selectedRegionForTeams) return;
+    assignTeamMutation.mutate({
+      regionId: selectedRegionForTeams.id,
+      teamId: selectedTeamId,
+    });
+  };
+
+  const handleRemoveTeam = (teamId: string) => {
+    if (!selectedRegionForTeams) return;
+    removeTeamMutation.mutate({
+      regionId: selectedRegionForTeams.id,
+      teamId,
+    });
+  };
+
+  // Get available teams (teams not already assigned to this region)
+  const availableTeams = teams.filter(
+    team => !regionTeams.some(regionTeam => regionTeam.id === team.id)
+  );
 
   return (
     <div>
@@ -332,6 +414,20 @@ export default function RegionsPage() {
                       />
                     </div>
                   </div>
+                                    <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="is_dedicated"
+                      checked={newRegion.is_dedicated}
+                      onChange={(e) =>
+                        setNewRegion({ ...newRegion, is_dedicated: e.target.checked })
+                      }
+                      className="h-4 w-4 rounded border-gray-300"
+                    />
+                    <label htmlFor="is_dedicated" className="text-sm font-medium">
+                      Dedicated Region (can be assigned to specific teams)
+                    </label>
+                  </div>
                   <DialogFooter>
                     <Button
                       type="submit"
@@ -357,7 +453,9 @@ export default function RegionsPage() {
                 <TableRow>
                   <TableHead>Name</TableHead>
                   <TableHead>Postgres Host</TableHead>
+                  <TableHead>Type</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Teams</TableHead>
                   <TableHead>Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -367,11 +465,31 @@ export default function RegionsPage() {
                     <TableCell>{region.name}</TableCell>
                     <TableCell>{region.postgres_host}</TableCell>
                     <TableCell>
+                      <Badge variant={region.is_dedicated ? "default" : "secondary"}>
+                        {region.is_dedicated ? 'Dedicated' : 'Shared'}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
                       <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
                         region.is_active ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
                       }`}>
                         {region.is_active ? 'Active' : 'Inactive'}
                       </span>
+                    </TableCell>
+                    <TableCell>
+                      {region.is_dedicated ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => handleManageTeams(region)}
+                          className="flex items-center gap-2"
+                        >
+                          <Users className="h-4 w-4" />
+                          Manage Teams
+                        </Button>
+                      ) : (
+                        <span className="text-gray-500 text-sm">N/A</span>
+                      )}
                     </TableCell>
                     <TableCell className="space-x-2">
                       <Button
@@ -416,6 +534,8 @@ export default function RegionsPage() {
               </TableBody>
             </Table>
           </div>
+
+          {/* Edit Region Dialog */}
           <Dialog open={isEditingRegion} onOpenChange={setIsEditingRegion}>
             <DialogContent className="max-w-2xl">
               <DialogHeader>
@@ -492,6 +612,20 @@ export default function RegionsPage() {
                       />
                     </div>
                   </div>
+                                    <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="edit_is_dedicated"
+                      checked={editingRegion.is_dedicated}
+                      onChange={(e) =>
+                        setEditingRegion({ ...editingRegion, is_dedicated: e.target.checked })
+                      }
+                      className="h-4 w-4 rounded border-gray-300"
+                    />
+                    <label htmlFor="edit_is_dedicated" className="text-sm font-medium">
+                      Dedicated Region (can be assigned to specific teams)
+                    </label>
+                  </div>
                   <DialogFooter>
                     <Button
                       type="submit"
@@ -509,6 +643,79 @@ export default function RegionsPage() {
                   </DialogFooter>
                 </form>
               )}
+            </DialogContent>
+          </Dialog>
+
+          {/* Manage Teams Dialog */}
+          <Dialog open={isManagingTeams} onOpenChange={setIsManagingTeams}>
+            <DialogContent className="max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>Manage Teams for {selectedRegionForTeams?.name}</DialogTitle>
+                <DialogDescription>
+                  Assign or remove teams from this dedicated region.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4">
+                {/* Current Teams */}
+                <div>
+                  <h3 className="text-sm font-medium mb-2">Assigned Teams</h3>
+                  {isLoadingRegionTeams ? (
+                    <div className="flex items-center justify-center py-4">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    </div>
+                  ) : regionTeams.length === 0 ? (
+                    <p className="text-sm text-gray-500">No teams assigned to this region.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {regionTeams.map((team) => (
+                        <div key={team.id} className="flex items-center justify-between p-2 border rounded">
+                          <span className="text-sm">{team.name}</span>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleRemoveTeam(team.id.toString())}
+                            disabled={removeTeamMutation.isPending}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Assign New Team */}
+                <div>
+                  <h3 className="text-sm font-medium mb-2">Assign New Team</h3>
+                  <div className="flex gap-2">
+                    <Select value={selectedTeamId} onValueChange={setSelectedTeamId}>
+                      <SelectTrigger className="flex-1">
+                        <SelectValue placeholder="Select a team" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {availableTeams.map((team) => (
+                          <SelectItem key={team.id} value={team.id.toString()}>
+                            {team.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      onClick={handleAssignTeam}
+                      disabled={!selectedTeamId || assignTeamMutation.isPending}
+                    >
+                      {assignTeamMutation.isPending ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Assigning...
+                        </>
+                      ) : (
+                        'Assign'
+                      )}
+                    </Button>
+                  </div>
+                </div>
+              </div>
             </DialogContent>
           </Dialog>
         </>
