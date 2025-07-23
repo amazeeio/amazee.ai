@@ -305,7 +305,7 @@ async def associate_team_with_region(
     except Exception as e:
         db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to associate team with region: {str(e)}"
         )
 
@@ -339,7 +339,7 @@ async def disassociate_team_from_region(
     except Exception as e:
         db.rollback()
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to disassociate team from region: {str(e)}"
         )
 
