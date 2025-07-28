@@ -287,7 +287,7 @@ def test_create_key_exceeding_total_limit(db, test_team, test_product, test_regi
     with pytest.raises(HTTPException) as exc_info:
         check_key_limits(db, test_team.id, None)
     assert exc_info.value.status_code == 402
-    assert f"Team has reached the maximum LLM token limit of {test_product.total_key_count} tokens" in str(exc_info.value.detail)
+    assert f"Team has reached the maximum LLM key limit of {test_product.total_key_count} keys" in str(exc_info.value.detail)
 
 def test_create_key_exceeding_user_limit(db, test_team, test_product, test_region):
     """Test creating an LLM token when it would exceed user token limit"""
@@ -333,7 +333,7 @@ def test_create_key_exceeding_user_limit(db, test_team, test_product, test_regio
     with pytest.raises(HTTPException) as exc_info:
         check_key_limits(db, test_team.id, user.id)
     assert exc_info.value.status_code == 402
-    assert f"User has reached the maximum LLM token limit of {test_product.keys_per_user} tokens" in str(exc_info.value.detail)
+    assert f"User has reached the maximum LLM key limit of {test_product.keys_per_user} keys" in str(exc_info.value.detail)
 
 def test_create_key_exceeding_service_key_limit(db, test_team, test_product, test_region):
     """Test creating an LLM token when it would exceed service token limit"""
@@ -366,7 +366,7 @@ def test_create_key_exceeding_service_key_limit(db, test_team, test_product, tes
     with pytest.raises(HTTPException) as exc_info:
         check_key_limits(db, test_team.id, None)
     assert exc_info.value.status_code == 402
-    assert f"Team has reached the maximum service LLM token limit of {test_product.service_key_count} tokens" in str(exc_info.value.detail)
+    assert f"Team has reached the maximum service LLM key limit of {test_product.service_key_count} keys" in str(exc_info.value.detail)
 
 def test_create_key_with_default_limits(db, test_team, test_region):
     """Test creating LLM tokens with default limits when team has no products"""
@@ -419,7 +419,7 @@ def test_create_key_with_default_limits(db, test_team, test_region):
     with pytest.raises(HTTPException) as exc_info:
         check_key_limits(db, test_team.id, None)
     assert exc_info.value.status_code == 402
-    assert f"Team has reached the maximum LLM token limit of {test_product.total_key_count} tokens" in str(exc_info.value.detail)
+    assert f"Team has reached the maximum LLM key limit of {test_product.total_key_count} keys" in str(exc_info.value.detail)
 
 def test_create_key_with_multiple_products(db, test_team, test_region):
     """Test creating LLM tokens when team has multiple products with different limits"""
@@ -492,7 +492,7 @@ def test_create_key_with_multiple_products(db, test_team, test_region):
     with pytest.raises(HTTPException) as exc_info:
         check_key_limits(db, test_team.id, None)
     assert exc_info.value.status_code == 402
-    assert f"Team has reached the maximum LLM token limit of {product2.total_key_count} tokens" in str(exc_info.value.detail)
+    assert f"Team has reached the maximum LLM key limit of {product2.total_key_count} keys" in str(exc_info.value.detail)
 
 def test_create_key_with_multiple_users_default_limits(db, test_team, test_region):
     """Test creating a key when team has no products and multiple users have keys"""
@@ -569,7 +569,7 @@ def test_create_key_with_multiple_users_default_limits(db, test_team, test_regio
     with pytest.raises(HTTPException) as exc_info:
         check_key_limits(db, test_team.id, None)
     assert exc_info.value.status_code == 402
-    assert f"Team has reached the maximum LLM token limit of {test_product.total_key_count} tokens" in str(exc_info.value.detail)
+    assert f"Team has reached the maximum LLM key limit of {test_product.total_key_count} keys" in str(exc_info.value.detail)
 
 def test_create_key_with_mixed_service_and_user_keys(db, test_team, test_region):
     """Test creating keys when team has a mix of service and user keys"""
@@ -659,7 +659,7 @@ def test_create_key_with_mixed_service_and_user_keys(db, test_team, test_region)
     with pytest.raises(HTTPException) as exc_info:
         check_key_limits(db, test_team.id, None)
     assert exc_info.value.status_code == 402
-    assert f"Team has reached the maximum LLM token limit of {product.total_key_count} tokens" in str(exc_info.value.detail)
+    assert f"Team has reached the maximum LLM key limit of {product.total_key_count} keys" in str(exc_info.value.detail)
 
 def test_create_vector_db_within_limits(db, test_team, test_product):
     """Test creating a vector DB when within product limits"""

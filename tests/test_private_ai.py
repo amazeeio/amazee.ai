@@ -1557,7 +1557,7 @@ def test_create_too_many_service_keys(mock_post, client, admin_token, test_regio
         }
     )
     assert response.status_code == 402
-    assert f"Team has reached the maximum service LLM token limit of {key_count} tokens" in response.json()["detail"]
+    assert f"Team has reached the maximum service LLM key limit of {key_count} keys" in response.json()["detail"]
 
 @patch("app.services.litellm.requests.post")
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
@@ -1623,7 +1623,7 @@ def test_create_too_many_user_keys(mock_post, client, admin_token, test_region, 
         }
     )
     assert response.status_code == 402
-    assert f"User has reached the maximum LLM token limit of {key_count} tokens" in response.json()["detail"]
+    assert f"User has reached the maximum LLM key limit of {key_count} keys" in response.json()["detail"]
 
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
 def test_create_too_many_vector_dbs(client, admin_token, test_region, db, test_team):
@@ -1760,7 +1760,7 @@ def test_create_too_many_total_keys(mock_post, client, admin_token, test_region,
         }
     )
     assert response.status_code == 402
-    assert f"Team has reached the maximum LLM token limit of {key_count} tokens" in response.json()["detail"]
+    assert f"Team has reached the maximum LLM key limit of {key_count} keys" in response.json()["detail"]
 
 @patch("app.services.litellm.requests.post")
 def test_delete_private_ai_key_with_only_vector_db(mock_post, client, admin_token, test_region, db):
