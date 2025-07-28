@@ -100,19 +100,19 @@ def check_key_limits(db: Session, team_id: int, owner_id: Optional[int] = None) 
     if result.current_team_keys >= result.max_total_keys:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=f"Team has reached the maximum LLM token limit of {result.max_total_keys} tokens"
+            detail=f"Team has reached the maximum LLM key limit of {result.max_total_keys} keys"
         )
 
     if owner_id is not None and result.current_user_keys >= result.max_keys_per_user:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=f"User has reached the maximum LLM token limit of {result.max_keys_per_user} tokens"
+            detail=f"User has reached the maximum LLM key limit of {result.max_keys_per_user} keys"
         )
 
     if owner_id is None and result.current_service_keys >= result.max_service_keys:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=f"Team has reached the maximum service LLM token limit of {result.max_service_keys} tokens"
+            detail=f"Team has reached the maximum service LLM key limit of {result.max_service_keys} keys"
         )
 
 def check_vector_db_limits(db: Session, team_id: int) -> None:
