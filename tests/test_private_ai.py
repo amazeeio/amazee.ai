@@ -1,9 +1,10 @@
 import pytest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from app.db.models import DBPrivateAIKey, DBTeam, DBUser, DBProduct, DBTeamProduct
 from datetime import datetime, UTC
 from app.core.security import get_password_hash
 from requests.exceptions import HTTPError
+from fastapi import status, HTTPException
 from app.core.resource_limits import (
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
@@ -1905,3 +1906,190 @@ def test_delete_private_ai_key_litellm_service_unavailable(mock_post, client, ad
         json={"keys": [test_key.litellm_token]}
     )
     db.commit()
+
+@patch("app.services.litellm.requests.post")
+@patch("app.db.postgres.PostgresManager.create_database")
+def test_create_private_ai_key_cleanup_on_vector_db_failure(mock_create_db, mock_post, client, test_token, test_region, test_user):
+    """
+    Given a user creates a private AI key
+    When the vector database creation fails after LiteLLM token is created
+    Then the LiteLLM token should be cleaned up and an error returned
+    """
+    # Mock successful LiteLLM token creation
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Mock vector database creation failure
+    mock_create_db.side_effect = Exception("Database creation failed")
+
+    response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {test_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Test AI Key"
+        }
+    )
+
+    # Verify the response indicates failure
+    assert response.status_code == 500
+    assert "Failed to create vector database" in response.json()["detail"]
+
+    # Verify LiteLLM token was cleaned up (delete API was called)
+    # First call is for token creation, second call is for cleanup
+    assert mock_post.call_count == 2
+
+    # Verify the cleanup call
+    cleanup_call = mock_post.call_args_list[1]
+    assert cleanup_call[0][0] == f"{test_region.litellm_api_url}/key/delete"
+    assert cleanup_call[1]["headers"]["Authorization"] == f"Bearer {test_region.litellm_api_key}"
+    assert cleanup_call[1]["json"]["keys"] == ["test-private-key-123"]
+
+    # Verify no key was stored in the database
+    stored_keys = client.get(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {test_token}"}
+    ).json()
+    assert len([k for k in stored_keys if k["name"] == "Test AI Key"]) == 0
+
+@patch("app.services.litellm.requests.post")
+@patch("app.db.postgres.PostgresManager.create_database")
+@patch("app.db.postgres.PostgresManager.delete_database")
+@patch("sqlalchemy.orm.Session.commit")
+def test_create_private_ai_key_cleanup_on_db_storage_failure(mock_commit, mock_delete_db, mock_create_db, mock_post, client, test_token, test_region, test_user):
+    """
+    Given a user creates a private AI key
+    When the database storage fails after both LiteLLM token and vector DB are created
+    Then both resources should be cleaned up and an error returned
+    """
+    # Mock successful LiteLLM token creation
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Mock successful vector database creation
+    mock_create_db.return_value = {
+        "database_name": "test_db_123",
+        "database_host": "test-host",
+        "database_username": "test_user",
+        "database_password": "test_pass"
+    }
+
+    # Mock successful vector database deletion
+    mock_delete_db.return_value = None
+
+    # Mock database storage failure
+    mock_commit.side_effect = Exception("Database storage failed")
+
+    response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {test_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Test AI Key"
+        }
+    )
+
+    # Verify the response indicates failure
+    assert response.status_code == 500
+    assert "Failed to create private AI key" in response.json()["detail"]
+
+    # Verify LiteLLM token was cleaned up
+    assert mock_post.call_count == 2
+    cleanup_call = mock_post.call_args_list[1]
+    assert cleanup_call[0][0] == f"{test_region.litellm_api_url}/key/delete"
+    assert cleanup_call[1]["json"]["keys"] == ["test-private-key-123"]
+
+    # Verify vector database was cleaned up
+    mock_delete_db.assert_called_once_with("test_db_123")
+
+    # Verify no key was stored in the database
+    stored_keys = client.get(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {test_token}"}
+    ).json()
+    assert len([k for k in stored_keys if k["name"] == "Test AI Key"]) == 0
+
+@patch("app.services.litellm.requests.post")
+@patch("app.db.postgres.PostgresManager.create_database")
+def test_create_private_ai_key_cleanup_failure_handling(mock_create_db, mock_post, client, test_token, test_region, test_user):
+    """
+    Given a user creates a private AI key
+    When the cleanup process itself fails
+    Then the original error should still be returned to the user
+    """
+    # Mock successful LiteLLM token creation
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Mock vector database creation failure
+    mock_create_db.side_effect = Exception("Database creation failed")
+
+    # Mock cleanup failure - the second call to requests.post will be for cleanup
+    # First call succeeds, second call fails
+    mock_post.side_effect = [
+        Mock(
+            status_code=200,
+            json=Mock(return_value={"key": "test-private-key-123"}),
+            raise_for_status=Mock(return_value=None)
+        ),
+        Mock(
+            status_code=500,
+            raise_for_status=Mock(side_effect=HTTPError("Cleanup failed"))
+        )
+    ]
+
+    response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {test_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Test AI Key"
+        }
+    )
+
+    # Verify the response indicates the original failure, not cleanup failure
+    assert response.status_code == 500
+    assert "Failed to create vector database" in response.json()["detail"]
+    assert "Database creation failed" in response.json()["detail"]
+
+    # Verify cleanup was attempted
+    assert mock_post.call_count == 2
+
+@patch("app.services.litellm.requests.post")
+@patch("app.db.postgres.PostgresManager.create_database")
+def test_create_private_ai_key_http_exception_preservation(mock_create_db, mock_post, client, test_token, test_region, test_user):
+    """
+    Given a user creates a private AI key
+    When an HTTPException is raised during creation
+    Then the original HTTPException should be preserved and returned
+    """
+    # Mock successful LiteLLM token creation
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
+    mock_post.return_value.raise_for_status.return_value = None
+
+    # Mock vector database creation failure with HTTPException
+    mock_create_db.side_effect = HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Invalid database configuration"
+    )
+
+    response = client.post(
+        "/private-ai-keys/",
+        headers={"Authorization": f"Bearer {test_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Test AI Key"
+        }
+    )
+
+    # Verify the original HTTPException is preserved
+    assert response.status_code == 500
+    assert "Failed to create vector database" in response.json()["detail"]
+    assert "Invalid database configuration" in response.json()["detail"]
+
+    # Verify cleanup was attempted
+    assert mock_post.call_count == 2
