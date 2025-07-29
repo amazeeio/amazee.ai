@@ -191,38 +191,89 @@ async def create_private_ai_key(
     Note: You must be authenticated to use this endpoint.
     Only admins can create keys for other users or teams.
     """
-    # First create the LiteLLM token
-    llm_token = await create_llm_token(private_ai_key, current_user, user_role, db, store_result=False)
+    llm_token = None
+    db_info = None
+    region = None
 
-    # Then create the vector database
-    vector_db = VectorDBCreate(
-        region_id=private_ai_key.region_id,
-        name=private_ai_key.name,
-        owner_id=private_ai_key.owner_id,
-        team_id=private_ai_key.team_id
-    )
-    db_info = await create_vector_db(vector_db, current_user, user_role, db, store_result=False)
+    try:
+        # Get the region first for cleanup purposes
+        region = db.query(DBRegion).filter(
+            DBRegion.id == private_ai_key.region_id,
+            DBRegion.is_active == True
+        ).first()
+        if not region:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Region not found or inactive"
+            )
 
-    # Store private AI key info in main application database
-    new_key = DBPrivateAIKey(
-        database_name=db_info.database_name,
-        name=db_info.name,
-        database_host=db_info.database_host,
-        database_username=db_info.database_username,
-        database_password=db_info.database_password,
-        litellm_token=llm_token.litellm_token,
-        litellm_api_url=llm_token.litellm_api_url,
-        owner_id=db_info.owner_id,
-        team_id=db_info.team_id,
-        region_id=private_ai_key.region_id
-    )
-    db.add(new_key)
-    db.commit()
-    db.refresh(new_key)
+        # First create the LiteLLM token
+        llm_token = await create_llm_token(private_ai_key, current_user, user_role, db, store_result=False)
 
-    key_data = new_key.to_dict()
+        # Then create the vector database
+        vector_db = VectorDBCreate(
+            region_id=private_ai_key.region_id,
+            name=private_ai_key.name,
+            owner_id=private_ai_key.owner_id,
+            team_id=private_ai_key.team_id
+        )
+        db_info = await create_vector_db(vector_db, current_user, user_role, db, store_result=False)
 
-    return PrivateAIKey.model_validate(key_data)
+        # Store private AI key info in main application database
+        new_key = DBPrivateAIKey(
+            database_name=db_info.database_name,
+            name=db_info.name,
+            database_host=db_info.database_host,
+            database_username=db_info.database_username,
+            database_password=db_info.database_password,
+            litellm_token=llm_token.litellm_token,
+            litellm_api_url=llm_token.litellm_api_url,
+            owner_id=db_info.owner_id,
+            team_id=db_info.team_id,
+            region_id=private_ai_key.region_id
+        )
+        db.add(new_key)
+        db.commit()
+        db.refresh(new_key)
+
+        key_data = new_key.to_dict()
+
+        return PrivateAIKey.model_validate(key_data)
+
+    except Exception as e:
+        logger.error(f"Failed to create private AI key: {str(e)}", exc_info=True)
+        db.rollback()
+
+        # Cleanup resources on failure
+        try:
+            if llm_token and region:
+                # Delete LiteLLM token
+                litellm_service = LiteLLMService(
+                    api_url=region.litellm_api_url,
+                    api_key=region.litellm_api_key
+                )
+                await litellm_service.delete_key(llm_token.litellm_token)
+                logger.info(f"Cleaned up LiteLLM token after failure")
+        except Exception as cleanup_error:
+            logger.error(f"Failed to cleanup LiteLLM token: {str(cleanup_error)}", exc_info=True)
+
+        try:
+            if db_info and region:
+                # Delete vector database
+                postgres_manager = PostgresManager(region=region)
+                await postgres_manager.delete_database(db_info.database_name)
+                logger.info(f"Cleaned up vector database after failure")
+        except Exception as cleanup_error:
+            logger.error(f"Failed to cleanup vector database: {str(cleanup_error)}", exc_info=True)
+
+        # Re-raise the original exception
+        if isinstance(e, HTTPException):
+            raise e
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to create private AI key: {str(e)}"
+            )
 
 @router.post("/token", response_model=LiteLLMToken)
 async def create_llm_token(
