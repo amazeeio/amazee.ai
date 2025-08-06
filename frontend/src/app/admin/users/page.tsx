@@ -27,6 +27,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Loader2, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
 import { get, post, del, put } from '@/utils/api';
 import { TableActionButtons } from '@/components/ui/table-action-buttons';
+import { TableFilters, FilterField } from '@/components/ui/table-filters';
 import {
   Select,
   SelectContent,
@@ -101,7 +102,7 @@ export default function UsersPage() {
 
   // Filtered and sorted users
   const filteredAndSortedUsers = useMemo(() => {
-    let filtered = users.filter(user => {
+    const filtered = users.filter(user => {
       const emailMatch = user.email.toLowerCase().includes(emailFilter.toLowerCase());
       const teamMatch = !teamFilter || (user.team_name || 'None').toLowerCase().includes(teamFilter.toLowerCase());
       const roleMatch = roleFilter === 'all' || user.role === roleFilter;
@@ -141,6 +142,40 @@ export default function UsersPage() {
 
     return filtered;
   }, [users, emailFilter, teamFilter, roleFilter, sortField, sortDirection]);
+
+  const hasActiveFilters = Boolean(emailFilter.trim() || teamFilter.trim() || roleFilter !== 'all');
+
+  // Filter fields configuration
+  const filterFields: FilterField[] = [
+    {
+      key: 'email',
+      label: 'Filter by Email',
+      type: 'search',
+      placeholder: 'Search by email...',
+      value: emailFilter,
+      onChange: setEmailFilter,
+    },
+    {
+      key: 'team',
+      label: 'Filter by Team',
+      type: 'search',
+      placeholder: 'Search by team...',
+      value: teamFilter,
+      onChange: setTeamFilter,
+    },
+    {
+      key: 'role',
+      label: 'Filter by Role',
+      type: 'select',
+      placeholder: 'All roles',
+      value: roleFilter,
+      onChange: setRoleFilter,
+      options: [
+        { value: 'all', label: 'All roles' },
+        ...USER_ROLES.map((role) => ({ value: role.value, label: role.label })),
+      ],
+    },
+  ];
 
   // Pagination
   const {
@@ -468,61 +503,19 @@ export default function UsersPage() {
         </Dialog>
       </div>
 
-      {/* Filter Controls */}
-      <div className="space-y-4 p-4 bg-gray-50 rounded-md border">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Filter by Email</label>
-            <Input
-              placeholder="Search by email..."
-              value={emailFilter}
-              onChange={(e) => setEmailFilter(e.target.value)}
-            />
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Filter by Team</label>
-            <Input
-              placeholder="Search by team..."
-              value={teamFilter}
-              onChange={(e) => setTeamFilter(e.target.value)}
-            />
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Filter by Role</label>
-            <Select value={roleFilter} onValueChange={setRoleFilter}>
-              <SelectTrigger>
-                <SelectValue placeholder="All roles" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All roles</SelectItem>
-                {USER_ROLES.map((role) => (
-                  <SelectItem key={role.value} value={role.value}>
-                    {role.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-        <div className="flex justify-between items-center">
-          <span className="text-sm text-gray-600">
-            Showing {filteredAndSortedUsers.length} of {users.length} users
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setEmailFilter('');
-              setTeamFilter('');
-              setRoleFilter('all');
-              setSortField(null);
-              setSortDirection('asc');
-            }}
-          >
-            Clear Filters
-          </Button>
-        </div>
-      </div>
+      <TableFilters
+        filters={filterFields}
+        onClearFilters={() => {
+          setEmailFilter('');
+          setTeamFilter('');
+          setRoleFilter('all');
+          setSortField(null);
+          setSortDirection('asc');
+        }}
+        hasActiveFilters={hasActiveFilters}
+        totalItems={users.length}
+        filteredItems={filteredAndSortedUsers.length}
+      />
 
       <div className="rounded-md border">
         <Table>

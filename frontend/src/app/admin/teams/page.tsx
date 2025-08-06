@@ -34,6 +34,7 @@ import { Badge } from '@/components/ui/badge';
 import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
 import { ConfirmationDialog } from '@/components/ui/confirmation-dialog';
 import { TableActionButtons } from '@/components/ui/table-action-buttons';
+import { TableFilters, FilterField } from '@/components/ui/table-filters';
 import {
   Select,
   SelectContent,
@@ -161,7 +162,7 @@ export default function TeamsPage() {
 
   // Filtered and sorted teams
   const filteredAndSortedTeams = useMemo(() => {
-    let filtered = teams.filter(team => {
+    const filtered = teams.filter(team => {
       const nameMatch = team.name.toLowerCase().includes(nameFilter.toLowerCase());
       const adminEmailMatch = team.admin_email.toLowerCase().includes(adminEmailFilter.toLowerCase());
       const statusMatch = statusFilter === 'all' ||
@@ -223,6 +224,41 @@ export default function TeamsPage() {
 
     return filtered;
   }, [teams, nameFilter, adminEmailFilter, statusFilter, sortField, sortDirection]);
+
+  const hasActiveFilters = Boolean(nameFilter.trim() || adminEmailFilter.trim() || statusFilter !== 'all');
+
+  // Filter fields configuration
+  const filterFields: FilterField[] = [
+    {
+      key: 'name',
+      label: 'Filter by Name',
+      type: 'search',
+      placeholder: 'Search by team name...',
+      value: nameFilter,
+      onChange: setNameFilter,
+    },
+    {
+      key: 'adminEmail',
+      label: 'Filter by Admin Email',
+      type: 'search',
+      placeholder: 'Search by admin email...',
+      value: adminEmailFilter,
+      onChange: setAdminEmailFilter,
+    },
+    {
+      key: 'status',
+      label: 'Filter by Status',
+      type: 'select',
+      placeholder: 'All statuses',
+      value: statusFilter,
+      onChange: setStatusFilter,
+      options: [
+        { value: 'all', label: 'All statuses' },
+        { value: 'active', label: 'Active' },
+        { value: 'inactive', label: 'Inactive' },
+      ],
+    },
+  ];
 
   // Handle sorting
   const handleSort = (field: SortField) => {
@@ -662,471 +698,376 @@ export default function TeamsPage() {
 
   return (
     <div className="container mx-auto py-10">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-3xl font-bold">Teams</h1>
-        <Dialog open={isAddingTeam} onOpenChange={setIsAddingTeam}>
-          <DialogTrigger asChild>
-            <Button>
-              <Plus className="mr-2 h-4 w-4" />
-              Add Team
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Add New Team</DialogTitle>
-              <DialogDescription>
-                Create a new team by filling out the information below.
-              </DialogDescription>
-            </DialogHeader>
-            <form onSubmit={handleCreateTeam}>
-              <div className="grid gap-4 py-4">
-                <div className="grid grid-cols-4 items-center gap-4">
-                  <label htmlFor="name" className="text-right">
-                    Name
-                  </label>
-                  <Input
-                    id="name"
-                    value={newTeamName}
-                    onChange={(e) => setNewTeamName(e.target.value)}
-                    className="col-span-3"
-                    required
-                  />
-                </div>
-                <div className="grid grid-cols-4 items-center gap-4">
-                  <label htmlFor="admin_email" className="text-right">
-                    Admin Email
-                  </label>
-                  <Input
-                    id="admin_email"
-                    type="email"
-                    value={newTeamAdminEmail}
-                    onChange={(e) => setNewTeamAdminEmail(e.target.value)}
-                    className="col-span-3"
-                    required
-                  />
-                </div>
-              </div>
-              <DialogFooter>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setIsAddingTeam(false)}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  disabled={createTeamMutation.isPending}
-                >
-                  {createTeamMutation.isPending && (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  )}
-                  Create Team
-                </Button>
-              </DialogFooter>
-            </form>
-          </DialogContent>
-        </Dialog>
-      </div>
-
-      {/* Filter Controls */}
-      <div className="space-y-4 p-4 bg-gray-50 rounded-md border mb-6">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Filter by Name</label>
-            <Input
-              placeholder="Search by team name..."
-              value={nameFilter}
-              onChange={(e) => setNameFilter(e.target.value)}
-            />
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Filter by Admin Email</label>
-            <Input
-              placeholder="Search by admin email..."
-              value={adminEmailFilter}
-              onChange={(e) => setAdminEmailFilter(e.target.value)}
-            />
-          </div>
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Filter by Status</label>
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger>
-                <SelectValue placeholder="All statuses" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All statuses</SelectItem>
-                <SelectItem value="active">Active</SelectItem>
-                <SelectItem value="inactive">Inactive</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
+      <div className="space-y-4">
         <div className="flex justify-between items-center">
-          <span className="text-sm text-gray-600">
-            Showing {filteredAndSortedTeams.length} of {teams.length} teams
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setNameFilter('');
-              setAdminEmailFilter('');
-              setStatusFilter('all');
-              setSortField(null);
-              setSortDirection('asc');
-            }}
-          >
-            Clear Filters
-          </Button>
+          <h1 className="text-3xl font-bold">Teams</h1>
+          <Dialog open={isAddingTeam} onOpenChange={setIsAddingTeam}>
+            <DialogTrigger asChild>
+              <Button>
+                <Plus className="mr-2 h-4 w-4" />
+                Add Team
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Add New Team</DialogTitle>
+                <DialogDescription>
+                  Create a new team by filling out the information below.
+                </DialogDescription>
+              </DialogHeader>
+              <form onSubmit={handleCreateTeam}>
+                <div className="grid gap-4 py-4">
+                  <div className="grid grid-cols-4 items-center gap-4">
+                    <label htmlFor="name" className="text-right">
+                      Name
+                    </label>
+                    <Input
+                      id="name"
+                      value={newTeamName}
+                      onChange={(e) => setNewTeamName(e.target.value)}
+                      className="col-span-3"
+                      required
+                    />
+                  </div>
+                  <div className="grid grid-cols-4 items-center gap-4">
+                    <label htmlFor="admin_email" className="text-right">
+                      Admin Email
+                    </label>
+                    <Input
+                      id="admin_email"
+                      type="email"
+                      value={newTeamAdminEmail}
+                      onChange={(e) => setNewTeamAdminEmail(e.target.value)}
+                      className="col-span-3"
+                      required
+                    />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setIsAddingTeam(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    disabled={createTeamMutation.isPending}
+                  >
+                    {createTeamMutation.isPending && (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    )}
+                    Create Team
+                  </Button>
+                </DialogFooter>
+              </form>
+            </DialogContent>
+          </Dialog>
         </div>
-      </div>
 
-      {isLoadingTeams ? (
-        <div className="flex justify-center items-center h-64">
-          <Loader2 className="h-8 w-8 animate-spin" />
-        </div>
-      ) : (
-        <div className="rounded-md border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-10"></TableHead>
-                <TableHead
-                  className="cursor-pointer hover:bg-gray-50"
-                  onClick={() => handleSort('name')}
-                >
-                  <div className="flex items-center gap-2">
-                    Name
-                    {getSortIcon('name')}
-                  </div>
-                </TableHead>
-                                <TableHead
-                  className="cursor-pointer hover:bg-gray-50"
-                  onClick={() => handleSort('admin_email')}
-                >
-                  <div className="flex items-center gap-2">
-                    Admin Email
-                    {getSortIcon('admin_email')}
-                  </div>
-                </TableHead>
-                <TableHead
-                  className="cursor-pointer hover:bg-gray-50"
-                  onClick={() => handleSort('is_active')}
-                >
-                  <div className="flex items-center gap-2">
-                    Status
-                    {getSortIcon('is_active')}
-                  </div>
-                </TableHead>
-                <TableHead
-                  className="cursor-pointer hover:bg-gray-50"
-                  onClick={() => handleSort('created_at')}
-                >
-                  <div className="flex items-center gap-2">
-                    Created At
-                    {getSortIcon('created_at')}
-                  </div>
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredAndSortedTeams.length === 0 ? (
+        <TableFilters
+          filters={filterFields}
+          onClearFilters={() => {
+            setNameFilter('');
+            setAdminEmailFilter('');
+            setStatusFilter('all');
+            setSortField(null);
+            setSortDirection('asc');
+          }}
+          hasActiveFilters={hasActiveFilters}
+          totalItems={teams.length}
+          filteredItems={filteredAndSortedTeams.length}
+        />
+
+        {isLoadingTeams ? (
+          <div className="flex justify-center items-center h-64">
+            <Loader2 className="h-8 w-8 animate-spin" />
+          </div>
+        ) : (
+          <div className="rounded-md border">
+            <Table>
+              <TableHeader>
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center py-6">
-                    No teams found. Create a new team to get started.
-                  </TableCell>
+                  <TableHead className="w-10"></TableHead>
+                  <TableHead
+                    className="cursor-pointer hover:bg-gray-50"
+                    onClick={() => handleSort('name')}
+                  >
+                    <div className="flex items-center gap-2">
+                      Name
+                      {getSortIcon('name')}
+                    </div>
+                  </TableHead>
+                  <TableHead
+                    className="cursor-pointer hover:bg-gray-50"
+                    onClick={() => handleSort('admin_email')}
+                  >
+                    <div className="flex items-center gap-2">
+                      Admin Email
+                      {getSortIcon('admin_email')}
+                    </div>
+                  </TableHead>
+                  <TableHead
+                    className="cursor-pointer hover:bg-gray-50"
+                    onClick={() => handleSort('is_active')}
+                  >
+                    <div className="flex items-center gap-2">
+                      Status
+                      {getSortIcon('is_active')}
+                    </div>
+                  </TableHead>
+                  <TableHead
+                    className="cursor-pointer hover:bg-gray-50"
+                    onClick={() => handleSort('created_at')}
+                  >
+                    <div className="flex items-center gap-2">
+                      Created At
+                      {getSortIcon('created_at')}
+                    </div>
+                  </TableHead>
                 </TableRow>
-              ) : (
-                filteredAndSortedTeams.map((team) => (
-                  <React.Fragment key={team.id}>
-                    <TableRow
-                      className="cursor-pointer hover:bg-muted/50"
-                      onClick={() => toggleTeamExpansion(team.id)}
-                    >
-                      <TableCell>
-                        {expandedTeamId === team.id ? (
-                          <ChevronDown className="h-4 w-4" />
-                        ) : (
-                          <ChevronRight className="h-4 w-4" />
-                        )}
-                      </TableCell>
-                      <TableCell className="font-medium">{team.name}</TableCell>
-                      <TableCell>{team.admin_email}</TableCell>
-                      <TableCell>
-                        <div className="flex flex-col gap-1">
-                          <span
-                            className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                              team.is_active
-                                ? 'bg-green-100 text-green-800'
-                                : 'bg-red-100 text-red-800'
-                            }`}
-                          >
-                            {team.is_active ? 'Active' : 'Inactive'}
-                          </span>
-                          {isTeamExpired(team) && (
-                            <span className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-600 text-white">
-                              Expired
-                            </span>
+              </TableHeader>
+              <TableBody>
+                {filteredAndSortedTeams.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center py-6">
+                      No teams found. Create a new team to get started.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  filteredAndSortedTeams.map((team) => (
+                    <React.Fragment key={team.id}>
+                      <TableRow
+                        className="cursor-pointer hover:bg-muted/50"
+                        onClick={() => toggleTeamExpansion(team.id)}
+                      >
+                        <TableCell>
+                          {expandedTeamId === team.id ? (
+                            <ChevronDown className="h-4 w-4" />
+                          ) : (
+                            <ChevronRight className="h-4 w-4" />
                           )}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        {new Date(team.created_at).toLocaleDateString()}
-                      </TableCell>
-                    </TableRow>
-                    {expandedTeamId === team.id && (
-                      <TableRow>
-                        <TableCell colSpan={7} className="p-0">
-                          <Collapsible open={expandedTeamId === team.id}>
-                            <CollapsibleContent className="p-4 bg-muted/30">
-                              {isLoadingTeamDetails ? (
-                                <div className="flex justify-center items-center py-8">
-                                  <Loader2 className="h-8 w-8 animate-spin" />
-                                </div>
-                              ) : expandedTeam ? (
-                                <div className="space-y-6">
-                                  <Tabs defaultValue="details">
-                                    <TabsList>
-                                      <TabsTrigger value="details">Team Details</TabsTrigger>
-                                      <TabsTrigger value="users">Users</TabsTrigger>
-                                      <TabsTrigger value="products">Products</TabsTrigger>
-                                    </TabsList>
-                                    <TabsContent value="details" className="mt-4">
-                                      <Card>
-                                        <CardHeader>
-                                          <CardTitle>Team Information</CardTitle>
-                                          <CardDescription>
-                                            Detailed information about the team
-                                          </CardDescription>
-                                        </CardHeader>
-                                        <CardContent className="space-y-4">
-                                          <div className="grid grid-cols-2 gap-4">
-                                            <div>
-                                              <p className="text-sm font-medium text-muted-foreground">Name</p>
-                                              <p>{expandedTeam.name}</p>
-                                            </div>
-                                            <div>
-                                              <p className="text-sm font-medium text-muted-foreground">Admin Email</p>
-                                              <p>{expandedTeam.admin_email}</p>
-                                            </div>
-                                            <div>
-                                              <p className="text-sm font-medium text-muted-foreground">Phone</p>
-                                              <p>{expandedTeam.phone}</p>
-                                            </div>
-                                            <div>
-                                              <p className="text-sm font-medium text-muted-foreground">Billing Address</p>
-                                              <p>{expandedTeam.billing_address}</p>
-                                            </div>
-                                            <div>
-                                              <p className="text-sm font-medium text-muted-foreground">Status</p>
-                                              <Badge variant={expandedTeam.is_active ? "default" : "destructive"}>
-                                                {expandedTeam.is_active ? "Active" : "Inactive"}
-                                              </Badge>
-                                            </div>
-                                            {isTeamExpired(expandedTeam) && (
+                        </TableCell>
+                        <TableCell className="font-medium">{team.name}</TableCell>
+                        <TableCell>{team.admin_email}</TableCell>
+                        <TableCell>
+                          <div className="flex flex-col gap-1">
+                            <span
+                              className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${team.is_active
+                                  ? 'bg-green-100 text-green-800'
+                                  : 'bg-red-100 text-red-800'
+                                }`}
+                            >
+                              {team.is_active ? 'Active' : 'Inactive'}
+                            </span>
+                            {isTeamExpired(team) && (
+                              <span className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-600 text-white">
+                                Expired
+                              </span>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          {new Date(team.created_at).toLocaleDateString()}
+                        </TableCell>
+                      </TableRow>
+                      {expandedTeamId === team.id && (
+                        <TableRow>
+                          <TableCell colSpan={7} className="p-0">
+                            <Collapsible open={expandedTeamId === team.id}>
+                              <CollapsibleContent className="p-4 bg-muted/30">
+                                {isLoadingTeamDetails ? (
+                                  <div className="flex justify-center items-center py-8">
+                                    <Loader2 className="h-8 w-8 animate-spin" />
+                                  </div>
+                                ) : expandedTeam ? (
+                                  <div className="space-y-6">
+                                    <Tabs defaultValue="details">
+                                      <TabsList>
+                                        <TabsTrigger value="details">Team Details</TabsTrigger>
+                                        <TabsTrigger value="users">Users</TabsTrigger>
+                                        <TabsTrigger value="products">Products</TabsTrigger>
+                                      </TabsList>
+                                      <TabsContent value="details" className="mt-4">
+                                        <Card>
+                                          <CardHeader>
+                                            <CardTitle>Team Information</CardTitle>
+                                            <CardDescription>
+                                              Detailed information about the team
+                                            </CardDescription>
+                                          </CardHeader>
+                                          <CardContent className="space-y-4">
+                                            <div className="grid grid-cols-2 gap-4">
                                               <div>
-                                                <p className="text-sm font-medium text-muted-foreground">Expiration Status</p>
-                                                <Badge variant="destructive" className="bg-red-600 hover:bg-red-700">
-                                                  Expired
+                                                <p className="text-sm font-medium text-muted-foreground">Name</p>
+                                                <p>{expandedTeam.name}</p>
+                                              </div>
+                                              <div>
+                                                <p className="text-sm font-medium text-muted-foreground">Admin Email</p>
+                                                <p>{expandedTeam.admin_email}</p>
+                                              </div>
+                                              <div>
+                                                <p className="text-sm font-medium text-muted-foreground">Phone</p>
+                                                <p>{expandedTeam.phone}</p>
+                                              </div>
+                                              <div>
+                                                <p className="text-sm font-medium text-muted-foreground">Billing Address</p>
+                                                <p>{expandedTeam.billing_address}</p>
+                                              </div>
+                                              <div>
+                                                <p className="text-sm font-medium text-muted-foreground">Status</p>
+                                                <Badge variant={expandedTeam.is_active ? "default" : "destructive"}>
+                                                  {expandedTeam.is_active ? "Active" : "Inactive"}
                                                 </Badge>
                                               </div>
-                                            )}
-                                            {expandedTeam.is_always_free && (
-                                              <div>
-                                                <p className="text-sm font-medium text-muted-foreground">Always Free Status</p>
-                                                <div className="flex items-center gap-2">
-                                                  <Badge variant="default" className="bg-green-500 hover:bg-green-600">
-                                                    Always Free
+                                              {isTeamExpired(expandedTeam) && (
+                                                <div>
+                                                  <p className="text-sm font-medium text-muted-foreground">Expiration Status</p>
+                                                  <Badge variant="destructive" className="bg-red-600 hover:bg-red-700">
+                                                    Expired
                                                   </Badge>
-                                                  <ConfirmationDialog
-                                                    title="Resend Always-Free Request"
-                                                    description="Are you sure you want to resend the always-free request email?"
-                                                    triggerText="Resend Request"
-                                                    confirmText="Resend"
-                                                    onConfirm={() => setAlwaysFreeMutation.mutate(expandedTeam.id)}
-                                                    isLoading={setAlwaysFreeMutation.isPending}
-                                                    variant="outline"
-                                                    size="sm"
-                                                  />
                                                 </div>
-                                              </div>
-                                            )}
-                                            <div>
-                                              <p className="text-sm font-medium text-muted-foreground">Created At</p>
-                                              <p>{new Date(expandedTeam.created_at).toLocaleString()}</p>
-                                            </div>
-                                            {expandedTeam.updated_at && (
-                                              <div>
-                                                <p className="text-sm font-medium text-muted-foreground">Updated At</p>
-                                                <p>{new Date(expandedTeam.updated_at).toLocaleString()}</p>
-                                              </div>
-                                            )}
-                                            {expandedTeam.last_payment && (
-                                              <div>
-                                                <p className="text-sm font-medium text-muted-foreground">Last Payment</p>
-                                                <p>{new Date(expandedTeam.last_payment).toLocaleString()}</p>
-                                              </div>
-                                            )}
-                                          </div>
-                                          <div className="flex justify-end space-x-2 mt-4">
-                                            <Button
-                                              variant="outline"
-                                              onClick={() => openSubscribeToProductDialog(expandedTeam.id)}
-                                            >
-                                              Subscribe to Product
-                                            </Button>
-                                            <Button
-                                              variant="outline"
-                                              onClick={() => extendTrialMutation.mutate(expandedTeam.id)}
-                                              disabled={extendTrialMutation.isPending}
-                                            >
-                                              {extendTrialMutation.isPending ? (
-                                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                              ) : null}
-                                              Extend Trial
-                                            </Button>
-                                            {!expandedTeam.is_always_free && (
-                                              <ConfirmationDialog
-                                                title="Set Team to Always Free"
-                                                description="Are you sure you want to set this team to always-free? This will give them permanent free access."
-                                                triggerText="Set Always Free"
-                                                confirmText="Set Always Free"
-                                                onConfirm={() => setAlwaysFreeMutation.mutate(expandedTeam.id)}
-                                                isLoading={setAlwaysFreeMutation.isPending}
-                                                variant="outline"
-                                                size="default"
-                                              />
-                                            )}
-                                            {(!expandedTeam.users || expandedTeam.users.length === 0) && (
-                                              <DeleteConfirmationDialog
-                                                title="Delete Team"
-                                                description="Are you sure you want to delete this team? This action cannot be undone."
-                                                triggerText="Delete Team"
-                                                onConfirm={() => deleteTeamMutation.mutate(expandedTeam.id)}
-                                                isLoading={deleteTeamMutation.isPending}
-                                                size="default"
-                                              />
-                                            )}
-                                          </div>
-                                        </CardContent>
-                                      </Card>
-                                    </TabsContent>
-                                    <TabsContent value="users" className="mt-4">
-                                      <div className="flex justify-between items-center mb-4">
-                                        <h3 className="text-lg font-medium">Team Users</h3>
-                                        <div className="space-x-2">
-                                          <Button
-                                            size="sm"
-                                            onClick={() => openAddUserToTeamDialog(team.id)}
-                                          >
-                                            <UserPlus className="mr-2 h-4 w-4" />
-                                            Add Existing User
-                                          </Button>
-                                          <Button
-                                            size="sm"
-                                            onClick={() => openCreateUserInTeamDialog(team.id)}
-                                          >
-                                            <Plus className="mr-2 h-4 w-4" />
-                                            Create New User
-                                          </Button>
-                                        </div>
-                                      </div>
-
-                                      {expandedTeam.users && expandedTeam.users.length > 0 ? (
-                                        <div className="rounded-md border">
-                                          <Table>
-                                            <TableHeader>
-                                              <TableRow>
-                                                <TableHead>Email</TableHead>
-                                                <TableHead>Role</TableHead>
-                                                <TableHead>Status</TableHead>
-                                                <TableHead>Admin</TableHead>
-                                                <TableHead className="text-right">Actions</TableHead>
-                                              </TableRow>
-                                            </TableHeader>
-                                            <TableBody>
-                                              {expandedTeam.users.map((user) => (
-                                                <TableRow key={user.id}>
-                                                  <TableCell>{user.email}</TableCell>
-                                                  <TableCell>{user.role || 'User'}</TableCell>
-                                                  <TableCell>
-                                                    <Badge variant={user.is_active ? "default" : "destructive"}>
-                                                      {user.is_active ? "Active" : "Inactive"}
+                                              )}
+                                              {expandedTeam.is_always_free && (
+                                                <div>
+                                                  <p className="text-sm font-medium text-muted-foreground">Always Free Status</p>
+                                                  <div className="flex items-center gap-2">
+                                                    <Badge variant="default" className="bg-green-500 hover:bg-green-600">
+                                                      Always Free
                                                     </Badge>
-                                                  </TableCell>
-                                                  <TableCell>
-                                                    <Badge variant={user.is_admin ? "default" : "outline"}>
-                                                      {user.is_admin ? "Yes" : "No"}
-                                                    </Badge>
-                                                  </TableCell>
-                                                  <TableCell className="text-right">
-                                                    <TableActionButtons
-                                                      showEdit={false}
-                                                      onDelete={() => removeUserFromTeamMutation.mutate(user.id)}
-                                                      deleteTitle="Remove User"
-                                                      deleteDescription="Are you sure you want to remove this user from the team?"
-                                                      deleteText="Remove"
-                                                      deleteConfirmText="Remove"
-                                                      isDeleting={removeUserFromTeamMutation.isPending}
-                                                      className="justify-end"
+                                                    <ConfirmationDialog
+                                                      title="Resend Always-Free Request"
+                                                      description="Are you sure you want to resend the always-free request email?"
+                                                      triggerText="Resend Request"
+                                                      confirmText="Resend"
+                                                      onConfirm={() => setAlwaysFreeMutation.mutate(expandedTeam.id)}
+                                                      isLoading={setAlwaysFreeMutation.isPending}
+                                                      variant="outline"
+                                                      size="sm"
                                                     />
-                                                  </TableCell>
-                                                </TableRow>
-                                              ))}
-                                            </TableBody>
-                                          </Table>
-                                        </div>
-                                      ) : (
-                                        <div className="text-center py-8 border rounded-md">
-                                          <p className="text-muted-foreground">No users in this team yet.</p>
-                                          <p className="text-sm text-muted-foreground mt-2">
-                                            Add existing users or create new ones to get started.
-                                          </p>
-                                        </div>
-                                      )}
-                                    </TabsContent>
-                                    <TabsContent value="products" className="mt-4">
-                                      <div className="space-y-4">
-                                        {isLoadingTeamProducts ? (
-                                          <div className="flex justify-center items-center py-8">
-                                            <Loader2 className="h-8 w-8 animate-spin" />
+                                                  </div>
+                                                </div>
+                                              )}
+                                              <div>
+                                                <p className="text-sm font-medium text-muted-foreground">Created At</p>
+                                                <p>{new Date(expandedTeam.created_at).toLocaleString()}</p>
+                                              </div>
+                                              {expandedTeam.updated_at && (
+                                                <div>
+                                                  <p className="text-sm font-medium text-muted-foreground">Updated At</p>
+                                                  <p>{new Date(expandedTeam.updated_at).toLocaleString()}</p>
+                                                </div>
+                                              )}
+                                              {expandedTeam.last_payment && (
+                                                <div>
+                                                  <p className="text-sm font-medium text-muted-foreground">Last Payment</p>
+                                                  <p>{new Date(expandedTeam.last_payment).toLocaleString()}</p>
+                                                </div>
+                                              )}
+                                            </div>
+                                            <div className="flex justify-end space-x-2 mt-4">
+                                              <Button
+                                                variant="outline"
+                                                onClick={() => openSubscribeToProductDialog(expandedTeam.id)}
+                                              >
+                                                Subscribe to Product
+                                              </Button>
+                                              <Button
+                                                variant="outline"
+                                                onClick={() => extendTrialMutation.mutate(expandedTeam.id)}
+                                                disabled={extendTrialMutation.isPending}
+                                              >
+                                                {extendTrialMutation.isPending ? (
+                                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                ) : null}
+                                                Extend Trial
+                                              </Button>
+                                              {!expandedTeam.is_always_free && (
+                                                <ConfirmationDialog
+                                                  title="Set Team to Always Free"
+                                                  description="Are you sure you want to set this team to always-free? This will give them permanent free access."
+                                                  triggerText="Set Always Free"
+                                                  confirmText="Set Always Free"
+                                                  onConfirm={() => setAlwaysFreeMutation.mutate(expandedTeam.id)}
+                                                  isLoading={setAlwaysFreeMutation.isPending}
+                                                  variant="outline"
+                                                  size="default"
+                                                />
+                                              )}
+                                              {(!expandedTeam.users || expandedTeam.users.length === 0) && (
+                                                <DeleteConfirmationDialog
+                                                  title="Delete Team"
+                                                  description="Are you sure you want to delete this team? This action cannot be undone."
+                                                  triggerText="Delete Team"
+                                                  onConfirm={() => deleteTeamMutation.mutate(expandedTeam.id)}
+                                                  isLoading={deleteTeamMutation.isPending}
+                                                  size="default"
+                                                />
+                                              )}
+                                            </div>
+                                          </CardContent>
+                                        </Card>
+                                      </TabsContent>
+                                      <TabsContent value="users" className="mt-4">
+                                        <div className="flex justify-between items-center mb-4">
+                                          <h3 className="text-lg font-medium">Team Users</h3>
+                                          <div className="space-x-2">
+                                            <Button
+                                              size="sm"
+                                              onClick={() => openAddUserToTeamDialog(team.id)}
+                                            >
+                                              <UserPlus className="mr-2 h-4 w-4" />
+                                              Add Existing User
+                                            </Button>
+                                            <Button
+                                              size="sm"
+                                              onClick={() => openCreateUserInTeamDialog(team.id)}
+                                            >
+                                              <Plus className="mr-2 h-4 w-4" />
+                                              Create New User
+                                            </Button>
                                           </div>
-                                        ) : teamProducts.length > 0 ? (
+                                        </div>
+
+                                        {expandedTeam.users && expandedTeam.users.length > 0 ? (
                                           <div className="rounded-md border">
                                             <Table>
                                               <TableHeader>
                                                 <TableRow>
-                                                  <TableHead>Name</TableHead>
-                                                  <TableHead>User Count</TableHead>
-                                                  <TableHead>Keys/User</TableHead>
-                                                  <TableHead>Total Keys</TableHead>
-                                                  <TableHead>Service Keys</TableHead>
-                                                  <TableHead>Budget/Key</TableHead>
-                                                  <TableHead>RPM/Key</TableHead>
-                                                  <TableHead>Vector DBs</TableHead>
-                                                  <TableHead>Storage (GiB)</TableHead>
-                                                  <TableHead>Renewal (Days)</TableHead>
+                                                  <TableHead>Email</TableHead>
+                                                  <TableHead>Role</TableHead>
                                                   <TableHead>Status</TableHead>
+                                                  <TableHead>Admin</TableHead>
+                                                  <TableHead className="text-right">Actions</TableHead>
                                                 </TableRow>
                                               </TableHeader>
                                               <TableBody>
-                                                {teamProducts.map((product) => (
-                                                  <TableRow key={product.id}>
-                                                    <TableCell>{product.name}</TableCell>
-                                                    <TableCell>{product.user_count}</TableCell>
-                                                    <TableCell>{product.keys_per_user}</TableCell>
-                                                    <TableCell>{product.total_key_count}</TableCell>
-                                                    <TableCell>{product.service_key_count}</TableCell>
-                                                    <TableCell>${product.max_budget_per_key.toFixed(2)}</TableCell>
-                                                    <TableCell>{product.rpm_per_key}</TableCell>
-                                                    <TableCell>{product.vector_db_count}</TableCell>
-                                                    <TableCell>{product.vector_db_storage}</TableCell>
-                                                    <TableCell>{product.renewal_period_days}</TableCell>
+                                                {expandedTeam.users.map((user) => (
+                                                  <TableRow key={user.id}>
+                                                    <TableCell>{user.email}</TableCell>
+                                                    <TableCell>{user.role || 'User'}</TableCell>
                                                     <TableCell>
-                                                      <Badge variant={product.active ? "default" : "destructive"}>
-                                                        {product.active ? "Active" : "Inactive"}
+                                                      <Badge variant={user.is_active ? "default" : "destructive"}>
+                                                        {user.is_active ? "Active" : "Inactive"}
                                                       </Badge>
+                                                    </TableCell>
+                                                    <TableCell>
+                                                      <Badge variant={user.is_admin ? "default" : "outline"}>
+                                                        {user.is_admin ? "Yes" : "No"}
+                                                      </Badge>
+                                                    </TableCell>
+                                                    <TableCell className="text-right">
+                                                      <TableActionButtons
+                                                        showEdit={false}
+                                                        onDelete={() => removeUserFromTeamMutation.mutate(user.id)}
+                                                        deleteTitle="Remove User"
+                                                        deleteDescription="Are you sure you want to remove this user from the team?"
+                                                        deleteText="Remove"
+                                                        deleteConfirmText="Remove"
+                                                        isDeleting={removeUserFromTeamMutation.isPending}
+                                                        className="justify-end"
+                                                      />
                                                     </TableCell>
                                                   </TableRow>
                                                 ))}
@@ -1135,269 +1076,326 @@ export default function TeamsPage() {
                                           </div>
                                         ) : (
                                           <div className="text-center py-8 border rounded-md">
-                                            <p className="text-muted-foreground">No products associated with this team.</p>
+                                            <p className="text-muted-foreground">No users in this team yet.</p>
+                                            <p className="text-sm text-muted-foreground mt-2">
+                                              Add existing users or create new ones to get started.
+                                            </p>
                                           </div>
                                         )}
-                                      </div>
-                                    </TabsContent>
-                                  </Tabs>
-                                </div>
-                              ) : (
-                                <div className="text-center py-8">
-                                  <p className="text-muted-foreground">Failed to load team details.</p>
-                                </div>
-                              )}
-                            </CollapsibleContent>
-                          </Collapsible>
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </React.Fragment>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      )}
-
-      {/* Dialog for adding existing users to a team */}
-      <Dialog open={isAddingUserToTeam} onOpenChange={setIsAddingUserToTeam}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Add User to Team</DialogTitle>
-            <DialogDescription>
-              Search for an existing user to add to this team.
-            </DialogDescription>
-          </DialogHeader>
-          <form onSubmit={handleSearchUsers} className="space-y-4">
-            <div className="flex space-x-2">
-              <Input
-                placeholder="Search by email..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="flex-1"
-              />
-              <Button type="submit" disabled={isSearching}>
-                {isSearching ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : (
-                  "Search"
+                                      </TabsContent>
+                                      <TabsContent value="products" className="mt-4">
+                                        <div className="space-y-4">
+                                          {isLoadingTeamProducts ? (
+                                            <div className="flex justify-center items-center py-8">
+                                              <Loader2 className="h-8 w-8 animate-spin" />
+                                            </div>
+                                          ) : teamProducts.length > 0 ? (
+                                            <div className="rounded-md border">
+                                              <Table>
+                                                <TableHeader>
+                                                  <TableRow>
+                                                    <TableHead>Name</TableHead>
+                                                    <TableHead>User Count</TableHead>
+                                                    <TableHead>Keys/User</TableHead>
+                                                    <TableHead>Total Keys</TableHead>
+                                                    <TableHead>Service Keys</TableHead>
+                                                    <TableHead>Budget/Key</TableHead>
+                                                    <TableHead>RPM/Key</TableHead>
+                                                    <TableHead>Vector DBs</TableHead>
+                                                    <TableHead>Storage (GiB)</TableHead>
+                                                    <TableHead>Renewal (Days)</TableHead>
+                                                    <TableHead>Status</TableHead>
+                                                  </TableRow>
+                                                </TableHeader>
+                                                <TableBody>
+                                                  {teamProducts.map((product) => (
+                                                    <TableRow key={product.id}>
+                                                      <TableCell>{product.name}</TableCell>
+                                                      <TableCell>{product.user_count}</TableCell>
+                                                      <TableCell>{product.keys_per_user}</TableCell>
+                                                      <TableCell>{product.total_key_count}</TableCell>
+                                                      <TableCell>{product.service_key_count}</TableCell>
+                                                      <TableCell>${product.max_budget_per_key.toFixed(2)}</TableCell>
+                                                      <TableCell>{product.rpm_per_key}</TableCell>
+                                                      <TableCell>{product.vector_db_count}</TableCell>
+                                                      <TableCell>{product.vector_db_storage}</TableCell>
+                                                      <TableCell>{product.renewal_period_days}</TableCell>
+                                                      <TableCell>
+                                                        <Badge variant={product.active ? "default" : "destructive"}>
+                                                          {product.active ? "Active" : "Inactive"}
+                                                        </Badge>
+                                                      </TableCell>
+                                                    </TableRow>
+                                                  ))}
+                                                </TableBody>
+                                              </Table>
+                                            </div>
+                                          ) : (
+                                            <div className="text-center py-8 border rounded-md">
+                                              <p className="text-muted-foreground">No products associated with this team.</p>
+                                            </div>
+                                          )}
+                                        </div>
+                                      </TabsContent>
+                                    </Tabs>
+                                  </div>
+                                ) : (
+                                  <div className="text-center py-8">
+                                    <p className="text-muted-foreground">Failed to load team details.</p>
+                                  </div>
+                                )}
+                              </CollapsibleContent>
+                            </Collapsible>
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </React.Fragment>
+                  ))
                 )}
-              </Button>
-            </div>
-          </form>
+              </TableBody>
+            </Table>
+          </div>
+        )}
 
-          {searchResults.length > 0 && (
-            <div className="mt-4">
-              <h4 className="text-sm font-medium mb-2">Search Results</h4>
-              <div className="rounded-md border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Email</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Admin</TableHead>
-                      <TableHead className="w-20"></TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {searchResults.map((user) => (
-                      <TableRow key={user.id}>
-                        <TableCell>{user.email}</TableCell>
-                        <TableCell>
-                          <Badge variant={user.is_active ? "default" : "destructive"}>
-                            {user.is_active ? "Active" : "Inactive"}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={user.is_admin ? "default" : "outline"}>
-                            {user.is_admin ? "Yes" : "No"}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <Button
-                            size="sm"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleAddUserToTeam(user.id, e);
-                            }}
-                            disabled={addUserToTeamMutation.isPending}
-                          >
-                            {addUserToTeamMutation.isPending ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              "Add"
-                            )}
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </div>
-          )}
-
-          {searchQuery && !isSearching && searchResults.length === 0 && (
-            <div className="text-center py-4">
-              <p className="text-muted-foreground">No users found matching your search.</p>
-            </div>
-          )}
-
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                setIsAddingUserToTeam(false);
-                setSearchQuery('');
-                setSearchResults([]);
-              }}
-            >
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Dialog for creating a new user in a team */}
-      <Dialog open={isCreatingUserInTeam} onOpenChange={setIsCreatingUserInTeam}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Create New User</DialogTitle>
-            <DialogDescription>
-              Create a new user and add them to this team.
-            </DialogDescription>
-          </DialogHeader>
-          <form onSubmit={handleCreateUserInTeam}>
-            <div className="grid gap-4 py-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Email</label>
+        {/* Dialog for adding existing users to a team */}
+        <Dialog open={isAddingUserToTeam} onOpenChange={setIsAddingUserToTeam}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Add User to Team</DialogTitle>
+              <DialogDescription>
+                Search for an existing user to add to this team.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleSearchUsers} className="space-y-4">
+              <div className="flex space-x-2">
                 <Input
-                  type="email"
-                  value={newUserEmail}
-                  onChange={(e) => setNewUserEmail(e.target.value)}
-                  placeholder="user@example.com"
-                  required
+                  placeholder="Search by email..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="flex-1"
                 />
+                <Button type="submit" disabled={isSearching}>
+                  {isSearching ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    "Search"
+                  )}
+                </Button>
               </div>
-              {!isPasswordless && (
-                <div className="space-y-2">
-                  <label className="text-sm font-medium">Password</label>
-                  <Input
-                    type="password"
-                    value={newUserPassword}
-                    onChange={(e) => setNewUserPassword(e.target.value)}
-                    placeholder="••••••••"
-                    required
-                  />
-                </div>
-              )}
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Role</label>
-                <Select
-                  value={newUserRole}
-                  onValueChange={setNewUserRole}
-                >
-                  <SelectTrigger className="col-span-3">
-                    <SelectValue placeholder="Select a role" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {USER_ROLES.map((role) => (
-                      <SelectItem key={role.value} value={role.value}>
-                        {role.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setIsCreatingUserInTeam(false)}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                disabled={createUserMutation.isPending}
-              >
-                {createUserMutation.isPending && (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                )}
-                Create User
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+            </form>
 
-      {/* Dialog for subscribing a team to a product */}
-      <Dialog open={isSubscribingToProduct} onOpenChange={setIsSubscribingToProduct}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Subscribe Team to Product</DialogTitle>
-            <DialogDescription>
-              Select a product to subscribe this team to.
-            </DialogDescription>
-          </DialogHeader>
-          <form onSubmit={handleCreateTeamSubscription}>
-            <div className="grid gap-4 py-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Product</label>
-                <Select
-                  value={selectedProductId}
-                  onValueChange={setSelectedProductId}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a product" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {isLoadingAllProducts ? (
-                      <SelectItem value="" disabled>
-                        Loading products...
-                      </SelectItem>
-                    ) : allProducts.length > 0 ? (
-                      allProducts.map((product) => (
-                        <SelectItem key={product.id} value={product.id}>
-                          {product.name} ({product.id})
-                        </SelectItem>
-                      ))
-                    ) : (
-                      <SelectItem value="" disabled>
-                        No products available
-                      </SelectItem>
-                    )}
-                  </SelectContent>
-                </Select>
+            {searchResults.length > 0 && (
+              <div className="mt-4">
+                <h4 className="text-sm font-medium mb-2">Search Results</h4>
+                <div className="rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Email</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Admin</TableHead>
+                        <TableHead className="w-20"></TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {searchResults.map((user) => (
+                        <TableRow key={user.id}>
+                          <TableCell>{user.email}</TableCell>
+                          <TableCell>
+                            <Badge variant={user.is_active ? "default" : "destructive"}>
+                              {user.is_active ? "Active" : "Inactive"}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={user.is_admin ? "default" : "outline"}>
+                              {user.is_admin ? "Yes" : "No"}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleAddUserToTeam(user.id, e);
+                              }}
+                              disabled={addUserToTeamMutation.isPending}
+                            >
+                              {addUserToTeamMutation.isPending ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                "Add"
+                              )}
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
               </div>
-            </div>
+            )}
+
+            {searchQuery && !isSearching && searchResults.length === 0 && (
+              <div className="text-center py-4">
+                <p className="text-muted-foreground">No users found matching your search.</p>
+              </div>
+            )}
+
             <DialogFooter>
               <Button
                 type="button"
                 variant="outline"
                 onClick={() => {
-                  setIsSubscribingToProduct(false);
-                  setSelectedProductId('');
+                  setIsAddingUserToTeam(false);
+                  setSearchQuery('');
+                  setSearchResults([]);
                 }}
               >
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                disabled={createTeamSubscriptionMutation.isPending || !selectedProductId}
-              >
-                {createTeamSubscriptionMutation.isPending && (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                )}
-                Subscribe
+                Close
               </Button>
             </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
+          </DialogContent>
+        </Dialog>
+
+        {/* Dialog for creating a new user in a team */}
+        <Dialog open={isCreatingUserInTeam} onOpenChange={setIsCreatingUserInTeam}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Create New User</DialogTitle>
+              <DialogDescription>
+                Create a new user and add them to this team.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleCreateUserInTeam}>
+              <div className="grid gap-4 py-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Email</label>
+                  <Input
+                    type="email"
+                    value={newUserEmail}
+                    onChange={(e) => setNewUserEmail(e.target.value)}
+                    placeholder="user@example.com"
+                    required
+                  />
+                </div>
+                {!isPasswordless && (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Password</label>
+                    <Input
+                      type="password"
+                      value={newUserPassword}
+                      onChange={(e) => setNewUserPassword(e.target.value)}
+                      placeholder="••••••••"
+                      required
+                    />
+                  </div>
+                )}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Role</label>
+                  <Select
+                    value={newUserRole}
+                    onValueChange={setNewUserRole}
+                  >
+                    <SelectTrigger className="col-span-3">
+                      <SelectValue placeholder="Select a role" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {USER_ROLES.map((role) => (
+                        <SelectItem key={role.value} value={role.value}>
+                          {role.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsCreatingUserInTeam(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={createUserMutation.isPending}
+                >
+                  {createUserMutation.isPending && (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  )}
+                  Create User
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        {/* Dialog for subscribing a team to a product */}
+        <Dialog open={isSubscribingToProduct} onOpenChange={setIsSubscribingToProduct}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Subscribe Team to Product</DialogTitle>
+              <DialogDescription>
+                Select a product to subscribe this team to.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleCreateTeamSubscription}>
+              <div className="grid gap-4 py-4">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Product</label>
+                  <Select
+                    value={selectedProductId}
+                    onValueChange={setSelectedProductId}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a product" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {isLoadingAllProducts ? (
+                        <SelectItem value="" disabled>
+                          Loading products...
+                        </SelectItem>
+                      ) : allProducts.length > 0 ? (
+                        allProducts.map((product) => (
+                          <SelectItem key={product.id} value={product.id}>
+                            {product.name} ({product.id})
+                          </SelectItem>
+                        ))
+                      ) : (
+                        <SelectItem value="" disabled>
+                          No products available
+                        </SelectItem>
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setIsSubscribingToProduct(false);
+                    setSelectedProductId('');
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={createTeamSubscriptionMutation.isPending || !selectedProductId}
+                >
+                  {createTeamSubscriptionMutation.isPending && (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  )}
+                  Subscribe
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+      </div>
     </div>
   );
 }

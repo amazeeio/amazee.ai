@@ -20,18 +20,13 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Eye, EyeOff, Pencil, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Search, X } from 'lucide-react';
+import { Eye, EyeOff, Pencil, Loader2, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import { formatTimeUntil } from '@/lib/utils';
 import { PrivateAIKey } from '@/types/private-ai-key';
+import { TableFilters, FilterField } from '@/components/ui/table-filters';
 
 type SortField = 'name' | 'region' | 'owner' | null;
 type SortDirection = 'asc' | 'desc';
@@ -170,7 +165,41 @@ export function PrivateAIKeysTable({
     return filteredKeys;
   };
 
-  const hasActiveFilters = nameFilter.trim() || regionFilter.trim() || keyTypeFilter !== 'all';
+  const hasActiveFilters = Boolean(nameFilter.trim() || regionFilter.trim() || keyTypeFilter !== 'all');
+
+  // Filter fields configuration
+  const filterFields: FilterField[] = [
+    {
+      key: 'name',
+      label: 'Filter by Name',
+      type: 'search',
+      placeholder: 'Filter by name...',
+      value: nameFilter,
+      onChange: setNameFilter,
+    },
+    {
+      key: 'region',
+      label: 'Filter by Region',
+      type: 'search',
+      placeholder: 'Filter by region...',
+      value: regionFilter,
+      onChange: setRegionFilter,
+    },
+    {
+      key: 'type',
+      label: 'Filter by Type',
+      type: 'select',
+      placeholder: 'Filter by type',
+      value: keyTypeFilter,
+      onChange: (value: string) => setKeyTypeFilter(value as KeyType),
+      options: [
+        { value: 'all', label: 'All Keys' },
+        { value: 'full', label: 'Full Keys' },
+        { value: 'llm', label: 'LLM Only' },
+        { value: 'vector', label: 'Vector DB Only' },
+      ],
+    },
+  ];
 
   // Get filtered and sorted keys
   const filteredAndSortedKeys = getSortedAndFilteredKeys();
@@ -196,48 +225,13 @@ export function PrivateAIKeysTable({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-4 flex-wrap">
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Filter by name..."
-            value={nameFilter}
-            onChange={(e) => setNameFilter(e.target.value)}
-            className="pl-10 w-[200px]"
-          />
-        </div>
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Filter by region..."
-            value={regionFilter}
-            onChange={(e) => setRegionFilter(e.target.value)}
-            className="pl-10 w-[200px]"
-          />
-        </div>
-        <Select value={keyTypeFilter} onValueChange={(value: KeyType) => setKeyTypeFilter(value)}>
-          <SelectTrigger className="w-[180px]">
-            <SelectValue placeholder="Filter by type" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Keys</SelectItem>
-            <SelectItem value="full">Full Keys</SelectItem>
-            <SelectItem value="llm">LLM Only</SelectItem>
-            <SelectItem value="vector">Vector DB Only</SelectItem>
-          </SelectContent>
-        </Select>
-        {hasActiveFilters && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={clearFilters}
-            className="flex items-center gap-2"
-          >
-            <X className="h-4 w-4" />
-            Clear filters
-          </Button>
-        )}
-      </div>
+      <TableFilters
+        filters={filterFields}
+        onClearFilters={clearFilters}
+        hasActiveFilters={hasActiveFilters}
+        totalItems={keys.length}
+        filteredItems={filteredAndSortedKeys.length}
+      />
       <div className="rounded-md border">
         <Table>
           <TableHeader>

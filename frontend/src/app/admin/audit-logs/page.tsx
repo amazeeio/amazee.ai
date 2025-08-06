@@ -5,6 +5,7 @@ import { format, parseISO } from 'date-fns';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { TableFilters, FilterField } from '@/components/ui/table-filters';
 import {
   Table,
   TableBody,
