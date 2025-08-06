@@ -2,29 +2,11 @@
 
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, Plus } from 'lucide-react';
 import { get, post, del, put } from '@/utils/api';
 import { useAuth } from '@/hooks/use-auth';
 import { PrivateAIKeysTable } from '@/components/private-ai-keys-table';
+import { CreateAIKeyDialog } from '@/components/create-ai-key-dialog';
 import { PrivateAIKey } from '@/types/private-ai-key';
 
 interface SpendInfo {
@@ -56,10 +38,6 @@ export default function TeamAIKeysPage() {
   const { toast } = useToast();
   const { user } = useAuth();
   const [isAddingKey, setIsAddingKey] = useState(false);
-  const [newKeyName, setNewKeyName] = useState('');
-  const [selectedRegion, setSelectedRegion] = useState<string>('');
-  const [selectedUserId, setSelectedUserId] = useState<string>('team');
-  const [keyType, setKeyType] = useState<'full' | 'llm' | 'vector'>('full');
   const [loadedSpendKeys, setLoadedSpendKeys] = useState<Set<number>>(new Set());
 
   const queryClient = useQueryClient();
@@ -144,16 +122,9 @@ export default function TeamAIKeysPage() {
       const response = await post(endpoint, data, { credentials: 'include' });
       return response.json();
     },
-    onSuccess: (data) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
       setIsAddingKey(false);
-      setNewKeyName('');
-      setSelectedRegion('');
-      setSelectedUserId('team');
-      // Determine key type based on returned data
-      const newKeyType = data.litellm_token && data.database_name ? 'full' :
-                        data.litellm_token ? 'llm' : 'vector';
-      setKeyType(newKeyType);
       toast({
         title: 'Success',
         description: 'AI key added successfully',
@@ -217,23 +188,17 @@ export default function TeamAIKeysPage() {
     },
   });
 
-  const handleCreateKey = (e: React.FormEvent) => {
-    e.preventDefault();
-    const region = regions.find(r => r.name === selectedRegion);
-    if (!region || !user?.team_id) return;
-
-    const data: { name: string; region_id: number; owner_id?: number; team_id?: number; key_type: 'full' | 'llm' | 'vector' } = {
-      name: newKeyName,
-      region_id: region.id,
-      key_type: keyType
-    };
-
-    if (selectedUserId === 'team') {
+  const handleCreateKey = (data: {
+    name: string
+    region_id: number
+    key_type: 'full' | 'llm' | 'vector'
+    owner_id?: number
+    team_id?: number
+  }) => {
+    // Add team_id for team context
+    if (user?.team_id) {
       data.team_id = user.team_id;
-    } else {
-      data.owner_id = parseInt(selectedUserId);
     }
-
     createKeyMutation.mutate(data);
   };
 
@@ -241,99 +206,19 @@ export default function TeamAIKeysPage() {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold">Team AI Keys</h1>
-        <Dialog open={isAddingKey} onOpenChange={setIsAddingKey}>
-          <DialogTrigger asChild>
-            <Button>
-              <Plus className="mr-2 h-4 w-4" />
-              Add Key
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Create New AI Key</DialogTitle>
-              <DialogDescription>
-                Create a new AI key for your team. This will generate new database credentials.
-              </DialogDescription>
-            </DialogHeader>
-            <form onSubmit={handleCreateKey}>
-              <div className="grid gap-4 py-4">
-                <div className="grid gap-2">
-                  <label htmlFor="name">Name</label>
-                  <Input
-                    id="name"
-                    value={newKeyName}
-                    onChange={(e) => setNewKeyName(e.target.value)}
-                    required
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <label htmlFor="type">Type</label>
-                  <Select value={keyType} onValueChange={(value: 'full' | 'llm' | 'vector') => setKeyType(value)}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select a type" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="full">Full Key (LLM + Vector DB)</SelectItem>
-                      <SelectItem value="llm">LLM Token Only</SelectItem>
-                      <SelectItem value="vector">Vector DB Only</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <p className="text-sm text-muted-foreground">
-                    Choose whether to create a full key with both LLM and Vector DB access, or just one component
-                  </p>
-                </div>
-                <div className="grid gap-2">
-                  <label htmlFor="region">Region</label>
-                  <Select value={selectedRegion} onValueChange={setSelectedRegion}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select a region" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {regions
-                        .filter(region => region.is_active)
-                        .map(region => (
-                          <SelectItem key={region.id} value={region.name}>
-                            {region.name}
-                          </SelectItem>
-                        ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="grid gap-2">
-                  <label htmlFor="user">Assign to <span className="text-red-500">*</span></label>
-                  <Select
-                    value={selectedUserId}
-                    onValueChange={setSelectedUserId}
-                    required
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select who will own this key" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="team">Team (Shared)</SelectItem>
-                      {teamMembers.map(member => (
-                        <SelectItem key={member.id} value={member.id.toString()}>
-                          {member.email}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-sm text-muted-foreground">
-                    Select &quot;Team (Shared)&quot; to create a key accessible to all team members
-                  </p>
-                </div>
-              </div>
-              <DialogFooter>
-                <Button type="submit" disabled={createKeyMutation.isPending || !selectedRegion || !selectedUserId}>
-                  {createKeyMutation.isPending && (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  )}
-                  Create Key
-                </Button>
-              </DialogFooter>
-            </form>
-          </DialogContent>
-        </Dialog>
+        <CreateAIKeyDialog
+          open={isAddingKey}
+          onOpenChange={setIsAddingKey}
+          onSubmit={handleCreateKey}
+          isLoading={createKeyMutation.isPending}
+          regions={regions}
+          teamMembers={teamMembers}
+          showUserAssignment={true}
+          currentUser={user || undefined}
+          triggerText="Add Key"
+          title="Create New AI Key"
+          description="Create a new AI key for your team. This will generate new database credentials."
+        />
       </div>
 
       <PrivateAIKeysTable
