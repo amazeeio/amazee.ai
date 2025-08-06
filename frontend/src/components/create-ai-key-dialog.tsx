@@ -103,7 +103,10 @@ export function CreateAIKeyDialog({
 
     if (showUserAssignment) {
       if (selectedUserId === "team") {
-        // Team shared - no specific owner_id, team_id will be set by the parent component
+        // Team shared - set team_id and no specific owner_id
+        if (currentUser?.team_id) {
+          data.team_id = currentUser.team_id
+        }
       } else if (selectedUserId === currentUser?.id.toString() || selectedUserId === "self") {
         data.owner_id = currentUser?.id
       } else {

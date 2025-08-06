@@ -421,7 +421,7 @@ export default function ProductsPage() {
                     id="renewal_period_days"
                     type="number"
                     required
-                    value={formData.renewal_period_days || 30}
+                    value={formData.renewal_period_days || 31}
                     onChange={(e) => updateFormData({ ...formData, renewal_period_days: parseInt(e.target.value) })}
                   />
                 </div>
@@ -607,7 +607,7 @@ export default function ProductsPage() {
                 id="edit-renewal-period-days"
                 type="number"
                 required
-                value={formData.renewal_period_days || 30}
+                value={formData.renewal_period_days || 31}
                 onChange={(e) => updateFormData({ ...formData, renewal_period_days: parseInt(e.target.value) })}
               />
             </div>

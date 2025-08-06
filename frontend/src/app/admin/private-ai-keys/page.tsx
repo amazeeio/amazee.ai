@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/rea
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Search } from 'lucide-react';
-import { get, del, put } from '@/utils/api';
+import { get, del, put, post } from '@/utils/api';
 import { useDebounce } from '@/hooks/use-debounce';
 import {
   Command,
@@ -21,11 +21,22 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover';
 import { PrivateAIKeysTable } from '@/components/private-ai-keys-table';
+import { CreateAIKeyDialog } from '@/components/create-ai-key-dialog';
 import { PrivateAIKey } from '@/types/private-ai-key';
 
 interface User {
   id: number;
   email: string;
+  is_active: boolean;
+  role: string;
+  team_id: number | null;
+  created_at: string;
+}
+
+interface Region {
+  id: number;
+  name: string;
+  is_active: boolean;
 }
 
 interface SpendInfo {
@@ -45,6 +56,7 @@ export default function PrivateAIKeysPage() {
   const [isUserSearchOpen, setIsUserSearchOpen] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [loadedSpendKeys, setLoadedSpendKeys] = useState<Set<number>>(new Set());
+  const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const debouncedSearchTerm = useDebounce(searchTerm, 300);
 
   // Queries
@@ -55,6 +67,18 @@ export default function PrivateAIKeysPage() {
         ? `/private-ai-keys?owner_id=${selectedUser.id}`
         : '/private-ai-keys';
       const response = await get(url);
+      const data = await response.json();
+      return data;
+    },
+    refetchInterval: 30000, // Refetch every 30 seconds to detect new keys
+    refetchIntervalInBackground: true, // Continue polling even when tab is not active
+  });
+
+  // Fetch regions for create dialog
+  const { data: regions = [] } = useQuery<Region[]>({
+    queryKey: ['regions'],
+    queryFn: async () => {
+      const response = await get('/regions');
       const data = await response.json();
       return data;
     },
@@ -155,6 +179,31 @@ export default function PrivateAIKeysPage() {
   }, [spendQueries, privateAIKeys, loadedSpendKeys]);
 
   // Mutations
+  const createKeyMutation = useMutation({
+    mutationFn: async (data: { name: string; region_id: number; owner_id?: number; team_id?: number; key_type: 'full' | 'llm' | 'vector' }) => {
+      const endpoint = data.key_type === 'full' ? 'private-ai-keys' :
+                      data.key_type === 'llm' ? 'private-ai-keys/token' :
+                      'private-ai-keys/vector-db';
+      const response = await post(endpoint, data);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
+      setIsCreateDialogOpen(false);
+      toast({
+        title: 'Success',
+        description: 'Private AI key created successfully',
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
   const deletePrivateAIKeyMutation = useMutation({
     mutationFn: async (keyId: number) => {
       await del(`/private-ai-keys/${keyId}`);
@@ -200,10 +249,33 @@ export default function PrivateAIKeysPage() {
     },
   });
 
+  const handleCreateKey = (data: {
+    name: string
+    region_id: number
+    key_type: 'full' | 'llm' | 'vector'
+    owner_id?: number
+    team_id?: number
+  }) => {
+    createKeyMutation.mutate(data);
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold">Private AI Keys</h1>
+        <CreateAIKeyDialog
+          open={isCreateDialogOpen}
+          onOpenChange={setIsCreateDialogOpen}
+          onSubmit={handleCreateKey}
+          isLoading={createKeyMutation.isPending}
+          regions={regions}
+          teamMembers={Object.values(usersMap)}
+          showUserAssignment={true}
+          currentUser={undefined}
+          triggerText="Create Key"
+          title="Create New Private AI Key"
+          description="Create a new private AI key for any user or team."
+        />
       </div>
 
       <div className="flex items-center gap-2">

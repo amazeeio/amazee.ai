@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -22,7 +22,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, Plus, ChevronDown, ChevronRight, UserPlus } from 'lucide-react';
+import { Loader2, Plus, ChevronDown, ChevronRight, UserPlus, ChevronUp, ChevronsUpDown } from 'lucide-react';
 import { get, post, del, put } from '@/utils/api';
 import {
   Collapsible,
@@ -96,14 +96,15 @@ interface User {
   is_admin: boolean;
 }
 
+type SortField = 'name' | 'admin_email' | 'is_active' | 'created_at' | null;
+type SortDirection = 'asc' | 'desc';
+
 export default function TeamsPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [isAddingTeam, setIsAddingTeam] = useState(false);
   const [newTeamName, setNewTeamName] = useState('');
   const [newTeamAdminEmail, setNewTeamAdminEmail] = useState('');
-  const [newTeamPhone, setNewTeamPhone] = useState('');
-  const [newTeamBillingAddress, setNewTeamBillingAddress] = useState('');
   const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null);
   const [isAddingUserToTeam, setIsAddingUserToTeam] = useState(false);
   const [isCreatingUserInTeam, setIsCreatingUserInTeam] = useState(false);
@@ -117,6 +118,13 @@ export default function TeamsPage() {
   const [isPasswordless, setIsPasswordless] = useState(false);
   const [isSubscribingToProduct, setIsSubscribingToProduct] = useState(false);
   const [selectedProductId, setSelectedProductId] = useState('');
+
+  // Filter and sort state
+  const [nameFilter, setNameFilter] = useState('');
+  const [adminEmailFilter, setAdminEmailFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [sortField, setSortField] = useState<SortField>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
 
   useEffect(() => {
     const config = getCachedConfig();
@@ -150,6 +158,89 @@ export default function TeamsPage() {
       return data;
     },
   });
+
+  // Filtered and sorted teams
+  const filteredAndSortedTeams = useMemo(() => {
+    let filtered = teams.filter(team => {
+      const nameMatch = team.name.toLowerCase().includes(nameFilter.toLowerCase());
+      const adminEmailMatch = team.admin_email.toLowerCase().includes(adminEmailFilter.toLowerCase());
+      const statusMatch = statusFilter === 'all' ||
+        (statusFilter === 'active' && team.is_active) ||
+        (statusFilter === 'inactive' && !team.is_active);
+
+      return nameMatch && adminEmailMatch && statusMatch;
+    });
+
+    if (sortField) {
+      filtered.sort((a, b) => {
+        let aValue: string | boolean | Date;
+        let bValue: string | boolean | Date;
+
+        switch (sortField) {
+          case 'name':
+            aValue = a.name.toLowerCase();
+            bValue = b.name.toLowerCase();
+            break;
+          case 'admin_email':
+            aValue = a.admin_email.toLowerCase();
+            bValue = b.admin_email.toLowerCase();
+            break;
+          case 'is_active':
+            aValue = a.is_active;
+            bValue = b.is_active;
+            break;
+          case 'created_at':
+            aValue = new Date(a.created_at);
+            bValue = new Date(b.created_at);
+            break;
+          default:
+            return 0;
+        }
+
+        if (typeof aValue === 'string' && typeof bValue === 'string') {
+          if (sortDirection === 'asc') {
+            return aValue.localeCompare(bValue);
+          } else {
+            return bValue.localeCompare(aValue);
+          }
+        } else if (typeof aValue === 'boolean' && typeof bValue === 'boolean') {
+          if (sortDirection === 'asc') {
+            return aValue === bValue ? 0 : aValue ? -1 : 1;
+          } else {
+            return aValue === bValue ? 0 : aValue ? 1 : -1;
+          }
+        } else if (aValue instanceof Date && bValue instanceof Date) {
+          if (sortDirection === 'asc') {
+            return aValue.getTime() - bValue.getTime();
+          } else {
+            return bValue.getTime() - aValue.getTime();
+          }
+        }
+
+        return 0;
+      });
+    }
+
+    return filtered;
+  }, [teams, nameFilter, adminEmailFilter, statusFilter, sortField, sortDirection]);
+
+  // Handle sorting
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+  };
+
+  // Get sort icon
+  const getSortIcon = (field: SortField) => {
+    if (sortField !== field) {
+      return <ChevronsUpDown className="h-4 w-4" />;
+    }
+    return sortDirection === 'asc' ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />;
+  };
 
   // Get team details when expanded
   const { data: expandedTeam, isLoading: isLoadingTeamDetails } = useQuery<Team>({
@@ -208,8 +299,6 @@ export default function TeamsPage() {
     mutationFn: async (teamData: {
       name: string;
       admin_email: string;
-      phone: string;
-      billing_address: string;
     }) => {
       try {
         const response = await post('/teams', teamData);
@@ -250,8 +339,6 @@ export default function TeamsPage() {
       setIsAddingTeam(false);
       setNewTeamName('');
       setNewTeamAdminEmail('');
-      setNewTeamPhone('');
-      setNewTeamBillingAddress('');
     },
     onError: (error: Error) => {
       toast({
@@ -494,8 +581,6 @@ export default function TeamsPage() {
     createTeamMutation.mutate({
       name: newTeamName,
       admin_email: newTeamAdminEmail,
-      phone: newTeamPhone,
-      billing_address: newTeamBillingAddress,
     });
   };
 
@@ -620,30 +705,6 @@ export default function TeamsPage() {
                     required
                   />
                 </div>
-                <div className="grid grid-cols-4 items-center gap-4">
-                  <label htmlFor="phone" className="text-right">
-                    Phone
-                  </label>
-                  <Input
-                    id="phone"
-                    value={newTeamPhone}
-                    onChange={(e) => setNewTeamPhone(e.target.value)}
-                    className="col-span-3"
-                    required
-                  />
-                </div>
-                <div className="grid grid-cols-4 items-center gap-4">
-                  <label htmlFor="billing_address" className="text-right">
-                    Billing Address
-                  </label>
-                  <Input
-                    id="billing_address"
-                    value={newTeamBillingAddress}
-                    onChange={(e) => setNewTeamBillingAddress(e.target.value)}
-                    className="col-span-3"
-                    required
-                  />
-                </div>
               </div>
               <DialogFooter>
                 <Button
@@ -668,6 +729,59 @@ export default function TeamsPage() {
         </Dialog>
       </div>
 
+      {/* Filter Controls */}
+      <div className="space-y-4 p-4 bg-gray-50 rounded-md border mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Filter by Name</label>
+            <Input
+              placeholder="Search by team name..."
+              value={nameFilter}
+              onChange={(e) => setNameFilter(e.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Filter by Admin Email</label>
+            <Input
+              placeholder="Search by admin email..."
+              value={adminEmailFilter}
+              onChange={(e) => setAdminEmailFilter(e.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Filter by Status</label>
+            <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <SelectTrigger>
+                <SelectValue placeholder="All statuses" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All statuses</SelectItem>
+                <SelectItem value="active">Active</SelectItem>
+                <SelectItem value="inactive">Inactive</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <div className="flex justify-between items-center">
+          <span className="text-sm text-gray-600">
+            Showing {filteredAndSortedTeams.length} of {teams.length} teams
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setNameFilter('');
+              setAdminEmailFilter('');
+              setStatusFilter('all');
+              setSortField(null);
+              setSortDirection('asc');
+            }}
+          >
+            Clear Filters
+          </Button>
+        </div>
+      </div>
+
       {isLoadingTeams ? (
         <div className="flex justify-center items-center h-64">
           <Loader2 className="h-8 w-8 animate-spin" />
@@ -678,23 +792,53 @@ export default function TeamsPage() {
             <TableHeader>
               <TableRow>
                 <TableHead className="w-10"></TableHead>
-                <TableHead>Name</TableHead>
-                <TableHead>Admin Email</TableHead>
-                <TableHead>Phone</TableHead>
-                <TableHead>Billing Address</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Created At</TableHead>
+                <TableHead
+                  className="cursor-pointer hover:bg-gray-50"
+                  onClick={() => handleSort('name')}
+                >
+                  <div className="flex items-center gap-2">
+                    Name
+                    {getSortIcon('name')}
+                  </div>
+                </TableHead>
+                                <TableHead
+                  className="cursor-pointer hover:bg-gray-50"
+                  onClick={() => handleSort('admin_email')}
+                >
+                  <div className="flex items-center gap-2">
+                    Admin Email
+                    {getSortIcon('admin_email')}
+                  </div>
+                </TableHead>
+                <TableHead
+                  className="cursor-pointer hover:bg-gray-50"
+                  onClick={() => handleSort('is_active')}
+                >
+                  <div className="flex items-center gap-2">
+                    Status
+                    {getSortIcon('is_active')}
+                  </div>
+                </TableHead>
+                <TableHead
+                  className="cursor-pointer hover:bg-gray-50"
+                  onClick={() => handleSort('created_at')}
+                >
+                  <div className="flex items-center gap-2">
+                    Created At
+                    {getSortIcon('created_at')}
+                  </div>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {teams.length === 0 ? (
+              {filteredAndSortedTeams.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center py-6">
                     No teams found. Create a new team to get started.
                   </TableCell>
                 </TableRow>
               ) : (
-                teams.map((team) => (
+                filteredAndSortedTeams.map((team) => (
                   <React.Fragment key={team.id}>
                     <TableRow
                       className="cursor-pointer hover:bg-muted/50"
@@ -709,8 +853,6 @@ export default function TeamsPage() {
                       </TableCell>
                       <TableCell className="font-medium">{team.name}</TableCell>
                       <TableCell>{team.admin_email}</TableCell>
-                      <TableCell>{team.phone}</TableCell>
-                      <TableCell>{team.billing_address}</TableCell>
                       <TableCell>
                         <div className="flex flex-col gap-1">
                           <span
@@ -924,7 +1066,7 @@ export default function TeamsPage() {
                                                       onDelete={() => removeUserFromTeamMutation.mutate(user.id)}
                                                       deleteTitle="Remove User"
                                                       deleteDescription="Are you sure you want to remove this user from the team?"
-                                                      deleteTriggerText="Remove"
+                                                      deleteText="Remove"
                                                       deleteConfirmText="Remove"
                                                       isDeleting={removeUserFromTeamMutation.isPending}
                                                       className="justify-end"

@@ -27,7 +27,7 @@ import {
 } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Eye, EyeOff, Pencil, Loader2, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
+import { Eye, EyeOff, Pencil, Loader2, ArrowUp, ArrowDown, ArrowUpDown, Search, X } from 'lucide-react';
 import { formatTimeUntil } from '@/lib/utils';
 import { PrivateAIKey } from '@/types/private-ai-key';
 
@@ -74,6 +74,8 @@ export function PrivateAIKeysTable({
   const [sortField, setSortField] = useState<SortField>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [keyTypeFilter, setKeyTypeFilter] = useState<KeyType>('all');
+  const [nameFilter, setNameFilter] = useState('');
+  const [regionFilter, setRegionFilter] = useState('');
 
   const togglePasswordVisibility = (keyId: number | string) => {
     setShowPassword(prev => ({
@@ -91,8 +93,28 @@ export function PrivateAIKeysTable({
     }
   };
 
+  const clearFilters = () => {
+    setNameFilter('');
+    setRegionFilter('');
+    setKeyTypeFilter('all');
+  };
+
   const getSortedAndFilteredKeys = () => {
     let filteredKeys = keys;
+
+    // Apply name filter
+    if (nameFilter.trim()) {
+      filteredKeys = filteredKeys.filter(key =>
+        key.name?.toLowerCase().includes(nameFilter.toLowerCase())
+      );
+    }
+
+    // Apply region filter
+    if (regionFilter.trim()) {
+      filteredKeys = filteredKeys.filter(key =>
+        key.region?.toLowerCase().includes(regionFilter.toLowerCase())
+      );
+    }
 
     // Apply key type filter
     if (keyTypeFilter !== 'all') {
@@ -146,6 +168,8 @@ export function PrivateAIKeysTable({
     return filteredKeys;
   };
 
+  const hasActiveFilters = nameFilter.trim() || regionFilter.trim() || keyTypeFilter !== 'all';
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
@@ -156,7 +180,25 @@ export function PrivateAIKeysTable({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-4 flex-wrap">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Filter by name..."
+            value={nameFilter}
+            onChange={(e) => setNameFilter(e.target.value)}
+            className="pl-10 w-[200px]"
+          />
+        </div>
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Filter by region..."
+            value={regionFilter}
+            onChange={(e) => setRegionFilter(e.target.value)}
+            className="pl-10 w-[200px]"
+          />
+        </div>
         <Select value={keyTypeFilter} onValueChange={(value: KeyType) => setKeyTypeFilter(value)}>
           <SelectTrigger className="w-[180px]">
             <SelectValue placeholder="Filter by type" />
@@ -168,6 +210,17 @@ export function PrivateAIKeysTable({
             <SelectItem value="vector">Vector DB Only</SelectItem>
           </SelectContent>
         </Select>
+        {hasActiveFilters && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={clearFilters}
+            className="flex items-center gap-2"
+          >
+            <X className="h-4 w-4" />
+            Clear filters
+          </Button>
+        )}
       </div>
       <div className="rounded-md border">
         <Table>

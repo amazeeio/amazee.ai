@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -22,7 +22,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2 } from 'lucide-react';
+import { Loader2, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
 import { get, post, del, put } from '@/utils/api';
 import { TableActionButtons } from '@/components/ui/table-action-buttons';
 import {
@@ -49,6 +49,9 @@ const USER_ROLES = [
   { value: 'read_only', label: 'Read Only' },
 ];
 
+type SortField = 'email' | 'team_name' | 'role' | null;
+type SortDirection = 'asc' | 'desc';
+
 export default function UsersPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -62,6 +65,13 @@ export default function UsersPage() {
   const [isSystemUser, setIsSystemUser] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
   const [teams, setTeams] = useState<{ id: string; name: string }[]>([]);
+
+  // Filter and sort state
+  const [emailFilter, setEmailFilter] = useState('');
+  const [teamFilter, setTeamFilter] = useState('');
+  const [roleFilter, setRoleFilter] = useState('all');
+  const [sortField, setSortField] = useState<SortField>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
 
   // Queries
   const { isLoading: isLoadingUsers } = useQuery<User[]>({
@@ -86,6 +96,67 @@ export default function UsersPage() {
     };
     fetchTeams();
   }, []);
+
+  // Filtered and sorted users
+  const filteredAndSortedUsers = useMemo(() => {
+    let filtered = users.filter(user => {
+      const emailMatch = user.email.toLowerCase().includes(emailFilter.toLowerCase());
+      const teamMatch = !teamFilter || (user.team_name || 'None').toLowerCase().includes(teamFilter.toLowerCase());
+      const roleMatch = roleFilter === 'all' || user.role === roleFilter;
+
+      return emailMatch && teamMatch && roleMatch;
+    });
+
+    if (sortField) {
+      filtered.sort((a, b) => {
+        let aValue: string;
+        let bValue: string;
+
+        switch (sortField) {
+          case 'email':
+            aValue = a.email.toLowerCase();
+            bValue = b.email.toLowerCase();
+            break;
+          case 'team_name':
+            aValue = (a.team_name || 'None').toLowerCase();
+            bValue = (b.team_name || 'None').toLowerCase();
+            break;
+          case 'role':
+            aValue = a.role.toLowerCase();
+            bValue = b.role.toLowerCase();
+            break;
+          default:
+            return 0;
+        }
+
+        if (sortDirection === 'asc') {
+          return aValue.localeCompare(bValue);
+        } else {
+          return bValue.localeCompare(aValue);
+        }
+      });
+    }
+
+    return filtered;
+  }, [users, emailFilter, teamFilter, roleFilter, sortField, sortDirection]);
+
+  // Handle sorting
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+  };
+
+  // Get sort icon
+  const getSortIcon = (field: SortField) => {
+    if (sortField !== field) {
+      return <ChevronsUpDown className="h-4 w-4" />;
+    }
+    return sortDirection === 'asc' ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />;
+  };
 
   // Mutations
   const updateUserMutation = useMutation({
@@ -384,20 +455,100 @@ export default function UsersPage() {
         </Dialog>
       </div>
 
+      {/* Filter Controls */}
+      <div className="space-y-4 p-4 bg-gray-50 rounded-md border">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Filter by Email</label>
+            <Input
+              placeholder="Search by email..."
+              value={emailFilter}
+              onChange={(e) => setEmailFilter(e.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Filter by Team</label>
+            <Input
+              placeholder="Search by team..."
+              value={teamFilter}
+              onChange={(e) => setTeamFilter(e.target.value)}
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Filter by Role</label>
+            <Select value={roleFilter} onValueChange={setRoleFilter}>
+              <SelectTrigger>
+                <SelectValue placeholder="All roles" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All roles</SelectItem>
+                {USER_ROLES.map((role) => (
+                  <SelectItem key={role.value} value={role.value}>
+                    {role.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <div className="flex justify-between items-center">
+          <span className="text-sm text-gray-600">
+            Showing {filteredAndSortedUsers.length} of {users.length} users
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              setEmailFilter('');
+              setTeamFilter('');
+              setRoleFilter('all');
+              setSortField(null);
+              setSortDirection('asc');
+            }}
+          >
+            Clear Filters
+          </Button>
+        </div>
+      </div>
+
       <div className="rounded-md border">
         <Table>
           <TableHeader>
             <TableRow>
               <TableHead>ID</TableHead>
-              <TableHead>Email</TableHead>
+              <TableHead
+                className="cursor-pointer hover:bg-gray-50"
+                onClick={() => handleSort('email')}
+              >
+                <div className="flex items-center gap-2">
+                  Email
+                  {getSortIcon('email')}
+                </div>
+              </TableHead>
               <TableHead>Status</TableHead>
-              <TableHead>Team</TableHead>
-              <TableHead>Team Role</TableHead>
+              <TableHead
+                className="cursor-pointer hover:bg-gray-50"
+                onClick={() => handleSort('team_name')}
+              >
+                <div className="flex items-center gap-2">
+                  Team
+                  {getSortIcon('team_name')}
+                </div>
+              </TableHead>
+              <TableHead
+                className="cursor-pointer hover:bg-gray-50"
+                onClick={() => handleSort('role')}
+              >
+                <div className="flex items-center gap-2">
+                  Team Role
+                  {getSortIcon('role')}
+                </div>
+              </TableHead>
               <TableHead>Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {users.map((user) => (
+            {filteredAndSortedUsers.map((user) => (
               <TableRow key={user.id}>
                 <TableCell className="font-mono text-sm">{user.id}</TableCell>
                 <TableCell>{user.email}</TableCell>
