@@ -9,6 +9,8 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  TablePagination,
+  useTablePagination,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import {
@@ -228,6 +230,17 @@ export default function ProductsPage() {
   const handleDeletePricingTable = () => {
     deletePricingTableMutation.mutate();
   };
+
+  // Pagination
+  const {
+    currentPage,
+    pageSize,
+    totalPages,
+    totalItems,
+    paginatedData,
+    goToPage,
+    changePageSize,
+  } = useTablePagination(products, 10);
 
   return (
     <div className="space-y-6">
@@ -466,7 +479,7 @@ export default function ProductsPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {products.map((product) => (
+          {paginatedData.map((product) => (
             <TableRow key={product.id}>
               <TableCell className="font-mono text-sm">{product.id}</TableCell>
               <TableCell>{product.name}</TableCell>
@@ -504,6 +517,15 @@ export default function ProductsPage() {
           ))}
         </TableBody>
       </Table>
+
+      <TablePagination
+        currentPage={currentPage}
+        totalPages={totalPages}
+        pageSize={pageSize}
+        totalItems={totalItems}
+        onPageChange={goToPage}
+        onPageSizeChange={changePageSize}
+      />
 
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
         <DialogContent className="max-w-2xl">

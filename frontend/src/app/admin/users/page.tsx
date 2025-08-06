@@ -11,6 +11,8 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  TablePagination,
+  useTablePagination,
 } from '@/components/ui/table';
 import {
   Dialog,
@@ -139,6 +141,17 @@ export default function UsersPage() {
 
     return filtered;
   }, [users, emailFilter, teamFilter, roleFilter, sortField, sortDirection]);
+
+  // Pagination
+  const {
+    currentPage,
+    pageSize,
+    totalPages,
+    totalItems,
+    paginatedData,
+    goToPage,
+    changePageSize,
+  } = useTablePagination(filteredAndSortedUsers, 10);
 
   // Handle sorting
   const handleSort = (field: SortField) => {
@@ -548,7 +561,7 @@ export default function UsersPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filteredAndSortedUsers.map((user) => (
+            {paginatedData.map((user) => (
               <TableRow key={user.id}>
                 <TableCell className="font-mono text-sm">{user.id}</TableCell>
                 <TableCell>{user.email}</TableCell>
@@ -597,6 +610,15 @@ export default function UsersPage() {
           </TableBody>
         </Table>
       </div>
+
+      <TablePagination
+        currentPage={currentPage}
+        totalPages={totalPages}
+        pageSize={pageSize}
+        totalItems={totalItems}
+        onPageChange={goToPage}
+        onPageSizeChange={changePageSize}
+      />
 
       {/* Role Update Dialog */}
       <Dialog open={isUpdatingRole} onOpenChange={setIsUpdatingRole}>

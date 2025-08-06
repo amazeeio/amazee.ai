@@ -12,6 +12,8 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  TablePagination,
+  useTablePagination,
 } from '@/components/ui/table';
 import {
   Dialog,
@@ -314,6 +316,17 @@ export default function RegionsPage() {
     team => !regionTeams.some(regionTeam => regionTeam.id === team.id)
   );
 
+  // Pagination
+  const {
+    currentPage,
+    pageSize,
+    totalPages,
+    totalItems,
+    paginatedData,
+    goToPage,
+    changePageSize,
+  } = useTablePagination(regions, 10);
+
   return (
     <div>
       {isLoadingRegions ? (
@@ -450,7 +463,7 @@ export default function RegionsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {regions.map((region) => (
+                {paginatedData.map((region) => (
                   <TableRow key={region.id}>
                     <TableCell>{region.name}</TableCell>
                     <TableCell>{region.postgres_host}</TableCell>
@@ -495,6 +508,15 @@ export default function RegionsPage() {
               </TableBody>
             </Table>
           </div>
+
+          <TablePagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            pageSize={pageSize}
+            totalItems={totalItems}
+            onPageChange={goToPage}
+            onPageSizeChange={changePageSize}
+          />
 
           {/* Edit Region Dialog */}
           <Dialog open={isEditingRegion} onOpenChange={setIsEditingRegion}>

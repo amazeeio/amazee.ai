@@ -7,6 +7,8 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  TablePagination,
+  useTablePagination,
 } from '@/components/ui/table';
 import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
 import {
@@ -170,6 +172,20 @@ export function PrivateAIKeysTable({
 
   const hasActiveFilters = nameFilter.trim() || regionFilter.trim() || keyTypeFilter !== 'all';
 
+  // Get filtered and sorted keys
+  const filteredAndSortedKeys = getSortedAndFilteredKeys();
+
+  // Pagination
+  const {
+    currentPage,
+    pageSize,
+    totalPages,
+    totalItems,
+    paginatedData,
+    goToPage,
+    changePageSize,
+  } = useTablePagination(filteredAndSortedKeys, 10);
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
@@ -289,7 +305,7 @@ export function PrivateAIKeysTable({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {getSortedAndFilteredKeys().map((key, index) => (
+            {paginatedData.map((key, index) => (
               <TableRow key={key.id || `key-${index}`}>
                 <TableCell>{key.name}</TableCell>
                 <TableCell>
@@ -462,6 +478,15 @@ export function PrivateAIKeysTable({
           </TableBody>
         </Table>
       </div>
+
+      <TablePagination
+        currentPage={currentPage}
+        totalPages={totalPages}
+        pageSize={pageSize}
+        totalItems={totalItems}
+        onPageChange={goToPage}
+        onPageSizeChange={changePageSize}
+      />
     </div>
   );
 }
