@@ -24,7 +24,7 @@ import {
 import { useToast } from '@/hooks/use-toast';
 import { Loader2 } from 'lucide-react';
 import { get, post, del, put } from '@/utils/api';
-import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
+import { TableActionButtons } from '@/components/ui/table-action-buttons';
 import {
   Select,
   SelectContent,
@@ -432,11 +432,12 @@ export default function UsersPage() {
                     >
                       Change Role
                     </Button>
-                    <DeleteConfirmationDialog
-                      title="Are you sure?"
-                      description="This action cannot be undone. This will permanently delete the user account and all associated data."
-                      onConfirm={() => handleDeleteUser(user.id)}
-                      isLoading={deleteUserMutation.isPending}
+                    <TableActionButtons
+                      showEdit={false}
+                      onDelete={() => handleDeleteUser(user.id)}
+                      deleteTitle="Are you sure?"
+                      deleteDescription="This action cannot be undone. This will permanently delete the user account and all associated data."
+                      isDeleting={deleteUserMutation.isPending}
                     />
                   </div>
                 </TableCell>

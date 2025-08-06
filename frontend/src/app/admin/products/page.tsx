@@ -22,6 +22,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from '@/hooks/use-toast';
 import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
+import { TableActionButtons } from '@/components/ui/table-action-buttons';
 import { get, post, put, del } from '@/utils/api';
 import {
   Select,
@@ -487,25 +488,17 @@ export default function ProductsPage() {
               </TableCell>
               <TableCell>{new Date(product.created_at).toLocaleDateString()}</TableCell>
               <TableCell>
-                <div className="space-x-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      setSelectedProduct(product);
-                      setFormData(product);
-                      setIsEditDialogOpen(true);
-                    }}
-                  >
-                    Edit
-                  </Button>
-                  <DeleteConfirmationDialog
-                    title="Delete Product"
-                    description="Are you sure you want to delete this product? This action cannot be undone."
-                    onConfirm={() => handleDelete(product.id)}
-                    isLoading={deleteProductMutation.isPending}
-                  />
-                </div>
+                <TableActionButtons
+                  onEdit={() => {
+                    setSelectedProduct(product);
+                    setFormData(product);
+                    setIsEditDialogOpen(true);
+                  }}
+                  onDelete={() => handleDelete(product.id)}
+                  deleteTitle="Delete Product"
+                  deleteDescription="Are you sure you want to delete this product? This action cannot be undone."
+                  isDeleting={deleteProductMutation.isPending}
+                />
               </TableCell>
             </TableRow>
           ))}

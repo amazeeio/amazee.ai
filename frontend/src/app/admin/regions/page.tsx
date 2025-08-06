@@ -22,7 +22,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
+import { TableActionButtons } from '@/components/ui/table-action-buttons';
 import {
   Select,
   SelectContent,
@@ -481,19 +481,13 @@ export default function RegionsPage() {
                         <span className="text-gray-500 text-sm">N/A</span>
                       )}
                     </TableCell>
-                    <TableCell className="space-x-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleEditRegion(region)}
-                      >
-                        Edit
-                      </Button>
-                      <DeleteConfirmationDialog
-                        title="Delete Region"
-                        description="Are you sure you want to delete this region? This action cannot be undone."
-                        onConfirm={() => deleteRegionMutation.mutate(region.id)}
-                        isLoading={deleteRegionMutation.isPending}
+                    <TableCell>
+                      <TableActionButtons
+                        onEdit={() => handleEditRegion(region)}
+                        onDelete={() => deleteRegionMutation.mutate(region.id)}
+                        deleteTitle="Delete Region"
+                        deleteDescription="Are you sure you want to delete this region? This action cannot be undone."
+                        isDeleting={deleteRegionMutation.isPending}
                       />
                     </TableCell>
                   </TableRow>

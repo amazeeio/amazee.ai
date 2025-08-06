@@ -33,6 +33,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
 import { ConfirmationDialog } from '@/components/ui/confirmation-dialog';
+import { TableActionButtons } from '@/components/ui/table-action-buttons';
 import {
   Select,
   SelectContent,
@@ -531,10 +532,7 @@ export default function TeamsPage() {
     });
   };
 
-  const handleRemoveUserFromTeam = (userId: number, e: React.MouseEvent) => {
-    e.stopPropagation();
-    removeUserFromTeamMutation.mutate(userId);
-  };
+
 
   const handleSearchUsers = (e: React.FormEvent) => {
     e.preventDefault();
@@ -921,14 +919,16 @@ export default function TeamsPage() {
                                                     </Badge>
                                                   </TableCell>
                                                   <TableCell className="text-right">
-                                                    <Button
-                                                      size="sm"
-                                                      variant="destructive"
-                                                      onClick={(e) => handleRemoveUserFromTeam(user.id, e)}
-                                                      disabled={removeUserFromTeamMutation.isPending}
-                                                    >
-                                                      Remove
-                                                    </Button>
+                                                    <TableActionButtons
+                                                      showEdit={false}
+                                                      onDelete={() => removeUserFromTeamMutation.mutate(user.id)}
+                                                      deleteTitle="Remove User"
+                                                      deleteDescription="Are you sure you want to remove this user from the team?"
+                                                      deleteTriggerText="Remove"
+                                                      deleteConfirmText="Remove"
+                                                      isDeleting={removeUserFromTeamMutation.isPending}
+                                                      className="justify-end"
+                                                    />
                                                   </TableCell>
                                                 </TableRow>
                                               ))}

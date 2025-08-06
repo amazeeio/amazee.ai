@@ -25,7 +25,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Loader2, UserPlus } from 'lucide-react';
 import { get, post } from '@/utils/api';
 import { useAuth } from '@/hooks/use-auth';
-import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
+import { TableActionButtons } from '@/components/ui/table-action-buttons';
 import {
   Select,
   SelectContent,
@@ -283,12 +283,13 @@ export default function TeamUsersPage() {
                     >
                       Change Role
                     </Button>
-                    <DeleteConfirmationDialog
-                      title="Are you sure?"
-                      description="This will remove the user from your team. They will lose access to all team resources."
-                      triggerText="Remove"
-                      confirmText="Remove"
-                      onConfirm={() => handleRemoveUser(user.id)}
+                    <TableActionButtons
+                      showEdit={false}
+                      onDelete={() => handleRemoveUser(user.id)}
+                      deleteTitle="Are you sure?"
+                      deleteDescription="This will remove the user from your team. They will lose access to all team resources."
+                      deleteConfirmText="Remove"
+                      deleteText="Remove"
                     />
                   </div>
                 </TableCell>
