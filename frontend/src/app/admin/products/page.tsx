@@ -21,6 +21,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from '@/hooks/use-toast';
+import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
 import { get, post, put, del } from '@/utils/api';
 import {
   Select,
@@ -213,7 +214,6 @@ export default function ProductsPage() {
   };
 
   const handleDelete = (id: string) => {
-    if (!confirm('Are you sure you want to delete this product?')) return;
     deleteProductMutation.mutate(id);
   };
 
@@ -225,7 +225,6 @@ export default function ProductsPage() {
   };
 
   const handleDeletePricingTable = () => {
-    if (!confirm('Are you sure you want to delete the current pricing table?')) return;
     deletePricingTableMutation.mutate();
   };
 
@@ -301,13 +300,14 @@ export default function ProductsPage() {
                   </div>
                 </div>
                 <div className="flex justify-between">
-                  <Button
-                    variant="destructive"
-                    onClick={handleDeletePricingTable}
+                  <DeleteConfirmationDialog
+                    title="Delete Pricing Table"
+                    description="Are you sure you want to delete the current pricing table? This action cannot be undone."
+                    triggerText="Delete Current Table"
+                    onConfirm={handleDeletePricingTable}
                     disabled={!pricingTables?.standard && !pricingTables?.always_free}
-                  >
-                    Delete Current Table
-                  </Button>
+                    size="default"
+                  />
                   <Button onClick={handleUpdatePricingTable}>
                     Update Pricing Table
                   </Button>
@@ -499,13 +499,12 @@ export default function ProductsPage() {
                   >
                     Edit
                   </Button>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => handleDelete(product.id)}
-                  >
-                    Delete
-                  </Button>
+                  <DeleteConfirmationDialog
+                    title="Delete Product"
+                    description="Are you sure you want to delete this product? This action cannot be undone."
+                    onConfirm={() => handleDelete(product.id)}
+                    isLoading={deleteProductMutation.isPending}
+                  />
                 </div>
               </TableCell>
             </TableRow>

@@ -8,17 +8,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog';
+import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
 import {
   Dialog,
   DialogContent,
@@ -406,35 +396,12 @@ export function PrivateAIKeysTable({
                 </TableCell>
                 {allowModification && (
                   <TableCell>
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button variant="destructive" size="sm">Delete</Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Delete Private AI Key</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            Are you sure you want to delete this private AI key? This action cannot be undone.
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction
-                            onClick={() => onDelete(key.id)}
-                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                          >
-                            {isDeleting ? (
-                              <>
-                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                Deleting...
-                              </>
-                            ) : (
-                              'Delete'
-                            )}
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
+                    <DeleteConfirmationDialog
+                      title="Delete Private AI Key"
+                      description="Are you sure you want to delete this private AI key? This action cannot be undone."
+                      onConfirm={() => onDelete(key.id)}
+                      isLoading={isDeleting}
+                    />
                   </TableCell>
                 )}
               </TableRow>

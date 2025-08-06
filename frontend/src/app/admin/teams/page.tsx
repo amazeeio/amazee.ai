@@ -31,6 +31,8 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
+import { ConfirmationDialog } from '@/components/ui/confirmation-dialog';
 import {
   Select,
   SelectContent,
@@ -797,21 +799,16 @@ export default function TeamsPage() {
                                                   <Badge variant="default" className="bg-green-500 hover:bg-green-600">
                                                     Always Free
                                                   </Badge>
-                                                  <Button
-                                                    size="sm"
+                                                  <ConfirmationDialog
+                                                    title="Resend Always-Free Request"
+                                                    description="Are you sure you want to resend the always-free request email?"
+                                                    triggerText="Resend Request"
+                                                    confirmText="Resend"
+                                                    onConfirm={() => setAlwaysFreeMutation.mutate(expandedTeam.id)}
+                                                    isLoading={setAlwaysFreeMutation.isPending}
                                                     variant="outline"
-                                                    onClick={() => {
-                                                      if (window.confirm('Are you sure you want to resend the always-free request email?')) {
-                                                        setAlwaysFreeMutation.mutate(expandedTeam.id);
-                                                      }
-                                                    }}
-                                                    disabled={setAlwaysFreeMutation.isPending}
-                                                  >
-                                                    {setAlwaysFreeMutation.isPending ? (
-                                                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                                    ) : null}
-                                                    Resend Request
-                                                  </Button>
+                                                    size="sm"
+                                                  />
                                                 </div>
                                               </div>
                                             )}
@@ -850,36 +847,26 @@ export default function TeamsPage() {
                                               Extend Trial
                                             </Button>
                                             {!expandedTeam.is_always_free && (
-                                              <Button
+                                              <ConfirmationDialog
+                                                title="Set Team to Always Free"
+                                                description="Are you sure you want to set this team to always-free? This will give them permanent free access."
+                                                triggerText="Set Always Free"
+                                                confirmText="Set Always Free"
+                                                onConfirm={() => setAlwaysFreeMutation.mutate(expandedTeam.id)}
+                                                isLoading={setAlwaysFreeMutation.isPending}
                                                 variant="outline"
-                                                onClick={() => {
-                                                  if (window.confirm('Are you sure you want to set this team to always-free? This will give them permanent free access.')) {
-                                                    setAlwaysFreeMutation.mutate(expandedTeam.id);
-                                                  }
-                                                }}
-                                                disabled={setAlwaysFreeMutation.isPending}
-                                              >
-                                                {setAlwaysFreeMutation.isPending ? (
-                                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                                ) : null}
-                                                Set Always Free
-                                              </Button>
+                                                size="default"
+                                              />
                                             )}
                                             {(!expandedTeam.users || expandedTeam.users.length === 0) && (
-                                              <Button
-                                                variant="destructive"
-                                                onClick={() => {
-                                                  if (window.confirm('Are you sure you want to delete this team? This action cannot be undone.')) {
-                                                    deleteTeamMutation.mutate(expandedTeam.id);
-                                                  }
-                                                }}
-                                                disabled={deleteTeamMutation.isPending}
-                                              >
-                                                {deleteTeamMutation.isPending ? (
-                                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                                ) : null}
-                                                Delete Team
-                                              </Button>
+                                              <DeleteConfirmationDialog
+                                                title="Delete Team"
+                                                description="Are you sure you want to delete this team? This action cannot be undone."
+                                                triggerText="Delete Team"
+                                                onConfirm={() => deleteTeamMutation.mutate(expandedTeam.id)}
+                                                isLoading={deleteTeamMutation.isPending}
+                                                size="default"
+                                              />
                                             )}
                                           </div>
                                         </CardContent>

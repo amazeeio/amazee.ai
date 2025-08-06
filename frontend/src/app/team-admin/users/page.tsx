@@ -25,17 +25,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Loader2, UserPlus } from 'lucide-react';
 import { get, post } from '@/utils/api';
 import { useAuth } from '@/hooks/use-auth';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog';
+import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
 import {
   Select,
   SelectContent,
@@ -293,27 +283,13 @@ export default function TeamUsersPage() {
                     >
                       Change Role
                     </Button>
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button variant="destructive" size="sm">
-                          Remove
-                        </Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            This will remove the user from your team. They will lose access to all team resources.
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction onClick={() => handleRemoveUser(user.id)}>
-                            Remove
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
+                    <DeleteConfirmationDialog
+                      title="Are you sure?"
+                      description="This will remove the user from your team. They will lose access to all team resources."
+                      triggerText="Remove"
+                      confirmText="Remove"
+                      onConfirm={() => handleRemoveUser(user.id)}
+                    />
                   </div>
                 </TableCell>
               </TableRow>
