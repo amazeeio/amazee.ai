@@ -24,7 +24,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
+import { Loader2, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight } from 'lucide-react';
 import { get, post, del, put } from '@/utils/api';
 import { TableActionButtons } from '@/components/ui/table-action-buttons';
 import { TableFilters, FilterField } from '@/components/ui/table-filters';
@@ -35,6 +35,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import {
+  Collapsible,
+  CollapsibleContent,
+} from '@/components/ui/collapsible';
+import React from 'react';
 
 interface User {
   id: string;
@@ -44,6 +49,32 @@ interface User {
   role: string;
   created_at: string;
   team_name?: string;
+}
+
+interface PrivateAIKey {
+  id: number;
+  name: string;
+  database_name: string;
+  database_host: string;
+  database_username: string;
+  database_password: string;
+  region: string;
+  created_at: string;
+  owner_id: number;
+  team_id?: number;
+  team_name?: string;
+  litellm_token?: string;
+  litellm_api_url?: string;
+}
+
+interface SpendInfo {
+  spend: number;
+  expires: string;
+  created_at: string;
+  updated_at: string;
+  max_budget: number | null;
+  budget_duration: string | null;
+  budget_reset_at: string | null;
 }
 
 const USER_ROLES = [
@@ -68,6 +99,7 @@ export default function UsersPage() {
   const [isSystemUser, setIsSystemUser] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
   const [teams, setTeams] = useState<{ id: string; name: string }[]>([]);
+  const [expandedUserId, setExpandedUserId] = useState<string | null>(null);
 
   // Filter and sort state
   const [emailFilter, setEmailFilter] = useState('');
@@ -84,6 +116,40 @@ export default function UsersPage() {
       const data = await response.json();
       return data;
     },
+  });
+
+  // Get user AI keys when expanded
+  const { data: userAIKeys = [], isLoading: isLoadingUserAIKeys } = useQuery<PrivateAIKey[]>({
+    queryKey: ['user-ai-keys', expandedUserId],
+    queryFn: async () => {
+      if (!expandedUserId) return [];
+      const response = await get(`/private-ai-keys?owner_id=${expandedUserId}`);
+      return response.json();
+    },
+    enabled: !!expandedUserId,
+  });
+
+  // Get spend data for each key
+  const { data: spendMap = {} } = useQuery<Record<number, SpendInfo>>({
+    queryKey: ['user-ai-keys-spend', expandedUserId, userAIKeys],
+    queryFn: async () => {
+      if (!expandedUserId || userAIKeys.length === 0) return {};
+
+      const spendData: Record<number, SpendInfo> = {};
+
+      for (const key of userAIKeys) {
+        try {
+          const response = await get(`/private-ai-keys/${key.id}/spend`);
+          const spendInfo = await response.json();
+          spendData[key.id] = spendInfo;
+        } catch (error) {
+          console.error(`Failed to fetch spend data for key ${key.id}:`, error);
+        }
+      }
+
+      return spendData;
+    },
+    enabled: !!expandedUserId && userAIKeys.length > 0,
   });
 
   // Fetch teams
@@ -205,6 +271,17 @@ export default function UsersPage() {
     }
     return sortDirection === 'asc' ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />;
   };
+
+  // Handle user expansion
+  const toggleUserExpansion = (userId: string) => {
+    if (expandedUserId === userId) {
+      setExpandedUserId(null);
+    } else {
+      setExpandedUserId(userId);
+    }
+  };
+
+
 
   // Mutations
   const updateUserMutation = useMutation({
@@ -525,6 +602,7 @@ export default function UsersPage() {
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-10"></TableHead>
               <TableHead>ID</TableHead>
               <TableHead
                 className="cursor-pointer hover:bg-gray-50"
@@ -558,52 +636,150 @@ export default function UsersPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {paginatedData.map((user) => (
-              <TableRow key={user.id}>
-                <TableCell className="font-mono text-sm">{user.id}</TableCell>
-                <TableCell>{user.email}</TableCell>
-                <TableCell>
-                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                    user.is_active ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                  }`}>
-                    {user.is_active ? 'Active' : 'Inactive'}
-                  </span>
-                </TableCell>
-                <TableCell>
-                  {user.team_name || 'None'}
-                </TableCell>
-                <TableCell>
-                  {USER_ROLES.find(r => r.value === user.role)?.label || user.role}
-                </TableCell>
-                <TableCell>
-                  <div className="flex gap-2">
-                    <Button
-                      variant={user.is_admin ? "destructive" : "secondary"}
-                      size="sm"
-                      onClick={() => handleToggleAdmin(user.id, user.is_admin)}
-                      disabled={updateUserMutation.isPending}
-                    >
-                      {user.is_admin ? 'Remove Admin' : 'Make Admin'}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => handleUpdateRole(user.id, 'member')}
-                      disabled={updateUserRoleMutation.isPending}
-                    >
-                      Change Role
-                    </Button>
-                    <TableActionButtons
-                      showEdit={false}
-                      onDelete={() => handleDeleteUser(user.id)}
-                      deleteTitle="Are you sure?"
-                      deleteDescription="This action cannot be undone. This will permanently delete the user account and all associated data."
-                      isDeleting={deleteUserMutation.isPending}
-                    />
-                  </div>
+            {paginatedData.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={8} className="text-center py-6">
+                  No users found. Create a new user to get started.
                 </TableCell>
               </TableRow>
-            ))}
+            ) : (
+              paginatedData.map((user) => (
+                <React.Fragment key={user.id}>
+                  <TableRow
+                    className="cursor-pointer hover:bg-muted/50"
+                    onClick={() => toggleUserExpansion(user.id)}
+                  >
+                    <TableCell>
+                      {expandedUserId === user.id ? (
+                        <ChevronDown className="h-4 w-4" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4" />
+                      )}
+                    </TableCell>
+                    <TableCell className="font-mono text-sm">{user.id}</TableCell>
+                    <TableCell>{user.email}</TableCell>
+                    <TableCell>
+                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${user.is_active ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                        }`}>
+                        {user.is_active ? 'Active' : 'Inactive'}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      {user.team_name || 'None'}
+                    </TableCell>
+                    <TableCell>
+                      {USER_ROLES.find(r => r.value === user.role)?.label || user.role}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex gap-2">
+                        <Button
+                          variant={user.is_admin ? "destructive" : "secondary"}
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleToggleAdmin(user.id, user.is_admin);
+                          }}
+                          disabled={updateUserMutation.isPending}
+                        >
+                          {user.is_admin ? 'Remove Admin' : 'Make Admin'}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleUpdateRole(user.id, 'member');
+                          }}
+                          disabled={updateUserRoleMutation.isPending}
+                        >
+                          Change Role
+                        </Button>
+                        <TableActionButtons
+                          showEdit={false}
+                          onDelete={() => handleDeleteUser(user.id)}
+                          deleteTitle="Are you sure?"
+                          deleteDescription="This action cannot be undone. This will permanently delete the user account and all associated data."
+                          isDeleting={deleteUserMutation.isPending}
+                        />
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                  {expandedUserId === user.id && (
+                    <TableRow>
+                      <TableCell colSpan={8} className="p-0">
+                        <Collapsible open={expandedUserId === user.id}>
+                          <CollapsibleContent className="p-4 bg-muted/30">
+                            {isLoadingUserAIKeys ? (
+                              <div className="flex justify-center items-center py-8">
+                                <Loader2 className="h-8 w-8 animate-spin" />
+                              </div>
+                            ) : (
+                              <div className="space-y-4">
+                                <h3 className="text-lg font-medium">AI Keys</h3>
+                                {userAIKeys.length > 0 ? (
+                                  <div className="rounded-md border">
+                                    <Table>
+                                      <TableHeader>
+                                        <TableRow>
+                                          <TableHead>Name</TableHead>
+                                          <TableHead>Region</TableHead>
+                                          <TableHead>Database</TableHead>
+                                          <TableHead>Created At</TableHead>
+                                          <TableHead>Spend</TableHead>
+                                          <TableHead>Budget</TableHead>
+                                        </TableRow>
+                                      </TableHeader>
+                                      <TableBody>
+                                        {userAIKeys.map((key) => {
+                                          const spendInfo = spendMap[key.id];
+                                          return (
+                                            <TableRow key={key.id}>
+                                              <TableCell>{key.name}</TableCell>
+                                              <TableCell>{key.region}</TableCell>
+                                              <TableCell>{key.database_name}</TableCell>
+                                              <TableCell>
+                                                {new Date(key.created_at).toLocaleDateString()}
+                                              </TableCell>
+                                              <TableCell>
+                                                {spendInfo ? (
+                                                  <span>
+                                                    ${spendInfo.spend.toFixed(2)}
+                                                  </span>
+                                                ) : (
+                                                  <span className="text-muted-foreground">Loading...</span>
+                                                )}
+                                              </TableCell>
+                                              <TableCell>
+                                                {spendInfo?.max_budget ? (
+                                                  <span>
+                                                    ${spendInfo.max_budget.toFixed(2)}
+                                                  </span>
+                                                ) : (
+                                                  <span className="text-muted-foreground">No limit</span>
+                                                )}
+                                              </TableCell>
+
+                                            </TableRow>
+                                          );
+                                        })}
+                                      </TableBody>
+                                    </Table>
+                                  </div>
+                                ) : (
+                                  <div className="text-center py-8 border rounded-md">
+                                    <p className="text-muted-foreground">No AI keys found for this user.</p>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </CollapsibleContent>
+                        </Collapsible>
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </React.Fragment>
+              ))
+            )}
           </TableBody>
         </Table>
       </div>
