@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { Card, CardContent } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
@@ -10,11 +10,7 @@ import { CreateAIKeyDialog } from '@/components/create-ai-key-dialog';
 import { useAuth } from '@/hooks/use-auth';
 import { usePrivateAIKeysData } from '@/hooks/use-private-ai-keys-data';
 
-interface Region {
-  id: number;
-  name: string;
-  is_active: boolean;
-}
+
 
 interface PrivateAIKey {
   database_name: string;
@@ -39,7 +35,7 @@ export default function DashboardPage() {
   const [loadedSpendKeys, setLoadedSpendKeys] = useState<Set<number>>(new Set());
 
   // Fetch private AI keys using React Query
-  const { data: privateAIKeys = [], isLoading: isLoadingKeys } = useQuery<PrivateAIKey[]>({
+  const { data: privateAIKeys = [] } = useQuery<PrivateAIKey[]>({
     queryKey: ['private-ai-keys', user?.id],
     queryFn: async () => {
       if (!user) return [];
@@ -76,7 +72,7 @@ export default function DashboardPage() {
         description: 'Budget period updated successfully',
       });
     },
-    onError: (error: Error) => {
+    onError: () => {
       toast({
         title: 'Error',
         description: 'Failed to update budget period',
@@ -100,7 +96,7 @@ export default function DashboardPage() {
         description: 'Key deleted successfully',
       });
     },
-    onError: (error: Error) => {
+    onError: () => {
       toast({
         title: 'Error',
         description: 'Failed to delete key',
@@ -129,10 +125,10 @@ export default function DashboardPage() {
         description: 'Private AI key created successfully',
       });
     },
-    onError: (error: Error) => {
+    onError: () => {
       toast({
         title: 'Error',
-        description: error.message,
+        description: 'Failed to create key',
         variant: 'destructive',
       });
     },
@@ -191,7 +187,7 @@ export default function DashboardPage() {
         <Card>
           <CardContent className="p-6">
             <p className="text-center text-muted-foreground">
-              You don't have any private AI keys yet. Create your first key to get started.
+              You don&apos;t have any private AI keys yet. Create your first key to get started.
             </p>
           </CardContent>
         </Card>

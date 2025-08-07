@@ -20,12 +20,6 @@ interface SpendInfo {
   budget_reset_at: string | null;
 }
 
-interface Region {
-  id: number;
-  name: string;
-  is_active: boolean;
-}
-
 interface TeamUser {
   id: number;
   email: string;
@@ -68,8 +62,8 @@ export default function TeamAIKeysPage() {
   const createKeyMutation = useMutation({
     mutationFn: async (data: { name: string; region_id: number; owner_id?: number; team_id?: number; key_type: 'full' | 'llm' | 'vector' }) => {
       const endpoint = data.key_type === 'full' ? 'private-ai-keys' :
-                      data.key_type === 'llm' ? 'private-ai-keys/token' :
-                      'private-ai-keys/vector-db';
+        data.key_type === 'llm' ? 'private-ai-keys/token' :
+          'private-ai-keys/vector-db';
       const response = await post(endpoint, data, { credentials: 'include' });
       return response.json();
     },

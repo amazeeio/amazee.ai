@@ -5,7 +5,7 @@ import { format, parseISO } from 'date-fns';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { TableFilters, FilterField } from '@/components/ui/table-filters';
+
 import {
   Table,
   TableBody,
@@ -303,13 +303,12 @@ export default function AuditLogsPage() {
                     {log.user_email || 'Anonymous'}
                   </TableCell>
                   <TableCell>
-                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                      log.request_source === 'frontend'
+                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${log.request_source === 'frontend'
                         ? 'bg-green-100 text-green-800'
                         : log.request_source === 'api'
-                        ? 'bg-yellow-100 text-yellow-800'
-                        : 'bg-gray-100 text-gray-800'
-                    }`}>
+                          ? 'bg-yellow-100 text-yellow-800'
+                          : 'bg-gray-100 text-gray-800'
+                      }`}>
                       {log.request_source || 'Unknown'}
                     </span>
                   </TableCell>

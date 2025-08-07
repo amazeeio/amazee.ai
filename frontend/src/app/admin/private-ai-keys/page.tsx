@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useMemo } from 'react';
-import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query';
+import { useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Search } from 'lucide-react';
@@ -34,21 +34,7 @@ interface User {
   created_at: string;
 }
 
-interface Region {
-  id: number;
-  name: string;
-  is_active: boolean;
-}
 
-interface SpendInfo {
-  spend: number;
-  expires: string;
-  created_at: string;
-  updated_at: string;
-  max_budget: number | null;
-  budget_duration: string | null;
-  budget_reset_at: string | null;
-}
 
 export default function PrivateAIKeysPage() {
   const { toast } = useToast();
