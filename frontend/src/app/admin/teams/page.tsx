@@ -97,6 +97,32 @@ interface User {
   is_admin: boolean;
 }
 
+interface PrivateAIKey {
+  id: number;
+  name: string;
+  database_name: string;
+  database_host: string;
+  database_username: string;
+  database_password: string;
+  region: string;
+  created_at: string;
+  owner_id: number;
+  team_id?: number;
+  team_name?: string;
+  litellm_token?: string;
+  litellm_api_url?: string;
+}
+
+interface SpendInfo {
+  spend: number;
+  expires: string;
+  created_at: string;
+  updated_at: string;
+  max_budget: number | null;
+  budget_duration: string | null;
+  budget_reset_at: string | null;
+}
+
 type SortField = 'name' | 'admin_email' | 'is_active' | 'created_at' | null;
 type SortDirection = 'asc' | 'desc';
 
@@ -309,6 +335,53 @@ export default function TeamsPage() {
       const response = await get('/products');
       return response.json();
     },
+  });
+
+  // Get team AI keys when expanded
+  const { data: teamAIKeys = [], isLoading: isLoadingTeamAIKeys } = useQuery<PrivateAIKey[]>({
+    queryKey: ['team-ai-keys', expandedTeamId],
+    queryFn: async () => {
+      if (!expandedTeamId) return [];
+      const response = await get(`/private-ai-keys?team_id=${expandedTeamId}`);
+      return response.json();
+    },
+    enabled: !!expandedTeamId,
+  });
+
+  // Get users map for displaying owner emails
+  const { data: usersMap = {} } = useQuery<Record<number, User>>({
+    queryKey: ['users-map'],
+    queryFn: async () => {
+      const response = await get('/users');
+      const users: User[] = await response.json();
+      return users.reduce((acc, user) => ({
+        ...acc,
+        [user.id]: user
+      }), {});
+    },
+  });
+
+  // Get spend data for each key
+  const { data: spendMap = {} } = useQuery<Record<number, SpendInfo>>({
+    queryKey: ['team-ai-keys-spend', expandedTeamId, teamAIKeys],
+    queryFn: async () => {
+      if (!expandedTeamId || teamAIKeys.length === 0) return {};
+
+      const spendData: Record<number, SpendInfo> = {};
+
+      for (const key of teamAIKeys) {
+        try {
+          const response = await get(`/private-ai-keys/${key.id}/spend`);
+          const spendInfo = await response.json();
+          spendData[key.id] = spendInfo;
+        } catch (error) {
+          console.error(`Failed to fetch spend data for key ${key.id}:`, error);
+        }
+      }
+
+      return spendData;
+    },
+    enabled: !!expandedTeamId && teamAIKeys.length > 0,
   });
 
   // Search users query
@@ -890,6 +963,7 @@ export default function TeamsPage() {
                                         <TabsTrigger value="details">Team Details</TabsTrigger>
                                         <TabsTrigger value="users">Users</TabsTrigger>
                                         <TabsTrigger value="products">Products</TabsTrigger>
+                                        <TabsTrigger value="shared-keys">Shared Keys</TabsTrigger>
                                       </TabsList>
                                       <TabsContent value="details" className="mt-4">
                                         <Card>
@@ -1135,6 +1209,78 @@ export default function TeamsPage() {
                                           ) : (
                                             <div className="text-center py-8 border rounded-md">
                                               <p className="text-muted-foreground">No products associated with this team.</p>
+                                            </div>
+                                          )}
+                                        </div>
+                                      </TabsContent>
+                                      <TabsContent value="shared-keys" className="mt-4">
+                                        <div className="space-y-4">
+                                          {isLoadingTeamAIKeys ? (
+                                            <div className="flex justify-center items-center py-8">
+                                              <Loader2 className="h-8 w-8 animate-spin" />
+                                            </div>
+                                          ) : teamAIKeys.length > 0 ? (
+                                            <div className="rounded-md border">
+                                              <Table>
+                                                <TableHeader>
+                                                  <TableRow>
+                                                    <TableHead>Name</TableHead>
+                                                    <TableHead>Owner</TableHead>
+                                                    <TableHead>Region</TableHead>
+                                                    <TableHead>Database</TableHead>
+                                                    <TableHead>Created At</TableHead>
+                                                    <TableHead>Spend</TableHead>
+                                                    <TableHead>Budget</TableHead>
+                                                  </TableRow>
+                                                </TableHeader>
+                                                <TableBody>
+                                                  {teamAIKeys.map((key) => {
+                                                    const spendInfo = spendMap[key.id];
+                                                    const owner = usersMap[key.owner_id];
+                                                    return (
+                                                      <TableRow key={key.id}>
+                                                        <TableCell>{key.name}</TableCell>
+                                                        <TableCell>
+                                                          {key.owner_id ? (
+                                                            owner ? owner.email : `User ${key.owner_id}`
+                                                          ) : key.team_id ? (
+                                                            <span>(Team) {expandedTeam?.name || 'Team (Shared)'}</span>
+                                                          ) : (
+                                                            <span className="text-muted-foreground">Unknown</span>
+                                                          )}
+                                                        </TableCell>
+                                                        <TableCell>{key.region}</TableCell>
+                                                        <TableCell>{key.database_name}</TableCell>
+                                                        <TableCell>
+                                                          {new Date(key.created_at).toLocaleDateString()}
+                                                        </TableCell>
+                                                        <TableCell>
+                                                          {spendInfo ? (
+                                                            <span>
+                                                              ${spendInfo.spend.toFixed(2)}
+                                                            </span>
+                                                          ) : (
+                                                            <span className="text-muted-foreground">Loading...</span>
+                                                          )}
+                                                        </TableCell>
+                                                        <TableCell>
+                                                          {spendInfo?.max_budget ? (
+                                                            <span>
+                                                              ${spendInfo.max_budget.toFixed(2)}
+                                                            </span>
+                                                          ) : (
+                                                            <span className="text-muted-foreground">No limit</span>
+                                                          )}
+                                                        </TableCell>
+                                                      </TableRow>
+                                                    );
+                                                  })}
+                                                </TableBody>
+                                              </Table>
+                                            </div>
+                                          ) : (
+                                            <div className="text-center py-8 border rounded-md">
+                                              <p className="text-muted-foreground">No shared AI keys found for this team.</p>
                                             </div>
                                           )}
                                         </div>
