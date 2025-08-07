@@ -213,6 +213,14 @@ export default function ProductsPage() {
   });
 
   const handleCreate = () => {
+    if (!formData.id?.trim() || !formData.name?.trim()) {
+      toast({
+        variant: "destructive",
+        title: "Validation Error",
+        description: "Product ID and Name are required fields"
+      });
+      return;
+    }
     createProductMutation.mutate(formData);
   };
 
@@ -344,20 +352,23 @@ export default function ProductsPage() {
               </DialogHeader>
               <div className="grid grid-cols-2 gap-4">
                 <div className="col-span-2">
-                  <Label htmlFor="id">Product ID (Stripe ID)</Label>
+                  <Label htmlFor="id">Product ID (Stripe ID) *</Label>
                   <Input
                     id="id"
                     placeholder="prod_XXX"
                     value={formData.id || ''}
                     onChange={(e) => updateFormData({ ...formData, id: e.target.value })}
+                    required
                   />
                 </div>
                 <div className="col-span-2">
-                  <Label htmlFor="name">Name</Label>
+                  <Label htmlFor="name">Name *</Label>
                   <Input
                     id="name"
+                    placeholder="Enter product name"
                     value={formData.name || ''}
                     onChange={(e) => updateFormData({ ...formData, name: e.target.value })}
+                    required
                   />
                 </div>
                 <div>
@@ -457,7 +468,12 @@ export default function ProductsPage() {
                 </div>
               </div>
               <div className="mt-4 flex justify-end">
-                <Button onClick={handleCreate}>Create</Button>
+                <Button
+                  onClick={handleCreate}
+                  disabled={!formData.id?.trim() || !formData.name?.trim()}
+                >
+                  Create
+                </Button>
               </div>
             </DialogContent>
           </Dialog>
