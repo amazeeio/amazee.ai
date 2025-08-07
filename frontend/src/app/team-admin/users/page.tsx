@@ -89,6 +89,7 @@ export default function TeamUsersPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['team-users'] });
+      queryClient.refetchQueries({ queryKey: ['team-users'], exact: true });
       setIsAddingUser(false);
       setNewUserEmail('');
       setNewUserPassword('');
@@ -114,6 +115,7 @@ export default function TeamUsersPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['team-users'] });
+      queryClient.refetchQueries({ queryKey: ['team-users'], exact: true });
       toast({
         title: 'Success',
         description: 'User role updated successfully',
@@ -135,6 +137,7 @@ export default function TeamUsersPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['team-users'] });
+      queryClient.refetchQueries({ queryKey: ['team-users'], exact: true });
       toast({
         title: 'Success',
         description: 'User removed from team successfully',

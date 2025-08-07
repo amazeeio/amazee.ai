@@ -75,6 +75,7 @@ export default function TeamAIKeysPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
+      queryClient.refetchQueries({ queryKey: ['private-ai-keys'], exact: true });
       setIsAddingKey(false);
       toast({
         title: 'Success',
@@ -97,6 +98,7 @@ export default function TeamAIKeysPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
+      queryClient.refetchQueries({ queryKey: ['private-ai-keys'], exact: true });
       toast({
         title: 'Success',
         description: 'AI key deleted successfully',

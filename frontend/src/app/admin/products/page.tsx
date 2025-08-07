@@ -102,6 +102,7 @@ export default function ProductsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.refetchQueries({ queryKey: ['products'], exact: true });
       setIsCreateDialogOpen(false);
       setFormData({});
       toast({
@@ -125,6 +126,7 @@ export default function ProductsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.refetchQueries({ queryKey: ['products'], exact: true });
       setIsEditDialogOpen(false);
       setSelectedProduct(null);
       setFormData({});
@@ -148,6 +150,7 @@ export default function ProductsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.refetchQueries({ queryKey: ['products'], exact: true });
       toast({
         title: "Success",
         description: "Product deleted successfully"
@@ -170,6 +173,7 @@ export default function ProductsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pricing-tables'] });
+      queryClient.refetchQueries({ queryKey: ['pricing-tables'], exact: true });
       setIsPricingTableDialogOpen(false);
       setPricingTableId('');
       setPricingTableType('standard');
@@ -193,6 +197,7 @@ export default function ProductsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pricing-tables'] });
+      queryClient.refetchQueries({ queryKey: ['pricing-tables'], exact: true });
       toast({
         title: "Success",
         description: "Pricing table deleted successfully"

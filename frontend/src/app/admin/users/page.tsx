@@ -215,6 +215,7 @@ export default function UsersPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] });
+      queryClient.refetchQueries({ queryKey: ['users'], exact: true });
       toast({
         title: 'Success',
         description: 'User updated successfully',
@@ -237,6 +238,7 @@ export default function UsersPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] });
+      queryClient.refetchQueries({ queryKey: ['users'], exact: true });
       toast({
         title: 'Success',
         description: 'User role updated successfully',
@@ -264,6 +266,7 @@ export default function UsersPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] });
+      queryClient.refetchQueries({ queryKey: ['users'], exact: true });
       setIsAddingUser(false);
       setNewUserEmail('');
       setNewUserPassword('');
@@ -292,6 +295,7 @@ export default function UsersPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] });
+      queryClient.refetchQueries({ queryKey: ['users'], exact: true });
       toast({
         title: 'Success',
         description: 'User deleted successfully',

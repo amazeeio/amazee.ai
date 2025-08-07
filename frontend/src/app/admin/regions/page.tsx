@@ -115,6 +115,7 @@ export default function RegionsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['regions'] });
+      queryClient.refetchQueries({ queryKey: ['regions'], exact: true });
       setIsAddingRegion(false);
       setNewRegion({
         name: '',
@@ -146,6 +147,7 @@ export default function RegionsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['regions'] });
+      queryClient.refetchQueries({ queryKey: ['regions'], exact: true });
       toast({
         title: 'Success',
         description: 'Region deleted successfully',
@@ -198,6 +200,7 @@ export default function RegionsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['regions'] });
+      queryClient.refetchQueries({ queryKey: ['regions'], exact: true });
       setIsEditingRegion(false);
       setEditingRegion(null);
       toast({
@@ -220,6 +223,7 @@ export default function RegionsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['region-teams', selectedRegionForTeams?.id] });
+      queryClient.refetchQueries({ queryKey: ['region-teams', selectedRegionForTeams?.id], exact: true });
       setSelectedTeamId('');
       toast({
         title: 'Success',
@@ -241,6 +245,7 @@ export default function RegionsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['region-teams', selectedRegionForTeams?.id] });
+      queryClient.refetchQueries({ queryKey: ['region-teams', selectedRegionForTeams?.id], exact: true });
       toast({
         title: 'Success',
         description: 'Team removed from region successfully',

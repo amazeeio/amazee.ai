@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useCallback, useEffect } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { Card, CardContent } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
 import { get, post } from '@/utils/api';
@@ -36,82 +36,78 @@ export default function DashboardPage() {
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
-  const [privateAIKeys, setPrivateAIKeys] = useState<PrivateAIKey[]>([]);
-  const [isDeleting, setIsDeleting] = useState(false);
-  const [isUpdatingBudget, setIsUpdatingBudget] = useState(false);
   const [loadedSpendKeys, setLoadedSpendKeys] = useState<Set<number>>(new Set());
+
+  // Fetch private AI keys using React Query
+  const { data: privateAIKeys = [], isLoading: isLoadingKeys } = useQuery<PrivateAIKey[]>({
+    queryKey: ['private-ai-keys', user?.id],
+    queryFn: async () => {
+      if (!user) return [];
+      const response = await get(`/private-ai-keys?owner_id=${user.id}`);
+      const data = await response.json();
+      return data;
+    },
+    enabled: !!user,
+    staleTime: 0, // Always consider data stale to ensure immediate refetch
+    refetchOnWindowFocus: false, // Prevent unnecessary refetches
+  });
 
   // Use shared hook for data fetching
   const { teamDetails, teamMembers, spendMap, regions } = usePrivateAIKeysData(privateAIKeys, loadedSpendKeys);
-
-  // Fetch private AI keys - only show keys owned by current user or their team
-  const fetchKeys = useCallback(async () => {
-    if (!user) return;
-
-    try {
-      // Filter by owner_id to only show keys owned by the current user
-      const response = await get(`/private-ai-keys?owner_id=${user.id}`);
-      const data = await response.json();
-      setPrivateAIKeys(data);
-    } catch (error) {
-      console.error('Error fetching private AI keys:', error);
-      toast({
-        title: 'Error',
-        description: 'Failed to fetch your private AI keys',
-        variant: 'destructive',
-      });
-    }
-  }, [toast, user]);
 
   // Load spend for a key
   const loadSpend = useCallback(async (keyId: number) => {
     setLoadedSpendKeys(prev => new Set([...prev, keyId]));
   }, []);
 
-  // Update budget period
-  const updateBudget = useCallback(async (keyId: number, budgetDuration: string) => {
-    setIsUpdatingBudget(true);
-    try {
-      await post(`/private-ai-keys/${keyId}/budget-period`, { budget_duration: budgetDuration });
+  // Update budget period mutation
+  const updateBudgetMutation = useMutation({
+    mutationFn: async ({ keyId, budgetDuration }: { keyId: number; budgetDuration: string }) => {
+      const response = await post(`/private-ai-keys/${keyId}/budget-period`, { budget_duration: budgetDuration });
+      return response.json();
+    },
+    onSuccess: (_, { keyId }) => {
       // Refresh spend data
       setLoadedSpendKeys(prev => new Set([...prev, keyId]));
+      // Invalidate spend queries
+      queryClient.invalidateQueries({ queryKey: ['private-ai-keys-spend'] });
       toast({
         title: 'Success',
         description: 'Budget period updated successfully',
       });
-    } catch (error) {
-      console.error('Error updating budget:', error);
+    },
+    onError: (error: Error) => {
       toast({
         title: 'Error',
         description: 'Failed to update budget period',
         variant: 'destructive',
       });
-    } finally {
-      setIsUpdatingBudget(false);
-    }
-  }, [toast]);
+    },
+  });
 
-  // Delete key
-  const deleteKey = useCallback(async (keyId: number) => {
-    setIsDeleting(true);
-    try {
-      await post(`/private-ai-keys/${keyId}/delete`, {});
-      await fetchKeys();
+  // Delete key mutation
+  const deleteKeyMutation = useMutation({
+    mutationFn: async (keyId: number) => {
+      const response = await post(`/private-ai-keys/${keyId}/delete`, {});
+      return response.json();
+    },
+    onSuccess: () => {
+      // Invalidate and refetch the private AI keys query
+      queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
+      queryClient.refetchQueries({ queryKey: ['private-ai-keys'], exact: true });
       toast({
         title: 'Success',
         description: 'Key deleted successfully',
       });
-    } catch (error) {
-      console.error('Error deleting key:', error);
+    },
+    onError: (error: Error) => {
       toast({
         title: 'Error',
         description: 'Failed to delete key',
         variant: 'destructive',
       });
-    } finally {
-      setIsDeleting(false);
-    }
-  }, [toast, fetchKeys]);
+    },
+  });
 
   // Create key mutation
   const createKeyMutation = useMutation({
@@ -123,8 +119,10 @@ export default function DashboardPage() {
       const data = await response.json();
       return data;
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
+    onSuccess: () => {
+      // Invalidate and refetch the private AI keys query
+      queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
+      queryClient.refetchQueries({ queryKey: ['private-ai-keys'], exact: true });
       setIsCreateDialogOpen(false);
       toast({
         title: 'Success',
@@ -154,10 +152,6 @@ export default function DashboardPage() {
     });
   };
 
-  useEffect(() => {
-    void fetchKeys();
-  }, [fetchKeys]);
-
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
@@ -180,15 +174,15 @@ export default function DashboardPage() {
 
       <PrivateAIKeysTable
         keys={privateAIKeys}
-        onDelete={deleteKey}
+        onDelete={(keyId) => deleteKeyMutation.mutate(keyId)}
         isLoading={createKeyMutation.isPending}
         showOwner={true}
         allowModification={false}
         spendMap={spendMap}
         onLoadSpend={loadSpend}
-        onUpdateBudget={updateBudget}
-        isDeleting={isDeleting}
-        isUpdatingBudget={isUpdatingBudget}
+        onUpdateBudget={(keyId, budgetDuration) => updateBudgetMutation.mutate({ keyId, budgetDuration })}
+        isDeleting={deleteKeyMutation.isPending}
+        isUpdatingBudget={updateBudgetMutation.isPending}
         teamDetails={teamDetails}
         teamMembers={teamMembers}
       />

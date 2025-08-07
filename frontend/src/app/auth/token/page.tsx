@@ -43,6 +43,7 @@ export default function APITokensPage() {
     },
     onSuccess: (newToken) => {
       queryClient.invalidateQueries({ queryKey: ['tokens'] });
+      queryClient.refetchQueries({ queryKey: ['tokens'], exact: true });
       setShowNewToken(newToken);
       setNewTokenName('');
       toast({
@@ -65,6 +66,7 @@ export default function APITokensPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tokens'] });
+      queryClient.refetchQueries({ queryKey: ['tokens'], exact: true });
       toast({
         title: 'Success',
         description: 'Token deleted successfully',

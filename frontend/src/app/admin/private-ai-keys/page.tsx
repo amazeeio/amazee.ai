@@ -140,6 +140,7 @@ export default function PrivateAIKeysPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
+      queryClient.refetchQueries({ queryKey: ['private-ai-keys'], exact: true });
       setIsCreateDialogOpen(false);
       toast({
         title: 'Success',
@@ -161,6 +162,7 @@ export default function PrivateAIKeysPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
+      queryClient.refetchQueries({ queryKey: ['private-ai-keys'], exact: true });
       toast({
         title: 'Success',
         description: 'Private AI key deleted successfully',

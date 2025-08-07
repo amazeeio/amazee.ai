@@ -158,6 +158,8 @@ export default function TeamsPage() {
       const data = await response.json();
       return data;
     },
+    staleTime: 0, // Always consider data stale to ensure immediate refetch
+    refetchOnWindowFocus: false, // Prevent unnecessary refetches
   });
 
   // Filtered and sorted teams
@@ -366,7 +368,7 @@ export default function TeamsPage() {
       // Invalidate and refetch the teams query to reload the list
       queryClient.invalidateQueries({ queryKey: ['teams'] });
       // Force a refetch to ensure we have the latest data
-      queryClient.refetchQueries({ queryKey: ['teams'] });
+      queryClient.refetchQueries({ queryKey: ['teams'], exact: true });
 
       toast({
         title: 'Success',
