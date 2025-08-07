@@ -243,7 +243,7 @@ export default function ProductsPage() {
   } = useTablePagination(products, 10);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold">Product Management</h1>
         <div className="space-x-4">

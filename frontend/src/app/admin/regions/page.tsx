@@ -328,7 +328,7 @@ export default function RegionsPage() {
   } = useTablePagination(regions, 10);
 
   return (
-    <div>
+    <div className="space-y-4">
       {isLoadingRegions ? (
         <div className="flex items-center justify-center min-h-[400px]">
           <Loader2 className="h-8 w-8 animate-spin" />
@@ -336,7 +336,7 @@ export default function RegionsPage() {
       ) : (
         <>
           <div className="flex items-center justify-between">
-            <h1 className="text-2xl font-bold">Regions</h1>
+            <h1 className="text-3xl font-bold">Regions</h1>
             <Dialog open={isAddingRegion} onOpenChange={setIsAddingRegion}>
               <DialogTrigger asChild>
                 <Button>Add Region</Button>
