@@ -8,6 +8,7 @@ import { get, post } from '@/utils/api';
 import { PrivateAIKeysTable } from '@/components/private-ai-keys-table';
 import { CreateAIKeyDialog } from '@/components/create-ai-key-dialog';
 import { useAuth } from '@/hooks/use-auth';
+import { usePrivateAIKeysData } from '@/hooks/use-private-ai-keys-data';
 
 interface Region {
   id: number;
@@ -35,74 +36,45 @@ export default function DashboardPage() {
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
-  const [regions, setRegions] = useState<Region[]>([]);
   const [privateAIKeys, setPrivateAIKeys] = useState<PrivateAIKey[]>([]);
-  const [spendMap, setSpendMap] = useState<Record<number, {
-    spend: number;
-    max_budget: number | null;
-    budget_duration: string | null;
-    budget_reset_at: string | null;
-  }>>({});
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUpdatingBudget, setIsUpdatingBudget] = useState(false);
+  const [loadedSpendKeys, setLoadedSpendKeys] = useState<Set<number>>(new Set());
 
-  // Fetch regions
-  const fetchRegions = useCallback(async () => {
-    try {
-      const response = await get('regions');
-      const data = await response.json();
-      setRegions(data);
-    } catch (error) {
-      console.error('Error fetching regions:', error);
-      toast({
-        title: 'Error',
-        description: 'Failed to fetch regions',
-        variant: 'destructive',
-      });
-    }
-  }, [toast]);
+  // Use shared hook for data fetching
+  const { teamDetails, teamMembers, spendMap, regions } = usePrivateAIKeysData(privateAIKeys, loadedSpendKeys);
 
-  // Fetch private AI keys
+  // Fetch private AI keys - only show keys owned by current user or their team
   const fetchKeys = useCallback(async () => {
+    if (!user) return;
+
     try {
-      const response = await get('/private-ai-keys');
+      // Filter by owner_id to only show keys owned by the current user
+      const response = await get(`/private-ai-keys?owner_id=${user.id}`);
       const data = await response.json();
       setPrivateAIKeys(data);
     } catch (error) {
       console.error('Error fetching private AI keys:', error);
       toast({
         title: 'Error',
-        description: 'Failed to fetch private AI keys',
+        description: 'Failed to fetch your private AI keys',
         variant: 'destructive',
       });
     }
-  }, [toast]);
+  }, [toast, user]);
 
   // Load spend for a key
   const loadSpend = useCallback(async (keyId: number) => {
-    try {
-      const response = await get(`/private-ai-keys/${keyId}/spend`);
-      const data = await response.json();
-      setSpendMap(prev => ({
-        ...prev,
-        [keyId]: data
-      }));
-    } catch (error) {
-      console.error('Error loading spend:', error);
-      toast({
-        title: 'Error',
-        description: 'Failed to load spend information',
-        variant: 'destructive',
-      });
-    }
-  }, [toast]);
+    setLoadedSpendKeys(prev => new Set([...prev, keyId]));
+  }, []);
 
   // Update budget period
   const updateBudget = useCallback(async (keyId: number, budgetDuration: string) => {
     setIsUpdatingBudget(true);
     try {
       await post(`/private-ai-keys/${keyId}/budget-period`, { budget_duration: budgetDuration });
-      await loadSpend(keyId);
+      // Refresh spend data
+      setLoadedSpendKeys(prev => new Set([...prev, keyId]));
       toast({
         title: 'Success',
         description: 'Budget period updated successfully',
@@ -117,7 +89,7 @@ export default function DashboardPage() {
     } finally {
       setIsUpdatingBudget(false);
     }
-  }, [toast, loadSpend]);
+  }, [toast]);
 
   // Delete key
   const deleteKey = useCallback(async (keyId: number) => {
@@ -183,14 +155,13 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
-    void fetchRegions();
     void fetchKeys();
-  }, [fetchRegions, fetchKeys]);
+  }, [fetchKeys]);
 
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
-        <h1 className="text-3xl font-bold">Private AI Keys</h1>
+        <h1 className="text-3xl font-bold">My Private AI Keys</h1>
         {user?.role !== 'read_only' && user && (
           <CreateAIKeyDialog
             open={isCreateDialogOpen}
@@ -211,20 +182,22 @@ export default function DashboardPage() {
         keys={privateAIKeys}
         onDelete={deleteKey}
         isLoading={createKeyMutation.isPending}
-        showOwner={false}
+        showOwner={true}
         allowModification={false}
         spendMap={spendMap}
         onLoadSpend={loadSpend}
         onUpdateBudget={updateBudget}
         isDeleting={isDeleting}
         isUpdatingBudget={isUpdatingBudget}
+        teamDetails={teamDetails}
+        teamMembers={teamMembers}
       />
 
       {privateAIKeys.length === 0 && (
         <Card>
           <CardContent className="p-6">
             <p className="text-center text-muted-foreground">
-              No private AI keys found. Keys will appear here once they are created.
+              You don't have any private AI keys yet. Create your first key to get started.
             </p>
           </CardContent>
         </Card>

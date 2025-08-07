@@ -23,6 +23,7 @@ import {
 import { PrivateAIKeysTable } from '@/components/private-ai-keys-table';
 import { CreateAIKeyDialog } from '@/components/create-ai-key-dialog';
 import { PrivateAIKey } from '@/types/private-ai-key';
+import { usePrivateAIKeysData } from '@/hooks/use-private-ai-keys-data';
 
 interface User {
   id: number;
@@ -74,33 +75,8 @@ export default function PrivateAIKeysPage() {
     refetchIntervalInBackground: true, // Continue polling even when tab is not active
   });
 
-  // Fetch regions for create dialog
-  const { data: regions = [] } = useQuery<Region[]>({
-    queryKey: ['regions'],
-    queryFn: async () => {
-      const response = await get('/regions');
-      const data = await response.json();
-      return data;
-    },
-  });
-
-  // Get unique team IDs from the keys
-  const teamIds = Array.from(new Set(privateAIKeys.filter(key => key.team_id).map(key => key.team_id)));
-
-  // Fetch team details for each team ID
-  const { data: teamDetails = {} } = useQuery({
-    queryKey: ['team-details', teamIds],
-    queryFn: async () => {
-      const teamPromises = teamIds.map(async (teamId) => {
-        const response = await get(`teams/${teamId}`);
-        const data = await response.json();
-        return [teamId, data];
-      });
-      const teamResults = await Promise.all(teamPromises);
-      return Object.fromEntries(teamResults);
-    },
-    enabled: teamIds.length > 0,
-  });
+  // Use shared hook for data fetching
+  const { teamDetails, teamMembers, spendMap, regions } = usePrivateAIKeysData(privateAIKeys, loadedSpendKeys);
 
   // Query to get all users for displaying emails
   const { data: usersMap = {} } = useQuery<Record<number, User>>({
@@ -152,31 +128,6 @@ export default function PrivateAIKeysPage() {
       });
     }
   };
-
-  // Query to get spend information for each key
-  const spendQueries = useQueries({
-    queries: privateAIKeys
-      .filter(key => loadedSpendKeys.has(key.id))
-      .map((key) => ({
-        queryKey: ['private-ai-key-spend', key.id],
-        queryFn: async () => {
-          const response = await get(`/private-ai-keys/${key.id}/spend`);
-          const data = await response.json();
-          return data as SpendInfo;
-        },
-        refetchInterval: 60000, // Refetch every minute
-      })),
-  });
-
-  // Create a map of spend information
-  const spendMap = useMemo(() => {
-    return spendQueries.reduce((acc, query, index) => {
-      if (query.data) {
-        acc[privateAIKeys.filter(key => loadedSpendKeys.has(key.id))[index].id] = query.data;
-      }
-      return acc;
-    }, {} as Record<number, SpendInfo>);
-  }, [spendQueries, privateAIKeys, loadedSpendKeys]);
 
   // Mutations
   const createKeyMutation = useMutation({
@@ -352,7 +303,7 @@ export default function PrivateAIKeysPage() {
         }}
         isUpdatingBudget={updateBudgetPeriodMutation.isPending}
         teamDetails={teamDetails}
-        teamMembers={Object.values(usersMap)}
+        teamMembers={teamMembers}
       />
     </div>
   );
