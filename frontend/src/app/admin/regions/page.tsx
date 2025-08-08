@@ -12,6 +12,8 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  TablePagination,
+  useTablePagination,
 } from '@/components/ui/table';
 import {
   Dialog,
@@ -22,17 +24,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog';
+import { TableActionButtons } from '@/components/ui/table-action-buttons';
 import {
   Select,
   SelectContent,
@@ -123,6 +115,7 @@ export default function RegionsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['regions'] });
+      queryClient.refetchQueries({ queryKey: ['regions'], exact: true });
       setIsAddingRegion(false);
       setNewRegion({
         name: '',
@@ -154,6 +147,7 @@ export default function RegionsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['regions'] });
+      queryClient.refetchQueries({ queryKey: ['regions'], exact: true });
       toast({
         title: 'Success',
         description: 'Region deleted successfully',
@@ -206,6 +200,7 @@ export default function RegionsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['regions'] });
+      queryClient.refetchQueries({ queryKey: ['regions'], exact: true });
       setIsEditingRegion(false);
       setEditingRegion(null);
       toast({
@@ -228,6 +223,7 @@ export default function RegionsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['region-teams', selectedRegionForTeams?.id] });
+      queryClient.refetchQueries({ queryKey: ['region-teams', selectedRegionForTeams?.id], exact: true });
       setSelectedTeamId('');
       toast({
         title: 'Success',
@@ -249,6 +245,7 @@ export default function RegionsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['region-teams', selectedRegionForTeams?.id] });
+      queryClient.refetchQueries({ queryKey: ['region-teams', selectedRegionForTeams?.id], exact: true });
       toast({
         title: 'Success',
         description: 'Team removed from region successfully',
@@ -324,8 +321,19 @@ export default function RegionsPage() {
     team => !regionTeams.some(regionTeam => regionTeam.id === team.id)
   );
 
+  // Pagination
+  const {
+    currentPage,
+    pageSize,
+    totalPages,
+    totalItems,
+    paginatedData,
+    goToPage,
+    changePageSize,
+  } = useTablePagination(regions, 10);
+
   return (
-    <div>
+    <div className="space-y-4">
       {isLoadingRegions ? (
         <div className="flex items-center justify-center min-h-[400px]">
           <Loader2 className="h-8 w-8 animate-spin" />
@@ -333,7 +341,7 @@ export default function RegionsPage() {
       ) : (
         <>
           <div className="flex items-center justify-between">
-            <h1 className="text-2xl font-bold">Regions</h1>
+            <h1 className="text-3xl font-bold">Regions</h1>
             <Dialog open={isAddingRegion} onOpenChange={setIsAddingRegion}>
               <DialogTrigger asChild>
                 <Button>Add Region</Button>
@@ -460,7 +468,7 @@ export default function RegionsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {regions.map((region) => (
+                {paginatedData.map((region) => (
                   <TableRow key={region.id}>
                     <TableCell>{region.name}</TableCell>
                     <TableCell>{region.postgres_host}</TableCell>
@@ -491,49 +499,29 @@ export default function RegionsPage() {
                         <span className="text-gray-500 text-sm">N/A</span>
                       )}
                     </TableCell>
-                    <TableCell className="space-x-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => handleEditRegion(region)}
-                      >
-                        Edit
-                      </Button>
-                      <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                          <Button variant="destructive" size="sm">Delete</Button>
-                        </AlertDialogTrigger>
-                        <AlertDialogContent>
-                          <AlertDialogHeader>
-                            <AlertDialogTitle>Delete Region</AlertDialogTitle>
-                            <AlertDialogDescription>
-                              Are you sure you want to delete this region? This action cannot be undone.
-                            </AlertDialogDescription>
-                          </AlertDialogHeader>
-                          <AlertDialogFooter>
-                            <AlertDialogCancel>Cancel</AlertDialogCancel>
-                            <AlertDialogAction
-                              onClick={() => deleteRegionMutation.mutate(region.id)}
-                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                            >
-                              {deleteRegionMutation.isPending ? (
-                                <>
-                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                  Deleting...
-                                </>
-                              ) : (
-                                'Delete'
-                              )}
-                            </AlertDialogAction>
-                          </AlertDialogFooter>
-                        </AlertDialogContent>
-                      </AlertDialog>
+                    <TableCell>
+                      <TableActionButtons
+                        onEdit={() => handleEditRegion(region)}
+                        onDelete={() => deleteRegionMutation.mutate(region.id)}
+                        deleteTitle="Delete Region"
+                        deleteDescription="Are you sure you want to delete this region? This action cannot be undone."
+                        isDeleting={deleteRegionMutation.isPending}
+                      />
                     </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
           </div>
+
+          <TablePagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            pageSize={pageSize}
+            totalItems={totalItems}
+            onPageChange={goToPage}
+            onPageSizeChange={changePageSize}
+          />
 
           {/* Edit Region Dialog */}
           <Dialog open={isEditingRegion} onOpenChange={setIsEditingRegion}>

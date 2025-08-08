@@ -7,18 +7,10 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  TablePagination,
+  useTablePagination,
 } from '@/components/ui/table';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog';
+import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
 import {
   Dialog,
   DialogContent,
@@ -28,18 +20,13 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Eye, EyeOff, Pencil, Loader2, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import { formatTimeUntil } from '@/lib/utils';
 import { PrivateAIKey } from '@/types/private-ai-key';
+import { TableFilters, FilterField } from '@/components/ui/table-filters';
 
 type SortField = 'name' | 'region' | 'owner' | null;
 type SortDirection = 'asc' | 'desc';
@@ -84,6 +71,8 @@ export function PrivateAIKeysTable({
   const [sortField, setSortField] = useState<SortField>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [keyTypeFilter, setKeyTypeFilter] = useState<KeyType>('all');
+  const [nameFilter, setNameFilter] = useState('');
+  const [regionFilter, setRegionFilter] = useState('');
 
   const togglePasswordVisibility = (keyId: number | string) => {
     setShowPassword(prev => ({
@@ -101,8 +90,28 @@ export function PrivateAIKeysTable({
     }
   };
 
+  const clearFilters = () => {
+    setNameFilter('');
+    setRegionFilter('');
+    setKeyTypeFilter('all');
+  };
+
   const getSortedAndFilteredKeys = () => {
     let filteredKeys = keys;
+
+    // Apply name filter
+    if (nameFilter.trim()) {
+      filteredKeys = filteredKeys.filter(key =>
+        key.name?.toLowerCase().includes(nameFilter.toLowerCase())
+      );
+    }
+
+    // Apply region filter
+    if (regionFilter.trim()) {
+      filteredKeys = filteredKeys.filter(key =>
+        key.region?.toLowerCase().includes(regionFilter.toLowerCase())
+      );
+    }
 
     // Apply key type filter
     if (keyTypeFilter !== 'all') {
@@ -156,6 +165,56 @@ export function PrivateAIKeysTable({
     return filteredKeys;
   };
 
+  const hasActiveFilters = Boolean(nameFilter.trim() || regionFilter.trim() || keyTypeFilter !== 'all');
+
+  // Filter fields configuration
+  const filterFields: FilterField[] = [
+    {
+      key: 'name',
+      label: 'Filter by Name',
+      type: 'search',
+      placeholder: 'Filter by name...',
+      value: nameFilter,
+      onChange: setNameFilter,
+    },
+    {
+      key: 'region',
+      label: 'Filter by Region',
+      type: 'search',
+      placeholder: 'Filter by region...',
+      value: regionFilter,
+      onChange: setRegionFilter,
+    },
+    {
+      key: 'type',
+      label: 'Filter by Type',
+      type: 'select',
+      placeholder: 'Filter by type',
+      value: keyTypeFilter,
+      onChange: (value: string) => setKeyTypeFilter(value as KeyType),
+      options: [
+        { value: 'all', label: 'All Keys' },
+        { value: 'full', label: 'Full Keys' },
+        { value: 'llm', label: 'LLM Only' },
+        { value: 'vector', label: 'Vector DB Only' },
+      ],
+    },
+  ];
+
+  // Get filtered and sorted keys
+  const filteredAndSortedKeys = getSortedAndFilteredKeys();
+
+  // Pagination
+  const {
+    currentPage,
+    pageSize,
+    totalPages,
+    totalItems,
+    paginatedData,
+    goToPage,
+    changePageSize,
+  } = useTablePagination(filteredAndSortedKeys, 10);
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
@@ -166,19 +225,13 @@ export function PrivateAIKeysTable({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-4">
-        <Select value={keyTypeFilter} onValueChange={(value: KeyType) => setKeyTypeFilter(value)}>
-          <SelectTrigger className="w-[180px]">
-            <SelectValue placeholder="Filter by type" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Keys</SelectItem>
-            <SelectItem value="full">Full Keys</SelectItem>
-            <SelectItem value="llm">LLM Only</SelectItem>
-            <SelectItem value="vector">Vector DB Only</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
+      <TableFilters
+        filters={filterFields}
+        onClearFilters={clearFilters}
+        hasActiveFilters={hasActiveFilters}
+        totalItems={keys.length}
+        filteredItems={filteredAndSortedKeys.length}
+      />
       <div className="rounded-md border">
         <Table>
           <TableHeader>
@@ -246,7 +299,7 @@ export function PrivateAIKeysTable({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {getSortedAndFilteredKeys().map((key, index) => (
+            {paginatedData.map((key, index) => (
               <TableRow key={key.id || `key-${index}`}>
                 <TableCell>{key.name}</TableCell>
                 <TableCell>
@@ -406,35 +459,12 @@ export function PrivateAIKeysTable({
                 </TableCell>
                 {allowModification && (
                   <TableCell>
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button variant="destructive" size="sm">Delete</Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Delete Private AI Key</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            Are you sure you want to delete this private AI key? This action cannot be undone.
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction
-                            onClick={() => onDelete(key.id)}
-                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                          >
-                            {isDeleting ? (
-                              <>
-                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                Deleting...
-                              </>
-                            ) : (
-                              'Delete'
-                            )}
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
+                    <DeleteConfirmationDialog
+                      title="Delete Private AI Key"
+                      description="Are you sure you want to delete this private AI key? This action cannot be undone."
+                      onConfirm={() => onDelete(key.id)}
+                      isLoading={isDeleting}
+                    />
                   </TableCell>
                 )}
               </TableRow>
@@ -442,6 +472,15 @@ export function PrivateAIKeysTable({
           </TableBody>
         </Table>
       </div>
+
+      <TablePagination
+        currentPage={currentPage}
+        totalPages={totalPages}
+        pageSize={pageSize}
+        totalItems={totalItems}
+        onPageChange={goToPage}
+        onPageSizeChange={changePageSize}
+      />
     </div>
   );
 }

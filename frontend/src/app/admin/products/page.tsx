@@ -9,6 +9,8 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  TablePagination,
+  useTablePagination,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,6 +23,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from '@/hooks/use-toast';
+import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
+import { TableActionButtons } from '@/components/ui/table-action-buttons';
 import { get, post, put, del } from '@/utils/api';
 import {
   Select,
@@ -98,6 +102,7 @@ export default function ProductsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.refetchQueries({ queryKey: ['products'], exact: true });
       setIsCreateDialogOpen(false);
       setFormData({});
       toast({
@@ -121,6 +126,7 @@ export default function ProductsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.refetchQueries({ queryKey: ['products'], exact: true });
       setIsEditDialogOpen(false);
       setSelectedProduct(null);
       setFormData({});
@@ -144,6 +150,7 @@ export default function ProductsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.refetchQueries({ queryKey: ['products'], exact: true });
       toast({
         title: "Success",
         description: "Product deleted successfully"
@@ -166,6 +173,7 @@ export default function ProductsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pricing-tables'] });
+      queryClient.refetchQueries({ queryKey: ['pricing-tables'], exact: true });
       setIsPricingTableDialogOpen(false);
       setPricingTableId('');
       setPricingTableType('standard');
@@ -189,6 +197,7 @@ export default function ProductsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pricing-tables'] });
+      queryClient.refetchQueries({ queryKey: ['pricing-tables'], exact: true });
       toast({
         title: "Success",
         description: "Pricing table deleted successfully"
@@ -204,6 +213,14 @@ export default function ProductsPage() {
   });
 
   const handleCreate = () => {
+    if (!formData.id?.trim() || !formData.name?.trim()) {
+      toast({
+        variant: "destructive",
+        title: "Validation Error",
+        description: "Product ID and Name are required fields"
+      });
+      return;
+    }
     createProductMutation.mutate(formData);
   };
 
@@ -213,7 +230,6 @@ export default function ProductsPage() {
   };
 
   const handleDelete = (id: string) => {
-    if (!confirm('Are you sure you want to delete this product?')) return;
     deleteProductMutation.mutate(id);
   };
 
@@ -225,12 +241,22 @@ export default function ProductsPage() {
   };
 
   const handleDeletePricingTable = () => {
-    if (!confirm('Are you sure you want to delete the current pricing table?')) return;
     deletePricingTableMutation.mutate();
   };
 
+  // Pagination
+  const {
+    currentPage,
+    pageSize,
+    totalPages,
+    totalItems,
+    paginatedData,
+    goToPage,
+    changePageSize,
+  } = useTablePagination(products, 10);
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold">Product Management</h1>
         <div className="space-x-4">
@@ -301,13 +327,14 @@ export default function ProductsPage() {
                   </div>
                 </div>
                 <div className="flex justify-between">
-                  <Button
-                    variant="destructive"
-                    onClick={handleDeletePricingTable}
+                  <DeleteConfirmationDialog
+                    title="Delete Pricing Table"
+                    description="Are you sure you want to delete the current pricing table? This action cannot be undone."
+                    triggerText="Delete Current Table"
+                    onConfirm={handleDeletePricingTable}
                     disabled={!pricingTables?.standard && !pricingTables?.always_free}
-                  >
-                    Delete Current Table
-                  </Button>
+                    size="default"
+                  />
                   <Button onClick={handleUpdatePricingTable}>
                     Update Pricing Table
                   </Button>
@@ -325,20 +352,23 @@ export default function ProductsPage() {
               </DialogHeader>
               <div className="grid grid-cols-2 gap-4">
                 <div className="col-span-2">
-                  <Label htmlFor="id">Product ID (Stripe ID)</Label>
+                  <Label htmlFor="id">Product ID (Stripe ID) *</Label>
                   <Input
                     id="id"
                     placeholder="prod_XXX"
                     value={formData.id || ''}
                     onChange={(e) => updateFormData({ ...formData, id: e.target.value })}
+                    required
                   />
                 </div>
                 <div className="col-span-2">
-                  <Label htmlFor="name">Name</Label>
+                  <Label htmlFor="name">Name *</Label>
                   <Input
                     id="name"
+                    placeholder="Enter product name"
                     value={formData.name || ''}
                     onChange={(e) => updateFormData({ ...formData, name: e.target.value })}
+                    required
                   />
                 </div>
                 <div>
@@ -420,7 +450,7 @@ export default function ProductsPage() {
                     id="renewal_period_days"
                     type="number"
                     required
-                    value={formData.renewal_period_days || 30}
+                    value={formData.renewal_period_days || 31}
                     onChange={(e) => updateFormData({ ...formData, renewal_period_days: parseInt(e.target.value) })}
                   />
                 </div>
@@ -438,7 +468,12 @@ export default function ProductsPage() {
                 </div>
               </div>
               <div className="mt-4 flex justify-end">
-                <Button onClick={handleCreate}>Create</Button>
+                <Button
+                  onClick={handleCreate}
+                  disabled={!formData.id?.trim() || !formData.name?.trim()}
+                >
+                  Create
+                </Button>
               </div>
             </DialogContent>
           </Dialog>
@@ -465,7 +500,7 @@ export default function ProductsPage() {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {products.map((product) => (
+          {paginatedData.map((product) => (
             <TableRow key={product.id}>
               <TableCell className="font-mono text-sm">{product.id}</TableCell>
               <TableCell>{product.name}</TableCell>
@@ -487,31 +522,31 @@ export default function ProductsPage() {
               </TableCell>
               <TableCell>{new Date(product.created_at).toLocaleDateString()}</TableCell>
               <TableCell>
-                <div className="space-x-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      setSelectedProduct(product);
-                      setFormData(product);
-                      setIsEditDialogOpen(true);
-                    }}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => handleDelete(product.id)}
-                  >
-                    Delete
-                  </Button>
-                </div>
+                <TableActionButtons
+                  onEdit={() => {
+                    setSelectedProduct(product);
+                    setFormData(product);
+                    setIsEditDialogOpen(true);
+                  }}
+                  onDelete={() => handleDelete(product.id)}
+                  deleteTitle="Delete Product"
+                  deleteDescription="Are you sure you want to delete this product? This action cannot be undone."
+                  isDeleting={deleteProductMutation.isPending}
+                />
               </TableCell>
             </TableRow>
           ))}
         </TableBody>
       </Table>
+
+      <TablePagination
+        currentPage={currentPage}
+        totalPages={totalPages}
+        pageSize={pageSize}
+        totalItems={totalItems}
+        onPageChange={goToPage}
+        onPageSizeChange={changePageSize}
+      />
 
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
         <DialogContent className="max-w-2xl">
@@ -615,7 +650,7 @@ export default function ProductsPage() {
                 id="edit-renewal-period-days"
                 type="number"
                 required
-                value={formData.renewal_period_days || 30}
+                value={formData.renewal_period_days || 31}
                 onChange={(e) => updateFormData({ ...formData, renewal_period_days: parseInt(e.target.value) })}
               />
             </div>

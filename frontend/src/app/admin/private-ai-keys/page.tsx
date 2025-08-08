@@ -1,11 +1,11 @@
 'use client';
 
-import { useState, useMemo } from 'react';
-import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query';
+import { useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Search } from 'lucide-react';
-import { get, del, put } from '@/utils/api';
+import { get, del, put, post } from '@/utils/api';
 import { useDebounce } from '@/hooks/use-debounce';
 import {
   Command,
@@ -21,22 +21,20 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover';
 import { PrivateAIKeysTable } from '@/components/private-ai-keys-table';
+import { CreateAIKeyDialog } from '@/components/create-ai-key-dialog';
 import { PrivateAIKey } from '@/types/private-ai-key';
+import { usePrivateAIKeysData } from '@/hooks/use-private-ai-keys-data';
 
 interface User {
   id: number;
   email: string;
+  is_active: boolean;
+  role: string;
+  team_id: number | null;
+  created_at: string;
 }
 
-interface SpendInfo {
-  spend: number;
-  expires: string;
-  created_at: string;
-  updated_at: string;
-  max_budget: number | null;
-  budget_duration: string | null;
-  budget_reset_at: string | null;
-}
+
 
 export default function PrivateAIKeysPage() {
   const { toast } = useToast();
@@ -45,6 +43,7 @@ export default function PrivateAIKeysPage() {
   const [isUserSearchOpen, setIsUserSearchOpen] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [loadedSpendKeys, setLoadedSpendKeys] = useState<Set<number>>(new Set());
+  const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const debouncedSearchTerm = useDebounce(searchTerm, 300);
 
   // Queries
@@ -58,25 +57,12 @@ export default function PrivateAIKeysPage() {
       const data = await response.json();
       return data;
     },
+    refetchInterval: 30000, // Refetch every 30 seconds to detect new keys
+    refetchIntervalInBackground: true, // Continue polling even when tab is not active
   });
 
-  // Get unique team IDs from the keys
-  const teamIds = Array.from(new Set(privateAIKeys.filter(key => key.team_id).map(key => key.team_id)));
-
-  // Fetch team details for each team ID
-  const { data: teamDetails = {} } = useQuery({
-    queryKey: ['team-details', teamIds],
-    queryFn: async () => {
-      const teamPromises = teamIds.map(async (teamId) => {
-        const response = await get(`teams/${teamId}`);
-        const data = await response.json();
-        return [teamId, data];
-      });
-      const teamResults = await Promise.all(teamPromises);
-      return Object.fromEntries(teamResults);
-    },
-    enabled: teamIds.length > 0,
-  });
+  // Use shared hook for data fetching
+  const { teamDetails, teamMembers, spendMap, regions } = usePrivateAIKeysData(privateAIKeys, loadedSpendKeys);
 
   // Query to get all users for displaying emails
   const { data: usersMap = {} } = useQuery<Record<number, User>>({
@@ -129,38 +115,40 @@ export default function PrivateAIKeysPage() {
     }
   };
 
-  // Query to get spend information for each key
-  const spendQueries = useQueries({
-    queries: privateAIKeys
-      .filter(key => loadedSpendKeys.has(key.id))
-      .map((key) => ({
-        queryKey: ['private-ai-key-spend', key.id],
-        queryFn: async () => {
-          const response = await get(`/private-ai-keys/${key.id}/spend`);
-          const data = await response.json();
-          return data as SpendInfo;
-        },
-        refetchInterval: 60000, // Refetch every minute
-      })),
+  // Mutations
+  const createKeyMutation = useMutation({
+    mutationFn: async (data: { name: string; region_id: number; owner_id?: number; team_id?: number; key_type: 'full' | 'llm' | 'vector' }) => {
+      const endpoint = data.key_type === 'full' ? 'private-ai-keys' :
+                      data.key_type === 'llm' ? 'private-ai-keys/token' :
+                      'private-ai-keys/vector-db';
+      const response = await post(endpoint, data);
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
+      queryClient.refetchQueries({ queryKey: ['private-ai-keys'], exact: true });
+      setIsCreateDialogOpen(false);
+      toast({
+        title: 'Success',
+        description: 'Private AI key created successfully',
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
   });
 
-  // Create a map of spend information
-  const spendMap = useMemo(() => {
-    return spendQueries.reduce((acc, query, index) => {
-      if (query.data) {
-        acc[privateAIKeys.filter(key => loadedSpendKeys.has(key.id))[index].id] = query.data;
-      }
-      return acc;
-    }, {} as Record<number, SpendInfo>);
-  }, [spendQueries, privateAIKeys, loadedSpendKeys]);
-
-  // Mutations
   const deletePrivateAIKeyMutation = useMutation({
     mutationFn: async (keyId: number) => {
       await del(`/private-ai-keys/${keyId}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
+      queryClient.refetchQueries({ queryKey: ['private-ai-keys'], exact: true });
       toast({
         title: 'Success',
         description: 'Private AI key deleted successfully',
@@ -200,10 +188,33 @@ export default function PrivateAIKeysPage() {
     },
   });
 
+  const handleCreateKey = (data: {
+    name: string
+    region_id: number
+    key_type: 'full' | 'llm' | 'vector'
+    owner_id?: number
+    team_id?: number
+  }) => {
+    createKeyMutation.mutate(data);
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold">Private AI Keys</h1>
+        <CreateAIKeyDialog
+          open={isCreateDialogOpen}
+          onOpenChange={setIsCreateDialogOpen}
+          onSubmit={handleCreateKey}
+          isLoading={createKeyMutation.isPending}
+          regions={regions}
+          teamMembers={Object.values(usersMap)}
+          showUserAssignment={true}
+          currentUser={undefined}
+          triggerText="Create Key"
+          title="Create New Private AI Key"
+          description="Create a new private AI key for any user or team."
+        />
       </div>
 
       <div className="flex items-center gap-2">
@@ -280,7 +291,7 @@ export default function PrivateAIKeysPage() {
         }}
         isUpdatingBudget={updateBudgetPeriodMutation.isPending}
         teamDetails={teamDetails}
-        teamMembers={Object.values(usersMap)}
+        teamMembers={teamMembers}
       />
     </div>
   );

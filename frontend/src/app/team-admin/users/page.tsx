@@ -25,17 +25,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Loader2, UserPlus } from 'lucide-react';
 import { get, post } from '@/utils/api';
 import { useAuth } from '@/hooks/use-auth';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog';
+import { TableActionButtons } from '@/components/ui/table-action-buttons';
 import {
   Select,
   SelectContent,
@@ -99,6 +89,7 @@ export default function TeamUsersPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['team-users'] });
+      queryClient.refetchQueries({ queryKey: ['team-users'], exact: true });
       setIsAddingUser(false);
       setNewUserEmail('');
       setNewUserPassword('');
@@ -124,6 +115,7 @@ export default function TeamUsersPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['team-users'] });
+      queryClient.refetchQueries({ queryKey: ['team-users'], exact: true });
       toast({
         title: 'Success',
         description: 'User role updated successfully',
@@ -145,6 +137,7 @@ export default function TeamUsersPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['team-users'] });
+      queryClient.refetchQueries({ queryKey: ['team-users'], exact: true });
       toast({
         title: 'Success',
         description: 'User removed from team successfully',
@@ -293,27 +286,14 @@ export default function TeamUsersPage() {
                     >
                       Change Role
                     </Button>
-                    <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button variant="destructive" size="sm">
-                          Remove
-                        </Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            This will remove the user from your team. They will lose access to all team resources.
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction onClick={() => handleRemoveUser(user.id)}>
-                            Remove
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
+                    <TableActionButtons
+                      showEdit={false}
+                      onDelete={() => handleRemoveUser(user.id)}
+                      deleteTitle="Are you sure?"
+                      deleteDescription="This will remove the user from your team. They will lose access to all team resources."
+                      deleteConfirmText="Remove"
+                      deleteText="Remove"
+                    />
                   </div>
                 </TableCell>
               </TableRow>

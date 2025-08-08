@@ -6,17 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog';
+import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, X } from 'lucide-react';
 import { get, post, del } from '@/utils/api';
@@ -53,6 +43,7 @@ export default function APITokensPage() {
     },
     onSuccess: (newToken) => {
       queryClient.invalidateQueries({ queryKey: ['tokens'] });
+      queryClient.refetchQueries({ queryKey: ['tokens'], exact: true });
       setShowNewToken(newToken);
       setNewTokenName('');
       toast({
@@ -75,6 +66,7 @@ export default function APITokensPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tokens'] });
+      queryClient.refetchQueries({ queryKey: ['tokens'], exact: true });
       toast({
         title: 'Success',
         description: 'Token deleted successfully',
@@ -217,37 +209,12 @@ export default function APITokensPage() {
                     )}
                   </div>
                 </div>
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button variant="destructive" size="sm">
-                      Delete
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Delete Token</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        Are you sure you want to delete this token? This action cannot be undone.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction
-                        onClick={() => handleDeleteToken(token.id)}
-                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                      >
-                        {deleteMutation.isPending ? (
-                          <>
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            Deleting...
-                          </>
-                        ) : (
-                          'Delete'
-                        )}
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
+                <DeleteConfirmationDialog
+                  title="Delete Token"
+                  description="Are you sure you want to delete this token? This action cannot be undone."
+                  onConfirm={() => handleDeleteToken(token.id)}
+                  isLoading={deleteMutation.isPending}
+                />
               </div>
             </CardContent>
           </Card>
