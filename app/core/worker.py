@@ -432,7 +432,8 @@ async def monitor_teams(db: Session):
             # Get all keys for the team grouped by region
             keys_by_region = get_team_keys_by_region(db, team.id)
             expire_keys = False
-            if days_remaining <= 0 and should_send_notifications:
+            # If the team has a product, expiry will be handled by a Stripe cancellation
+            if not has_products and days_remaining <= 0 and should_send_notifications:
                 expire_keys = True
 
             # Monitor keys and get total spend
