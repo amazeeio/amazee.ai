@@ -62,18 +62,26 @@ export function usePrivateAIKeysData(
     },
   });
 
-  // Query to get spend information for each key
-  const { data: spendMap = {} } = useQuery<Record<number, SpendInfo>>({
-    queryKey: ['private-ai-keys-spend', Array.from(loadedSpendKeys)],
-    queryFn: async () => {
-      const spendPromises = Array.from(loadedSpendKeys).map(async (keyId) => {
-        const response = await get(`private-ai-keys/${keyId}/spend`);
-        return [keyId, await response.json()] as [number, SpendInfo];
-      });
-      const spendResults = await Promise.all(spendPromises);
-      return Object.fromEntries(spendResults);
-    },
-    enabled: loadedSpendKeys.size > 0,
+  // Create individual queries for each key
+  // Use the keys array length to ensure stable hook count
+  const spendQueries = keys.map((key, index) =>
+    useQuery<SpendInfo>({
+      queryKey: ['private-ai-key-spend', key.id],
+      queryFn: async () => {
+        const response = await get(`private-ai-keys/${key.id}/spend`);
+        return response.json();
+      },
+      enabled: loadedSpendKeys.has(key.id),
+    })
+  );
+
+  // Combine all spend data into a single map
+  const spendMap: Record<number, SpendInfo> = {};
+  keys.forEach((key, index) => {
+    const query = spendQueries[index];
+    if (query.data && loadedSpendKeys.has(key.id)) {
+      spendMap[key.id] = query.data;
+    }
   });
 
   // Fetch regions
