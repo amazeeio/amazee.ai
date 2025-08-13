@@ -10,16 +10,6 @@ import { CreateAIKeyDialog } from '@/components/create-ai-key-dialog';
 import { PrivateAIKey } from '@/types/private-ai-key';
 import { usePrivateAIKeysData } from '@/hooks/use-private-ai-keys-data';
 
-interface SpendInfo {
-  spend: number;
-  expires: string;
-  created_at: string;
-  updated_at: string;
-  max_budget: number | null;
-  budget_duration: string | null;
-  budget_reset_at: string | null;
-}
-
 interface TeamUser {
   id: number;
   email: string;
@@ -31,39 +21,43 @@ interface TeamUser {
 
 export default function TeamAIKeysPage() {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const { user } = useAuth();
   const [isAddingKey, setIsAddingKey] = useState(false);
-  const [loadedSpendKeys, setLoadedSpendKeys] = useState<Set<number>>(new Set());
 
-  const queryClient = useQueryClient();
-
-  const { data: keys = [], isLoading: isLoadingKeys } = useQuery<PrivateAIKey[]>({
-    queryKey: ['private-ai-keys', user?.team_id],
-    queryFn: async () => {
-      const response = await get(`private-ai-keys?team_id=${user?.team_id}`, { credentials: 'include' });
-      const data = await response.json();
-      return data;
-    },
-    enabled: !!user?.team_id,
-  });
-
-  // Use shared hook for data fetching
-  const { teamDetails, teamMembers, spendMap, regions } = usePrivateAIKeysData(keys, loadedSpendKeys);
-
+  // Fetch team members
   const { data: teamMembersFull = [] } = useQuery<TeamUser[]>({
-    queryKey: ['team-users'],
+    queryKey: ['team-members'],
     queryFn: async () => {
-      const response = await get('users', { credentials: 'include' });
-      const allUsers = await response.json();
-      return allUsers;
+      const response = await get('teams/members', { credentials: 'include' });
+      return response.json();
     },
   });
 
+  // Fetch private AI keys
+  const { data: keys = [], isLoading: isLoadingKeys } = useQuery<PrivateAIKey[]>({
+    queryKey: ['private-ai-keys'],
+    queryFn: async () => {
+      const response = await get('private-ai-keys', { credentials: 'include' });
+      return response.json();
+    },
+  });
+
+  // Use shared hook for data fetching (only for team details and regions)
+  const { teamDetails, teamMembers, regions } = usePrivateAIKeysData(keys, new Set());
+
+  // Create key mutation
   const createKeyMutation = useMutation({
-    mutationFn: async (data: { name: string; region_id: number; owner_id?: number; team_id?: number; key_type: 'full' | 'llm' | 'vector' }) => {
+    mutationFn: async (data: {
+      name: string
+      region_id: number
+      key_type: 'full' | 'llm' | 'vector'
+      owner_id?: number
+      team_id?: number
+    }) => {
       const endpoint = data.key_type === 'full' ? 'private-ai-keys' :
-        data.key_type === 'llm' ? 'private-ai-keys/token' :
-          'private-ai-keys/vector-db';
+                      data.key_type === 'llm' ? 'private-ai-keys/token' :
+                      'private-ai-keys/vector-db';
       const response = await post(endpoint, data, { credentials: 'include' });
       return response.json();
     },
@@ -73,18 +67,19 @@ export default function TeamAIKeysPage() {
       setIsAddingKey(false);
       toast({
         title: 'Success',
-        description: 'AI key added successfully',
+        description: 'AI key created successfully',
       });
     },
-    onError: () => {
+    onError: (error: Error) => {
       toast({
         title: 'Error',
-        description: 'Failed to add AI key',
+        description: error.message,
         variant: 'destructive',
       });
     },
   });
 
+  // Delete key mutation
   const deleteKeyMutation = useMutation({
     mutationFn: async (keyId: number) => {
       const response = await del(`private-ai-keys/${keyId}`, { credentials: 'include' });
@@ -116,11 +111,8 @@ export default function TeamAIKeysPage() {
       return response.json();
     },
     onSuccess: (data, variables) => {
-      // Update the spend information for this specific key
-      queryClient.setQueryData(['private-ai-keys-spend', Array.from(loadedSpendKeys)], (oldData: Record<number, SpendInfo> = {}) => ({
-        ...oldData,
-        [variables.keyId]: data
-      }));
+      // Invalidate the specific key's spend query to refresh the data
+      queryClient.invalidateQueries({ queryKey: ['private-ai-key-spend', variables.keyId] });
       toast({
         title: 'Success',
         description: 'Budget period updated successfully',
@@ -175,8 +167,6 @@ export default function TeamAIKeysPage() {
         isDeleting={deleteKeyMutation.isPending}
         allowModification={true}
         showOwner={true}
-        spendMap={spendMap}
-        onLoadSpend={(keyId) => setLoadedSpendKeys(prev => new Set([...prev, keyId]))}
         onUpdateBudget={(keyId, budgetDuration) => {
           updateBudgetPeriodMutation.mutate({ keyId, budgetDuration });
         }}

@@ -62,18 +62,20 @@ export function usePrivateAIKeysData(
     },
   });
 
-  // Query to get spend information for each key
+  // Query to get spend information for loaded keys
+  // Use a stable query key to avoid Rules of Hooks violations
+  const loadedSpendKeysArray = Array.from(loadedSpendKeys).sort();
   const { data: spendMap = {} } = useQuery<Record<number, SpendInfo>>({
-    queryKey: ['private-ai-keys-spend', Array.from(loadedSpendKeys)],
+    queryKey: ['private-ai-keys-spend', loadedSpendKeysArray],
     queryFn: async () => {
-      const spendPromises = Array.from(loadedSpendKeys).map(async (keyId) => {
+      const spendPromises = loadedSpendKeysArray.map(async (keyId) => {
         const response = await get(`private-ai-keys/${keyId}/spend`);
         return [keyId, await response.json()] as [number, SpendInfo];
       });
       const spendResults = await Promise.all(spendPromises);
       return Object.fromEntries(spendResults);
     },
-    enabled: loadedSpendKeys.size > 0,
+    enabled: loadedSpendKeysArray.length > 0,
   });
 
   // Fetch regions
