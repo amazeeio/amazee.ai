@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, UTC, timedelta
 from sqlalchemy.orm import Session
 from app.db.models import DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey, DBUser, DBRegion
@@ -17,7 +18,7 @@ from app.services.stripe import (
     INVOICE_SUCCESS_EVENTS
 )
 from prometheus_client import Gauge, Counter, Summary
-from typing import Dict, List
+from typing import Dict, List, Optional
 from app.core.security import create_access_token
 from app.core.config import settings
 from urllib.parse import urljoin
@@ -94,6 +95,8 @@ def get_team_keys_by_region(db: Session, team_id: int) -> Dict[DBRegion, List[DB
 
     logger.info(f"Found {len(team_keys)} keys in {len(keys_by_region)} regions for team {team_id}")
     return keys_by_region
+
+
 
 async def handle_stripe_event_background(event, db: Session):
     """
@@ -247,19 +250,28 @@ async def remove_product_from_team(db: Session, customer_id: str, product_id: st
         logger.error(f"Error removing product from team: {str(e)}")
         raise e
 
-async def monitor_team_keys(team: DBTeam, keys_by_region: Dict[DBRegion, List[DBPrivateAIKey]], expire_keys: bool) -> float:
+async def monitor_team_keys(
+    team: DBTeam,
+    keys_by_region: Dict[DBRegion, List[DBPrivateAIKey]],
+    expire_keys: bool,
+    renewal_period_days: Optional[int] = None,
+    max_budget_amount: Optional[float] = None
+) -> float:
     """
-    Monitor spend for all keys in a team across different regions.
+    Monitor spend for all keys in a team across different regions and optionally update keys after renewal period.
 
     Args:
-        db: Database session
         team: The team to monitor keys for
         keys_by_region: Dictionary mapping regions to lists of keys
+        expire_keys: Whether to expire keys (set duration to 0)
+        renewal_period_days: Optional renewal period in days. If provided, will check for and update keys renewed within the last hour.
+        max_budget_amount: Optional maximum budget amount. If provided, will update the budget amount for the keys.
 
     Returns:
         float: Total spend across all keys for the team
     """
     team_total = 0
+    current_time = datetime.now(UTC)
 
     # Monitor keys for each region
     for region, keys in keys_by_region.items():
@@ -280,6 +292,86 @@ async def monitor_team_keys(team: DBTeam, keys_by_region: Dict[DBRegion, List[DB
                     current_spend = info.get("spend", 0) or 0.0
                     budget = info.get("max_budget", 0) or 0.0
                     key_alias = info.get("key_alias", f"key-{key.id}")  # Fallback to key-{id} if no alias
+
+                    # Check for renewal period update if renewal_period_days is provided
+                    if renewal_period_days is not None:
+                        # Check current values and only update if they don't match the parameters
+                        current_budget_duration = info.get("budget_duration")
+                        current_max_budget = info.get("max_budget")
+
+                        needs_update = False
+                        data = {"litellm_token": key.litellm_token}
+
+                        # Check if budget_duration needs updating
+                        expected_budget_duration = f"{renewal_period_days}d"
+                        if current_budget_duration != expected_budget_duration:
+                            data["budget_duration"] = expected_budget_duration
+                            needs_update = True
+                            logger.info(f"Key {key.id} budget_duration will be updated from '{current_budget_duration}' to '{expected_budget_duration}'")
+
+                        # Check if budget_amount needs updating
+                        if max_budget_amount is not None and current_max_budget != max_budget_amount:
+                            data["budget_amount"] = max_budget_amount
+                            needs_update = True
+                            logger.info(f"Key {key.id} budget_amount will be updated from {current_max_budget} to {max_budget_amount}")
+
+                        # Only check reset timestamp if we need to update
+                        if needs_update:
+                            budget_reset_at_str = info.get("budget_reset_at")
+                            if budget_reset_at_str:
+                                try:
+                                    # Parse the budget_reset_at timestamp
+                                    budget_reset_at = datetime.fromisoformat(budget_reset_at_str.replace('Z', '+00:00'))
+                                    if budget_reset_at.tzinfo is None:
+                                        budget_reset_at = budget_reset_at.replace(tzinfo=UTC)
+                                    logger.info(f"Key {key.id} budget_reset_at_str: {budget_reset_at_str}, budget_reset_at: {budget_reset_at}")
+
+                                    # Check if budget was reset recently using heuristics
+                                    # budget_reset_at represents when the next reset will occur
+                                    current_spend = info.get("spend", 0) or 0.0
+                                    current_budget_duration = info.get("budget_duration")
+
+                                    should_update = False
+                                    update_reason = ""
+
+                                    # Heuristic 1: Check if (now + current_budget_duration) is within an hour of budget_reset_at
+                                    if current_budget_duration is not None:
+                                        try:
+                                            # Parse current budget duration (e.g., "30d" -> 30 days)
+                                            duration_match = re.match(r'(\d+)d', current_budget_duration)
+                                            if duration_match:
+                                                duration_days = int(duration_match.group(1))
+                                                expected_reset_time = current_time + timedelta(days=duration_days)
+                                                hours_diff = abs((expected_reset_time - budget_reset_at).total_seconds() / 3600)
+
+                                                if hours_diff <= 1.0:
+                                                    should_update = True
+                                                    update_reason = f"reset time alignment (within {hours_diff:.2f} hours)"
+                                        except (ValueError, AttributeError):
+                                            logger.warning(f"Key {key.id} has invalid budget_duration format: {current_budget_duration}")
+                                    else:
+                                        logger.debug(f"Key {key.id} has no budget_duration set, skipping reset time alignment heuristic")
+                                        should_update = True
+                                        update_reason = "no budget_duration set, forcing update"
+
+                                    # Heuristic 2: Update if amount spent is $0.00 (indicating fresh reset)
+                                    if current_spend == 0.0:
+                                        should_update = True
+                                        update_reason = "zero spend (fresh reset)"
+
+                                    if should_update:
+                                        logger.info(f"Key {key.id} budget update triggered: {update_reason}, updating budget settings")
+                                        await litellm_service.update_budget(**data)
+                                        logger.info(f"Updated key {key.id} budget settings")
+                                    else:
+                                        logger.debug(f"Key {key.id} budget update not triggered, skipping update")
+                                except ValueError:
+                                    logger.warning(f"Key {key.id} has invalid budget_reset_at timestamp: {budget_reset_at_str}")
+                            else:
+                                logger.warning(f"Key {key.id} has no budget_reset_at timestamp, forcing update")
+                                await litellm_service.update_budget(**data)
+                        else:
+                            logger.info(f"Key {key.id} budget settings already match the expected values, no update needed")
 
                     # Set the key duration to 0 days to end its usability.
                     if expire_keys:
@@ -332,15 +424,18 @@ async def monitor_teams(db: Session):
     """
     logger.info("Monitoring teams")
     try:
-        # Initialize SES service
-        ses_service = SESService()
-
         # Get all teams
         teams = db.query(DBTeam).all()
         current_time = datetime.now(UTC)
 
         # Track current active team labels
         current_team_labels = set()
+        try:
+            # Initialize SES service
+            ses_service = SESService()
+        except Exception as e:
+            logger.error(f"Error initializing SES service: {str(e)}")
+            pass
 
         logger.info(f"Found {len(teams)} teams to track")
         for team in teams:
@@ -436,8 +531,24 @@ async def monitor_teams(db: Session):
             if not has_products and days_remaining <= 0 and should_send_notifications:
                 expire_keys = True
 
-            # Monitor keys and get total spend
-            team_total = await monitor_team_keys(team, keys_by_region, expire_keys)
+            # Determine if we should check for renewal period updates
+            renewal_period_days = None
+            max_budget_amount = None
+            if has_products and team.last_payment:
+                # Get the product with the longest renewal period
+                active_products = db.query(DBTeamProduct).filter(
+                    DBTeamProduct.team_id == team.id
+                ).all()
+                product_ids = [tp.product_id for tp in active_products]
+                products = db.query(DBProduct).filter(DBProduct.id.in_(product_ids)).all()
+
+                if products:
+                    max_renewal_product = max(products, key=lambda product: product.renewal_period_days)
+                    renewal_period_days = max_renewal_product.renewal_period_days
+                    max_budget_amount = max(products, key=lambda product: product.max_budget_per_key).max_budget_per_key
+
+            # Monitor keys and get total spend (includes renewal period updates if applicable)
+            team_total = await monitor_team_keys(team, keys_by_region, expire_keys, renewal_period_days, max_budget_amount)
 
             # Set the total spend metric for the team (always emit metrics)
             team_total_spend.labels(
