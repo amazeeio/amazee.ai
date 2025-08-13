@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
 import { get, post, del, put } from '@/utils/api';
@@ -9,16 +9,6 @@ import { PrivateAIKeysTable } from '@/components/private-ai-keys-table';
 import { CreateAIKeyDialog } from '@/components/create-ai-key-dialog';
 import { PrivateAIKey } from '@/types/private-ai-key';
 import { usePrivateAIKeysData } from '@/hooks/use-private-ai-keys-data';
-
-interface SpendInfo {
-  spend: number;
-  expires: string;
-  created_at: string;
-  updated_at: string;
-  max_budget: number | null;
-  budget_duration: string | null;
-  budget_reset_at: string | null;
-}
 
 interface TeamUser {
   id: number;
