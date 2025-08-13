@@ -62,26 +62,20 @@ export function usePrivateAIKeysData(
     },
   });
 
-  // Create individual queries for each key
-  // Use the keys array length to ensure stable hook count
-  const spendQueries = keys.map((key, index) =>
-    useQuery<SpendInfo>({
-      queryKey: ['private-ai-key-spend', key.id],
-      queryFn: async () => {
-        const response = await get(`private-ai-keys/${key.id}/spend`);
-        return response.json();
-      },
-      enabled: loadedSpendKeys.has(key.id),
-    })
-  );
-
-  // Combine all spend data into a single map
-  const spendMap: Record<number, SpendInfo> = {};
-  keys.forEach((key, index) => {
-    const query = spendQueries[index];
-    if (query.data && loadedSpendKeys.has(key.id)) {
-      spendMap[key.id] = query.data;
-    }
+  // Query to get spend information for loaded keys
+  // Use a stable query key to avoid Rules of Hooks violations
+  const loadedSpendKeysArray = Array.from(loadedSpendKeys).sort();
+  const { data: spendMap = {} } = useQuery<Record<number, SpendInfo>>({
+    queryKey: ['private-ai-keys-spend', loadedSpendKeysArray],
+    queryFn: async () => {
+      const spendPromises = loadedSpendKeysArray.map(async (keyId) => {
+        const response = await get(`private-ai-keys/${keyId}/spend`);
+        return [keyId, await response.json()] as [number, SpendInfo];
+      });
+      const spendResults = await Promise.all(spendPromises);
+      return Object.fromEntries(spendResults);
+    },
+    enabled: loadedSpendKeysArray.length > 0,
   });
 
   // Fetch regions

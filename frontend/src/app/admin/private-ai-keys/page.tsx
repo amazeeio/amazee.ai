@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
@@ -34,19 +34,16 @@ interface User {
   created_at: string;
 }
 
-
-
 export default function PrivateAIKeysPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [searchTerm, setSearchTerm] = useState('');
-  const [isUserSearchOpen, setIsUserSearchOpen] = useState(false);
-  const [selectedUser, setSelectedUser] = useState<User | null>(null);
-  const [loadedSpendKeys, setLoadedSpendKeys] = useState<Set<number>>(new Set());
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
+  const [selectedUser, setSelectedUser] = useState<User | null>(null);
+  const [isUserSearchOpen, setIsUserSearchOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+
   const debouncedSearchTerm = useDebounce(searchTerm, 300);
 
-  // Queries
   const { data: privateAIKeys = [], isLoading: isLoadingPrivateAIKeys } = useQuery<PrivateAIKey[]>({
     queryKey: ['private-ai-keys', selectedUser?.id],
     queryFn: async () => {
@@ -56,15 +53,24 @@ export default function PrivateAIKeysPage() {
       const response = await get(url);
       const data = await response.json();
       return data;
-    },
-    refetchInterval: 30000, // Refetch every 30 seconds to detect new keys
-    refetchIntervalInBackground: true, // Continue polling even when tab is not active
+    }
   });
 
-  // Use shared hook for data fetching
-  const { teamDetails, teamMembers, spendMap, regions } = usePrivateAIKeysData(privateAIKeys, loadedSpendKeys);
+  // Use shared hook for data fetching (only for team details and regions)
+  const { teamDetails, teamMembers, regions } = usePrivateAIKeysData(privateAIKeys, new Set());
 
-  // Query to get all users for displaying emails
+  // Search users
+  const { data: users = [], isLoading: isSearching } = useQuery<User[]>({
+    queryKey: ['users', debouncedSearchTerm],
+    queryFn: async () => {
+      if (!debouncedSearchTerm) return [];
+      const response = await get(`/users?search=${debouncedSearchTerm}`);
+      return response.json();
+    },
+    enabled: debouncedSearchTerm.length > 0,
+  });
+
+  // Get all users for the dropdown
   const { data: usersMap = {} } = useQuery<Record<number, User>>({
     queryKey: ['users-map'],
     queryFn: async () => {
@@ -77,50 +83,22 @@ export default function PrivateAIKeysPage() {
     },
   });
 
-  const { data: users = [], isLoading: isLoadingUsers, isFetching: isFetchingUsers } = useQuery<User[], Error, User[]>({
-    queryKey: ['users', debouncedSearchTerm],
-    queryFn: async () => {
-      if (!debouncedSearchTerm) return [];
-      await new Promise(resolve => setTimeout(resolve, 100)); // Small delay to ensure loading state shows
-      const response = await get(`/users/search?email=${encodeURIComponent(debouncedSearchTerm)}`);
-      const data = await response.json();
-      return data;
-    },
-    enabled: isUserSearchOpen && !!debouncedSearchTerm,
-    gcTime: 60000,
-    staleTime: 30000,
-    refetchOnMount: false,
-    refetchOnWindowFocus: false,
-  });
-
-  // Show loading state immediately when search term changes
-  const isSearching = searchTerm.length > 0 && (
-    isLoadingUsers ||
-    isFetchingUsers ||
-    debouncedSearchTerm !== searchTerm
-  );
-
   const handleSearchChange = (value: string) => {
     setSearchTerm(value);
-    // Prefetch the query if we have a value
-    if (value) {
-      queryClient.prefetchQuery({
-        queryKey: ['users', value],
-        queryFn: async () => {
-          const response = await get(`/users/search?email=${encodeURIComponent(value)}`);
-          const data = await response.json();
-          return data;
-        },
-      });
-    }
   };
 
-  // Mutations
+  // Create key mutation
   const createKeyMutation = useMutation({
-    mutationFn: async (data: { name: string; region_id: number; owner_id?: number; team_id?: number; key_type: 'full' | 'llm' | 'vector' }) => {
-      const endpoint = data.key_type === 'full' ? 'private-ai-keys' :
-                      data.key_type === 'llm' ? 'private-ai-keys/token' :
-                      'private-ai-keys/vector-db';
+    mutationFn: async (data: {
+      name: string
+      region_id: number
+      key_type: 'full' | 'llm' | 'vector'
+      owner_id?: number
+      team_id?: number
+    }) => {
+      const endpoint = data.key_type === 'full' ? '/private-ai-keys' :
+                      data.key_type === 'llm' ? '/private-ai-keys/token' :
+                      '/private-ai-keys/vector-db';
       const response = await post(endpoint, data);
       return response.json();
     },
@@ -142,9 +120,11 @@ export default function PrivateAIKeysPage() {
     },
   });
 
+  // Delete key mutation
   const deletePrivateAIKeyMutation = useMutation({
     mutationFn: async (keyId: number) => {
-      await del(`/private-ai-keys/${keyId}`);
+      const response = await del(`/private-ai-keys/${keyId}`);
+      return response.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
@@ -172,8 +152,8 @@ export default function PrivateAIKeysPage() {
       return response.json();
     },
     onSuccess: (data, variables) => {
-      // Update the spend information for this specific key
-      queryClient.setQueryData(['private-ai-key-spend', variables.keyId], data);
+      // Invalidate the specific key's spend query to refresh the data
+      queryClient.invalidateQueries({ queryKey: ['private-ai-key-spend', variables.keyId] });
       toast({
         title: 'Success',
         description: 'Budget period updated successfully',
@@ -284,8 +264,6 @@ export default function PrivateAIKeysPage() {
         isDeleting={deletePrivateAIKeyMutation.isPending}
         allowModification={true}
         showOwner={true}
-        spendMap={spendMap}
-        onLoadSpend={(keyId) => setLoadedSpendKeys(prev => new Set([...prev, keyId]))}
         onUpdateBudget={(keyId, budgetDuration) => {
           updateBudgetPeriodMutation.mutate({ keyId, budgetDuration });
         }}

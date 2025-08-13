@@ -32,7 +32,6 @@ export default function DashboardPage() {
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
-  const [loadedSpendKeys, setLoadedSpendKeys] = useState<Set<number>>(new Set());
 
   // Fetch private AI keys using React Query
   const { data: privateAIKeys = [] } = useQuery<PrivateAIKey[]>({
@@ -48,13 +47,8 @@ export default function DashboardPage() {
     refetchOnWindowFocus: false, // Prevent unnecessary refetches
   });
 
-  // Use shared hook for data fetching
-  const { teamDetails, teamMembers, spendMap, regions } = usePrivateAIKeysData(privateAIKeys, loadedSpendKeys);
-
-  // Load spend for a key
-  const loadSpend = useCallback(async (keyId: number) => {
-    setLoadedSpendKeys(prev => new Set([...prev, keyId]));
-  }, []);
+  // Use shared hook for data fetching (only for team details and regions)
+  const { teamDetails, teamMembers, regions } = usePrivateAIKeysData(privateAIKeys, new Set());
 
   // Update budget period mutation
   const updateBudgetMutation = useMutation({
@@ -63,10 +57,8 @@ export default function DashboardPage() {
       return response.json();
     },
     onSuccess: (_, { keyId }) => {
-      // Refresh spend data
-      setLoadedSpendKeys(prev => new Set([...prev, keyId]));
-      // Invalidate spend queries
-      queryClient.invalidateQueries({ queryKey: ['private-ai-keys-spend'] });
+      // Invalidate the specific key's spend query to refresh the data
+      queryClient.invalidateQueries({ queryKey: ['private-ai-key-spend', keyId] });
       toast({
         title: 'Success',
         description: 'Budget period updated successfully',
@@ -174,8 +166,6 @@ export default function DashboardPage() {
         isLoading={createKeyMutation.isPending}
         showOwner={true}
         allowModification={false}
-        spendMap={spendMap}
-        onLoadSpend={loadSpend}
         onUpdateBudget={(keyId, budgetDuration) => updateBudgetMutation.mutate({ keyId, budgetDuration })}
         isDeleting={deleteKeyMutation.isPending}
         isUpdatingBudget={updateBudgetMutation.isPending}
