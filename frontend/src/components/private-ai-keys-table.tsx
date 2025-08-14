@@ -11,22 +11,10 @@ import {
   useTablePagination,
 } from '@/components/ui/table';
 import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog';
-
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Eye, EyeOff, Pencil, Loader2, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
-import { formatTimeUntil } from '@/lib/utils';
+import { Eye, EyeOff, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import { PrivateAIKey } from '@/types/private-ai-key';
 import { TableFilters, FilterField } from '@/components/ui/table-filters';
+import { PrivateAIKeySpendCell } from '@/components/private-ai-key-spend-cell';
 
 type SortField = 'name' | 'region' | 'owner' | null;
 type SortDirection = 'asc' | 'desc';
@@ -38,13 +26,6 @@ interface PrivateAIKeysTableProps {
   isLoading?: boolean;
   showOwner?: boolean;
   allowModification?: boolean;
-  spendMap?: Record<number, {
-    spend: number;
-    max_budget: number | null;
-    budget_duration: string | null;
-    budget_reset_at: string | null;
-  }>;
-  onLoadSpend?: (keyId: number) => void;
   onUpdateBudget?: (keyId: number, budgetDuration: string) => void;
   isDeleting?: boolean;
   isUpdatingBudget?: boolean;
@@ -58,8 +39,6 @@ export function PrivateAIKeysTable({
   isLoading = false,
   showOwner = false,
   allowModification = false,
-  spendMap = {},
-  onLoadSpend,
   onUpdateBudget,
   isDeleting = false,
   isUpdatingBudget = false,
@@ -67,7 +46,6 @@ export function PrivateAIKeysTable({
   teamMembers = [],
 }: PrivateAIKeysTableProps) {
   const [showPassword, setShowPassword] = useState<Record<number | string, boolean>>({});
-  const [openBudgetDialog, setOpenBudgetDialog] = useState<number | null>(null);
   const [sortField, setSortField] = useState<SortField>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [keyTypeFilter, setKeyTypeFilter] = useState<KeyType>('all');
@@ -383,79 +361,13 @@ export function PrivateAIKeysTable({
                   </TableCell>
                 )}
                 <TableCell>
-                  {spendMap[key.id] ? (
-                    <div className="flex flex-col gap-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium">
-                          ${spendMap[key.id].spend.toFixed(2)}
-                        </span>
-                        <span className="text-xs text-muted-foreground">
-                          {spendMap[key.id]?.max_budget !== null
-                            ? `/ $${spendMap[key.id]?.max_budget?.toFixed(2)}`
-                            : '(No budget)'}
-                        </span>
-                      </div>
-                      <span className="text-xs text-muted-foreground">
-                        {spendMap[key.id].budget_duration || 'No budget period'}
-                        {spendMap[key.id].budget_reset_at && ` • Resets ${formatTimeUntil(spendMap[key.id].budget_reset_at as string)}`}
-                        {allowModification && onUpdateBudget && (
-                          <Dialog open={openBudgetDialog === key.id} onOpenChange={(open) => setOpenBudgetDialog(open ? key.id : null)}>
-                            <DialogTrigger asChild>
-                              <Button variant="ghost" size="icon" className="h-4 w-4 ml-1">
-                                <Pencil className="h-3 w-3" />
-                              </Button>
-                            </DialogTrigger>
-                            <DialogContent>
-                              <DialogHeader>
-                                <DialogTitle>Update Budget Period</DialogTitle>
-                                <DialogDescription>
-                                  Set the budget period for this key. Examples: &quot;30d&quot; (30 days), &quot;24h&quot; (24 hours), &quot;60m&quot; (60 minutes)
-                                </DialogDescription>
-                              </DialogHeader>
-                              <div className="grid gap-4 py-4">
-                                <div className="grid gap-2">
-                                  <Label htmlFor="budget-duration">Budget Period</Label>
-                                  <Input
-                                    id="budget-duration"
-                                    defaultValue={spendMap[key.id].budget_duration || ''}
-                                    placeholder="e.g. 30d"
-                                  />
-                                </div>
-                              </div>
-                              <DialogFooter>
-                                <Button
-                                  onClick={() => {
-                                    const input = document.getElementById('budget-duration') as HTMLInputElement;
-                                    if (input) {
-                                      onUpdateBudget(key.id, input.value);
-                                    }
-                                  }}
-                                  disabled={isUpdatingBudget}
-                                >
-                                  {isUpdatingBudget ? (
-                                    <>
-                                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                      Updating...
-                                    </>
-                                  ) : (
-                                    'Update'
-                                  )}
-                                </Button>
-                              </DialogFooter>
-                            </DialogContent>
-                          </Dialog>
-                        )}
-                      </span>
-                    </div>
-                  ) : key.litellm_token ? (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => onLoadSpend?.(key.id)}
-                    >
-                      Load Spend
-                    </Button>
-                  ) : null}
+                  <PrivateAIKeySpendCell
+                    keyId={key.id}
+                    hasLiteLLMToken={!!key.litellm_token}
+                    allowModification={allowModification}
+                    onUpdateBudget={onUpdateBudget}
+                    isUpdatingBudget={isUpdatingBudget}
+                  />
                 </TableCell>
                 {allowModification && (
                   <TableCell>
