@@ -24,8 +24,12 @@ test-postgres: test-clean test-network
 	sleep 5
 
 # Run backend tests for a specific regex
+# Usage: make backend-test-regex regex="test_pattern"
 backend-test-regex: test-clean backend-test-build test-postgres
-	@read -p "Enter regex: " regex; \
+	@if [ -z "$(regex)" ]; then \
+		echo "Error: regex parameter is required. Usage: make backend-test-regex regex=\"test_pattern\""; \
+		exit 1; \
+	fi
 	docker run --rm \
 		--network amazeeai_default \
 		-e DATABASE_URL="postgresql://postgres:postgres@amazee-test-postgres/postgres_service" \
@@ -40,7 +44,7 @@ backend-test-regex: test-clean backend-test-build test-postgres
 		-e ENV_SUFFIX="test" \
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
-		amazee-backend-test pytest -vv -k "$$regex"
+		amazee-backend-test pytest -vv -k "$(regex)"
 
 # Run backend tests in a new container
 backend-test: test-clean backend-test-build test-postgres
