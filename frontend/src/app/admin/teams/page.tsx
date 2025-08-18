@@ -176,6 +176,11 @@ export default function TeamsPage() {
     return createdAt < thirtyDaysAgo && lastPayment < thirtyDaysAgo;
   };
 
+  // Helper function to determine if a team has active products
+  const hasActiveProducts = (team: Team): boolean => {
+    return Boolean(team.products && team.products.some(product => product.active));
+  };
+
   // Queries
   const { data: teams = [], isLoading: isLoadingTeams } = useQuery<Team[]>({
     queryKey: ['teams'],
@@ -907,7 +912,7 @@ export default function TeamsPage() {
                             >
                               {team.is_active ? 'Active' : 'Inactive'}
                             </span>
-                            {isTeamExpired(team) && (
+                            {isTeamExpired(team) && !hasActiveProducts(team) && (
                               <span className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-600 text-white">
                                 Expired
                               </span>
@@ -968,14 +973,14 @@ export default function TeamsPage() {
                                                   {expandedTeam.is_active ? "Active" : "Inactive"}
                                                 </Badge>
                                               </div>
-                                              {isTeamExpired(expandedTeam) && (
+                                              {isTeamExpired(expandedTeam) && !hasActiveProducts(expandedTeam) && (
                                                 <div>
                                                   <p className="text-sm font-medium text-muted-foreground">Expiration Status</p>
                                                   <Badge variant="destructive" className="bg-red-600 hover:bg-red-700">
                                                     Expired
                                                   </Badge>
                                                 </div>
-                                                                                            )}
+                                              )}
                                               {expandedTeam.is_always_free && (
                                                 <div>
                                                   <p className="text-sm font-medium text-muted-foreground">Always Free Status</p>

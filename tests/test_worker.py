@@ -987,13 +987,13 @@ async def test_monitor_team_keys_with_renewal_period_updates(mock_litellm, db, t
 
     # Check the first call (team key)
     first_call = mock_instance.update_budget.call_args_list[0]
-    assert first_call[1]['litellm_token'] == "team_token_123"
+    assert first_call[0][0] == "team_token_123"  # First positional argument should be litellm_token
     assert first_call[1]['budget_amount'] == test_product.max_budget_per_key
     # budget_duration should not be updated since it's not None and reset time doesn't align
 
     # Check the second call (user key)
     second_call = mock_instance.update_budget.call_args_list[1]
-    assert second_call[1]['litellm_token'] == "user_token_456"
+    assert second_call[0][0] == "user_token_456"  # First positional argument should be litellm_token
     assert second_call[1]['budget_amount'] == test_product.max_budget_per_key
     # budget_duration should not be updated since it's not None and reset time doesn't align
 
@@ -1077,22 +1077,22 @@ async def test_monitor_team_keys_with_renewal_period_updates_no_products(mock_li
     # Verify get_key_info was called for both keys
     assert mock_instance.get_key_info.call_count == 2
 
-    # Verify update_budget was called for both keys since they have different settings
+    # Verify update_budget was called for both keys since they have None budget_duration
     assert mock_instance.update_budget.call_count == 2
 
     # Check the first call (team key)
     first_call = mock_instance.update_budget.call_args_list[0]
-    assert first_call[1]['litellm_token'] == "team_token_123"
-    assert first_call[1]['budget_duration'] == "30d"
+    assert first_call[0][0] == "team_token_123"  # First positional argument should be litellm_token
+    assert first_call[0][1] == "30d"  # Second positional argument should be budget_duration
     # Should not have budget_amount since no products were found
-    assert 'budget_amount' not in first_call[1]
+    assert first_call[1]['budget_amount'] is None
 
     # Check the second call (user key)
     second_call = mock_instance.update_budget.call_args_list[1]
-    assert second_call[1]['litellm_token'] == "user_token_456"
-    assert second_call[1]['budget_duration'] == "30d"
+    assert second_call[0][0] == "user_token_456"  # First positional argument should be litellm_token
+    assert second_call[0][1] == "30d"  # Second positional argument should be budget_duration
     # Should not have budget_amount since no products were found
-    assert 'budget_amount' not in second_call[1]
+    assert second_call[1]['budget_amount'] is None
 
     # Verify team total spend is calculated correctly
     assert team_total == 5.0  # 0.0 + 5.0
@@ -1156,8 +1156,8 @@ async def test_monitor_team_keys_reset_time_alignment_heuristic(mock_litellm, db
     # Verify update_budget was called because of reset time alignment
     assert mock_instance.update_budget.call_count == 1
     update_call = mock_instance.update_budget.call_args
-    assert update_call[1]['litellm_token'] == "team_token_123"
-    assert update_call[1]['budget_duration'] == f"{test_product.renewal_period_days}d"
+    assert update_call[0][0] == "team_token_123"  # First positional argument should be litellm_token
+    assert update_call[0][1] == f"{test_product.renewal_period_days}d"  # Second positional argument should be budget_duration
     assert update_call[1]['budget_amount'] == test_product.max_budget_per_key
 
     # Verify team total spend is calculated correctly
@@ -1225,8 +1225,8 @@ async def test_monitor_team_keys_none_budget_duration_handled(mock_litellm, db, 
     # Verify update_budget was called because budget_duration is None (forces update)
     assert mock_instance.update_budget.call_count == 1
     update_call = mock_instance.update_budget.call_args
-    assert update_call[1]['litellm_token'] == "team_token_123"
-    assert update_call[1]['budget_duration'] == f"{test_product.renewal_period_days}d"
+    assert update_call[0][0] == "team_token_123"  # First positional argument should be litellm_token
+    assert update_call[0][1] == f"{test_product.renewal_period_days}d"  # Second positional argument should be budget_duration
     assert update_call[1]['budget_amount'] == test_product.max_budget_per_key
 
     # Verify team total spend is calculated correctly
@@ -1353,9 +1353,9 @@ async def test_monitor_team_keys_both_mismatch_with_reset_time_alignment(mock_li
     # Verify update_budget was called with both budget_amount and budget_duration
     assert mock_instance.update_budget.call_count == 1
     update_call = mock_instance.update_budget.call_args
-    assert update_call[1]['litellm_token'] == "team_token_123"
+    assert update_call[0][0] == "team_token_123"  # First positional argument should be litellm_token
+    assert update_call[0][1] == f"{test_product.renewal_period_days}d"  # Second positional argument should be budget_duration
     assert update_call[1]['budget_amount'] == test_product.max_budget_per_key
-    assert update_call[1]['budget_duration'] == f"{test_product.renewal_period_days}d"
 
     # Verify team total spend is calculated correctly
     assert team_total == 10.0
@@ -1418,10 +1418,9 @@ async def test_monitor_team_keys_both_mismatch_without_reset_time_alignment(mock
     # Verify update_budget was called with only budget_amount
     assert mock_instance.update_budget.call_count == 1
     update_call = mock_instance.update_budget.call_args
-    assert update_call[1]['litellm_token'] == "team_token_123"
+    assert update_call[0][0] == "team_token_123"  # First positional argument should be litellm_token
+    assert update_call[0][1] is None  # Second positional argument should be None (no budget_duration update)
     assert update_call[1]['budget_amount'] == test_product.max_budget_per_key
-    # Should not include budget_duration since reset time doesn't align
-    assert 'budget_duration' not in update_call[1]
 
     # Verify team total spend is calculated correctly
     assert team_total == 10.0
@@ -1501,8 +1500,8 @@ async def test_monitor_team_keys_duration_parsing_different_units(mock_litellm, 
         if should_update:
             assert mock_instance.update_budget.call_count == 1
             update_call = mock_instance.update_budget.call_args
-            assert update_call[1]['litellm_token'] == "team_token_123"
-            assert update_call[1]['budget_duration'] == f"{test_product.renewal_period_days}d"
+            assert update_call[0][0] == "team_token_123"  # First positional argument should be litellm_token
+            assert update_call[0][1] == f"{test_product.renewal_period_days}d"  # Second positional argument should be budget_duration
         else:
             assert mock_instance.update_budget.call_count == 0
 
@@ -1567,9 +1566,67 @@ async def test_monitor_team_keys_zero_duration_renewal(mock_litellm, db, test_te
     # Verify update_budget was called to fix the "0d" duration
     assert mock_instance.update_budget.call_count == 1
     update_call = mock_instance.update_budget.call_args
-    assert update_call[1]['litellm_token'] == "team_token_123"
-    assert update_call[1]['budget_duration'] == f"{test_product.renewal_period_days}d"
+    assert update_call[0][0] == "team_token_123"  # First positional argument should be litellm_token
+    assert update_call[0][1] == f"{test_product.renewal_period_days}d"  # Second positional argument should be budget_duration
     assert update_call[1]['budget_amount'] == test_product.max_budget_per_key
 
     # Verify team total spend is calculated correctly
     assert team_total == 10.0
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_monitor_team_keys_update_budget_parameter_issue(mock_litellm, db, test_team, test_product, test_region, test_team_user, test_team_key_creator):
+    """
+    Test that update_budget is called with correct parameters when budget amount needs updating.
+
+    GIVEN: A team with a product and keys that have different budget amounts
+    WHEN: monitor_team_keys is called with renewal period and budget amount
+    THEN: update_budget should be called with litellm_token as first positional argument, not as keyword argument
+    """
+    # Set up team-product association
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+
+    # Create a key for the team
+    team_key = DBPrivateAIKey(
+        name="Team Key",
+        litellm_token="team_token_123",
+        region=test_region,
+        team_id=test_team.id
+    )
+    db.add(team_key)
+    db.commit()
+
+    # Mock LiteLLM service
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock()
+    mock_instance.update_budget = AsyncMock()
+
+    # Mock key info response - different budget amount triggers update
+    mock_instance.get_key_info.return_value = {
+        "info": {
+            "budget_reset_at": (datetime.now(UTC) + timedelta(days=30)).isoformat(),
+            "key_alias": "test_key",
+            "spend": 0.0,
+            "max_budget": 27.0,  # Different from expected (120.0)
+            "budget_duration": "30d"
+        }
+    }
+
+    # Get keys by region
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+
+    # Call the function with renewal period days and budget amount
+    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+
+    # Verify update_budget was called with correct parameters
+    assert mock_instance.update_budget.call_count == 1
+
+    # Check that litellm_token is passed as first positional argument, not as keyword
+    call_args = mock_instance.update_budget.call_args
+    # After the fix, litellm_token should be the first positional argument
+    assert call_args[0][0] == "team_token_123"  # First positional argument should be litellm_token
+    assert call_args[1]['budget_amount'] == test_product.max_budget_per_key  # budget_amount as keyword argument

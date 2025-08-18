@@ -980,8 +980,8 @@ def test_get_token_restrictions_with_payment_history(db, test_team, test_product
 
     days_left, max_spend, rpm_limit = get_token_restrictions(db, test_team.id)
 
-    # Should have 15 days left (30 - 15)
-    assert days_left == 15
+    # Should return the product's renewal_period_days, not calculated days left
+    assert days_left == test_product.renewal_period_days  # 30 days
     assert max_spend == test_product.max_budget_per_key
     assert rpm_limit == test_product.rpm_per_key
 

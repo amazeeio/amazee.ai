@@ -368,7 +368,14 @@ async def monitor_team_keys(
                             # Determine what the new budget_duration will be for logging
                             new_budget_duration = data.get("budget_duration", current_budget_duration)
                             logger.info(f"Key {key.id} budget update triggered: changing from {current_budget_duration}, {current_max_budget} to {new_budget_duration}, {max_budget_amount}")
-                            await litellm_service.update_budget(**data)
+
+                            # Extract litellm_token and other parameters for update_budget call
+                            litellm_token = data.pop("litellm_token")
+                            budget_duration = data.get("budget_duration")
+                            budget_amount = data.get("budget_amount")
+
+                            # Call update_budget with correct parameter order
+                            await litellm_service.update_budget(litellm_token, budget_duration, budget_amount=budget_amount)
                             logger.info(f"Updated key {key.id} budget settings")
                         else:
                             logger.info(f"Key {key.id} budget settings already match the expected values, no update needed")

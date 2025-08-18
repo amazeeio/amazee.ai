@@ -52,7 +52,7 @@ class LiteLLMService:
             if user_id is not None:
                 request_data["user_id"] = str(user_id)
 
-            logger.info("Making request to LiteLLM API to generate key")
+            logger.info(f"Making request to LiteLLM API to generate key with data: {request_data}")
             response = requests.post(
                 f"{self.api_url}/key/generate",
                 json=request_data,
@@ -123,6 +123,7 @@ class LiteLLMService:
                 }
             )
             response.raise_for_status()
+            logger.info(f"LiteLLM key information: {response.json()}")
             return response.json()
         except requests.exceptions.RequestException as e:
             error_msg = str(e)
