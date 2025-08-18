@@ -16,22 +16,40 @@ from app.core.worker import (
 )
 from unittest.mock import AsyncMock, patch, Mock
 
+@pytest.mark.parametrize("event_type,object_type,get_product_func", [
+    ("customer.subscription.deleted", "subscription", "get_product_id_from_subscription"),
+    ("checkout.session.async_payment_failed", "session", "get_product_id_from_session"),
+    ("checkout.session.expired", "session", "get_product_id_from_session"),
+    ("customer.subscription.paused", "subscription", "get_product_id_from_subscription"),
+])
 @pytest.mark.asyncio
-@patch('app.core.worker.get_product_id_from_subscription', new_callable=AsyncMock)
-async def test_handle_subscription_deleted(mock_get_product, db, test_team, test_product):
+async def test_handle_stripe_events_remove_product(event_type, object_type, get_product_func, db, test_team, test_product):
+    """
+    Test that various Stripe events correctly remove product associations from teams.
+
+    GIVEN: A team with an active product association
+    WHEN: A Stripe event occurs that indicates payment/subscription failure
+    THEN: The product association is removed from the team
+    """
     # Arrange
     test_team.stripe_customer_id = "cus_123"
     db.add(test_team)
     db.commit()
 
     mock_event = Mock()
-    mock_event.type = "customer.subscription.deleted"
-    mock_subscription = Mock()
-    mock_subscription.customer = "cus_123"
-    mock_subscription.id = "sub_123"
-    mock_event.data.object = mock_subscription
+    mock_event.type = event_type
 
-    mock_get_product.return_value = test_product.id
+    if object_type == "subscription":
+        mock_object = Mock()
+        mock_object.customer = "cus_123"
+        mock_object.id = "sub_123"
+    else:  # session
+        mock_object = Mock()
+        mock_object.metadata = {"team_id": str(test_team.id)}
+        mock_object.customer = "cus_123"
+        mock_object.id = "cs_123"
+
+    mock_event.data.object = mock_object
 
     # Set up initial team-product association
     team_product = DBTeamProduct(
@@ -42,10 +60,12 @@ async def test_handle_subscription_deleted(mock_get_product, db, test_team, test
     db.commit()
 
     # Act
-    await handle_stripe_event_background(mock_event, db)
+    with patch(f'app.core.worker.{get_product_func}', new_callable=AsyncMock) as mock_get_product:
+        mock_get_product.return_value = test_product.id
+        await handle_stripe_event_background(mock_event, db)
 
     # Assert
-    mock_get_product.assert_called_once_with("sub_123")
+    mock_get_product.assert_called_once_with(mock_object.id)
     # Verify team-product association was removed
     team_product = db.query(DBTeamProduct).filter(
         DBTeamProduct.team_id == test_team.id,
@@ -63,120 +83,6 @@ async def test_handle_unknown_event_type(db):
     await handle_stripe_event_background(mock_event, db)
 
     # No assertion needed as we're just verifying no error occurs
-
-@patch('app.core.worker.get_product_id_from_session', new_callable=AsyncMock)
-@pytest.mark.asyncio
-async def test_handle_checkout_session_async_payment_failed(mock_get_product, db, test_team, test_product):
-    # Arrange
-    test_team.stripe_customer_id = "cus_123"
-    db.add(test_team)
-    db.commit()
-
-    mock_event = Mock()
-    mock_event.type = "checkout.session.async_payment_failed"
-    mock_session = Mock()
-    mock_session.metadata = {"team_id": str(test_team.id)}
-    mock_session.customer = "cus_123"
-    mock_session.id = "cs_123"
-    mock_event.data.object = mock_session
-
-    mock_get_product.return_value = test_product.id
-
-    # Set up initial team-product association
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
-    db.add(team_product)
-    db.commit()
-
-    # Act
-    await handle_stripe_event_background(mock_event, db)
-
-    # Assert
-    mock_get_product.assert_called_once_with("cs_123")
-    # Verify team-product association was removed
-    team_product = db.query(DBTeamProduct).filter(
-        DBTeamProduct.team_id == test_team.id,
-        DBTeamProduct.product_id == test_product.id
-    ).first()
-    assert team_product is None
-
-@patch('app.core.worker.get_product_id_from_session', new_callable=AsyncMock)
-@pytest.mark.asyncio
-async def test_handle_checkout_session_expired(mock_get_product, db, test_team, test_product):
-    # Arrange
-    test_team.stripe_customer_id = "cus_123"
-    db.add(test_team)
-    db.commit()
-
-    mock_event = Mock()
-    mock_event.type = "checkout.session.expired"
-    mock_session = Mock()
-    mock_session.metadata = {"team_id": str(test_team.id)}
-    mock_session.customer = "cus_123"
-    mock_session.id = "cs_123"
-    mock_event.data.object = mock_session
-
-    mock_get_product.return_value = test_product.id
-
-    # Set up initial team-product association
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
-    db.add(team_product)
-    db.commit()
-
-    # Act
-    await handle_stripe_event_background(mock_event, db)
-
-    # Assert
-    mock_get_product.assert_called_once_with("cs_123")
-    # Verify team-product association was removed
-    team_product = db.query(DBTeamProduct).filter(
-        DBTeamProduct.team_id == test_team.id,
-        DBTeamProduct.product_id == test_product.id
-    ).first()
-    assert team_product is None
-
-@patch('app.core.worker.get_product_id_from_subscription', new_callable=AsyncMock)
-@pytest.mark.asyncio
-async def test_handle_subscription_paused(mock_get_product, db, test_team, test_product):
-    # Arrange
-    test_team.stripe_customer_id = "cus_123"
-    db.add(test_team)
-    db.commit()
-
-    mock_event = Mock()
-    mock_event.type = "customer.subscription.paused"
-    mock_subscription = Mock()
-    mock_subscription.customer = "cus_123"
-    mock_subscription.id = "sub_123"
-    mock_event.data.object = mock_subscription
-
-    mock_get_product.return_value = test_product.id
-
-    # Set up initial team-product association
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
-    db.add(team_product)
-    db.commit()
-
-    # Act
-    await handle_stripe_event_background(mock_event, db)
-
-    # Assert
-    mock_get_product.assert_called_once_with("sub_123")
-    # Verify team-product association was removed
-    team_product = db.query(DBTeamProduct).filter(
-        DBTeamProduct.team_id == test_team.id,
-        DBTeamProduct.product_id == test_product.id
-    ).first()
-    assert team_product is None
-
 
 @pytest.mark.asyncio
 async def test_apply_product_success(db, test_team, test_product):
@@ -566,74 +472,25 @@ async def test_monitor_teams_basic_metrics(mock_litellm, mock_ses, db, test_team
         team_name=team_with_payment.name
     )._value.get() == 10
 
+@pytest.mark.parametrize("team_age,expected_days_remaining,template_name", [
+    (23, 7, "team-expiring"),
+    (25, 5, "team-expiring"),
+    (30, 0, "trial-expired"),
+])
 @pytest.mark.asyncio
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_expiration_notification(mock_litellm, mock_ses, db, test_team, test_team_admin):
+async def test_monitor_teams_notification_scenarios(mock_litellm, mock_ses, team_age, expected_days_remaining, template_name, db, test_team, test_team_admin):
     """
-    Test first expiration notification for teams approaching expiration (7 days remaining).
+    Test notification scenarios for teams approaching or reaching expiration.
+
+    GIVEN: A team approaching or at expiration with different ages
+    WHEN: The monitoring workflow runs
+    THEN: Appropriate notifications are sent with correct template and days remaining
     """
-    # Setup test team approaching expiration (23 days old, 7 days remaining)
-    test_team.created_at = datetime.now(UTC) - timedelta(days=23)
-    test_team.admin_email = test_team_admin.email  # Use the admin fixture's email
-    db.add(test_team)
-    db.commit()
-
-    # Setup mock SES service
-    mock_ses_instance = mock_ses.return_value
-    mock_ses_instance.send_email = Mock()
-
-    # Run monitoring
-    await monitor_teams(db)
-
-    # Verify email was sent
-    mock_ses_instance.send_email.assert_called_once()
-    call_args = mock_ses_instance.send_email.call_args[1]
-    assert call_args['to_addresses'] == [test_team.admin_email]
-    assert call_args['template_name'] == "team-expiring"
-    assert call_args['template_data']['name'] == test_team.name
-    assert call_args['template_data']['days_remaining'] == 7  # 30 - 23
-
-@pytest.mark.asyncio
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.LiteLLMService')
-@patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_expiration_notification_second(mock_litellm, mock_ses, db, test_team, test_team_admin):
-    """
-    Test second expiration notification for teams approaching expiration (5 days remaining).
-    """
-    # Setup test team approaching expiration (25 days old, 5 days remaining)
-    test_team.created_at = datetime.now(UTC) - timedelta(days=25)
-    test_team.admin_email = test_team_admin.email  # Use the admin fixture's email
-    db.add(test_team)
-    db.commit()
-
-    # Setup mock SES service
-    mock_ses_instance = mock_ses.return_value
-    mock_ses_instance.send_email = Mock()
-
-    # Run monitoring
-    await monitor_teams(db)
-
-    # Verify email was sent
-    mock_ses_instance.send_email.assert_called_once()
-    call_args = mock_ses_instance.send_email.call_args[1]
-    assert call_args['to_addresses'] == [test_team.admin_email]
-    assert call_args['template_name'] == "team-expiring"
-    assert call_args['template_data']['name'] == test_team.name
-    assert call_args['template_data']['days_remaining'] == 5  # 30 - 25
-
-@pytest.mark.asyncio
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.LiteLLMService')
-@patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_trial_expired_notification(mock_litellm, mock_ses, db, test_team, test_team_admin):
-    """
-    Test trial expired notification for teams that have reached expiration.
-    """
-    # Setup test team at expiration (30 days old)
-    test_team.created_at = datetime.now(UTC) - timedelta(days=30)
+    # Setup test team with specified age
+    test_team.created_at = datetime.now(UTC) - timedelta(days=team_age)
     test_team.admin_email = test_team_admin.email
     db.add(test_team)
     db.commit()
@@ -645,12 +502,16 @@ async def test_monitor_teams_trial_expired_notification(mock_litellm, mock_ses, 
     # Run monitoring
     await monitor_teams(db)
 
-    # Verify expired email was sent
+    # Verify email was sent
     mock_ses_instance.send_email.assert_called_once()
     call_args = mock_ses_instance.send_email.call_args[1]
     assert call_args['to_addresses'] == [test_team.admin_email]
-    assert call_args['template_name'] == "trial-expired"
+    assert call_args['template_name'] == template_name
     assert call_args['template_data']['name'] == test_team.name
+
+    # For trial-expired template, there's no days_remaining field
+    if template_name == "team-expiring":
+        assert call_args['template_data']['days_remaining'] == expected_days_remaining
 
 @pytest.mark.asyncio
 @patch('app.core.worker.SESService')
@@ -1082,25 +943,25 @@ async def test_monitor_team_keys_with_renewal_period_updates(mock_litellm, db, t
     mock_instance.get_key_info = AsyncMock()
     mock_instance.update_budget = AsyncMock()
 
-    # Mock key info responses - one key with zero spend (triggers heuristic), one not
+    # Mock key info responses - both keys have different budget amounts, triggering updates
     mock_instance.get_key_info.side_effect = [
-        # Team key - zero spend (triggers zero spend heuristic)
+        # Team key - different budget amount triggers update
         {
             "info": {
                 "budget_reset_at": (datetime.now(UTC) + timedelta(days=30)).isoformat(),
                 "key_alias": "team_key",
-                "spend": 0.0,  # Zero spend triggers update
-                "max_budget": 100.0,
+                "spend": 0.0,
+                "max_budget": 100.0,  # Different from expected (50.0)
                 "budget_duration": "15d"
             }
         },
-        # User key - non-zero spend (doesn't trigger heuristic)
+        # User key - different budget amount triggers update
         {
             "info": {
                 "budget_reset_at": (datetime.now(UTC) + timedelta(days=30)).isoformat(),
                 "key_alias": "user_key",
-                "spend": 5.0,  # Non-zero spend
-                "max_budget": 50.0,
+                "spend": 5.0,
+                "max_budget": 25.0,  # Different from expected (50.0)
                 "budget_duration": "15d"
             }
         }
@@ -1121,12 +982,20 @@ async def test_monitor_team_keys_with_renewal_period_updates(mock_litellm, db, t
     # Verify get_key_info was called for both keys
     assert mock_instance.get_key_info.call_count == 2
 
-    # Verify update_budget was called only for the key with budget reset within the last hour
-    assert mock_instance.update_budget.call_count == 1
-    update_call = mock_instance.update_budget.call_args
-    assert update_call[1]['litellm_token'] == "team_token_123"
-    assert update_call[1]['budget_duration'] == f"{test_product.renewal_period_days}d"
-    assert update_call[1]['budget_amount'] == test_product.max_budget_per_key
+    # Verify update_budget was called for both keys since they have different settings
+    assert mock_instance.update_budget.call_count == 2
+
+    # Check the first call (team key)
+    first_call = mock_instance.update_budget.call_args_list[0]
+    assert first_call[1]['litellm_token'] == "team_token_123"
+    assert first_call[1]['budget_amount'] == test_product.max_budget_per_key
+    # budget_duration should not be updated since it's not None and reset time doesn't align
+
+    # Check the second call (user key)
+    second_call = mock_instance.update_budget.call_args_list[1]
+    assert second_call[1]['litellm_token'] == "user_token_456"
+    assert second_call[1]['budget_amount'] == test_product.max_budget_per_key
+    # budget_duration should not be updated since it's not None and reset time doesn't align
 
     # Verify team total spend is calculated correctly
     assert team_total == 5.0  # 0.0 + 5.0
@@ -1169,26 +1038,26 @@ async def test_monitor_team_keys_with_renewal_period_updates_no_products(mock_li
     mock_instance.get_key_info = AsyncMock()
     mock_instance.update_budget = AsyncMock()
 
-    # Mock key info responses - one key with zero spend (triggers heuristic), one not
+    # Mock key info responses - both keys have None budget_duration, triggering updates
     mock_instance.get_key_info.side_effect = [
-        # Team key - zero spend (triggers zero spend heuristic)
+        # Team key - None budget_duration triggers update
         {
             "info": {
                 "budget_reset_at": (datetime.now(UTC) + timedelta(days=30)).isoformat(),
                 "key_alias": "team_key",
-                "spend": 0.0,  # Zero spend triggers update
+                "spend": 0.0,
                 "max_budget": 100.0,
-                "budget_duration": "15d"
+                "budget_duration": None  # None triggers update
             }
         },
-        # User key - non-zero spend (doesn't trigger heuristic)
+        # User key - None budget_duration triggers update
         {
             "info": {
                 "budget_reset_at": (datetime.now(UTC) + timedelta(days=30)).isoformat(),
                 "key_alias": "user_key",
-                "spend": 5.0,  # Non-zero spend
+                "spend": 5.0,
                 "max_budget": 50.0,
-                "budget_duration": "15d"
+                "budget_duration": None  # None triggers update
             }
         }
     ]
@@ -1208,13 +1077,22 @@ async def test_monitor_team_keys_with_renewal_period_updates_no_products(mock_li
     # Verify get_key_info was called for both keys
     assert mock_instance.get_key_info.call_count == 2
 
-    # Verify update_budget was called only for the key with budget reset within the last hour
-    assert mock_instance.update_budget.call_count == 1
-    update_call = mock_instance.update_budget.call_args
-    assert update_call[1]['litellm_token'] == "team_token_123"
-    assert update_call[1]['budget_duration'] == "30d"
+    # Verify update_budget was called for both keys since they have different settings
+    assert mock_instance.update_budget.call_count == 2
+
+    # Check the first call (team key)
+    first_call = mock_instance.update_budget.call_args_list[0]
+    assert first_call[1]['litellm_token'] == "team_token_123"
+    assert first_call[1]['budget_duration'] == "30d"
     # Should not have budget_amount since no products were found
-    assert 'budget_amount' not in update_call[1]
+    assert 'budget_amount' not in first_call[1]
+
+    # Check the second call (user key)
+    second_call = mock_instance.update_budget.call_args_list[1]
+    assert second_call[1]['litellm_token'] == "user_token_456"
+    assert second_call[1]['budget_duration'] == "30d"
+    # Should not have budget_amount since no products were found
+    assert 'budget_amount' not in second_call[1]
 
     # Verify team total spend is calculated correctly
     assert team_total == 5.0  # 0.0 + 5.0
@@ -1285,131 +1163,9 @@ async def test_monitor_team_keys_reset_time_alignment_heuristic(mock_litellm, db
     # Verify team total spend is calculated correctly
     assert team_total == 10.0
 
-@pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_monitor_team_keys_zero_spend_heuristic(mock_litellm, db, test_team, test_product, test_region, test_team_user, test_team_key_creator):
-    """
-    Test that monitor_team_keys updates when zero spend heuristic is met.
 
-    Given: A team with keys where spend is $0.00 (indicating fresh reset)
-    When: monitor_team_keys is called with renewal_period_days
-    Then: The budget should be updated due to zero spend
-    """
-    # Setup test data
-    test_team.last_payment = datetime.now(UTC) - timedelta(days=35)  # 35 days ago (past 30-day renewal period)
-    db.add(test_team)
 
-    # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
-    db.add(team_product)
 
-    # Create a key for the team
-    team_key = DBPrivateAIKey(
-        name="Team Key",
-        litellm_token="team_token_123",
-        region=test_region,
-        team_id=test_team.id
-    )
-    db.add(team_key)
-    db.commit()
-
-    # Setup mock LiteLLM service
-    mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock()
-    mock_instance.update_budget = AsyncMock()
-
-    current_time = datetime.now(UTC)
-
-    # Mock key info response - spend is 0.0 (should trigger zero spend heuristic)
-    mock_instance.get_key_info.return_value = {
-        "info": {
-            "budget_reset_at": (current_time + timedelta(days=30)).isoformat(),
-            "key_alias": "team_key",
-            "spend": 0.0,  # Zero spend triggers update
-            "max_budget": 100.0,
-            "budget_duration": "15d"  # Different from expected
-        }
-    }
-
-    # Get keys by region
-    keys_by_region = get_team_keys_by_region(db, test_team.id)
-
-    # Call the function with renewal period days
-    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
-
-    # Verify update_budget was called because of zero spend
-    assert mock_instance.update_budget.call_count == 1
-    update_call = mock_instance.update_budget.call_args
-    assert update_call[1]['litellm_token'] == "team_token_123"
-    assert update_call[1]['budget_duration'] == f"{test_product.renewal_period_days}d"
-    assert update_call[1]['budget_amount'] == test_product.max_budget_per_key
-
-    # Verify team total spend is calculated correctly
-    assert team_total == 0.0
-
-@pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_monitor_team_keys_no_heuristic_met(mock_litellm, db, test_team, test_product, test_region, test_team_user, test_team_key_creator):
-    """
-    Test that monitor_team_keys does not update when no heuristics are met.
-
-    Given: A team with keys where neither reset time alignment nor zero spend heuristics are met
-    When: monitor_team_keys is called with renewal_period_days
-    Then: The budget should not be updated
-    """
-    # Setup test data
-    test_team.last_payment = datetime.now(UTC) - timedelta(days=35)  # 35 days ago (past 30-day renewal period)
-    db.add(test_team)
-
-    # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
-    db.add(team_product)
-
-    # Create a key for the team
-    team_key = DBPrivateAIKey(
-        name="Team Key",
-        litellm_token="team_token_123",
-        region=test_region,
-        team_id=test_team.id
-    )
-    db.add(team_key)
-    db.commit()
-
-    # Setup mock LiteLLM service
-    mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock()
-    mock_instance.update_budget = AsyncMock()
-
-    current_time = datetime.now(UTC)
-
-    # Mock key info response - no heuristics met
-    mock_instance.get_key_info.return_value = {
-        "info": {
-            "budget_reset_at": (current_time + timedelta(days=30)).isoformat(),
-            "key_alias": "team_key",
-            "spend": 10.0,  # Non-zero spend
-            "max_budget": 100.0,
-            "budget_duration": "15d"  # Different from expected, but reset time not aligned
-        }
-    }
-
-    # Get keys by region
-    keys_by_region = get_team_keys_by_region(db, test_team.id)
-
-    # Call the function with renewal period days
-    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
-
-    # Verify update_budget was NOT called because no heuristics are met
-    assert mock_instance.update_budget.call_count == 0
-
-    # Verify team total spend is calculated correctly
-    assert team_total == 10.0
 
 @pytest.mark.asyncio
 @patch('app.core.worker.LiteLLMService')
@@ -1467,6 +1223,348 @@ async def test_monitor_team_keys_none_budget_duration_handled(mock_litellm, db, 
     team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
 
     # Verify update_budget was called because budget_duration is None (forces update)
+    assert mock_instance.update_budget.call_count == 1
+    update_call = mock_instance.update_budget.call_args
+    assert update_call[1]['litellm_token'] == "team_token_123"
+    assert update_call[1]['budget_duration'] == f"{test_product.renewal_period_days}d"
+    assert update_call[1]['budget_amount'] == test_product.max_budget_per_key
+
+    # Verify team total spend is calculated correctly
+    assert team_total == 10.0
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_monitor_team_keys_duration_mismatch_without_reset_time_alignment(mock_litellm, db, test_team, test_product, test_region):
+    """
+    Test that duration mismatches do not trigger updates when reset time is not within an hour of (now + current duration).
+
+    Given: A team with keys where duration mismatches but reset time is not within 1 hour of (now + current duration)
+    When: monitor_team_keys is called with renewal_period_days
+    Then: The budget_duration should not be updated
+    """
+    # Setup test data
+    test_team.last_payment = datetime.now(UTC) - timedelta(days=35)
+    db.add(test_team)
+
+    # Add product to team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+
+    # Create a key for the team
+    team_key = DBPrivateAIKey(
+        name="Team Key",
+        litellm_token="team_token_123",
+        region=test_region,
+        team_id=test_team.id
+    )
+    db.add(team_key)
+    db.commit()
+
+    # Setup mock LiteLLM service
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock()
+    mock_instance.update_budget = AsyncMock()
+
+    current_time = datetime.now(UTC)
+
+    # Mock key info response - duration mismatches but reset time is not within 1 hour of (now + current duration)
+    # Current duration is 15d, expected is 30d
+    # Reset time is 2 hours after (now + 15d), which is not within 1 hour of (now + 15d)
+    mock_instance.get_key_info.return_value = {
+        "info": {
+            "budget_reset_at": (current_time + timedelta(days=15, hours=2)).isoformat(),
+            "key_alias": "team_key",
+            "spend": 10.0,
+            "max_budget": 50.0,  # Same as expected
+            "budget_duration": "15d"  # Different from expected (30d)
+        }
+    }
+
+    # Get keys by region
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+
+    # Call the function with renewal period days
+    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+
+    # Verify update_budget was not called because reset time doesn't align
+    assert mock_instance.update_budget.call_count == 0
+
+    # Verify team total spend is calculated correctly
+    assert team_total == 10.0
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_monitor_team_keys_both_mismatch_with_reset_time_alignment(mock_litellm, db, test_team, test_product, test_region):
+    """
+    Test that both budget amount and duration mismatches trigger updates when reset time aligns.
+
+    Given: A team with keys where both budget amount and duration mismatch, and reset time aligns
+    When: monitor_team_keys is called with renewal_period_days and max_budget_amount
+    Then: Both budget_amount and budget_duration should be updated
+    """
+    # Setup test data
+    test_team.last_payment = datetime.now(UTC) - timedelta(days=35)
+    db.add(test_team)
+
+    # Add product to team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+
+    # Create a key for the team
+    team_key = DBPrivateAIKey(
+        name="Team Key",
+        litellm_token="team_token_123",
+        region=test_region,
+        team_id=test_team.id
+    )
+    db.add(team_key)
+    db.commit()
+
+    # Setup mock LiteLLM service
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock()
+    mock_instance.update_budget = AsyncMock()
+
+    current_time = datetime.now(UTC)
+
+    # Mock key info response - both budget amount and duration mismatch, and reset time aligns
+    mock_instance.get_key_info.return_value = {
+        "info": {
+            "budget_reset_at": (current_time + timedelta(days=15, minutes=30)).isoformat(),
+            "key_alias": "team_key",
+            "spend": 10.0,
+            "max_budget": 25.0,  # Different from expected (50.0)
+            "budget_duration": "15d"  # Different from expected (30d)
+        }
+    }
+
+    # Get keys by region
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+
+    # Call the function with renewal period days
+    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+
+    # Verify update_budget was called with both budget_amount and budget_duration
+    assert mock_instance.update_budget.call_count == 1
+    update_call = mock_instance.update_budget.call_args
+    assert update_call[1]['litellm_token'] == "team_token_123"
+    assert update_call[1]['budget_amount'] == test_product.max_budget_per_key
+    assert update_call[1]['budget_duration'] == f"{test_product.renewal_period_days}d"
+
+    # Verify team total spend is calculated correctly
+    assert team_total == 10.0
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_monitor_team_keys_both_mismatch_without_reset_time_alignment(mock_litellm, db, test_team, test_product, test_region):
+    """
+    Test that only budget amount is updated when both mismatch but reset time doesn't align.
+
+    Given: A team with keys where both budget amount and duration mismatch, but reset time doesn't align
+    When: monitor_team_keys is called with renewal_period_days and max_budget_amount
+    Then: Only budget_amount should be updated, not budget_duration
+    """
+    # Setup test data
+    test_team.last_payment = datetime.now(UTC) - timedelta(days=35)
+    db.add(test_team)
+
+    # Add product to team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+
+    # Create a key for the team
+    team_key = DBPrivateAIKey(
+        name="Team Key",
+        litellm_token="team_token_123",
+        region=test_region,
+        team_id=test_team.id
+    )
+    db.add(team_key)
+    db.commit()
+
+    # Setup mock LiteLLM service
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock()
+    mock_instance.update_budget = AsyncMock()
+
+    current_time = datetime.now(UTC)
+
+    # Mock key info response - both budget amount and duration mismatch, but reset time doesn't align
+    mock_instance.get_key_info.return_value = {
+        "info": {
+            "budget_reset_at": (current_time + timedelta(days=15, hours=2)).isoformat(),
+            "key_alias": "team_key",
+            "spend": 10.0,
+            "max_budget": 25.0,  # Different from expected (50.0)
+            "budget_duration": "15d"  # Different from expected (30d)
+        }
+    }
+
+    # Get keys by region
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+
+    # Call the function with renewal period days
+    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+
+    # Verify update_budget was called with only budget_amount
+    assert mock_instance.update_budget.call_count == 1
+    update_call = mock_instance.update_budget.call_args
+    assert update_call[1]['litellm_token'] == "team_token_123"
+    assert update_call[1]['budget_amount'] == test_product.max_budget_per_key
+    # Should not include budget_duration since reset time doesn't align
+    assert 'budget_duration' not in update_call[1]
+
+    # Verify team total spend is calculated correctly
+    assert team_total == 10.0
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_monitor_team_keys_duration_parsing_different_units(mock_litellm, db, test_team, test_product, test_region):
+    """
+    Test that duration parsing handles different time units correctly.
+
+    Given: A team with keys where duration uses different time units (minutes, hours, days)
+    When: monitor_team_keys is called with renewal_period_days
+    Then: The duration parsing should work correctly for all supported units
+    """
+    # Setup test data
+    test_team.last_payment = datetime.now(UTC) - timedelta(days=35)
+    db.add(test_team)
+
+    # Add product to team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+
+    # Create a key for the team
+    team_key = DBPrivateAIKey(
+        name="Team Key",
+        litellm_token="team_token_123",
+        region=test_region,
+        team_id=test_team.id
+    )
+    db.add(team_key)
+    db.commit()
+
+    # Setup mock LiteLLM service
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock()
+    mock_instance.update_budget = AsyncMock()
+
+    current_time = datetime.now(UTC)
+
+    # Test cases for different duration units
+    test_cases = [
+        # (current_duration, reset_time_offset, should_update)
+        ("30m", timedelta(minutes=30, seconds=30), True),   # 30 minutes, reset 30 seconds after period end
+        ("2h", timedelta(hours=2, minutes=30), True),       # 2 hours, reset 30 minutes after period end
+        ("15d", timedelta(days=15, hours=2), False),        # 15 days, reset 2 hours after period end (too far)
+        ("1h", timedelta(hours=1, minutes=30), True),       # 1 hour, reset 30 minutes after period end
+    ]
+
+    for current_duration, reset_time_offset, should_update in test_cases:
+        # Use a fresh current_time for each iteration to ensure consistent calculations
+        iteration_time = datetime.now(UTC)
+
+        # Mock key info response with different duration units
+        mock_instance.get_key_info.return_value = {
+            "info": {
+                "budget_reset_at": (iteration_time + reset_time_offset).isoformat(),
+                "key_alias": "team_key",
+                "spend": 10.0,
+                "max_budget": 50.0,  # Same as expected
+                "budget_duration": current_duration  # Different from expected (30d)
+            }
+        }
+
+        # Get keys by region
+        keys_by_region = get_team_keys_by_region(db, test_team.id)
+
+        # Reset mock call count
+        mock_instance.update_budget.reset_mock()
+
+        # Call the function with renewal period days
+        team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+
+        # Verify update_budget was called or not based on the test case
+        if should_update:
+            assert mock_instance.update_budget.call_count == 1
+            update_call = mock_instance.update_budget.call_args
+            assert update_call[1]['litellm_token'] == "team_token_123"
+            assert update_call[1]['budget_duration'] == f"{test_product.renewal_period_days}d"
+        else:
+            assert mock_instance.update_budget.call_count == 0
+
+        # Verify team total spend is calculated correctly
+        assert team_total == 10.0
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_monitor_team_keys_zero_duration_renewal(mock_litellm, db, test_team, test_product, test_region, test_team_user, test_team_key_creator):
+    """
+    Test that monitor_team_keys properly renews keys with "0d" duration.
+
+    Given: A team with an active product and a key that has been incorrectly set to "0d" duration
+    When: monitor_team_keys is called with renewal_period_days
+    Then: The key should be updated to the correct duration regardless of reset time alignment
+    """
+    # Setup test data
+    test_team.last_payment = datetime.now(UTC) - timedelta(days=35)  # 35 days ago (past 30-day renewal period)
+    db.add(test_team)
+
+    # Add product to team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+
+    # Create a key for the team
+    team_key = DBPrivateAIKey(
+        name="Team Key",
+        litellm_token="team_token_123",
+        region=test_region,
+        team_id=test_team.id
+    )
+    db.add(team_key)
+    db.commit()
+
+    # Setup mock LiteLLM service
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock()
+    mock_instance.update_budget = AsyncMock()
+
+    current_time = datetime.now(UTC)
+
+    # Mock key info response - key has "0d" duration (expired due to bug)
+    mock_instance.get_key_info.return_value = {
+        "info": {
+            "budget_reset_at": (current_time - timedelta(days=2)).isoformat(),  # Reset time in the past
+            "key_alias": "team_key",
+            "spend": 10.0,
+            "max_budget": 100.0,
+            "budget_duration": "0d"  # Expired key due to bug
+        }
+    }
+
+    # Get keys by region
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+
+    # Call the function with renewal period days
+    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+
+    # Verify update_budget was called to fix the "0d" duration
     assert mock_instance.update_budget.call_count == 1
     update_call = mock_instance.update_budget.call_args
     assert update_call[1]['litellm_token'] == "team_token_123"
