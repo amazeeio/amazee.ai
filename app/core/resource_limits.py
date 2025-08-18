@@ -185,14 +185,7 @@ def get_token_restrictions(db: Session, team_id: int) -> tuple[int, float, int]:
         logger.error(f"Team not found for team_id: {team_id}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
 
-    if result.last_payment is None:
-        days_left_in_period = result.max_key_duration
-    else:
-        days_left_in_period = result.max_key_duration - (
-            datetime.now(UTC) - max(result.created_at.replace(tzinfo=UTC), result.last_payment.replace(tzinfo=UTC))
-        ).days
-
-    return days_left_in_period, result.max_max_spend, result.max_rpm_limit
+    return result.max_key_duration, result.max_max_spend, result.max_rpm_limit
 
 def get_team_limits(db: Session, team_id: int):
     # TODO: Go through all products, and create a master list of the limits on all fields for this team.
