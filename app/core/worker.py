@@ -299,6 +299,7 @@ async def monitor_team_keys(
                         current_budget_duration = info.get("budget_duration")
                         current_max_budget = info.get("max_budget")
                         budget_reset_at = info.get("budget_reset_at")
+                        expiry_date = info.get("expires")
 
                         needs_update = False
                         data = {"litellm_token": key.litellm_token}
@@ -308,19 +309,36 @@ async def monitor_team_keys(
                             data["budget_amount"] = max_budget_amount
                             needs_update = True
 
-                        # Rule 2: If budget_duration is None, always update it
+                        # Rule 2: If the key is expired or expires within the next month, always update the budget duration
+                        if expiry_date is not None:
+                            try:
+                                # Parse the expiry date string into a datetime object
+                                parsed_expiry_date = datetime.fromisoformat(expiry_date.replace('Z', '+00:00'))
+                                # Check if key is expired or expires within the next month (30 days)
+                                one_month_from_now = current_time + timedelta(days=30)
+                                if parsed_expiry_date <= one_month_from_now:
+                                    needs_update = True
+                                    data["budget_duration"] = f"{renewal_period_days}d"
+                                    if parsed_expiry_date < current_time:
+                                        logger.info(f"Key {key.id} budget update triggered by expired key")
+                                    else:
+                                        logger.info(f"Key {key.id} budget update triggered by key expiring within next month (expires: {parsed_expiry_date})")
+                            except (ValueError, AttributeError) as e:
+                                logger.warning(f"Error parsing expiry date for key {key.id}: {str(e)}")
+
+                        # Rule 3: If budget_duration is None, always update it
                         if current_budget_duration is None:
                             data["budget_duration"] = f"{renewal_period_days}d"
                             needs_update = True
                             logger.info(f"Key {key.id} budget update triggered by None budget_duration")
 
-                        # Rule 2.5: If budget_duration is "0d", always update it (fix for expired keys)
+                        # Rule 4: If budget_duration is "0d", always update it (fix for expired keys)
                         elif current_budget_duration == "0d":
                             data["budget_duration"] = f"{renewal_period_days}d"
                             needs_update = True
                             logger.info(f"Key {key.id} budget update triggered by 0d duration (expired key fix)")
 
-                        # Rule 3: If the duration mismatches, and the next reset time is within an hour of (now + current duration) then reset the duration
+                        # Rule 5: If the duration mismatches, and the next reset time is within an hour of (now + current duration) then reset the duration
                         else:
                             expected_budget_duration = f"{renewal_period_days}d"
                             if current_budget_duration != expected_budget_duration:
@@ -362,7 +380,6 @@ async def monitor_team_keys(
                                 if should_update_duration:
                                     data["budget_duration"] = expected_budget_duration
                                     needs_update = True
-
                         # Update when needs_update is True
                         if needs_update:
                             # Determine what the new budget_duration will be for logging

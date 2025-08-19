@@ -1630,3 +1630,205 @@ async def test_monitor_team_keys_update_budget_parameter_issue(mock_litellm, db,
     # After the fix, litellm_token should be the first positional argument
     assert call_args[0][0] == "team_token_123"  # First positional argument should be litellm_token
     assert call_args[1]['budget_amount'] == test_product.max_budget_per_key  # budget_amount as keyword argument
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_monitor_team_keys_expiry_within_next_month(mock_litellm, db, test_team, test_product, test_region, test_team_user, test_team_key_creator):
+    """
+    Test that monitor_team_keys updates keys that expire within the next month.
+
+    Given: A team with an active product and a key that expires within the next 30 days
+    When: monitor_team_keys is called with renewal_period_days
+    Then: The key should be updated to the renewal period duration
+    """
+    # Setup test data
+    test_team.last_payment = datetime.now(UTC) - timedelta(days=35)  # 35 days ago (past 30-day renewal period)
+    db.add(test_team)
+
+    # Add product to team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+
+    # Create a key for the team
+    team_key = DBPrivateAIKey(
+        name="Team Key",
+        litellm_token="team_token_123",
+        region=test_region,
+        team_id=test_team.id
+    )
+    db.add(team_key)
+    db.commit()
+
+    # Setup mock LiteLLM service
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock()
+    mock_instance.update_budget = AsyncMock()
+
+    current_time = datetime.now(UTC)
+    # Set expiry date to 15 days from now (within the 30-day window)
+    expiry_date = current_time + timedelta(days=15)
+
+    # Mock key info response - key expires within next month
+    mock_instance.get_key_info.return_value = {
+        "info": {
+            "budget_reset_at": (current_time - timedelta(days=2)).isoformat(),
+            "key_alias": "team_key",
+            "spend": 10.0,
+            "max_budget": test_product.max_budget_per_key,  # Use the same budget amount to avoid Rule 1 trigger
+            "budget_duration": "30d",
+            "expires": expiry_date.isoformat()
+        }
+    }
+
+    # Get keys by region
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+
+    # Call the function with renewal period days
+    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+
+    # Verify update_budget was called to update the duration for expiring key
+    assert mock_instance.update_budget.call_count == 1
+    update_call = mock_instance.update_budget.call_args
+    assert update_call[0][0] == "team_token_123"  # First positional argument should be litellm_token
+    assert update_call[0][1] == f"{test_product.renewal_period_days}d"  # Second positional argument should be budget_duration
+    # When updating for expiry reasons, budget_amount should be None since we're only updating duration
+    assert update_call[1]['budget_amount'] is None
+
+    # Verify team total spend is calculated correctly
+    assert team_total == 10.0
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_monitor_team_keys_expired_key(mock_litellm, db, test_team, test_product, test_region, test_team_user, test_team_key_creator):
+    """
+    Test that monitor_team_keys updates keys that are already expired.
+
+    Given: A team with an active product and a key that has already expired
+    When: monitor_team_keys is called with renewal_period_days
+    Then: The key should be updated to the renewal period duration
+    """
+    # Setup test data
+    test_team.last_payment = datetime.now(UTC) - timedelta(days=35)  # 35 days ago (past 30-day renewal period)
+    db.add(test_team)
+
+    # Add product to team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+
+    # Create a key for the team
+    team_key = DBPrivateAIKey(
+        name="Team Key",
+        litellm_token="team_token_123",
+        region=test_region,
+        team_id=test_team.id
+    )
+    db.add(team_key)
+    db.commit()
+
+    # Setup mock LiteLLM service
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock()
+    mock_instance.update_budget = AsyncMock()
+
+    current_time = datetime.now(UTC)
+    # Set expiry date to 5 days ago (already expired)
+    expiry_date = current_time - timedelta(days=5)
+
+    # Mock key info response - key is already expired
+    mock_instance.get_key_info.return_value = {
+        "info": {
+            "budget_reset_at": (current_time - timedelta(days=2)).isoformat(),
+            "key_alias": "team_key",
+            "spend": 10.0,
+            "max_budget": test_product.max_budget_per_key,  # Use the same budget amount to avoid Rule 1 trigger
+            "budget_duration": "30d",
+            "expires": expiry_date.isoformat()
+        }
+    }
+
+    # Get keys by region
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+
+    # Call the function with renewal period days
+    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+
+    # Verify update_budget was called to update the duration for expired key
+    assert mock_instance.update_budget.call_count == 1
+    update_call = mock_instance.update_budget.call_args
+    assert update_call[0][0] == "team_token_123"  # First positional argument should be litellm_token
+    assert update_call[0][1] == f"{test_product.renewal_period_days}d"  # Second positional argument should be budget_duration
+    # When updating for expiry reasons, budget_amount should be None since we're only updating duration
+    assert update_call[1]['budget_amount'] is None
+
+    # Verify team total spend is calculated correctly
+    assert team_total == 10.0
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_monitor_team_keys_expiry_beyond_next_month(mock_litellm, db, test_team, test_product, test_region, test_team_user, test_team_key_creator):
+    """
+    Test that monitor_team_keys does not update keys that expire beyond the next month.
+
+    Given: A team with an active product and a key that expires beyond the next 30 days
+    When: monitor_team_keys is called with renewal_period_days
+    Then: The key should not be updated for expiry reasons
+    """
+    # Setup test data
+    test_team.last_payment = datetime.now(UTC) - timedelta(days=35)  # 35 days ago (past 30-day renewal period)
+    db.add(test_team)
+
+    # Add product to team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+
+    # Create a key for the team
+    team_key = DBPrivateAIKey(
+        name="Team Key",
+        litellm_token="team_token_123",
+        region=test_region,
+        team_id=test_team.id
+    )
+    db.add(team_key)
+    db.commit()
+
+    # Setup mock LiteLLM service
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock()
+    mock_instance.update_budget = AsyncMock()
+
+    current_time = datetime.now(UTC)
+    # Set expiry date to 45 days from now (beyond the 30-day window)
+    expiry_date = current_time + timedelta(days=45)
+
+    # Mock key info response - key expires beyond next month
+    mock_instance.get_key_info.return_value = {
+        "info": {
+            "budget_reset_at": (current_time - timedelta(days=2)).isoformat(),
+            "key_alias": "team_key",
+            "spend": 10.0,
+            "max_budget": test_product.max_budget_per_key,  # Use the same budget amount to avoid Rule 1 trigger
+            "budget_duration": "30d",
+            "expires": expiry_date.isoformat()
+        }
+    }
+
+    # Get keys by region
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+
+    # Call the function with renewal period days
+    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+
+    # Verify update_budget was not called for expiry reasons
+    assert mock_instance.update_budget.call_count == 0
+
+    # Verify team total spend is calculated correctly
+    assert team_total == 10.0

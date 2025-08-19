@@ -42,7 +42,7 @@ class LiteLLMService:
             request_data["team_id"] = team_id
 
             if settings.ENABLE_LIMITS:
-                request_data["duration"] = duration
+                request_data["duration"] = "365d" # Sets the expiry date for the key
                 request_data["budget_duration"] = duration
                 request_data["max_budget"] = max_budget
                 request_data["rpm_limit"] = rpm_limit
@@ -145,7 +145,8 @@ class LiteLLMService:
             # Update budget period in LiteLLM
             request_data = {
                 "key": litellm_token,
-                "budget_duration": budget_duration
+                "budget_duration": budget_duration,
+                "duration": "365d"
             }
             if budget_amount:
                 request_data["max_budget"] = budget_amount

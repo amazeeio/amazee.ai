@@ -1048,7 +1048,8 @@ def test_update_budget_duration_as_team_admin(mock_post, mock_get, client, team_
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
         json={
             "key": test_key.litellm_token,
-            "budget_duration": "monthly"
+            "budget_duration": "monthly",
+            "duration": "365d"
         }
     )
 
@@ -1137,7 +1138,7 @@ def test_create_llm_token_with_expiration(mock_post, client, admin_token, test_r
     # Verify that the LiteLLM API was called with the correct duration
     mock_post.assert_called_once()
     call_args = mock_post.call_args[1]
-    assert call_args["json"]["duration"] == "30d"  # Verify 1 month
+    assert call_args["json"]["duration"] == "365d"  # Updated default duration
     assert call_args["json"]["budget_duration"] == "30d"  # Verify 1 month
     assert call_args["json"]["max_budget"] == DEFAULT_MAX_SPEND
     assert call_args["json"]["rpm_limit"] == DEFAULT_RPM_PER_KEY
