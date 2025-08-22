@@ -310,11 +310,12 @@ async def merge_teams(
 
     This endpoint will:
     1. Validate both teams exist
-    2. Check for key name conflicts
-    3. Apply conflict resolution strategy
-    4. Migrate users and keys
-    5. Update LiteLLM key associations
-    6. Delete the source team
+    2. Check if source team has active product associations (fails if it does)
+    3. Check for key name conflicts
+    4. Apply conflict resolution strategy
+    5. Migrate users and keys
+    6. Update LiteLLM key associations
+    7. Delete the source team
     """
     try:
         # Validate teams exist
@@ -333,7 +334,16 @@ async def merge_teams(
                 detail="Cannot merge a team into itself"
             )
 
-        # Get team keys and users
+        # Check if source team has active product associations first
+        source_products = db.query(DBTeamProduct).filter(DBTeamProduct.team_id == source_team.id).all()
+        if source_products:
+            product_names = [product.product_id for product in source_products]
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot merge team '{source_team.name}' - it has active product associations: {', '.join(product_names)}. Please remove product associations before merging."
+            )
+
+        # Get team keys and users (only if no product associations found)
         source_keys = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.team_id == source_team.id).all()
         target_keys = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.team_id == target_team.id).all()
         source_users = db.query(DBUser).filter(DBUser.team_id == source_team.id).all()

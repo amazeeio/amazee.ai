@@ -1022,3 +1022,51 @@ def test_merge_teams_with_users_and_keys(mock_post, client, admin_token, db, tes
     # Verify source team was deleted
     source_team_exists = db.query(DBTeam).filter(DBTeam.id == source_team.id).first()
     assert source_team_exists is None
+
+def test_merge_teams_with_product_associations_fails(client, admin_token, db, test_product):
+    """Given a source team with product associations
+    When attempting to merge teams
+    Then the merge should fail with a 400 error"""
+
+    # Store product ID before any database operations that might detach it
+    product_id = test_product.id
+
+    # Create teams
+    source_team = DBTeam(name="Source", admin_email="source@example.com", is_active=True)
+    target_team = DBTeam(name="Target", admin_email="target@example.com", is_active=True)
+    db.add_all([source_team, target_team])
+    db.commit()
+
+    # Associate product with source team
+    source_team_product = DBTeamProduct(
+        team_id=source_team.id,
+        product_id=product_id
+    )
+    db.add(source_team_product)
+    db.commit()
+
+    response = client.post(
+        f"/teams/{target_team.id}/merge",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "source_team_id": source_team.id,
+            "conflict_resolution_strategy": "delete"
+        }
+    )
+
+    assert response.status_code == 400
+    assert "active product associations" in response.json()["detail"]
+    assert product_id in response.json()["detail"]
+
+    # Verify both teams still exist
+    source_team_exists = db.query(DBTeam).filter(DBTeam.id == source_team.id).first()
+    target_team_exists = db.query(DBTeam).filter(DBTeam.id == target_team.id).first()
+    assert source_team_exists is not None
+    assert target_team_exists is not None
+
+    # Verify product association still exists
+    source_team_product_exists = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == source_team.id,
+        DBTeamProduct.product_id == product_id
+    ).first()
+    assert source_team_product_exists is not None
