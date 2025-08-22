@@ -221,12 +221,26 @@ export default function ProductsPage() {
       });
       return;
     }
-    createProductMutation.mutate(formData);
+
+    // Ensure max_budget_per_key is not null
+    const validatedData = {
+      ...formData,
+      max_budget_per_key: formData.max_budget_per_key ?? 20.0
+    };
+
+    createProductMutation.mutate(validatedData);
   };
 
   const handleUpdate = () => {
     if (!selectedProduct) return;
-    updateProductMutation.mutate({ id: selectedProduct.id, data: formData });
+
+    // Ensure max_budget_per_key is not null
+    const validatedData = {
+      ...formData,
+      max_budget_per_key: formData.max_budget_per_key ?? 20.0
+    };
+
+    updateProductMutation.mutate({ id: selectedProduct.id, data: validatedData });
   };
 
   const handleDelete = (id: string) => {
@@ -413,8 +427,13 @@ export default function ProductsPage() {
                     id="max_budget_per_key"
                     type="number"
                     step="0.01"
-                    value={formData.max_budget_per_key || 20.0}
-                    onChange={(e) => updateFormData({ ...formData, max_budget_per_key: parseFloat(e.target.value) })}
+                    min="0"
+                    required
+                    value={formData.max_budget_per_key ?? 20.0}
+                    onChange={(e) => {
+                      const value = parseFloat(e.target.value);
+                      updateFormData({ ...formData, max_budget_per_key: isNaN(value) ? 20.0 : value });
+                    }}
                   />
                 </div>
                 <div>
@@ -508,7 +527,7 @@ export default function ProductsPage() {
               <TableCell>{product.keys_per_user}</TableCell>
               <TableCell>{product.total_key_count}</TableCell>
               <TableCell>{product.service_key_count}</TableCell>
-              <TableCell>${product.max_budget_per_key.toFixed(2)}</TableCell>
+              <TableCell>${product.max_budget_per_key ? product.max_budget_per_key.toFixed(2) : '0.00'}</TableCell>
               <TableCell>{product.rpm_per_key}</TableCell>
               <TableCell>{product.vector_db_count}</TableCell>
               <TableCell>{product.vector_db_storage}</TableCell>
@@ -613,8 +632,13 @@ export default function ProductsPage() {
                 id="edit-max-budget-per-key"
                 type="number"
                 step="0.01"
-                value={formData.max_budget_per_key || 20.0}
-                onChange={(e) => updateFormData({ ...formData, max_budget_per_key: parseFloat(e.target.value) })}
+                min="0"
+                required
+                value={formData.max_budget_per_key ?? 20.0}
+                onChange={(e) => {
+                  const value = parseFloat(e.target.value);
+                  updateFormData({ ...formData, max_budget_per_key: isNaN(value) ? 20.0 : value });
+                }}
               />
             </div>
             <div>
