@@ -163,27 +163,32 @@ export default function TeamsPage() {
     setIsPasswordless(config.PASSWORDLESS_SIGN_IN);
   }, []);
 
-  // Helper function to determine if a team is expired
+  // Helper function to determine if a team is expired (and has no active products)
   const isTeamExpired = (team: Team): boolean => {
+    // Teams with active products are never considered expired
+    if (team.products && team.products.some(product => product.active)) {
+      return false;
+    }
+
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
     const createdAt = new Date(team.created_at);
 
-    // If no last_payment, team is not expired
-    if (!team.last_payment) {
+    // If team was created less than 30 days ago, it's not expired
+    if (createdAt >= thirtyDaysAgo) {
       return false;
+    }
+
+    // If team has no last_payment, it's expired if created more than 30 days ago
+    if (!team.last_payment) {
+      return true;
     }
 
     const lastPayment = new Date(team.last_payment);
 
-    // Team is expired if both created_at and last_payment are more than 30 days ago
-    return createdAt < thirtyDaysAgo && lastPayment < thirtyDaysAgo;
-  };
-
-  // Helper function to determine if a team has active products
-  const hasActiveProducts = (team: Team): boolean => {
-    return Boolean(team.products && team.products.some(product => product.active));
+    // Team is expired if last_payment is more than 30 days ago
+    return lastPayment < thirtyDaysAgo;
   };
 
   // Queries
@@ -947,7 +952,7 @@ export default function TeamsPage() {
                             >
                               {team.is_active ? 'Active' : 'Inactive'}
                             </span>
-                            {isTeamExpired(team) && !hasActiveProducts(team) && (
+                            {isTeamExpired(team) && (
                               <span className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-600 text-white">
                                 Expired
                               </span>
@@ -1008,7 +1013,7 @@ export default function TeamsPage() {
                                                   {expandedTeam.is_active ? "Active" : "Inactive"}
                                                 </Badge>
                                               </div>
-                                              {isTeamExpired(expandedTeam) && !hasActiveProducts(expandedTeam) && (
+                                              {isTeamExpired(expandedTeam) && (
                                                 <div>
                                                   <p className="text-sm font-medium text-muted-foreground">Expiration Status</p>
                                                   <Badge variant="destructive" className="bg-red-600 hover:bg-red-700">
