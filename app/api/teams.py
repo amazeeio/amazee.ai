@@ -1,20 +1,22 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from datetime import datetime, UTC
 import logging
 
 from app.db.database import get_db
-from app.db.models import DBTeam, DBTeamProduct, DBUser
+from app.db.models import DBTeam, DBTeamProduct, DBUser, DBPrivateAIKey, DBRegion
 from app.core.security import check_system_admin, check_specific_team_admin, get_current_user_from_auth
 from app.schemas.models import (
     Team, TeamCreate, TeamUpdate,
-    TeamWithUsers
+    TeamWithUsers, TeamMergeRequest, TeamMergeResponse
 )
 from app.core.resource_limits import DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
 from app.core.worker import get_team_keys_by_region, generate_pricing_url, get_team_admin_email
+from app.api.private_ai_keys import delete_private_ai_key
+
 
 logger = logging.getLogger(__name__)
 
@@ -219,3 +221,209 @@ async def extend_team_trial(
         # Don't fail the request if email fails
 
     return {"message": "Team trial extended successfully"}
+
+def _check_key_name_conflicts(team1_keys: List[DBPrivateAIKey], team2_keys: List[DBPrivateAIKey]) -> List[str]:
+    """Return list of conflicting key names between two teams"""
+    team1_names = {key.name for key in team1_keys if key.name}
+    team2_names = {key.name for key in team2_keys if key.name}
+    return list(team1_names.intersection(team2_names))
+
+async def _resolve_key_conflicts(
+    conflicts: List[str],
+    strategy: str,
+    team2_keys: List[DBPrivateAIKey],
+    rename_suffix: Optional[str] = None,
+    db: Session = None,
+    current_user = None
+) -> List[DBPrivateAIKey]:
+    """Apply conflict resolution strategy to team2 keys"""
+    if strategy == "delete":
+        # Remove conflicting keys from team2 and delete them from database
+        keys_to_delete = [key for key in team2_keys if key.name in conflicts]
+        remaining_keys = [key for key in team2_keys if key.name not in conflicts]
+
+        # Delete conflicting keys from database if db session provided
+        if db and current_user:
+            for key in keys_to_delete:
+                try:
+                    await delete_private_ai_key(
+                        key_id=key.id,
+                        current_user=current_user,
+                        user_role="system_admin",  # System admin context for merge operations
+                        db=db
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to delete key {key.id}: {str(e)}")
+                    # Continue with other keys even if one fails
+
+        return remaining_keys
+    elif strategy == "rename":
+        # Rename conflicting keys in team2
+        suffix = rename_suffix or "_merged"
+        for key in team2_keys:
+            if key.name in conflicts:
+                key.name = f"{key.name}{suffix}"
+        return team2_keys
+    elif strategy == "cancel":
+        # Return original keys unchanged
+        return team2_keys
+    else:
+        raise ValueError(f"Unknown conflict resolution strategy: {strategy}")
+
+async def _migrate_users_to_team(
+    users: List[DBUser],
+    target_team_id: int,
+    db: Session
+) -> int:
+    """Migrate users from source team to target team"""
+    migrated_count = 0
+    for user in users:
+        if user.team_id != target_team_id:
+            user.team_id = target_team_id
+            migrated_count += 1
+    db.commit()
+    return migrated_count
+
+async def _migrate_keys_to_team(
+    keys: List[DBPrivateAIKey],
+    target_team_id: int,
+    db: Session
+) -> int:
+    """Migrate keys from source team to target team"""
+    migrated_count = 0
+    for key in keys:
+        if key.team_id != target_team_id:
+            key.team_id = target_team_id
+            migrated_count += 1
+    db.commit()
+    return migrated_count
+
+@router.post("/{target_team_id}/merge", dependencies=[Depends(check_system_admin)])
+async def merge_teams(
+    target_team_id: int,
+    merge_request: TeamMergeRequest,
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user_from_auth)
+):
+    """
+    Merge source team into target team. Only accessible by system administrators.
+
+    This endpoint will:
+    1. Validate both teams exist
+    2. Check for key name conflicts
+    3. Apply conflict resolution strategy
+    4. Migrate users and keys
+    5. Update LiteLLM key associations
+    6. Delete the source team
+    """
+    try:
+        # Validate teams exist
+        target_team = db.query(DBTeam).filter(DBTeam.id == target_team_id).first()
+        if not target_team:
+            raise HTTPException(status_code=404, detail="Target team not found")
+
+        source_team = db.query(DBTeam).filter(DBTeam.id == merge_request.source_team_id).first()
+        if not source_team:
+            raise HTTPException(status_code=404, detail="Source team not found")
+
+        # Prevent merging a team into itself
+        if source_team.id == target_team.id:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot merge a team into itself"
+            )
+
+        # Get team keys and users
+        source_keys = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.team_id == source_team.id).all()
+        target_keys = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.team_id == target_team.id).all()
+        source_users = db.query(DBUser).filter(DBUser.team_id == source_team.id).all()
+
+        # Check for conflicts
+        conflicts = _check_key_name_conflicts(target_keys, source_keys)
+
+        # Apply conflict resolution strategy
+        if conflicts:
+            if merge_request.conflict_resolution_strategy == "cancel":
+                return TeamMergeResponse(
+                    success=False,
+                    message=f"Merge cancelled due to {len(conflicts)} key name conflicts",
+                    conflicts_resolved=conflicts,
+                    keys_migrated=0,
+                    users_migrated=0
+                )
+
+            source_keys = await _resolve_key_conflicts(
+                conflicts,
+                merge_request.conflict_resolution_strategy,
+                source_keys,
+                merge_request.rename_suffix,
+                db,
+                current_user
+            )
+
+        # Store team names before deletion
+        source_team_name = source_team.name
+        target_team_name = target_team.name
+
+        # Migrate users and keys
+        users_migrated = await _migrate_users_to_team(source_users, target_team.id, db)
+        keys_migrated = await _migrate_keys_to_team(source_keys, target_team.id, db)
+
+        # Update LiteLLM key associations
+        # Create a map of keys by region to avoid unnecessary DB queries
+        keys_by_region = {}
+        for key in source_keys:
+            if key.region_id not in keys_by_region:
+                keys_by_region[key.region_id] = []
+            keys_by_region[key.region_id].append(key)
+
+        # Update LiteLLM key associations for each region
+        for region_id, region_keys in keys_by_region.items():
+            # Get region info
+            region = db.query(DBRegion).filter(
+                DBRegion.id == region_id,
+                DBRegion.is_active == True
+            ).first()
+
+            if not region:
+                continue
+
+            # Initialize LiteLLM service for this region
+            litellm_service = LiteLLMService(
+                api_url=region.litellm_api_url,
+                api_key=region.litellm_api_key
+            )
+
+            # Update team association for each key in this region
+            for key in region_keys:
+                try:
+                    await litellm_service.update_key_team_association(
+                        key.litellm_token,
+                        f"{region.name.replace(' ', '_')}_{target_team.id}"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to update LiteLLM key {key.id}: {str(e)}")
+                    # Continue with other keys even if one fails
+
+        # Delete source team
+        db.delete(source_team)
+        db.commit()
+
+        return TeamMergeResponse(
+            success=True,
+            message=f"Successfully merged team '{source_team_name}' into '{target_team_name}'",
+            conflicts_resolved=conflicts if conflicts else None,
+            keys_migrated=keys_migrated,
+            users_migrated=users_migrated
+        )
+
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error during team merge: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Team merge failed: {str(e)}"
+        )
