@@ -3,7 +3,7 @@ from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBProduct, DBTeamProdu
 from app.main import app
 from app.core.security import get_password_hash
 from datetime import datetime, UTC
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import patch, MagicMock
 
 client = TestClient(app)
 
@@ -677,3 +677,396 @@ def test_toggle_always_free_email_error(mock_ses, client, admin_token, test_team
 
     # Verify email was attempted
     mock_ses_instance.send_email.assert_called_once()
+
+# Tests for team merge functionality
+@patch("app.services.litellm.requests.post")
+def test_merge_teams_endpoint_success(mock_post, client, admin_token, db):
+    """Given a system admin and two teams
+    When merging source team into target team
+    Then the merge should succeed"""
+
+    # Create source and target teams
+    source_team = DBTeam(
+        name="Source Team",
+        admin_email="source@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC)
+    )
+    target_team = DBTeam(
+        name="Target Team",
+        admin_email="target@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add_all([source_team, target_team])
+    db.commit()
+
+    # Mock LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.raise_for_status.return_value = None
+
+    response = client.post(
+        f"/teams/{target_team.id}/merge",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "source_team_id": source_team.id,
+            "conflict_resolution_strategy": "delete"
+        }
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert "successfully merged team" in data["message"].lower()
+    assert data["keys_migrated"] == 0
+    assert data["users_migrated"] == 0
+
+def test_merge_teams_endpoint_unauthorized(client, test_token, db):
+    """Given a non-admin user
+    When attempting to merge teams
+    Then access should be denied"""
+
+    response = client.post(
+        "/teams/1/merge",
+        headers={"Authorization": f"Bearer {test_token}"},
+        json={
+            "source_team_id": 2,
+            "conflict_resolution_strategy": "delete"
+        }
+    )
+
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
+
+def test_merge_teams_endpoint_invalid_teams(client, admin_token, db):
+    """Given invalid team IDs
+    When attempting to merge teams
+    Then appropriate errors should be returned"""
+
+    response = client.post(
+        "/teams/999/merge",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "source_team_id": 888,
+            "conflict_resolution_strategy": "delete"
+        }
+    )
+
+    assert response.status_code == 404
+    assert "Target team not found" in response.json()["detail"]
+
+def test_merge_teams_endpoint_same_team(client, admin_token, db, test_team):
+    """Given the same team as source and target
+    When attempting to merge teams
+    Then an error should be returned"""
+
+    response = client.post(
+        f"/teams/{test_team.id}/merge",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "source_team_id": test_team.id,
+            "conflict_resolution_strategy": "delete"
+        }
+    )
+
+    assert response.status_code == 400
+    assert "cannot merge a team into itself" in response.json()["detail"].lower()
+
+@patch("app.services.litellm.requests.post")
+@patch("app.services.litellm.requests.delete")
+@patch("app.db.postgres.PostgresManager.delete_database")
+@patch("app.api.private_ai_keys._get_key_if_allowed")
+def test_merge_teams_endpoint_with_conflicts_delete_strategy(mock_get_key, mock_delete_db, mock_delete, mock_post, client, admin_token, db, test_region):
+    """Given teams with conflicting key names and delete strategy
+    When merging teams
+    Then conflicting keys should be deleted from source team"""
+
+    # Create teams with conflicting keys
+    source_team = DBTeam(name="Source", admin_email="source@example.com", is_active=True)
+    target_team = DBTeam(name="Target", admin_email="target@example.com", is_active=True)
+    db.add_all([source_team, target_team])
+    db.commit()
+
+    # Create conflicting keys
+    source_key = DBPrivateAIKey(
+        name="conflict-key",
+        team_id=source_team.id,
+        region_id=test_region.id,
+        litellm_token="source-token"
+    )
+    target_key = DBPrivateAIKey(
+        name="conflict-key",
+        team_id=target_team.id,
+        region_id=test_region.id,
+        litellm_token="target-token"
+    )
+    db.add_all([source_key, target_key])
+    db.commit()
+
+    # Mock _get_key_if_allowed to return the source key
+    mock_get_key.return_value = source_key
+
+    # Mock LiteLLM API responses
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.raise_for_status.return_value = None
+    mock_delete.return_value.status_code = 200
+    mock_delete.return_value.raise_for_status.return_value = None
+
+    # Mock PostgresManager delete_database
+    mock_delete_db.return_value = None
+
+    response = client.post(
+        f"/teams/{target_team.id}/merge",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "source_team_id": source_team.id,
+            "conflict_resolution_strategy": "delete"
+        }
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert "conflicts_resolved" in data
+    assert len(data["conflicts_resolved"]) > 0
+    assert "conflict-key" in data["conflicts_resolved"]
+
+@patch("app.services.litellm.requests.post")
+def test_merge_teams_endpoint_with_conflicts_rename_strategy(mock_post, client, admin_token, db, test_region):
+    """Given teams with conflicting key names and rename strategy
+    When merging teams
+    Then conflicting keys should be renamed in source team"""
+
+    # Create teams with conflicting keys
+    source_team = DBTeam(name="Source", admin_email="source@example.com", is_active=True)
+    target_team = DBTeam(name="Target", admin_email="target@example.com", is_active=True)
+    db.add_all([source_team, target_team])
+    db.commit()
+
+    # Create conflicting keys
+    source_key = DBPrivateAIKey(
+        name="conflict-key",
+        team_id=source_team.id,
+        region_id=test_region.id,
+        litellm_token="source-token"
+    )
+    target_key = DBPrivateAIKey(
+        name="conflict-key",
+        team_id=target_team.id,
+        region_id=test_region.id,
+        litellm_token="target-token"
+    )
+    db.add_all([source_key, target_key])
+    db.commit()
+
+    # Store IDs for verification after merge
+    source_key_id = source_key.id
+
+    # Mock LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.raise_for_status.return_value = None
+
+    response = client.post(
+        f"/teams/{target_team.id}/merge",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "source_team_id": source_team.id,
+            "conflict_resolution_strategy": "rename",
+            "rename_suffix": "_merged"
+        }
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert "conflicts_resolved" in data
+    assert len(data["conflicts_resolved"]) > 0
+
+    # Verify the source key was renamed
+    updated_source_key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == source_key_id).first()
+    assert updated_source_key.name == "conflict-key_merged"
+
+@patch("app.services.litellm.requests.post")
+def test_merge_teams_endpoint_with_conflicts_cancel_strategy(mock_post, client, admin_token, db, test_region):
+    """Given teams with conflicting key names and cancel strategy
+    When merging teams
+    Then the merge should be cancelled"""
+
+    # Create teams with conflicting keys
+    source_team = DBTeam(name="Source", admin_email="source@example.com", is_active=True)
+    target_team = DBTeam(name="Target", admin_email="target@example.com", is_active=True)
+    db.add_all([source_team, target_team])
+    db.commit()
+
+    # Create conflicting keys
+    source_key = DBPrivateAIKey(
+        name="conflict-key",
+        team_id=source_team.id,
+        region_id=test_region.id,
+        litellm_token="source-token"
+    )
+    target_key = DBPrivateAIKey(
+        name="conflict-key",
+        team_id=target_team.id,
+        region_id=test_region.id,
+        litellm_token="target-token"
+    )
+    db.add_all([source_key, target_key])
+    db.commit()
+
+    response = client.post(
+        f"/teams/{target_team.id}/merge",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "source_team_id": source_team.id,
+            "conflict_resolution_strategy": "cancel"
+        }
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is False
+    assert "merge cancelled" in data["message"].lower()
+    assert "conflicts_resolved" in data
+    assert len(data["conflicts_resolved"]) > 0
+    assert data["keys_migrated"] == 0
+    assert data["users_migrated"] == 0
+
+    # Verify both teams still exist
+    source_team_exists = db.query(DBTeam).filter(DBTeam.id == source_team.id).first()
+    target_team_exists = db.query(DBTeam).filter(DBTeam.id == target_team.id).first()
+    assert source_team_exists is not None
+    assert target_team_exists is not None
+
+@patch("app.services.litellm.requests.post")
+def test_merge_teams_with_users_and_keys(mock_post, client, admin_token, db, test_region):
+    """Given teams with users and keys
+    When merging teams
+    Then users and keys should be migrated correctly"""
+
+    # Create teams
+    source_team = DBTeam(name="Source", admin_email="source@example.com", is_active=True)
+    target_team = DBTeam(name="Target", admin_email="target@example.com", is_active=True)
+    db.add_all([source_team, target_team])
+    db.commit()
+
+    # Create users in source team
+    source_user1 = DBUser(
+        email="user1@source.com",
+        hashed_password="hashed",
+        team_id=source_team.id,
+        is_active=True
+    )
+    source_user2 = DBUser(
+        email="user2@source.com",
+        hashed_password="hashed",
+        team_id=source_team.id,
+        is_active=True
+    )
+    db.add_all([source_user1, source_user2])
+
+    # Create keys in source team
+    source_key1 = DBPrivateAIKey(
+        name="source-key-1",
+        team_id=source_team.id,
+        region_id=test_region.id,
+        litellm_token="source-token-1"
+    )
+    source_key2 = DBPrivateAIKey(
+        name="source-key-2",
+        team_id=source_team.id,
+        region_id=test_region.id,
+        litellm_token="source-token-2"
+    )
+    db.add_all([source_key1, source_key2])
+    db.commit()
+
+    # Store IDs for verification after merge
+    source_user1_id = source_user1.id
+    source_user2_id = source_user2.id
+    source_key1_id = source_key1.id
+    source_key2_id = source_key2.id
+    target_team_id = target_team.id
+
+    # Mock LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.raise_for_status.return_value = None
+
+    response = client.post(
+        f"/teams/{target_team.id}/merge",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "source_team_id": source_team.id,
+            "conflict_resolution_strategy": "delete"
+        }
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert data["users_migrated"] == 2
+    assert data["keys_migrated"] == 2
+
+    # Verify users were migrated
+    updated_user1 = db.query(DBUser).filter(DBUser.id == source_user1_id).first()
+    updated_user2 = db.query(DBUser).filter(DBUser.id == source_user2_id).first()
+    assert updated_user1.team_id == target_team_id
+    assert updated_user2.team_id == target_team_id
+
+    # Verify keys were migrated
+    updated_key1 = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == source_key1_id).first()
+    updated_key2 = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == source_key2_id).first()
+    assert updated_key1.team_id == target_team_id
+    assert updated_key2.team_id == target_team_id
+
+    # Verify source team was deleted
+    source_team_exists = db.query(DBTeam).filter(DBTeam.id == source_team.id).first()
+    assert source_team_exists is None
+
+def test_merge_teams_with_product_associations_fails(client, admin_token, db, test_product):
+    """Given a source team with product associations
+    When attempting to merge teams
+    Then the merge should fail with a 400 error"""
+
+    # Store product ID before any database operations that might detach it
+    product_id = test_product.id
+
+    # Create teams
+    source_team = DBTeam(name="Source", admin_email="source@example.com", is_active=True)
+    target_team = DBTeam(name="Target", admin_email="target@example.com", is_active=True)
+    db.add_all([source_team, target_team])
+    db.commit()
+
+    # Associate product with source team
+    source_team_product = DBTeamProduct(
+        team_id=source_team.id,
+        product_id=product_id
+    )
+    db.add(source_team_product)
+    db.commit()
+
+    response = client.post(
+        f"/teams/{target_team.id}/merge",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "source_team_id": source_team.id,
+            "conflict_resolution_strategy": "delete"
+        }
+    )
+
+    assert response.status_code == 400
+    assert "active product associations" in response.json()["detail"]
+    assert product_id in response.json()["detail"]
+
+    # Verify both teams still exist
+    source_team_exists = db.query(DBTeam).filter(DBTeam.id == source_team.id).first()
+    target_team_exists = db.query(DBTeam).filter(DBTeam.id == target_team.id).first()
+    assert source_team_exists is not None
+    assert target_team_exists is not None
+
+    # Verify product association still exists
+    source_team_product_exists = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == source_team.id,
+        DBTeamProduct.product_id == product_id
+    ).first()
+    assert source_team_product_exists is not None

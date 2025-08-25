@@ -17,6 +17,11 @@ class LiteLLMService:
         if not self.master_key:
             raise ValueError("LiteLLM API key is required")
 
+    @staticmethod
+    def format_team_id(region_name: str, team_id: int) -> str:
+        """Generate the correctly formatted team_id for LiteLLM"""
+        return f"{region_name.replace(' ', '_')}_{team_id}"
+
     async def create_key(self, email: str, name: str, user_id: int, team_id: str, duration: str = f"{DEFAULT_KEY_DURATION}d", max_budget: float = DEFAULT_MAX_SPEND, rpm_limit: int = DEFAULT_RPM_PER_KEY) -> str:
         """Create a new API key for LiteLLM"""
         try:
@@ -227,4 +232,31 @@ class LiteLLMService:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to set LiteLLM key restrictions: {error_msg}"
+            )
+
+    async def update_key_team_association(self, litellm_token: str, new_team_id: str):
+        """Update the team association for a LiteLLM API key"""
+        try:
+            response = requests.post(
+                f"{self.api_url}/key/update",
+                headers={
+                    "Authorization": f"Bearer {self.master_key}"
+                },
+                json={
+                    "key": litellm_token,
+                    "team_id": new_team_id
+                }
+            )
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            error_msg = str(e)
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update LiteLLM key team association: {error_msg}"
             )

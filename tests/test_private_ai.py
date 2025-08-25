@@ -8,10 +8,6 @@ from fastapi import status, HTTPException
 from app.core.resource_limits import (
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
-    DEFAULT_SERVICE_KEYS,
-    DEFAULT_KEYS_PER_USER,
-    DEFAULT_TOTAL_KEYS,
-    DEFAULT_VECTOR_DB_COUNT
 )
 
 @pytest.fixture

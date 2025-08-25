@@ -97,13 +97,14 @@ async def get_sign_in_data(
             return None
     return None
 
-def create_and_set_access_token(response: Response, user_email: str) -> Token:
+def create_and_set_access_token(response: Response, user_email: str, user: Optional[DBUser] = None) -> Token:
     """
     Create an access token for the user and set it as a cookie.
 
     Args:
         response: The FastAPI response object to set the cookie on
         user_email: The email of the user to create the token for
+        user: The user object to check if they are a system administrator
 
     Returns:
         Token: The created access token
@@ -116,13 +117,17 @@ def create_and_set_access_token(response: Response, user_email: str) -> Token:
     # Get cookie domain from LAGOON_ROUTES
     cookie_domain = get_cookie_domain()
 
+    # Set cookie expiration based on user role
+    # System administrators get 8 hours (28800 seconds), regular users get 30 minutes (1800 seconds)
+    cookie_expiration = 28800 if user and user.is_admin else 1800
+
     # Prepare cookie settings
     cookie_settings = {
         "key": "access_token",
         "value": access_token,
         "httponly": True,
-        "max_age": 1800,
-        "expires": 1800,
+        "max_age": cookie_expiration,
+        "expires": cookie_expiration,
         "samesite": 'none',
         "secure": True,
         "path": '/',
@@ -176,7 +181,7 @@ async def login(
         )
 
     auth_logger.info(f"Successful login for user: {login_data.username}")
-    return create_and_set_access_token(response, user.email)
+    return create_and_set_access_token(response, user.email, user)
 
 @router.post("/logout")
 async def logout(response: Response):
@@ -476,7 +481,7 @@ async def sign_in(
         auth_logger.info(f"Successfully created new user and team for: {sign_in_data.username}")
 
     auth_logger.info(f"Successful sign-in for user: {sign_in_data.username}")
-    return create_and_set_access_token(response, user.email)
+    return create_and_set_access_token(response, user.email, user)
 
 # API Token routes (as apposed to AI Token routes)
 def generate_api_token() -> str:
@@ -623,7 +628,7 @@ async def validate_jwt(
 
         # Token is valid, create new access token
         auth_logger.info(f"Successfully validated JWT for user: {user.email}")
-        return create_and_set_access_token(response, user.email)
+        return create_and_set_access_token(response, user.email, user)
 
     except JWTError as e:
         if isinstance(e, jwt.ExpiredSignatureError):

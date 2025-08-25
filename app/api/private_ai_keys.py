@@ -373,7 +373,7 @@ async def create_llm_token(
             email=owner_email,
             name=private_ai_key.name,
             user_id=owner_id,
-            team_id=f"{region.name.replace(' ', '_')}_{litellm_team}",
+            team_id=LiteLLMService.format_team_id(region.name, litellm_team),
             duration=f"{days_left_in_period}d",
             max_budget=max_max_spend,
             rpm_limit=max_rpm_limit

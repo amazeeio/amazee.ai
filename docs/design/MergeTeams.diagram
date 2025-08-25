@@ -1,0 +1,48 @@
+title Merge Teams Functionality (Team2 into Team1)
+
+participant User
+participant amazee.ai
+participant LocalDB
+participant RemoteSystem
+
+User->amazee.ai: initiateMergeTeams(team1, team2, conflictResolutionStrategy)
+amazee.ai->LocalDB: getTeamUsers(team2)
+LocalDB-->amazee.ai: team2Users
+amazee.ai->LocalDB: getTeamKeys(team1)
+LocalDB-->amazee.ai: team1Keys
+amazee.ai->LocalDB: getTeamKeys(team2)
+LocalDB-->amazee.ai: team2Keys
+
+amazee.ai->amazee.ai: checkKeyNameConflicts(team1Keys, team2Keys)
+alt Conflicts exist
+    amazee.ai->amazee.ai: applyConflictResolutionStrategy(conflictResolutionStrategy)
+    alt Strategy is "Delete conflicting keys from team2"
+        amazee.ai->amazee.ai: deleteConflictingKeysFromTeam2()
+    else Strategy is "Rename conflicting keys from team2"
+        amazee.ai->amazee.ai: renameConflictingKeysFromTeam2()
+    else Strategy is "Do not merge the teams"
+        amazee.ai->User: notifyMergeCancelled()
+        stop
+    end
+else No conflicts
+    amazee.ai->amazee.ai: proceedWithMerge()
+end
+
+loop for each user in team2Users
+    amazee.ai->LocalDB: getUserKeys(user)
+    LocalDB-->amazee.ai: userKeys
+    amazee.ai->amazee.ai: mergeUserIntoTeam1(user, userKeys)
+end
+
+amazee.ai->amazee.ai: mergeTeam2KeysIntoTeam1(team2Keys)
+
+amazee.ai->LocalDB: updateTeam1(mergedUsers, mergedKeys)
+LocalDB-->amazee.ai: updateConfirmation
+
+amazee.ai->RemoteSystem: updateRemoteKeys(mergedKeys)
+RemoteSystem-->amazee.ai: updateConfirmation
+
+amazee.ai->LocalDB: deleteTeam2()
+LocalDB-->amazee.ai: deleteConfirmation
+
+amazee.ai->User: mergeTeamsComplete()
