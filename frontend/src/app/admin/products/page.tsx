@@ -56,8 +56,7 @@ interface PricingTable {
 }
 
 interface PricingTables {
-  standard: PricingTable | null;
-  always_free: PricingTable | null;
+  tables: Record<string, PricingTable | null>;
 }
 
 export default function ProductsPage() {
@@ -69,7 +68,7 @@ export default function ProductsPage() {
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [formData, setFormData] = useState<Partial<Product>>({});
   const [pricingTableId, setPricingTableId] = useState('');
-  const [pricingTableType, setPricingTableType] = useState<'standard' | 'always_free'>('standard');
+  const [pricingTableType, setPricingTableType] = useState<'standard' | 'always_free' | 'gpt'>('standard');
 
   // Update form data
   const updateFormData = (newData: Partial<Product>) => {
@@ -167,7 +166,7 @@ export default function ProductsPage() {
 
   // Pricing Table Mutations
   const updatePricingTableMutation = useMutation({
-    mutationFn: async (data: { pricing_table_id: string; table_type: 'standard' | 'always_free' }) => {
+    mutationFn: async (data: { pricing_table_id: string; table_type: 'standard' | 'always_free' | 'gpt' }) => {
       const response = await post('/pricing-tables', data);
       return response.json();
     },
@@ -192,8 +191,8 @@ export default function ProductsPage() {
   });
 
   const deletePricingTableMutation = useMutation({
-    mutationFn: async () => {
-      await del('/pricing-tables');
+    mutationFn: async (tableType: string) => {
+      await del(`/pricing-tables?table_type=${tableType}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pricing-tables'] });
@@ -255,7 +254,8 @@ export default function ProductsPage() {
   };
 
   const handleDeletePricingTable = () => {
-    deletePricingTableMutation.mutate();
+    // For now, delete the standard table. In a real implementation, you might want to show a dialog to select which table to delete
+    deletePricingTableMutation.mutate('standard');
   };
 
   // Pagination
@@ -287,7 +287,7 @@ export default function ProductsPage() {
                   <Label htmlFor="pricing-table-type">Table Type</Label>
                   <Select
                     value={pricingTableType}
-                    onValueChange={(value: 'standard' | 'always_free') => setPricingTableType(value)}
+                    onValueChange={(value: 'standard' | 'always_free' | 'gpt') => setPricingTableType(value)}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Select table type" />
@@ -295,6 +295,7 @@ export default function ProductsPage() {
                     <SelectContent>
                       <SelectItem value="standard">Standard</SelectItem>
                       <SelectItem value="always_free">Always Free</SelectItem>
+                      <SelectItem value="gpt">GPT</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -310,34 +311,22 @@ export default function ProductsPage() {
                 <div className="space-y-2">
                   <div className="text-sm font-medium">Current Pricing Tables</div>
                   <div className="grid gap-2">
-                    <div className="text-sm">
-                      <span className="font-medium">Standard:</span>{' '}
-                      {pricingTables?.standard ? (
-                        <span className="text-muted-foreground">
-                          {pricingTables.standard.pricing_table_id}
-                          <br />
-                          <span className="text-xs">
-                            Last updated: {new Date(pricingTables.standard.updated_at).toLocaleString()}
+                    {pricingTables?.tables && Object.entries(pricingTables.tables).map(([tableType, table]) => (
+                      <div key={tableType} className="text-sm">
+                        <span className="font-medium">{tableType.charAt(0).toUpperCase() + tableType.slice(1).replace('_', ' ')}:</span>{' '}
+                        {table ? (
+                          <span className="text-muted-foreground">
+                            {table.pricing_table_id}
+                            <br />
+                            <span className="text-xs">
+                              Last updated: {new Date(table.updated_at).toLocaleString()}
+                            </span>
                           </span>
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">Not set</span>
-                      )}
-                    </div>
-                    <div className="text-sm">
-                      <span className="font-medium">Always Free:</span>{' '}
-                      {pricingTables?.always_free ? (
-                        <span className="text-muted-foreground">
-                          {pricingTables.always_free.pricing_table_id}
-                          <br />
-                          <span className="text-xs">
-                            Last updated: {new Date(pricingTables.always_free.updated_at).toLocaleString()}
-                          </span>
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">Not set</span>
-                      )}
-                    </div>
+                        ) : (
+                          <span className="text-muted-foreground">Not set</span>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 </div>
                 <div className="flex justify-between">
@@ -346,7 +335,7 @@ export default function ProductsPage() {
                     description="Are you sure you want to delete the current pricing table? This action cannot be undone."
                     triggerText="Delete Current Table"
                     onConfirm={handleDeletePricingTable}
-                    disabled={!pricingTables?.standard && !pricingTables?.always_free}
+                    disabled={!pricingTables?.tables || Object.keys(pricingTables.tables).length === 0}
                     size="default"
                   />
                   <Button onClick={handleUpdatePricingTable}>
