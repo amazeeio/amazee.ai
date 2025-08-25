@@ -17,6 +17,11 @@ class LiteLLMService:
         if not self.master_key:
             raise ValueError("LiteLLM API key is required")
 
+    @staticmethod
+    def format_team_id(region_name: str, team_id: int) -> str:
+        """Generate the correctly formatted team_id for LiteLLM"""
+        return f"{region_name.replace(' ', '_')}_{team_id}"
+
     async def create_key(self, email: str, name: str, user_id: int, team_id: str, duration: str = f"{DEFAULT_KEY_DURATION}d", max_budget: float = DEFAULT_MAX_SPEND, rpm_limit: int = DEFAULT_RPM_PER_KEY) -> str:
         """Create a new API key for LiteLLM"""
         try:

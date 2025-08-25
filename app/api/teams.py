@@ -203,7 +203,6 @@ async def extend_team_trial(
             except Exception as e:
                 logger.error(f"Failed to update key {key.id} via LiteLLM: {str(e)}")
                 # Continue with other keys even if one fails
-                continue
 
     # Send trial extension email
     try:
@@ -232,7 +231,7 @@ async def _resolve_key_conflicts(
     conflicts: List[str],
     strategy: str,
     team2_keys: List[DBPrivateAIKey],
-    rename_suffix: Optional[str] = None,
+    rename_suffix: str,
     db: Session = None,
     current_user = None
 ) -> List[DBPrivateAIKey]:
@@ -259,7 +258,7 @@ async def _resolve_key_conflicts(
         return remaining_keys
     elif strategy == "rename":
         # Rename conflicting keys in team2
-        suffix = rename_suffix or "_merged"
+        suffix = rename_suffix
         for key in team2_keys:
             if key.name in conflicts:
                 key.name = f"{key.name}{suffix}"
@@ -269,34 +268,6 @@ async def _resolve_key_conflicts(
         return team2_keys
     else:
         raise ValueError(f"Unknown conflict resolution strategy: {strategy}")
-
-async def _migrate_users_to_team(
-    users: List[DBUser],
-    target_team_id: int,
-    db: Session
-) -> int:
-    """Migrate users from source team to target team"""
-    migrated_count = 0
-    for user in users:
-        if user.team_id != target_team_id:
-            user.team_id = target_team_id
-            migrated_count += 1
-    db.commit()
-    return migrated_count
-
-async def _migrate_keys_to_team(
-    keys: List[DBPrivateAIKey],
-    target_team_id: int,
-    db: Session
-) -> int:
-    """Migrate keys from source team to target team"""
-    migrated_count = 0
-    for key in keys:
-        if key.team_id != target_team_id:
-            key.team_id = target_team_id
-            migrated_count += 1
-    db.commit()
-    return migrated_count
 
 @router.post("/{target_team_id}/merge", dependencies=[Depends(check_system_admin)])
 async def merge_teams(
@@ -366,7 +337,7 @@ async def merge_teams(
                 conflicts,
                 merge_request.conflict_resolution_strategy,
                 source_keys,
-                merge_request.rename_suffix,
+                merge_request.rename_suffix if merge_request.rename_suffix is not None else f"_team{source_team.id}",
                 db,
                 current_user
             )
@@ -375,9 +346,22 @@ async def merge_teams(
         source_team_name = source_team.name
         target_team_name = target_team.name
 
-        # Migrate users and keys
-        users_migrated = await _migrate_users_to_team(source_users, target_team.id, db)
-        keys_migrated = await _migrate_keys_to_team(source_keys, target_team.id, db)
+        # Migrate users from source team to target team
+        users_migrated = 0
+        for user in source_users:
+            if user.team_id != target_team.id:
+                user.team_id = target_team.id
+                users_migrated += 1
+
+        # Migrate keys from source team to target team
+        keys_migrated = 0
+        for key in source_keys:
+            if key.team_id != target_team.id:
+                key.team_id = target_team.id
+                keys_migrated += 1
+
+        # Flush changes to ensure they're persisted in the current transaction
+        db.flush()
 
         # Update LiteLLM key associations
         # Create a map of keys by region to avoid unnecessary DB queries
@@ -395,9 +379,6 @@ async def merge_teams(
                 DBRegion.is_active == True
             ).first()
 
-            if not region:
-                continue
-
             # Initialize LiteLLM service for this region
             litellm_service = LiteLLMService(
                 api_url=region.litellm_api_url,
@@ -409,11 +390,10 @@ async def merge_teams(
                 try:
                     await litellm_service.update_key_team_association(
                         key.litellm_token,
-                        f"{region.name.replace(' ', '_')}_{target_team.id}"
+                        LiteLLMService.format_team_id(region.name, target_team.id)
                     )
                 except Exception as e:
                     logger.error(f"Failed to update LiteLLM key {key.id}: {str(e)}")
-                    # Continue with other keys even if one fails
 
         # Delete source team
         db.delete(source_team)
