@@ -1,7 +1,7 @@
 import pytest
 from fastapi import status
 from datetime import datetime, UTC
-from app.db.models import DBSystemSecret, DBUser
+from app.db.models import DBSystemSecret, DBUser, DBPricingTable
 from app.core.security import get_password_hash
 
 def test_create_pricing_table_system_admin(client, db, admin_token):
@@ -15,14 +15,17 @@ def test_create_pricing_table_system_admin(client, db, admin_token):
     assert response.status_code == status.HTTP_201_CREATED
     data = response.json()
     assert data["pricing_table_id"] == "test_pricing_table_123"
+    assert data["stripe_publishable_key"] == "pk_test_string"  # Default from settings
     assert "updated_at" in data
 
     # Verify in database
-    pricing_table = db.query(DBSystemSecret).filter(
-        DBSystemSecret.key == "CurrentPricingTable"
+    pricing_table = db.query(DBPricingTable).filter(
+        DBPricingTable.table_type == "standard",
+        DBPricingTable.is_active == True
     ).first()
     assert pricing_table is not None
-    assert pricing_table.value == "test_pricing_table_123"
+    assert pricing_table.pricing_table_id == "test_pricing_table_123"
+    assert pricing_table.stripe_publishable_key == "pk_test_string"
 
 def test_create_pricing_table_team_admin(client, db, test_team_admin):
     """Test that a team admin cannot create a pricing table"""
@@ -55,10 +58,11 @@ def test_get_pricing_table_team_admin(client, db, team_admin_token):
     db.commit()
 
     # Create pricing table
-    pricing_table = DBSystemSecret(
-        key="CurrentPricingTable",
-        value="test_pricing_table_123",
-        description="Test pricing table",
+    pricing_table = DBPricingTable(
+        table_type="standard",
+        pricing_table_id="test_pricing_table_123",
+        stripe_publishable_key="pk_test_string",
+        is_active=True,
         created_at=datetime.now(UTC)
     )
     db.add(pricing_table)
@@ -69,6 +73,7 @@ def test_get_pricing_table_team_admin(client, db, team_admin_token):
     assert response.status_code == status.HTTP_200_OK
     data = response.json()
     assert data["pricing_table_id"] == "test_pricing_table_123"
+    assert data["stripe_publishable_key"] == "pk_test_string"
     assert "updated_at" in data
 
 def test_get_pricing_table_not_found(client, db, team_admin_token):
@@ -80,10 +85,11 @@ def test_get_pricing_table_not_found(client, db, team_admin_token):
 def test_delete_pricing_table_system_admin(client, db, test_admin):
     """Test that a system admin can delete the pricing table"""
     # Create pricing table
-    pricing_table = DBSystemSecret(
-        key="CurrentPricingTable",
-        value="test_pricing_table_123",
-        description="Test pricing table",
+    pricing_table = DBPricingTable(
+        table_type="standard",
+        pricing_table_id="test_pricing_table_123",
+        stripe_publishable_key="pk_test_string",
+        is_active=True,
         created_at=datetime.now(UTC)
     )
     db.add(pricing_table)
@@ -103,19 +109,21 @@ def test_delete_pricing_table_system_admin(client, db, test_admin):
     assert response.status_code == status.HTTP_200_OK
     assert response.json()["message"] == "Pricing table deleted successfully"
 
-    # Verify deleted from database
-    pricing_table = db.query(DBSystemSecret).filter(
-        DBSystemSecret.key == "CurrentPricingTable"
+    # Verify soft deleted from database (is_active = False)
+    pricing_table = db.query(DBPricingTable).filter(
+        DBPricingTable.table_type == "standard",
+        DBPricingTable.is_active == True
     ).first()
     assert pricing_table is None
 
 def test_delete_pricing_table_team_admin(client, db, test_team_admin):
     """Test that a team admin cannot delete the pricing table"""
     # Create pricing table
-    pricing_table = DBSystemSecret(
-        key="CurrentPricingTable",
-        value="test_pricing_table_123",
-        description="Test pricing table",
+    pricing_table = DBPricingTable(
+        table_type="standard",
+        pricing_table_id="test_pricing_table_123",
+        stripe_publishable_key="pk_test_string",
+        is_active=True,
         created_at=datetime.now(UTC)
     )
     db.add(pricing_table)
@@ -137,10 +145,11 @@ def test_delete_pricing_table_team_admin(client, db, test_team_admin):
 def test_update_existing_pricing_table(client, db, test_admin):
     """Test updating an existing pricing table"""
     # Create initial pricing table
-    pricing_table = DBSystemSecret(
-        key="CurrentPricingTable",
-        value="initial_pricing_table",
-        description="Test pricing table",
+    pricing_table = DBPricingTable(
+        table_type="standard",
+        pricing_table_id="initial_pricing_table",
+        stripe_publishable_key="pk_test_string",
+        is_active=True,
         created_at=datetime.now(UTC)
     )
     db.add(pricing_table)
@@ -164,22 +173,25 @@ def test_update_existing_pricing_table(client, db, test_admin):
     assert response.status_code == status.HTTP_201_CREATED
     data = response.json()
     assert data["pricing_table_id"] == "updated_pricing_table"
+    assert data["stripe_publishable_key"] == "pk_test_string"
     assert "updated_at" in data
 
     # Verify only one pricing table exists with updated value
-    pricing_tables = db.query(DBSystemSecret).filter(
-        DBSystemSecret.key == "CurrentPricingTable"
+    pricing_tables = db.query(DBPricingTable).filter(
+        DBPricingTable.table_type == "standard",
+        DBPricingTable.is_active == True
     ).all()
     assert len(pricing_tables) == 1
-    assert pricing_tables[0].value == "updated_pricing_table"
+    assert pricing_tables[0].pricing_table_id == "updated_pricing_table"
 
 def test_key_creator_cannot_access_pricing_table(client, db, test_team_key_creator):
     """Test that a key_creator cannot access the pricing table"""
     # Create pricing table as system admin
-    pricing_table = DBSystemSecret(
-        key="CurrentPricingTable",
-        value="test_pricing_table_123",
-        description="Test pricing table",
+    pricing_table = DBPricingTable(
+        table_type="standard",
+        pricing_table_id="test_pricing_table_123",
+        stripe_publishable_key="pk_test_string",
+        is_active=True,
         created_at=datetime.now(UTC)
     )
     db.add(pricing_table)
@@ -224,14 +236,17 @@ def test_create_always_free_pricing_table(client, db, admin_token):
     assert response.status_code == status.HTTP_201_CREATED
     data = response.json()
     assert data["pricing_table_id"] == "test_always_free_table_123"
+    assert data["stripe_publishable_key"] == "pk_test_string"  # Default from settings
     assert "updated_at" in data
 
     # Verify in database
-    pricing_table = db.query(DBSystemSecret).filter(
-        DBSystemSecret.key == "AlwaysFreePricingTable"
+    pricing_table = db.query(DBPricingTable).filter(
+        DBPricingTable.table_type == "always_free",
+        DBPricingTable.is_active == True
     ).first()
     assert pricing_table is not None
-    assert pricing_table.value == "test_always_free_table_123"
+    assert pricing_table.pricing_table_id == "test_always_free_table_123"
+    assert pricing_table.stripe_publishable_key == "pk_test_string"
 
 def test_get_pricing_table_always_free_team(client, db, team_admin_token, test_team):
     """Test that an always-free team gets the always-free pricing table"""
@@ -241,16 +256,18 @@ def test_get_pricing_table_always_free_team(client, db, team_admin_token, test_t
     db.commit()
 
     # Create both pricing tables
-    standard_table = DBSystemSecret(
-        key="CurrentPricingTable",
-        value="standard_table_123",
-        description="Standard pricing table",
+    standard_table = DBPricingTable(
+        table_type="standard",
+        pricing_table_id="standard_table_123",
+        stripe_publishable_key="pk_test_string",
+        is_active=True,
         created_at=datetime.now(UTC)
     )
-    always_free_table = DBSystemSecret(
-        key="AlwaysFreePricingTable",
-        value="always_free_table_123",
-        description="Always-free pricing table",
+    always_free_table = DBPricingTable(
+        table_type="always_free",
+        pricing_table_id="always_free_table_123",
+        stripe_publishable_key="pk_test_string",
+        is_active=True,
         created_at=datetime.now(UTC)
     )
     db.add(standard_table)
@@ -262,6 +279,7 @@ def test_get_pricing_table_always_free_team(client, db, team_admin_token, test_t
     assert response.status_code == status.HTTP_200_OK
     data = response.json()
     assert data["pricing_table_id"] == "always_free_table_123"
+    assert data["stripe_publishable_key"] == "pk_test_string"
     assert "updated_at" in data
 
 def test_get_pricing_table_always_free_not_found(client, db, team_admin_token, test_team):
@@ -272,10 +290,11 @@ def test_get_pricing_table_always_free_not_found(client, db, team_admin_token, t
     db.commit()
 
     # Create only standard pricing table
-    standard_table = DBSystemSecret(
-        key="CurrentPricingTable",
-        value="standard_table_123",
-        description="Standard pricing table",
+    standard_table = DBPricingTable(
+        table_type="standard",
+        pricing_table_id="standard_table_123",
+        stripe_publishable_key="pk_test_string",
+        is_active=True,
         created_at=datetime.now(UTC)
     )
     db.add(standard_table)
@@ -289,10 +308,11 @@ def test_get_pricing_table_always_free_not_found(client, db, team_admin_token, t
 def test_update_always_free_pricing_table(client, db, admin_token):
     """Test updating an existing always-free pricing table"""
     # Create initial always-free pricing table
-    pricing_table = DBSystemSecret(
-        key="AlwaysFreePricingTable",
-        value="initial_always_free_table",
-        description="Test always-free pricing table",
+    pricing_table = DBPricingTable(
+        table_type="always_free",
+        pricing_table_id="initial_always_free_table",
+        stripe_publishable_key="pk_test_string",
+        is_active=True,
         created_at=datetime.now(UTC)
     )
     db.add(pricing_table)
@@ -310,14 +330,16 @@ def test_update_always_free_pricing_table(client, db, admin_token):
     assert response.status_code == status.HTTP_201_CREATED
     data = response.json()
     assert data["pricing_table_id"] == "updated_always_free_table"
+    assert data["stripe_publishable_key"] == "pk_test_string"
     assert "updated_at" in data
 
     # Verify only one always-free pricing table exists with updated value
-    pricing_tables = db.query(DBSystemSecret).filter(
-        DBSystemSecret.key == "AlwaysFreePricingTable"
+    pricing_tables = db.query(DBPricingTable).filter(
+        DBPricingTable.table_type == "always_free",
+        DBPricingTable.is_active == True
     ).all()
     assert len(pricing_tables) == 1
-    assert pricing_tables[0].value == "updated_always_free_table"
+    assert pricing_tables[0].pricing_table_id == "updated_always_free_table"
 
 def test_create_always_free_pricing_table_team_admin(client, db, test_team_admin):
     """Test that a team admin cannot create an always-free pricing table"""
@@ -355,3 +377,259 @@ def test_create_pricing_table_invalid_type(client, db, admin_token):
     assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
     assert "table_type" in response.json()["detail"][0]["loc"]
     assert "Input should be 'standard' or 'always_free'" in response.json()["detail"][0]["msg"]
+
+def test_create_pricing_table_without_publishable_key(client, db, admin_token):
+    """Test that a system admin can create a pricing table without providing stripe_publishable_key"""
+    # Create pricing table without stripe_publishable_key
+    response = client.post(
+        "/pricing-tables",
+        json={"pricing_table_id": "test_pricing_table_123"},
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == status.HTTP_201_CREATED
+    data = response.json()
+    assert data["pricing_table_id"] == "test_pricing_table_123"
+    assert data["stripe_publishable_key"] == "pk_test_string"  # Should use system default
+    assert "updated_at" in data
+
+def test_create_pricing_table_with_custom_publishable_key(client, db, admin_token):
+    """Test that a system admin can create a pricing table with custom stripe_publishable_key"""
+    # Create pricing table with custom stripe_publishable_key
+    response = client.post(
+        "/pricing-tables",
+        json={
+            "pricing_table_id": "test_pricing_table_123",
+            "stripe_publishable_key": "pk_custom_key_123"
+        },
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == status.HTTP_201_CREATED
+    data = response.json()
+    assert data["pricing_table_id"] == "test_pricing_table_123"
+    assert data["stripe_publishable_key"] == "pk_custom_key_123"  # Should use provided key
+    assert "updated_at" in data
+
+def test_update_pricing_table_with_custom_publishable_key(client, db, admin_token):
+    """Test that a system admin can update a pricing table with custom stripe_publishable_key"""
+    # Create initial pricing table
+    pricing_table = DBPricingTable(
+        table_type="standard",
+        pricing_table_id="initial_pricing_table",
+        stripe_publishable_key="pk_initial_key",
+        is_active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(pricing_table)
+    db.commit()
+
+    # Update pricing table with custom stripe_publishable_key
+    response = client.post(
+        "/pricing-tables",
+        json={
+            "pricing_table_id": "updated_pricing_table",
+            "stripe_publishable_key": "pk_updated_key"
+        },
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == status.HTTP_201_CREATED
+    data = response.json()
+    assert data["pricing_table_id"] == "updated_pricing_table"
+    assert data["stripe_publishable_key"] == "pk_updated_key"
+    assert "updated_at" in data
+
+    # Verify in database
+    pricing_table = db.query(DBPricingTable).filter(
+        DBPricingTable.table_type == "standard",
+        DBPricingTable.is_active == True
+    ).first()
+    assert pricing_table.pricing_table_id == "updated_pricing_table"
+    assert pricing_table.stripe_publishable_key == "pk_updated_key"
+
+def test_get_all_pricing_tables_system_admin(client, db, admin_token):
+    """Test that a system admin can get all pricing tables"""
+    # Create both pricing tables
+    standard_table = DBPricingTable(
+        table_type="standard",
+        pricing_table_id="standard_table_123",
+        stripe_publishable_key="pk_standard_key",
+        is_active=True,
+        created_at=datetime.now(UTC)
+    )
+    always_free_table = DBPricingTable(
+        table_type="always_free",
+        pricing_table_id="always_free_table_123",
+        stripe_publishable_key="pk_always_free_key",
+        is_active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(standard_table)
+    db.add(always_free_table)
+    db.commit()
+
+    # Get all pricing tables
+    response = client.get("/pricing-tables/list", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == status.HTTP_200_OK
+    data = response.json()
+
+    assert data["standard"] is not None
+    assert data["standard"]["pricing_table_id"] == "standard_table_123"
+    assert data["standard"]["stripe_publishable_key"] == "pk_standard_key"
+    assert "updated_at" in data["standard"]
+
+    assert data["always_free"] is not None
+    assert data["always_free"]["pricing_table_id"] == "always_free_table_123"
+    assert data["always_free"]["stripe_publishable_key"] == "pk_always_free_key"
+    assert "updated_at" in data["always_free"]
+
+def test_get_all_pricing_tables_partial(client, db, admin_token):
+    """Test that a system admin can get all pricing tables when only some exist"""
+    # Create only standard pricing table
+    standard_table = DBPricingTable(
+        table_type="standard",
+        pricing_table_id="standard_table_123",
+        stripe_publishable_key="pk_standard_key",
+        is_active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(standard_table)
+    db.commit()
+
+    # Get all pricing tables
+    response = client.get("/pricing-tables/list", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == status.HTTP_200_OK
+    data = response.json()
+
+    assert data["standard"] is not None
+    assert data["standard"]["pricing_table_id"] == "standard_table_123"
+    assert data["standard"]["stripe_publishable_key"] == "pk_standard_key"
+
+    assert data["always_free"] is None
+
+def test_get_all_pricing_tables_team_admin_forbidden(client, db, test_team_admin):
+    """Test that a team admin cannot get all pricing tables"""
+    # Login as team admin
+    response = client.post(
+        "/auth/login",
+        data={"username": test_team_admin.email, "password": "password123"}
+    )
+    assert response.status_code == status.HTTP_200_OK
+    token = response.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Try to get all pricing tables
+    response = client.get("/pricing-tables/list", headers=headers)
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+
+def test_get_pricing_table_fallback_to_old_method(client, db, team_admin_token):
+    """Test that get pricing table falls back to old DBSystemSecret method when new table doesn't exist"""
+    # Create old-style pricing table
+    old_pricing_table = DBSystemSecret(
+        key="CurrentPricingTable",
+        value="old_pricing_table_123",
+        description="Old pricing table",
+        created_at=datetime.now(UTC)
+    )
+    db.add(old_pricing_table)
+    db.commit()
+
+    # Get pricing table (should fall back to old method)
+    response = client.get("/pricing-tables", headers={"Authorization": f"Bearer {team_admin_token}"})
+    assert response.status_code == status.HTTP_200_OK
+    data = response.json()
+    assert data["pricing_table_id"] == "old_pricing_table_123"
+    assert data["stripe_publishable_key"] == "pk_test_string"  # System default
+    assert "updated_at" in data
+
+def test_get_pricing_table_always_free_fallback_to_old_method(client, db, team_admin_token, test_team):
+    """Test that get pricing table falls back to old DBSystemSecret method for always-free teams"""
+    # Set team as always-free
+    test_team.is_always_free = True
+    db.add(test_team)
+    db.commit()
+
+    # Create old-style always-free pricing table
+    old_always_free_table = DBSystemSecret(
+        key="AlwaysFreePricingTable",
+        value="old_always_free_table_123",
+        description="Old always-free pricing table",
+        created_at=datetime.now(UTC)
+    )
+    db.add(old_always_free_table)
+    db.commit()
+
+    # Get pricing table (should fall back to old method)
+    response = client.get("/pricing-tables", headers={"Authorization": f"Bearer {team_admin_token}"})
+    assert response.status_code == status.HTTP_200_OK
+    data = response.json()
+    assert data["pricing_table_id"] == "old_always_free_table_123"
+    assert data["stripe_publishable_key"] == "pk_test_string"  # System default
+    assert "updated_at" in data
+
+def test_get_all_pricing_tables_fallback_to_old_method(client, db, admin_token):
+    """Test that get all pricing tables falls back to old DBSystemSecret method when new tables don't exist"""
+    # Create old-style pricing tables
+    old_standard_table = DBSystemSecret(
+        key="CurrentPricingTable",
+        value="old_standard_table_123",
+        description="Old standard pricing table",
+        created_at=datetime.now(UTC)
+    )
+    old_always_free_table = DBSystemSecret(
+        key="AlwaysFreePricingTable",
+        value="old_always_free_table_123",
+        description="Old always-free pricing table",
+        created_at=datetime.now(UTC)
+    )
+    db.add(old_standard_table)
+    db.add(old_always_free_table)
+    db.commit()
+
+    # Get all pricing tables (should fall back to old method)
+    response = client.get("/pricing-tables/list", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == status.HTTP_200_OK
+    data = response.json()
+
+    assert data["standard"] is not None
+    assert data["standard"]["pricing_table_id"] == "old_standard_table_123"
+    assert data["standard"]["stripe_publishable_key"] == "pk_test_string"  # System default
+    assert "updated_at" in data["standard"]
+
+    assert data["always_free"] is not None
+    assert data["always_free"]["pricing_table_id"] == "old_always_free_table_123"
+    assert data["always_free"]["stripe_publishable_key"] == "pk_test_string"  # System default
+    assert "updated_at" in data["always_free"]
+
+def test_get_all_pricing_tables_partial_fallback(client, db, admin_token):
+    """Test that get all pricing tables handles partial fallback when only some new tables exist"""
+    # Create new standard table but old always-free table
+    new_standard_table = DBPricingTable(
+        table_type="standard",
+        pricing_table_id="new_standard_table_123",
+        stripe_publishable_key="pk_new_standard_key",
+        is_active=True,
+        created_at=datetime.now(UTC)
+    )
+    old_always_free_table = DBSystemSecret(
+        key="AlwaysFreePricingTable",
+        value="old_always_free_table_123",
+        description="Old always-free pricing table",
+        created_at=datetime.now(UTC)
+    )
+    db.add(new_standard_table)
+    db.add(old_always_free_table)
+    db.commit()
+
+    # Get all pricing tables (should use new for standard, fallback for always-free)
+    response = client.get("/pricing-tables/list", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == status.HTTP_200_OK
+    data = response.json()
+
+    assert data["standard"] is not None
+    assert data["standard"]["pricing_table_id"] == "new_standard_table_123"
+    assert data["standard"]["stripe_publishable_key"] == "pk_new_standard_key"
+    assert "updated_at" in data["standard"]
+
+    assert data["always_free"] is not None
+    assert data["always_free"]["pricing_table_id"] == "old_always_free_table_123"
+    assert data["always_free"]["stripe_publishable_key"] == "pk_test_string"  # System default
+    assert "updated_at" in data["always_free"]

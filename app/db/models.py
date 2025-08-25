@@ -2,6 +2,7 @@ from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime, J
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime, UTC
 from sqlalchemy.sql import func
+from sqlalchemy import UniqueConstraint
 
 Base = declarative_base()
 
@@ -197,3 +198,19 @@ class DBProduct(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     teams = relationship("DBTeamProduct", back_populates="product")
+
+class DBPricingTable(Base):
+    __tablename__ = "pricing_tables"
+
+    id = Column(Integer, primary_key=True, index=True)
+    table_type = Column(String, nullable=False, index=True)  # "standard" or "always_free"
+    pricing_table_id = Column(String, nullable=False)  # Stripe pricing table ID
+    stripe_publishable_key = Column(String, nullable=False)  # Stripe publishable key
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Ensure only one active table per type
+    __table_args__ = (
+        UniqueConstraint('table_type', 'is_active', name='uq_pricing_table_type_active'),
+    )
