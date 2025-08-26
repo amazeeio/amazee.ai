@@ -274,6 +274,18 @@ class TeamSummary(BaseModel):
 class TeamOperation(BaseModel):
     team_id: int
 
+class TeamMergeRequest(BaseModel):
+    source_team_id: int
+    conflict_resolution_strategy: Literal["delete", "rename", "cancel"]
+    rename_suffix: Optional[str] = None  # For rename strategy
+
+class TeamMergeResponse(BaseModel):
+    success: bool
+    message: str
+    conflicts_resolved: Optional[List[str]] = None
+    keys_migrated: int
+    users_migrated: int
+
 class UserRoleUpdate(BaseModel):
     role: str
     model_config = ConfigDict(from_attributes=True)
