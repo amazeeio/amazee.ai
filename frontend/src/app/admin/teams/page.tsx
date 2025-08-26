@@ -32,6 +32,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 
 import { TableActionButtons } from '@/components/ui/table-action-buttons';
 import { TableFilters, FilterField } from '@/components/ui/table-filters';
@@ -135,7 +136,7 @@ export default function TeamsPage() {
   const [expandedTeamId, setExpandedTeamId] = useState<string | null>(null);
   const [isAddingUserToTeam, setIsAddingUserToTeam] = useState(false);
   const [isCreatingUserInTeam, setIsCreatingUserInTeam] = useState(false);
-  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
+  const [selectedTeamId, setSelectedTeamId] = useState<string>('');
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserPassword, setNewUserPassword] = useState('');
   const [newUserRole, setNewUserRole] = useState('read_only');
@@ -145,6 +146,10 @@ export default function TeamsPage() {
   const [isPasswordless, setIsPasswordless] = useState(false);
   const [isSubscribingToProduct, setIsSubscribingToProduct] = useState(false);
   const [selectedProductId, setSelectedProductId] = useState('');
+  const [isMergingTeams, setIsMergingTeams] = useState(false);
+  const [selectedSourceTeamId, setSelectedSourceTeamId] = useState('');
+  const [conflictResolutionStrategy, setConflictResolutionStrategy] = useState<'delete' | 'rename' | 'cancel'>('rename');
+  const [renameSuffix, setRenameSuffix] = useState('_merged');
 
   // Filter and sort state
   const [nameFilter, setNameFilter] = useState('');
@@ -158,27 +163,32 @@ export default function TeamsPage() {
     setIsPasswordless(config.PASSWORDLESS_SIGN_IN);
   }, []);
 
-  // Helper function to determine if a team is expired
+  // Helper function to determine if a team is expired (and has no active products)
   const isTeamExpired = (team: Team): boolean => {
+    // Teams with active products are never considered expired
+    if (team.products && team.products.some(product => product.active)) {
+      return false;
+    }
+
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
     const createdAt = new Date(team.created_at);
 
-    // If no last_payment, team is not expired
-    if (!team.last_payment) {
+    // If team was created less than 30 days ago, it's not expired
+    if (createdAt >= thirtyDaysAgo) {
       return false;
+    }
+
+    // If team has no last_payment, it's expired if created more than 30 days ago
+    if (!team.last_payment) {
+      return true;
     }
 
     const lastPayment = new Date(team.last_payment);
 
-    // Team is expired if both created_at and last_payment are more than 30 days ago
-    return createdAt < thirtyDaysAgo && lastPayment < thirtyDaysAgo;
-  };
-
-  // Helper function to determine if a team has active products
-  const hasActiveProducts = (team: Team): boolean => {
-    return Boolean(team.products && team.products.some(product => product.active));
+    // Team is expired if last_payment is more than 30 days ago
+    return lastPayment < thirtyDaysAgo;
   };
 
   // Queries
@@ -663,6 +673,68 @@ export default function TeamsPage() {
     },
   });
 
+  const mergeTeamsMutation = useMutation({
+    mutationFn: async ({ targetTeamId, sourceTeamId, conflictResolutionStrategy, renameSuffix }: {
+      targetTeamId: string;
+      sourceTeamId: string;
+      conflictResolutionStrategy: 'delete' | 'rename' | 'cancel';
+      renameSuffix?: string;
+    }) => {
+      try {
+        // Find team IDs by name
+        const targetTeam = teams.find(team => team.name === targetTeamId);
+        const sourceTeam = teams.find(team => team.name === sourceTeamId);
+
+        if (!targetTeam || !sourceTeam) {
+          throw new Error('Selected team not found');
+        }
+
+        const payload: {
+          source_team_id: number;
+          conflict_resolution_strategy: 'delete' | 'rename' | 'cancel';
+          rename_suffix?: string;
+        } = {
+          source_team_id: parseInt(sourceTeam.id),
+          conflict_resolution_strategy: conflictResolutionStrategy,
+        };
+
+        if (conflictResolutionStrategy === 'rename' && renameSuffix) {
+          payload.rename_suffix = renameSuffix;
+        }
+
+        const response = await post(`/teams/${targetTeam.id}/merge`, payload);
+        return response.json();
+      } catch (error) {
+        if (error instanceof Error) {
+          throw new Error(`Failed to merge teams: ${error.message}`);
+        } else {
+          throw new Error('An unexpected error occurred while merging the teams.');
+        }
+      }
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['teams'] });
+      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId] });
+      setExpandedTeamId(null);
+
+      toast({
+        title: 'Success',
+        description: data.message || 'Teams merged successfully',
+      });
+      setIsMergingTeams(false);
+      setSelectedSourceTeamId('');
+      setConflictResolutionStrategy('rename');
+      setRenameSuffix('_merged');
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
   const handleCreateTeam = (e: React.FormEvent) => {
     e.preventDefault();
     createTeamMutation.mutate({
@@ -747,74 +819,42 @@ export default function TeamsPage() {
     });
   };
 
+  const handleMergeTeams = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedTeamId || !selectedSourceTeamId) return;
+
+    mergeTeamsMutation.mutate({
+      targetTeamId: selectedTeamId,
+      sourceTeamId: selectedSourceTeamId,
+      conflictResolutionStrategy,
+      renameSuffix: conflictResolutionStrategy === 'rename' ? renameSuffix : undefined,
+    });
+  };
+
+
+
   return (
     <div className="container mx-auto py-10">
       <div className="space-y-4">
         <div className="flex justify-between items-center">
           <h1 className="text-3xl font-bold">Teams</h1>
-          <Dialog open={isAddingTeam} onOpenChange={setIsAddingTeam}>
-            <DialogTrigger asChild>
-              <Button>
-                <Plus className="mr-2 h-4 w-4" />
-                Add Team
-              </Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Add New Team</DialogTitle>
-                <DialogDescription>
-                  Create a new team by filling out the information below.
-                </DialogDescription>
-              </DialogHeader>
-              <form onSubmit={handleCreateTeam}>
-                <div className="grid gap-4 py-4">
-                  <div className="grid grid-cols-4 items-center gap-4">
-                    <label htmlFor="name" className="text-right">
-                      Name
-                    </label>
-                    <Input
-                      id="name"
-                      value={newTeamName}
-                      onChange={(e) => setNewTeamName(e.target.value)}
-                      className="col-span-3"
-                      required
-                    />
-                  </div>
-                  <div className="grid grid-cols-4 items-center gap-4">
-                    <label htmlFor="admin_email" className="text-right">
-                      Admin Email
-                    </label>
-                    <Input
-                      id="admin_email"
-                      type="email"
-                      value={newTeamAdminEmail}
-                      onChange={(e) => setNewTeamAdminEmail(e.target.value)}
-                      className="col-span-3"
-                      required
-                    />
-                  </div>
-                </div>
-                <DialogFooter>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => setIsAddingTeam(false)}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    type="submit"
-                    disabled={createTeamMutation.isPending}
-                  >
-                    {createTeamMutation.isPending && (
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    )}
-                    Create Team
-                  </Button>
-                </DialogFooter>
-              </form>
-            </DialogContent>
-          </Dialog>
+          <div className="flex space-x-2">
+            <Dialog open={isMergingTeams} onOpenChange={setIsMergingTeams}>
+              <DialogTrigger asChild>
+                <Button variant="outline">
+                  Merge Teams
+                </Button>
+              </DialogTrigger>
+            </Dialog>
+            <Dialog open={isAddingTeam} onOpenChange={setIsAddingTeam}>
+              <DialogTrigger asChild>
+                <Button>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add Team
+                </Button>
+              </DialogTrigger>
+            </Dialog>
+          </div>
         </div>
 
         <TableFilters
@@ -906,13 +946,13 @@ export default function TeamsPage() {
                           <div className="flex flex-col gap-1">
                             <span
                               className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${team.is_active
-                                  ? 'bg-green-100 text-green-800'
-                                  : 'bg-red-100 text-red-800'
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-red-100 text-red-800'
                                 }`}
                             >
                               {team.is_active ? 'Active' : 'Inactive'}
                             </span>
-                            {isTeamExpired(team) && !hasActiveProducts(team) && (
+                            {isTeamExpired(team) && (
                               <span className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-600 text-white">
                                 Expired
                               </span>
@@ -973,7 +1013,7 @@ export default function TeamsPage() {
                                                   {expandedTeam.is_active ? "Active" : "Inactive"}
                                                 </Badge>
                                               </div>
-                                              {isTeamExpired(expandedTeam) && !hasActiveProducts(expandedTeam) && (
+                                              {isTeamExpired(expandedTeam) && (
                                                 <div>
                                                   <p className="text-sm font-medium text-muted-foreground">Expiration Status</p>
                                                   <Badge variant="destructive" className="bg-red-600 hover:bg-red-700">
@@ -989,7 +1029,7 @@ export default function TeamsPage() {
                                                   </Badge>
                                                 </div>
                                               )}
-                                                <div>
+                                              <div>
                                                 <p className="text-sm font-medium text-muted-foreground">Created At</p>
                                                 <p>{new Date(expandedTeam.created_at).toLocaleString()}</p>
                                               </div>
@@ -1491,6 +1531,164 @@ export default function TeamsPage() {
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   )}
                   Subscribe
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        {/* Dialog for merging teams */}
+        <Dialog open={isMergingTeams} onOpenChange={setIsMergingTeams}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Merge Teams</DialogTitle>
+              <DialogDescription>
+                Merge another team into the target team. Users and keys from the source team will be moved to the target team, and the source team will be deleted. This action cannot be undone.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleMergeTeams} className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Target Team</label>
+                <Select
+                  value={selectedTeamId}
+                  onValueChange={setSelectedTeamId}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select target team" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {teams.map((team) => (
+                      <SelectItem key={team.id} value={team.name}>
+                        {team.name} ({team.id})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <Alert>
+                <AlertDescription>
+                  <strong>Warning:</strong> This operation will permanently delete the source team after merging its users and keys into the target team. Make sure you have selected the correct teams.
+                </AlertDescription>
+              </Alert>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Source Team</label>
+                <Select
+                  value={selectedSourceTeamId}
+                  onValueChange={setSelectedSourceTeamId}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a team to merge from" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {teams.filter(team => team.name !== selectedTeamId).map((team) => (
+                      <SelectItem key={team.id} value={team.name}>
+                        {team.name} ({team.id})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Conflict Resolution</label>
+                <Select
+                  value={conflictResolutionStrategy}
+                  onValueChange={(value: 'delete' | 'rename' | 'cancel') => setConflictResolutionStrategy(value)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a strategy" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="delete">Delete conflicting keys from source team</SelectItem>
+                    <SelectItem value="rename">Rename conflicting keys from source team</SelectItem>
+                    <SelectItem value="cancel">Cancel merge if conflicts exist</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {conflictResolutionStrategy === 'rename' && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Rename Suffix</label>
+                  <Input
+                    value={renameSuffix}
+                    onChange={(e) => setRenameSuffix(e.target.value)}
+                    placeholder="e.g., _merged"
+                  />
+                </div>
+              )}
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsMergingTeams(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={mergeTeamsMutation.isPending || !selectedTeamId || !selectedSourceTeamId}
+                >
+                  {mergeTeamsMutation.isPending && (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  )}
+                  Merge Teams
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        {/* Dialog for adding a new team */}
+        <Dialog open={isAddingTeam} onOpenChange={setIsAddingTeam}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Add New Team</DialogTitle>
+              <DialogDescription>
+                Create a new team by filling out the information below.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleCreateTeam}>
+              <div className="grid gap-4 py-4">
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <label htmlFor="name" className="text-right">
+                    Name
+                  </label>
+                  <Input
+                    id="name"
+                    value={newTeamName}
+                    onChange={(e) => setNewTeamName(e.target.value)}
+                    className="col-span-3"
+                    required
+                  />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <label htmlFor="admin_email" className="text-right">
+                    Admin Email
+                  </label>
+                  <Input
+                    id="admin_email"
+                    type="email"
+                    value={newTeamAdminEmail}
+                    onChange={(e) => setNewTeamAdminEmail(e.target.value)}
+                    className="col-span-3"
+                    required
+                  />
+                </div>
+              </div>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsAddingTeam(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={createTeamMutation.isPending}
+                >
+                  {createTeamMutation.isPending && (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  )}
+                  Create Team
                 </Button>
               </DialogFooter>
             </form>

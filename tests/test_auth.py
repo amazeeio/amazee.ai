@@ -696,3 +696,168 @@ def test_delete_token_system_admin_for_other_user(client, test_admin, test_user,
     )
     assert response.status_code == 404
     assert response.json()["detail"] == "Token not found"
+
+def test_login_cookie_expiration_regular_user(client, test_user):
+    """
+    Given a regular user
+    When the user logs in successfully
+    Then the cookie should expire in 30 minutes (1800 seconds)
+    """
+    response = client.post(
+        "/auth/login",
+        data={"username": test_user.email, "password": "testpassword"}
+    )
+    assert response.status_code == 200
+
+    # Check that the cookie is set with 30-minute expiration
+    cookies = response.cookies
+    assert "access_token" in cookies
+
+    # Check the Set-Cookie header for max-age
+    set_cookie_header = response.headers.get("set-cookie", "")
+    assert "Max-Age=1800" in set_cookie_header or "max-age=1800" in set_cookie_header
+
+def test_login_cookie_expiration_system_admin(client, test_admin):
+    """
+    Given a system administrator
+    When the system admin logs in successfully
+    Then the cookie should expire in 8 hours (28800 seconds)
+    """
+    response = client.post(
+        "/auth/login",
+        data={"username": test_admin.email, "password": "adminpassword"}
+    )
+    assert response.status_code == 200
+
+    # Check that the cookie is set with 8-hour expiration
+    cookies = response.cookies
+    assert "access_token" in cookies
+
+    # Check the Set-Cookie header for max-age
+    set_cookie_header = response.headers.get("set-cookie", "")
+    assert "Max-Age=28800" in set_cookie_header or "max-age=28800" in set_cookie_header
+
+def test_sign_in_cookie_expiration_regular_user(client, test_user, mock_dynamodb):
+    """
+    Given a regular user
+    When the user signs in with verification code
+    Then the cookie should expire in 30 minutes (1800 seconds)
+    """
+    # Mock the validation code
+    email = test_user.email
+    code = "TESTCODE"
+    mock_dynamodb.read_validation_code.return_value = {
+        'email': email,
+        'code': code,
+        'ttl': 1234567890
+    }
+
+    response = client.post(
+        "/auth/sign-in",
+        json={"username": email, "verification_code": code}
+    )
+    assert response.status_code == 200
+
+    # Check that the cookie is set with 30-minute expiration
+    cookies = response.cookies
+    assert "access_token" in cookies
+
+    # Check the Set-Cookie header for max-age
+    set_cookie_header = response.headers.get("set-cookie", "")
+    assert "Max-Age=1800" in set_cookie_header or "max-age=1800" in set_cookie_header
+
+def test_sign_in_cookie_expiration_system_admin(client, test_admin, mock_dynamodb):
+    """
+    Given a system administrator
+    When the system admin signs in with verification code
+    Then the cookie should expire in 8 hours (28800 seconds)
+    """
+    # Mock the validation code
+    email = test_admin.email
+    code = "TESTCODE"
+    mock_dynamodb.read_validation_code.return_value = {
+        'email': email,
+        'code': code,
+        'ttl': 1234567890
+    }
+
+    response = client.post(
+        "/auth/sign-in",
+        json={"username": email, "verification_code": code}
+    )
+    assert response.status_code == 200
+
+    # Check that the cookie is set with 8-hour expiration
+    cookies = response.cookies
+    assert "access_token" in cookies
+
+    # Check the Set-Cookie header for max-age
+    set_cookie_header = response.headers.get("set-cookie", "")
+    assert "Max-Age=28800" in set_cookie_header or "max-age=28800" in set_cookie_header
+
+def test_sign_in_new_user_cookie_expiration(client, mock_dynamodb):
+    """
+    Given a new user signing in for the first time
+    When the user signs in with verification code
+    Then the cookie should expire in 30 minutes (1800 seconds) since they are not a system admin
+    """
+    # Mock the validation code
+    email = "newuser@example.com"
+    code = "TESTCODE"
+    mock_dynamodb.read_validation_code.return_value = {
+        'email': email,
+        'code': code,
+        'ttl': 1234567890
+    }
+
+    response = client.post(
+        "/auth/sign-in",
+        json={"username": email, "verification_code": code}
+    )
+    assert response.status_code == 200
+
+    # Check that the cookie is set with 30-minute expiration (new users are not system admins)
+    cookies = response.cookies
+    assert "access_token" in cookies
+
+    # Check the Set-Cookie header for max-age
+    set_cookie_header = response.headers.get("set-cookie", "")
+    assert "Max-Age=1800" in set_cookie_header or "max-age=1800" in set_cookie_header
+
+def test_validate_jwt_cookie_expiration_regular_user(client, test_user, test_token):
+    """
+    Given a regular user with a valid JWT token
+    When the user validates their JWT token
+    Then the cookie should expire in 30 minutes (1800 seconds)
+    """
+    response = client.get(
+        f"/auth/validate-jwt?token={test_token}"
+    )
+    assert response.status_code == 200
+
+    # Check that the cookie is set with 30-minute expiration
+    cookies = response.cookies
+    assert "access_token" in cookies
+
+    # Check the Set-Cookie header for max-age
+    set_cookie_header = response.headers.get("set-cookie", "")
+    assert "Max-Age=1800" in set_cookie_header or "max-age=1800" in set_cookie_header
+
+def test_validate_jwt_cookie_expiration_system_admin(client, test_admin, admin_token):
+    """
+    Given a system administrator with a valid JWT token
+    When the system admin validates their JWT token
+    Then the cookie should expire in 8 hours (28800 seconds)
+    """
+    response = client.get(
+        f"/auth/validate-jwt?token={admin_token}"
+    )
+    assert response.status_code == 200
+
+    # Check that the cookie is set with 8-hour expiration
+    cookies = response.cookies
+    assert "access_token" in cookies
+
+    # Check the Set-Cookie header for max-age
+    set_cookie_header = response.headers.get("set-cookie", "")
+    assert "Max-Age=28800" in set_cookie_header or "max-age=28800" in set_cookie_header
