@@ -140,9 +140,8 @@ async def delete_pricing_table(
             detail=f"No pricing table of type '{table_type}' found"
         )
 
-    # Soft delete by setting is_active to False
-    pricing_table.is_active = False
-    pricing_table.updated_at = datetime.now(UTC)
+    # Actually delete the record from the database
+    db.delete(pricing_table)
     db.commit()
 
     return {"message": f"Pricing table of type '{table_type}' deleted successfully"}

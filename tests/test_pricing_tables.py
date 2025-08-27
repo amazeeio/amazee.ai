@@ -109,10 +109,9 @@ def test_delete_pricing_table_system_admin(client, db, test_admin):
     assert response.status_code == status.HTTP_200_OK
     assert response.json()["message"] == "Pricing table of type 'standard' deleted successfully"
 
-    # Verify soft deleted from database (is_active = False)
+    # Verify actually deleted from database
     pricing_table = db.query(DBPricingTable).filter(
-        DBPricingTable.table_type == "standard",
-        DBPricingTable.is_active == True
+        DBPricingTable.table_type == "standard"
     ).first()
     assert pricing_table is None
 
