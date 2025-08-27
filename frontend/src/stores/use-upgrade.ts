@@ -52,7 +52,7 @@ interface UpgradeState {
   setLoading: (loading: boolean) => void;
   setIsValidatingToken: (validating: boolean) => void;
   setConfig: (config: Config | null) => void;
-  
+
   // Complex actions
   loadConfig: () => Promise<void>;
   validateToken: (token: string) => Promise<void>;
@@ -90,24 +90,24 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
   loadConfig: async () => {
     try {
       const configStore = useConfig.getState();
-      
+
       // Load config and get it directly from the return value
       const config = await configStore.loadConfig();
-      
+
       if (config && config.STRIPE_PUBLISHABLE_KEY) {
         set({ config, error: null });
       } else {
         console.error('Config missing or invalid:', config);
-        set({ 
+        set({
           error: 'Failed to load configuration. Please try again later.',
-          config: null 
+          config: null
         });
       }
     } catch (error) {
       console.error('Error loading config:', error);
-      set({ 
+      set({
         error: 'Failed to load configuration. Please try again later.',
-        config: null 
+        config: null
       });
     }
   },
@@ -126,7 +126,7 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
 
       // Validate the JWT token using the validate-jwt endpoint
       const response = await getWithToken('/auth/validate-jwt', token);
-      
+
       if (!response.ok) {
         throw new Error('Invalid or expired token');
       }
@@ -134,7 +134,7 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
       // Get user data from /auth/me endpoint
       const userResponse = await getWithToken('/auth/me', token);
       const userData = await userResponse.json();
-      
+
       set({ user: userData, isValidatingToken: false });
     } catch (err) {
       console.error('Error validating token:', err);
@@ -185,13 +185,13 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
 
   initializeUpgrade: async (token: string) => {
     const { loadConfig, validateToken, fetchPricingTable, fetchClientSecret } = get();
-    
+
     // First load config and validate token in parallel
     await Promise.all([
       loadConfig(),
       validateToken(token),
     ]);
-    
+
     const { user, error, config } = get();
     if (error || !user || !config) return;
 
@@ -215,7 +215,7 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
   // Computed properties
   getStripeFormProps: () => {
     const { pricingTable, clientSecret, config } = get();
-    
+
     if (!pricingTable || !clientSecret || !config?.STRIPE_PUBLISHABLE_KEY) {
       return null;
     }

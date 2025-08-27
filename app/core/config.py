@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "sk_test_string")
     STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "pk_test_string")
     WEBHOOK_SIG: str = os.getenv("WEBHOOK_SIG", "whsec_test_1234567890")
+    ENABLE_METRICS: bool = os.getenv("ENABLE_METRICS", "false") == "true"
 
     model_config = ConfigDict(env_file=".env")
     main_route: str = os.getenv("LAGOON_ROUTE", "http://localhost:8800")

@@ -1,15 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from datetime import datetime, UTC
+from typing import Optional
 
 from app.db.database import get_db
-from app.db.models import DBSystemSecret, DBTeam
+from app.db.models import DBTeam, DBPricingTable
 from app.core.security import check_system_admin, get_role_min_team_admin, get_current_user_from_auth
 from app.schemas.models import PricingTableCreate, PricingTableResponse, PricingTablesResponse
+from app.core.config import settings
 
-# Constants for pricing table keys
-STANDARD_PRICING_TABLE_KEY = "CurrentPricingTable"
-ALWAYS_FREE_PRICING_TABLE_KEY = "AlwaysFreePricingTable"
+# Constants for pricing table types
+VALID_TABLE_TYPES = ["standard", "always_free", "gpt"]
 
 router = APIRouter(
     tags=["pricing-tables"]
@@ -23,94 +24,127 @@ async def create_pricing_table(
 ):
     """
     Create or update a pricing table. Only accessible by system admin users.
-    Can create/update either the standard pricing table or the always-free pricing table.
+    Can create/update pricing tables of type: standard, always_free, or gpt.
     """
-    # Determine which table to update based on the table_type
-    table_key = STANDARD_PRICING_TABLE_KEY if pricing_table.table_type == "standard" else ALWAYS_FREE_PRICING_TABLE_KEY
-    table_description = "Current Stripe pricing table ID" if pricing_table.table_type == "standard" else "Always-free pricing table ID"
+    # Use provided stripe_publishable_key or fall back to system config
+    stripe_publishable_key = pricing_table.stripe_publishable_key or settings.STRIPE_PUBLISHABLE_KEY
 
     # Check if the table already exists
-    existing_table = db.query(DBSystemSecret).filter(DBSystemSecret.key == table_key).first()
+    existing_table = db.query(DBPricingTable).filter(
+        DBPricingTable.table_type == pricing_table.table_type,
+        DBPricingTable.is_active == True
+    ).first()
 
     if existing_table:
         # Update existing table
-        existing_table.value = pricing_table.pricing_table_id
+        existing_table.pricing_table_id = pricing_table.pricing_table_id
+        existing_table.stripe_publishable_key = stripe_publishable_key
         existing_table.updated_at = datetime.now(UTC)
         db.commit()
         db.refresh(existing_table)
         return PricingTableResponse(
-            pricing_table_id=existing_table.value,
+            pricing_table_id=existing_table.pricing_table_id,
+            stripe_publishable_key=existing_table.stripe_publishable_key,
             updated_at=existing_table.updated_at
         )
     else:
         # Create new table
-        db_table = DBSystemSecret(
-            key=table_key,
-            value=pricing_table.pricing_table_id,
-            description=table_description,
+        db_table = DBPricingTable(
+            table_type=pricing_table.table_type,
+            pricing_table_id=pricing_table.pricing_table_id,
+            stripe_publishable_key=stripe_publishable_key,
+            is_active=True,
             created_at=datetime.now(UTC)
         )
         db.add(db_table)
         db.commit()
         db.refresh(db_table)
         return PricingTableResponse(
-            pricing_table_id=db_table.value,
+            pricing_table_id=db_table.pricing_table_id,
+            stripe_publishable_key=db_table.stripe_publishable_key,
             updated_at=db_table.created_at
         )
 
 @router.get("", response_model=PricingTableResponse, dependencies=[Depends(get_role_min_team_admin)])
 @router.get("/", response_model=PricingTableResponse, dependencies=[Depends(get_role_min_team_admin)])
 async def get_pricing_table(
+    table_type: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user_from_auth)
 ):
     """
-    Get the current pricing table ID. Only accessible by team admin users or higher privileges.
-    For always-free teams, returns the always-free pricing table.
+    Get the pricing table ID. Only accessible by team admin users or higher privileges.
+    If table_type is not provided, defaults to "standard" unless the team is marked as "always_free".
+    Valid table types: standard, always_free, gpt
     """
-    # Load the team from the database
-    team = db.query(DBTeam).filter(DBTeam.id == current_user.team_id).first()
-    if not team:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Team not found"
-        )
-
-    # Check if the team is always-free
-    if team.is_always_free:
-        pricing_table = db.query(DBSystemSecret).filter(DBSystemSecret.key == ALWAYS_FREE_PRICING_TABLE_KEY).first()
+    # Determine table type if not provided
+    if table_type is None:
+        # Load the team from the database
+        team = db.query(DBTeam).filter(DBTeam.id == current_user.team_id).first()
+        if not team:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Team not found"
+            )
+        table_type = "always_free" if team.is_always_free else "standard"
     else:
-        # For non-always-free teams, return the standard pricing table
-        pricing_table = db.query(DBSystemSecret).filter(DBSystemSecret.key == STANDARD_PRICING_TABLE_KEY).first()
+        # Validate table type if provided
+        if table_type not in VALID_TABLE_TYPES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid table type. Must be one of: {', '.join(VALID_TABLE_TYPES)}"
+            )
+
+    # Get the pricing table
+    pricing_table = db.query(DBPricingTable).filter(
+        DBPricingTable.table_type == table_type,
+        DBPricingTable.is_active == True
+    ).first()
+
     if not pricing_table:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Pricing table ID not found"
+            detail=f"Pricing table of type '{table_type}' not found"
         )
+
     return PricingTableResponse(
-        pricing_table_id=pricing_table.value,
+        pricing_table_id=pricing_table.pricing_table_id,
+        stripe_publishable_key=pricing_table.stripe_publishable_key,
         updated_at=pricing_table.updated_at or pricing_table.created_at
     )
 
 @router.delete("", dependencies=[Depends(check_system_admin)])
 @router.delete("/", dependencies=[Depends(check_system_admin)])
 async def delete_pricing_table(
+    table_type: str,
     db: Session = Depends(get_db)
 ):
     """
-    Delete the current pricing table. Only accessible by system admin users.
+    Delete a pricing table by type. Only accessible by system admin users.
+    Valid table types: standard, always_free, gpt
     """
-    pricing_table = db.query(DBSystemSecret).filter(DBSystemSecret.key == STANDARD_PRICING_TABLE_KEY).first()
+    # Validate table type
+    if table_type not in VALID_TABLE_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid table type. Must be one of: {', '.join(VALID_TABLE_TYPES)}"
+        )
+
+    pricing_table = db.query(DBPricingTable).filter(
+        DBPricingTable.table_type == table_type,
+        DBPricingTable.is_active == True
+    ).first()
     if not pricing_table:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="No pricing table found"
+            detail=f"No pricing table of type '{table_type}' found"
         )
 
+    # Actually delete the record from the database
     db.delete(pricing_table)
     db.commit()
 
-    return {"message": "Pricing table deleted successfully"}
+    return {"message": f"Pricing table of type '{table_type}' deleted successfully"}
 
 @router.get("/list", response_model=PricingTablesResponse, dependencies=[Depends(check_system_admin)])
 async def get_all_pricing_tables(
@@ -118,18 +152,20 @@ async def get_all_pricing_tables(
 ):
     """
     Get all pricing tables. Only accessible by system admin users.
-    Returns both the standard and always-free pricing tables.
+    Returns all active pricing tables by type.
     """
-    standard_table = db.query(DBSystemSecret).filter(DBSystemSecret.key == STANDARD_PRICING_TABLE_KEY).first()
-    always_free_table = db.query(DBSystemSecret).filter(DBSystemSecret.key == ALWAYS_FREE_PRICING_TABLE_KEY).first()
+    # Get all active pricing tables
+    pricing_tables = db.query(DBPricingTable).filter(
+        DBPricingTable.is_active == True
+    ).all()
 
-    return PricingTablesResponse(
-        standard=PricingTableResponse(
-            pricing_table_id=standard_table.value if standard_table else None,
-            updated_at=standard_table.updated_at or standard_table.created_at if standard_table else None
-        ) if standard_table else None,
-        always_free=PricingTableResponse(
-            pricing_table_id=always_free_table.value if always_free_table else None,
-            updated_at=always_free_table.updated_at or always_free_table.created_at if always_free_table else None
-        ) if always_free_table else None
-    )
+    # Build response dictionary
+    tables_dict = {}
+    for table in pricing_tables:
+        tables_dict[table.table_type] = PricingTableResponse(
+            pricing_table_id=table.pricing_table_id,
+            stripe_publishable_key=table.stripe_publishable_key,
+            updated_at=table.updated_at or table.created_at
+        )
+
+    return PricingTablesResponse(tables=tables_dict)
