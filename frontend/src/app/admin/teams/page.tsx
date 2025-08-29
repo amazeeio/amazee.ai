@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -22,7 +22,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, Plus, ChevronDown, ChevronRight, UserPlus, ChevronUp, ChevronsUpDown } from 'lucide-react';
+import { Loader2, Plus, ChevronDown, ChevronRight, UserPlus, ChevronUp, ChevronsUpDown, Search } from 'lucide-react';
 import { get, post, del } from '@/utils/api';
 import {
   Collapsible,
@@ -43,6 +43,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+
 import React from 'react';
 import { getCachedConfig } from '@/utils/config';
 
@@ -831,6 +832,88 @@ export default function TeamsPage() {
     });
   };
 
+  // Searchable Select Component using Command
+  const SearchableSelect = ({
+    value,
+    onValueChange,
+    placeholder,
+    options,
+    searchPlaceholder = "Search..."
+  }: {
+    value: string;
+    onValueChange: (value: string) => void;
+    placeholder: string;
+    options: { value: string; label: string }[];
+    searchPlaceholder?: string;
+  }) => {
+    const [isOpen, setIsOpen] = useState(false);
+    const [searchTerm, setSearchTerm] = useState('');
+    const searchInputRef = useRef<HTMLInputElement>(null);
+
+    const filteredOptions = searchTerm
+      ? options.filter(option =>
+          option.label.toLowerCase().includes(searchTerm.toLowerCase())
+        )
+      : options;
+
+    const handleOpenChange = (open: boolean) => {
+      setIsOpen(open);
+      if (!open) {
+        setSearchTerm('');
+      }
+    };
+
+    // Focus the search input when the dropdown opens
+    useEffect(() => {
+      if (isOpen) {
+        const timer = setTimeout(() => {
+          searchInputRef.current?.focus();
+        }, 100);
+        return () => clearTimeout(timer);
+      }
+    }, [isOpen]);
+
+    return (
+      <Select value={value} onValueChange={onValueChange} open={isOpen} onOpenChange={handleOpenChange}>
+        <SelectTrigger>
+          <SelectValue placeholder={placeholder} />
+        </SelectTrigger>
+        <SelectContent>
+          <div className="p-2 border-b">
+            <div className="relative">
+              <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input
+                ref={searchInputRef}
+                placeholder={searchPlaceholder}
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-8"
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    setIsOpen(false);
+                  }
+                }}
+              />
+            </div>
+          </div>
+          <div className="max-h-60 overflow-y-auto">
+            {filteredOptions.length === 0 ? (
+              <div className="p-2 text-center text-sm text-muted-foreground">
+                No options found
+              </div>
+            ) : (
+              filteredOptions.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))
+            )}
+          </div>
+        </SelectContent>
+      </Select>
+    );
+  };
+
 
 
   return (
@@ -1549,21 +1632,16 @@ export default function TeamsPage() {
             <form onSubmit={handleMergeTeams} className="space-y-4">
               <div className="space-y-2">
                 <label className="text-sm font-medium">Target Team</label>
-                <Select
+                <SearchableSelect
                   value={selectedTeamId}
                   onValueChange={setSelectedTeamId}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select target team" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {teams.map((team) => (
-                      <SelectItem key={team.id} value={team.name}>
-                        {team.name} ({team.id})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  placeholder="Select target team"
+                  searchPlaceholder="Search teams by name or admin email..."
+                  options={teams.map((team) => ({
+                    value: team.name,
+                    label: `${team.name} (${team.admin_email})`
+                  }))}
+                />
               </div>
               <Alert>
                 <AlertDescription>
@@ -1572,21 +1650,18 @@ export default function TeamsPage() {
               </Alert>
               <div className="space-y-2">
                 <label className="text-sm font-medium">Source Team</label>
-                <Select
+                <SearchableSelect
                   value={selectedSourceTeamId}
                   onValueChange={setSelectedSourceTeamId}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a team to merge from" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {teams.filter(team => team.name !== selectedTeamId).map((team) => (
-                      <SelectItem key={team.id} value={team.name}>
-                        {team.name} ({team.id})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  placeholder="Select a team to merge from"
+                  searchPlaceholder="Search teams by name or admin email..."
+                  options={teams
+                    .filter(team => team.name !== selectedTeamId)
+                    .map((team) => ({
+                      value: team.name,
+                      label: `${team.name} (${team.admin_email})`
+                    }))}
+                />
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">Conflict Resolution</label>
