@@ -33,6 +33,29 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ChevronDown, ChevronRight } from 'lucide-react';
+import Script from 'next/script';
+import React from 'react';
+
+declare module 'react' {
+  interface HTMLAttributes<T> extends AriaAttributes, DOMAttributes<T> {
+    'pricing-table-id'?: string;
+    'publishable-key'?: string;
+  }
+}
+
+declare module 'react/jsx-runtime' {
+  interface Element {
+    'stripe-pricing-table': HTMLElement;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'stripe-pricing-table': HTMLElement;
+  }
+}
 
 interface Product {
   id: string;
@@ -53,11 +76,11 @@ interface Product {
 interface PricingTable {
   pricing_table_id: string;
   updated_at: string;
+  stripe_publishable_key: string;
 }
 
 interface PricingTables {
-  standard: PricingTable | null;
-  always_free: PricingTable | null;
+  tables: Record<string, PricingTable | null>;
 }
 
 export default function ProductsPage() {
@@ -69,7 +92,8 @@ export default function ProductsPage() {
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [formData, setFormData] = useState<Partial<Product>>({});
   const [pricingTableId, setPricingTableId] = useState('');
-  const [pricingTableType, setPricingTableType] = useState<'standard' | 'always_free'>('standard');
+  const [pricingTableType, setPricingTableType] = useState<'standard' | 'always_free' | 'gpt'>('standard');
+  const [expandedPricingTable, setExpandedPricingTable] = useState<string | null>(null);
 
   // Update form data
   const updateFormData = (newData: Partial<Product>) => {
@@ -93,6 +117,8 @@ export default function ProductsPage() {
       return response.json();
     },
   });
+
+
 
   // Mutations
   const createProductMutation = useMutation({
@@ -167,7 +193,7 @@ export default function ProductsPage() {
 
   // Pricing Table Mutations
   const updatePricingTableMutation = useMutation({
-    mutationFn: async (data: { pricing_table_id: string; table_type: 'standard' | 'always_free' }) => {
+    mutationFn: async (data: { pricing_table_id: string; table_type: 'standard' | 'always_free' | 'gpt' }) => {
       const response = await post('/pricing-tables', data);
       return response.json();
     },
@@ -192,8 +218,8 @@ export default function ProductsPage() {
   });
 
   const deletePricingTableMutation = useMutation({
-    mutationFn: async () => {
-      await del('/pricing-tables');
+    mutationFn: async (tableType: string) => {
+      await del(`/pricing-tables?table_type=${tableType}`);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['pricing-tables'] });
@@ -254,8 +280,12 @@ export default function ProductsPage() {
     });
   };
 
-  const handleDeletePricingTable = () => {
-    deletePricingTableMutation.mutate();
+  const handleDeletePricingTable = (tableType: string) => {
+    deletePricingTableMutation.mutate(tableType);
+  };
+
+  const togglePricingTableExpansion = (tableType: string) => {
+    setExpandedPricingTable(expandedPricingTable === tableType ? null : tableType);
   };
 
   // Pagination
@@ -273,299 +303,339 @@ export default function ProductsPage() {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold">Product Management</h1>
-        <div className="space-x-4">
-          <Dialog open={isPricingTableDialogOpen} onOpenChange={setIsPricingTableDialogOpen}>
-            <DialogTrigger asChild>
-              <Button variant="outline">Manage Pricing Table</Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Manage Pricing Table</DialogTitle>
-              </DialogHeader>
-              <div className="space-y-4">
-                <div>
-                  <Label htmlFor="pricing-table-type">Table Type</Label>
-                  <Select
-                    value={pricingTableType}
-                    onValueChange={(value: 'standard' | 'always_free') => setPricingTableType(value)}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select table type" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="standard">Standard</SelectItem>
-                      <SelectItem value="always_free">Always Free</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label htmlFor="pricing-table-id">Stripe Pricing Table ID</Label>
-                  <Input
-                    id="pricing-table-id"
-                    placeholder="prctbl_XXX"
-                    value={pricingTableId}
-                    onChange={(e) => setPricingTableId(e.target.value)}
+        <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
+          <DialogTrigger asChild>
+            <Button>Create Product</Button>
+          </DialogTrigger>
+          <DialogContent className="max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Create New Product</DialogTitle>
+            </DialogHeader>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="col-span-2">
+                <Label htmlFor="id">Product ID (Stripe ID) *</Label>
+                <Input
+                  id="id"
+                  placeholder="prod_XXX"
+                  value={formData.id || ''}
+                  onChange={(e) => updateFormData({ ...formData, id: e.target.value })}
+                  required
+                />
+              </div>
+              <div className="col-span-2">
+                <Label htmlFor="name">Name *</Label>
+                <Input
+                  id="name"
+                  placeholder="Enter product name"
+                  value={formData.name || ''}
+                  onChange={(e) => updateFormData({ ...formData, name: e.target.value })}
+                  required
+                />
+              </div>
+              <div>
+                <Label htmlFor="user_count">User Count</Label>
+                <Input
+                  id="user_count"
+                  type="number"
+                  value={formData.user_count || 1}
+                  onChange={(e) => updateFormData({ ...formData, user_count: parseInt(e.target.value) })}
+                />
+              </div>
+              <div>
+                <Label htmlFor="keys_per_user">Keys per User</Label>
+                <Input
+                  id="keys_per_user"
+                  type="number"
+                  value={formData.keys_per_user || 1}
+                  onChange={(e) => updateFormData({ ...formData, keys_per_user: parseInt(e.target.value) })}
+                />
+              </div>
+              <div>
+                <Label htmlFor="total_key_count">Total Key Count</Label>
+                <Input
+                  id="total_key_count"
+                  type="number"
+                  value={formData.total_key_count || 1}
+                  onChange={(e) => updateFormData({ ...formData, total_key_count: parseInt(e.target.value) })}
+                />
+              </div>
+              <div>
+                <Label htmlFor="service_key_count">Service Key Count</Label>
+                <Input
+                  id="service_key_count"
+                  type="number"
+                  value={formData.service_key_count || 5}
+                  onChange={(e) => updateFormData({ ...formData, service_key_count: parseInt(e.target.value) })}
+                />
+              </div>
+              <div>
+                <Label htmlFor="max_budget_per_key">Max Budget per Key</Label>
+                <Input
+                  id="max_budget_per_key"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  required
+                  value={formData.max_budget_per_key ?? 20.0}
+                  onChange={(e) => {
+                    const value = parseFloat(e.target.value);
+                    updateFormData({ ...formData, max_budget_per_key: isNaN(value) ? 20.0 : value });
+                  }}
+                />
+              </div>
+              <div>
+                <Label htmlFor="rpm_per_key">RPM per Key</Label>
+                <Input
+                  id="rpm_per_key"
+                  type="number"
+                  value={formData.rpm_per_key || 500}
+                  onChange={(e) => updateFormData({ ...formData, rpm_per_key: parseInt(e.target.value) })}
+                />
+              </div>
+              <div>
+                <Label htmlFor="vector_db_count">Vector DB Count</Label>
+                <Input
+                  id="vector_db_count"
+                  type="number"
+                  value={formData.vector_db_count || 1}
+                  onChange={(e) => updateFormData({ ...formData, vector_db_count: parseInt(e.target.value) })}
+                />
+              </div>
+              <div>
+                <Label htmlFor="vector_db_storage">Vector DB Storage (GiB)</Label>
+                <Input
+                  id="vector_db_storage"
+                  type="number"
+                  value={formData.vector_db_storage || 50}
+                  onChange={(e) => updateFormData({ ...formData, vector_db_storage: parseInt(e.target.value) })}
+                />
+              </div>
+              <div>
+                <Label htmlFor="renewal_period_days">Renewal Period (Days)</Label>
+                <Input
+                  id="renewal_period_days"
+                  type="number"
+                  required
+                  value={formData.renewal_period_days || 31}
+                  onChange={(e) => updateFormData({ ...formData, renewal_period_days: parseInt(e.target.value) })}
+                />
+              </div>
+              <div className="col-span-2">
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    id="active"
+                    checked={formData.active !== false}
+                    onChange={(e) => updateFormData({ ...formData, active: e.target.checked })}
+                    className="h-4 w-4 rounded border-gray-300"
                   />
-                </div>
-                <div className="space-y-2">
-                  <div className="text-sm font-medium">Current Pricing Tables</div>
-                  <div className="grid gap-2">
-                    <div className="text-sm">
-                      <span className="font-medium">Standard:</span>{' '}
-                      {pricingTables?.standard ? (
-                        <span className="text-muted-foreground">
-                          {pricingTables.standard.pricing_table_id}
-                          <br />
-                          <span className="text-xs">
-                            Last updated: {new Date(pricingTables.standard.updated_at).toLocaleString()}
-                          </span>
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">Not set</span>
-                      )}
-                    </div>
-                    <div className="text-sm">
-                      <span className="font-medium">Always Free:</span>{' '}
-                      {pricingTables?.always_free ? (
-                        <span className="text-muted-foreground">
-                          {pricingTables.always_free.pricing_table_id}
-                          <br />
-                          <span className="text-xs">
-                            Last updated: {new Date(pricingTables.always_free.updated_at).toLocaleString()}
-                          </span>
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">Not set</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-                <div className="flex justify-between">
-                  <DeleteConfirmationDialog
-                    title="Delete Pricing Table"
-                    description="Are you sure you want to delete the current pricing table? This action cannot be undone."
-                    triggerText="Delete Current Table"
-                    onConfirm={handleDeletePricingTable}
-                    disabled={!pricingTables?.standard && !pricingTables?.always_free}
-                    size="default"
-                  />
-                  <Button onClick={handleUpdatePricingTable}>
-                    Update Pricing Table
-                  </Button>
+                  <Label htmlFor="active">Active</Label>
                 </div>
               </div>
-            </DialogContent>
-          </Dialog>
-          <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
-            <DialogTrigger asChild>
-              <Button>Create Product</Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-2xl">
-              <DialogHeader>
-                <DialogTitle>Create New Product</DialogTitle>
-              </DialogHeader>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="col-span-2">
-                  <Label htmlFor="id">Product ID (Stripe ID) *</Label>
-                  <Input
-                    id="id"
-                    placeholder="prod_XXX"
-                    value={formData.id || ''}
-                    onChange={(e) => updateFormData({ ...formData, id: e.target.value })}
-                    required
-                  />
-                </div>
-                <div className="col-span-2">
-                  <Label htmlFor="name">Name *</Label>
-                  <Input
-                    id="name"
-                    placeholder="Enter product name"
-                    value={formData.name || ''}
-                    onChange={(e) => updateFormData({ ...formData, name: e.target.value })}
-                    required
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="user_count">User Count</Label>
-                  <Input
-                    id="user_count"
-                    type="number"
-                    value={formData.user_count || 1}
-                    onChange={(e) => updateFormData({ ...formData, user_count: parseInt(e.target.value) })}
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="keys_per_user">Keys per User</Label>
-                  <Input
-                    id="keys_per_user"
-                    type="number"
-                    value={formData.keys_per_user || 1}
-                    onChange={(e) => updateFormData({ ...formData, keys_per_user: parseInt(e.target.value) })}
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="total_key_count">Total Key Count</Label>
-                  <Input
-                    id="total_key_count"
-                    type="number"
-                    value={formData.total_key_count || 1}
-                    onChange={(e) => updateFormData({ ...formData, total_key_count: parseInt(e.target.value) })}
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="service_key_count">Service Key Count</Label>
-                  <Input
-                    id="service_key_count"
-                    type="number"
-                    value={formData.service_key_count || 5}
-                    onChange={(e) => updateFormData({ ...formData, service_key_count: parseInt(e.target.value) })}
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="max_budget_per_key">Max Budget per Key</Label>
-                  <Input
-                    id="max_budget_per_key"
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    required
-                    value={formData.max_budget_per_key ?? 20.0}
-                    onChange={(e) => {
-                      const value = parseFloat(e.target.value);
-                      updateFormData({ ...formData, max_budget_per_key: isNaN(value) ? 20.0 : value });
-                    }}
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="rpm_per_key">RPM per Key</Label>
-                  <Input
-                    id="rpm_per_key"
-                    type="number"
-                    value={formData.rpm_per_key || 500}
-                    onChange={(e) => updateFormData({ ...formData, rpm_per_key: parseInt(e.target.value) })}
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="vector_db_count">Vector DB Count</Label>
-                  <Input
-                    id="vector_db_count"
-                    type="number"
-                    value={formData.vector_db_count || 1}
-                    onChange={(e) => updateFormData({ ...formData, vector_db_count: parseInt(e.target.value) })}
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="vector_db_storage">Vector DB Storage (GiB)</Label>
-                  <Input
-                    id="vector_db_storage"
-                    type="number"
-                    value={formData.vector_db_storage || 50}
-                    onChange={(e) => updateFormData({ ...formData, vector_db_storage: parseInt(e.target.value) })}
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="renewal_period_days">Renewal Period (Days)</Label>
-                  <Input
-                    id="renewal_period_days"
-                    type="number"
-                    required
-                    value={formData.renewal_period_days || 31}
-                    onChange={(e) => updateFormData({ ...formData, renewal_period_days: parseInt(e.target.value) })}
-                  />
-                </div>
-                <div className="col-span-2">
-                  <div className="flex items-center space-x-2">
-                    <input
-                      type="checkbox"
-                      id="active"
-                      checked={formData.active !== false}
-                      onChange={(e) => updateFormData({ ...formData, active: e.target.checked })}
-                      className="h-4 w-4 rounded border-gray-300"
-                    />
-                    <Label htmlFor="active">Active</Label>
-                  </div>
-                </div>
-              </div>
-              <div className="mt-4 flex justify-end">
-                <Button
-                  onClick={handleCreate}
-                  disabled={!formData.id?.trim() || !formData.name?.trim()}
-                >
-                  Create
-                </Button>
-              </div>
-            </DialogContent>
-          </Dialog>
-        </div>
+            </div>
+            <div className="mt-4 flex justify-end">
+              <Button
+                onClick={handleCreate}
+                disabled={!formData.id?.trim() || !formData.name?.trim()}
+              >
+                Create
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
 
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>ID</TableHead>
-            <TableHead>Name</TableHead>
-            <TableHead>User Count</TableHead>
-            <TableHead>Keys/User</TableHead>
-            <TableHead>Total Keys</TableHead>
-            <TableHead>Service Keys</TableHead>
-            <TableHead>Budget/Key</TableHead>
-            <TableHead>RPM/Key</TableHead>
-            <TableHead>Vector DBs</TableHead>
-            <TableHead>Storage (GiB)</TableHead>
-            <TableHead>Renewal (Days)</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>Created</TableHead>
-            <TableHead>Actions</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {paginatedData.map((product) => (
-            <TableRow key={product.id}>
-              <TableCell className="font-mono text-sm">{product.id}</TableCell>
-              <TableCell>{product.name}</TableCell>
-              <TableCell>{product.user_count}</TableCell>
-              <TableCell>{product.keys_per_user}</TableCell>
-              <TableCell>{product.total_key_count}</TableCell>
-              <TableCell>{product.service_key_count}</TableCell>
-              <TableCell>${product.max_budget_per_key ? product.max_budget_per_key.toFixed(2) : '0.00'}</TableCell>
-              <TableCell>{product.rpm_per_key}</TableCell>
-              <TableCell>{product.vector_db_count}</TableCell>
-              <TableCell>{product.vector_db_storage}</TableCell>
-              <TableCell>{product.renewal_period_days}</TableCell>
-              <TableCell>
-                <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
-                  product.active ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                }`}>
-                  {product.active ? 'Active' : 'Inactive'}
-                </span>
-              </TableCell>
-              <TableCell>{new Date(product.created_at).toLocaleDateString()}</TableCell>
-              <TableCell>
-                <TableActionButtons
-                  onEdit={() => {
-                    setSelectedProduct(product);
-                    setFormData(product);
-                    setIsEditDialogOpen(true);
-                  }}
-                  onDelete={() => handleDelete(product.id)}
-                  deleteTitle="Delete Product"
-                  deleteDescription="Are you sure you want to delete this product? This action cannot be undone."
-                  isDeleting={deleteProductMutation.isPending}
-                />
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+      <Tabs defaultValue="products" className="space-y-4">
+        <TabsList>
+          <TabsTrigger value="products">Products</TabsTrigger>
+          <TabsTrigger value="pricing-tables">Pricing Tables</TabsTrigger>
+        </TabsList>
 
-      <TablePagination
-        currentPage={currentPage}
-        totalPages={totalPages}
-        pageSize={pageSize}
-        totalItems={totalItems}
-        onPageChange={goToPage}
-        onPageSizeChange={changePageSize}
-      />
+        <TabsContent value="products" className="space-y-4">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>ID</TableHead>
+                <TableHead>Name</TableHead>
+                <TableHead>User Count</TableHead>
+                <TableHead>Keys/User</TableHead>
+                <TableHead>Total Keys</TableHead>
+                <TableHead>Service Keys</TableHead>
+                <TableHead>Budget/Key</TableHead>
+                <TableHead>RPM/Key</TableHead>
+                <TableHead>Vector DBs</TableHead>
+                <TableHead>Storage (GiB)</TableHead>
+                <TableHead>Renewal (Days)</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Created</TableHead>
+                <TableHead>Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {paginatedData.map((product) => (
+                <TableRow key={product.id}>
+                  <TableCell className="font-mono text-sm">{product.id}</TableCell>
+                  <TableCell>{product.name}</TableCell>
+                  <TableCell>{product.user_count}</TableCell>
+                  <TableCell>{product.keys_per_user}</TableCell>
+                  <TableCell>{product.total_key_count}</TableCell>
+                  <TableCell>{product.service_key_count}</TableCell>
+                  <TableCell>${product.max_budget_per_key ? product.max_budget_per_key.toFixed(2) : '0.00'}</TableCell>
+                  <TableCell>{product.rpm_per_key}</TableCell>
+                  <TableCell>{product.vector_db_count}</TableCell>
+                  <TableCell>{product.vector_db_storage}</TableCell>
+                  <TableCell>{product.renewal_period_days}</TableCell>
+                  <TableCell>
+                    <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${product.active ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                      }`}>
+                      {product.active ? 'Active' : 'Inactive'}
+                    </span>
+                  </TableCell>
+                  <TableCell>{new Date(product.created_at).toLocaleDateString()}</TableCell>
+                  <TableCell>
+                    <TableActionButtons
+                      onEdit={() => {
+                        setSelectedProduct(product);
+                        setFormData(product);
+                        setIsEditDialogOpen(true);
+                      }}
+                      onDelete={() => handleDelete(product.id)}
+                      deleteTitle="Delete Product"
+                      deleteDescription="Are you sure you want to delete this product? This action cannot be undone."
+                      isDeleting={deleteProductMutation.isPending}
+                    />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+
+          <TablePagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            pageSize={pageSize}
+            totalItems={totalItems}
+            onPageChange={goToPage}
+            onPageSizeChange={changePageSize}
+          />
+        </TabsContent>
+
+        <TabsContent value="pricing-tables" className="space-y-4">
+          <div className="flex justify-between items-center">
+            <h2 className="text-xl font-semibold">Pricing Tables</h2>
+            <Dialog open={isPricingTableDialogOpen} onOpenChange={setIsPricingTableDialogOpen}>
+              <DialogTrigger asChild>
+                <Button variant="outline">Add Pricing Table</Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Add Pricing Table</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <div>
+                    <Label htmlFor="pricing-table-type">Table Type</Label>
+                    <Select
+                      value={pricingTableType}
+                      onValueChange={(value: 'standard' | 'always_free' | 'gpt') => setPricingTableType(value)}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select table type" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="standard">Standard</SelectItem>
+                        <SelectItem value="always_free">Always Free</SelectItem>
+                        <SelectItem value="gpt">GPT</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label htmlFor="pricing-table-id">Stripe Pricing Table ID</Label>
+                    <Input
+                      id="pricing-table-id"
+                      placeholder="prctbl_XXX"
+                      value={pricingTableId}
+                      onChange={(e) => setPricingTableId(e.target.value)}
+                    />
+                  </div>
+                  <div className="flex justify-end">
+                    <Button onClick={handleUpdatePricingTable}>
+                      Add Pricing Table
+                    </Button>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
+          </div>
+
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-12"></TableHead>
+                <TableHead>Table Type</TableHead>
+                <TableHead>Pricing Table ID</TableHead>
+                <TableHead>Last Updated</TableHead>
+                <TableHead>Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {pricingTables?.tables && Object.entries(pricingTables.tables).map(([tableType, table]) => (
+                <React.Fragment key={tableType}>
+                  <TableRow>
+                    <TableCell>
+                      <button
+                        onClick={() => togglePricingTableExpansion(tableType)}
+                        className="flex items-center justify-center w-6 h-6 rounded hover:bg-muted"
+                      >
+                        {expandedPricingTable === tableType ? (
+                          <ChevronDown className="h-4 w-4" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4" />
+                        )}
+                      </button>
+                    </TableCell>
+                    <TableCell className="font-medium">
+                      {tableType.charAt(0).toUpperCase() + tableType.slice(1).replace('_', ' ')}
+                    </TableCell>
+                    <TableCell className="font-mono text-sm">
+                      {table ? table.pricing_table_id : 'Not set'}
+                    </TableCell>
+                    <TableCell>
+                      {table ? new Date(table.updated_at).toLocaleString() : '-'}
+                    </TableCell>
+                    <TableCell>
+                      {table && (
+                        <DeleteConfirmationDialog
+                          title="Delete Pricing Table"
+                          description={`Are you sure you want to delete the ${tableType} pricing table? This action cannot be undone.`}
+                          triggerText="Delete"
+                          onConfirm={() => handleDeletePricingTable(tableType)}
+                          size="sm"
+                        />
+                      )}
+                    </TableCell>
+                  </TableRow>
+                  {expandedPricingTable === tableType && table && (
+                    <TableRow>
+                      <TableCell colSpan={5} className="p-0">
+                        <div className="p-4 bg-muted/30">
+                          <Script src="https://js.stripe.com/v3/pricing-table.js" strategy="afterInteractive" />
+                          {table.stripe_publishable_key && (
+                            // @ts-expect-error - Stripe pricing table is a custom element
+                            <stripe-pricing-table
+                              pricing-table-id={table.pricing_table_id}
+                              publishable-key={table.stripe_publishable_key}
+                            />
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </React.Fragment>
+              ))}
+            </TableBody>
+          </Table>
+        </TabsContent>
+      </Tabs>
 
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
         <DialogContent className="max-w-2xl">

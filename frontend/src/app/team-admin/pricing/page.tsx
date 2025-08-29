@@ -5,7 +5,6 @@ import { useAuth } from '@/hooks/use-auth';
 import { get, post } from '@/utils/api';
 import Script from 'next/script';
 import { useQuery } from '@tanstack/react-query';
-import { getConfig } from '@/utils/config';
 
 declare module 'react' {
   interface HTMLAttributes<T> extends AriaAttributes, DOMAttributes<T> {
@@ -29,6 +28,7 @@ declare global {
 
 interface PricingTable {
   pricing_table_id: string;
+  stripe_publishable_key: string;
   updated_at: string;
 }
 
@@ -37,14 +37,8 @@ export default function PricingPage() {
   const [clientSecret, setClientSecret] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch config using React Query
-  const { data: config, isLoading: isLoadingConfig } = useQuery({
-    queryKey: ['config'],
-    queryFn: getConfig,
-  });
-
-  // Fetch pricing table ID
-  const { data: pricingTable, error: pricingTableError } = useQuery<PricingTable>({
+  // Fetch pricing table data
+  const { data: pricingTable, error: pricingTableError, isLoading: isLoadingPricingTable } = useQuery<PricingTable>({
     queryKey: ['pricing-table'],
     queryFn: async () => {
       const response = await get('/pricing-tables');
@@ -79,15 +73,15 @@ export default function PricingPage() {
     }
   };
 
-  if (isLoadingConfig) {
-    return <div>Loading configuration...</div>;
+  if (isLoadingPricingTable) {
+    return <div>Loading pricing table...</div>;
   }
 
   if (error || pricingTableError) {
     return <div className="text-red-500">{error || 'Failed to load pricing table. Please try again later.'}</div>;
   }
 
-  if (!config?.STRIPE_PUBLISHABLE_KEY) {
+  if (!pricingTable?.stripe_publishable_key) {
     return <div className="text-red-500">Stripe configuration is missing. Please contact support.</div>;
   }
 
@@ -107,7 +101,7 @@ export default function PricingPage() {
         // @ts-expect-error - Stripe pricing table is a custom element
         <stripe-pricing-table
           pricing-table-id={pricingTable.pricing_table_id}
-          publishable-key={config.STRIPE_PUBLISHABLE_KEY}
+          publishable-key={pricingTable.stripe_publishable_key}
           customer-session-client-secret={clientSecret}
         />
       )}
