@@ -42,6 +42,14 @@ async def register_team(
             detail="Email already registered"
         )
 
+    # Check if team name already exists (case insensitive)
+    db_team = db.query(DBTeam).filter(func.lower(DBTeam.name) == func.lower(team.name)).first()
+    if db_team:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Team name already exists"
+        )
+
     # Create the team
     db_team = DBTeam(
         name=team.name,

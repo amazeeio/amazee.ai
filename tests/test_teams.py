@@ -121,6 +121,70 @@ def test_register_team_duplicate_admin_email_case_insensitive_reverse(client, db
     assert response.status_code == 400
     assert response.json()["detail"] == "Email already registered"
 
+def test_register_team_duplicate_name(client, db):
+    """
+    Given a team with name "Existing Team" exists
+    When registering a new team with name "Existing Team"
+    Then the registration should fail with "Team name already exists" error
+    """
+    # First, create a team
+    team = DBTeam(
+        name="Existing Team",
+        admin_email="existing@example.com",
+        phone="1234567890",
+        billing_address="123 Test St, Test City, 12345",
+        is_active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(team)
+    db.commit()
+    db.refresh(team)
+
+    # Try to register a new team with the same name
+    response = client.post(
+        "/teams/",
+        json={
+            "name": "Existing Team",
+            "admin_email": "newteam@example.com",
+            "phone": "0987654321",
+            "billing_address": "456 New St, New City, 54321"
+        }
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Team name already exists"
+
+def test_register_team_duplicate_name_case_insensitive(client, db):
+    """
+    Given a team with name "Existing Team" exists
+    When registering a new team with name "existing team"
+    Then the registration should fail with "Team name already exists" error
+    """
+    # First, create a team
+    team = DBTeam(
+        name="Existing Team",
+        admin_email="existing@example.com",
+        phone="1234567890",
+        billing_address="123 Test St, Test City, 12345",
+        is_active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(team)
+    db.commit()
+    db.refresh(team)
+
+    # Try to register a new team with the same name but different case
+    response = client.post(
+        "/teams/",
+        json={
+            "name": "existing team",
+            "admin_email": "newteam@example.com",
+            "phone": "0987654321",
+            "billing_address": "456 New St, New City, 54321"
+        }
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Team name already exists"
+
 def test_list_teams(client, admin_token, db, test_team):
     """Test listing all teams (admin only)"""
     # List teams as admin
