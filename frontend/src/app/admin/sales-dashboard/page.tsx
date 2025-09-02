@@ -27,6 +27,7 @@ interface Team {
   created_at: string;
   last_payment?: string;
   is_always_free: boolean;
+  hubspot_status?: string; // New field for tracking Hubspot import status - will use "update-sales-data" API after it has been built
 }
 
 interface Product {
@@ -53,7 +54,7 @@ interface SpendInfo {
 }
 
 
-type SortField = 'admin_email' | 'name' | 'created_at' | 'last_payment' | 'products' | 'trial_status' | 'regions' | 'total_spend' | null;
+type SortField = 'admin_email' | 'name' | 'created_at' | 'last_payment' | 'products' | 'trial_status' | 'regions' | 'total_spend' | 'hubspot_status' | null;
 type SortDirection = 'asc' | 'desc';
 
 interface Filter {
@@ -69,6 +70,9 @@ export default function SalesDashboardPage() {
   const [filters, setFilters] = useState<Filter[]>([]);
   const [sortField, setSortField] = useState<SortField>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+
+  // Local state for hubspot status updates (until API is implemented)
+  const [localHubspotStatuses, setLocalHubspotStatuses] = useState<Record<string, string>>({});
 
   // Queries
   const { data: teams = [], isLoading: isLoadingTeams } = useQuery<Team[]>({
@@ -335,6 +339,7 @@ export default function SalesDashboardPage() {
     { value: 'products', label: 'Products', type: 'select' },
     { value: 'trial_status', label: 'Trial Status', type: 'select' },
     { value: 'regions', label: 'Regions', type: 'select' },
+    { value: 'hubspot_status', label: 'Hubspot Status', type: 'select' },
   ];
 
   // Filter operators
@@ -374,40 +379,47 @@ export default function SalesDashboardPage() {
   // Get options for select-type filters
   const getFilterOptions = (column: string) => {
     switch (column) {
-             case 'trial_status':
-         return [
-           { value: 'Active Product', label: 'Active Product' },
-           { value: 'Always Free', label: 'Always Free' },
-           { value: 'In Progress', label: 'In Progress' },
-           { value: 'Expired', label: 'Expired' },
-         ];
-             case 'regions':
-         // Get unique regions from all teams
-         const allRegions = new Set<string>();
-         teams.forEach(team => {
-           const teamRegions = getTeamRegions(team.id);
-           teamRegions.forEach(region => allRegions.add(region));
-         });
-         return [
-           { value: 'No Region', label: 'No Region' },
-           ...Array.from(allRegions).sort().map(region => ({
-             value: region,
-             label: region
-           }))
-         ];
-             case 'products':
-         const allProducts = new Set<string>();
-         teams.forEach(team => {
-           const teamProducts = teamProductsMap[team.id] || [];
-           teamProducts.forEach(product => allProducts.add(product.name));
-         });
-         return [
-           { value: 'No Product', label: 'No Product' },
-           ...Array.from(allProducts).sort().map(productName => ({
-             value: productName,
-             label: productName
-           }))
-         ];
+      case 'trial_status':
+        return [
+          { value: 'Active Product', label: 'Active Product' },
+          { value: 'Always Free', label: 'Always Free' },
+          { value: 'In Progress', label: 'In Progress' },
+          { value: 'Expired', label: 'Expired' },
+        ];
+      case 'regions':
+        // Get unique regions from all teams
+        const allRegions = new Set<string>();
+        teams.forEach(team => {
+          const teamRegions = getTeamRegions(team.id);
+          teamRegions.forEach(region => allRegions.add(region));
+        });
+        return [
+          { value: 'No Region', label: 'No Region' },
+          ...Array.from(allRegions).sort().map(region => ({
+            value: region,
+            label: region
+          }))
+        ];
+      case 'products':
+        const allProducts = new Set<string>();
+        teams.forEach(team => {
+          const teamProducts = teamProductsMap[team.id] || [];
+          teamProducts.forEach(product => allProducts.add(product.name));
+        });
+        return [
+          { value: 'No Product', label: 'No Product' },
+          ...Array.from(allProducts).sort().map(productName => ({
+            value: productName,
+            label: productName
+          }))
+        ];
+      case 'hubspot_status':
+        return [
+          { value: 'Needs Import', label: 'Needs Import' },
+          { value: 'Import Successful', label: 'Import Successful' },
+          { value: 'Import Failed', label: 'Import Failed' },
+          { value: 'Skip Import', label: 'Skip Import' },
+        ];
       default:
         return [];
     }
@@ -492,6 +504,9 @@ export default function SalesDashboardPage() {
              const teamRegions = getTeamRegions(team.id);
              teamValue = teamRegions.length > 0 ? teamRegions.join(', ') : 'No Region';
              break;
+                                case 'hubspot_status':
+             teamValue = localHubspotStatuses[team.id] || team.hubspot_status || 'Needs Import';
+             break;
           default:
             return true;
         }
@@ -563,6 +578,10 @@ export default function SalesDashboardPage() {
           case 'total_spend':
             aValue = getTeamTotalSpend(a.id);
             bValue = getTeamTotalSpend(b.id);
+            break;
+          case 'hubspot_status':
+            aValue = localHubspotStatuses[a.id] || a.hubspot_status || 'Needs Import';
+            bValue = localHubspotStatuses[b.id] || b.hubspot_status || 'Needs Import';
             break;
           default:
             return 0;
@@ -822,13 +841,23 @@ export default function SalesDashboardPage() {
                   {getSortIcon('total_spend')}
                 </div>
               </TableHead>
+              <TableHead
+                className="cursor-pointer hover:bg-gray-50"
+                onClick={() => handleSort('hubspot_status')}
+              >
+                <div className="flex items-center gap-2">
+                  <Users className="h-4 w-4" />
+                  Hubspot Status
+                  {getSortIcon('hubspot_status')}
+                </div>
+              </TableHead>
 
             </TableRow>
           </TableHeader>
           <TableBody>
             {paginatedData.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={9} className="text-center py-6">
+                <TableCell colSpan={10} className="text-center py-6">
                   No teams found matching your filters.
                 </TableCell>
               </TableRow>
@@ -940,6 +969,53 @@ export default function SalesDashboardPage() {
                         <div className="font-medium" style={{ color: spendColor }}>
                           {formatCurrency(totalSpend)}
                         </div>
+                      );
+                    })()}
+                  </TableCell>
+                                    <TableCell>
+                    {(() => {
+                      const hubspotStatus = localHubspotStatuses[team.id] || team.hubspot_status || 'Needs Import';
+
+                      // TODO: This will use the "update-sales-data" API after it has been built
+                      const handleStatusChange = (newStatus: string) => {
+                        console.log(`Updating team ${team.id} hubspot status to: ${newStatus}`);
+                        // Update local state immediately
+                        setLocalHubspotStatuses(prev => ({
+                          ...prev,
+                          [team.id]: newStatus
+                        }));
+                        // TODO: Implement API call to update-sales-data endpoint
+                      };
+
+                      // Get color styling based on status
+                      const getStatusColor = (status: string) => {
+                        switch (status) {
+                          case 'Import Successful':
+                            return 'bg-green-600 text-white border-green-600';
+                          case 'Import Failed':
+                            return 'bg-red-600 text-white border-red-600';
+                          case 'Skip Import':
+                            return 'bg-gray-500 text-white border-gray-500';
+                          default: // 'Needs Import'
+                            return 'bg-gray-100 text-gray-700 border-gray-300';
+                        }
+                      };
+
+                      return (
+                        <Select
+                          value={hubspotStatus}
+                          onValueChange={handleStatusChange}
+                        >
+                          <SelectTrigger className={`w-40 ${getStatusColor(hubspotStatus)}`}>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="Needs Import">Needs Import</SelectItem>
+                            <SelectItem value="Import Successful">Import Successful</SelectItem>
+                            <SelectItem value="Import Failed">Import Failed</SelectItem>
+                            <SelectItem value="Skip Import">Skip Import</SelectItem>
+                          </SelectContent>
+                        </Select>
                       );
                     })()}
                   </TableCell>
