@@ -11,7 +11,8 @@ import {
   PanelLeftClose,
   PanelLeft,
   Users2,
-  Package
+  Package,
+  DollarSign
 } from 'lucide-react';
 import { Sidebar, SidebarProvider } from '@/components/ui/sidebar';
 import { NavUser } from '@/components/nav-user';
@@ -49,6 +50,7 @@ const navigation = [
       { name: 'Products', href: '/admin/products', icon: <Package size={16} /> },
       { name: 'Private AI Keys', href: '/admin/private-ai-keys', icon: <Key size={16} /> },
       { name: 'Audit Logs', href: '/admin/audit-logs', icon: <ScrollText size={16} /> },
+      { name: 'Sales Dashboard', href: '/admin/sales-dashboard', icon: <DollarSign size={16} /> },
     ],
   },
   {
