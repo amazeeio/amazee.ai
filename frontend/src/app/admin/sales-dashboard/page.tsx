@@ -13,10 +13,12 @@ import {
   useTablePagination,
 } from '@/components/ui/table';
 
-import { Loader2, ChevronUp, ChevronDown, ChevronsUpDown, DollarSign, Calendar, Users, Globe, Package } from 'lucide-react';
+import { Loader2, ChevronUp, ChevronDown, ChevronsUpDown, DollarSign, Calendar, Users, Globe, Package, Plus, X } from 'lucide-react';
 import { get } from '@/utils/api';
-import { TableFilters, FilterField } from '@/components/ui/table-filters';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Input } from '@/components/ui/input';
 
 interface Team {
   id: string;
@@ -51,17 +53,20 @@ interface SpendInfo {
 }
 
 
-type SortField = 'admin_email' | 'name' | 'created_at' | 'last_payment' | 'product_count' | 'trial_status' | 'regions' | 'total_spend' | null;
+type SortField = 'admin_email' | 'name' | 'created_at' | 'last_payment' | 'products' | 'trial_status' | 'regions' | 'total_spend' | null;
 type SortDirection = 'asc' | 'desc';
+
+interface Filter {
+  id: string;
+  column: string;
+  value: string;
+  operator: 'contains' | 'equals' | 'starts_with' | 'ends_with';
+}
 
 export default function SalesDashboardPage() {
 
   // Filter and sort state
-  const [emailFilter, setEmailFilter] = useState('');
-  const [nameFilter, setNameFilter] = useState('');
-  const [productFilter, setProductFilter] = useState('all');
-  const [trialStatusFilter, setTrialStatusFilter] = useState('all');
-  const [regionsFilter, setRegionsFilter] = useState('all');
+  const [filters, setFilters] = useState<Filter[]>([]);
   const [sortField, setSortField] = useState<SortField>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
 
@@ -157,15 +162,7 @@ export default function SalesDashboardPage() {
     enabled: teams.length > 0 && Object.keys(teamAIKeysMap).length > 0,
   });
 
-  // Fetch available regions
-  const { data: availableRegions = [] } = useQuery<Array<{ id: number; name: string }>>({
-    queryKey: ['regions'],
-    queryFn: async () => {
-      const response = await get('/regions');
-      const data = await response.json();
-      return data;
-    },
-  });
+
 
   // Calculate trial time remaining
   const getTrialTimeRemaining = useCallback((team: Team): string => {
@@ -277,50 +274,257 @@ export default function SalesDashboardPage() {
     return `rgb(${red}, ${green}, ${blue})`;
   }, [spendStats]);
 
+  // Add a new filter
+  const addFilter = () => {
+    const newFilter: Filter = {
+      id: Date.now().toString(),
+      column: 'admin_email',
+      value: '',
+      operator: 'contains'
+    };
+    setFilters([...filters, newFilter]);
+  };
+
+  // Update filter when column changes to set appropriate default value
+  const handleColumnChange = (filterId: string, column: string) => {
+    const columnInfo = filterColumns.find(col => col.value === column);
+    let defaultValue = '';
+    let defaultOperator: Filter['operator'] = 'contains';
+
+    if (columnInfo?.type === 'select') {
+      const options = getFilterOptions(column);
+      if (options.length > 0) {
+        defaultValue = options[0].value;
+      }
+      // Regions use 'contains' since teams can have multiple regions
+      if (column === 'regions') {
+        defaultOperator = 'contains';
+      } else {
+        defaultOperator = 'equals';
+      }
+    } else if (columnInfo?.type === 'number') {
+      defaultOperator = 'equals';
+    }
+
+    updateFilter(filterId, { column, value: defaultValue, operator: defaultOperator });
+  };
+
+  // Remove a filter
+  const removeFilter = (filterId: string) => {
+    setFilters(filters.filter(f => f.id !== filterId));
+  };
+
+  // Update a filter
+  const updateFilter = (filterId: string, updates: Partial<Filter>) => {
+    setFilters(filters.map(f =>
+      f.id === filterId ? { ...f, ...updates } : f
+    ));
+  };
+
+  // Clear all filters
+  const clearAllFilters = () => {
+    setFilters([]);
+    setSortField(null);
+    setSortDirection('asc');
+  };
+
+  // Available filter columns
+  const filterColumns = [
+    { value: 'admin_email', label: 'Team Email', type: 'text' },
+    { value: 'name', label: 'Team Name', type: 'text' },
+    { value: 'products', label: 'Products', type: 'select' },
+    { value: 'trial_status', label: 'Trial Status', type: 'select' },
+    { value: 'regions', label: 'Regions', type: 'select' },
+  ];
+
+  // Filter operators
+  const filterOperators = [
+    { value: 'contains', label: 'Contains' },
+    { value: 'equals', label: 'Equals' },
+    { value: 'starts_with', label: 'Starts with' },
+    { value: 'ends_with', label: 'Ends with' },
+  ];
+
+  // Get operators for specific column types
+  const getOperatorsForColumn = (column: string) => {
+    const columnInfo = filterColumns.find(col => col.value === column);
+
+    if (columnInfo?.type === 'select') {
+      // Regions can use 'contains' since teams can have multiple regions
+      if (column === 'regions') {
+        return [
+          { value: 'equals', label: 'Equals' },
+          { value: 'contains', label: 'Contains' }
+        ];
+      }
+      return [{ value: 'equals', label: 'Equals' }];
+    }
+
+    if (columnInfo?.type === 'number') {
+      return [
+        { value: 'equals', label: 'Equals' },
+        { value: 'contains', label: 'Contains' }
+      ];
+    }
+
+    // Text fields get all operators
+    return filterOperators;
+  };
+
+  // Get options for select-type filters
+  const getFilterOptions = (column: string) => {
+    switch (column) {
+             case 'trial_status':
+         return [
+           { value: 'Active Product', label: 'Active Product' },
+           { value: 'Always Free', label: 'Always Free' },
+           { value: 'In Progress', label: 'In Progress' },
+           { value: 'Expired', label: 'Expired' },
+         ];
+             case 'regions':
+         // Get unique regions from all teams
+         const allRegions = new Set<string>();
+         teams.forEach(team => {
+           const teamRegions = getTeamRegions(team.id);
+           teamRegions.forEach(region => allRegions.add(region));
+         });
+         return [
+           { value: 'No Region', label: 'No Region' },
+           ...Array.from(allRegions).sort().map(region => ({
+             value: region,
+             label: region
+           }))
+         ];
+             case 'products':
+         const allProducts = new Set<string>();
+         teams.forEach(team => {
+           const teamProducts = teamProductsMap[team.id] || [];
+           teamProducts.forEach(product => allProducts.add(product.name));
+         });
+         return [
+           { value: 'No Product', label: 'No Product' },
+           ...Array.from(allProducts).sort().map(productName => ({
+             value: productName,
+             label: productName
+           }))
+         ];
+      default:
+        return [];
+    }
+  };
+
+  // Get filter input component based on column type
+  const getFilterInput = (filter: Filter) => {
+    const column = filterColumns.find(col => col.value === filter.column);
+
+    if (column?.type === 'select') {
+      const options = getFilterOptions(filter.column);
+      return (
+        <Select
+          value={filter.value}
+          onValueChange={(value) => updateFilter(filter.id, { value })}
+        >
+          <SelectTrigger className="flex-1">
+            <SelectValue placeholder="Select value..." />
+          </SelectTrigger>
+          <SelectContent>
+            {options.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      );
+    }
+
+    if (column?.type === 'number') {
+      return (
+        <Input
+          type="number"
+          placeholder="Enter value..."
+          value={filter.value}
+          onChange={(e) => updateFilter(filter.id, { value: e.target.value })}
+          className="flex-1"
+        />
+      );
+    }
+
+    // Default to text input
+    return (
+      <Input
+        placeholder="Enter value..."
+        value={filter.value}
+        onChange={(e) => updateFilter(filter.id, { value: e.target.value })}
+        className="flex-1"
+      />
+    );
+  };
+
+  // Apply filters to teams
+  const applyFilters = useCallback((teams: Team[]) => {
+    if (filters.length === 0) return teams;
+
+    return teams.filter(team => {
+      return filters.every(filter => {
+        let teamValue: string | number;
+
+        switch (filter.column) {
+          case 'admin_email':
+            teamValue = team.admin_email.toLowerCase();
+            break;
+          case 'name':
+            teamValue = team.name.toLowerCase();
+            break;
+                     case 'products':
+             const teamProducts = teamProductsMap[team.id] || [];
+             teamValue = teamProducts.length > 0 ? teamProducts.map(p => p.name).join(', ') : 'No Product';
+             break;
+                     case 'trial_status':
+             const trialStatus = getTrialTimeRemaining(team);
+             if (trialStatus.includes('days remaining')) {
+               teamValue = 'In Progress';
+             } else {
+               teamValue = trialStatus;
+             }
+             break;
+                                case 'regions':
+             const teamRegions = getTeamRegions(team.id);
+             teamValue = teamRegions.length > 0 ? teamRegions.join(', ') : 'No Region';
+             break;
+          default:
+            return true;
+        }
+
+        const filterValue = filter.value.toLowerCase();
+
+        if (typeof teamValue === 'number') {
+          // Handle numeric comparisons
+          const numValue = parseFloat(filterValue);
+          if (isNaN(numValue)) return true;
+          return teamValue === numValue;
+        }
+
+        // Handle string comparisons
+        switch (filter.operator) {
+          case 'contains':
+            return teamValue.toLowerCase().includes(filterValue);
+          case 'equals':
+            return teamValue.toLowerCase() === filterValue;
+          case 'starts_with':
+            return teamValue.toLowerCase().startsWith(filterValue);
+          case 'ends_with':
+            return teamValue.toLowerCase().endsWith(filterValue);
+          default:
+            return true;
+        }
+      });
+    });
+  }, [filters, teamProductsMap, getTrialTimeRemaining, getTeamRegions, getTeamTotalSpend]);
+
   // Filtered and sorted teams
   const filteredAndSortedTeams = useMemo(() => {
-    const filtered = teams.filter(team => {
-      const emailMatch = team.admin_email.toLowerCase().includes(emailFilter.toLowerCase());
-      const nameMatch = team.name.toLowerCase().includes(nameFilter.toLowerCase());
-
-      // Product filter
-      const teamProducts = teamProductsMap[team.id] || [];
-      let productMatch = true;
-      if (productFilter === 'has_products') {
-        productMatch = teamProducts.length > 0;
-      } else if (productFilter === 'no_products') {
-        productMatch = teamProducts.length === 0;
-      } else if (productFilter === 'has_active_products') {
-        productMatch = teamProducts.some(p => p.active);
-      }
-
-      // Trial status filter
-      const trialStatus = getTrialTimeRemaining(team);
-      let trialStatusMatch = true;
-      if (trialStatusFilter === 'active_product') {
-        trialStatusMatch = trialStatus === 'Active Product';
-      } else if (trialStatusFilter === 'always_free') {
-        trialStatusMatch = trialStatus === 'Always Free';
-      } else if (trialStatusFilter === 'trial_active') {
-        trialStatusMatch = trialStatus.includes('days remaining');
-      } else if (trialStatusFilter === 'expired') {
-        trialStatusMatch = trialStatus === 'Expired';
-      }
-
-      // Regions filter
-      const teamRegions = getTeamRegions(team.id);
-      let regionsMatch = true;
-      if (regionsFilter === 'has_regions') {
-        regionsMatch = teamRegions.length > 0;
-      } else if (regionsFilter === 'no_regions') {
-        regionsMatch = teamRegions.length === 0;
-      } else if (regionsFilter !== 'all') {
-        // Filter by specific region
-        regionsMatch = teamRegions.includes(regionsFilter);
-      }
-
-      return emailMatch && nameMatch && productMatch && trialStatusMatch && regionsMatch;
-    });
+    const filtered = applyFilters(teams);
 
     if (sortField) {
       filtered.sort((a, b) => {
@@ -344,7 +548,7 @@ export default function SalesDashboardPage() {
             aValue = a.last_payment ? new Date(a.last_payment).getTime() : 0;
             bValue = b.last_payment ? new Date(b.last_payment).getTime() : 0;
             break;
-          case 'product_count':
+          case 'products':
             aValue = (teamProductsMap[a.id] || []).length;
             bValue = (teamProductsMap[b.id] || []).length;
             break;
@@ -373,75 +577,9 @@ export default function SalesDashboardPage() {
     }
 
     return filtered;
-  }, [teams, emailFilter, nameFilter, productFilter, trialStatusFilter, regionsFilter, sortField, sortDirection, teamProductsMap, getTrialTimeRemaining, getTeamRegions, getTeamTotalSpend]);
+  }, [teams, filters, sortField, sortDirection, teamProductsMap, getTrialTimeRemaining, getTeamRegions, getTeamTotalSpend, applyFilters]);
 
-  const hasActiveFilters = Boolean(emailFilter.trim() || nameFilter.trim() || productFilter !== 'all' || trialStatusFilter !== 'all' || regionsFilter !== 'all');
-
-  // Filter fields configuration
-  const filterFields: FilterField[] = [
-    {
-      key: 'email',
-      label: 'Filter by Team Email',
-      type: 'search',
-      placeholder: 'Search by team email...',
-      value: emailFilter,
-      onChange: setEmailFilter,
-    },
-    {
-      key: 'name',
-      label: 'Filter by Team Name',
-      type: 'search',
-      placeholder: 'Search by team name...',
-      value: nameFilter,
-      onChange: setNameFilter,
-    },
-    {
-      key: 'products',
-      label: 'Filter by Products',
-      type: 'select',
-      placeholder: 'All products',
-      value: productFilter,
-      onChange: setProductFilter,
-      options: [
-        { value: 'all', label: 'All products' },
-        { value: 'has_products', label: 'Has products' },
-        { value: 'no_products', label: 'No products' },
-        { value: 'has_active_products', label: 'Has active products' },
-      ],
-    },
-    {
-      key: 'trial_status',
-      label: 'Filter by Trial Status',
-      type: 'select',
-      placeholder: 'All statuses',
-      value: trialStatusFilter,
-      onChange: setTrialStatusFilter,
-      options: [
-        { value: 'all', label: 'All statuses' },
-        { value: 'active_product', label: 'Active Product' },
-        { value: 'always_free', label: 'Always Free' },
-        { value: 'trial_active', label: 'Trial Active' },
-        { value: 'expired', label: 'Expired' },
-      ],
-    },
-    {
-      key: 'regions',
-      label: 'Filter by Regions',
-      type: 'select',
-      placeholder: 'All regions',
-      value: regionsFilter,
-      onChange: setRegionsFilter,
-      options: [
-        { value: 'all', label: 'All regions' },
-        { value: 'has_regions', label: 'Has regions' },
-        { value: 'no_regions', label: 'No regions' },
-        ...availableRegions.map((region: { id: number; name: string }) => ({
-          value: region.name,
-          label: region.name
-        }))
-      ],
-    },
-  ];
+  const hasActiveFilters = filters.length > 0;
 
   // Pagination
   const {
@@ -518,21 +656,88 @@ export default function SalesDashboardPage() {
         </div>
       </div>
 
-      <TableFilters
-        filters={filterFields}
-        onClearFilters={() => {
-          setEmailFilter('');
-          setNameFilter('');
-          setProductFilter('all');
-          setTrialStatusFilter('all');
-          setRegionsFilter('all');
-          setSortField(null);
-          setSortDirection('asc');
-        }}
-        hasActiveFilters={hasActiveFilters}
-        totalItems={teams.length}
-        filteredItems={filteredAndSortedTeams.length}
-      />
+      {/* Filters Section */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-medium">Filters</h3>
+          <div className="flex items-center gap-2">
+            {hasActiveFilters && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={clearAllFilters}
+              >
+                Clear All
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={addFilter}
+            >
+              <Plus className="h-4 w-4 mr-2" />
+              Add Filter
+            </Button>
+          </div>
+        </div>
+
+        {filters.length > 0 && (
+          <div className="space-y-3">
+            {filters.map((filter) => (
+              <div key={filter.id} className="flex items-center gap-3 p-3 border rounded-lg bg-muted/30">
+                                 <Select
+                   value={filter.column}
+                   onValueChange={(value) => handleColumnChange(filter.id, value)}
+                 >
+                  <SelectTrigger className="w-40">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {filterColumns.map((column) => (
+                      <SelectItem key={column.value} value={column.value}>
+                        {column.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+
+                                 <Select
+                   value={filter.operator}
+                   onValueChange={(value) => updateFilter(filter.id, { operator: value as Filter['operator'] })}
+                 >
+                   <SelectTrigger className="w-32">
+                     <SelectValue />
+                   </SelectTrigger>
+                   <SelectContent>
+                     {getOperatorsForColumn(filter.column).map((op) => (
+                       <SelectItem key={op.value} value={op.value}>
+                         {op.label}
+                       </SelectItem>
+                     ))}
+                   </SelectContent>
+                 </Select>
+
+                {getFilterInput(filter)}
+
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => removeFilter(filter.id)}
+                  className="text-muted-foreground hover:text-destructive"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {hasActiveFilters && (
+          <div className="text-sm text-muted-foreground">
+            Showing {filteredAndSortedTeams.length} of {teams.length} teams
+          </div>
+        )}
+      </div>
 
       <div className="rounded-md border">
         <Table>
@@ -579,12 +784,12 @@ export default function SalesDashboardPage() {
               </TableHead>
               <TableHead
                 className="cursor-pointer hover:bg-gray-50"
-                onClick={() => handleSort('product_count')}
+                onClick={() => handleSort('products')}
               >
                 <div className="flex items-center gap-2">
                   <Package className="h-4 w-4" />
-                  Product Associations
-                  {getSortIcon('product_count')}
+                  Products
+                  {getSortIcon('products')}
                 </div>
               </TableHead>
               <TableHead
@@ -617,6 +822,7 @@ export default function SalesDashboardPage() {
                   {getSortIcon('total_spend')}
                 </div>
               </TableHead>
+
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -737,6 +943,7 @@ export default function SalesDashboardPage() {
                       );
                     })()}
                   </TableCell>
+
                 </TableRow>
               ))
             )}
