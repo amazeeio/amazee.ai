@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from typing import List, Optional
 from datetime import datetime, UTC
 import logging
@@ -33,12 +34,20 @@ async def register_team(
     """
     Register a new team. This endpoint is publicly accessible.
     """
-    # Check if team email already exists
-    db_team = db.query(DBTeam).filter(DBTeam.admin_email == team.admin_email).first()
+    # Check if team email already exists (case insensitive)
+    db_team = db.query(DBTeam).filter(func.lower(DBTeam.admin_email) == func.lower(team.admin_email)).first()
     if db_team:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
+        )
+
+    # Check if team name already exists (case insensitive)
+    db_team = db.query(DBTeam).filter(func.lower(DBTeam.name) == func.lower(team.name)).first()
+    if db_team:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Team name already exists"
         )
 
     # Create the team
