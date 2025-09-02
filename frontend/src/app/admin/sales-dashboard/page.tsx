@@ -10,10 +10,9 @@ import {
   TableHeader,
   TableRow,
   TablePagination,
-  useTablePagination,
 } from '@/components/ui/table';
 
-import { Loader2, ChevronUp, ChevronDown, ChevronsUpDown, DollarSign, Calendar, Users, Globe, Package, Plus, X } from 'lucide-react';
+import { Loader2, ChevronUp, ChevronDown, ChevronsUpDown, DollarSign, Calendar, Users, Globe, Package, Plus, X, Edit, Check } from 'lucide-react';
 import { get } from '@/utils/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -28,6 +27,7 @@ interface Team {
   last_payment?: string;
   is_always_free: boolean;
   hubspot_status?: string; // New field for tracking Hubspot import status - will use "update-sales-data" API after it has been built
+  assigned_user?: string; // New field for tracking assigned sales user
 }
 
 interface Product {
@@ -54,7 +54,7 @@ interface SpendInfo {
 }
 
 
-type SortField = 'admin_email' | 'name' | 'created_at' | 'last_payment' | 'products' | 'trial_status' | 'regions' | 'total_spend' | 'hubspot_status' | null;
+type SortField = 'admin_email' | 'name' | 'created_at' | 'last_payment' | 'products' | 'trial_status' | 'regions' | 'total_spend' | 'hubspot_status' | 'assigned_user' | null;
 type SortDirection = 'asc' | 'desc';
 
 interface Filter {
@@ -73,6 +73,13 @@ export default function SalesDashboardPage() {
 
   // Local state for hubspot status updates (until API is implemented)
   const [localHubspotStatuses, setLocalHubspotStatuses] = useState<Record<string, string>>({});
+
+  // Local state for assigned user updates (until API is implemented)
+  const [localAssignedUsers, setLocalAssignedUsers] = useState<Record<string, string>>({});
+
+  // State for tracking which assigned user field is being edited
+  const [editingAssignedUser, setEditingAssignedUser] = useState<string | null>(null);
+  const [editingAssignedUserValue, setEditingAssignedUserValue] = useState<string>('');
 
   // Queries
   const { data: teams = [], isLoading: isLoadingTeams } = useQuery<Team[]>({
@@ -194,7 +201,7 @@ export default function SalesDashboardPage() {
 
       const diffTime = thirtyDaysFromPayment.getTime() - now.getTime();
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      return `${diffDays} days remaining`;
+      return `${diffDays} days left`;
     } else {
       // If no last payment, calculate based on 30 days from creation
       const thirtyDaysFromCreation = new Date(createdAt);
@@ -206,7 +213,7 @@ export default function SalesDashboardPage() {
 
       const diffTime = thirtyDaysFromCreation.getTime() - now.getTime();
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      return `${diffDays} days remaining`;
+      return `${diffDays} days left`;
     }
   }, [teamProductsMap]);
 
@@ -250,6 +257,35 @@ export default function SalesDashboardPage() {
       maxSpend: Math.max(...spends)
     };
   }, [allTeamSpends]);
+
+  // Color assignment for unique users
+  const userColors = useMemo(() => {
+    const uniqueUsers = new Set<string>();
+    teams.forEach(team => {
+      const user = localAssignedUsers[team.id] || team.assigned_user;
+      if (user && user !== 'None') {
+        uniqueUsers.add(user);
+      }
+    });
+
+    const colors = [
+      '#3b82f6', // blue
+      '#f59e0b', // amber
+      '#8b5cf6', // violet
+      '#ec4899', // pink
+      '#06b6d4', // cyan
+      '#84cc16', // lime
+      '#f97316', // orange
+      '#6366f1', // indigo
+    ];
+
+    const userColorMap: Record<string, string> = {};
+    Array.from(uniqueUsers).forEach((user, index) => {
+      userColorMap[user] = colors[index % colors.length];
+    });
+
+    return userColorMap;
+  }, [teams, localAssignedUsers]);
 
   // Get color for spend value based on gradient rules
   const getSpendColor = useCallback((spend: number): string => {
@@ -332,6 +368,28 @@ export default function SalesDashboardPage() {
     setSortDirection('asc');
   };
 
+  // Functions for handling assigned user editing
+  const startEditingAssignedUser = (teamId: string, currentUser: string) => {
+    setEditingAssignedUser(teamId);
+    setEditingAssignedUserValue(currentUser);
+  };
+
+  const saveAssignedUser = (teamId: string) => {
+    console.log(`Updating team ${teamId} assigned user to: ${editingAssignedUserValue}`);
+    setLocalAssignedUsers(prev => ({
+      ...prev,
+      [teamId]: editingAssignedUserValue
+    }));
+    setEditingAssignedUser(null);
+    setEditingAssignedUserValue('');
+    // TODO: Implement API call to update-sales-data endpoint
+  };
+
+  const cancelEditingAssignedUser = () => {
+    setEditingAssignedUser(null);
+    setEditingAssignedUserValue('');
+  };
+
   // Available filter columns
   const filterColumns = [
     { value: 'admin_email', label: 'Team Email', type: 'text' },
@@ -340,6 +398,7 @@ export default function SalesDashboardPage() {
     { value: 'trial_status', label: 'Trial Status', type: 'select' },
     { value: 'regions', label: 'Regions', type: 'select' },
     { value: 'hubspot_status', label: 'Hubspot Status', type: 'select' },
+    { value: 'assigned_user', label: 'Assigned User', type: 'text' },
   ];
 
   // Filter operators
@@ -420,6 +479,22 @@ export default function SalesDashboardPage() {
           { value: 'Import Failed', label: 'Import Failed' },
           { value: 'Skip Import', label: 'Skip Import' },
         ];
+      case 'assigned_user':
+        // Get unique assigned users for suggestions
+        const allAssignedUsers = new Set<string>();
+        teams.forEach(team => {
+          const user = localAssignedUsers[team.id] || team.assigned_user;
+          if (user && user !== 'None') {
+            allAssignedUsers.add(user);
+          }
+        });
+        return [
+          { value: 'None', label: 'None' },
+          ...Array.from(allAssignedUsers).sort().map(user => ({
+            value: user,
+            label: user
+          }))
+        ];
       default:
         return [];
     }
@@ -494,7 +569,7 @@ export default function SalesDashboardPage() {
              break;
                      case 'trial_status':
              const trialStatus = getTrialTimeRemaining(team);
-             if (trialStatus.includes('days remaining')) {
+             if (trialStatus.includes('days left')) {
                teamValue = 'In Progress';
              } else {
                teamValue = trialStatus;
@@ -506,6 +581,9 @@ export default function SalesDashboardPage() {
              break;
                                 case 'hubspot_status':
              teamValue = localHubspotStatuses[team.id] || team.hubspot_status || 'Needs Import';
+             break;
+                                case 'assigned_user':
+             teamValue = localAssignedUsers[team.id] || team.assigned_user || 'None';
              break;
           default:
             return true;
@@ -535,7 +613,7 @@ export default function SalesDashboardPage() {
         }
       });
     });
-  }, [filters, teamProductsMap, getTrialTimeRemaining, getTeamRegions, getTeamTotalSpend]);
+  }, [filters, teamProductsMap, getTrialTimeRemaining, getTeamRegions, localAssignedUsers, localHubspotStatuses]);
 
   // Filtered and sorted teams
   const filteredAndSortedTeams = useMemo(() => {
@@ -583,6 +661,10 @@ export default function SalesDashboardPage() {
             aValue = localHubspotStatuses[a.id] || a.hubspot_status || 'Needs Import';
             bValue = localHubspotStatuses[b.id] || b.hubspot_status || 'Needs Import';
             break;
+          case 'assigned_user':
+            aValue = localAssignedUsers[a.id] || a.assigned_user || 'None';
+            bValue = localAssignedUsers[b.id] || b.assigned_user || 'None';
+            break;
           default:
             return 0;
         }
@@ -596,20 +678,26 @@ export default function SalesDashboardPage() {
     }
 
     return filtered;
-  }, [teams, filters, sortField, sortDirection, teamProductsMap, getTrialTimeRemaining, getTeamRegions, getTeamTotalSpend, applyFilters]);
+  }, [teams, sortField, sortDirection, teamProductsMap, getTrialTimeRemaining, getTeamRegions, getTeamTotalSpend, localHubspotStatuses, localAssignedUsers, applyFilters]);
 
   const hasActiveFilters = filters.length > 0;
 
-  // Pagination
-  const {
-    currentPage,
-    pageSize,
-    totalPages,
-    totalItems,
-    paginatedData,
-    goToPage,
-    changePageSize,
-  } = useTablePagination(filteredAndSortedTeams, 10);
+  // Manual pagination to ensure it updates with local state changes
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+
+  const totalItems = filteredAndSortedTeams.length;
+  const totalPages = Math.ceil(totalItems / pageSize);
+
+  const startIndex = (currentPage - 1) * pageSize;
+  const endIndex = startIndex + pageSize;
+  const paginatedData = filteredAndSortedTeams.slice(startIndex, endIndex);
+
+  const goToPage = (page: number) => setCurrentPage(page);
+  const changePageSize = (newPageSize: number) => {
+    setPageSize(newPageSize);
+    setCurrentPage(1); // Reset to first page when changing page size
+  };
 
   // Handle sorting
   const handleSort = (field: SortField) => {
@@ -657,7 +745,7 @@ export default function SalesDashboardPage() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 w-full min-w-0 px-4 sm:px-6 lg:px-8">
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-bold">Sales Dashboard</h1>
@@ -758,12 +846,13 @@ export default function SalesDashboardPage() {
         )}
       </div>
 
-      <div className="rounded-md border">
-        <Table>
+      <div className="rounded-md border w-full min-w-0">
+        <div className="overflow-x-auto w-full">
+          <Table className="w-full table-fixed text-xs">
           <TableHeader>
-            <TableRow>
+            <TableRow className="h-10">
               <TableHead
-                className="cursor-pointer hover:bg-gray-50"
+                className="cursor-pointer hover:bg-gray-50 w-36"
                 onClick={() => handleSort('admin_email')}
               >
                 <div className="flex items-center gap-2">
@@ -773,7 +862,7 @@ export default function SalesDashboardPage() {
                 </div>
               </TableHead>
               <TableHead
-                className="cursor-pointer hover:bg-gray-50"
+                className="cursor-pointer hover:bg-gray-50 w-32"
                 onClick={() => handleSort('name')}
               >
                 <div className="flex items-center gap-2">
@@ -782,7 +871,7 @@ export default function SalesDashboardPage() {
                 </div>
               </TableHead>
               <TableHead
-                className="cursor-pointer hover:bg-gray-50"
+                className="cursor-pointer hover:bg-gray-50 w-24"
                 onClick={() => handleSort('created_at')}
               >
                 <div className="flex items-center gap-2">
@@ -792,17 +881,17 @@ export default function SalesDashboardPage() {
                 </div>
               </TableHead>
               <TableHead
-                className="cursor-pointer hover:bg-gray-50"
+                className="cursor-pointer hover:bg-gray-50 w-24"
                 onClick={() => handleSort('last_payment')}
               >
                 <div className="flex items-center gap-2">
-                  <DollarSign className="h-4 w-4" />
+                  <Calendar className="h-4 w-4" />
                   Last Payment
                   {getSortIcon('last_payment')}
                 </div>
               </TableHead>
               <TableHead
-                className="cursor-pointer hover:bg-gray-50"
+                className="cursor-pointer hover:bg-gray-50 w-28"
                 onClick={() => handleSort('products')}
               >
                 <div className="flex items-center gap-2">
@@ -812,7 +901,7 @@ export default function SalesDashboardPage() {
                 </div>
               </TableHead>
               <TableHead
-                className="cursor-pointer hover:bg-gray-50"
+                className="cursor-pointer hover:bg-gray-50 w-28"
                 onClick={() => handleSort('trial_status')}
               >
                 <div className="flex items-center gap-2">
@@ -822,7 +911,7 @@ export default function SalesDashboardPage() {
                 </div>
               </TableHead>
               <TableHead
-                className="cursor-pointer hover:bg-gray-50"
+                className="cursor-pointer hover:bg-gray-50 w-28"
                 onClick={() => handleSort('regions')}
               >
                 <div className="flex items-center gap-2">
@@ -832,7 +921,7 @@ export default function SalesDashboardPage() {
                 </div>
               </TableHead>
               <TableHead
-                className="cursor-pointer hover:bg-gray-50"
+                className="cursor-pointer hover:bg-gray-50 w-24"
                 onClick={() => handleSort('total_spend')}
               >
                 <div className="flex items-center gap-2">
@@ -842,7 +931,7 @@ export default function SalesDashboardPage() {
                 </div>
               </TableHead>
               <TableHead
-                className="cursor-pointer hover:bg-gray-50"
+                className="cursor-pointer hover:bg-gray-50 w-32"
                 onClick={() => handleSort('hubspot_status')}
               >
                 <div className="flex items-center gap-2">
@@ -851,55 +940,65 @@ export default function SalesDashboardPage() {
                   {getSortIcon('hubspot_status')}
                 </div>
               </TableHead>
+              <TableHead
+                className="cursor-pointer hover:bg-gray-50 w-32"
+                onClick={() => handleSort('assigned_user')}
+              >
+                <div className="flex items-center gap-2">
+                  <Users className="h-4 w-4" />
+                  Assigned User
+                  {getSortIcon('assigned_user')}
+                </div>
+              </TableHead>
 
             </TableRow>
           </TableHeader>
           <TableBody>
             {paginatedData.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={10} className="text-center py-6">
+                <TableCell colSpan={11} className="text-center py-6">
                   No teams found matching your filters.
                 </TableCell>
               </TableRow>
             ) : (
               paginatedData.map((team) => (
-                <TableRow key={team.id} className="hover:bg-muted/50">
-                  <TableCell className="font-medium">
-                    {team.admin_email}
+                <TableRow key={team.id} className="hover:bg-muted/50 h-12">
+                  <TableCell className="font-medium py-2">
+                    <div className="truncate">{team.admin_email}</div>
                   </TableCell>
-                  <TableCell>
-                    <div className="font-medium">{team.name}</div>
-                    <div className="text-sm text-muted-foreground">
+                  <TableCell className="py-2">
+                    <div className="font-medium truncate">{team.name}</div>
+                    <div className="text-xs text-muted-foreground">
                       ID: {team.id}
                     </div>
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="py-2 text-xs">
                     {formatDate(team.created_at)}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="py-2 text-xs">
                     {formatDate(team.last_payment)}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="py-2">
                     {(() => {
                       const teamProducts = teamProductsMap[team.id] || [];
                       return teamProducts.length > 0 ? (
-                        <div className="space-y-1">
+                        <div className="space-y-0.5">
                           {teamProducts.map((product) => (
                             <Badge
                               key={product.id}
                               variant={product.active ? "default" : "secondary"}
-                              className="mr-1"
+                              className="mr-1 text-xs px-1.5 py-0.5"
                             >
                               {product.name}
                             </Badge>
                           ))}
                         </div>
                       ) : (
-                        <span className="text-muted-foreground">No products</span>
+                        <span className="text-muted-foreground text-xs">No products</span>
                       );
                     })()}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="py-2">
                     {(() => {
                       const trialStatus = getTrialTimeRemaining(team);
                       let badgeVariant: "default" | "secondary" | "destructive" | "outline" = "outline";
@@ -913,17 +1012,18 @@ export default function SalesDashboardPage() {
                       } else if (trialStatus === 'Expired') {
                         badgeVariant = "destructive";
                         customStyle = { backgroundColor: '#991b1b', color: 'white' }; // dark red
-                      } else if (trialStatus.includes('days remaining')) {
+                      } else if (trialStatus.includes('days left')) {
                         // Extract the number of days
                         const daysMatch = trialStatus.match(/(\d+)/);
                         if (daysMatch) {
                           const days = parseInt(daysMatch[1]);
-                          // Calculate color: 30 days = green, 0 days = red
+                          // Calculate color: 30 days = muted green, 0 days = red
                           const ratio = Math.max(0, Math.min(1, days / 30));
                           const red = Math.round(255 * (1 - ratio));
-                          const green = Math.round(255 * ratio);
+                          const green = Math.round(180 * ratio); // Reduced from 255 to 180 for muted green
+                          const blue = Math.round(100 * ratio); // Added blue for softer appearance
                           customStyle = {
-                            backgroundColor: `rgb(${red}, ${green}, 0)`,
+                            backgroundColor: `rgb(${red}, ${green}, ${blue})`,
                             color: 'white',
                             fontWeight: 'bold'
                           };
@@ -934,25 +1034,26 @@ export default function SalesDashboardPage() {
                         <Badge
                           variant={badgeVariant}
                           style={customStyle}
+                          className="text-xs px-1.5 py-0.5"
                         >
                           {trialStatus}
                         </Badge>
                       );
                     })()}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="py-2">
                     {(() => {
                       const regions = getTeamRegions(team.id);
                       if (regions.length === 0) {
-                        return <span className="text-muted-foreground">No regions</span>;
+                        return <span className="text-muted-foreground text-xs">No regions</span>;
                       }
                       return (
-                        <div className="space-y-1">
+                        <div className="space-y-0.5">
                           {regions.map((region) => (
                             <Badge
                               key={region}
                               variant="outline"
-                              className="mr-1"
+                              className="mr-1 text-xs px-1.5 py-0.5"
                             >
                               {region}
                             </Badge>
@@ -961,18 +1062,18 @@ export default function SalesDashboardPage() {
                       );
                     })()}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="py-2">
                     {(() => {
                       const totalSpend = getTeamTotalSpend(team.id);
                       const spendColor = getSpendColor(totalSpend);
                       return (
-                        <div className="font-medium" style={{ color: spendColor }}>
+                        <div className="font-medium text-xs" style={{ color: spendColor }}>
                           {formatCurrency(totalSpend)}
                         </div>
                       );
                     })()}
                   </TableCell>
-                                    <TableCell>
+                                    <TableCell className="py-2">
                     {(() => {
                       const hubspotStatus = localHubspotStatuses[team.id] || team.hubspot_status || 'Needs Import';
 
@@ -1006,7 +1107,7 @@ export default function SalesDashboardPage() {
                           value={hubspotStatus}
                           onValueChange={handleStatusChange}
                         >
-                          <SelectTrigger className={`w-40 ${getStatusColor(hubspotStatus)}`}>
+                          <SelectTrigger className={`w-32 text-xs ${getStatusColor(hubspotStatus)}`}>
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
@@ -1019,12 +1120,97 @@ export default function SalesDashboardPage() {
                       );
                     })()}
                   </TableCell>
+                  <TableCell className="py-2">
+                    {(() => {
+                      const assignedUser = localAssignedUsers[team.id] || team.assigned_user || 'None';
+                      const isEditing = editingAssignedUser === team.id;
+
+                      if (isEditing) {
+                        // Get all unique assigned users for suggestions
+                        const getAllAssignedUsers = () => {
+                          const users = new Set<string>();
+                          teams.forEach(t => {
+                            const user = localAssignedUsers[t.id] || t.assigned_user;
+                            if (user && user !== 'None') {
+                              users.add(user);
+                            }
+                          });
+                          return Array.from(users).sort();
+                        };
+
+                        const allUsers = getAllAssignedUsers();
+
+                        return (
+                          <div className="flex items-center gap-1">
+                            <Input
+                              value={editingAssignedUserValue}
+                              onChange={(e) => setEditingAssignedUserValue(e.target.value)}
+                              placeholder="Type or select user..."
+                              className="w-24 text-xs h-7"
+                              list={`assigned-users-${team.id}`}
+                              autoFocus
+                            />
+                            <datalist id={`assigned-users-${team.id}`}>
+                              <option value="None" />
+                              {allUsers.map((user) => (
+                                <option key={user} value={user} />
+                              ))}
+                            </datalist>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => saveAssignedUser(team.id)}
+                              className="h-7 w-7 p-0 text-green-600 hover:text-green-700 hover:bg-green-50"
+                            >
+                              <Check className="h-3 w-3" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={cancelEditingAssignedUser}
+                              className="h-7 w-7 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
+                            >
+                              <X className="h-3 w-3" />
+                            </Button>
+                          </div>
+                        );
+                      }
+
+                      // Display mode - show badge with edit button
+                      const userColor = assignedUser !== 'None' ? userColors[assignedUser] : '#6b7280';
+
+                      return (
+                        <div className="flex items-center gap-1">
+                          <Badge
+                            variant="outline"
+                            className="text-xs px-2 py-1"
+                            style={{
+                              backgroundColor: assignedUser !== 'None' ? userColor : 'transparent',
+                              color: assignedUser !== 'None' ? 'white' : '#6b7280',
+                              borderColor: userColor,
+                            }}
+                          >
+                            {assignedUser}
+                          </Badge>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => startEditingAssignedUser(team.id, assignedUser)}
+                            className="h-7 w-7 p-0 text-gray-400 hover:text-gray-600 hover:bg-gray-50"
+                          >
+                            <Edit className="h-3 w-3" />
+                          </Button>
+                        </div>
+                      );
+                    })()}
+                  </TableCell>
 
                 </TableRow>
               ))
             )}
           </TableBody>
         </Table>
+        </div>
       </div>
 
       <TablePagination
