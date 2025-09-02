@@ -21,7 +21,7 @@ WORKDIR /app
 
 # Copy package files and install production dependencies
 COPY package*.json ./
-RUN npm install --production
+RUN npm install --omit-dev
 
 # Copy built application from builder
 COPY --from=builder /app/.lagoon.env ./.lagoon.env
