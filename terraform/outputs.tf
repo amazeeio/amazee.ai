@@ -150,3 +150,25 @@ output "vectordb_ap_southeast_2_master_passwords" {
   value       = try(module.vectordb_prod_ap_southeast_2[0].master_passwords, {})
   sensitive   = true
 }
+
+# VectorDB CA Central 1 (Canada) Outputs
+output "vectordb_ca_central_1_cluster_endpoints" {
+  description = "Writer endpoints for each cluster in CA Central 1 (Canada)"
+  value       = try(module.vectordb_prod_ca_central_1[0].cluster_endpoints, {})
+}
+
+output "vectordb_ca_central_1_cluster_reader_endpoints" {
+  description = "Read-only endpoints for each cluster in CA Central 1 (Canada)"
+  value       = try(module.vectordb_prod_ca_central_1[0].cluster_reader_endpoints, {})
+}
+
+output "vectordb_ca_central_1_cluster_ids" {
+  description = "The IDs of each cluster in CA Central 1 (Canada)"
+  value       = try(module.vectordb_prod_ca_central_1[0].cluster_ids, {})
+}
+
+output "vectordb_ca_central_1_master_passwords" {
+  description = "The master passwords for each database in CA Central 1 (Canada)"
+  value       = try(module.vectordb_prod_ca_central_1[0].master_passwords, {})
+  sensitive   = true
+}
