@@ -4,7 +4,7 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Users, Globe, Key } from 'lucide-react';
+import { Users, Globe, Key, DollarSign } from 'lucide-react';
 
 export default function AdminPage() {
   const router = useRouter();
@@ -52,6 +52,19 @@ export default function AdminPage() {
         </CardHeader>
         <CardContent>
           <Button variant="secondary" className="w-full">View Keys</Button>
+        </CardContent>
+      </Card>
+
+      <Card className="cursor-pointer" onClick={() => router.push('/admin/sales-dashboard')}>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <DollarSign className="h-5 w-5" />
+            Sales Dashboard
+          </CardTitle>
+          <CardDescription>Monitor team performance and revenue metrics</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button variant="secondary" className="w-full">View Dashboard</Button>
         </CardContent>
       </Card>
     </div>
