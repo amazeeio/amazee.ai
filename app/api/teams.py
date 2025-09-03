@@ -6,7 +6,7 @@ from datetime import datetime, UTC
 import logging
 
 from app.db.database import get_db
-from app.db.models import DBTeam, DBTeamProduct, DBUser, DBPrivateAIKey, DBRegion, DBTeamRegion
+from app.db.models import DBTeam, DBTeamProduct, DBUser, DBPrivateAIKey, DBRegion, DBTeamRegion, DBProduct
 from app.core.security import check_system_admin, check_specific_team_admin, get_current_user_from_auth
 from app.schemas.models import (
     Team, TeamCreate, TeamUpdate,
@@ -17,6 +17,7 @@ from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
 from app.core.worker import get_team_keys_by_region, generate_pricing_url, get_team_admin_email
 from app.api.private_ai_keys import delete_private_ai_key
+from app.schemas.models import SalesTeamsResponse, SalesProduct, SalesTeam
 
 
 logger = logging.getLogger(__name__)
@@ -229,6 +230,143 @@ async def extend_team_trial(
         # Don't fail the request if email fails
 
     return {"message": "Team trial extended successfully"}
+
+@router.get("/sales/list-teams", response_model=SalesTeamsResponse, dependencies=[Depends(check_system_admin)])
+async def list_teams_for_sales(
+    db: Session = Depends(get_db)
+):
+    """
+    Get consolidated team information for sales dashboard.
+    Returns all teams with their products, regions, spend data, and trial status.
+    Only accessible by system admin users.
+    """
+    try:
+        # Pre-fetch all regions once to avoid repeated queries
+        all_regions = db.query(DBRegion).filter(DBRegion.is_active == True).all()
+        regions_map = {r.id: r for r in all_regions}
+
+        # Pre-create LiteLLM services for each region to avoid re-instantiation
+        litellm_services = {}
+        for region in all_regions:
+            litellm_services[region.id] = LiteLLMService(
+                api_url=region.litellm_api_url,
+                api_key=region.litellm_api_key
+            )
+
+        # Get all teams with their basic information
+        teams = db.query(DBTeam).all()
+
+        sales_teams = []
+
+        for team in teams:
+            # Get team products
+            team_products = db.query(DBTeamProduct).join(DBProduct).filter(
+                DBTeamProduct.team_id == team.id,
+                DBProduct.active == True
+            ).all()
+
+            products = [
+                SalesProduct(
+                    id=team_product.product.id,
+                    name=team_product.product.name,
+                    active=team_product.product.active
+                )
+                for team_product in team_products
+            ]
+
+            # Get team AI keys (both team-owned and user-owned) and calculate total spend
+            team_users = db.query(DBUser).filter(DBUser.team_id == team.id).all()
+            team_user_ids = [user.id for user in team_users]
+
+            team_keys = db.query(DBPrivateAIKey).filter(
+                (DBPrivateAIKey.team_id == team.id) |  # Team-owned keys
+                (DBPrivateAIKey.owner_id.in_(team_user_ids))  # User-owned keys by team members
+            ).all()
+
+            # Calculate total spend from all AI keys and build regions list as we go
+            total_spend = 0.0
+            regions_set = set()
+
+            for key in team_keys:
+                if key.litellm_token and key.region_id in regions_map:
+                    try:
+                        # Use pre-fetched region info and pre-created LiteLLM service
+                        region = regions_map[key.region_id]
+                        litellm_service = litellm_services[region.id]
+
+                        # Add region name to our set
+                        regions_set.add(region.name)
+
+                        # Get spend data from LiteLLM
+                        key_data = await litellm_service.get_key_info(key.litellm_token)
+                        key_spend = key_data.get("info", {}).get("spend", 0.0)
+                        total_spend += float(key_spend)
+                    except Exception as e:
+                        logger.warning(f"Failed to get spend for key {key.id}: {str(e)}")
+                        # Continue with other keys even if one fails
+
+            # Convert set to list for the response
+            regions = list(regions_set)
+
+            # Calculate trial status
+            trial_status = _calculate_trial_status(team, products)
+
+            sales_team = SalesTeam(
+                id=team.id,
+                name=team.name,
+                admin_email=team.admin_email,
+                created_at=team.created_at,
+                last_payment=team.last_payment,
+                is_always_free=team.is_always_free,
+                products=products,
+                regions=regions,
+                total_spend=round(total_spend, 4),
+                trial_status=trial_status
+            )
+
+            sales_teams.append(sales_team)
+
+        return SalesTeamsResponse(teams=sales_teams)
+
+    except Exception as e:
+        logger.error(f"Error in list_teams_for_sales: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve sales data: {str(e)}"
+        )
+
+def _calculate_trial_status(team: DBTeam, products: List[SalesProduct]) -> str:
+    """
+    Calculate trial status based on team creation, last payment, and active products.
+    """
+    if team.is_always_free:
+        return "Always Free"
+
+    if not products:
+        return "No Active Products"
+
+    # Check if team has any active products
+    active_products = [p for p in products if p.active]
+    if not active_products:
+        return "No Active Products"
+
+    # If team has last payment, they're past trial
+    if team.last_payment:
+        return "Active Product"
+
+    # Calculate days since team creation
+    days_since_creation = (datetime.now(UTC) - team.created_at).days
+
+    # Default trial period is 30 days
+    trial_period_days = 30
+    days_remaining = trial_period_days - days_since_creation
+
+    if days_remaining <= 0:
+        return "Expired"
+    elif days_remaining <= 7:
+        return f"{days_remaining} days left"
+    else:
+        return "In Progress"
 
 def _check_key_name_conflicts(team1_keys: List[DBPrivateAIKey], team2_keys: List[DBPrivateAIKey]) -> List[str]:
     """Return list of conflicting key names between two teams"""
