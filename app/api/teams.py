@@ -6,7 +6,7 @@ from datetime import datetime, UTC
 import logging
 
 from app.db.database import get_db
-from app.db.models import DBTeam, DBTeamProduct, DBUser, DBPrivateAIKey, DBRegion
+from app.db.models import DBTeam, DBTeamProduct, DBUser, DBPrivateAIKey, DBRegion, DBTeamRegion
 from app.core.security import check_system_admin, check_specific_team_admin, get_current_user_from_auth
 from app.schemas.models import (
     Team, TeamCreate, TeamUpdate,
@@ -321,6 +321,14 @@ async def merge_teams(
             raise HTTPException(
                 status_code=400,
                 detail=f"Cannot merge team '{source_team.name}' - it has active product associations: {', '.join(product_names)}. Please remove product associations before merging."
+            )
+
+        # Check if source team has dedicated region associations
+        source_dedicated_regions = db.query(DBTeamRegion).filter(DBTeamRegion.team_id == source_team.id).all()
+        if source_dedicated_regions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot merge team '{source_team.name}' - it has dedicated region associations. Please remove the association before merging."
             )
 
         # Get team keys and users (only if no product associations found)

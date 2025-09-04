@@ -1,5 +1,5 @@
 from fastapi.testclient import TestClient
-from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBProduct, DBTeamProduct
+from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBProduct, DBTeamProduct, DBRegion, DBTeamRegion
 from app.main import app
 from app.core.security import get_password_hash
 from datetime import datetime, UTC
@@ -1198,3 +1198,230 @@ def test_merge_teams_with_product_associations_fails(client, admin_token, db, te
         DBTeamProduct.product_id == product_id
     ).first()
     assert source_team_product_exists is not None
+
+def test_merge_teams_with_source_team_dedicated_regions_fails(client, admin_token, db):
+    """
+    Given a source team with dedicated region associations
+    When attempting to merge teams
+    Then the merge should fail with a friendly error message asking to remove the association
+    """
+    # Create a dedicated region
+    dedicated_region = DBRegion(
+        name="dedicated-region",
+        postgres_host="test-host",
+        postgres_port=5432,
+        postgres_admin_user="test-user",
+        postgres_admin_password="test-pass",
+        litellm_api_url="https://test-litellm.com",
+        litellm_api_key="test-key",
+        is_active=True,
+        is_dedicated=True
+    )
+    db.add(dedicated_region)
+    db.commit()
+
+    # Create teams
+    source_team = DBTeam(name="Source", admin_email="source@example.com", is_active=True)
+    target_team = DBTeam(name="Target", admin_email="target@example.com", is_active=True)
+    db.add_all([source_team, target_team])
+    db.commit()
+
+    # Associate source team with dedicated region
+    team_region = DBTeamRegion(
+        team_id=source_team.id,
+        region_id=dedicated_region.id
+    )
+    db.add(team_region)
+    db.commit()
+
+    # Refresh the region to keep it attached to the session
+    db.refresh(dedicated_region)
+
+    response = client.post(
+        f"/teams/{target_team.id}/merge",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "source_team_id": source_team.id,
+            "conflict_resolution_strategy": "delete"
+        }
+    )
+
+    assert response.status_code == 400
+    assert "dedicated region" in response.json()["detail"].lower()
+    assert "remove the association" in response.json()["detail"].lower()
+    assert source_team.name in response.json()["detail"]
+
+    # Verify both teams still exist
+    source_team_exists = db.query(DBTeam).filter(DBTeam.id == source_team.id).first()
+    target_team_exists = db.query(DBTeam).filter(DBTeam.id == target_team.id).first()
+    assert source_team_exists is not None
+    assert target_team_exists is not None
+
+    # Verify team-region association still exists
+    team_region_exists = db.query(DBTeamRegion).filter(
+        DBTeamRegion.team_id == source_team.id,
+        DBTeamRegion.region_id == dedicated_region.id
+    ).first()
+    assert team_region_exists is not None
+
+@patch("app.services.litellm.requests.post")
+def test_merge_teams_with_target_team_dedicated_regions_succeeds(mock_post, client, admin_token, db):
+    """
+    Given a target team with dedicated region associations
+    When merging teams
+    Then the merge should succeed and target team's dedicated regions should remain unchanged
+    """
+    # Create a dedicated region
+    dedicated_region = DBRegion(
+        name="dedicated-region",
+        postgres_host="test-host",
+        postgres_port=5432,
+        postgres_admin_user="test-user",
+        postgres_admin_password="test-pass",
+        litellm_api_url="https://test-litellm.com",
+        litellm_api_key="test-key",
+        is_active=True,
+        is_dedicated=True
+    )
+    db.add(dedicated_region)
+    db.commit()
+
+    # Create teams
+    source_team = DBTeam(name="Source", admin_email="source@example.com", is_active=True)
+    target_team = DBTeam(name="Target", admin_email="target@example.com", is_active=True)
+    db.add_all([source_team, target_team])
+    db.commit()
+
+    # Associate target team with dedicated region
+    team_region = DBTeamRegion(
+        team_id=target_team.id,
+        region_id=dedicated_region.id
+    )
+    db.add(team_region)
+    db.commit()
+
+    # Store team IDs before they get detached
+    source_team_id = source_team.id
+    target_team_id = target_team.id
+    dedicated_region_id = dedicated_region.id
+
+    # Mock LiteLLM API response
+    mock_post.return_value.status_code = 200
+    mock_post.return_value.raise_for_status.return_value = None
+
+    response = client.post(
+        f"/teams/{target_team_id}/merge",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "source_team_id": source_team_id,
+            "conflict_resolution_strategy": "delete"
+        }
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+
+    # Verify source team was deleted
+    source_team_exists = db.query(DBTeam).filter(DBTeam.id == source_team_id).first()
+    assert source_team_exists is None
+
+    # Verify target team still exists
+    target_team_exists = db.query(DBTeam).filter(DBTeam.id == target_team_id).first()
+    assert target_team_exists is not None
+
+    # Verify target team's dedicated region association still exists
+    team_region_exists = db.query(DBTeamRegion).filter(
+        DBTeamRegion.team_id == target_team_id,
+        DBTeamRegion.region_id == dedicated_region_id
+    ).first()
+    assert team_region_exists is not None
+
+@patch("app.services.litellm.requests.post")
+def test_merge_teams_with_both_teams_dedicated_regions_fails(mock_post, client, admin_token, db):
+    """
+    Given both source and target teams with dedicated region associations
+    When attempting to merge teams
+    Then the merge should fail with a friendly error message asking to remove the source team's association
+    """
+    # Create dedicated regions
+    source_dedicated_region = DBRegion(
+        name="source-dedicated-region",
+        postgres_host="test-host",
+        postgres_port=5432,
+        postgres_admin_user="test-user",
+        postgres_admin_password="test-pass",
+        litellm_api_url="https://test-litellm.com",
+        litellm_api_key="test-key",
+        is_active=True,
+        is_dedicated=True
+    )
+    target_dedicated_region = DBRegion(
+        name="target-dedicated-region",
+        postgres_host="test-host",
+        postgres_port=5432,
+        postgres_admin_user="test-user",
+        postgres_admin_password="test-pass",
+        litellm_api_url="https://test-litellm.com",
+        litellm_api_key="test-key",
+        is_active=True,
+        is_dedicated=True
+    )
+    db.add_all([source_dedicated_region, target_dedicated_region])
+    db.commit()
+
+    # Create teams
+    source_team = DBTeam(name="Source", admin_email="source@example.com", is_active=True)
+    target_team = DBTeam(name="Target", admin_email="target@example.com", is_active=True)
+    db.add_all([source_team, target_team])
+    db.commit()
+
+    # Associate both teams with their respective dedicated regions
+    source_team_region = DBTeamRegion(
+        team_id=source_team.id,
+        region_id=source_dedicated_region.id
+    )
+    target_team_region = DBTeamRegion(
+        team_id=target_team.id,
+        region_id=target_dedicated_region.id
+    )
+    db.add_all([source_team_region, target_team_region])
+    db.commit()
+
+    # Store team IDs before they get detached
+    source_team_id = source_team.id
+    target_team_id = target_team.id
+    source_dedicated_region_id = source_dedicated_region.id
+    target_dedicated_region_id = target_dedicated_region.id
+
+    response = client.post(
+        f"/teams/{target_team_id}/merge",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "source_team_id": source_team_id,
+            "conflict_resolution_strategy": "delete"
+        }
+    )
+
+    assert response.status_code == 400
+    assert "dedicated region" in response.json()["detail"].lower()
+    assert "remove the association" in response.json()["detail"].lower()
+    assert source_team.name in response.json()["detail"]
+
+    # Verify both teams still exist
+    source_team_exists = db.query(DBTeam).filter(DBTeam.id == source_team_id).first()
+    target_team_exists = db.query(DBTeam).filter(DBTeam.id == target_team_id).first()
+    assert source_team_exists is not None
+    assert target_team_exists is not None
+
+    # Verify both team-region associations still exist
+    source_team_region_exists = db.query(DBTeamRegion).filter(
+        DBTeamRegion.team_id == source_team_id,
+        DBTeamRegion.region_id == source_dedicated_region_id
+    ).first()
+    target_team_region_exists = db.query(DBTeamRegion).filter(
+        DBTeamRegion.team_id == target_team_id,
+        DBTeamRegion.region_id == target_dedicated_region_id
+    ).first()
+    assert source_team_region_exists is not None
+    assert target_team_region_exists is not None
