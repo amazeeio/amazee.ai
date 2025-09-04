@@ -2,9 +2,11 @@ from fastapi import Depends, HTTPException, status
 from typing import List, Union, Set, Callable
 from app.core.roles import UserRole, UserType
 from app.db.models import DBUser
+import logging
 
 class RBACDependency:
     """Base class for role-based access control dependencies"""
+    logger = logging.getLogger(__name__)
 
     def __init__(self, allowed_roles: List[str], require_team_membership: bool = False):
         self.allowed_roles = set(allowed_roles)
@@ -17,6 +19,7 @@ class RBACDependency:
         """Check if user has access and return their effective role"""
         # Validate user type constraints
         if self._validate_user_type_constraints(user):
+            self.logger.info(f"User {user.id} has invalid user type constraints")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to perform this action"
@@ -25,6 +28,7 @@ class RBACDependency:
         # Check role permissions
         effective_role = self._get_effective_role(user)
         if effective_role not in self.allowed_roles:
+            self.logger.info(f"User {user.id} has invalid role {effective_role}")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to perform this action"
@@ -32,6 +36,7 @@ class RBACDependency:
 
         # Check team membership if required (but allow system admins to bypass this)
         if self.require_team_membership and not user.team_id and not user.is_admin:
+            self.logger.info(f"User {user.id} is not a team member")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to perform this action"

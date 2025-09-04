@@ -99,11 +99,20 @@ export default function DashboardPage() {
 
   // Create key mutation
   const createKeyMutation = useMutation({
-    mutationFn: async ({ region_id, name, key_type }: { region_id: number, name: string, key_type: 'full' | 'llm' | 'vector' }) => {
+    mutationFn: async ({ region_id, name, key_type, owner_id, team_id }: {
+      region_id: number,
+      name: string,
+      key_type: 'full' | 'llm' | 'vector',
+      owner_id?: number,
+      team_id?: number
+    }) => {
       const endpoint = key_type === 'full' ? '/private-ai-keys' :
                       key_type === 'llm' ? '/private-ai-keys/token' :
                       '/private-ai-keys/vector-db';
-      const response = await post(endpoint, { region_id, name });
+      const payload: any = { region_id, name };
+      if (owner_id) payload.owner_id = owner_id;
+      if (team_id) payload.team_id = team_id;
+      const response = await post(endpoint, payload);
       const data = await response.json();
       return data;
     },
@@ -136,7 +145,9 @@ export default function DashboardPage() {
     createKeyMutation.mutate({
       region_id: data.region_id,
       name: data.name,
-      key_type: data.key_type
+      key_type: data.key_type,
+      owner_id: data.owner_id,
+      team_id: data.team_id
     });
   };
 
