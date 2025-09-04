@@ -13,7 +13,7 @@ from app.schemas.models import (
 from app.db.postgres import PostgresManager
 from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
 from app.services.litellm import LiteLLMService
-from app.core.security import get_current_user_from_auth, get_role_min_key_creator, get_role_min_team_admin, UserRole, check_system_admin
+from app.core.security import get_current_user_from_auth, get_role_min_key_creator, get_role_min_team_admin, get_private_ai_access, UserRole, check_system_admin
 from app.core.config import settings
 from app.core.resource_limits import check_key_limits, check_vector_db_limits, get_token_restrictions, DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
 
@@ -68,7 +68,7 @@ def _validate_permissions_and_get_ownership_info(
 async def create_vector_db(
     vector_db: VectorDBCreate,
     current_user = Depends(get_current_user_from_auth),
-    user_role: UserRole = Depends(get_role_min_key_creator),
+    user_role: UserRole = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
     store_result: bool = True
 ):
@@ -164,7 +164,7 @@ async def create_vector_db(
 async def create_private_ai_key(
     private_ai_key: PrivateAIKeyCreate,
     current_user = Depends(get_current_user_from_auth),
-    user_role: UserRole = Depends(get_role_min_key_creator),
+    user_role: UserRole = Depends(get_private_ai_access),
     db: Session = Depends(get_db)
 ):
     """
@@ -279,7 +279,7 @@ async def create_private_ai_key(
 async def create_llm_token(
     private_ai_key: PrivateAIKeyCreate,
     current_user = Depends(get_current_user_from_auth),
-    user_role: UserRole = Depends(get_role_min_key_creator),
+    user_role: UserRole = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
     store_result: bool = True
 ):
@@ -571,7 +571,7 @@ def _get_key_if_allowed(key_id: int, current_user: DBUser, user_role: UserRole, 
 async def delete_private_ai_key(
     key_id: int,
     current_user = Depends(get_current_user_from_auth),
-    user_role: UserRole = Depends(get_role_min_key_creator),
+    user_role: UserRole = Depends(get_private_ai_access),
     db: Session = Depends(get_db)
 ):
     private_ai_key = _get_key_if_allowed(key_id, current_user, user_role, db)
