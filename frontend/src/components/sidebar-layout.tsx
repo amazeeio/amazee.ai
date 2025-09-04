@@ -65,6 +65,10 @@ const navigation = [
   },
 ];
 
+const salesNavigation = [
+  { name: 'Sales Dashboard', href: '/sales', icon: <DollarSign size={16} /> },
+];
+
 function NavMain({ navigation, pathname, collapsed }: { navigation: NavItem[]; pathname: string; collapsed: boolean }) {
   const [expandedItems, setExpandedItems] = useState<string[]>(['/admin', '/team-admin']);
 
@@ -192,12 +196,14 @@ export function SidebarLayout({
     return <>{children}</>;
   }
 
-  // Filter out admin navigation for non-admin users
-  const filteredNavigation = navigation.filter((item) => {
-    if (item.name === 'Admin' && !user?.is_admin) return false;
-    if (item.name === 'Team Admin' && !isTeamAdmin(user)) return false;
-    return true;
-  });
+  // Use sales navigation for sales users, otherwise filter regular navigation
+  const filteredNavigation = user?.role === 'sales'
+    ? salesNavigation
+    : navigation.filter((item) => {
+        if (item.name === 'Admin' && !user?.is_admin) return false;
+        if (item.name === 'Team Admin' && !isTeamAdmin(user)) return false;
+        return true;
+      });
 
   return (
     <div className="min-h-screen bg-background">
@@ -206,7 +212,7 @@ export function SidebarLayout({
         <Sidebar className={cn("hidden lg:flex transition-all duration-300", collapsed ? "w-[70px]" : "w-[240px]")}>
           <div className={cn("flex h-16 items-center border-b px-6 transition-all", collapsed ? "justify-center px-2" : "justify-between")}>
             {!collapsed && (
-              <Link href="/private-ai-keys" className="flex items-center space-x-3">
+              <Link href={user?.role === 'sales' ? '/sales' : '/private-ai-keys'} className="flex items-center space-x-3">
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
                   viewBox="0 0 24 24"
@@ -250,7 +256,7 @@ export function SidebarLayout({
             <SidebarProvider>
               <Sidebar className="border-r-0">
                 <div className="flex h-16 items-center border-b px-6">
-                  <Link href="/private-ai-keys" className="flex items-center space-x-3">
+                  <Link href={user?.role === 'sales' ? '/sales' : '/private-ai-keys'} className="flex items-center space-x-3">
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
                       viewBox="0 0 24 24"

@@ -190,3 +190,8 @@ async def get_private_ai_access(current_user: DBUser = Depends(get_current_user_
     from app.core.rbac import require_private_ai_access
     dependency = require_private_ai_access()
     return dependency.check_access(current_user)
+
+async def check_sales_or_higher(current_user: DBUser = Depends(get_current_user_from_auth)):
+    """Check if the current user is a sales user or system admin."""
+    dependency = require_sales_or_higher()
+    return dependency.check_access(current_user)
