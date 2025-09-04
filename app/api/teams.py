@@ -342,31 +342,23 @@ def _calculate_trial_status(team: DBTeam, products: List[SalesProduct]) -> str:
     if team.is_always_free:
         return "Always Free"
 
-    if not products:
-        return "No Active Products"
-
-    # Check if team has any active products
-    active_products = [p for p in products if p.active]
-    if not active_products:
-        return "No Active Products"
-
-    # If team has last payment, they're past trial
-    if team.last_payment:
+    if len(products) > 0:
         return "Active Product"
 
-    # Calculate days since team creation
-    days_since_creation = (datetime.now(UTC) - team.created_at).days
-
-    # Default trial period is 30 days
+    # Calculate days until expiry
     trial_period_days = 30
-    days_remaining = trial_period_days - days_since_creation
+    if team.last_payment:
+        days_since_last_payment = (datetime.now(UTC) - team.last_payment).days
+        days_remaining = trial_period_days - days_since_last_payment
+    else:
+        days_since_creation = (datetime.now(UTC) - team.created_at).days
+        days_remaining = trial_period_days - days_since_creation
 
     if days_remaining <= 0:
         return "Expired"
-    elif days_remaining <= 7:
-        return f"{days_remaining} days left"
     else:
-        return "In Progress"
+        # Always show days remaining for active trials
+        return f"{days_remaining} days left"
 
 def _check_key_name_conflicts(team1_keys: List[DBPrivateAIKey], team2_keys: List[DBPrivateAIKey]) -> List[str]:
     """Return list of conflicting key names between two teams"""
