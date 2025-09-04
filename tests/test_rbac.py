@@ -1,6 +1,6 @@
 import pytest
 from fastapi import HTTPException
-from app.core.rbac import RBACDependency, require_system_admin, require_team_admin, require_key_creator_or_higher, require_read_only_or_higher
+from app.core.rbac import RBACDependency, require_system_admin, require_team_admin, require_key_creator_or_higher, require_read_only_or_higher, require_sales_or_higher
 from app.core.roles import UserRole
 from app.db.models import DBUser
 
@@ -111,6 +111,60 @@ class TestRBACDependency:
 
         result = dependency.check_access(user)
         assert result == UserRole.SYSTEM_ADMIN
+
+    def test_sales_user_access(self):
+        """
+        Given a sales user
+        When checking access to sales endpoint
+        Then access should be granted and return sales role
+        """
+        user = DBUser(id=1, email="sales@test.com", is_admin=False, team_id=None, role="sales")
+        dependency = require_sales_or_higher()
+
+        result = dependency.check_access(user)
+        assert result == UserRole.SALES
+
+    def test_system_admin_access_sales_endpoint(self):
+        """
+        Given a system admin user
+        When checking access to sales endpoint
+        Then access should be granted and return system_admin role
+        """
+        user = DBUser(id=1, email="admin@test.com", is_admin=True, team_id=None, role=None)
+        dependency = require_sales_or_higher()
+
+        result = dependency.check_access(user)
+        assert result == UserRole.SYSTEM_ADMIN
+
+    def test_regular_user_denied_sales_access(self):
+        """
+        Given a regular system user
+        When checking access to sales endpoint
+        Then access should be denied due to insufficient permissions
+        """
+        user = DBUser(id=1, email="user@test.com", is_admin=False, team_id=None, role="user")
+        dependency = require_sales_or_higher()
+
+        with pytest.raises(HTTPException) as exc_info:
+            dependency.check_access(user)
+
+        assert exc_info.value.status_code == 403
+        assert "Not authorized to perform this action" in str(exc_info.value.detail)
+
+    def test_team_user_denied_sales_access(self):
+        """
+        Given a team user
+        When checking access to sales endpoint
+        Then access should be denied due to invalid user type
+        """
+        user = DBUser(id=1, email="teamuser@test.com", is_admin=False, team_id=1, role="admin")
+        dependency = require_sales_or_higher()
+
+        with pytest.raises(HTTPException) as exc_info:
+            dependency.check_access(user)
+
+        assert exc_info.value.status_code == 403
+        assert "Not authorized to perform this action" in str(exc_info.value.detail)
 
 class TestUserRole:
     """Test UserRole class functionality"""

@@ -173,7 +173,12 @@ export function PasswordlessLoginForm({ onSwitchToPassword }: PasswordlessLoginF
           });
 
           router.refresh();
-          router.push('/private-ai-keys');
+          // Redirect based on user role
+          if (profileData.role === 'sales') {
+            router.push('/sales');
+          } else {
+            router.push('/private-ai-keys');
+          }
         } catch (profileError) {
           console.error('Failed to fetch user profile:', profileError);
           setError('Successfully signed in but failed to fetch user profile. Please refresh the page.');

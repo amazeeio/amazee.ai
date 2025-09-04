@@ -7,7 +7,7 @@ import logging
 
 from app.db.database import get_db
 from app.db.models import DBTeam, DBTeamProduct, DBUser, DBPrivateAIKey, DBRegion, DBTeamRegion, DBProduct
-from app.core.security import check_system_admin, check_specific_team_admin, get_current_user_from_auth
+from app.core.security import check_system_admin, check_specific_team_admin, get_current_user_from_auth, check_sales_or_higher
 from app.schemas.models import (
     Team, TeamCreate, TeamUpdate,
     TeamWithUsers, TeamMergeRequest, TeamMergeResponse
@@ -231,14 +231,14 @@ async def extend_team_trial(
 
     return {"message": "Team trial extended successfully"}
 
-@router.get("/sales/list-teams", response_model=SalesTeamsResponse, dependencies=[Depends(check_system_admin)])
+@router.get("/sales/list-teams", response_model=SalesTeamsResponse, dependencies=[Depends(check_sales_or_higher)])
 async def list_teams_for_sales(
     db: Session = Depends(get_db)
 ):
     """
     Get consolidated team information for sales dashboard.
     Returns all teams with their products, regions, spend data, and trial status.
-    Only accessible by system admin users.
+    Accessible by system admin and sales users.
     """
     try:
         # Pre-fetch all regions once to avoid repeated queries
