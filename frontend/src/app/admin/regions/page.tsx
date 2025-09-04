@@ -636,7 +636,7 @@ export default function RegionsPage() {
 
           {/* Manage Teams Dialog */}
           <Dialog open={isManagingTeams} onOpenChange={setIsManagingTeams}>
-            <DialogContent className="max-w-2xl">
+            <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
               <DialogHeader>
                 <DialogTitle>Manage Teams for {selectedRegionForTeams?.name}</DialogTitle>
                 <DialogDescription>
@@ -646,7 +646,7 @@ export default function RegionsPage() {
               <div className="space-y-4">
                 {/* Current Teams */}
                 <div>
-                  <h3 className="text-sm font-medium mb-2">Assigned Teams</h3>
+                  <h3 className="text-sm font-medium mb-2">Assigned Teams ({regionTeams.length})</h3>
                   {isLoadingRegionTeams ? (
                     <div className="flex items-center justify-center py-4">
                       <Loader2 className="h-4 w-4 animate-spin" />
@@ -654,26 +654,29 @@ export default function RegionsPage() {
                   ) : regionTeams.length === 0 ? (
                     <p className="text-sm text-gray-500">No teams assigned to this region.</p>
                   ) : (
-                    <div className="space-y-2">
-                      {regionTeams.map((team) => (
-                        <div key={team.id} className="flex items-center justify-between p-2 border rounded">
-                          <span className="text-sm">{team.name}</span>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleRemoveTeam(team.id.toString())}
-                            disabled={removeTeamMutation.isPending}
-                          >
-                            <X className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      ))}
+                    <div className="border rounded-md" style={{ height: '200px', overflowY: 'auto' }}>
+                      <div className="space-y-1 p-2">
+                        {regionTeams.map((team) => (
+                          <div key={team.id} className="flex items-center justify-between p-3 border rounded-md bg-gray-50 hover:bg-gray-100 transition-colors">
+                            <span className="text-sm font-medium">{team.name}</span>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleRemoveTeam(team.id.toString())}
+                              disabled={removeTeamMutation.isPending}
+                              className="h-8 w-8 p-0"
+                            >
+                              <X className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
 
                 {/* Assign New Team */}
-                <div>
+                <div className="border-t pt-4">
                   <h3 className="text-sm font-medium mb-2">Assign New Team</h3>
                   <div className="flex gap-2">
                     <Select value={selectedTeamId} onValueChange={setSelectedTeamId}>
