@@ -109,7 +109,7 @@ export default function DashboardPage() {
       const endpoint = key_type === 'full' ? '/private-ai-keys' :
                       key_type === 'llm' ? '/private-ai-keys/token' :
                       '/private-ai-keys/vector-db';
-      const payload: any = { region_id, name };
+      const payload: { region_id: number; name: string; owner_id?: number; team_id?: number } = { region_id, name };
       if (owner_id) payload.owner_id = owner_id;
       if (team_id) payload.team_id = team_id;
       const response = await post(endpoint, payload);

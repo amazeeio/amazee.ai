@@ -12,7 +12,7 @@ import {
   TablePagination,
 } from '@/components/ui/table';
 
-import { Loader2, ChevronUp, ChevronDown, ChevronsUpDown, DollarSign, Calendar, Users, Globe, Package, Plus, X, Edit, Check } from 'lucide-react';
+import { Loader2, ChevronUp, ChevronDown, ChevronsUpDown, DollarSign, Calendar, Users, Globe, Package, Plus, X } from 'lucide-react';
 import { get } from '@/utils/api';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -20,14 +20,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Input } from '@/components/ui/input';
 
 interface Team {
-  id: string;
+  id: number;
   name: string;
   admin_email: string;
   created_at: string;
   last_payment?: string;
   is_always_free: boolean;
-  hubspot_status?: string; // New field for tracking Hubspot import status - will use "update-sales-data" API after it has been built
-  assigned_user?: string; // New field for tracking assigned sales user
+  products: Product[];
+  regions: string[];
+  total_spend: number;
+  trial_status: string;
 }
 
 interface Product {
@@ -36,25 +38,9 @@ interface Product {
   active: boolean;
 }
 
-interface PrivateAIKey {
-  id: number;
-  name: string;
-  region: string;
-  team_id?: number;
-}
-
-interface SpendInfo {
-  spend: number;
-  expires: string;
-  created_at: string;
-  updated_at: string;
-  max_budget: number | null;
-  budget_duration: string | null;
-  budget_reset_at: string | null;
-}
 
 
-type SortField = 'admin_email' | 'name' | 'created_at' | 'last_payment' | 'products' | 'trial_status' | 'regions' | 'total_spend' | 'hubspot_status' | 'assigned_user' | null;
+type SortField = 'admin_email' | 'name' | 'created_at' | 'last_payment' | 'products' | 'trial_status' | 'regions' | 'total_spend' | null;
 type SortDirection = 'asc' | 'desc';
 
 interface Filter {
@@ -71,177 +57,40 @@ export default function SalesDashboardPage() {
   const [sortField, setSortField] = useState<SortField>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
 
-  // Local state for hubspot status updates (until API is implemented)
-  const [localHubspotStatuses, setLocalHubspotStatuses] = useState<Record<string, string>>({});
-
-  // Local state for assigned user updates (until API is implemented)
-  const [localAssignedUsers, setLocalAssignedUsers] = useState<Record<string, string>>({});
-
-  // State for tracking which assigned user field is being edited
-  const [editingAssignedUser, setEditingAssignedUser] = useState<string | null>(null);
-  const [editingAssignedUserValue, setEditingAssignedUserValue] = useState<string>('');
 
   // Queries
   const { data: teams = [], isLoading: isLoadingTeams } = useQuery<Team[]>({
-    queryKey: ['teams'],
+    queryKey: ['sales-teams'],
     queryFn: async () => {
-      const response = await get('/teams');
+      const response = await get('/teams/sales/list-teams');
       const data = await response.json();
-      return data;
+      return data.teams;
     },
   });
 
-  // Get products for all teams
-  const { data: teamProductsMap = {} } = useQuery<Record<string, Product[]>>({
-    queryKey: ['team-products-map'],
-    queryFn: async () => {
-      const productsMap: Record<string, Product[]> = {};
-
-      for (const team of teams) {
-        try {
-          const response = await get(`/products?team_id=${team.id}`);
-          const products = await response.json();
-          productsMap[team.id] = products;
-        } catch (error) {
-          console.error(`Failed to fetch products for team ${team.id}:`, error);
-          productsMap[team.id] = [];
-        }
-      }
-
-      return productsMap;
-    },
-    enabled: teams.length > 0,
-  });
-
-  // Get AI keys for all teams
-  const { data: teamAIKeysMap = {} } = useQuery<Record<string, PrivateAIKey[]>>({
-    queryKey: ['team-ai-keys-map'],
-    queryFn: async () => {
-      const aiKeysMap: Record<string, PrivateAIKey[]> = {};
-
-      for (const team of teams) {
-        try {
-          const response = await get(`/private-ai-keys?team_id=${team.id}`);
-          const aiKeys = await response.json();
-          aiKeysMap[team.id] = aiKeys;
-        } catch (error) {
-          console.error(`Failed to fetch AI keys for team ${team.id}:`, error);
-          aiKeysMap[team.id] = [];
-        }
-      }
-
-      return aiKeysMap;
-    },
-    enabled: teams.length > 0,
-  });
-
-  // Get spend data for all AI keys
-  const { data: teamSpendMap = {} } = useQuery<Record<string, SpendInfo[]>>({
-    queryKey: ['team-spend-map', teamAIKeysMap],
-    queryFn: async () => {
-      const spendMap: Record<string, SpendInfo[]> = {};
-
-      for (const team of teams) {
-        const teamKeys = teamAIKeysMap[team.id] || [];
-        const teamSpend: SpendInfo[] = [];
-
-        for (const key of teamKeys) {
-          try {
-            const response = await get(`/private-ai-keys/${key.id}/spend`);
-            const spendInfo = await response.json();
-            teamSpend.push(spendInfo);
-          } catch (error) {
-            console.error(`Failed to fetch spend data for key ${key.id}:`, error);
-            // Add default spend info if fetch fails
-            teamSpend.push({
-              spend: 0,
-              expires: '',
-              created_at: '',
-              updated_at: '',
-              max_budget: null,
-              budget_duration: null,
-              budget_reset_at: null,
-            });
-          }
-        }
-
-        spendMap[team.id] = teamSpend;
-      }
-
-      return spendMap;
-    },
-    enabled: teams.length > 0 && Object.keys(teamAIKeysMap).length > 0,
-  });
 
 
 
   // Calculate trial time remaining
   const getTrialTimeRemaining = useCallback((team: Team): string => {
-    const teamProducts = teamProductsMap[team.id] || [];
-    if (teamProducts.some(p => p.active)) {
-      return 'Active Product';
-    }
-
-    if (team.is_always_free) {
-      return 'Always Free';
-    }
-
-    const now = new Date();
-    const createdAt = new Date(team.created_at);
-    const lastPayment = team.last_payment ? new Date(team.last_payment) : null;
-
-    if (lastPayment) {
-      // If there's a last payment, calculate based on 30 days from last payment
-      const thirtyDaysFromPayment = new Date(lastPayment);
-      thirtyDaysFromPayment.setDate(thirtyDaysFromPayment.getDate() + 30);
-
-      if (now > thirtyDaysFromPayment) {
-        return 'Expired';
-      }
-
-      const diffTime = thirtyDaysFromPayment.getTime() - now.getTime();
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      return `${diffDays} days left`;
-    } else {
-      // If no last payment, calculate based on 30 days from creation
-      const thirtyDaysFromCreation = new Date(createdAt);
-      thirtyDaysFromCreation.setDate(thirtyDaysFromCreation.getDate() + 30);
-
-      if (now > thirtyDaysFromCreation) {
-        return 'Expired';
-      }
-
-      const diffTime = thirtyDaysFromCreation.getTime() - now.getTime();
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-      return `${diffDays} days left`;
-    }
-  }, [teamProductsMap]);
+    return team.trial_status;
+  }, []);
 
   // Get unique regions for a team
-  const getTeamRegions = useCallback((teamId: string): string[] => {
-    const teamKeys = teamAIKeysMap[teamId] || [];
-    const regions = new Set<string>();
-
-    teamKeys.forEach(key => {
-      if (key.region) {
-        regions.add(key.region);
-      }
-    });
-
-    return Array.from(regions).sort();
-  }, [teamAIKeysMap]);
+  const getTeamRegions = useCallback((team: Team): string[] => {
+    return team.regions;
+  }, []);
 
   // Get total spend for a team
-  const getTeamTotalSpend = useCallback((teamId: string): number => {
-    const teamSpend = teamSpendMap[teamId] || [];
-    return teamSpend.reduce((total, spendInfo) => total + (spendInfo.spend || 0), 0);
-  }, [teamSpendMap]);
+  const getTeamTotalSpend = useCallback((team: Team): number => {
+    return team.total_spend;
+  }, []);
 
   // Get all team spend values for calculating min/max
   const allTeamSpends = useMemo(() => {
     return teams.map(team => ({
       teamId: team.id,
-      spend: getTeamTotalSpend(team.id)
+      spend: getTeamTotalSpend(team)
     })).filter(item => item.spend > 0); // Only non-zero values for min calculation
   }, [teams, getTeamTotalSpend]);
 
@@ -258,34 +107,6 @@ export default function SalesDashboardPage() {
     };
   }, [allTeamSpends]);
 
-  // Color assignment for unique users
-  const userColors = useMemo(() => {
-    const uniqueUsers = new Set<string>();
-    teams.forEach(team => {
-      const user = localAssignedUsers[team.id] || team.assigned_user;
-      if (user && user !== 'None') {
-        uniqueUsers.add(user);
-      }
-    });
-
-    const colors = [
-      '#3b82f6', // blue
-      '#f59e0b', // amber
-      '#8b5cf6', // violet
-      '#ec4899', // pink
-      '#06b6d4', // cyan
-      '#84cc16', // lime
-      '#f97316', // orange
-      '#6366f1', // indigo
-    ];
-
-    const userColorMap: Record<string, string> = {};
-    Array.from(uniqueUsers).forEach((user, index) => {
-      userColorMap[user] = colors[index % colors.length];
-    });
-
-    return userColorMap;
-  }, [teams, localAssignedUsers]);
 
   // Get color for spend value based on gradient rules
   const getSpendColor = useCallback((spend: number): string => {
@@ -368,27 +189,6 @@ export default function SalesDashboardPage() {
     setSortDirection('asc');
   };
 
-  // Functions for handling assigned user editing
-  const startEditingAssignedUser = (teamId: string, currentUser: string) => {
-    setEditingAssignedUser(teamId);
-    setEditingAssignedUserValue(currentUser);
-  };
-
-  const saveAssignedUser = (teamId: string) => {
-    console.log(`Updating team ${teamId} assigned user to: ${editingAssignedUserValue}`);
-    setLocalAssignedUsers(prev => ({
-      ...prev,
-      [teamId]: editingAssignedUserValue
-    }));
-    setEditingAssignedUser(null);
-    setEditingAssignedUserValue('');
-    // TODO: Implement API call to update-sales-data endpoint
-  };
-
-  const cancelEditingAssignedUser = () => {
-    setEditingAssignedUser(null);
-    setEditingAssignedUserValue('');
-  };
 
   // Available filter columns
   const filterColumns = [
@@ -397,8 +197,6 @@ export default function SalesDashboardPage() {
     { value: 'products', label: 'Products', type: 'select' },
     { value: 'trial_status', label: 'Trial Status', type: 'select' },
     { value: 'regions', label: 'Regions', type: 'select' },
-    { value: 'hubspot_status', label: 'Hubspot Status', type: 'select' },
-    { value: 'assigned_user', label: 'Assigned User', type: 'text' },
   ];
 
   // Filter operators
@@ -449,7 +247,7 @@ export default function SalesDashboardPage() {
         // Get unique regions from all teams
         const allRegions = new Set<string>();
         teams.forEach(team => {
-          const teamRegions = getTeamRegions(team.id);
+          const teamRegions = getTeamRegions(team);
           teamRegions.forEach(region => allRegions.add(region));
         });
         return [
@@ -462,7 +260,7 @@ export default function SalesDashboardPage() {
       case 'products':
         const allProducts = new Set<string>();
         teams.forEach(team => {
-          const teamProducts = teamProductsMap[team.id] || [];
+          const teamProducts = team.products || [];
           teamProducts.forEach(product => allProducts.add(product.name));
         });
         return [
@@ -470,29 +268,6 @@ export default function SalesDashboardPage() {
           ...Array.from(allProducts).sort().map(productName => ({
             value: productName,
             label: productName
-          }))
-        ];
-      case 'hubspot_status':
-        return [
-          { value: 'Needs Import', label: 'Needs Import' },
-          { value: 'Import Successful', label: 'Import Successful' },
-          { value: 'Import Failed', label: 'Import Failed' },
-          { value: 'Skip Import', label: 'Skip Import' },
-        ];
-      case 'assigned_user':
-        // Get unique assigned users for suggestions
-        const allAssignedUsers = new Set<string>();
-        teams.forEach(team => {
-          const user = localAssignedUsers[team.id] || team.assigned_user;
-          if (user && user !== 'None') {
-            allAssignedUsers.add(user);
-          }
-        });
-        return [
-          { value: 'None', label: 'None' },
-          ...Array.from(allAssignedUsers).sort().map(user => ({
-            value: user,
-            label: user
           }))
         ];
       default:
@@ -564,7 +339,7 @@ export default function SalesDashboardPage() {
             teamValue = team.name.toLowerCase();
             break;
                      case 'products':
-             const teamProducts = teamProductsMap[team.id] || [];
+             const teamProducts = team.products || [];
              teamValue = teamProducts.length > 0 ? teamProducts.map(p => p.name).join(', ') : 'No Product';
              break;
                      case 'trial_status':
@@ -576,14 +351,8 @@ export default function SalesDashboardPage() {
              }
              break;
                                 case 'regions':
-             const teamRegions = getTeamRegions(team.id);
+             const teamRegions = getTeamRegions(team);
              teamValue = teamRegions.length > 0 ? teamRegions.join(', ') : 'No Region';
-             break;
-                                case 'hubspot_status':
-             teamValue = localHubspotStatuses[team.id] || team.hubspot_status || 'Needs Import';
-             break;
-                                case 'assigned_user':
-             teamValue = localAssignedUsers[team.id] || team.assigned_user || 'None';
              break;
           default:
             return true;
@@ -613,7 +382,7 @@ export default function SalesDashboardPage() {
         }
       });
     });
-  }, [filters, teamProductsMap, getTrialTimeRemaining, getTeamRegions, localAssignedUsers, localHubspotStatuses]);
+  }, [filters, getTrialTimeRemaining, getTeamRegions]);
 
   // Filtered and sorted teams
   const filteredAndSortedTeams = useMemo(() => {
@@ -642,28 +411,20 @@ export default function SalesDashboardPage() {
             bValue = b.last_payment ? new Date(b.last_payment).getTime() : 0;
             break;
           case 'products':
-            aValue = (teamProductsMap[a.id] || []).length;
-            bValue = (teamProductsMap[b.id] || []).length;
+            aValue = (a.products || []).length;
+            bValue = (b.products || []).length;
             break;
           case 'trial_status':
             aValue = getTrialTimeRemaining(a);
             bValue = getTrialTimeRemaining(b);
             break;
           case 'regions':
-            aValue = getTeamRegions(a.id).length;
-            bValue = getTeamRegions(b.id).length;
+            aValue = getTeamRegions(a).length;
+            bValue = getTeamRegions(b).length;
             break;
           case 'total_spend':
-            aValue = getTeamTotalSpend(a.id);
-            bValue = getTeamTotalSpend(b.id);
-            break;
-          case 'hubspot_status':
-            aValue = localHubspotStatuses[a.id] || a.hubspot_status || 'Needs Import';
-            bValue = localHubspotStatuses[b.id] || b.hubspot_status || 'Needs Import';
-            break;
-          case 'assigned_user':
-            aValue = localAssignedUsers[a.id] || a.assigned_user || 'None';
-            bValue = localAssignedUsers[b.id] || b.assigned_user || 'None';
+            aValue = getTeamTotalSpend(a);
+            bValue = getTeamTotalSpend(b);
             break;
           default:
             return 0;
@@ -678,7 +439,7 @@ export default function SalesDashboardPage() {
     }
 
     return filtered;
-  }, [teams, sortField, sortDirection, teamProductsMap, getTrialTimeRemaining, getTeamRegions, getTeamTotalSpend, localHubspotStatuses, localAssignedUsers, applyFilters]);
+  }, [teams, sortField, sortDirection, getTrialTimeRemaining, getTeamRegions, getTeamTotalSpend, applyFilters]);
 
   const hasActiveFilters = filters.length > 0;
 
@@ -733,12 +494,12 @@ export default function SalesDashboardPage() {
     }).format(amount);
   };
 
-  if (isLoadingTeams || (teams.length > 0 && Object.keys(teamProductsMap).length === 0)) {
+  if (isLoadingTeams) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <Loader2 className="h-8 w-8 animate-spin" />
         <div className="ml-3 text-sm text-muted-foreground">
-          {isLoadingTeams ? 'Loading teams...' : 'Loading team products...'}
+          Loading teams...
         </div>
       </div>
     );
@@ -930,33 +691,13 @@ export default function SalesDashboardPage() {
                   {getSortIcon('total_spend')}
                 </div>
               </TableHead>
-              <TableHead
-                className="cursor-pointer hover:bg-gray-50 w-32"
-                onClick={() => handleSort('hubspot_status')}
-              >
-                <div className="flex items-center gap-2">
-                  <Users className="h-4 w-4" />
-                  Hubspot Status
-                  {getSortIcon('hubspot_status')}
-                </div>
-              </TableHead>
-              <TableHead
-                className="cursor-pointer hover:bg-gray-50 w-32"
-                onClick={() => handleSort('assigned_user')}
-              >
-                <div className="flex items-center gap-2">
-                  <Users className="h-4 w-4" />
-                  Assigned User
-                  {getSortIcon('assigned_user')}
-                </div>
-              </TableHead>
 
             </TableRow>
           </TableHeader>
           <TableBody>
             {paginatedData.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={11} className="text-center py-6">
+                <TableCell colSpan={9} className="text-center py-6">
                   No teams found matching your filters.
                 </TableCell>
               </TableRow>
@@ -980,7 +721,7 @@ export default function SalesDashboardPage() {
                   </TableCell>
                   <TableCell className="py-2">
                     {(() => {
-                      const teamProducts = teamProductsMap[team.id] || [];
+                      const teamProducts = team.products || [];
                       return teamProducts.length > 0 ? (
                         <div className="space-y-0.5">
                           {teamProducts.map((product) => (
@@ -1012,16 +753,23 @@ export default function SalesDashboardPage() {
                       } else if (trialStatus === 'Expired') {
                         badgeVariant = "destructive";
                         customStyle = { backgroundColor: '#991b1b', color: 'white' }; // dark red
+                      } else if (trialStatus === 'In Progress') {
+                        badgeVariant = "outline";
+                        customStyle = { backgroundColor: '#fef3c7', color: '#92400e' }; // amber/yellow
                       } else if (trialStatus.includes('days left')) {
                         // Extract the number of days
                         const daysMatch = trialStatus.match(/(\d+)/);
                         if (daysMatch) {
-                          const days = parseInt(daysMatch[1]);
-                          // Calculate color: 30 days = muted green, 0 days = red
+                          const days = parseInt(daysMatch[1], 10);
+                          // Calculate color gradient: 30 days = green, 0 days = red
+                          // Use a 30-day scale instead of 7-day for better gradient
                           const ratio = Math.max(0, Math.min(1, days / 30));
-                          const red = Math.round(255 * (1 - ratio));
-                          const green = Math.round(180 * ratio); // Reduced from 255 to 180 for muted green
-                          const blue = Math.round(100 * ratio); // Added blue for softer appearance
+
+                          // Green to red gradient: green (34, 197, 94) to red (239, 68, 68)
+                          const red = Math.round(34 + (205 * (1 - ratio))); // 34-239 range
+                          const green = Math.round(197 - (129 * (1 - ratio))); // 197-68 range
+                          const blue = Math.round(94 - (26 * (1 - ratio))); // 94-68 range
+
                           customStyle = {
                             backgroundColor: `rgb(${red}, ${green}, ${blue})`,
                             color: 'white',
@@ -1043,7 +791,7 @@ export default function SalesDashboardPage() {
                   </TableCell>
                   <TableCell className="py-2">
                     {(() => {
-                      const regions = getTeamRegions(team.id);
+                      const regions = getTeamRegions(team);
                       if (regions.length === 0) {
                         return <span className="text-muted-foreground text-xs">No regions</span>;
                       }
@@ -1064,142 +812,11 @@ export default function SalesDashboardPage() {
                   </TableCell>
                   <TableCell className="py-2">
                     {(() => {
-                      const totalSpend = getTeamTotalSpend(team.id);
+                      const totalSpend = getTeamTotalSpend(team);
                       const spendColor = getSpendColor(totalSpend);
                       return (
                         <div className="font-medium text-xs" style={{ color: spendColor }}>
                           {formatCurrency(totalSpend)}
-                        </div>
-                      );
-                    })()}
-                  </TableCell>
-                                    <TableCell className="py-2">
-                    {(() => {
-                      const hubspotStatus = localHubspotStatuses[team.id] || team.hubspot_status || 'Needs Import';
-
-                      // TODO: This will use the "update-sales-data" API after it has been built
-                      const handleStatusChange = (newStatus: string) => {
-                        console.log(`Updating team ${team.id} hubspot status to: ${newStatus}`);
-                        // Update local state immediately
-                        setLocalHubspotStatuses(prev => ({
-                          ...prev,
-                          [team.id]: newStatus
-                        }));
-                        // TODO: Implement API call to update-sales-data endpoint
-                      };
-
-                      // Get color styling based on status
-                      const getStatusColor = (status: string) => {
-                        switch (status) {
-                          case 'Import Successful':
-                            return 'bg-green-600 text-white border-green-600';
-                          case 'Import Failed':
-                            return 'bg-red-600 text-white border-red-600';
-                          case 'Skip Import':
-                            return 'bg-gray-500 text-white border-gray-500';
-                          default: // 'Needs Import'
-                            return 'bg-gray-100 text-gray-700 border-gray-300';
-                        }
-                      };
-
-                      return (
-                        <Select
-                          value={hubspotStatus}
-                          onValueChange={handleStatusChange}
-                        >
-                          <SelectTrigger className={`w-32 text-xs ${getStatusColor(hubspotStatus)}`}>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="Needs Import">Needs Import</SelectItem>
-                            <SelectItem value="Import Successful">Import Successful</SelectItem>
-                            <SelectItem value="Import Failed">Import Failed</SelectItem>
-                            <SelectItem value="Skip Import">Skip Import</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      );
-                    })()}
-                  </TableCell>
-                  <TableCell className="py-2">
-                    {(() => {
-                      const assignedUser = localAssignedUsers[team.id] || team.assigned_user || 'None';
-                      const isEditing = editingAssignedUser === team.id;
-
-                      if (isEditing) {
-                        // Get all unique assigned users for suggestions
-                        const getAllAssignedUsers = () => {
-                          const users = new Set<string>();
-                          teams.forEach(t => {
-                            const user = localAssignedUsers[t.id] || t.assigned_user;
-                            if (user && user !== 'None') {
-                              users.add(user);
-                            }
-                          });
-                          return Array.from(users).sort();
-                        };
-
-                        const allUsers = getAllAssignedUsers();
-
-                        return (
-                          <div className="flex items-center gap-1">
-                            <Input
-                              value={editingAssignedUserValue}
-                              onChange={(e) => setEditingAssignedUserValue(e.target.value)}
-                              placeholder="Type or select user..."
-                              className="w-24 text-xs h-7"
-                              list={`assigned-users-${team.id}`}
-                              autoFocus
-                            />
-                            <datalist id={`assigned-users-${team.id}`}>
-                              <option value="None" />
-                              {allUsers.map((user) => (
-                                <option key={user} value={user} />
-                              ))}
-                            </datalist>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => saveAssignedUser(team.id)}
-                              className="h-7 w-7 p-0 text-green-600 hover:text-green-700 hover:bg-green-50"
-                            >
-                              <Check className="h-3 w-3" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={cancelEditingAssignedUser}
-                              className="h-7 w-7 p-0 text-red-600 hover:text-red-700 hover:bg-red-50"
-                            >
-                              <X className="h-3 w-3" />
-                            </Button>
-                          </div>
-                        );
-                      }
-
-                      // Display mode - show badge with edit button
-                      const userColor = assignedUser !== 'None' ? userColors[assignedUser] : '#6b7280';
-
-                      return (
-                        <div className="flex items-center gap-1">
-                          <Badge
-                            variant="outline"
-                            className="text-xs px-2 py-1"
-                            style={{
-                              backgroundColor: assignedUser !== 'None' ? userColor : 'transparent',
-                              color: assignedUser !== 'None' ? 'white' : '#6b7280',
-                              borderColor: userColor,
-                            }}
-                          >
-                            {assignedUser}
-                          </Badge>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => startEditingAssignedUser(team.id, assignedUser)}
-                            className="h-7 w-7 p-0 text-gray-400 hover:text-gray-600 hover:bg-gray-50"
-                          >
-                            <Edit className="h-3 w-3" />
-                          </Button>
                         </div>
                       );
                     })()}
