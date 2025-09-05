@@ -75,6 +75,7 @@ export default function RegionsPage() {
   });
   const [regions, setRegions] = useState<Region[]>([]);
   const [selectedTeamId, setSelectedTeamId] = useState<string>('');
+  const [teamSearchQuery, setTeamSearchQuery] = useState<string>('');
 
   // Queries
   const { isLoading: isLoadingRegions } = useQuery<Region[]>({
@@ -298,6 +299,7 @@ export default function RegionsPage() {
   const handleManageTeams = (region: Region) => {
     setSelectedRegionForTeams(region);
     setIsManagingTeams(true);
+    setTeamSearchQuery(''); // Clear search when opening dialog
   };
 
   const handleAssignTeam = () => {
@@ -319,6 +321,11 @@ export default function RegionsPage() {
   // Get available teams (teams not already assigned to this region)
   const availableTeams = teams.filter(
     team => !regionTeams.some(regionTeam => regionTeam.id === team.id)
+  );
+
+  // Filter region teams based on search query
+  const filteredRegionTeams = regionTeams.filter(team =>
+    team.name.toLowerCase().includes(teamSearchQuery.toLowerCase())
   );
 
   // Pagination
@@ -635,8 +642,13 @@ export default function RegionsPage() {
           </Dialog>
 
           {/* Manage Teams Dialog */}
-          <Dialog open={isManagingTeams} onOpenChange={setIsManagingTeams}>
-            <DialogContent className="max-w-2xl">
+          <Dialog open={isManagingTeams} onOpenChange={(open) => {
+            setIsManagingTeams(open);
+            if (!open) {
+              setTeamSearchQuery(''); // Clear search when closing dialog
+            }
+          }}>
+            <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
               <DialogHeader>
                 <DialogTitle>Manage Teams for {selectedRegionForTeams?.name}</DialogTitle>
                 <DialogDescription>
@@ -646,34 +658,61 @@ export default function RegionsPage() {
               <div className="space-y-4">
                 {/* Current Teams */}
                 <div>
-                  <h3 className="text-sm font-medium mb-2">Assigned Teams</h3>
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-sm font-medium">Assigned Teams ({regionTeams.length})</h3>
+                    {regionTeams.length > 0 && (
+                      <div className="flex items-center gap-2">
+                        <Input
+                          placeholder="Search teams..."
+                          value={teamSearchQuery}
+                          onChange={(e) => setTeamSearchQuery(e.target.value)}
+                          className="h-8 w-48 text-sm"
+                        />
+                        {teamSearchQuery && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setTeamSearchQuery('')}
+                            className="h-8 w-8 p-0"
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </div>
                   {isLoadingRegionTeams ? (
                     <div className="flex items-center justify-center py-4">
                       <Loader2 className="h-4 w-4 animate-spin" />
                     </div>
                   ) : regionTeams.length === 0 ? (
                     <p className="text-sm text-gray-500">No teams assigned to this region.</p>
+                  ) : filteredRegionTeams.length === 0 ? (
+                    <p className="text-sm text-gray-500">No teams match your search.</p>
                   ) : (
-                    <div className="space-y-2">
-                      {regionTeams.map((team) => (
-                        <div key={team.id} className="flex items-center justify-between p-2 border rounded">
-                          <span className="text-sm">{team.name}</span>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleRemoveTeam(team.id.toString())}
-                            disabled={removeTeamMutation.isPending}
-                          >
-                            <X className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      ))}
+                    <div className="border rounded-md" style={{ height: '200px', overflowY: 'auto' }}>
+                      <div className="space-y-1 p-2">
+                        {filteredRegionTeams.map((team) => (
+                          <div key={team.id} className="flex items-center justify-between p-3 border rounded-md bg-gray-50 hover:bg-gray-100 transition-colors">
+                            <span className="text-sm font-medium">{team.name}</span>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleRemoveTeam(team.id.toString())}
+                              disabled={removeTeamMutation.isPending}
+                              className="h-8 w-8 p-0"
+                            >
+                              <X className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
 
                 {/* Assign New Team */}
-                <div>
+                <div className="border-t pt-4">
                   <h3 className="text-sm font-medium mb-2">Assign New Team</h3>
                   <div className="flex gap-2">
                     <Select value={selectedTeamId} onValueChange={setSelectedTeamId}>
