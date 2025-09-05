@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, UTC
-from typing import Optional, Literal, Dict
+from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status, Cookie, Header, Request
@@ -9,14 +9,11 @@ from app.core.config import settings
 from app.db.database import get_db
 from sqlalchemy.orm import Session
 from app.db.models import DBUser, DBAPIToken
-from app.core.roles import UserRole as RoleClass
 from app.core.rbac import (
     require_system_admin,
     require_team_admin,
     require_key_creator_or_higher,
-    require_read_only_or_higher,
     require_sales_or_higher,
-    require_any_role
 )
 
 logger = logging.getLogger(__name__)
@@ -26,19 +23,6 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Custom bearer scheme
 bearer_scheme = HTTPBearer(auto_error=False)
-
-# Define valid user roles as a Literal type - MUST match existing values exactly
-UserRole = Literal["admin", "key_creator", "read_only", "user", "system_admin", "sales"]
-
-# Define a hierarchy for roles - updated to include new roles
-user_role_hierarchy: Dict[UserRole, int] = {
-    "system_admin": 0,
-    "admin": 1,
-    "user": 2,
-    "key_creator": 3,
-    "read_only": 4,
-    "sales": 5,
-}
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
@@ -151,16 +135,6 @@ async def check_system_admin(current_user: DBUser = Depends(get_current_user_fro
     """Check if the current user is a system admin."""
     dependency = require_system_admin()
     return dependency.check_access(current_user)
-
-def get_user_role(minimum_role: UserRole, current_user: DBUser):
-    if current_user.is_admin:
-        return "system_admin"
-    elif user_role_hierarchy[current_user.role] > user_role_hierarchy[minimum_role]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to perform this action"
-        )
-    return current_user.role
 
 async def get_role_min_team_admin(current_user: DBUser = Depends(get_current_user_from_auth)):
     """Require team admin role or higher."""
