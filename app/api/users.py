@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List, get_args
+from typing import List
 from app.core.config import settings
 from app.core.resource_limits import check_team_user_limit
 from app.db.database import get_db
 from app.schemas.models import User, UserUpdate, UserCreate, TeamOperation, UserRoleUpdate
 from app.db.models import DBUser, DBTeam
-from app.core.security import get_password_hash, check_system_admin, get_current_user_from_auth, UserRole, get_role_min_team_admin
+from app.core.security import get_password_hash, check_system_admin, get_current_user_from_auth, get_role_min_team_admin
+from app.core.roles import UserRole
 from datetime import datetime, UTC
 
 router = APIRouter(
@@ -77,10 +78,10 @@ async def create_user(
         check_team_user_limit(db, user.team_id)
 
     # Validate role if provided
-    if user.role and user.role not in get_args(UserRole):
+    if user.role and user.role not in UserRole.get_all_roles():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid role. Must be one of: {', '.join(get_args(UserRole))}"
+            detail=f"Invalid role. Must be one of: {', '.join(UserRole.get_all_roles())}"
         )
 
     # Default to the lowest permissions for a user in a team
@@ -256,10 +257,10 @@ async def update_user_role(
     Update a user's role. Accessible by admin users or team admins for their team members.
     """
     # Validate role
-    if role_update.role not in get_args(UserRole):
+    if role_update.role not in UserRole.get_all_roles():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid role. Must be one of: {', '.join(get_args(UserRole))}"
+            detail=f"Invalid role. Must be one of: {', '.join(UserRole.get_all_roles())}"
         )
 
     # Get the user to update

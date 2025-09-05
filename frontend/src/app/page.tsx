@@ -10,7 +10,12 @@ export default function Home() {
 
   useEffect(() => {
     if (user) {
-      router.replace('/private-ai-keys');
+      // Redirect sales users to their dashboard
+      if (user.role === 'sales') {
+        router.replace('/sales');
+      } else {
+        router.replace('/private-ai-keys');
+      }
     } else {
       router.replace('/auth/login');
     }
