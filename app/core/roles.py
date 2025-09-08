@@ -21,6 +21,12 @@ class UserRole:
     ADMIN = TEAM_ADMIN  # "admin"
     DEFAULT = USER      # "user"
 
+    # Role combinations for better readability
+    ADMIN_ROLES = [TEAM_ADMIN, SYSTEM_ADMIN]
+    KEY_MANAGEMENT_ROLES = [KEY_CREATOR] + ADMIN_ROLES
+    READ_ACCESS_ROLES = [READ_ONLY] + KEY_MANAGEMENT_ROLES
+    SYSTEM_ACCESS_ROLES = [SYSTEM_ADMIN, SALES]
+
     @staticmethod
     def get_system_roles() -> List[str]:
         """Get all valid system user roles"""
@@ -45,34 +51,3 @@ class UserRole:
     def is_team_role(role: str) -> bool:
         """Check if role is valid for team users"""
         return role in UserRole.get_team_roles()
-
-    @staticmethod
-    def validate_user_role_assignment(user_is_admin: bool, role: str) -> bool:
-        """
-        Validate if a role can be assigned to a user based on user type.
-
-        Args:
-            user_is_admin: Whether the user is a system admin
-            role: The role to assign
-
-        Returns:
-            True if assignment is valid, False otherwise
-        """
-        if user_is_admin:
-            return UserRole.is_system_role(role)
-        else:
-            return UserRole.is_team_role(role)
-
-    @staticmethod
-    def can_assign_role(current_role: str, target_role: str) -> bool:
-        """Enhanced role assignment logic"""
-        # System admins can assign any role
-        if current_role == UserRole.SYSTEM_ADMIN:
-            return True
-
-        # Team admins can assign team roles within their team
-        if current_role == UserRole.TEAM_ADMIN:
-            return UserRole.is_team_role(target_role)
-
-        # Other roles cannot assign roles
-        return False

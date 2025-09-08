@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
-from app.core.security import check_sales_or_higher, check_system_admin
+from app.core.security import check_sales_or_higher, get_role_min_system_admin
 from app.core.roles import UserRole
 from app.db.models import DBUser
 
@@ -72,7 +72,7 @@ class TestSecurityFunctions:
         """
         user = DBUser(id=1, email="admin@test.com", is_admin=True, team_id=None, role=None)
 
-        result = await check_system_admin(current_user=user)
+        result = await get_role_min_system_admin(current_user=user)
         assert result == UserRole.SYSTEM_ADMIN
 
     @pytest.mark.asyncio
@@ -85,7 +85,7 @@ class TestSecurityFunctions:
         user = DBUser(id=1, email="user@test.com", is_admin=False, team_id=None, role="user")
 
         with pytest.raises(HTTPException) as exc_info:
-            await check_system_admin(current_user=user)
+            await get_role_min_system_admin(current_user=user)
 
         assert exc_info.value.status_code == 403
         assert "Not authorized to perform this action" in str(exc_info.value.detail)

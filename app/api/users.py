@@ -6,7 +6,7 @@ from app.core.resource_limits import check_team_user_limit
 from app.db.database import get_db
 from app.schemas.models import User, UserUpdate, UserCreate, TeamOperation, UserRoleUpdate
 from app.db.models import DBUser, DBTeam
-from app.core.security import get_password_hash, check_system_admin, get_current_user_from_auth, get_role_min_team_admin
+from app.core.security import get_password_hash, get_role_min_system_admin, get_current_user_from_auth, get_role_min_team_admin
 from app.core.roles import UserRole
 from datetime import datetime, UTC
 
@@ -14,7 +14,7 @@ router = APIRouter(
     tags=["users"]
 )
 
-@router.get("/search", response_model=List[User], dependencies=[Depends(check_system_admin)])
+@router.get("/search", response_model=List[User], dependencies=[Depends(get_role_min_system_admin)])
 async def search_users(
     email: str,
     db: Session = Depends(get_db)
@@ -199,7 +199,7 @@ async def add_user_to_team(
     db.refresh(db_user)
     return db_user
 
-@router.post("/{user_id}/remove-from-team", response_model=User, dependencies=[Depends(check_system_admin)])
+@router.post("/{user_id}/remove-from-team", response_model=User, dependencies=[Depends(get_role_min_system_admin)])
 async def remove_user_from_team(
     user_id: int,
     current_user: DBUser = Depends(get_current_user_from_auth),
@@ -225,7 +225,7 @@ async def remove_user_from_team(
     db.refresh(db_user)
     return db_user
 
-@router.delete("/{user_id}", dependencies=[Depends(check_system_admin)])
+@router.delete("/{user_id}", dependencies=[Depends(get_role_min_system_admin)])
 async def delete_user(
     user_id: int,
     current_user: DBUser = Depends(get_current_user_from_auth),

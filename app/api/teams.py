@@ -7,7 +7,7 @@ import logging
 
 from app.db.database import get_db
 from app.db.models import DBTeam, DBTeamProduct, DBUser, DBPrivateAIKey, DBRegion, DBTeamRegion, DBProduct
-from app.core.security import check_system_admin, check_specific_team_admin, get_current_user_from_auth, check_sales_or_higher
+from app.core.security import get_role_min_system_admin, get_role_min_specific_team_admin, get_current_user_from_auth, check_sales_or_higher
 from app.schemas.models import (
     Team, TeamCreate, TeamUpdate,
     TeamWithUsers, TeamMergeRequest, TeamMergeResponse
@@ -67,8 +67,8 @@ async def register_team(
 
     return db_team
 
-@router.get("", response_model=List[Team], dependencies=[Depends(check_system_admin)])
-@router.get("/", response_model=List[Team], dependencies=[Depends(check_system_admin)])
+@router.get("", response_model=List[Team], dependencies=[Depends(get_role_min_system_admin)])
+@router.get("/", response_model=List[Team], dependencies=[Depends(get_role_min_system_admin)])
 async def list_teams(
     db: Session = Depends(get_db)
 ):
@@ -77,7 +77,7 @@ async def list_teams(
     """
     return db.query(DBTeam).all()
 
-@router.get("/{team_id}", response_model=TeamWithUsers, dependencies=[Depends(check_specific_team_admin)])
+@router.get("/{team_id}", response_model=TeamWithUsers, dependencies=[Depends(get_role_min_specific_team_admin)])
 async def get_team(
     team_id: int,
     db: Session = Depends(get_db)
@@ -93,7 +93,7 @@ async def get_team(
     # Convert directly to TeamWithUsers model
     return TeamWithUsers.model_validate(db_team)
 
-@router.put("/{team_id}", response_model=Team, dependencies=[Depends(check_specific_team_admin)])
+@router.put("/{team_id}", response_model=Team, dependencies=[Depends(get_role_min_specific_team_admin)])
 async def update_team(
     team_id: int,
     team_update: TeamUpdate,
@@ -144,7 +144,7 @@ async def update_team(
 
     return db_team
 
-@router.delete("/{team_id}", dependencies=[Depends(check_system_admin)])
+@router.delete("/{team_id}", dependencies=[Depends(get_role_min_system_admin)])
 async def delete_team(
     team_id: int,
     db: Session = Depends(get_db)
@@ -167,7 +167,7 @@ async def delete_team(
 
     return {"message": "Team deleted successfully"}
 
-@router.post("/{team_id}/extend-trial", dependencies=[Depends(check_system_admin)])
+@router.post("/{team_id}/extend-trial", dependencies=[Depends(get_role_min_system_admin)])
 async def extend_team_trial(
     team_id: int,
     db: Session = Depends(get_db)
@@ -408,7 +408,7 @@ async def _resolve_key_conflicts(
     else:
         raise ValueError(f"Unknown conflict resolution strategy: {strategy}")
 
-@router.post("/{target_team_id}/merge", dependencies=[Depends(check_system_admin)])
+@router.post("/{target_team_id}/merge", dependencies=[Depends(get_role_min_system_admin)])
 async def merge_teams(
     target_team_id: int,
     merge_request: TeamMergeRequest,

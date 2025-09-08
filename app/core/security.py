@@ -14,6 +14,7 @@ from app.core.rbac import (
     require_team_admin,
     require_key_creator_or_higher,
     require_sales_or_higher,
+    require_private_ai_access,
 )
 
 logger = logging.getLogger(__name__)
@@ -131,7 +132,7 @@ async def get_current_user_from_auth(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-async def check_system_admin(current_user: DBUser = Depends(get_current_user_from_auth)):
+async def get_role_min_system_admin(current_user: DBUser = Depends(get_current_user_from_auth)):
     """Check if the current user is a system admin."""
     dependency = require_system_admin()
     return dependency.check_access(current_user)
@@ -141,7 +142,7 @@ async def get_role_min_team_admin(current_user: DBUser = Depends(get_current_use
     dependency = require_team_admin()
     return dependency.check_access(current_user)
 
-async def check_specific_team_admin(current_user: DBUser = Depends(get_current_user_from_auth), team_id: int = None):
+async def get_role_min_specific_team_admin(current_user: DBUser = Depends(get_current_user_from_auth), team_id: int = None):
     """Check if user is admin of specific team."""
     dependency = require_team_admin()
     role = dependency.check_access(current_user)
@@ -161,7 +162,6 @@ async def get_role_min_key_creator(current_user: DBUser = Depends(get_current_us
 
 async def get_private_ai_access(current_user: DBUser = Depends(get_current_user_from_auth)):
     """Require access to private AI operations - allows system users or team key creators."""
-    from app.core.rbac import require_private_ai_access
     dependency = require_private_ai_access()
     return dependency.check_access(current_user)
 

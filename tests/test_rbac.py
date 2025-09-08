@@ -195,34 +195,6 @@ class TestUserRole:
         assert not UserRole.is_team_role("user")
         assert not UserRole.is_team_role("sales")
 
-    def test_role_assignment_validation_system_user(self):
-        """
-        Given a system admin user
-        When validating role assignments
-        Then only system roles should be valid
-        """
-        # System users can only have system roles
-        assert UserRole.validate_user_role_assignment(True, "system_admin")
-        assert UserRole.validate_user_role_assignment(True, "user")
-        assert UserRole.validate_user_role_assignment(True, "sales")
-        assert not UserRole.validate_user_role_assignment(True, "admin")
-        assert not UserRole.validate_user_role_assignment(True, "key_creator")
-        assert not UserRole.validate_user_role_assignment(True, "read_only")
-
-    def test_role_assignment_validation_team_user(self):
-        """
-        Given a team user
-        When validating role assignments
-        Then only team roles should be valid
-        """
-        # Team users can only have team roles
-        assert UserRole.validate_user_role_assignment(False, "admin")
-        assert UserRole.validate_user_role_assignment(False, "key_creator")
-        assert UserRole.validate_user_role_assignment(False, "read_only")
-        assert not UserRole.validate_user_role_assignment(False, "system_admin")
-        assert not UserRole.validate_user_role_assignment(False, "user")
-        assert not UserRole.validate_user_role_assignment(False, "sales")
-
     def test_get_system_roles(self):
         """
         Given the UserRole class
@@ -261,43 +233,3 @@ class TestUserRole:
         assert "admin" in roles
         assert "key_creator" in roles
         assert "read_only" in roles
-
-    def test_can_assign_role_system_admin(self):
-        """
-        Given a system admin role
-        When checking if it can assign other roles
-        Then it should be able to assign any role
-        """
-        assert UserRole.can_assign_role("system_admin", "system_admin")
-        assert UserRole.can_assign_role("system_admin", "user")
-        assert UserRole.can_assign_role("system_admin", "sales")
-        assert UserRole.can_assign_role("system_admin", "admin")
-        assert UserRole.can_assign_role("system_admin", "key_creator")
-        assert UserRole.can_assign_role("system_admin", "read_only")
-
-    def test_can_assign_role_team_admin(self):
-        """
-        Given a team admin role
-        When checking if it can assign other roles
-        Then it should only be able to assign team roles
-        """
-        assert UserRole.can_assign_role("admin", "admin")
-        assert UserRole.can_assign_role("admin", "key_creator")
-        assert UserRole.can_assign_role("admin", "read_only")
-        assert not UserRole.can_assign_role("admin", "system_admin")
-        assert not UserRole.can_assign_role("admin", "user")
-        assert not UserRole.can_assign_role("admin", "sales")
-
-    def test_can_assign_role_other_roles(self):
-        """
-        Given non-admin roles
-        When checking if they can assign other roles
-        Then they should not be able to assign any roles
-        """
-        for role in [UserRole.USER, UserRole.SALES, UserRole.KEY_CREATOR, UserRole.READ_ONLY]:
-            assert not UserRole.can_assign_role(role, "system_admin")
-            assert not UserRole.can_assign_role(role, "user")
-            assert not UserRole.can_assign_role(role, "sales")
-            assert not UserRole.can_assign_role(role, "admin")
-            assert not UserRole.can_assign_role(role, "key_creator")
-            assert not UserRole.can_assign_role(role, "read_only")

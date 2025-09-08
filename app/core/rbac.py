@@ -54,11 +54,11 @@ class RBACDependency:
         effective_role = self._get_effective_role(user)
 
         # System users (team_id is None) cannot have team roles
-        if user.team_id is None and effective_role in ["admin", "key_creator", "read_only"]:
+        if user.team_id is None and effective_role in UserRole.get_team_roles():
             return True
 
         # Team users (team_id is not None) cannot have system roles
-        if user.team_id is not None and effective_role in ["system_admin", "user", "sales"]:
+        if user.team_id is not None and effective_role in UserRole.get_system_roles():
             return True
 
         return False
@@ -76,23 +76,23 @@ def require_system_admin():
 
 def require_team_admin():
     """Require team admin role or system admin"""
-    return RBACDependency([UserRole.TEAM_ADMIN, UserRole.SYSTEM_ADMIN], require_team_membership=True)
+    return RBACDependency(UserRole.ADMIN_ROLES, require_team_membership=True)
 
 def require_key_creator_or_higher():
     """Require key creator role or higher (team context)"""
-    return RBACDependency([UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR, UserRole.SYSTEM_ADMIN], require_team_membership=True)
+    return RBACDependency(UserRole.KEY_MANAGEMENT_ROLES, require_team_membership=True)
 
 def require_private_ai_access():
     """Require access to private AI operations - allows system users or team key creators"""
-    return RBACDependency([UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR, UserRole.SYSTEM_ADMIN, UserRole.USER], require_team_membership=False)
+    return RBACDependency(UserRole.KEY_MANAGEMENT_ROLES + [UserRole.USER], require_team_membership=False)
 
 def require_read_only_or_higher():
     """Require read only role or higher (team context)"""
-    return RBACDependency([UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR, UserRole.READ_ONLY, UserRole.SYSTEM_ADMIN], require_team_membership=True)
+    return RBACDependency(UserRole.READ_ACCESS_ROLES, require_team_membership=True)
 
 def require_sales_or_higher():
     """Require sales role or higher (system context)"""
-    return RBACDependency([UserRole.SYSTEM_ADMIN, UserRole.SALES])
+    return RBACDependency(UserRole.SYSTEM_ACCESS_ROLES)
 
 def require_any_role():
     """Allow any authenticated user"""

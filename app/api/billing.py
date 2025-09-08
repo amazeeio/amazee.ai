@@ -4,7 +4,7 @@ import logging
 import os
 from datetime import datetime, UTC
 from app.db.database import get_db
-from app.core.security import check_specific_team_admin, check_system_admin
+from app.core.security import get_role_min_specific_team_admin, get_role_min_system_admin
 from app.db.models import DBTeam, DBSystemSecret, DBProduct, DBTeamProduct
 from app.schemas.models import PricingTableSession, SubscriptionCreate, SubscriptionResponse
 from app.services.stripe import (
@@ -91,7 +91,7 @@ async def handle_events(
             detail="Error processing webhook"
         )
 
-@router.post("/teams/{team_id}/portal", dependencies=[Depends(check_specific_team_admin)])
+@router.post("/teams/{team_id}/portal", dependencies=[Depends(get_role_min_specific_team_admin)])
 async def get_portal(
     team_id: int,
     db: Session = Depends(get_db)
@@ -135,7 +135,7 @@ async def get_portal(
             detail="Error creating portal session"
         )
 
-@router.get("/teams/{team_id}/pricing-table-session", dependencies=[Depends(check_specific_team_admin)], response_model=PricingTableSession)
+@router.get("/teams/{team_id}/pricing-table-session", dependencies=[Depends(get_role_min_specific_team_admin)], response_model=PricingTableSession)
 async def get_pricing_table_session(
     team_id: int,
     db: Session = Depends(get_db)
@@ -178,7 +178,7 @@ async def get_pricing_table_session(
             detail="Error creating customer session"
         )
 
-@router.post("/teams/{team_id}/subscriptions", dependencies=[Depends(check_system_admin)], response_model=SubscriptionResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/teams/{team_id}/subscriptions", dependencies=[Depends(get_role_min_system_admin)], response_model=SubscriptionResponse, status_code=status.HTTP_201_CREATED)
 async def create_team_subscription(
     team_id: int,
     subscription_data: SubscriptionCreate,

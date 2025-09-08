@@ -17,7 +17,7 @@ from app.core.security import (
     get_current_user_from_auth,
     get_role_min_team_admin,
     get_private_ai_access,
-    check_system_admin
+    get_role_min_system_admin
 )
 from app.core.roles import UserRole
 from app.core.config import settings
@@ -477,7 +477,7 @@ async def list_private_ai_keys(
     private_ai_keys = query.all()
     return [key.to_dict() for key in private_ai_keys]
 
-@router.get("/{key_id}", response_model=PrivateAIKeyDetail, dependencies=[Depends(check_system_admin)])
+@router.get("/{key_id}", response_model=PrivateAIKeyDetail, dependencies=[Depends(get_role_min_system_admin)])
 async def get_private_ai_key(
     key_id: int,
     current_user = Depends(get_current_user_from_auth),
