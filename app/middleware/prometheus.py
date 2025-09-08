@@ -44,6 +44,10 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
         if request.url.path in settings.PUBLIC_PATHS:
             return await call_next(request)
 
+        # Skip processing for the /metrics endpoint itself
+        if request.url.path == "/metrics":
+            return await call_next(request)
+
         # Track auth requests for specific endpoints
         is_auth_endpoint = request.url.path in [
             "/auth/login",

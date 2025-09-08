@@ -19,7 +19,7 @@ class Settings(BaseSettings):
         "http://localhost:8800"
     ]
     ALLOWED_HOSTS: list[str] = ["*"]  # In production, restrict this
-    PUBLIC_PATHS: list[str] = ["/health", "/docs", "/openapi.json", "/metrics"]
+    PUBLIC_PATHS: list[str] = ["/health", "/docs", "/openapi.json"]
 
     AWS_ACCESS_KEY_ID: str = "AKIATEST"
     AWS_SECRET_ACCESS_KEY: str = "sk-string"
