@@ -307,7 +307,7 @@ async def list_teams_for_sales(
                     except Exception as e:
                         # Track unreachable endpoint for logging at the end (only once per region)
                         region = regions_map[key.region_id]
-                        endpoint_info = f"Region: {region.name}, Error: {str(e)}"
+                        endpoint_info = f"Region: {region.name}"
                         unreachable_endpoints.add(endpoint_info)
 
             # Convert set to list for the response
