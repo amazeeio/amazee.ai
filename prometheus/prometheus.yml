@@ -8,3 +8,6 @@ scrape_configs:
       - targets: ['backend:8800']
     metrics_path: '/metrics'
     scheme: 'http'
+    authorization:
+      type: 'Bearer'
+      credentials: 'test-key'
