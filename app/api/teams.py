@@ -310,10 +310,6 @@ async def list_teams_for_sales(
                         endpoint_info = f"Region: {region.name}, Error: {str(e)}"
                         unreachable_endpoints.add(endpoint_info)
 
-                        # Default spend to 0 for failed litellm calls so rest of data can be displayed
-                        logger.warning(f"Failed to get spend for key {key.id} in region {region.name}: {str(e)}")
-                        # Continue with other keys even if one fails
-
             # Convert set to list for the response
             regions = list(regions_set)
 
@@ -363,10 +359,10 @@ def _calculate_trial_status(team: DBTeam, products: List[SalesProduct]) -> str:
     # Calculate days until expiry
     trial_period_days = 30
     if team.last_payment:
-        days_since_last_payment = (datetime.now(UTC) - team.last_payment).days
+        days_since_last_payment = (datetime.now(UTC) - team.last_payment.replace(tzinfo=UTC)).days
         days_remaining = trial_period_days - days_since_last_payment
     else:
-        days_since_creation = (datetime.now(UTC) - team.created_at).days
+        days_since_creation = (datetime.now(UTC) - team.created_at.replace(tzinfo=UTC)).days
         days_remaining = trial_period_days - days_since_creation
 
     if days_remaining <= 0:
