@@ -1,4 +1,5 @@
 from fastapi import Request
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.security import get_current_user_from_auth
 from app.db.database import get_db
@@ -12,6 +13,25 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Skip auth for certain paths
         if request.url.path in settings.PUBLIC_PATHS:
             return await call_next(request)
+
+        # Check Bearer token for /metrics endpoint
+        if request.url.path == "/metrics":
+            auth_header = request.headers.get("authorization")
+            if auth_header and auth_header.startswith("Bearer "):
+                bearer_token = auth_header.split(" ")[1]
+
+                if settings.PROMETHEUS_API_KEY and bearer_token == settings.PROMETHEUS_API_KEY:
+                    return await call_next(request)
+                else:
+                    logger.info("Metrics Bearer token validation failed")
+            else:
+                logger.info("No valid Metrics Bearer token found in authorization header")
+
+            # If no valid Bearer token, return 404
+            return JSONResponse(
+                status_code=404,
+                content={"detail": "Not Found"}
+            )
 
         # Initialize user as None
         request.state.user = None
