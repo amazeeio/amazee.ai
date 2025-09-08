@@ -5,7 +5,7 @@ from typing import Optional
 
 from app.db.database import get_db
 from app.db.models import DBTeam, DBPricingTable
-from app.core.security import check_system_admin, get_role_min_team_admin, get_current_user_from_auth
+from app.core.security import get_role_min_system_admin, get_role_min_team_admin, get_current_user_from_auth
 from app.schemas.models import PricingTableCreate, PricingTableResponse, PricingTablesResponse
 from app.core.config import settings
 
@@ -16,8 +16,8 @@ router = APIRouter(
     tags=["pricing-tables"]
 )
 
-@router.post("", response_model=PricingTableResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(check_system_admin)])
-@router.post("/", response_model=PricingTableResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(check_system_admin)])
+@router.post("", response_model=PricingTableResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(get_role_min_system_admin)])
+@router.post("/", response_model=PricingTableResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(get_role_min_system_admin)])
 async def create_pricing_table(
     pricing_table: PricingTableCreate,
     db: Session = Depends(get_db)
@@ -113,8 +113,8 @@ async def get_pricing_table(
         updated_at=pricing_table.updated_at or pricing_table.created_at
     )
 
-@router.delete("", dependencies=[Depends(check_system_admin)])
-@router.delete("/", dependencies=[Depends(check_system_admin)])
+@router.delete("", dependencies=[Depends(get_role_min_system_admin)])
+@router.delete("/", dependencies=[Depends(get_role_min_system_admin)])
 async def delete_pricing_table(
     table_type: str,
     db: Session = Depends(get_db)
@@ -146,7 +146,7 @@ async def delete_pricing_table(
 
     return {"message": f"Pricing table of type '{table_type}' deleted successfully"}
 
-@router.get("/list", response_model=PricingTablesResponse, dependencies=[Depends(check_system_admin)])
+@router.get("/list", response_model=PricingTablesResponse, dependencies=[Depends(get_role_min_system_admin)])
 async def get_all_pricing_tables(
     db: Session = Depends(get_db)
 ):

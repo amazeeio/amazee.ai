@@ -143,7 +143,7 @@ def test_team_user(db, test_team):
         hashed_password=get_password_hash("password123"),
         is_active=True,
         is_admin=False,
-        role="user",
+        role="key_creator",
         team_id=test_team.id,
         created_at=datetime.now(UTC)
     )

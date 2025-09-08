@@ -9,7 +9,7 @@ from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
 from app.schemas.models import Region, RegionCreate, RegionResponse, User, RegionUpdate, TeamSummary
 from app.db.models import DBRegion, DBPrivateAIKey, DBTeamRegion, DBTeam
-from app.core.security import check_system_admin
+from app.core.security import get_role_min_system_admin
 
 logger = logging.getLogger(__name__)
 
@@ -89,8 +89,8 @@ async def validate_database_connection(host: str, port: int, user: str, password
             detail=f"Database connection validation failed: {str(e)}"
         )
 
-@router.post("", response_model=Region, dependencies=[Depends(check_system_admin)])
-@router.post("/", response_model=Region, dependencies=[Depends(check_system_admin)])
+@router.post("", response_model=Region, dependencies=[Depends(get_role_min_system_admin)])
+@router.post("/", response_model=Region, dependencies=[Depends(get_role_min_system_admin)])
 async def create_region(
     region: RegionCreate,
     db: Session = Depends(get_db)
@@ -158,13 +158,13 @@ async def list_regions(
 
     return non_dedicated_regions + team_dedicated_regions
 
-@router.get("/admin", response_model=List[Region], dependencies=[Depends(check_system_admin)])
+@router.get("/admin", response_model=List[Region], dependencies=[Depends(get_role_min_system_admin)])
 async def list_admin_regions(
     db: Session = Depends(get_db)
 ):
     return db.query(DBRegion).all()
 
-@router.get("/{region_id}", response_model=RegionResponse, dependencies=[Depends(check_system_admin)])
+@router.get("/{region_id}", response_model=RegionResponse, dependencies=[Depends(get_role_min_system_admin)])
 async def get_region(
     region_id: int,
     db: Session = Depends(get_db)
@@ -177,7 +177,7 @@ async def get_region(
         )
     return region
 
-@router.delete("/{region_id}", dependencies=[Depends(check_system_admin)])
+@router.delete("/{region_id}", dependencies=[Depends(get_role_min_system_admin)])
 async def delete_region(
     region_id: int,
     db: Session = Depends(get_db)
@@ -209,7 +209,7 @@ async def delete_region(
         )
     return {"message": "Region deleted successfully"}
 
-@router.put("/{region_id}", response_model=Region, dependencies=[Depends(check_system_admin)])
+@router.put("/{region_id}", response_model=Region, dependencies=[Depends(get_role_min_system_admin)])
 async def update_region(
     region_id: int,
     region: RegionUpdate,
@@ -251,7 +251,7 @@ async def update_region(
         )
     return db_region
 
-@router.post("/{region_id}/teams/{team_id}", dependencies=[Depends(check_system_admin)])
+@router.post("/{region_id}/teams/{team_id}", dependencies=[Depends(get_role_min_system_admin)])
 async def associate_team_with_region(
     region_id: int,
     team_id: int,
@@ -311,7 +311,7 @@ async def associate_team_with_region(
 
     return {"message": "Team associated with region successfully"}
 
-@router.delete("/{region_id}/teams/{team_id}", dependencies=[Depends(check_system_admin)])
+@router.delete("/{region_id}/teams/{team_id}", dependencies=[Depends(get_role_min_system_admin)])
 async def disassociate_team_from_region(
     region_id: int,
     team_id: int,
@@ -345,7 +345,7 @@ async def disassociate_team_from_region(
 
     return {"message": "Team disassociated from region successfully"}
 
-@router.get("/{region_id}/teams", response_model=List[TeamSummary], dependencies=[Depends(check_system_admin)])
+@router.get("/{region_id}/teams", response_model=List[TeamSummary], dependencies=[Depends(get_role_min_system_admin)])
 async def list_teams_for_region(
     region_id: int,
     db: Session = Depends(get_db)
