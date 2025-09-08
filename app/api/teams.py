@@ -241,6 +241,9 @@ async def list_teams_for_sales(
     Accessible by system admin and sales users.
     """
     try:
+        # Track unreachable endpoints for logging at the end (use set to avoid duplicates)
+        unreachable_endpoints = set()
+
         # Pre-fetch all regions once to avoid repeated queries
         all_regions = db.query(DBRegion).filter(DBRegion.is_active == True).all()
         regions_map = {r.id: r for r in all_regions}
@@ -302,7 +305,13 @@ async def list_teams_for_sales(
                         key_spend = key_data.get("info", {}).get("spend", 0.0)
                         total_spend += float(key_spend)
                     except Exception as e:
-                        logger.warning(f"Failed to get spend for key {key.id}: {str(e)}")
+                        # Track unreachable endpoint for logging at the end (only once per region)
+                        region = regions_map[key.region_id]
+                        endpoint_info = f"Region: {region.name}, Error: {str(e)}"
+                        unreachable_endpoints.add(endpoint_info)
+
+                        # Default spend to 0 for failed litellm calls so rest of data can be displayed
+                        logger.warning(f"Failed to get spend for key {key.id} in region {region.name}: {str(e)}")
                         # Continue with other keys even if one fails
 
             # Convert set to list for the response
@@ -325,6 +334,12 @@ async def list_teams_for_sales(
             )
 
             sales_teams.append(sales_team)
+
+        # Log all unreachable endpoints at the end
+        if unreachable_endpoints:
+            logger.warning(f"Unreachable LiteLLM endpoints encountered: {len(unreachable_endpoints)} unique endpoints")
+            for endpoint in unreachable_endpoints:
+                logger.warning(f"  - {endpoint}")
 
         return SalesTeamsResponse(teams=sales_teams)
 

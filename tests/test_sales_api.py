@@ -417,3 +417,158 @@ def test_team_with_last_payment_days_calculation(client, admin_token, test_team,
     team_data = data["teams"][0]
     # Should calculate from last_payment date (30 - 10 = 20 days remaining)
     assert team_data["trial_status"] == "20 days left"
+
+
+@patch('app.api.teams.logger')
+@patch('app.services.litellm.LiteLLMService.get_key_info', new_callable=AsyncMock)
+def test_list_teams_for_sales_unreachable_endpoints_logging(mock_get_info, mock_logger, client, admin_token, test_team, test_product,
+                                                           test_region, test_ai_key, db):
+    """
+    Given a team with AI keys in a region where LiteLLM endpoint is unreachable
+    When calling list_teams_for_sales
+    Then the function should log unreachable endpoints once per region and default spend to 0
+    """
+    # Create team-product association
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+
+    # Create a second AI key in the same region to test duplicate endpoint logging
+    ai_key2 = DBPrivateAIKey(
+        database_name="test-db-2",
+        name="Test Key 2",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="test-token-2",
+        litellm_api_url="https://test-litellm.com",
+        owner_id=None,
+        team_id=test_team.id,
+        region_id=test_region.id
+    )
+    db.add(ai_key2)
+    db.commit()
+
+    # Mock LiteLLM service to raise an exception (simulating unreachable endpoint)
+    mock_get_info.side_effect = Exception("Connection timeout")
+
+    response = client.get(
+        "/teams/sales/list-teams",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    # Should still succeed despite LiteLLM errors
+    assert response.status_code == 200
+    data = response.json()
+    team_data = data["teams"][0]
+
+    # Spend should default to 0 for failed litellm calls
+    assert team_data["total_spend"] == 0.0
+
+    # Verify individual key failure warnings were logged (one per key)
+    individual_warnings = [call for call in mock_logger.warning.call_args_list
+                          if "Failed to get spend for key" in str(call)]
+    assert len(individual_warnings) == 2  # Two keys, two individual warnings
+
+    # Verify summary logging of unreachable endpoints (should be logged once per unique endpoint)
+    summary_warnings = [call for call in mock_logger.warning.call_args_list
+                       if "Unreachable LiteLLM endpoints encountered" in str(call)]
+    assert len(summary_warnings) == 1  # One summary message
+
+    # Verify the summary message contains the correct count
+    summary_call = summary_warnings[0]
+    assert "1 unique endpoints" in str(summary_call)
+
+    # Verify individual endpoint details were logged
+    endpoint_details = [call for call in mock_logger.warning.call_args_list
+                       if "Region:" in str(call) and "Error:" in str(call)]
+    assert len(endpoint_details) == 1  # One unique endpoint logged
+
+
+@patch('app.api.teams.logger')
+@patch('app.services.litellm.LiteLLMService.get_key_info', new_callable=AsyncMock)
+def test_list_teams_for_sales_multiple_unreachable_regions(mock_get_info, mock_logger, client, admin_token, test_team, test_product,
+                                                          test_region, test_ai_key, db):
+    """
+    Given a team with AI keys in multiple regions where some endpoints are unreachable
+    When calling list_teams_for_sales
+    Then the function should log each unreachable endpoint once and default spend to 0
+    """
+    # Create a second region
+    region2 = DBRegion(
+        name="Test Region 2",
+        postgres_host="test-host-2",
+        postgres_port=5432,
+        postgres_admin_user="test-user-2",
+        postgres_admin_password="test-pass-2",
+        litellm_api_url="https://test-litellm-2.com",
+        litellm_api_key="test-key-2",
+        is_active=True
+    )
+    db.add(region2)
+    db.commit()
+
+    # Create team-product association
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+
+    # Create AI key in second region
+    ai_key2 = DBPrivateAIKey(
+        database_name="test-db-2",
+        name="Test Key 2",
+        database_host="test-host-2",
+        database_username="test-user-2",
+        database_password="test-pass-2",
+        litellm_token="test-token-2",
+        litellm_api_url="https://test-litellm-2.com",
+        owner_id=None,
+        team_id=test_team.id,
+        region_id=region2.id
+    )
+    db.add(ai_key2)
+    db.commit()
+
+    # Mock LiteLLM service to raise different exceptions for different regions
+    mock_get_info.side_effect = [
+        Exception("Connection timeout"),  # First region fails
+        Exception("Service unavailable")  # Second region fails
+    ]
+
+    response = client.get(
+        "/teams/sales/list-teams",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    # Should still succeed despite LiteLLM errors
+    assert response.status_code == 200
+    data = response.json()
+    team_data = data["teams"][0]
+
+    # Spend should default to 0 for failed litellm calls
+    assert team_data["total_spend"] == 0.0
+
+    # Should include both regions in the response
+    assert len(team_data["regions"]) == 2
+    assert test_region.name in team_data["regions"]
+    assert region2.name in team_data["regions"]
+
+    # Verify individual key failure warnings were logged (one per key)
+    individual_warnings = [call for call in mock_logger.warning.call_args_list
+                          if "Failed to get spend for key" in str(call)]
+    assert len(individual_warnings) == 2  # Two keys, two individual warnings
+
+    # Verify summary logging shows 2 unique endpoints
+    summary_warnings = [call for call in mock_logger.warning.call_args_list
+                       if "Unreachable LiteLLM endpoints encountered" in str(call)]
+    assert len(summary_warnings) == 1  # One summary message
+    assert "2 unique endpoints" in str(summary_warnings[0])
+
+    # Verify individual endpoint details were logged for both regions
+    endpoint_details = [call for call in mock_logger.warning.call_args_list
+                       if "Region:" in str(call) and "Error:" in str(call)]
+    assert len(endpoint_details) == 2  # Two unique endpoints logged
