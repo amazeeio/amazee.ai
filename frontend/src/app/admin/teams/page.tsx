@@ -11,6 +11,8 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  TablePagination,
+  useTablePagination,
 } from '@/components/ui/table';
 import {
   Dialog,
@@ -268,6 +270,17 @@ export default function TeamsPage() {
 
     return filtered;
   }, [teams, nameFilter, adminEmailFilter, statusFilter, sortField, sortDirection]);
+
+  // Pagination
+  const {
+    currentPage,
+    pageSize,
+    totalPages,
+    totalItems,
+    paginatedData,
+    goToPage,
+    changePageSize,
+  } = useTablePagination(filteredAndSortedTeams, 10);
 
   const hasActiveFilters = Boolean(nameFilter.trim() || adminEmailFilter.trim() || statusFilter !== 'all');
 
@@ -1003,14 +1016,14 @@ export default function TeamsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredAndSortedTeams.length === 0 ? (
+                {paginatedData.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={7} className="text-center py-6">
                       No teams found. Create a new team to get started.
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filteredAndSortedTeams.map((team) => (
+                  paginatedData.map((team) => (
                     <React.Fragment key={team.id}>
                       <TableRow
                         className="cursor-pointer hover:bg-muted/50"
@@ -1380,6 +1393,15 @@ export default function TeamsPage() {
             </Table>
           </div>
         )}
+
+        <TablePagination
+          currentPage={currentPage}
+          totalPages={totalPages}
+          pageSize={pageSize}
+          totalItems={totalItems}
+          onPageChange={goToPage}
+          onPageSizeChange={changePageSize}
+        />
 
         {/* Dialog for adding existing users to a team */}
         <Dialog open={isAddingUserToTeam} onOpenChange={setIsAddingUserToTeam}>
