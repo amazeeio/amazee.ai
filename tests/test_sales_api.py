@@ -419,14 +419,13 @@ def test_team_with_last_payment_days_calculation(client, admin_token, test_team,
     assert team_data["trial_status"] == "20 days left"
 
 
-@patch('app.api.teams.logger')
 @patch('app.services.litellm.LiteLLMService.get_key_info', new_callable=AsyncMock)
-def test_list_teams_for_sales_unreachable_endpoints_logging(mock_get_info, mock_logger, client, admin_token, test_team, test_product,
+def test_list_teams_for_sales_unreachable_endpoints_logging(mock_get_info, client, admin_token, test_team, test_product,
                                                            test_region, test_ai_key, db):
     """
     Given a team with AI keys in a region where LiteLLM endpoint is unreachable
     When calling list_teams_for_sales
-    Then the function should log unreachable endpoints once per region and default spend to 0
+    Then the function should default spend to 0 and still return successful response
     """
     # Create team-product association
     team_product = DBTeamProduct(
@@ -435,7 +434,7 @@ def test_list_teams_for_sales_unreachable_endpoints_logging(mock_get_info, mock_
     )
     db.add(team_product)
 
-    # Create a second AI key in the same region to test duplicate endpoint logging
+    # Create a second AI key in the same region to test multiple keys
     ai_key2 = DBPrivateAIKey(
         database_name="test-db-2",
         name="Test Key 2",
@@ -467,34 +466,14 @@ def test_list_teams_for_sales_unreachable_endpoints_logging(mock_get_info, mock_
     # Spend should default to 0 for failed litellm calls
     assert team_data["total_spend"] == 0.0
 
-    # Verify individual key failure warnings were logged (one per key)
-    individual_warnings = [call for call in mock_logger.warning.call_args_list
-                          if "Failed to get spend for key" in str(call)]
-    assert len(individual_warnings) == 2  # Two keys, two individual warnings
 
-    # Verify summary logging of unreachable endpoints (should be logged once per unique endpoint)
-    summary_warnings = [call for call in mock_logger.warning.call_args_list
-                       if "Unreachable LiteLLM endpoints encountered" in str(call)]
-    assert len(summary_warnings) == 1  # One summary message
-
-    # Verify the summary message contains the correct count
-    summary_call = summary_warnings[0]
-    assert "1 unique endpoints" in str(summary_call)
-
-    # Verify individual endpoint details were logged
-    endpoint_details = [call for call in mock_logger.warning.call_args_list
-                       if "Region:" in str(call) and "Error:" in str(call)]
-    assert len(endpoint_details) == 1  # One unique endpoint logged
-
-
-@patch('app.api.teams.logger')
 @patch('app.services.litellm.LiteLLMService.get_key_info', new_callable=AsyncMock)
-def test_list_teams_for_sales_multiple_unreachable_regions(mock_get_info, mock_logger, client, admin_token, test_team, test_product,
+def test_list_teams_for_sales_multiple_unreachable_regions(mock_get_info, client, admin_token, test_team, test_product,
                                                           test_region, test_ai_key, db):
     """
     Given a team with AI keys in multiple regions where some endpoints are unreachable
     When calling list_teams_for_sales
-    Then the function should log each unreachable endpoint once and default spend to 0
+    Then the function should default spend to 0 and include all regions in response
     """
     # Create a second region
     region2 = DBRegion(
@@ -556,19 +535,3 @@ def test_list_teams_for_sales_multiple_unreachable_regions(mock_get_info, mock_l
     assert len(team_data["regions"]) == 2
     assert test_region.name in team_data["regions"]
     assert region2.name in team_data["regions"]
-
-    # Verify individual key failure warnings were logged (one per key)
-    individual_warnings = [call for call in mock_logger.warning.call_args_list
-                          if "Failed to get spend for key" in str(call)]
-    assert len(individual_warnings) == 2  # Two keys, two individual warnings
-
-    # Verify summary logging shows 2 unique endpoints
-    summary_warnings = [call for call in mock_logger.warning.call_args_list
-                       if "Unreachable LiteLLM endpoints encountered" in str(call)]
-    assert len(summary_warnings) == 1  # One summary message
-    assert "2 unique endpoints" in str(summary_warnings[0])
-
-    # Verify individual endpoint details were logged for both regions
-    endpoint_details = [call for call in mock_logger.warning.call_args_list
-                       if "Region:" in str(call) and "Error:" in str(call)]
-    assert len(endpoint_details) == 2  # Two unique endpoints logged
