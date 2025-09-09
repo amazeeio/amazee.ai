@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, UTC
-from typing import Optional, Literal, Dict
+from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status, Cookie, Header, Request
@@ -9,6 +9,13 @@ from app.core.config import settings
 from app.db.database import get_db
 from sqlalchemy.orm import Session
 from app.db.models import DBUser, DBAPIToken
+from app.core.rbac import (
+    require_system_admin,
+    require_team_admin,
+    require_key_creator_or_higher,
+    require_sales_or_higher,
+    require_private_ai_access,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -17,18 +24,6 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Custom bearer scheme
 bearer_scheme = HTTPBearer(auto_error=False)
-
-# Define valid user roles as a Literal type
-UserRole = Literal["admin", "key_creator", "read_only", "user", "system_admin"]
-
-# Define a hierarchy for roles
-user_role_hierarchy: Dict[UserRole, int] = {
-    "admin": 0,
-    "user": 1,
-    "key_creator": 2,
-    "read_only": 3,
-    "system_admin": 4,
-}
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
@@ -137,35 +132,40 @@ async def get_current_user_from_auth(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-async def check_system_admin(current_user: DBUser = Depends(get_current_user_from_auth)):
+async def get_role_min_system_admin(current_user: DBUser = Depends(get_current_user_from_auth)):
     """Check if the current user is a system admin."""
-    if not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to perform this action"
-        )
-
-def get_user_role(minimum_role: UserRole, current_user: DBUser):
-    if current_user.is_admin:
-        return "system_admin"
-    elif user_role_hierarchy[current_user.role] > user_role_hierarchy[minimum_role]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to perform this action"
-        )
-    return current_user.role
+    dependency = require_system_admin()
+    return dependency.check_access(current_user)
 
 async def get_role_min_team_admin(current_user: DBUser = Depends(get_current_user_from_auth)):
-    return get_user_role("admin", current_user)
+    """Require team admin role or higher."""
+    dependency = require_team_admin()
+    return dependency.check_access(current_user)
 
-async def check_specific_team_admin(current_user: DBUser = Depends(get_current_user_from_auth), team_id: int = None):
-    get_user_role("admin", current_user)
-    # system administrators will fail the team check
+async def get_role_min_specific_team_admin(current_user: DBUser = Depends(get_current_user_from_auth), team_id: int = None):
+    """Check if user is admin of specific team."""
+    dependency = require_team_admin()
+    role = dependency.check_access(current_user)
+
+    # Additional team-specific check
     if not current_user.is_admin and not current_user.team_id == team_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to perform this action"
         )
+    return role
 
 async def get_role_min_key_creator(current_user: DBUser = Depends(get_current_user_from_auth)):
-    return get_user_role("key_creator", current_user)
+    """Require key creator role or higher."""
+    dependency = require_key_creator_or_higher()
+    return dependency.check_access(current_user)
+
+async def get_private_ai_access(current_user: DBUser = Depends(get_current_user_from_auth)):
+    """Require access to private AI operations - allows system users or team key creators."""
+    dependency = require_private_ai_access()
+    return dependency.check_access(current_user)
+
+async def check_sales_or_higher(current_user: DBUser = Depends(get_current_user_from_auth)):
+    """Check if the current user is a sales user or system admin."""
+    dependency = require_sales_or_higher()
+    return dependency.check_access(current_user)

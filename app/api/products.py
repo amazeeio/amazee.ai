@@ -5,15 +5,15 @@ from datetime import datetime, UTC
 
 from app.db.database import get_db
 from app.db.models import DBProduct, DBTeamProduct, DBTeam
-from app.core.security import check_system_admin, get_current_user_from_auth, get_role_min_team_admin
+from app.core.security import get_role_min_system_admin, get_current_user_from_auth, get_role_min_team_admin
 from app.schemas.models import Product, ProductCreate, ProductUpdate
 
 router = APIRouter(
     tags=["products"]
 )
 
-@router.post("", response_model=Product, status_code=status.HTTP_201_CREATED, dependencies=[Depends(check_system_admin)])
-@router.post("/", response_model=Product, status_code=status.HTTP_201_CREATED, dependencies=[Depends(check_system_admin)])
+@router.post("", response_model=Product, status_code=status.HTTP_201_CREATED, dependencies=[Depends(get_role_min_system_admin)])
+@router.post("/", response_model=Product, status_code=status.HTTP_201_CREATED, dependencies=[Depends(get_role_min_system_admin)])
 async def create_product(
     product: ProductCreate,
     db: Session = Depends(get_db)
@@ -105,7 +105,7 @@ async def get_product(
         )
     return product
 
-@router.put("/{product_id}", response_model=Product, dependencies=[Depends(check_system_admin)])
+@router.put("/{product_id}", response_model=Product, dependencies=[Depends(get_role_min_system_admin)])
 async def update_product(
     product_id: str,
     product_update: ProductUpdate,
@@ -132,7 +132,7 @@ async def update_product(
 
     return product
 
-@router.delete("/{product_id}", dependencies=[Depends(check_system_admin)])
+@router.delete("/{product_id}", dependencies=[Depends(get_role_min_system_admin)])
 async def delete_product(
     product_id: str,
     db: Session = Depends(get_db)

@@ -363,3 +363,27 @@ class SubscriptionResponse(BaseModel):
     team_id: int
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+# Sales Dashboard schemas
+class SalesProduct(BaseModel):
+    id: str
+    name: str
+    active: bool
+    model_config = ConfigDict(from_attributes=True)
+
+class SalesTeam(BaseModel):
+    id: int
+    name: str
+    admin_email: str
+    created_at: datetime
+    last_payment: Optional[datetime] = None
+    is_always_free: bool
+    products: List[SalesProduct]
+    regions: List[str]
+    total_spend: float
+    trial_status: str
+    model_config = ConfigDict(from_attributes=True)
+
+class SalesTeamsResponse(BaseModel):
+    teams: List[SalesTeam]
+    model_config = ConfigDict(from_attributes=True)

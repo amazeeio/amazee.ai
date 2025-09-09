@@ -81,6 +81,7 @@ const USER_ROLES = [
   { value: 'admin', label: 'Admin' },
   { value: 'key_creator', label: 'Key Creator' },
   { value: 'read_only', label: 'Read Only' },
+  { value: 'sales', label: 'Sales' },
 ];
 
 type SortField = 'email' | 'team_name' | 'role' | null;
@@ -406,6 +407,15 @@ export default function UsersPage() {
     void fetchUsers();
   }, [fetchUsers]);
 
+  // Update role when switching between system and team user types
+  useEffect(() => {
+    if (isSystemUser) {
+      setNewUserRole('admin'); // Default to admin for system users
+    } else {
+      setNewUserRole('read_only'); // Default to read_only for team users
+    }
+  }, [isSystemUser]);
+
   if (isLoadingUsers) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
@@ -452,6 +462,9 @@ export default function UsersPage() {
       if (newUserTeamId) {
         userData.team_id = newUserTeamId;
       }
+    } else {
+      // For system users, also set the role
+      userData.role = newUserRole;
     }
 
     createUserMutation.mutate(userData);
@@ -545,7 +558,7 @@ export default function UsersPage() {
                     </Select>
                   </div>
                   <div className="space-y-2">
-                    <label className="text-sm font-medium">Role</label>
+                    <label className="text-sm font-medium">Team Role</label>
                     <Select
                       value={newUserRole}
                       onValueChange={setNewUserRole}
@@ -554,7 +567,7 @@ export default function UsersPage() {
                         <SelectValue placeholder="Select a role" />
                       </SelectTrigger>
                       <SelectContent>
-                        {USER_ROLES.map((role) => (
+                        {USER_ROLES.filter(role => role.value !== 'sales').map((role) => (
                           <SelectItem key={role.value} value={role.value}>
                             {role.label}
                           </SelectItem>
@@ -563,6 +576,23 @@ export default function UsersPage() {
                     </Select>
                   </div>
                 </>
+              )}
+              {isSystemUser && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">System Role</label>
+                  <Select
+                    value={newUserRole}
+                    onValueChange={setNewUserRole}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a system role" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="admin">Admin</SelectItem>
+                      <SelectItem value="sales">Sales</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               )}
               <DialogFooter>
                 <Button
