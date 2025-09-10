@@ -1,7 +1,7 @@
 import re
 from datetime import datetime, UTC, timedelta
 from sqlalchemy.orm import Session
-from app.db.models import DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey, DBUser, DBRegion
+from app.db.models import DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey, DBUser, DBRegion, DBTeamMetrics
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
 import logging
@@ -580,6 +580,31 @@ async def monitor_teams(db: Session):
                 team_id=str(team.id),
                 team_name=team.name
             ).set(team_total)
+
+            # Update or create team metrics record
+            regions_list = list(keys_by_region.keys())
+            region_names = [region.name for region in regions_list]
+
+            # Check if metrics record exists
+            team_metrics = db.query(DBTeamMetrics).filter(DBTeamMetrics.team_id == team.id).first()
+
+            if team_metrics:
+                logger.info(f"metrics last updated at {team_metrics.last_updated}, curent time is {current_time}")
+                # Update existing metrics
+                team_metrics.total_spend = team_total
+                team_metrics.last_spend_calculation = current_time
+                team_metrics.regions = region_names
+                team_metrics.last_updated = current_time
+            else:
+                # Create new metrics record
+                team_metrics = DBTeamMetrics(
+                    team_id=team.id,
+                    total_spend=team_total,
+                    last_spend_calculation=current_time,
+                    regions=region_names,
+                    last_updated=current_time
+                )
+                db.add(team_metrics)
 
             # Update last_monitored timestamp only if notifications were sent
             if should_send_notifications:

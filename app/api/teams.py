@@ -6,7 +6,7 @@ from datetime import datetime, UTC
 import logging
 
 from app.db.database import get_db
-from app.db.models import DBTeam, DBTeamProduct, DBUser, DBPrivateAIKey, DBRegion, DBTeamRegion, DBProduct
+from app.db.models import DBTeam, DBTeamProduct, DBUser, DBPrivateAIKey, DBRegion, DBTeamRegion, DBProduct, DBTeamMetrics
 from app.core.security import get_role_min_system_admin, get_role_min_specific_team_admin, get_current_user_from_auth, check_sales_or_higher
 from app.schemas.models import (
     Team, TeamCreate, TeamUpdate,
@@ -248,14 +248,6 @@ async def list_teams_for_sales(
         all_regions = db.query(DBRegion).filter(DBRegion.is_active == True).all()
         regions_map = {r.id: r for r in all_regions}
 
-        # Pre-create LiteLLM services for each region to avoid re-instantiation
-        litellm_services = {}
-        for region in all_regions:
-            litellm_services[region.id] = LiteLLMService(
-                api_url=region.litellm_api_url,
-                api_key=region.litellm_api_key
-            )
-
         # Get all teams with their basic information
         teams = db.query(DBTeam).all()
 
@@ -277,41 +269,70 @@ async def list_teams_for_sales(
                 for team_product in team_products
             ]
 
-            # Get team AI keys (both team-owned and user-owned) and calculate total spend
-            team_users = db.query(DBUser).filter(DBUser.team_id == team.id).all()
-            team_user_ids = [user.id for user in team_users]
+            # Try to get cached metrics first
+            team_metrics = db.query(DBTeamMetrics).filter(DBTeamMetrics.team_id == team.id).first()
 
-            team_keys = db.query(DBPrivateAIKey).filter(
-                (DBPrivateAIKey.team_id == team.id) |  # Team-owned keys
-                (DBPrivateAIKey.owner_id.in_(team_user_ids))  # User-owned keys by team members
-            ).all()
+            if team_metrics:
+                # Use cached data
+                total_spend = team_metrics.total_spend
+                regions = team_metrics.regions or []
+            else:
+                # Fallback to real-time calculation if no cached data
+                logger.warning(f"No cached metrics found for team {team.id}, falling back to real-time calculation")
+                current_time = datetime.now(UTC)
 
-            # Calculate total spend from all AI keys and build regions list as we go
-            total_spend = 0.0
-            regions_set = set()
+                # Create LiteLLM services only when needed for fallback
+                litellm_services = {}
+                for region in all_regions:
+                    litellm_services[region.id] = LiteLLMService(
+                        api_url=region.litellm_api_url,
+                        api_key=region.litellm_api_key
+                    )
 
-            for key in team_keys:
-                if key.litellm_token and key.region_id in regions_map:
-                    try:
-                        # Use pre-fetched region info and pre-created LiteLLM service
-                        region = regions_map[key.region_id]
-                        litellm_service = litellm_services[region.id]
+                # Get team AI keys (both team-owned and user-owned) and calculate total spend
+                team_users = db.query(DBUser).filter(DBUser.team_id == team.id).all()
+                team_user_ids = [user.id for user in team_users]
 
-                        # Add region name to our set
-                        regions_set.add(region.name)
+                team_keys = db.query(DBPrivateAIKey).filter(
+                    (DBPrivateAIKey.team_id == team.id) |  # Team-owned keys
+                    (DBPrivateAIKey.owner_id.in_(team_user_ids))  # User-owned keys by team members
+                ).all()
 
-                        # Get spend data from LiteLLM
-                        key_data = await litellm_service.get_key_info(key.litellm_token)
-                        key_spend = key_data.get("info", {}).get("spend", 0.0)
-                        total_spend += float(key_spend)
-                    except Exception as e:
-                        # Track unreachable endpoint for logging at the end (only once per region)
-                        region = regions_map[key.region_id]
-                        endpoint_info = f"Region: {region.name}"
-                        unreachable_endpoints.add(endpoint_info)
+                # Calculate total spend from all AI keys and build regions list as we go
+                total_spend = 0.0
+                regions_set = set()
 
-            # Convert set to list for the response
-            regions = list(regions_set)
+                for key in team_keys:
+                    if key.litellm_token and key.region_id in regions_map:
+                        try:
+                            # Use pre-fetched region info and pre-created LiteLLM service
+                            region = regions_map[key.region_id]
+                            litellm_service = litellm_services[region.id]
+
+                            # Add region name to our set
+                            regions_set.add(region.name)
+
+                            # Get spend data from LiteLLM
+                            key_data = await litellm_service.get_key_info(key.litellm_token)
+                            key_spend = key_data.get("info", {}).get("spend", 0.0)
+                            total_spend += float(key_spend)
+                        except Exception as e:
+                            # Track unreachable endpoint for logging at the end (only once per region)
+                            region = regions_map[key.region_id]
+                            endpoint_info = f"Region: {region.name}"
+                            unreachable_endpoints.add(endpoint_info)
+
+                # Convert set to list for the response
+                regions = list(regions_set)
+                # Create new metrics record
+                team_metrics = DBTeamMetrics(
+                    team_id=team.id,
+                    total_spend=total_spend,
+                    last_spend_calculation=current_time,
+                    regions=regions,
+                    last_updated=current_time
+                )
+                db.add(team_metrics)
 
             # Calculate trial status
             trial_status = _calculate_trial_status(team, products)
@@ -330,6 +351,8 @@ async def list_teams_for_sales(
             )
 
             sales_teams.append(sales_team)
+        # Any metrics calculated on-the-fly will be cached
+        db.commit()
 
         # Log all unreachable endpoints at the end
         if unreachable_endpoints:
