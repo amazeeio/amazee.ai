@@ -1,5 +1,5 @@
 import pytest
-from app.db.models import DBProduct, DBTeamProduct, DBPrivateAIKey, DBTeam, DBUser
+from app.db.models import DBProduct, DBTeamProduct, DBPrivateAIKey, DBTeam, DBTeamMetrics
 from datetime import datetime, UTC, timedelta
 from app.core.worker import (
     apply_product_for_team,
@@ -1832,3 +1832,104 @@ async def test_monitor_team_keys_expiry_beyond_next_month(mock_litellm, db, test
 
     # Verify team total spend is calculated correctly
     assert team_total == 10.0
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_monitor_teams_populates_team_metrics(mock_litellm_class, db, test_team, test_region):
+    """
+    Test that monitor_teams function populates DBTeamMetrics table.
+
+    GIVEN: A team with AI keys and regions
+    WHEN: monitor_teams is called
+    THEN: DBTeamMetrics record is created/updated with spend data
+    """
+    # Arrange
+    # Create a test key for the team
+    test_key = DBPrivateAIKey(
+        name="test-key",
+        team_id=test_team.id,
+        region_id=test_region.id,
+        litellm_token="test-token-123",
+        created_at=datetime.now(UTC)
+    )
+    db.add(test_key)
+    db.commit()
+
+    # Mock LiteLLM service responses
+    mock_litellm_service = AsyncMock()
+    mock_litellm_class.return_value = mock_litellm_service
+    mock_litellm_service.get_key_info.return_value = {
+        "info": {
+            "spend": 75.50,
+            "max_budget": 100.0,
+            "key_alias": "test-key"
+        }
+    }
+
+    # Act
+    await monitor_teams(db)
+
+    # Assert
+    metrics = db.query(DBTeamMetrics).filter(DBTeamMetrics.team_id == test_team.id).first()
+    assert metrics is not None
+    assert metrics.total_spend == 75.50
+    assert test_region.name in metrics.regions
+    assert metrics.last_spend_calculation is not None
+
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_monitor_teams_updates_existing_metrics(mock_litellm_class, db, test_team, test_region):
+    """
+    Test that monitor_teams updates existing DBTeamMetrics records.
+
+    GIVEN: A team with existing metrics record
+    WHEN: monitor_teams is called again
+    THEN: The existing metrics record is updated with new data
+    """
+    # Arrange
+    # Create existing metrics with a fixed old timestamp
+    old_timestamp = datetime.now(UTC) - timedelta(hours=1)
+    existing_metrics = DBTeamMetrics(
+        team_id=test_team.id,
+        total_spend=50.0,
+        last_spend_calculation=old_timestamp,
+        regions=["old-region"],
+        last_updated=old_timestamp
+    )
+    db.add(existing_metrics)
+    db.commit()
+    old_update_date = existing_metrics.last_updated
+
+    # Create a test key
+    test_key = DBPrivateAIKey(
+        name="test-key",
+        team_id=test_team.id,
+        region_id=test_region.id,
+        litellm_token="test-token-123",
+        created_at=datetime.now(UTC)
+    )
+    db.add(test_key)
+    db.commit()
+
+    # Mock LiteLLM service responses
+    mock_litellm_service = AsyncMock()
+    mock_litellm_class.return_value = mock_litellm_service
+    mock_litellm_service.get_key_info.return_value = {
+        "info": {
+            "spend": 125.75,
+            "max_budget": 200.0,
+            "key_alias": "test-key"
+        }
+    }
+
+    # Act
+    await monitor_teams(db)
+
+    # Assert
+    updated_metrics = db.query(DBTeamMetrics).filter(DBTeamMetrics.team_id == test_team.id).first()
+    assert updated_metrics is not None
+    assert updated_metrics.total_spend == 125.75
+    assert test_region.name in updated_metrics.regions
+    assert updated_metrics.last_updated > old_update_date
+

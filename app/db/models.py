@@ -18,7 +18,7 @@ class DBTeamProduct(Base):
     """
     __tablename__ = "team_products"
 
-    team_id = Column(Integer, ForeignKey('teams.id', ondelete='CASCADE'), primary_key=True, nullable=False)
+    team_id = Column(Integer, ForeignKey('teams.id'), primary_key=True, nullable=False)
     product_id = Column(String, ForeignKey('products.id', ondelete='CASCADE'), primary_key=True, nullable=False)
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
@@ -38,7 +38,7 @@ class DBTeamRegion(Base):
     """
     __tablename__ = "team_regions"
 
-    team_id = Column(Integer, ForeignKey('teams.id', ondelete='CASCADE'), primary_key=True, nullable=False)
+    team_id = Column(Integer, ForeignKey('teams.id'), primary_key=True, nullable=False)
     region_id = Column(Integer, ForeignKey('regions.id', ondelete='CASCADE'), primary_key=True, nullable=False)
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
@@ -114,6 +114,31 @@ class DBTeam(Base):
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="team")
     active_products = relationship("DBTeamProduct", back_populates="team")
     dedicated_regions = relationship("DBTeamRegion", back_populates="team")
+    metrics = relationship("DBTeamMetrics", back_populates="team", uselist=False, cascade="all, delete")
+
+class DBTeamMetrics(Base):
+    """
+    Cached team metrics table populated by the monitor_teams worker.
+    This table stores pre-calculated metrics to avoid expensive real-time
+    LiteLLM API calls in the sales dashboard.
+    """
+    __tablename__ = "team_metrics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    team_id = Column(Integer, ForeignKey('teams.id', ondelete='CASCADE'), unique=True, nullable=False, index=True)
+
+    # Spend metrics (the expensive calculation we want to cache)
+    total_spend = Column(Float, default=0.0, nullable=False)
+    last_spend_calculation = Column(DateTime(timezone=True), nullable=False)
+
+    # Region information (derived from team keys)
+    regions = Column(JSON, nullable=True)  # List of region names
+
+    # Monitoring metadata
+    last_updated = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    # Relationships
+    team = relationship("DBTeam", back_populates="metrics")
 
 class DBPrivateAIKey(Base):
     __tablename__ = "ai_tokens"
