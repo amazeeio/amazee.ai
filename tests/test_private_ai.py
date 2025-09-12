@@ -235,7 +235,7 @@ def test_create_private_ai_key_without_owner_or_team(mock_post, client, admin_to
 
 @patch("app.services.litellm.requests.post")
 def test_create_team_private_ai_key_as_key_creator(mock_post, client, team_key_creator_token, test_team_id, test_region, mock_litellm_response):
-    """Test that a team member with key_creator role cannot create a team key"""
+    """Test that a team member with key_creator role can create a team key"""
     # Mock the LiteLLM API response (though it shouldn't be called)
     mock_post.return_value.status_code = 200
     mock_post.return_value.json.return_value = mock_litellm_response
@@ -252,10 +252,12 @@ def test_create_team_private_ai_key_as_key_creator(mock_post, client, team_key_c
         }
     )
 
-    assert response.status_code == 403
-    assert "Not authorized to perform this action" in response.json()["detail"]
-    # Verify that the LiteLLM API was not called
-    mock_post.assert_not_called()
+    assert response.status_code == 200
+    data = response.json()
+    assert data["region"] == test_region.name
+    assert data["litellm_token"] == "test-private-key-123"
+    assert data["team_id"] == test_team_id
+    assert data["owner_id"] is None
 
 @patch("app.services.litellm.requests.post")
 def test_create_private_ai_key_with_both_owner_and_team(mock_post, client, admin_token, test_team, test_team_user, test_region, mock_litellm_response):
