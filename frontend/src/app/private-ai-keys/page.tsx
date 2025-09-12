@@ -4,10 +4,10 @@ import { useState } from 'react';
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query';
 import { Card, CardContent } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
-import { get, post } from '@/utils/api';
+import { get, post, del } from '@/utils/api';
 import { PrivateAIKeysTable } from '@/components/private-ai-keys-table';
 import { CreateAIKeyDialog } from '@/components/create-ai-key-dialog';
-import { useAuth } from '@/hooks/use-auth';
+import { getUserRole, useAuth } from '@/hooks/use-auth';
 import { usePrivateAIKeysData } from '@/hooks/use-private-ai-keys-data';
 
 
@@ -32,6 +32,7 @@ export default function DashboardPage() {
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
+  const mutatingRoles = ["admin", "key_creator", "system_admin"]
 
   // Fetch private AI keys using React Query
   const { data: privateAIKeys = [] } = useQuery<PrivateAIKey[]>({
@@ -76,7 +77,7 @@ export default function DashboardPage() {
   // Delete key mutation
   const deleteKeyMutation = useMutation({
     mutationFn: async (keyId: number) => {
-      const response = await post(`/private-ai-keys/${keyId}/delete`, {});
+      const response = await del(`/private-ai-keys/${keyId}`, {});
       return response.json();
     },
     onSuccess: () => {
@@ -107,8 +108,8 @@ export default function DashboardPage() {
       team_id?: number
     }) => {
       const endpoint = key_type === 'full' ? '/private-ai-keys' :
-                      key_type === 'llm' ? '/private-ai-keys/token' :
-                      '/private-ai-keys/vector-db';
+        key_type === 'llm' ? '/private-ai-keys/token' :
+          '/private-ai-keys/vector-db';
       const payload: { region_id: number; name: string; owner_id?: number; team_id?: number } = { region_id, name };
       if (owner_id) payload.owner_id = owner_id;
       if (team_id) payload.team_id = team_id;
@@ -176,7 +177,7 @@ export default function DashboardPage() {
         onDelete={(keyId) => deleteKeyMutation.mutate(keyId)}
         isLoading={createKeyMutation.isPending}
         showOwner={true}
-        allowModification={false}
+        allowModification={mutatingRoles.includes(getUserRole(user))}
         onUpdateBudget={(keyId, budgetDuration) => updateBudgetMutation.mutate({ keyId, budgetDuration })}
         isDeleting={deleteKeyMutation.isPending}
         isUpdatingBudget={updateBudgetMutation.isPending}

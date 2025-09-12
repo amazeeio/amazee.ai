@@ -26,3 +26,10 @@ export const isTeamAdmin = (user: User | null): boolean => {
   if (!user) return false;
   return !user.is_admin && user.team_id !== null && user.role === 'admin';
 };
+
+export const getUserRole = (user: User | null): string => {
+  if (!user) return "none";
+  if (user.is_admin) return "system_admin";
+  if (!user.role) return "user";
+  return user.role;
+}
