@@ -1,8 +1,5 @@
 import pytest
-from unittest.mock import Mock, patch, AsyncMock
-from app.api.billing import handle_stripe_event_background
-from app.db.models import DBTeamProduct
-from stripe._customer_session import CustomerSession
+from unittest.mock import patch, AsyncMock
 
 @patch('app.api.billing.create_portal_session', new_callable=AsyncMock)
 def test_get_portal_existing_customer(mock_create_portal, client, db, test_team, team_admin_token):

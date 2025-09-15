@@ -1,7 +1,7 @@
 import pytest
 from fastapi import HTTPException
 from app.db.models import DBTeam, DBRegion
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 @patch("app.api.regions.validate_litellm_endpoint")
 @patch("app.api.regions.validate_database_connection")
@@ -419,7 +419,7 @@ def test_delete_non_existent_region(client, admin_token):
     assert response.status_code == 404
     assert "Region not found" in response.json()["detail"]
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_delete_region_with_active_keys(mock_post, client, admin_token, test_region, db, test_admin):
     """Test that a region with active private AI keys cannot be deleted"""
     # Mock the LiteLLM API response
@@ -449,7 +449,7 @@ def test_delete_region_with_active_keys(mock_post, client, admin_token, test_reg
     assert "Cannot delete region" in response.json()["detail"]
     assert "keys(s) are currently using this region" in response.json()["detail"]
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_delete_region_with_active_vector_db(mock_post, client, admin_token, test_region, db, test_admin):
     """Test that a region with an active vector database cannot be deleted"""
     # Mock the LiteLLM API response

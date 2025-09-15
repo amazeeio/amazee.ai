@@ -3,7 +3,7 @@ from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBProduct, DBTeamProdu
 from app.main import app
 from app.core.security import get_password_hash
 from datetime import datetime, UTC
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 client = TestClient(app)
 
@@ -572,7 +572,7 @@ def test_team_admin_cannot_remove_user_from_team(client, team_admin_token, test_
     user_data = response.json()
     assert user_data["team_id"] == test_team_user.team_id
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 @patch("app.api.teams.SESService")
 def test_extend_team_trial_success(mock_ses_class, mock_litellm_post, client, admin_token, test_team, test_region, db):
     """Test successfully extending a team's trial period"""
@@ -636,7 +636,7 @@ def test_extend_team_trial_success(mock_ses_class, mock_litellm_post, client, ad
     assert call_args["template_name"] == "trial-extended"
     assert call_args["template_data"]["name"] == test_team.name
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 @patch("app.api.teams.SESService")
 def test_extend_team_trial_litellm_error(mock_ses_class, mock_litellm_post, client, admin_token, test_team, test_region, db):
     """Test extending a team's trial when LiteLLM API fails"""
@@ -681,7 +681,7 @@ def test_extend_team_trial_litellm_error(mock_ses_class, mock_litellm_post, clie
     # Verify email was still sent
     mock_ses_instance.send_email.assert_called_once()
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 @patch("app.api.teams.SESService")
 def test_extend_team_trial_email_error(mock_ses_class, mock_litellm_post, client, admin_token, test_team, test_region, db):
     """Test extending a team's trial when email sending fails"""
@@ -807,7 +807,7 @@ def test_toggle_always_free_email_error(mock_ses, client, admin_token, test_team
     mock_ses_instance.send_email.assert_called_once()
 
 # Tests for team merge functionality
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_merge_teams_endpoint_success(mock_post, client, admin_token, db):
     """Given a system admin and two teams
     When merging source team into target team
@@ -900,8 +900,8 @@ def test_merge_teams_endpoint_same_team(client, admin_token, db, test_team):
     assert response.status_code == 400
     assert "cannot merge a team into itself" in response.json()["detail"].lower()
 
-@patch("app.services.litellm.requests.post")
-@patch("app.services.litellm.requests.delete")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
+@patch("httpx.AsyncClient.delete", new_callable=AsyncMock)
 @patch("app.db.postgres.PostgresManager.delete_database")
 @patch("app.api.private_ai_keys._get_key_if_allowed")
 def test_merge_teams_endpoint_with_conflicts_delete_strategy(mock_get_key, mock_delete_db, mock_delete, mock_post, client, admin_token, db, test_region):
@@ -959,7 +959,7 @@ def test_merge_teams_endpoint_with_conflicts_delete_strategy(mock_get_key, mock_
     assert len(data["conflicts_resolved"]) > 0
     assert "conflict-key" in data["conflicts_resolved"]
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_merge_teams_endpoint_with_conflicts_rename_strategy(mock_post, client, admin_token, db, test_region):
     """Given teams with conflicting key names and rename strategy
     When merging teams
@@ -1014,8 +1014,7 @@ def test_merge_teams_endpoint_with_conflicts_rename_strategy(mock_post, client, 
     updated_source_key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == source_key_id).first()
     assert updated_source_key.name == "conflict-key_merged"
 
-@patch("app.services.litellm.requests.post")
-def test_merge_teams_endpoint_with_conflicts_cancel_strategy(mock_post, client, admin_token, db, test_region):
+def test_merge_teams_endpoint_with_conflicts_cancel_strategy(client, admin_token, db, test_region):
     """Given teams with conflicting key names and cancel strategy
     When merging teams
     Then the merge should be cancelled"""
@@ -1066,7 +1065,7 @@ def test_merge_teams_endpoint_with_conflicts_cancel_strategy(mock_post, client, 
     assert source_team_exists is not None
     assert target_team_exists is not None
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_merge_teams_with_users_and_keys(mock_post, client, admin_token, db, test_region):
     """Given teams with users and keys
     When merging teams
@@ -1264,7 +1263,7 @@ def test_merge_teams_with_source_team_dedicated_regions_fails(client, admin_toke
     ).first()
     assert team_region_exists is not None
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_merge_teams_with_target_team_dedicated_regions_succeeds(mock_post, client, admin_token, db):
     """
     Given a target team with dedicated region associations
@@ -1337,8 +1336,7 @@ def test_merge_teams_with_target_team_dedicated_regions_succeeds(mock_post, clie
     ).first()
     assert team_region_exists is not None
 
-@patch("app.services.litellm.requests.post")
-def test_merge_teams_with_both_teams_dedicated_regions_fails(mock_post, client, admin_token, db):
+def test_merge_teams_with_both_teams_dedicated_regions_fails(client, admin_token, db):
     """
     Given both source and target teams with dedicated region associations
     When attempting to merge teams

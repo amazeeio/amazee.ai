@@ -1,11 +1,9 @@
 import pytest
 import asyncio
-import requests
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 from fastapi import HTTPException
 from app.services.litellm import LiteLLMService
-from requests.exceptions import HTTPError
-
+from httpx import HTTPStatusError
 
 @pytest.fixture
 def mock_litellm_response():
@@ -34,7 +32,7 @@ def test_init_with_empty_api_key():
         LiteLLMService(api_url="https://test.com", api_key="")
 
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_create_key_success(mock_post, test_region, mock_litellm_response):
     """Test successful key creation"""
     mock_post.return_value.status_code = 200
@@ -57,11 +55,11 @@ def test_create_key_success(mock_post, test_region, mock_litellm_response):
     mock_post.assert_called_once()
 
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_create_key_failure(mock_post, test_region):
     """Test key creation failure"""
     mock_post.return_value.status_code = 500
-    mock_post.return_value.raise_for_status.side_effect = HTTPError("Internal Server Error")
+    mock_post.return_value.raise_for_status.side_effect = HTTPStatusError("Internal Server Error", request=None, response=None)
 
     service = LiteLLMService(
         api_url=test_region.litellm_api_url,
@@ -80,7 +78,7 @@ def test_create_key_failure(mock_post, test_region):
     assert "Failed to create LiteLLM key" in exc_info.value.detail
 
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_delete_key_success(mock_post, test_region):
     """Test successful key deletion"""
     mock_post.return_value.status_code = 200
@@ -101,10 +99,11 @@ def test_delete_key_success(mock_post, test_region):
     )
 
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_delete_key_not_found(mock_post, test_region):
     """Test key deletion when key not found (should return True)"""
     mock_post.return_value.status_code = 404
+    mock_post.return_value.raise_for_status.side_effect = HTTPStatusError("Not Found", request=None, response=None)
 
     service = LiteLLMService(
         api_url=test_region.litellm_api_url,
@@ -116,11 +115,11 @@ def test_delete_key_not_found(mock_post, test_region):
     assert result is True
 
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_delete_key_failure(mock_post, test_region):
     """Test key deletion failure"""
     mock_post.return_value.status_code = 500
-    mock_post.return_value.raise_for_status.side_effect = HTTPError("Internal Server Error")
+    mock_post.return_value.raise_for_status.side_effect = HTTPStatusError("Internal Server Error", request=None, response=None)
 
     service = LiteLLMService(
         api_url=test_region.litellm_api_url,
@@ -134,7 +133,7 @@ def test_delete_key_failure(mock_post, test_region):
     assert "Failed to delete LiteLLM key" in exc_info.value.detail
 
 
-@patch("app.services.litellm.requests.get")
+@patch("httpx.AsyncClient.get", new_callable=AsyncMock)
 def test_get_key_info_success(mock_get, test_region):
     """Test successful key info retrieval"""
     mock_response = {
@@ -163,11 +162,11 @@ def test_get_key_info_success(mock_get, test_region):
     )
 
 
-@patch("app.services.litellm.requests.get")
+@patch("httpx.AsyncClient.get", new_callable=AsyncMock)
 def test_get_key_info_failure(mock_get, test_region):
     """Test key info retrieval failure"""
     mock_get.return_value.status_code = 404
-    mock_get.return_value.raise_for_status.side_effect = HTTPError("Not Found")
+    mock_get.return_value.raise_for_status.side_effect = HTTPStatusError("Not Found", request=None, response=None)
 
     service = LiteLLMService(
         api_url=test_region.litellm_api_url,
@@ -181,7 +180,7 @@ def test_get_key_info_failure(mock_get, test_region):
     assert "Failed to get LiteLLM key information" in exc_info.value.detail
 
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_update_budget_success(mock_post, test_region):
     """Test successful budget update"""
     mock_post.return_value.status_code = 200
@@ -207,11 +206,11 @@ def test_update_budget_success(mock_post, test_region):
     )
 
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_update_budget_failure(mock_post, test_region):
     """Test budget update failure"""
     mock_post.return_value.status_code = 400
-    mock_post.return_value.raise_for_status.side_effect = HTTPError("Bad Request")
+    mock_post.return_value.raise_for_status.side_effect = HTTPStatusError("Bad Request", request=None, response=None)
 
     service = LiteLLMService(
         api_url=test_region.litellm_api_url,
@@ -225,7 +224,7 @@ def test_update_budget_failure(mock_post, test_region):
     assert "Failed to update LiteLLM budget" in exc_info.value.detail
 
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_update_key_duration_success(mock_post, test_region):
     """Test successful key duration update"""
     mock_post.return_value.status_code = 200
@@ -249,11 +248,11 @@ def test_update_key_duration_success(mock_post, test_region):
     )
 
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_update_key_duration_failure(mock_post, test_region):
     """Test key duration update failure"""
     mock_post.return_value.status_code = 400
-    mock_post.return_value.raise_for_status.side_effect = HTTPError("Bad Request")
+    mock_post.return_value.raise_for_status.side_effect = HTTPStatusError("Bad Request", request=None, response=None)
 
     service = LiteLLMService(
         api_url=test_region.litellm_api_url,
@@ -267,7 +266,7 @@ def test_update_key_duration_failure(mock_post, test_region):
     assert "Failed to update LiteLLM key duration" in exc_info.value.detail
 
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_set_key_restrictions_success(mock_post, test_region):
     """Test successful key restrictions setting"""
     mock_post.return_value.status_code = 200
@@ -296,11 +295,11 @@ def test_set_key_restrictions_success(mock_post, test_region):
     )
 
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_set_key_restrictions_failure(mock_post, test_region):
     """Test key restrictions setting failure"""
     mock_post.return_value.status_code = 400
-    mock_post.return_value.raise_for_status.side_effect = HTTPError("Bad Request")
+    mock_post.return_value.raise_for_status.side_effect = HTTPStatusError("Bad Request", request=None, response=None)
 
     service = LiteLLMService(
         api_url=test_region.litellm_api_url,
@@ -316,7 +315,7 @@ def test_set_key_restrictions_failure(mock_post, test_region):
     assert "Failed to set LiteLLM key restrictions" in exc_info.value.detail
 
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_update_key_team_association_success(mock_post, test_region):
     """
     Given a LiteLLM service and valid token
@@ -341,7 +340,7 @@ def test_update_key_team_association_success(mock_post, test_region):
     )
 
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_update_key_team_association_failure(mock_post, test_region):
     """
     Given a LiteLLM service and invalid token
@@ -349,8 +348,7 @@ def test_update_key_team_association_failure(mock_post, test_region):
     Then an HTTPException should be raised
     """
     mock_post.return_value.status_code = 404
-    mock_post.return_value.json.return_value = {"error": "Key not found"}
-    mock_post.return_value.raise_for_status.side_effect = requests.exceptions.HTTPError("404")
+    mock_post.return_value.raise_for_status.side_effect = HTTPStatusError("Key not found", request=None, response=None)
 
     service = LiteLLMService(
         api_url=test_region.litellm_api_url,

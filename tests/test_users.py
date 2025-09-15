@@ -1,9 +1,7 @@
 import pytest
-from fastapi.testclient import TestClient
-from app.db.models import DBUser, DBTeam, DBProduct, DBTeamProduct
+from app.db.models import DBUser, DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey
 from datetime import datetime, UTC
-from unittest.mock import patch
-import os
+from unittest.mock import patch, AsyncMock
 
 def test_create_user(client, test_admin, admin_token):
     response = client.post(
@@ -124,7 +122,7 @@ def test_delete_team_member(client, admin_token, test_team_user):
     )
     assert response.status_code == 404
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 def test_delete_team_member_with_ai_keys(mock_post, client, admin_token, test_team_user, test_region, db):
     """
     Test deleting a user who is a member of a team and has associated AI keys.
@@ -139,7 +137,6 @@ def test_delete_team_member_with_ai_keys(mock_post, client, admin_token, test_te
     mock_post.return_value.raise_for_status.return_value = None
 
     # Create an AI key for the team user
-    from app.db.models import DBPrivateAIKey
     ai_key = DBPrivateAIKey(
         database_name=f"test_db_{test_team_user.id}",
         name="Test AI Key",
