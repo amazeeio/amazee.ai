@@ -276,7 +276,7 @@ async def create_test_keys(count: int):
         region = db.query(DBRegion).filter(DBRegion.is_active == True).first()
         if not region:
             print(f"No active regions, not creating test keys")
-            pass
+            return
         litellm = LiteLLMService(region.litellm_api_url, region.litellm_api_key)
         team_id = team.id
         for i in range(0, count):
@@ -292,7 +292,7 @@ async def create_test_keys(count: int):
             db_token = DBPrivateAIKey(
                 litellm_token=litellm_token,
                 litellm_api_url=region.litellm_api_url,
-                owner_id=team_id,
+                owner_id=None,
                 team_id=None if team_id is None else team_id,
                 name=key_name,
                 region_id = region.id
