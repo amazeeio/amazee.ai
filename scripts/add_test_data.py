@@ -4,14 +4,16 @@ import os
 import sys
 from datetime import datetime, timedelta, UTC
 import random
+import asyncio
 
 # Add the parent directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from sqlalchemy.orm import sessionmaker, Session
 from app.db.database import engine
-from app.db.models import DBTeam, DBUser, DBProduct, DBTeamProduct
+from app.db.models import DBTeam, DBUser, DBProduct, DBTeamProduct, DBRegion, DBPrivateAIKey
 from app.core.security import get_password_hash
+from app.services.litellm import LiteLLMService
 
 def create_test_data():
     """Create test data for teams, users, and products"""
@@ -264,10 +266,49 @@ def create_test_data():
     finally:
         db.close()
 
+async def create_test_keys(count: int):
+    # Create database session
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = SessionLocal()
+
+    try:
+        team = db.query(DBTeam).first()
+        region = db.query(DBRegion).filter(DBRegion.is_active == True).first()
+        if not region:
+            print(f"No active regions, not creating test keys")
+            pass
+        litellm = LiteLLMService(region.litellm_api_url, region.litellm_api_key)
+        team_id = team.id
+        for i in range(0, count):
+            key_name = f"auto_test_{i}"
+            litellm_token = await litellm.create_key(
+                email=team.admin_email,
+                name=key_name,
+                user_id=team_id,
+                team_id=LiteLLMService.format_team_id(region.name, team_id),
+            )
+
+            # Create response object
+            db_token = DBPrivateAIKey(
+                litellm_token=litellm_token,
+                litellm_api_url=region.litellm_api_url,
+                owner_id=team_id,
+                team_id=None if team_id is None else team_id,
+                name=key_name,
+                region_id = region.id
+            )
+            db.add(db_token)
+            db.commit()
+            print(f"Created LLM token {key_name} int team {team.name}")
+
+    except Exception as e:
+        print(f"failed to create test keys {str(e)}")
+
 def main():
     """Main function to run the script"""
     try:
         create_test_data()
+        asyncio.run(create_test_keys(50))
     except Exception as e:
         print(f"Script failed: {str(e)}")
         sys.exit(1)
