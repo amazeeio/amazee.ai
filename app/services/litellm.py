@@ -66,8 +66,8 @@ class LiteLLMService:
                     }
                 )
 
-                await response.raise_for_status()
-                response_data = await response.json()
+                response.raise_for_status()
+                response_data = response.json()
                 key = response_data["key"]
                 logger.info("Successfully generated new LiteLLM API key")
                 return key
@@ -101,7 +101,7 @@ class LiteLLMService:
                 if response.status_code == 404:
                     return True
 
-                await response.raise_for_status()
+                response.raise_for_status()
                 return True
         except httpx.HTTPStatusError as e:
             error_msg = str(e)
@@ -130,8 +130,8 @@ class LiteLLMService:
                         "key": litellm_token
                     }
                 )
-                await response.raise_for_status()
-                response_data = await response.json()
+                response.raise_for_status()
+                response_data = response.json()
                 logger.info(f"LiteLLM key information: {response_data}")
                 return response_data
         except httpx.HTTPStatusError as e:
@@ -168,7 +168,7 @@ class LiteLLMService:
                     },
                     json=request_data
                 )
-                await response.raise_for_status()
+                response.raise_for_status()
         except httpx.HTTPStatusError as e:
             error_msg = str(e)
             if hasattr(e, 'response') and e.response is not None:
@@ -196,7 +196,7 @@ class LiteLLMService:
                         "duration": duration
                     }
                 )
-                await response.raise_for_status()
+                response.raise_for_status()
         except httpx.HTTPStatusError as e:
             error_msg = str(e)
             if hasattr(e, 'response') and e.response is not None:
@@ -227,7 +227,7 @@ class LiteLLMService:
                         "rpm_limit": rpm_limit
                     }
                 )
-                await response.raise_for_status()
+                response.raise_for_status()
         except httpx.HTTPStatusError as e:
             error_msg = str(e)
             if hasattr(e, 'response') and e.response is not None:
@@ -255,7 +255,7 @@ class LiteLLMService:
                         "team_id": new_team_id
                     }
                 )
-                await response.raise_for_status()
+                response.raise_for_status()
         except httpx.HTTPStatusError as e:
             error_msg = str(e)
             if hasattr(e, 'response') and e.response is not None:

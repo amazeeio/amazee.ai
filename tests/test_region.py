@@ -419,13 +419,11 @@ def test_delete_non_existent_region(client, admin_token):
     assert response.status_code == 404
     assert "Region not found" in response.json()["detail"]
 
-@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
-def test_delete_region_with_active_keys(mock_post, client, admin_token, test_region, db, test_admin):
+@patch("httpx.AsyncClient")
+def test_delete_region_with_active_keys(mock_client_class, client, admin_token, test_region, db, test_admin, mock_httpx_post_client):
     """Test that a region with active private AI keys cannot be deleted"""
-    # Mock the LiteLLM API response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     # Create a test private AI key in the region via API
     response = client.post(
@@ -449,13 +447,11 @@ def test_delete_region_with_active_keys(mock_post, client, admin_token, test_reg
     assert "Cannot delete region" in response.json()["detail"]
     assert "keys(s) are currently using this region" in response.json()["detail"]
 
-@patch("httpx.AsyncClient.post", new_callable=AsyncMock)
-def test_delete_region_with_active_vector_db(mock_post, client, admin_token, test_region, db, test_admin):
+@patch("httpx.AsyncClient")
+def test_delete_region_with_active_vector_db(mock_client_class, client, admin_token, test_region, db, test_admin, mock_httpx_post_client):
     """Test that a region with an active vector database cannot be deleted"""
-    # Mock the LiteLLM API response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     # Create a test vector database in the region via API
     response = client.post(
