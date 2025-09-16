@@ -3,17 +3,16 @@ from sqlalchemy import func, or_
 from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBTeamProduct, DBProduct
 from fastapi import HTTPException, status
 from typing import Optional
-from datetime import datetime, UTC
 import logging
 
 logger = logging.getLogger(__name__)
 
 # Default limits across all customers and products
-DEFAULT_USER_COUNT = 100
-DEFAULT_KEYS_PER_USER = 5
-DEFAULT_TOTAL_KEYS = 500
-DEFAULT_SERVICE_KEYS = 100
-DEFAULT_VECTOR_DB_COUNT = 100
+DEFAULT_USER_COUNT = 1
+DEFAULT_KEYS_PER_USER = 1
+DEFAULT_TOTAL_KEYS = 6
+DEFAULT_SERVICE_KEYS = 5
+DEFAULT_VECTOR_DB_COUNT = 5 # Setting to match service keys for drupal module trial
 DEFAULT_KEY_DURATION = 30
 DEFAULT_MAX_SPEND = 27.0
 DEFAULT_RPM_PER_KEY = 500

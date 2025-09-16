@@ -55,14 +55,14 @@ def _validate_permissions_and_get_ownership_info(
         owner_id = current_user.id
 
     # Fail fast without having to do DB lookups
-    personal_users : list[UserRole] = ["key_creator", "user"] # 'user' is the non-admin system user
-    if user_role in personal_users:
+    team_users : list[UserRole] = [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR]
+    if user_role == UserRole.DEFAULT:
         if owner_id != current_user.id or team_id is not None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to perform this action"
             )
-    elif user_role == "admin": # roles always refer to the team role, so admin is a team admin
+    elif user_role in team_users:
         if team_id is not None and team_id != current_user.team_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -455,7 +455,7 @@ async def list_private_ai_keys(
     else:
         # Check if user is a team admin
         if current_user.team_id is not None:
-            if current_user.role == "admin":
+            if current_user.role == UserRole.TEAM_ADMIN:
                 # Get all users in the team
                 team_users = db.query(DBUser).filter(DBUser.team_id == current_user.team_id).all()
                 team_user_ids = [user.id for user in team_users]
@@ -551,22 +551,25 @@ def _get_key_if_allowed(key_id: int, current_user: DBUser, user_role: UserRole, 
         )
 
     # Check if user has permission to view the key
+    team_users : list[UserRole] = [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR]
     if current_user.is_admin:
         # System admin can view any key
         pass
-    elif user_role == "admin":
-        # Team admin can only view keys from their team
+    elif user_role in team_users:
+        # No cross team access
         if private_ai_key.team_id is not None:
             # For team-owned keys, check if it belongs to the admin's team
             if private_ai_key.team_id != current_user.team_id:
+                logger.warning(f"User {current_user.id} trying to delete across teams.")
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Private AI Key not found"
                 )
         else:
-            # For user-owned keys, check if the owner is in the admin's team
+            # For user-owned keys, check if the owner is in the viewer's team
             owner = db.query(DBUser).filter(DBUser.id == private_ai_key.owner_id).first()
             if not owner or owner.team_id != current_user.team_id:
+                logger.warning(f"Keys owned by different teams")
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Private AI Key not found"
