@@ -28,7 +28,7 @@ def check_team_user_limit(db: Session, team_id: int) -> None:
     """
     # Get current user count and max allowed users in a single query
     result = db.query(
-        func.count(DBUser.id).label('current_user_count'),
+        func.count(func.distinct(DBUser.id)).label('current_user_count'),
         func.coalesce(func.max(DBProduct.user_count), DEFAULT_USER_COUNT).label('max_users')
     ).select_from(DBUser).filter(
         DBUser.team_id == team_id
@@ -64,14 +64,14 @@ def check_key_limits(db: Session, team_id: int, owner_id: Optional[int] = None) 
         func.coalesce(func.max(DBProduct.total_key_count), DEFAULT_TOTAL_KEYS).label('max_total_keys'),
         func.coalesce(func.max(DBProduct.keys_per_user), DEFAULT_KEYS_PER_USER).label('max_keys_per_user'),
         func.coalesce(func.max(DBProduct.service_key_count), DEFAULT_SERVICE_KEYS).label('max_service_keys'),
-        func.count(DBPrivateAIKey.id).filter(
+        func.count(func.distinct(DBPrivateAIKey.id)).filter(
             DBPrivateAIKey.litellm_token.isnot(None)
         ).label('current_team_keys'),
-        func.count(DBPrivateAIKey.id).filter(
+        func.count(func.distinct(DBPrivateAIKey.id)).filter(
             DBPrivateAIKey.owner_id == owner_id,
             DBPrivateAIKey.litellm_token.isnot(None)
         ).label('current_user_keys') if owner_id else None,
-        func.count(DBPrivateAIKey.id).filter(
+        func.count(func.distinct(DBPrivateAIKey.id)).filter(
             DBPrivateAIKey.owner_id.is_(None),
             DBPrivateAIKey.litellm_token.isnot(None)
         ).label('current_service_keys')
@@ -126,7 +126,7 @@ def check_vector_db_limits(db: Session, team_id: int) -> None:
     # Get vector DB limits and current count in a single query
     result = db.query(
         func.coalesce(func.max(DBProduct.vector_db_count), DEFAULT_VECTOR_DB_COUNT).label('max_vector_db_count'),
-        func.count(DBPrivateAIKey.id).filter(
+        func.count(func.distinct(DBPrivateAIKey.id)).filter(
             DBPrivateAIKey.database_name.isnot(None)
         ).label('current_vector_db_count')
     ).select_from(DBTeam).filter(
