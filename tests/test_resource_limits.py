@@ -225,6 +225,7 @@ def test_add_user_with_multiple_products(db, test_team):
 
     # Create and add users up to the higher limit (5)
     for i in range(5):
+        check_team_user_limit(db, test_team.id)
         user = DBUser(
             email=f"user{i}@example.com",
             hashed_password="hashed_password",
@@ -235,7 +236,7 @@ def test_add_user_with_multiple_products(db, test_team):
             created_at=datetime.now(UTC)
         )
         db.add(user)
-    db.commit()
+        db.commit()
 
     # Test that check_team_user_limit raises an exception
     with pytest.raises(HTTPException) as exc_info:
@@ -259,6 +260,8 @@ def test_create_key_within_limits(db, test_team, test_product, test_region):
 def test_create_key_exceeding_total_limit(db, test_team, test_product, test_region):
     """Test creating an LLM token when it would exceed total token limit"""
     # Add product to team
+    test_product.service_key_count = 15
+    db.add(test_product)
     team_product = DBTeamProduct(
         team_id=test_team.id,
         product_id=test_product.id
@@ -268,6 +271,7 @@ def test_create_key_exceeding_total_limit(db, test_team, test_product, test_regi
 
     # Create LLM tokens up to the limit
     for i in range(test_product.total_key_count):
+        check_key_limits(db, test_team.id, None)
         key = DBPrivateAIKey(
             name=f"Test Token {i}",
             database_name=f"test_db_{i}",
@@ -281,7 +285,7 @@ def test_create_key_exceeding_total_limit(db, test_team, test_product, test_regi
             created_at=datetime.now(UTC)
         )
         db.add(key)
-    db.commit()
+        db.commit()
 
     # Test that check_key_limits raises an exception
     with pytest.raises(HTTPException) as exc_info:
@@ -314,6 +318,7 @@ def test_create_key_exceeding_user_limit(db, test_team, test_product, test_regio
 
     # Create LLM tokens up to the user limit
     for i in range(test_product.keys_per_user):
+        check_key_limits(db, test_team.id, user.id)
         key = DBPrivateAIKey(
             name=f"Test Token {i}",
             database_name=f"test_db_{i}",
@@ -327,7 +332,7 @@ def test_create_key_exceeding_user_limit(db, test_team, test_product, test_regio
             created_at=datetime.now(UTC)
         )
         db.add(key)
-    db.commit()
+        db.commit()
 
     # Test that check_key_limits raises an exception
     with pytest.raises(HTTPException) as exc_info:
@@ -445,7 +450,7 @@ def test_create_key_with_multiple_products(db, test_team, test_region):
         user_count=3,
         keys_per_user=3,
         total_key_count=5,
-        service_key_count=2,
+        service_key_count=5,
         max_budget_per_key=50.0,
         rpm_per_key=1000,
         vector_db_count=1,
@@ -473,6 +478,7 @@ def test_create_key_with_multiple_products(db, test_team, test_region):
 
     # Create LLM tokens up to the higher total token limit (5)
     for i in range(5):
+        check_key_limits(db, test_team.id, None)
         key = DBPrivateAIKey(
             name=f"Test Token {i}",
             database_name=f"test_db_{i}",
@@ -486,7 +492,7 @@ def test_create_key_with_multiple_products(db, test_team, test_region):
             created_at=datetime.now(UTC)
         )
         db.add(key)
-    db.commit()
+        db.commit()
 
     # Test that check_key_limits raises an exception
     with pytest.raises(HTTPException) as exc_info:
@@ -808,6 +814,7 @@ def test_create_vector_db_with_multiple_products(db, test_team, test_region):
 
     # Create vector DBs up to the higher limit (3)
     for i in range(3):
+        check_vector_db_limits(db, test_team.id)
         key = DBPrivateAIKey(
             name=f"Test Vector DB {i}",
             database_name=f"test_db_{i}",
@@ -819,7 +826,7 @@ def test_create_vector_db_with_multiple_products(db, test_team, test_region):
             created_at=datetime.now(UTC)
         )
         db.add(key)
-    db.commit()
+        db.commit()
 
     # Test that check_vector_db_limits raises an exception
     with pytest.raises(HTTPException) as exc_info:

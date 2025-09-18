@@ -1,4 +1,4 @@
-import requests
+import httpx
 from fastapi import HTTPException, status
 import logging
 from app.core.resource_limits import DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
@@ -57,20 +57,21 @@ class LiteLLMService:
             if user_id is not None:
                 request_data["user_id"] = str(user_id)
 
-            logger.info(f"Making request to LiteLLM API to generate key with data: {request_data}")
-            response = requests.post(
-                f"{self.api_url}/key/generate",
-                json=request_data,
-                headers={
-                    "Authorization": f"Bearer {self.master_key}"
-                }
-            )
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/key/generate",
+                    json=request_data,
+                    headers={
+                        "Authorization": f"Bearer {self.master_key}"
+                    }
+                )
 
-            response.raise_for_status()
-            key = response.json()["key"]
-            logger.info("Successfully generated new LiteLLM API key")
-            return key
-        except requests.exceptions.RequestException as e:
+                response.raise_for_status()
+                response_data = response.json()
+                key = response_data["key"]
+                logger.info("Successfully generated new LiteLLM API key")
+                return key
+        except httpx.HTTPStatusError as e:
             error_msg = str(e)
             if hasattr(e, 'response') and e.response is not None:
                 try:
@@ -87,21 +88,22 @@ class LiteLLMService:
     async def delete_key(self, key: str) -> bool:
         """Delete a LiteLLM API key"""
         try:
-            response = requests.post(
-                f"{self.api_url}/key/delete",
-                json={"keys": [key]},  # API expects an array of keys
-                headers={
-                    "Authorization": f"Bearer {self.master_key}"
-                }
-            )
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/key/delete",
+                    json={"keys": [key]},  # API expects an array of keys
+                    headers={
+                        "Authorization": f"Bearer {self.master_key}"
+                    }
+                )
 
-            # Treat 404 (key not found) as success
-            if response.status_code == 404:
+                # Treat 404 (key not found) as success
+                if response.status_code == 404:
+                    return True
+
+                response.raise_for_status()
                 return True
-
-            response.raise_for_status()
-            return True
-        except requests.exceptions.RequestException as e:
+        except httpx.HTTPStatusError as e:
             error_msg = str(e)
             if hasattr(e, 'response') and e.response is not None:
                 try:
@@ -118,19 +120,21 @@ class LiteLLMService:
     async def get_key_info(self, litellm_token: str) -> dict:
         """Get information about a LiteLLM API key"""
         try:
-            response = requests.get(
-                f"{self.api_url}/key/info",
-                headers={
-                    "Authorization": f"Bearer {self.master_key}"
-                },
-                params={
-                    "key": litellm_token
-                }
-            )
-            response.raise_for_status()
-            logger.info(f"LiteLLM key information: {response.json()}")
-            return response.json()
-        except requests.exceptions.RequestException as e:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.api_url}/key/info",
+                    headers={
+                        "Authorization": f"Bearer {self.master_key}"
+                    },
+                    params={
+                        "key": litellm_token
+                    }
+                )
+                response.raise_for_status()
+                response_data = response.json()
+                logger.info(f"LiteLLM key information: {response_data}")
+                return response_data
+        except httpx.HTTPStatusError as e:
             error_msg = str(e)
             logger.error(f"Error getting LiteLLM key information: {error_msg}")
             if hasattr(e, 'response') and e.response is not None:
@@ -156,15 +160,16 @@ class LiteLLMService:
             if budget_amount:
                 request_data["max_budget"] = budget_amount
 
-            response = requests.post(
-                f"{self.api_url}/key/update",
-                headers={
-                    "Authorization": f"Bearer {self.master_key}"
-                },
-                json=request_data
-            )
-            response.raise_for_status()
-        except requests.exceptions.RequestException as e:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/key/update",
+                    headers={
+                        "Authorization": f"Bearer {self.master_key}"
+                    },
+                    json=request_data
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as e:
             error_msg = str(e)
             if hasattr(e, 'response') and e.response is not None:
                 try:
@@ -180,18 +185,19 @@ class LiteLLMService:
     async def update_key_duration(self, litellm_token: str, duration: str):
         """Update the duration for a LiteLLM API key"""
         try:
-            response = requests.post(
-                f"{self.api_url}/key/update",
-                headers={
-                    "Authorization": f"Bearer {self.master_key}"
-                },
-                json={
-                    "key": litellm_token,
-                    "duration": duration
-                }
-            )
-            response.raise_for_status()
-        except requests.exceptions.RequestException as e:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/key/update",
+                    headers={
+                        "Authorization": f"Bearer {self.master_key}"
+                    },
+                    json={
+                        "key": litellm_token,
+                        "duration": duration
+                    }
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as e:
             error_msg = str(e)
             if hasattr(e, 'response') and e.response is not None:
                 try:
@@ -207,21 +213,22 @@ class LiteLLMService:
     async def set_key_restrictions(self, litellm_token: str, duration: str, budget_amount: float, rpm_limit: int, budget_duration: Optional[str] = None):
         """Set the restrictions for a LiteLLM API key"""
         try:
-            response = requests.post(
-                f"{self.api_url}/key/update",
-                headers={
-                    "Authorization": f"Bearer {self.master_key}"
-                },
-                json={
-                    "key": litellm_token,
-                    "duration": duration,
-                    "budget_duration": budget_duration,
-                    "max_budget": budget_amount,
-                    "rpm_limit": rpm_limit
-                }
-            )
-            response.raise_for_status()
-        except requests.exceptions.RequestException as e:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/key/update",
+                    headers={
+                        "Authorization": f"Bearer {self.master_key}"
+                    },
+                    json={
+                        "key": litellm_token,
+                        "duration": duration,
+                        "budget_duration": budget_duration,
+                        "max_budget": budget_amount,
+                        "rpm_limit": rpm_limit
+                    }
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as e:
             error_msg = str(e)
             if hasattr(e, 'response') and e.response is not None:
                 try:
@@ -237,18 +244,19 @@ class LiteLLMService:
     async def update_key_team_association(self, litellm_token: str, new_team_id: str):
         """Update the team association for a LiteLLM API key"""
         try:
-            response = requests.post(
-                f"{self.api_url}/key/update",
-                headers={
-                    "Authorization": f"Bearer {self.master_key}"
-                },
-                json={
-                    "key": litellm_token,
-                    "team_id": new_team_id
-                }
-            )
-            response.raise_for_status()
-        except requests.exceptions.RequestException as e:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/key/update",
+                    headers={
+                        "Authorization": f"Bearer {self.master_key}"
+                    },
+                    json={
+                        "key": litellm_token,
+                        "team_id": new_team_id
+                    }
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as e:
             error_msg = str(e)
             if hasattr(e, 'response') and e.response is not None:
                 try:

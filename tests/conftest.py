@@ -8,7 +8,7 @@ from app.db.models import Base, DBRegion, DBUser, DBTeam, DBProduct
 import os
 from app.core.security import get_password_hash
 from datetime import datetime, UTC, timedelta
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, Mock, AsyncMock
 
 # Get database URL from environment
 DATABASE_URL = os.getenv(
@@ -265,3 +265,76 @@ def mock_sts_client():
 
         mock_client.return_value = mock_sts
         yield mock_sts
+
+@pytest.fixture
+def mock_httpx_post_client():
+    """Mock httpx.AsyncClient for POST operations (create/delete/update)"""
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"key": "test-private-key-123"}
+    mock_response.raise_for_status.return_value = None
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+
+    return mock_client
+
+@pytest.fixture
+def mock_httpx_get_client():
+    """Mock httpx.AsyncClient for GET operations (key info)"""
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "info": {
+            "spend": 10.5,
+            "expires": "2024-12-31T23:59:59Z",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-02T00:00:00Z",
+            "max_budget": 100.0,
+            "budget_duration": "monthly",
+            "budget_reset_at": "2024-02-01T00:00:00Z"
+        }
+    }
+    mock_response.raise_for_status.return_value = None
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+
+    return mock_client
+
+@pytest.fixture
+def mock_httpx_combined_client():
+    """Mock httpx.AsyncClient for operations that use both POST and GET"""
+    # POST response (for create/update/delete operations)
+    mock_post_response = Mock()
+    mock_post_response.status_code = 200
+    mock_post_response.json.return_value = {"key": "test-private-key-123"}
+    mock_post_response.raise_for_status.return_value = None
+
+    # GET response (for key info operations)
+    mock_get_response = Mock()
+    mock_get_response.status_code = 200
+    mock_get_response.json.return_value = {
+        "info": {
+            "spend": 10.5,
+            "expires": "2024-12-31T23:59:59Z",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-02T00:00:00Z",
+            "max_budget": 100.0,
+            "budget_duration": "monthly",
+            "budget_reset_at": "2024-02-01T00:00:00Z"
+        }
+    }
+    mock_get_response.raise_for_status.return_value = None
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_post_response
+    mock_client.get.return_value = mock_get_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+
+    return mock_client

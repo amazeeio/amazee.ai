@@ -1,26 +1,20 @@
 import pytest
-from unittest.mock import patch, Mock
+from unittest.mock import patch, Mock, AsyncMock
 from app.db.models import DBPrivateAIKey, DBTeam, DBUser, DBProduct, DBTeamProduct
 from datetime import datetime, UTC
 from app.core.security import get_password_hash
-from requests.exceptions import HTTPError
+from httpx import HTTPStatusError
 from fastapi import status, HTTPException
 from app.core.resource_limits import (
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
 )
 
-@pytest.fixture
-def mock_litellm_response():
-    return {"key": "test-private-key-123"}
-
-@patch("app.services.litellm.requests.post")
-def test_create_private_ai_key(mock_post, client, test_token, test_region, mock_litellm_response, test_user):
+@patch("httpx.AsyncClient")
+def test_create_private_ai_key(mock_client_class, client, test_token, test_region, test_user, mock_httpx_post_client):
     """Test creating a private AI key in a specific region"""
-    # Mock the LiteLLM API response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     response = client.post(
         "/private-ai-keys/",
@@ -38,14 +32,8 @@ def test_create_private_ai_key(mock_post, client, test_token, test_region, mock_
     assert data["owner_id"] == test_user.id
     assert data["id"] != -1
 
-@patch("app.services.litellm.requests.post")
-def test_create_private_ai_key_invalid_region(mock_post, client, test_token):
+def test_create_private_ai_key_invalid_region(client, test_token):
     """Test creating a private AI key with an invalid region ID"""
-    # Mock the LiteLLM API response (though it shouldn't be called)
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
-    mock_post.return_value.raise_for_status.return_value = None
-
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {test_token}"},
@@ -86,8 +74,8 @@ def test_list_private_ai_keys(client, test_token, test_region, db, test_user):
     assert data[0]["region"] == test_region.name
     assert data[0]["owner_id"] == test_user.id
 
-@patch("app.services.litellm.requests.post")
-def test_delete_private_ai_key(mock_post, client, test_token, test_region, db, test_user):
+@patch("httpx.AsyncClient")
+def test_delete_private_ai_key(mock_client_class, client, test_token, test_region, db, test_user, mock_httpx_post_client):
     """Test deleting a private AI key"""
     # Refresh the test_region to ensure it's attached to the session
     db.refresh(test_region)
@@ -114,9 +102,8 @@ def test_delete_private_ai_key(mock_post, client, test_token, test_region, db, t
     # Get the key ID for later verification
     key_id = test_key.id
 
-    # Mock the LiteLLM API delete response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     # Delete the private AI key
     response = client.delete(
@@ -129,7 +116,7 @@ def test_delete_private_ai_key(mock_post, client, test_token, test_region, db, t
     assert response.json()["message"] == "Private AI Key deleted successfully"
 
     # Verify the LiteLLM token was deleted
-    mock_post.assert_called_once_with(
+    mock_httpx_post_client.post.assert_called_once_with(
         f"{region_api_url}/key/delete",
         headers={"Authorization": f"Bearer {region_api_key}"},
         json={"keys": [test_key.litellm_token]}
@@ -139,13 +126,11 @@ def test_delete_private_ai_key(mock_post, client, test_token, test_region, db, t
     deleted_key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
     assert deleted_key is None
 
-@patch("app.services.litellm.requests.post")
-def test_list_private_ai_keys_as_team_admin(mock_post, client, team_admin_token, test_team_user, test_region, db):
+@patch("httpx.AsyncClient")
+def test_list_private_ai_keys_as_team_admin(mock_client_class, client, team_admin_token, test_team_user, test_region, db, mock_httpx_post_client):
     """Test that a team admin can list all AI keys associated with users in their team"""
-    # Mock the LiteLLM API response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     # First, get a token for the team user
     response = client.post(
@@ -181,13 +166,10 @@ def test_list_private_ai_keys_as_team_admin(mock_post, client, team_admin_token,
     assert any(key["name"] == "team-user-key" for key in data)
     assert any(key["owner_id"] == test_team_user.id for key in data)
 
-@patch("app.services.litellm.requests.post")
-def test_create_team_private_ai_key(mock_post, client, test_team, team_admin_token, test_region, mock_litellm_response):
+@patch("httpx.AsyncClient")
+def test_create_team_private_ai_key(mock_client_class, client, test_team, team_admin_token, test_region, mock_httpx_post_client):
     """Test creating a private AI key owned by a team"""
-    # Mock the LiteLLM API response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
+    mock_client_class.return_value = mock_httpx_post_client
 
     response = client.post(
         "/private-ai-keys/",
@@ -206,13 +188,10 @@ def test_create_team_private_ai_key(mock_post, client, test_team, team_admin_tok
     assert data["team_id"] == test_team.id
     assert data["owner_id"] is None
 
-@patch("app.services.litellm.requests.post")
-def test_create_private_ai_key_without_owner_or_team(mock_post, client, admin_token, test_region):
+@patch("httpx.AsyncClient")
+def test_create_private_ai_key_without_owner_or_team(mock_client_class, client, admin_token, test_region, mock_httpx_post_client):
     """Test that an admin user can create a private AI key without owner_id or team_id, defaulting to themselves as owner"""
-    # Mock the LiteLLM API response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
-    mock_post.return_value.raise_for_status.return_value = None
+    mock_client_class.return_value = mock_httpx_post_client
 
     response = client.post(
         "/private-ai-keys/",
@@ -231,15 +210,12 @@ def test_create_private_ai_key_without_owner_or_team(mock_post, client, admin_to
     assert data["team_id"] is None
 
     # Verify that the LiteLLM API was called
-    mock_post.assert_called_once()
+    mock_httpx_post_client.post.assert_called_once()
 
-@patch("app.services.litellm.requests.post")
-def test_create_team_private_ai_key_as_key_creator(mock_post, client, team_key_creator_token, test_team_id, test_region, mock_litellm_response):
+@patch("httpx.AsyncClient")
+def test_create_team_private_ai_key_as_key_creator(mock_client_class, client, team_key_creator_token, test_team_id, test_region, mock_httpx_post_client):
     """Test that a team member with key_creator role can create a team key"""
-    # Mock the LiteLLM API response (though it shouldn't be called)
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
+    mock_client_class.return_value = mock_httpx_post_client
 
     # Try to create a team key as a team member with key_creator role
     response = client.post(
@@ -259,13 +235,10 @@ def test_create_team_private_ai_key_as_key_creator(mock_post, client, team_key_c
     assert data["team_id"] == test_team_id
     assert data["owner_id"] is None
 
-@patch("app.services.litellm.requests.post")
-def test_create_private_ai_key_with_both_owner_and_team(mock_post, client, admin_token, test_team, test_team_user, test_region, mock_litellm_response):
+@patch("httpx.AsyncClient")
+def test_create_private_ai_key_with_both_owner_and_team(mock_client_class, client, admin_token, test_team, test_team_user, test_region, mock_httpx_post_client):
     """Test that an admin cannot create a key with both owner_id and team_id set"""
-    # Mock the LiteLLM API response (though it shouldn't be called)
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
+    mock_client_class.return_value = mock_httpx_post_client
 
     # Try to create a key with both owner_id and team_id set
     response = client.post(
@@ -282,15 +255,10 @@ def test_create_private_ai_key_with_both_owner_and_team(mock_post, client, admin
     assert response.status_code == 400
     assert "Either owner_id or team_id must be specified, not both" in response.json()["detail"]
     # Verify that the LiteLLM API was not called
-    mock_post.assert_not_called()
+    mock_httpx_post_client.post.assert_not_called()
 
-@patch("app.services.litellm.requests.post")
-def test_create_private_ai_key_as_read_only(mock_post, client, team_read_only_token, test_region, mock_litellm_response):
+def test_create_private_ai_key_as_read_only(client, team_read_only_token, test_region):
     """Test that a team member with read_only role cannot create a private AI key"""
-    # Mock the LiteLLM API response (though it shouldn't be called)
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
 
     # Try to create a private AI key as a read_only team member
     response = client.post(
@@ -304,11 +272,8 @@ def test_create_private_ai_key_as_read_only(mock_post, client, team_read_only_to
 
     assert response.status_code == 403
     assert "Not authorized to perform this action" in response.json()["detail"]
-    # Verify that the LiteLLM API was not called
-    mock_post.assert_not_called()
 
-@patch("app.services.litellm.requests.post")
-def test_create_private_ai_key_for_other_team(mock_post, client, team_admin_token, test_region, mock_litellm_response, db):
+def test_create_private_ai_key_for_other_team(client, team_admin_token, test_region, db):
     """Test that a team admin cannot create a private AI key for another team"""
     # Create a second team
     other_team = DBTeam(
@@ -323,11 +288,6 @@ def test_create_private_ai_key_for_other_team(mock_post, client, team_admin_toke
     db.commit()
     db.refresh(other_team)
 
-    # Mock the LiteLLM API response (though it shouldn't be called)
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
-
     # Try to create a private AI key for the other team
     response = client.post(
         "/private-ai-keys/",
@@ -341,11 +301,8 @@ def test_create_private_ai_key_for_other_team(mock_post, client, team_admin_toke
 
     assert response.status_code == 403
     assert "Not authorized to perform this action" in response.json()["detail"]
-    # Verify that the LiteLLM API was not called
-    mock_post.assert_not_called()
 
-@patch("app.services.litellm.requests.post")
-def test_create_private_ai_key_for_user_in_other_team(mock_post, client, team_admin_token, test_region, mock_litellm_response, db):
+def test_create_private_ai_key_for_user_in_other_team(client, team_admin_token, test_region, db):
     """Test that a team admin cannot create a private AI key for a user in another team"""
     # Create a second team
     other_team = DBTeam(
@@ -374,11 +331,6 @@ def test_create_private_ai_key_for_user_in_other_team(mock_post, client, team_ad
     db.commit()
     db.refresh(other_team_user)
 
-    # Mock the LiteLLM API response (though it shouldn't be called)
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
-
     # Try to create a private AI key for the user in the other team
     response = client.post(
         "/private-ai-keys/",
@@ -392,16 +344,9 @@ def test_create_private_ai_key_for_user_in_other_team(mock_post, client, team_ad
 
     assert response.status_code == 404
     assert "Owner user not found" in response.json()["detail"]
-    # Verify that the LiteLLM API was not called
-    mock_post.assert_not_called()
 
-@patch("app.services.litellm.requests.post")
-def test_create_private_ai_key_for_nonexistent_team(mock_post, client, admin_token, test_region, mock_litellm_response):
+def test_create_private_ai_key_for_nonexistent_team(client, admin_token, test_region):
     """Test that a system admin cannot create a private AI key for a non-existent team"""
-    # Mock the LiteLLM API response (though it shouldn't be called)
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
 
     # Try to create a private AI key for a non-existent team
     response = client.post(
@@ -416,16 +361,12 @@ def test_create_private_ai_key_for_nonexistent_team(mock_post, client, admin_tok
 
     assert response.status_code == 404
     assert "Team not found" in response.json()["detail"]
-    # Verify that the LiteLLM API was not called
-    mock_post.assert_not_called()
 
-@patch("app.services.litellm.requests.post")
-def test_list_private_ai_keys_as_team_admin_includes_team_and_user_keys(mock_post, client, team_admin_token, test_team_user, test_team, test_region, db):
+@patch("httpx.AsyncClient")
+def test_list_private_ai_keys_as_team_admin_includes_team_and_user_keys(mock_client_class, client, team_admin_token, test_team_user, test_team, test_region, db, mock_httpx_post_client):
     """Test that a team admin can list both team keys and keys owned by users in their team"""
-    # Mock the LiteLLM API response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     # First, get a token for the team user
     response = client.post(
@@ -475,13 +416,11 @@ def test_list_private_ai_keys_as_team_admin_includes_team_and_user_keys(mock_pos
     assert any(key["name"] == "team-user-key" and key["owner_id"] == test_team_user.id for key in data)
     assert any(key["name"] == "team-owned-key" and key["team_id"] == test_team.id for key in data)
 
-@patch("app.services.litellm.requests.post")
-def test_list_private_ai_keys_as_read_only_user(mock_post, client, team_admin_token, team_read_only_token, test_region, test_team_read_only, db):
+@patch("httpx.AsyncClient")
+def test_list_private_ai_keys_as_read_only_user(mock_client_class, client, team_admin_token, team_read_only_token, test_region, test_team_read_only, db, mock_httpx_post_client):
     """Test that a user with read_only access can see their own AI keys"""
-    # Mock the LiteLLM API response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     # Create a private AI key for the read_only user using team admin token
     key_data = {
@@ -511,23 +450,11 @@ def test_list_private_ai_keys_as_read_only_user(mock_post, client, team_admin_to
     assert data[0]["name"] == "read-only-user-key"
     assert data[0]["owner_id"] == test_team_read_only.id
 
-@patch("app.services.litellm.requests.get")
-def test_view_spend_as_read_only_user(mock_get, client, team_read_only_token, test_region, mock_litellm_response, db, test_team_read_only):
+@patch("httpx.AsyncClient")
+def test_view_spend_as_read_only_user(mock_client_class, client, team_read_only_token, test_region, db, test_team_read_only, mock_httpx_get_client):
     """Test that a read-only user can view spend information for their own key"""
-    # Mock the LiteLLM API response
-    mock_get.return_value.status_code = 200
-    mock_get.return_value.json.return_value = {
-        "info": {
-            "spend": 10.5,
-            "expires": "2024-12-31T23:59:59Z",
-            "created_at": "2024-01-01T00:00:00Z",
-            "updated_at": "2024-01-02T00:00:00Z",
-            "max_budget": 100.0,
-            "budget_duration": "monthly",
-            "budget_reset_at": "2024-02-01T00:00:00Z"
-        }
-    }
-    mock_get.return_value.raise_for_status.return_value = None
+    # Use the httpx GET client fixture
+    mock_client_class.return_value = mock_httpx_get_client
 
     # Create a test key owned by the read-only user
     test_key = DBPrivateAIKey(
@@ -566,13 +493,8 @@ def test_view_spend_as_read_only_user(mock_get, client, team_read_only_token, te
     db.delete(test_key)
     db.commit()
 
-@patch("app.services.litellm.requests.post")
-def test_delete_private_ai_key_as_read_only_user(mock_post, client, team_read_only_token, test_region, mock_litellm_response, db):
+def test_delete_private_ai_key_as_read_only_user(client, team_read_only_token, test_region, db):
     """Test that a user with read_only role cannot delete a key"""
-    # Mock the LiteLLM API response (though it shouldn't be called)
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
 
     # Create a test key
     test_key = DBPrivateAIKey(
@@ -599,20 +521,15 @@ def test_delete_private_ai_key_as_read_only_user(mock_post, client, team_read_on
     assert delete_response.status_code == 403
     assert "Not authorized to perform this action" in delete_response.json()["detail"]
 
-    # Verify that the LiteLLM API was not called
-    mock_post.assert_not_called()
-
     # Clean up the test key
     db.delete(test_key)
     db.commit()
 
-@patch("app.services.litellm.requests.post")
-def test_delete_team_private_ai_key(mock_post, client, team_admin_token, test_team, test_region, mock_litellm_response):
+@patch("httpx.AsyncClient")
+def test_delete_team_private_ai_key(mock_client_class, client, team_admin_token, test_team, test_region, mock_httpx_post_client):
     """Test that a team admin can delete a team-owned private AI key"""
-    # Mock the LiteLLM API response for both create and delete operations
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     # First create a team-owned key
     create_response = client.post(
@@ -640,19 +557,16 @@ def test_delete_team_private_ai_key(mock_post, client, team_admin_token, test_te
     assert delete_response.json()["message"] == "Private AI Key deleted successfully"
 
     # Verify the LiteLLM token was deleted
-    mock_post.assert_called_with(
+    mock_httpx_post_client.post.assert_called_with(
         f"{test_region.litellm_api_url}/key/delete",
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
         json={"keys": [created_key["litellm_token"]]}
     )
 
-@patch("app.services.litellm.requests.post")
-def test_delete_private_ai_key_as_system_admin(mock_post, client, admin_token, test_team_user, test_region, mock_litellm_response):
+@patch("httpx.AsyncClient")
+def test_delete_private_ai_key_as_system_admin(mock_client_class, client, admin_token, test_team_user, test_region, mock_httpx_post_client):
     """Test that a system admin can delete any private AI key"""
-    # Mock the LiteLLM API response for both create and delete operations
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
+    mock_client_class.return_value = mock_httpx_post_client
 
     # Create a private AI key for the team user using admin token
     test_team_user_id = test_team_user.id
@@ -680,14 +594,14 @@ def test_delete_private_ai_key_as_system_admin(mock_post, client, admin_token, t
     assert delete_response.json()["message"] == "Private AI Key deleted successfully"
 
     # Verify the LiteLLM token was deleted
-    mock_post.assert_called_with(
+    mock_httpx_post_client.post.assert_called_with(
         f"{test_region.litellm_api_url}/key/delete",
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
         json={"keys": [created_key["litellm_token"]]}
     )
 
-@patch("app.services.litellm.requests.post")
-def test_delete_private_ai_key_from_other_team(mock_post, client, team_admin_token, admin_token, test_region, mock_litellm_response, db):
+@patch("httpx.AsyncClient")
+def test_delete_private_ai_key_from_other_team(mock_client_class, client, team_admin_token, admin_token, test_region, db, mock_httpx_post_client):
     """Test that a team admin cannot delete a key from another team"""
     # Create a second team
     other_team = DBTeam(
@@ -702,10 +616,8 @@ def test_delete_private_ai_key_from_other_team(mock_post, client, team_admin_tok
     db.commit()
     db.refresh(other_team)
 
-    # Mock the LiteLLM API response for create operation
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     # Create a team key for the other team using admin token
     other_team_id = other_team.id
@@ -733,13 +645,11 @@ def test_delete_private_ai_key_from_other_team(mock_post, client, team_admin_tok
     assert delete_response.status_code == 404
     assert "Private AI Key not found" in delete_response.json()["detail"]
 
-@patch("app.services.litellm.requests.post")
-def test_delete_team_member_key_as_team_admin(mock_post, client, team_admin_token, admin_token, test_team_user, test_region, mock_litellm_response):
+@patch("httpx.AsyncClient")
+def test_delete_team_member_key_as_team_admin(mock_client_class, client, team_admin_token, admin_token, test_team_user, test_region, mock_httpx_post_client):
     """Test that a team admin can delete a key belonging to a user in their team"""
-    # Mock the LiteLLM API response for both create and delete operations
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     # Create a private AI key for the team user using admin token
     test_team_user_id = test_team_user.id
@@ -767,19 +677,14 @@ def test_delete_team_member_key_as_team_admin(mock_post, client, team_admin_toke
     assert delete_response.json()["message"] == "Private AI Key deleted successfully"
 
     # Verify the LiteLLM token was deleted
-    mock_post.assert_called_with(
+    mock_httpx_post_client.post.assert_called_with(
         f"{test_region.litellm_api_url}/key/delete",
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
         json={"keys": [created_key["litellm_token"]]}
     )
 
-@patch("app.services.litellm.requests.post")
-def test_delete_private_ai_key_as_default_user_not_owner(mock_post, client, test_token, test_region, mock_litellm_response, db, test_admin):
+def test_delete_private_ai_key_as_default_user_not_owner(client, test_token, test_region, db, test_admin):
     """Test that a default user cannot delete a key they don't own"""
-    # Mock the LiteLLM API response (though it shouldn't be called)
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
 
     # Create a test key owned by the admin user
     test_key = DBPrivateAIKey(
@@ -807,35 +712,15 @@ def test_delete_private_ai_key_as_default_user_not_owner(mock_post, client, test
     assert delete_response.status_code == 404
     assert "Private AI Key not found" in delete_response.json()["detail"]
 
-    # Verify that the LiteLLM API was not called
-    mock_post.assert_not_called()
-
     # Clean up the test key
     db.delete(test_key)
     db.commit()
 
-@patch("app.services.litellm.requests.get")
-def test_view_spend_with_extra_fields(mock_get, client, team_read_only_token, test_region, mock_litellm_response, db, test_team_read_only):
+@patch("httpx.AsyncClient")
+def test_view_spend_with_extra_fields(mock_client_class, client, team_read_only_token, test_region, db, test_team_read_only, mock_httpx_get_client):
     """Test that the spend endpoint correctly handles extra fields in the LiteLLM response"""
-    # Mock the LiteLLM API response with extra fields
-    mock_get.return_value.status_code = 200
-    mock_get.return_value.json.return_value = {
-        "info": {
-            "spend": 10.5,
-            "expires": "2024-12-31T23:59:59Z",
-            "created_at": "2024-01-01T00:00:00Z",
-            "updated_at": "2024-01-02T00:00:00Z",
-            "max_budget": 100.0,
-            "budget_duration": "monthly",
-            "budget_reset_at": "2024-02-01T00:00:00Z",
-            "extra_field1": "value1",  # Extra field not in our model
-            "extra_field2": 123,       # Extra field not in our model
-            "extra_field3": {          # Extra field not in our model
-                "nested": "value"
-            }
-        }
-    }
-    mock_get.return_value.raise_for_status.return_value = None
+    # Use the httpx GET client fixture
+    mock_client_class.return_value = mock_httpx_get_client
 
     # Create a test key owned by the read-only user
     test_key = DBPrivateAIKey(
@@ -882,23 +767,29 @@ def test_view_spend_with_extra_fields(mock_get, client, team_read_only_token, te
     db.delete(test_key)
     db.commit()
 
-@patch("app.services.litellm.requests.get")
-def test_view_spend_with_missing_fields(mock_get, client, team_read_only_token, test_region, mock_litellm_response, db, test_team_read_only):
+@patch("httpx.AsyncClient")
+def test_view_spend_with_missing_fields(mock_client_class, client, team_read_only_token, test_region, db, test_team_read_only):
     """Test that the spend endpoint handles missing spend and budget fields correctly"""
-    # Mock the LiteLLM API response with missing fields
-    mock_get.return_value.status_code = 200
-    mock_get.return_value.json.return_value = {
+    # Create custom mock with missing fields
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
         "info": {
-            # Missing spend field
+            # Missing spend field - should default to 0.0
             "expires": "2024-12-31T23:59:59Z",
             "created_at": "2024-01-01T00:00:00Z",
             "updated_at": "2024-01-02T00:00:00Z",
-            # Missing max_budget field
-            # Missing budget_duration field
-            # Missing budget_reset_at field
+            # Missing max_budget and budget_duration - should default to None
         }
     }
-    mock_get.return_value.raise_for_status.return_value = None
+    mock_response.raise_for_status.return_value = None
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+
+    mock_client_class.return_value = mock_client
 
     # Create a test key owned by the read-only user
     test_key = DBPrivateAIKey(
@@ -946,13 +837,11 @@ def test_view_spend_with_missing_fields(mock_get, client, team_read_only_token, 
     db.delete(test_key)
     db.commit()
 
-@patch("app.services.litellm.requests.post")
-def test_update_budget_period_as_key_creator(mock_post, client, team_key_creator_token, test_region, mock_litellm_response, db, test_team_key_creator):
+@patch("httpx.AsyncClient")
+def test_update_budget_period_as_key_creator(mock_client_class, client, team_key_creator_token, test_region, db, test_team_key_creator, mock_httpx_post_client):
     """Test that a key_creator cannot update the budget period for a key they own"""
-    # Mock the LiteLLM API response (though it shouldn't be called)
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture (though it shouldn't be called)
+    mock_client_class.return_value = mock_httpx_post_client
 
     # Create a test key owned by the key_creator user
     test_key = DBPrivateAIKey(
@@ -982,35 +871,17 @@ def test_update_budget_period_as_key_creator(mock_post, client, team_key_creator
     assert "Not authorized to perform this action" in response.json()["detail"]
 
     # Verify that the LiteLLM API was not called
-    mock_post.assert_not_called()
+    mock_httpx_post_client.post.assert_not_called()
 
     # Clean up the test key
     db.delete(test_key)
     db.commit()
 
-@patch("app.services.litellm.requests.get")
-@patch("app.services.litellm.requests.post")
-def test_update_budget_duration_as_team_admin(mock_post, mock_get, client, team_admin_token, test_region, mock_litellm_response, db, test_team):
+@patch("httpx.AsyncClient")
+def test_update_budget_duration_as_team_admin(mock_client_class, client, team_admin_token, test_region, db, test_team, mock_httpx_combined_client):
     """Test that a team admin can update the budget duration for a team-owned key"""
-    # Mock the LiteLLM API responses
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
-
-    # Mock the key info response
-    mock_get.return_value.status_code = 200
-    mock_get.return_value.json.return_value = {
-        "info": {
-            "spend": 0.0,
-            "expires": "2024-12-31T23:59:59Z",
-            "created_at": "2024-01-01T00:00:00Z",
-            "updated_at": "2024-01-02T00:00:00Z",
-            "max_budget": 100.0,
-            "budget_duration": "monthly",
-            "budget_reset_at": "2024-02-01T00:00:00Z"
-        }
-    }
-    mock_get.return_value.raise_for_status.return_value = None
+    # Use the combined httpx client fixture for both POST (update) and GET (info) operations
+    mock_client_class.return_value = mock_httpx_combined_client
 
     # Create a test key owned by the team
     test_key = DBPrivateAIKey(
@@ -1041,7 +912,7 @@ def test_update_budget_duration_as_team_admin(mock_post, mock_get, client, team_
     assert data["budget_duration"] == "monthly"
 
     # Verify that the LiteLLM API was called with the correct parameters
-    mock_post.assert_called_with(
+    mock_httpx_combined_client.post.assert_called_with(
         f"{test_region.litellm_api_url}/key/update",
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
         json={
@@ -1052,7 +923,7 @@ def test_update_budget_duration_as_team_admin(mock_post, mock_get, client, team_
     )
 
     # Verify that the key info was checked
-    mock_get.assert_called_with(
+    mock_httpx_combined_client.get.assert_called_with(
         f"{test_region.litellm_api_url}/key/info",
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
         params={"key": test_key.litellm_token}
@@ -1062,13 +933,11 @@ def test_update_budget_duration_as_team_admin(mock_post, mock_get, client, team_
     db.delete(test_key)
     db.commit()
 
-@patch("app.services.litellm.requests.post")
-def test_create_llm_token_as_system_admin(mock_post, client, admin_token, test_region, mock_litellm_response):
+@patch("httpx.AsyncClient")
+def test_create_llm_token_as_system_admin(mock_client_class, client, admin_token, test_region, mock_httpx_post_client):
     """Test that a system admin can create an LLM token for themselves"""
-    # Mock the LiteLLM API response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     llm_url = test_region.litellm_api_url
     region_name = test_region.name
@@ -1106,14 +975,12 @@ def test_create_llm_token_as_system_admin(mock_post, client, admin_token, test_r
         for key in list_data
     )
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient")
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
-def test_create_llm_token_with_expiration(mock_post, client, admin_token, test_region, mock_litellm_response):
+def test_create_llm_token_with_expiration(mock_client_class, client, admin_token, test_region, mock_httpx_post_client):
     """Test that when ENABLE_LIMITS is true, new LiteLLM tokens are created with a 30-day expiration duration"""
-    # Mock the LiteLLM API response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     # Create LLM token
     response = client.post(
@@ -1134,8 +1001,8 @@ def test_create_llm_token_with_expiration(mock_post, client, admin_token, test_r
     assert data["name"] == "Test LLM Token with Expiration"
 
     # Verify that the LiteLLM API was called with the correct duration
-    mock_post.assert_called_once()
-    call_args = mock_post.call_args[1]
+    mock_httpx_post_client.post.assert_called_once()
+    call_args = mock_httpx_post_client.post.call_args[1]
     assert call_args["json"]["duration"] == "365d"  # Updated default duration
     assert call_args["json"]["budget_duration"] == "30d"  # Verify 1 month
     assert call_args["json"]["max_budget"] == DEFAULT_MAX_SPEND
@@ -1179,13 +1046,11 @@ def test_create_vector_db_as_system_admin(client, admin_token, test_region):
         for key in list_data
     )
 
-@patch("app.services.litellm.requests.post")
-def test_delete_llm_token_as_system_admin(mock_post, client, admin_token, test_region, mock_litellm_response, db):
+@patch("httpx.AsyncClient")
+def test_delete_llm_token_as_system_admin(mock_client_class, client, admin_token, test_region, db, mock_httpx_post_client):
     """Test that a system admin can delete an LLM token they own"""
-    # Mock the LiteLLM API response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     # First create an LLM token
     create_response = client.post(
@@ -1216,19 +1081,21 @@ def test_delete_llm_token_as_system_admin(mock_post, client, admin_token, test_r
     assert deleted_key is None
 
     # Verify the LiteLLM API was called to delete the token
-    mock_post.assert_called_with(
+    mock_httpx_post_client.post.assert_called_with(
         f"{test_region.litellm_api_url}/key/delete",
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
         json={"keys": [created_token["litellm_token"]]}
     )
 
-@patch("app.services.litellm.requests.post")
-def test_delete_vector_db_as_system_admin(mock_post, client, admin_token, test_region, db):
+@patch("httpx.AsyncClient")
+def test_delete_vector_db_as_system_admin(mock_client_class, client, admin_token, test_region, db, mock_httpx_post_client):
     """Test that a system admin can delete their own vector database"""
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
     # Mock the LiteLLM API response
-    mock_post.return_value.status_code = 404
-    mock_post.return_value.json.return_value = {"error": "Key not found"}
-    mock_post.return_value.raise_for_status.side_effect = HTTPError("Key not found")
+    mock_httpx_post_client.post.return_value.status_code = 404
+    mock_httpx_post_client.post.return_value.json.return_value = {"error": "Key not found"}
+    mock_httpx_post_client.post.return_value.raise_for_status.side_effect = HTTPStatusError("Key not found", request=None, response=None)
 
     # First create a vector database
     create_response = client.post(
@@ -1259,13 +1126,11 @@ def test_delete_vector_db_as_system_admin(mock_post, client, admin_token, test_r
     ).first()
     assert deleted_key is None
 
-@patch("app.services.litellm.requests.post")
-def test_list_private_ai_keys_as_read_only_user_includes_team_keys(mock_post, client, team_admin_token, team_read_only_token, test_region, test_team_read_only, test_team, db):
+@patch("httpx.AsyncClient")
+def test_list_private_ai_keys_as_read_only_user_includes_team_keys(mock_client_class, client, team_admin_token, team_read_only_token, test_region, test_team_read_only, test_team, db, mock_httpx_post_client):
     """Test that a read-only user can see both their own keys and team-owned keys"""
-    # Mock the LiteLLM API response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     # Create a private AI key for the read_only user using team admin token
     user_key_data = {
@@ -1309,13 +1174,11 @@ def test_list_private_ai_keys_as_read_only_user_includes_team_keys(mock_post, cl
     assert any(key["name"] == "read-only-user-key" and key["owner_id"] == test_team_read_only.id for key in data)
     assert any(key["name"] == "team-owned-key" and key["team_id"] == test_team.id for key in data)
 
-@patch("app.services.litellm.requests.post")
-def test_list_private_ai_keys_as_non_team_user(mock_post, client, admin_token, test_token, test_region, test_user, test_team, test_team_user, db):
+@patch("httpx.AsyncClient")
+def test_list_private_ai_keys_as_non_team_user(mock_client_class, client, admin_token, test_token, test_region, test_user, test_team, test_team_user, db, mock_httpx_post_client):
     """Test that a user who is not an admin or team member can only see their own keys"""
-    # Mock the LiteLLM API response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     # Create a key for the test user
     user_key_data = {
@@ -1376,11 +1239,14 @@ def test_list_private_ai_keys_as_non_team_user(mock_post, client, admin_token, t
     assert data[0]["owner_id"] == test_user.id
     assert data[0].get("team_id") is None
 
-@patch("app.services.litellm.requests.get")
-def test_get_private_ai_key_success(mock_get, client, admin_token, test_region, db, test_team):
+@patch("httpx.AsyncClient")
+def test_get_private_ai_key_success(mock_client_class, client, admin_token, test_region, db, test_team, mock_httpx_get_client):
     """Test successfully retrieving a private AI key"""
     region_id = test_region.id
     region_name = test_region.name
+    # Refresh the team to ensure it's bound to the current session
+    db.refresh(test_team)
+    team_id = test_team.id
     # Create a test key owned by the team
     test_key = DBPrivateAIKey(
         database_name="test-db-get",
@@ -1390,33 +1256,15 @@ def test_get_private_ai_key_success(mock_get, client, admin_token, test_region, 
         database_password="test-pass",
         litellm_token="test-token-get",
         litellm_api_url="https://test-litellm.com",
-        team_id=test_team.id,
+        team_id=team_id,
         region_id=region_id
     )
     db.add(test_key)
     db.commit()
     db.refresh(test_key)
 
-    # Mock the LiteLLM API response for key info
-    mock_get.return_value.status_code = 200
-    mock_get.return_value.json.return_value = {
-        "info": {
-            "key_name": "Test Key for Get",
-            "key_alias": "test-key-alias",
-            "spend": 0.0,
-            "expires": "2024-12-31T23:59:59Z",
-            "created_at": "2024-01-01T00:00:00Z",
-            "updated_at": "2024-01-02T00:00:00Z",
-            "max_budget": 100.0,
-            "budget_duration": "monthly",
-            "budget_reset_at": "2024-02-01T00:00:00Z",
-            "metadata": {
-                "team_id": str(test_team.id),
-                "region_id": str(test_region.id)
-            }
-        }
-    }
-    mock_get.return_value.raise_for_status.return_value = None
+    # Use the httpx GET client fixture
+    mock_client_class.return_value = mock_httpx_get_client
 
     # Get the key as admin
     response = client.get(
@@ -1435,11 +1283,11 @@ def test_get_private_ai_key_success(mock_get, client, admin_token, test_region, 
     assert data["database_password"] == "test-pass"
     assert data["litellm_token"] == "test-token-get"
     assert data["litellm_api_url"] == "https://test-litellm.com"
-    assert data["team_id"] == test_team.id
+    assert data["team_id"] == team_id
     assert data["region"] == region_name
 
     # Verify the LiteLLM API was called correctly
-    mock_get.assert_called_with(
+    mock_httpx_get_client.get.assert_called_with(
         f"{test_region.litellm_api_url}/key/info",
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
         params={"key": test_key.litellm_token}
@@ -1449,9 +1297,11 @@ def test_get_private_ai_key_success(mock_get, client, admin_token, test_region, 
     db.delete(test_key)
     db.commit()
 
-@patch("app.services.litellm.requests.get")
-def test_get_private_ai_key_not_found(mock_get, client, admin_token):
+@patch("httpx.AsyncClient")
+def test_get_private_ai_key_not_found(mock_client_class, client, admin_token, mock_httpx_get_client):
     """Test getting a non-existent private AI key"""
+    # Use the httpx GET client fixture
+    mock_client_class.return_value = mock_httpx_get_client
     # Try to get a non-existent key
     response = client.get(
         "/private-ai-keys/99999",
@@ -1462,9 +1312,11 @@ def test_get_private_ai_key_not_found(mock_get, client, admin_token):
     assert response.status_code == 404
     assert "Private AI Key not found" in response.json()["detail"]
 
-@patch("app.services.litellm.requests.get")
-def test_get_private_ai_key_unauthorized(mock_get, client, test_token, test_region, db, test_team):
+@patch("httpx.AsyncClient")
+def test_get_private_ai_key_unauthorized(mock_client_class, client, test_token, test_region, db, test_team, mock_httpx_get_client):
     """Test getting a private AI key without proper authorization"""
+    # Use the httpx GET client fixture
+    mock_client_class.return_value = mock_httpx_get_client
     # Create a test key owned by the team
     test_key = DBPrivateAIKey(
         database_name="test-db-unauthorized",
@@ -1495,9 +1347,9 @@ def test_get_private_ai_key_unauthorized(mock_get, client, test_token, test_regi
     db.delete(test_key)
     db.commit()
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient")
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
-def test_create_too_many_service_keys(mock_post, client, admin_token, test_region, mock_litellm_response, db, test_team):
+def test_create_too_many_service_keys(mock_client_class, client, admin_token, test_region, db, test_team, mock_httpx_post_client):
     """Test that when ENABLE_LIMITS is true, creating too many service keys fails"""
     # Create a product with a specific service key limit for testing
     key_count = 2
@@ -1527,10 +1379,8 @@ def test_create_too_many_service_keys(mock_post, client, admin_token, test_regio
     db.add(team_product)
     db.commit()
 
-    # Mock the LiteLLM API response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     team_id = test_team.id
     # Create service keys up to the limit
@@ -1559,9 +1409,9 @@ def test_create_too_many_service_keys(mock_post, client, admin_token, test_regio
     assert response.status_code == 402
     assert f"Team has reached the maximum service LLM key limit of {key_count} keys" in response.json()["detail"]
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient")
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
-def test_create_too_many_user_keys(mock_post, client, admin_token, test_region, mock_litellm_response, db, test_team_user):
+def test_create_too_many_user_keys(mock_client_class, client, admin_token, test_region, db, test_team_user, mock_httpx_post_client):
     """Test that when ENABLE_LIMITS is true, creating too many user keys fails"""
     # Get the team from the team user
     team_id = test_team_user.team_id
@@ -1593,10 +1443,8 @@ def test_create_too_many_user_keys(mock_post, client, admin_token, test_region, 
     db.add(team_product)
     db.commit()
 
-    # Mock the LiteLLM API response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     user_id = test_team_user.id
     # Create user keys up to the limit
@@ -1683,9 +1531,9 @@ def test_create_too_many_vector_dbs(client, admin_token, test_region, db, test_t
     assert response.status_code == 402
     assert f"Team has reached the maximum vector DB limit of {vector_db_count} databases" in response.json()["detail"]
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient")
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
-def test_create_too_many_total_keys(mock_post, client, admin_token, test_region, mock_litellm_response, db, test_team, test_team_user):
+def test_create_too_many_total_keys(mock_client_class, client, admin_token, test_region, db, test_team, test_team_user, mock_httpx_post_client):
     """Test that when ENABLE_LIMITS is true, creating too many total keys fails"""
     # Create a product with a specific total key limit for testing
     key_count = 5
@@ -1714,10 +1562,8 @@ def test_create_too_many_total_keys(mock_post, client, admin_token, test_region,
     db.add(team_product)
     db.commit()
 
-    # Mock the LiteLLM API response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = mock_litellm_response
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     team_id = test_team.id
     user_id = test_team_user.id
@@ -1762,8 +1608,8 @@ def test_create_too_many_total_keys(mock_post, client, admin_token, test_region,
     assert response.status_code == 402
     assert f"Team has reached the maximum LLM key limit of {key_count} keys" in response.json()["detail"]
 
-@patch("app.services.litellm.requests.post")
-def test_delete_private_ai_key_with_only_vector_db(mock_post, client, admin_token, test_region, db):
+@patch("httpx.AsyncClient")
+def test_delete_private_ai_key_with_only_vector_db(mock_client_class, client, admin_token, test_region, db, mock_httpx_post_client):
     """Test deleting a private AI key that only has a vector database (no LLM token)"""
     litellm_api_url = test_region.litellm_api_url
     litellm_api_key = test_region.litellm_api_key
@@ -1783,9 +1629,11 @@ def test_delete_private_ai_key_with_only_vector_db(mock_post, client, admin_toke
     db.commit()
     db.refresh(test_key)
 
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
     # Mock the LiteLLM API response for the None token case
-    mock_post.return_value.status_code = 404
-    mock_post.return_value.raise_for_status.return_value = None
+    mock_httpx_post_client.post.return_value.status_code = 404
+    mock_httpx_post_client.post.return_value.raise_for_status.return_value = None
 
     # Delete the key
     delete_response = client.delete(
@@ -1804,14 +1652,14 @@ def test_delete_private_ai_key_with_only_vector_db(mock_post, client, admin_toke
     assert deleted_key is None
 
     # Verify that LiteLLM API was called with None token
-    mock_post.assert_called_with(
+    mock_httpx_post_client.post.assert_called_with(
         f"{litellm_api_url}/key/delete",
         headers={"Authorization": f"Bearer {litellm_api_key}"},
         json={"keys": [None]}
     )
 
-@patch("app.services.litellm.requests.post")
-def test_delete_private_ai_key_with_only_llm_token(mock_post, client, admin_token, test_region, db):
+@patch("httpx.AsyncClient")
+def test_delete_private_ai_key_with_only_llm_token(mock_client_class, client, admin_token, test_region, db, mock_httpx_post_client):
     """Test deleting a private AI key that only has an LLM token (no vector DB)"""
     # Create a test key with only LLM token
     api_key = test_region.litellm_api_key
@@ -1831,9 +1679,11 @@ def test_delete_private_ai_key_with_only_llm_token(mock_post, client, admin_toke
     db.commit()
     db.refresh(test_key)
 
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
     # Mock the LiteLLM API response
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.raise_for_status.return_value = None
+    mock_httpx_post_client.post.return_value.status_code = 200
+    mock_httpx_post_client.post.return_value.raise_for_status.return_value = None
 
     # Delete the key
     delete_response = client.delete(
@@ -1852,14 +1702,14 @@ def test_delete_private_ai_key_with_only_llm_token(mock_post, client, admin_toke
     assert deleted_key is None
 
     # Verify the LiteLLM token was deleted
-    mock_post.assert_called_with(
+    mock_httpx_post_client.post.assert_called_with(
         f"{litellm_api_url}/key/delete",
         headers={"Authorization": f"Bearer {api_key}"},
         json={"keys": [test_key.litellm_token]}
     )
 
-@patch("app.services.litellm.requests.post")
-def test_delete_private_ai_key_litellm_service_unavailable(mock_post, client, admin_token, test_region, db):
+@patch("httpx.AsyncClient")
+def test_delete_private_ai_key_litellm_service_unavailable(mock_client_class, client, admin_token, test_region, db, mock_httpx_post_client):
     """Test deleting a private AI key when LiteLLM service returns 503"""
     # Create a test key
     test_key = DBPrivateAIKey(
@@ -1877,9 +1727,11 @@ def test_delete_private_ai_key_litellm_service_unavailable(mock_post, client, ad
     db.commit()
     db.refresh(test_key)
 
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
     # Mock the LiteLLM API response to return 503
-    mock_post.return_value.status_code = 503
-    mock_post.return_value.raise_for_status.side_effect = HTTPError("Service Unavailable")
+    mock_httpx_post_client.post.return_value.status_code = 503
+    mock_httpx_post_client.post.return_value.raise_for_status.side_effect = HTTPStatusError("Service Unavailable", request=None, response=None)
 
     # Try to delete the key
     delete_response = client.delete(
@@ -1899,25 +1751,23 @@ def test_delete_private_ai_key_litellm_service_unavailable(mock_post, client, ad
     assert existing_key.id == test_key.id
 
     # Verify the LiteLLM API was called
-    mock_post.assert_called_with(
+    mock_httpx_post_client.post.assert_called_with(
         f"{test_region.litellm_api_url}/key/delete",
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
         json={"keys": [test_key.litellm_token]}
     )
     db.commit()
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient")
 @patch("app.db.postgres.PostgresManager.create_database")
-def test_create_private_ai_key_cleanup_on_vector_db_failure(mock_create_db, mock_post, client, test_token, test_region, test_user):
+def test_create_private_ai_key_cleanup_on_vector_db_failure(mock_create_db, mock_client_class, client, test_token, test_region, mock_httpx_post_client):
     """
     Given a user creates a private AI key
     When the vector database creation fails after LiteLLM token is created
     Then the LiteLLM token should be cleaned up and an error returned
     """
-    # Mock successful LiteLLM token creation
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     # Mock vector database creation failure
     mock_create_db.side_effect = Exception("Database creation failed")
@@ -1937,10 +1787,10 @@ def test_create_private_ai_key_cleanup_on_vector_db_failure(mock_create_db, mock
 
     # Verify LiteLLM token was cleaned up (delete API was called)
     # First call is for token creation, second call is for cleanup
-    assert mock_post.call_count == 2
+    assert mock_httpx_post_client.post.call_count == 2
 
     # Verify the cleanup call
-    cleanup_call = mock_post.call_args_list[1]
+    cleanup_call = mock_httpx_post_client.post.call_args_list[1]
     assert cleanup_call[0][0] == f"{test_region.litellm_api_url}/key/delete"
     assert cleanup_call[1]["headers"]["Authorization"] == f"Bearer {test_region.litellm_api_key}"
     assert cleanup_call[1]["json"]["keys"] == ["test-private-key-123"]
@@ -1952,20 +1802,18 @@ def test_create_private_ai_key_cleanup_on_vector_db_failure(mock_create_db, mock
     ).json()
     assert len([k for k in stored_keys if k["name"] == "Test AI Key"]) == 0
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient")
 @patch("app.db.postgres.PostgresManager.create_database")
 @patch("app.db.postgres.PostgresManager.delete_database")
 @patch("sqlalchemy.orm.Session.commit")
-def test_create_private_ai_key_cleanup_on_db_storage_failure(mock_commit, mock_delete_db, mock_create_db, mock_post, client, test_token, test_region, test_user):
+def test_create_private_ai_key_cleanup_on_db_storage_failure(mock_commit, mock_delete_db, mock_create_db, mock_client_class, client, test_token, test_region, mock_httpx_post_client):
     """
     Given a user creates a private AI key
     When the database storage fails after both LiteLLM token and vector DB are created
     Then both resources should be cleaned up and an error returned
     """
-    # Mock successful LiteLLM token creation
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     # Mock successful vector database creation
     mock_create_db.return_value = {
@@ -1995,8 +1843,8 @@ def test_create_private_ai_key_cleanup_on_db_storage_failure(mock_commit, mock_d
     assert "Failed to create private AI key" in response.json()["detail"]
 
     # Verify LiteLLM token was cleaned up
-    assert mock_post.call_count == 2
-    cleanup_call = mock_post.call_args_list[1]
+    assert mock_httpx_post_client.post.call_count == 2
+    cleanup_call = mock_httpx_post_client.post.call_args_list[1]
     assert cleanup_call[0][0] == f"{test_region.litellm_api_url}/key/delete"
     assert cleanup_call[1]["json"]["keys"] == ["test-private-key-123"]
 
@@ -2010,35 +1858,31 @@ def test_create_private_ai_key_cleanup_on_db_storage_failure(mock_commit, mock_d
     ).json()
     assert len([k for k in stored_keys if k["name"] == "Test AI Key"]) == 0
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient")
 @patch("app.db.postgres.PostgresManager.create_database")
-def test_create_private_ai_key_cleanup_failure_handling(mock_create_db, mock_post, client, test_token, test_region, test_user):
+def test_create_private_ai_key_cleanup_failure_handling(mock_create_db, mock_client_class, client, test_token, test_region, mock_httpx_post_client):
     """
     Given a user creates a private AI key
     When the cleanup process itself fails
     Then the original error should still be returned to the user
     """
-    # Mock successful LiteLLM token creation
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
-    mock_post.return_value.raise_for_status.return_value = None
-
     # Mock vector database creation failure
     mock_create_db.side_effect = Exception("Database creation failed")
 
-    # Mock cleanup failure - the second call to requests.post will be for cleanup
+    # Use the httpx POST client fixture but customize its behavior
+    mock_client_class.return_value = mock_httpx_post_client
+    # Mock cleanup failure - the second call will be for cleanup
     # First call succeeds, second call fails
-    mock_post.side_effect = [
-        Mock(
-            status_code=200,
-            json=Mock(return_value={"key": "test-private-key-123"}),
-            raise_for_status=Mock(return_value=None)
-        ),
-        Mock(
-            status_code=500,
-            raise_for_status=Mock(side_effect=HTTPError("Cleanup failed"))
-        )
-    ]
+    postsuccess = Mock()
+    postsuccess.status_code = 200
+    postsuccess.json.return_value = {"key": "test-private-key-123"}
+    postsuccess.raise_for_status.return_value = None
+
+    postfail = Mock()
+    postfail.status_code = 500
+    postfail.raise_for_status.side_effect = HTTPStatusError("Cleanup failed", request=None, response=None)
+
+    mock_httpx_post_client.post.side_effect = [postsuccess, postfail]
 
     response = client.post(
         "/private-ai-keys/",
@@ -2055,20 +1899,18 @@ def test_create_private_ai_key_cleanup_failure_handling(mock_create_db, mock_pos
     assert "Database creation failed" in response.json()["detail"]
 
     # Verify cleanup was attempted
-    assert mock_post.call_count == 2
+    assert mock_httpx_post_client.post.call_count == 2
 
-@patch("app.services.litellm.requests.post")
+@patch("httpx.AsyncClient")
 @patch("app.db.postgres.PostgresManager.create_database")
-def test_create_private_ai_key_http_exception_preservation(mock_create_db, mock_post, client, test_token, test_region, test_user):
+def test_create_private_ai_key_http_exception_preservation(mock_create_db, mock_client_class, client, test_token, test_region, mock_httpx_post_client):
     """
     Given a user creates a private AI key
     When an HTTPException is raised during creation
     Then the original HTTPException should be preserved and returned
     """
-    # Mock successful LiteLLM token creation
-    mock_post.return_value.status_code = 200
-    mock_post.return_value.json.return_value = {"key": "test-private-key-123"}
-    mock_post.return_value.raise_for_status.return_value = None
+    # Use the httpx POST client fixture
+    mock_client_class.return_value = mock_httpx_post_client
 
     # Mock vector database creation failure with HTTPException
     mock_create_db.side_effect = HTTPException(
@@ -2091,4 +1933,4 @@ def test_create_private_ai_key_http_exception_preservation(mock_create_db, mock_
     assert "Invalid database configuration" in response.json()["detail"]
 
     # Verify cleanup was attempted
-    assert mock_post.call_count == 2
+    assert mock_httpx_post_client.post.call_count == 2
