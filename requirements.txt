@@ -19,3 +19,4 @@ prometheus-fastapi-instrumentator==7.0.0
 stripe==12.1.0
 six==1.17.0
 apscheduler==3.10.4
+httpx==0.28.1
