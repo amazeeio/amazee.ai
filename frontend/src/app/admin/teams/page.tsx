@@ -749,6 +749,38 @@ export default function TeamsPage() {
     },
   });
 
+  const cancelSubscriptionMutation = useMutation({
+    mutationFn: async ({ teamId, productId }: { teamId: string; productId: string }) => {
+      try {
+        const response = await del(`/billing/teams/${teamId}/subscription/${productId}`);
+        return response.json();
+      } catch (error) {
+        if (error instanceof Error) {
+          throw new Error(`Failed to cancel subscription: ${error.message}`);
+        } else {
+          throw new Error('An unexpected error occurred while canceling the subscription.');
+        }
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['team', expandedTeamId] });
+      queryClient.invalidateQueries({ queryKey: ['teams'] });
+      queryClient.invalidateQueries({ queryKey: ['team-products', expandedTeamId] });
+
+      toast({
+        title: 'Success',
+        description: 'Subscription canceled successfully',
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
   const handleCreateTeam = (e: React.FormEvent) => {
     e.preventDefault();
     createTeamMutation.mutate({
@@ -1270,6 +1302,7 @@ export default function TeamsPage() {
                                                     <TableHead>Storage (GiB)</TableHead>
                                                     <TableHead>Renewal (Days)</TableHead>
                                                     <TableHead>Status</TableHead>
+                                                    <TableHead className="text-right">Actions</TableHead>
                                                   </TableRow>
                                                 </TableHeader>
                                                 <TableBody>
@@ -1289,6 +1322,19 @@ export default function TeamsPage() {
                                                         <Badge variant={product.active ? "default" : "destructive"}>
                                                           {product.active ? "Active" : "Inactive"}
                                                         </Badge>
+                                                      </TableCell>
+                                                      <TableCell className="text-right">
+                                                        <DeleteConfirmationDialog
+                                                          title="Cancel Subscription"
+                                                          description={`Are you sure you want to cancel the subscription to "${product.name}"? This action cannot be undone and will immediately remove access to this product.`}
+                                                          triggerText="Cancel"
+                                                          onConfirm={() => cancelSubscriptionMutation.mutate({
+                                                            teamId: expandedTeam!.id,
+                                                            productId: product.id
+                                                          })}
+                                                          isLoading={cancelSubscriptionMutation.isPending}
+                                                          size="sm"
+                                                        />
                                                       </TableCell>
                                                     </TableRow>
                                                   ))}
