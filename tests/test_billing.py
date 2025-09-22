@@ -1,5 +1,7 @@
 import pytest
 from unittest.mock import patch, AsyncMock
+from app.db.models import DBTeamProduct
+from fastapi import HTTPException, status
 
 @patch('app.api.billing.create_portal_session', new_callable=AsyncMock)
 def test_get_portal_existing_customer(mock_create_portal, client, db, test_team, team_admin_token):
@@ -361,3 +363,186 @@ def test_create_team_subscription_stripe_error(mock_create_customer, mock_create
     # Assert
     assert response.status_code == 500
     assert "Error creating subscription" in response.json()["detail"]
+
+@patch('app.api.billing.get_subscribed_products_for_customer', new_callable=AsyncMock)
+@patch('app.api.billing.cancel_subscription', new_callable=AsyncMock)
+def test_delete_subscription_for_team(mock_cancel_subscription, mock_get_subscribed_products_for_customer, client, admin_token, test_team, test_product, db):
+    """
+    GIVEN: A Team with a product association
+    WHEN: The subscription is cancelled
+    THEN: The appropriate stripe APIs are called, and the association is removed
+    """
+    # Associate the product with the team
+    team_id=test_team.id,
+    product_id=test_product.id
+    team_product = DBTeamProduct(
+        team_id=team_id,
+        product_id=product_id
+    )
+    db.add(team_product)
+    test_team.stripe_customer_id = "cus_123"
+    db.add(test_team)
+    db.commit()
+
+    mock_get_subscribed_products_for_customer.return_value = [("sub_1234", product_id)]
+
+    # Act
+    response = client.delete(
+        f"/billing/teams/{test_team.id}/subscription/{product_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    # Assert
+    assert response.status_code == 200
+    mock_get_subscribed_products_for_customer.assert_called_once_with("cus_123")
+    mock_cancel_subscription.assert_called_once_with("sub_1234")
+    results = db.query(DBTeamProduct).filter(DBTeamProduct.team_id == team_id, DBTeamProduct.product_id == product_id).first()
+    assert results is None
+
+def test_delete_subscription_team_not_found(client, admin_token, test_product):
+    """
+    GIVEN: A non-existent team ID
+    WHEN: Attempting to delete a subscription
+    THEN: A 404 error is returned
+    """
+    # Act
+    response = client.delete(
+        f"/billing/teams/99999/subscription/{test_product.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    # Assert
+    assert response.status_code == 404
+    assert "Team not found" in response.json()["detail"]
+
+def test_delete_subscription_product_not_found(client, admin_token, test_team):
+    """
+    GIVEN: A valid team but non-existent product ID
+    WHEN: Attempting to delete a subscription
+    THEN: A 400 error is returned
+    """
+    # Act
+    response = client.delete(
+        f"/billing/teams/{test_team.id}/subscription/nonexistent_product",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    # Assert
+    assert response.status_code == 400
+    assert "Product with ID nonexistent_product not found in database" in response.json()["detail"]
+
+def test_delete_subscription_no_association(client, admin_token, test_team, test_product, db):
+    """
+    GIVEN: A team with no product association
+    WHEN: Attempting to delete a subscription
+    THEN: A 400 error is returned
+    """
+    # Setup team with stripe customer but no product association
+    test_team.stripe_customer_id = "cus_123"
+    db.add(test_team)
+    db.commit()
+
+    # Act
+    response = client.delete(
+        f"/billing/teams/{test_team.id}/subscription/{test_product.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    # Assert
+    assert response.status_code == 400
+    assert f"Team {test_team.id} is not associated with product {test_product.id}" in response.json()["detail"]
+
+def test_delete_subscription_no_stripe_customer(client, admin_token, test_team, test_product, db):
+    """
+    GIVEN: A team with product association but no stripe customer ID
+    WHEN: Attempting to delete a subscription
+    THEN: A 400 error is returned
+    """
+    # Setup product association but no stripe customer
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    test_team.stripe_customer_id = None
+    db.add(test_team)
+    db.commit()
+
+    # Act
+    response = client.delete(
+        f"/billing/teams/{test_team.id}/subscription/{test_product.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    # Assert
+    assert response.status_code == 400
+    assert f"Team {test_team.id} is not associated with product {test_product.id}" in response.json()["detail"]
+
+@patch('app.api.billing.get_subscribed_products_for_customer', new_callable=AsyncMock)
+@patch('app.api.billing.cancel_subscription', new_callable=AsyncMock)
+def test_delete_subscription_stripe_get_products_error(mock_cancel_subscription, mock_get_subscribed_products_for_customer, client, admin_token, test_team, test_product, db):
+    """
+    GIVEN: A team with valid subscription setup
+    WHEN: get_subscribed_products_for_customer raises an exception
+    THEN: A 500 error is returned
+    """
+    # Setup valid subscription
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    test_team.stripe_customer_id = "cus_123"
+    db.add(test_team)
+    db.commit()
+
+    # Mock the stripe function to raise an exception
+    mock_get_subscribed_products_for_customer.side_effect = HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error calling Stripe API"
+        )
+
+    # Act
+    response = client.delete(
+        f"/billing/teams/{test_team.id}/subscription/{test_product.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    # Assert
+    assert response.status_code == 500
+    assert "Error calling Stripe API" in response.json()["detail"]
+
+@patch('app.api.billing.get_subscribed_products_for_customer', new_callable=AsyncMock)
+@patch('app.api.billing.cancel_subscription', new_callable=AsyncMock)
+def test_delete_subscription_stripe_cancel_error(mock_cancel_subscription, mock_get_subscribed_products_for_customer, client, admin_token, test_team, test_product, db):
+    """
+    GIVEN: A team with valid subscription setup
+    WHEN: cancel_subscription raises an exception
+    THEN: A 500 error is returned
+    """
+    # Setup valid subscription
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    test_team.stripe_customer_id = "cus_123"
+    db.add(test_team)
+    db.commit()
+
+    # Mock successful get but failed cancel
+    mock_get_subscribed_products_for_customer.return_value = [("sub_1234", test_product.id)]
+    mock_cancel_subscription.side_effect = HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error cancelling subscription in Stripe"
+        )
+
+    # Act
+    response = client.delete(
+        f"/billing/teams/{test_team.id}/subscription/{test_product.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    # Assert
+    assert response.status_code == 500
+    assert "Error cancelling subscription in Stripe" in response.json()["detail"]

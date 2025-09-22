@@ -301,6 +301,46 @@ async def get_product_id_from_session(session_id: str) -> str:
     line_items = stripe.checkout.Session.list_line_items(session_id)
     return line_items.data[0].price.product
 
+async def get_subscribed_products_for_customer(customer_id: str) -> list[(str, str)]:
+    """
+    Get a list of products to which the customer is subscribed in Stripe
+    Returns a list of tuples, (subscription_id, product_id)
+    """
+    try:
+        items = stripe.Subscription.list(customer=customer_id, expand=['data.plan.product'])
+        logger.info(f"{items}")
+    except Exception as e:
+        logger.error(f"Failed to get subscriptions for customer {customer_id}, {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error calling Stripe API"
+        )
+    subscriptions = []
+
+    if not items.data:
+        logger.warning(f"Found no subscription data for customer {customer_id}")
+        return subscriptions
+
+
+    logger.info(f"Found {len(items.data)} subscriptions for customer {customer_id}")
+    for item in items.data:
+        subscriptions.append((item.id, item.plan.product.id))
+
+    return subscriptions
+
+async def cancel_subscription(subscription_id: str):
+    """
+    End the subsciption to a particular price or product for a customer
+    """
+    try:
+        stripe.Subscription.cancel(subscription_id)
+    except Exception as e:
+        logger.error(f"Failed to cancel subscription {subscription_id}, {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error cancelling subscription in Stripe"
+        )
+
 async def get_customer_from_pi(payment_intent: str) -> str:
     """
     Get the Stripe customer ID from a payment intent.

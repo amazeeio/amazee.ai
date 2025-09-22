@@ -13,6 +13,8 @@ from app.services.stripe import (
     create_stripe_customer,
     get_pricing_table_secret,
     create_zero_rated_stripe_subscription,
+    get_subscribed_products_for_customer,
+    cancel_subscription,
 )
 from app.core.worker import handle_stripe_event_background
 
@@ -210,7 +212,7 @@ async def create_team_subscription(
             detail=f"Product with ID {subscription_data.product_id} not found in database"
         )
 
-        # Check if the team is already subscribed to any product
+    # Check if the team is already subscribed to any product
     existing_subscription = db.query(DBTeamProduct).filter(
         DBTeamProduct.team_id == team_id
     ).first()
@@ -250,3 +252,52 @@ async def create_team_subscription(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error creating subscription: {str(e)}"
         )
+
+@router.delete("/teams/{team_id}/subscription/{product_id}", dependencies=[Depends(get_role_min_system_admin)])
+async def delete_team_subscription(
+    team_id: int,
+    product_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Delete the subscription for a specific team to a specific product
+
+    Args:
+        team_id: The ID of the team to delete the subscription for
+        product_id: The ID of the product to be removed from the team
+    """
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if not team:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Team not found"
+        )
+
+    product = db.query(DBProduct).filter(DBProduct.id == product_id).first()
+    if not product:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Product with ID {product_id} not found in database"
+        )
+
+    existing_subscription = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == team_id,
+        DBTeamProduct.product_id == product_id
+    ).first()
+
+    if not existing_subscription or not team.stripe_customer_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Team {team_id} is not associated with product {product_id}"
+        )
+
+    # 1. Check Stripe Status
+    stripe_products = await get_subscribed_products_for_customer(team.stripe_customer_id)
+    for stripe_subscription, stripe_product in stripe_products:
+        if stripe_product == product_id:
+            await cancel_subscription(stripe_subscription)
+    # 3. Remove Association
+    db.delete(existing_subscription)
+    db.commit()
+
+    return {"message": "Successfully removed product"}
