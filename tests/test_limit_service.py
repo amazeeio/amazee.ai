@@ -1,13 +1,11 @@
 import pytest
 from datetime import datetime, UTC
-from sqlalchemy.orm import Session
-from fastapi import HTTPException
-from app.db.models import DBLimitedResource, DBTeam, DBUser
+from app.db.models import DBLimitedResource
 from app.core.limit_service import LimitService, LimitNotFoundError
 from app.schemas.limits import TeamLimits, LimitType, ResourceType, UnitType, OwnerType, LimitSource
 
 
-def test_get_team_limits_returns_all_limits(db: Session, test_team):
+def test_get_team_limits_returns_all_limits(db, test_team):
     """
     Given: A team with various limits set
     When: Calling get_team_limits(team_id)
@@ -41,7 +39,7 @@ def test_get_team_limits_returns_all_limits(db: Session, test_team):
     db.commit()
 
     limit_service = LimitService(db)
-    team_limits = limit_service.get_team_limits(test_team.id)
+    team_limits = limit_service.get_team_limits(test_team)
 
     assert isinstance(team_limits, TeamLimits)
     assert team_limits.team_id == test_team.id
@@ -53,7 +51,7 @@ def test_get_team_limits_returns_all_limits(db: Session, test_team):
     assert ResourceType.KEY in resources
 
 
-def test_increment_resource_cp_limit_within_capacity(db: Session, test_team):
+def test_increment_resource_cp_limit_within_capacity(db, test_team):
     """
     Given: A team with available capacity for a CP resource
     When: Calling increment_resource(owner_type="team", owner_id=team_id, resource_type="ai_key")
@@ -84,7 +82,7 @@ def test_increment_resource_cp_limit_within_capacity(db: Session, test_team):
     assert limit.current_value == 6.0
 
 
-def test_increment_resource_cp_limit_at_capacity(db: Session, test_team):
+def test_increment_resource_cp_limit_at_capacity(db, test_team):
     """
     Given: A team at maximum capacity for a CP resource
     When: Calling increment_resource(owner_type="team", owner_id=team_id, resource_type="user")
@@ -115,7 +113,7 @@ def test_increment_resource_cp_limit_at_capacity(db: Session, test_team):
     assert limit.current_value == 5.0
 
 
-def test_increment_resource_dp_limit_raises_exception(db: Session, test_team):
+def test_increment_resource_dp_limit_raises_exception(db, test_team):
     """
     Given: A team with DP resource limit
     When: Calling increment_resource(owner_type="team", owner_id=team_id, resource_type="max_budget")
@@ -143,7 +141,7 @@ def test_increment_resource_dp_limit_raises_exception(db: Session, test_team):
         limit_service.increment_resource(OwnerType.TEAM, test_team.id, ResourceType.BUDGET)
 
 
-def test_decrement_resource_cp_limit(db: Session, test_team):
+def test_decrement_resource_cp_limit(db, test_team):
     """
     Given: A team with existing CP resource usage
     When: Calling decrement_resource(owner_type="team", owner_id=team_id, resource_type="user")
@@ -174,7 +172,7 @@ def test_decrement_resource_cp_limit(db: Session, test_team):
     assert limit.current_value == 6.0
 
 
-def test_decrement_resource_dp_limit_raises_exception(db: Session, test_team):
+def test_decrement_resource_dp_limit_raises_exception(db, test_team):
     """
     Given: A team with DP resource limit
     When: Calling decrement_resource(owner_type="team", owner_id=team_id, resource_type="max_budget")
@@ -202,7 +200,7 @@ def test_decrement_resource_dp_limit_raises_exception(db: Session, test_team):
         limit_service.decrement_resource(OwnerType.TEAM, test_team.id, ResourceType.BUDGET)
 
 
-def test_increment_resource_dp_limit_should_fail(db: Session, test_team):
+def test_increment_resource_dp_limit_should_fail(db, test_team):
     """
     Given: A team with DP resource limit
     When: Calling increment_resource(owner_type="team", owner_id=team_id, resource_type="max_budget")
@@ -230,7 +228,7 @@ def test_increment_resource_dp_limit_should_fail(db: Session, test_team):
         limit_service.increment_resource(OwnerType.TEAM, test_team.id, ResourceType.BUDGET)
 
 
-def test_decrement_resource_dp_limit_should_fail(db: Session, test_team):
+def test_decrement_resource_dp_limit_should_fail(db, test_team):
     """
     Given: A team with DP resource limit
     When: Calling decrement_resource(owner_type="team", owner_id=team_id, resource_type="max_budget")
@@ -258,7 +256,7 @@ def test_decrement_resource_dp_limit_should_fail(db: Session, test_team):
         limit_service.decrement_resource(OwnerType.TEAM, test_team.id, ResourceType.BUDGET)
 
 
-def test_increment_resource_cp_non_count_type_should_fail(db: Session, test_team):
+def test_increment_resource_cp_non_count_type_should_fail(db, test_team):
     """
     Given: A team with CP resource that is not COUNT type (hypothetically)
     When: Calling increment_resource
@@ -286,7 +284,7 @@ def test_increment_resource_cp_non_count_type_should_fail(db: Session, test_team
         limit_service.increment_resource(OwnerType.TEAM, test_team.id, ResourceType.KEY)
 
 
-def test_decrement_resource_cp_non_count_type_should_fail(db: Session, test_team):
+def test_decrement_resource_cp_non_count_type_should_fail(db, test_team):
     """
     Given: A team with CP resource that is not COUNT type (hypothetically)
     When: Calling decrement_resource
@@ -314,7 +312,7 @@ def test_decrement_resource_cp_non_count_type_should_fail(db: Session, test_team
         limit_service.decrement_resource(OwnerType.TEAM, test_team.id, ResourceType.USER)
 
 
-def test_overwrite_limit_manual_can_override_anything(db: Session, test_team):
+def test_overwrite_limit_manual_can_override_anything(db, test_team):
     """
     Given: Any existing limit (PRODUCT or DEFAULT)
     When: Calling overwrite_limit with limited_by="manual"
@@ -357,7 +355,7 @@ def test_overwrite_limit_manual_can_override_anything(db: Session, test_team):
     assert limit.set_by == "admin@example.com"
 
 
-def test_overwrite_limit_product_can_override_default(db: Session, test_team):
+def test_overwrite_limit_product_can_override_default(db, test_team):
     """
     Given: Existing DEFAULT limit
     When: Calling overwrite_limit with limited_by="product"
@@ -398,7 +396,7 @@ def test_overwrite_limit_product_can_override_default(db: Session, test_team):
     assert limit.limited_by == LimitSource.PRODUCT
 
 
-def test_overwrite_limit_product_cannot_override_manual(db: Session, test_team):
+def test_overwrite_limit_product_cannot_override_manual(db, test_team):
     """
     Given: Existing MANUAL limit
     When: Calling overwrite_limit with limited_by="product"
@@ -422,7 +420,7 @@ def test_overwrite_limit_product_cannot_override_manual(db: Session, test_team):
 
     limit_service = LimitService(db)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(ValueError, match="Cannot override manual limit"):
         limit_service.overwrite_limit(
             owner_type=OwnerType.TEAM,
             owner_id=test_team.id,
@@ -434,11 +432,8 @@ def test_overwrite_limit_product_cannot_override_manual(db: Session, test_team):
             limited_by=LimitSource.PRODUCT
         )
 
-    assert exc_info.value.status_code == 400
-    assert "cannot override manual limit" in exc_info.value.detail.lower()
 
-
-def test_overwrite_limit_default_cannot_override_anything(db: Session, test_team):
+def test_overwrite_limit_default_cannot_override_anything(db, test_team):
     """
     Given: Existing PRODUCT or MANUAL limit
     When: Calling overwrite_limit with limited_by="default"
@@ -461,7 +456,7 @@ def test_overwrite_limit_default_cannot_override_anything(db: Session, test_team
 
     limit_service = LimitService(db)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(ValueError, match="Cannot override"):
         limit_service.overwrite_limit(
             owner_type=OwnerType.TEAM,
             owner_id=test_team.id,
@@ -473,26 +468,7 @@ def test_overwrite_limit_default_cannot_override_anything(db: Session, test_team
             limited_by=LimitSource.DEFAULT
         )
 
-    assert exc_info.value.status_code == 400
-    assert "cannot override" in exc_info.value.detail.lower()
-
-
-def test_reset_team_limits_cascades_properly(db: Session, test_team):
-    """
-    Given: Team with MANUAL overrides and PRODUCT limits
-    When: Calling reset_team_limits(team_id)
-    Then: Should cascade MANUAL -> PRODUCT -> DEFAULT based on availability
-    """
-    # This test will be implemented once we have the reset functionality
-    # For now, we'll create a placeholder
-    limit_service = LimitService(db)
-
-    # This should not raise an exception
-    result = limit_service.reset_team_limits(test_team.id)
-    assert result is not None
-
-
-def test_reset_limit_single_resource(db: Session, test_team):
+def test_reset_limit_single_resource(db, test_team):
     """
     Given: Team with MANUAL override for specific resource
     When: Calling reset_limit(owner_type="team", owner_id=team_id, resource_type="user")
@@ -522,7 +498,7 @@ def test_reset_limit_single_resource(db: Session, test_team):
     assert result.resource == ResourceType.USER
 
 
-def test_user_inherits_team_limits(db: Session, test_team, test_team_user):
+def test_user_inherits_team_limits(db, test_team, test_team_user):
     """
     Given: User without individual limit overrides
     When: Getting limits for the user
@@ -544,7 +520,7 @@ def test_user_inherits_team_limits(db: Session, test_team, test_team_user):
     db.commit()
 
     limit_service = LimitService(db)
-    user_limits = limit_service.get_user_limits(test_team_user.id)
+    user_limits = limit_service.get_user_limits(test_team_user)
 
     # User should inherit team limits
     assert len(user_limits.limits) == 1
@@ -552,7 +528,7 @@ def test_user_inherits_team_limits(db: Session, test_team, test_team_user):
     assert user_limits.limits[0].max_value == 5.0
 
 
-def test_user_override_supersedes_team_limit(db: Session, test_team, test_team_user):
+def test_user_override_supersedes_team_limit(db, test_team, test_team_user):
     """
     Given: User with individual limit overrides
     When: Getting limits for the user
@@ -590,7 +566,7 @@ def test_user_override_supersedes_team_limit(db: Session, test_team, test_team_u
     db.commit()
 
     limit_service = LimitService(db)
-    user_limits = limit_service.get_user_limits(test_team_user.id)
+    user_limits = limit_service.get_user_limits(test_team_user)
 
     # Should return user-specific limit, not team limit
     assert len(user_limits.limits) == 1
@@ -599,7 +575,7 @@ def test_user_override_supersedes_team_limit(db: Session, test_team, test_team_u
     assert user_limits.limits[0].limited_by == LimitSource.MANUAL
 
 
-def test_cp_limits_must_have_current_value(db: Session, test_team):
+def test_cp_limits_must_have_current_value(db, test_team):
     """
     Given: Attempting to create CP limit
     When: current_value is None
@@ -607,7 +583,7 @@ def test_cp_limits_must_have_current_value(db: Session, test_team):
     """
     limit_service = LimitService(db)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(ValueError, match="Control plane limits must have current_value") as exc_info:
         limit_service.overwrite_limit(
             owner_type=OwnerType.TEAM,
             owner_id=test_team.id,
@@ -619,11 +595,8 @@ def test_cp_limits_must_have_current_value(db: Session, test_team):
             limited_by=LimitSource.DEFAULT
         )
 
-    assert exc_info.value.status_code == 400
-    assert "control plane limits must have current_value" in exc_info.value.detail.lower()
 
-
-def test_dp_limits_must_not_have_current_value(db: Session, test_team):
+def test_dp_limits_must_not_have_current_value(db, test_team):
     """
     Given: Attempting to create DP limit
     When: current_value is not None
@@ -647,7 +620,7 @@ def test_dp_limits_must_not_have_current_value(db: Session, test_team):
     assert result.current_value is None
 
 
-def test_unique_constraint_enforced(db: Session, test_team):
+def test_unique_constraint_enforced(db, test_team):
     """
     Given: Existing limit for owner_type, owner_id, resource combination
     When: Attempting to create duplicate limit

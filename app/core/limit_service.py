@@ -30,7 +30,7 @@ class LimitService:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_team_limits(self, team_id: int) -> TeamLimits:
+    def get_team_limits(self, team: DBTeam) -> TeamLimits:
         """
         Get all effective limits for a team.
 
@@ -43,7 +43,7 @@ class LimitService:
         limits = self.db.query(DBLimitedResource).filter(
             and_(
                 DBLimitedResource.owner_type == OwnerType.TEAM,
-                DBLimitedResource.owner_id == team_id
+                DBLimitedResource.owner_id == team.id
             )
         ).all()
 
@@ -51,9 +51,9 @@ class LimitService:
             LimitedResourceSchema.model_validate(limit) for limit in limits
         ]
 
-        return TeamLimits(team_id=team_id, limits=limit_schemas)
+        return TeamLimits(team_id=team.id, limits=limit_schemas)
 
-    def get_user_limits(self, user_id: int) -> TeamLimits:
+    def get_user_limits(self, user: DBUser) -> TeamLimits:
         """
         Get all effective limits for a user.
         Users inherit team limits unless they have individual overrides.
@@ -64,16 +64,11 @@ class LimitService:
         Returns:
             TeamLimits object containing effective limits for the user
         """
-        # Get the user to find their team
-        user = self.db.query(DBUser).filter(DBUser.id == user_id).first()
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-
         # Get user-specific limits
         user_limits = self.db.query(DBLimitedResource).filter(
             and_(
                 DBLimitedResource.owner_type == OwnerType.USER,
-                DBLimitedResource.owner_id == user_id
+                DBLimitedResource.owner_id == user.id
             )
         ).all()
 
@@ -231,23 +226,17 @@ class LimitService:
             The created or updated limit
 
         Raises:
-            HTTPException: If validation fails or hierarchy rules are violated
+            ValueError: If validation fails or hierarchy rules are violated
         """
         # Validate inputs
         if limit_type == LimitType.CONTROL_PLANE and current_value is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Control plane limits must have current_value"
-            )
+            raise ValueError("Control plane limits must have current_value")
 
         if limit_type == LimitType.DATA_PLANE:
             current_value = None  # Force None for DP limits
 
         if limited_by == LimitSource.MANUAL and not set_by:
-            raise HTTPException(
-                status_code=400,
-                detail="Manual limits must specify set_by"
-            )
+            raise ValueError("Manual limits must specify set_by")
 
         # Check if limit already exists
         existing_limit = self.db.query(DBLimitedResource).filter(
@@ -261,16 +250,10 @@ class LimitService:
         if existing_limit:
             # Apply hierarchy rules
             if existing_limit.limited_by == LimitSource.MANUAL and limited_by != LimitSource.MANUAL:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Cannot override manual limit with non-manual limit"
-                )
+                raise ValueError("Cannot override manual limit with non-manual limit")
 
             if existing_limit.limited_by == LimitSource.PRODUCT and limited_by == LimitSource.DEFAULT:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Cannot override product limit with default limit"
-                )
+                raise ValueError("Cannot override product limit with default limit")
 
             # Update existing limit (enums are already the correct type)
             existing_limit.limit_type = limit_type
@@ -303,7 +286,7 @@ class LimitService:
             self.db.commit()
             return new_limit
 
-    def reset_team_limits(self, team_id: int) -> TeamLimits:
+    def reset_team_limits(self, team: DBTeam) -> TeamLimits:
         """
         Reset all limits for a team following cascade rules.
         MANUAL -> PRODUCT -> DEFAULT based on availability.
@@ -316,7 +299,8 @@ class LimitService:
         """
         # For now, return current limits (placeholder implementation)
         # Full implementation would involve product lookups and default fallbacks
-        return self.get_team_limits(team_id)
+        # TODO - Full implementation
+        return self.get_team_limits(team)
 
     def reset_limit(self, owner_type: OwnerType, owner_id: int, resource_type: ResourceType) -> DBLimitedResource:
         """
