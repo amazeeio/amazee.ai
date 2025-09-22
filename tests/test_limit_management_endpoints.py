@@ -5,7 +5,7 @@ from app.db.models import DBLimitedResource
 from app.schemas.limits import LimitType, ResourceType, UnitType, OwnerType, LimitSource
 
 
-def test_admin_can_overwrite_any_limit(client: TestClient, admin_token, test_team):
+def test_admin_can_overwrite_any_limit(client, admin_token, test_team):
     """
     Given: System admin credentials
     When: Using overwrite_limit API with MANUAL source
@@ -35,7 +35,7 @@ def test_admin_can_overwrite_any_limit(client: TestClient, admin_token, test_tea
     assert data["set_by"] == "admin@example.com"  # Should be set to admin user's email
 
 
-def test_admin_can_reset_team_limits(client: TestClient, admin_token, test_team):
+def test_admin_can_reset_team_limits(client, admin_token, test_team):
     """
     Given: System admin credentials
     When: Calling reset_team_limits API

@@ -47,7 +47,7 @@ def test_product_application_creates_product_limits(db: Session, test_team, test
     )
 
     # Verify limits were created
-    team_limits = limit_service.get_team_limits(test_team.id)
+    team_limits = limit_service.get_team_limits(test_team)
     assert len(team_limits.limits) == 2
 
     # Check that all limits are PRODUCT limits
@@ -76,7 +76,7 @@ def test_product_removal_resets_to_default(db: Session, test_team):
     )
 
     # Verify PRODUCT limit exists
-    team_limits = limit_service.get_team_limits(test_team.id)
+    team_limits = limit_service.get_team_limits(test_team)
     assert len(team_limits.limits) == 1
     assert team_limits.limits[0].limited_by == LimitSource.PRODUCT
 
@@ -103,7 +103,7 @@ def test_product_removal_resets_to_default(db: Session, test_team):
     )
 
     # Verify limit is now DEFAULT
-    team_limits = limit_service.get_team_limits(test_team.id)
+    team_limits = limit_service.get_team_limits(test_team)
     assert len(team_limits.limits) == 1
     assert team_limits.limits[0].limited_by == LimitSource.DEFAULT
     assert team_limits.limits[0].max_value == 1.0
@@ -156,7 +156,7 @@ def test_product_cannot_override_manual_limits(db: Session, test_team):
     )
 
     # Verify both limits exist with correct sources
-    team_limits = limit_service.get_team_limits(test_team.id)
+    team_limits = limit_service.get_team_limits(test_team)
     assert len(team_limits.limits) == 2
 
     user_limit = next(l for l in team_limits.limits if l.resource == ResourceType.USER)
@@ -228,7 +228,7 @@ def test_multiple_products_uses_highest_limits(db: Session, test_team):
     )
 
     # Verify limits use highest values
-    team_limits = limit_service.get_team_limits(test_team.id)
+    team_limits = limit_service.get_team_limits(test_team)
     assert len(team_limits.limits) == 2
 
     user_limit = next(l for l in team_limits.limits if l.resource == ResourceType.USER)
@@ -259,7 +259,7 @@ def test_product_deletion_fallback_logic(db: Session, test_team):
     )
 
     # Verify PRODUCT limit exists
-    team_limits = limit_service.get_team_limits(test_team.id)
+    team_limits = limit_service.get_team_limits(test_team)
     assert len(team_limits.limits) == 1
     assert team_limits.limits[0].limited_by == LimitSource.PRODUCT
     assert team_limits.limits[0].max_value == 8.0
@@ -287,7 +287,7 @@ def test_product_deletion_fallback_logic(db: Session, test_team):
     )
 
     # Verify fallback to DEFAULT
-    team_limits = limit_service.get_team_limits(test_team.id)
+    team_limits = limit_service.get_team_limits(test_team)
     assert len(team_limits.limits) == 1
     assert team_limits.limits[0].limited_by == LimitSource.DEFAULT
     assert team_limits.limits[0].max_value == 1.0
@@ -325,7 +325,7 @@ def test_data_plane_limits_from_products(db: Session, test_team, test_product):
     )
 
     # Verify DP limits were created correctly
-    team_limits = limit_service.get_team_limits(test_team.id)
+    team_limits = limit_service.get_team_limits(test_team)
     assert len(team_limits.limits) == 2
 
     for limit in team_limits.limits:

@@ -13,7 +13,7 @@ from app.schemas.limits import (
 )
 from app.core.limit_service import LimitService, LimitNotFoundError
 from app.core.security import get_role_min_system_admin, get_current_user_from_auth
-from app.db.models import DBUser
+from app.db.models import DBUser, DBTeam
 import logging
 
 logger = logging.getLogger(__name__)
@@ -32,9 +32,15 @@ async def get_team_limits(
     Get all effective limits for a team.
     Only accessible by system administrators.
     """
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if not team:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Team not found"
+        )
     try:
         limit_service = LimitService(db)
-        return limit_service.get_team_limits(team_id)
+        return limit_service.get_team_limits(team)
     except Exception as e:
         logger.error(f"Error getting team limits for team {team_id}: {str(e)}")
         raise HTTPException(
@@ -53,9 +59,16 @@ async def get_user_limits(
     Users inherit team limits unless they have individual overrides.
     Only accessible by system administrators.
     """
+    user = db.query(DBUser).filter(DBUser.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+
+        )
     try:
         limit_service = LimitService(db)
-        return limit_service.get_user_limits(user_id)
+        return limit_service.get_user_limits(user)
     except HTTPException:
         raise
     except Exception as e:
@@ -115,9 +128,15 @@ async def reset_team_limits(
 
     Only accessible by system administrators.
     """
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if not team:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Team not found"
+        )
     try:
         limit_service = LimitService(db)
-        return limit_service.reset_team_limits(team_id)
+        return limit_service.reset_team_limits(team)
     except Exception as e:
         logger.error(f"Error resetting team limits for team {team_id}: {str(e)}")
         raise HTTPException(
