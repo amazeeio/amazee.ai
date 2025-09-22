@@ -265,9 +265,6 @@ async def delete_team_subscription(
     Args:
         team_id: The ID of the team to delete the subscription for
         product_id: The ID of the product to be removed from the team
-
-    Returns:
-        JSON response containing the subscription details
     """
     team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not team:
