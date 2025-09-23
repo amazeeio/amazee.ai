@@ -24,7 +24,7 @@ def test_product_application_creates_product_limits(db: Session, test_team, test
     limit_service = LimitService(db)
 
     # Apply product limits (simulating what the worker would do)
-    limit_service.overwrite_limit(
+    limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         resource_type=ResourceType.USER,
@@ -35,7 +35,7 @@ def test_product_application_creates_product_limits(db: Session, test_team, test
         limited_by=LimitSource.PRODUCT
     )
 
-    limit_service.overwrite_limit(
+    limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         resource_type=ResourceType.KEY,
@@ -64,7 +64,7 @@ def test_product_removal_resets_to_default(db: Session, test_team):
     limit_service = LimitService(db)
 
     # Create PRODUCT limit
-    limit_service.overwrite_limit(
+    limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         resource_type=ResourceType.USER,
@@ -91,7 +91,7 @@ def test_product_removal_resets_to_default(db: Session, test_team):
     db.commit()
 
     # Then create DEFAULT limit
-    limit_service.overwrite_limit(
+    limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         resource_type=ResourceType.USER,
@@ -118,7 +118,7 @@ def test_product_cannot_override_manual_limits(db: Session, test_team):
     limit_service = LimitService(db)
 
     # Create MANUAL limit first
-    limit_service.overwrite_limit(
+    limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         resource_type=ResourceType.USER,
@@ -132,7 +132,7 @@ def test_product_cannot_override_manual_limits(db: Session, test_team):
 
     # Try to apply PRODUCT limit - should fail
     with pytest.raises(Exception):  # Should raise HTTPException
-        limit_service.overwrite_limit(
+        limit_service.set_limit(
             owner_type=OwnerType.TEAM,
             owner_id=test_team.id,
             resource_type=ResourceType.USER,
@@ -144,7 +144,7 @@ def test_product_cannot_override_manual_limits(db: Session, test_team):
         )
 
     # Apply PRODUCT limit for different resource - should succeed
-    limit_service.overwrite_limit(
+    limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         resource_type=ResourceType.KEY,
@@ -204,7 +204,7 @@ def test_multiple_products_uses_highest_limits(db: Session, test_team):
 
     # Apply limits using the highest values from both products
     # User count: max(3, 10) = 10
-    limit_service.overwrite_limit(
+    limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         resource_type=ResourceType.USER,
@@ -216,7 +216,7 @@ def test_multiple_products_uses_highest_limits(db: Session, test_team):
     )
 
     # Key count: max(10, 5) = 10
-    limit_service.overwrite_limit(
+    limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         resource_type=ResourceType.KEY,
@@ -247,7 +247,7 @@ def test_product_deletion_fallback_logic(db: Session, test_team):
     limit_service = LimitService(db)
 
     # Create PRODUCT limit
-    limit_service.overwrite_limit(
+    limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         resource_type=ResourceType.USER,
@@ -275,7 +275,7 @@ def test_product_deletion_fallback_logic(db: Session, test_team):
     db.commit()
 
     # Then create DEFAULT limit
-    limit_service.overwrite_limit(
+    limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         resource_type=ResourceType.USER,
@@ -302,7 +302,7 @@ def test_data_plane_limits_from_products(db: Session, test_team, test_product):
     limit_service = LimitService(db)
 
     # Apply DP limits from product
-    limit_service.overwrite_limit(
+    limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         resource_type=ResourceType.BUDGET,
@@ -313,7 +313,7 @@ def test_data_plane_limits_from_products(db: Session, test_team, test_product):
         limited_by=LimitSource.PRODUCT
     )
 
-    limit_service.overwrite_limit(
+    limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         resource_type=ResourceType.RPM,

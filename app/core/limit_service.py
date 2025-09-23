@@ -3,8 +3,22 @@ from sqlalchemy import and_
 from fastapi import HTTPException, status
 from typing import Optional, List
 from datetime import datetime, UTC
-from app.db.models import DBLimitedResource, DBUser, DBTeam
-from app.schemas.limits import TeamLimits, LimitedResource as LimitedResourceSchema, LimitType, ResourceType, UnitType, OwnerType, LimitSource
+from app.db.models import DBLimitedResource, DBUser, DBTeam, DBTeamProduct
+from app.schemas.limits import (
+    LimitedResource,
+    LimitedResourceBase,
+    TeamLimits,
+    OwnerType,
+    UnitType,
+    LimitSource,
+    LimitType,
+    ResourceType
+    )
+from app.core.resource_limits import (
+    get_default_team_limit_for_resource,
+    get_team_product_limit_for_resource,
+    DEFAULT_KEYS_PER_USER
+    )
 import logging
 
 logger = logging.getLogger(__name__)
@@ -48,7 +62,7 @@ class LimitService:
         ).all()
 
         limit_schemas = [
-            LimitedResourceSchema.model_validate(limit) for limit in limits
+            LimitedResource.model_validate(limit) for limit in limits
         ]
 
         return TeamLimits(team_id=team.id, limits=limit_schemas)
@@ -92,7 +106,7 @@ class LimitService:
             effective_limits[limit.resource] = limit
 
         limit_schemas = [
-            LimitedResourceSchema.model_validate(limit)
+            LimitedResource.model_validate(limit)
             for limit in effective_limits.values()
         ]
 
@@ -191,7 +205,7 @@ class LimitService:
 
         return True
 
-    def overwrite_limit(
+    def set_limit(
         self,
         owner_type: OwnerType,
         owner_id: int,
@@ -203,6 +217,21 @@ class LimitService:
         limited_by: LimitSource = LimitSource.DEFAULT,
         set_by: Optional[str] = None
     ) -> DBLimitedResource:
+        logger.info(f"Overwriting {resource_type.value} limit for {owner_type.value} {owner_id}")
+        limit = LimitedResourceBase(
+            limit_type=limit_type,
+            resource=resource_type,
+            unit=unit,
+            max_value=max_value,
+            current_value=current_value,
+            owner_type=owner_type,
+            owner_id=owner_id,
+            limited_by=limited_by,
+            set_by=set_by
+        )
+        return self._set_limit(limited_resource=limit)
+
+    def _set_limit(self, limited_resource: LimitedResourceBase) -> DBLimitedResource:
         """
         Create or update a limit following source hierarchy rules.
 
@@ -212,15 +241,7 @@ class LimitService:
         - DEFAULT cannot override anything
 
         Args:
-            owner_type: OwnerType enum
-            owner_id: ID of the owner
-            resource_type: ResourceType enum
-            limit_type: LimitType enum
-            unit: UnitType enum
-            max_value: Maximum allowed value
-            current_value: Current value (required for CP, ignored for DP)
-            limited_by: LimitSource enum
-            set_by: Who set the limit (required for manual limits)
+            limited_resource: A Pydantic type-checked LimitedResource object
 
         Returns:
             The created or updated limit
@@ -229,56 +250,54 @@ class LimitService:
             ValueError: If validation fails or hierarchy rules are violated
         """
         # Validate inputs
-        if limit_type == LimitType.CONTROL_PLANE and current_value is None:
+        if limited_resource.limit_type == LimitType.CONTROL_PLANE and limited_resource.current_value is None:
             raise ValueError("Control plane limits must have current_value")
 
-        if limit_type == LimitType.DATA_PLANE:
-            current_value = None  # Force None for DP limits
-
-        if limited_by == LimitSource.MANUAL and not set_by:
+        if limited_resource.limited_by == LimitSource.MANUAL and not limited_resource.set_by:
             raise ValueError("Manual limits must specify set_by")
 
         # Check if limit already exists
         existing_limit = self.db.query(DBLimitedResource).filter(
             and_(
-                DBLimitedResource.owner_type == owner_type,
-                DBLimitedResource.owner_id == owner_id,
-                DBLimitedResource.resource == resource_type
+                DBLimitedResource.owner_type == limited_resource.owner_type,
+                DBLimitedResource.owner_id == limited_resource.owner_id,
+                DBLimitedResource.resource == limited_resource.resource
             )
         ).first()
 
         if existing_limit:
             # Apply hierarchy rules
-            if existing_limit.limited_by == LimitSource.MANUAL and limited_by != LimitSource.MANUAL:
+            if existing_limit.limited_by == LimitSource.MANUAL and limited_resource.limited_by != LimitSource.MANUAL:
                 raise ValueError("Cannot override manual limit with non-manual limit")
 
-            if existing_limit.limited_by == LimitSource.PRODUCT and limited_by == LimitSource.DEFAULT:
+            if existing_limit.limited_by == LimitSource.PRODUCT and limited_resource.limited_by == LimitSource.DEFAULT:
                 raise ValueError("Cannot override product limit with default limit")
 
-            # Update existing limit (enums are already the correct type)
-            existing_limit.limit_type = limit_type
-            existing_limit.unit = unit
-            existing_limit.max_value = max_value
-            existing_limit.current_value = current_value
-            existing_limit.limited_by = limited_by
-            existing_limit.set_by = set_by if limited_by == LimitSource.MANUAL else None
+            # Update existing limit
+            existing_limit.limit_type = limited_resource.limit_type
+            existing_limit.unit = limited_resource.unit
+            existing_limit.max_value = limited_resource.max_value
+            existing_limit.current_value = limited_resource.current_value
+            existing_limit.limited_by = limited_resource.limited_by
+            existing_limit.set_by = limited_resource.set_by if limited_resource.limited_by == LimitSource.MANUAL else None
             existing_limit.updated_at = datetime.now(UTC)
 
+            self.db.add(existing_limit)
             self.db.commit()
             return existing_limit
 
         else:
-            # Create new limit (enums are already the correct type)
+            # Create new limit
             new_limit = DBLimitedResource(
-                limit_type=limit_type,
-                resource=resource_type,
-                unit=unit,
-                max_value=max_value,
-                current_value=current_value,
-                owner_type=owner_type,
-                owner_id=owner_id,
-                limited_by=limited_by,
-                set_by=set_by if limited_by == LimitSource.MANUAL else None,
+                limit_type=limited_resource.limit_type,
+                resource=limited_resource.resource,
+                unit=limited_resource.unit,
+                max_value=limited_resource.max_value,
+                current_value=limited_resource.current_value,
+                owner_type=limited_resource.owner_type,
+                owner_id=limited_resource.owner_id,
+                limited_by=limited_resource.limited_by,
+                set_by=limited_resource.set_by if limited_resource.limited_by == LimitSource.MANUAL else None,
                 created_at=datetime.now(UTC)
             )
 
@@ -297,12 +316,14 @@ class LimitService:
         Returns:
             Updated team limits
         """
-        # For now, return current limits (placeholder implementation)
-        # Full implementation would involve product lookups and default fallbacks
-        # TODO - Full implementation
+        team_limits = self.get_team_limits(team)
+        for limit in team_limits.limits:
+            self._reset_limit(limit)
+
+        # Do a fresh pull from the db after the updates
         return self.get_team_limits(team)
 
-    def reset_limit(self, owner_type: OwnerType, owner_id: int, resource_type: ResourceType) -> DBLimitedResource:
+    def _reset_limit(self, limit: LimitedResource) -> DBLimitedResource:
         """
         Reset a specific limit following cascade rules.
         MANUAL -> PRODUCT -> DEFAULT based on availability.
@@ -315,8 +336,32 @@ class LimitService:
         Returns:
             Updated limit
         """
-        # For now, return existing limit (placeholder implementation)
-        # Full implementation would involve product lookups and default fallbacks
+        if limit.owner_type == OwnerType.TEAM:
+            logger.info(f"Setting resource {limit.resource} to product max for team {limit.owner_id}")
+            team_id = limit.owner_id
+        elif limit.owner_type == OwnerType.USER:
+            logger.info(f"Trying to reset {limit.resource} limits for user {limit.owner_id}")
+            user = self.db.query(DBUser).filter(DBUser.id == limit.owner_id).first()
+            if not user.team_id:
+                logger.warning(f"User {limit.owner_id} is a system user; cannot reset limit")
+                return limit
+            team_id = user.team_id
+        else:
+            raise ValueError(f"Unknown owner type, cannot reset limit {limit}")
+        max_value = get_team_product_limit_for_resource(self.db, team_id, limit.resource)
+        if not max_value:
+            max_value = get_default_team_limit_for_resource(limit.resource)
+            limit.limited_by = LimitSource.DEFAULT
+        else:
+            limit.limited_by = LimitSource.PRODUCT
+        limit.max_value = max_value
+        limit.set_by = "reset"
+
+        self.db.add(limit)
+        self.db.commit()
+        return limit
+
+    def reset_limit(self, owner_type: OwnerType, owner_id: int, resource_type: ResourceType) -> DBLimitedResource:
         limit = self.db.query(DBLimitedResource).filter(
             and_(
                 DBLimitedResource.owner_type == owner_type,
@@ -328,4 +373,4 @@ class LimitService:
         if not limit:
             raise LimitNotFoundError(f"No limit found for {owner_type} {owner_id} resource {resource_type}")
 
-        return limit
+        return self._reset_limit(limit)

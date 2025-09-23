@@ -6,10 +6,7 @@ from app.schemas.limits import (
     LimitedResource,
     OverwriteLimitRequest,
     ResetLimitRequest,
-    LimitedResourceUpdate,
     LimitSource,
-    OwnerType,
-    ResourceType
 )
 from app.core.limit_service import LimitService, LimitNotFoundError
 from app.core.security import get_role_min_system_admin, get_current_user_from_auth
@@ -95,7 +92,7 @@ async def overwrite_limit(
     """
     try:
         limit_service = LimitService(db)
-        result = limit_service.overwrite_limit(
+        result = limit_service.set_limit(
             owner_type=request.owner_type,
             owner_id=request.owner_id,
             resource_type=request.resource_type,

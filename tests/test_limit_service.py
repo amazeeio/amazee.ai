@@ -1,8 +1,9 @@
 import pytest
 from datetime import datetime, UTC
-from app.db.models import DBLimitedResource
+from app.db.models import DBLimitedResource, DBTeamProduct
 from app.core.limit_service import LimitService, LimitNotFoundError
 from app.schemas.limits import TeamLimits, LimitType, ResourceType, UnitType, OwnerType, LimitSource
+from app.core.resource_limits import DEFAULT_USER_COUNT
 
 
 def test_get_team_limits_returns_all_limits(db, test_team):
@@ -334,7 +335,7 @@ def test_overwrite_limit_manual_can_override_anything(db, test_team):
     db.commit()
 
     limit_service = LimitService(db)
-    result = limit_service.overwrite_limit(
+    result = limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         resource_type=ResourceType.USER,
@@ -377,7 +378,7 @@ def test_overwrite_limit_product_can_override_default(db, test_team):
     db.commit()
 
     limit_service = LimitService(db)
-    result = limit_service.overwrite_limit(
+    result = limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         resource_type=ResourceType.KEY,
@@ -421,7 +422,7 @@ def test_overwrite_limit_product_cannot_override_manual(db, test_team):
     limit_service = LimitService(db)
 
     with pytest.raises(ValueError, match="Cannot override manual limit"):
-        limit_service.overwrite_limit(
+        limit_service.set_limit(
             owner_type=OwnerType.TEAM,
             owner_id=test_team.id,
             resource_type=ResourceType.USER,
@@ -457,7 +458,7 @@ def test_overwrite_limit_default_cannot_override_anything(db, test_team):
     limit_service = LimitService(db)
 
     with pytest.raises(ValueError, match="Cannot override"):
-        limit_service.overwrite_limit(
+        limit_service.set_limit(
             owner_type=OwnerType.TEAM,
             owner_id=test_team.id,
             resource_type=ResourceType.VECTOR_DB,
@@ -470,7 +471,7 @@ def test_overwrite_limit_default_cannot_override_anything(db, test_team):
 
 def test_reset_limit_single_resource(db, test_team):
     """
-    Given: Team with MANUAL override for specific resource
+    Given: Team with MANUAL override for specific resource and no associated products
     When: Calling reset_limit(owner_type="team", owner_id=team_id, resource_type="user")
     Then: Should reset that resource from MANUAL -> PRODUCT -> DEFAULT
     """
@@ -496,7 +497,104 @@ def test_reset_limit_single_resource(db, test_team):
     result = limit_service.reset_limit(OwnerType.TEAM, test_team.id, ResourceType.USER)
     assert result is not None
     assert result.resource == ResourceType.USER
+    assert result.max_value == DEFAULT_USER_COUNT
+    assert result.limited_by == LimitSource.DEFAULT
 
+def test_reset_limit_to_product_single_resource(db, test_team, test_product):
+    """
+    Given: Team with MANUAL override for specific resource and associated products
+    When: Calling reset_limit(owner_type="team", owner_id=team_id, resource_type="user")
+    Then: Should reset that resource from MANUAL -> PRODUCT -> DEFAULT
+    """
+    # Create a MANUAL limit first
+    limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.USER,
+        unit=UnitType.COUNT,
+        max_value=8.0,
+        current_value=3.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.MANUAL,
+        set_by="admin@example.com",
+        created_at=datetime.now(UTC)
+    )
+    db.add(limit)
+
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id,
+        created_at=datetime.now(UTC)
+    )
+    db.add(team_product)
+
+    db.commit()
+
+    limit_service = LimitService(db)
+
+    # This should not raise an exception and return the new limit value
+    result = limit_service.reset_limit(OwnerType.TEAM, test_team.id, ResourceType.USER)
+    assert result is not None
+    assert result.resource == ResourceType.USER
+    assert result.max_value == test_product.user_count
+    assert result.limited_by == LimitSource.PRODUCT
+
+def test_reset_user_limit_uses_team(db, test_team_user, test_team, test_product):
+    """
+    GIVEN: User in a team which has products
+    WHEN: Limits owned by that user are reset
+    THEN: The team product values are used
+    """
+    # Create a MANUAL limit first
+    limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.KEY,
+        unit=UnitType.COUNT,
+        max_value=8.0,
+        current_value=3.0,
+        owner_type=OwnerType.USER,
+        owner_id=test_team_user.id,
+        limited_by=LimitSource.MANUAL,
+        set_by="admin@example.com",
+        created_at=datetime.now(UTC)
+    )
+    db.add(limit)
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    limit_service = LimitService(db)
+    result = limit_service.reset_limit(limit.owner_type, limit.owner_id, limit.resource)
+    assert result.max_value == test_product.total_key_count
+
+def test_reset_system_user_limit_does_nothing(db, test_user):
+    """
+    GIVEN: User in a team which has products
+    WHEN: Limits owned by that user are reset
+    THEN: The team product values are used
+    """
+    # Create a MANUAL limit first
+    limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.KEY,
+        unit=UnitType.COUNT,
+        max_value=8.0,
+        current_value=3.0,
+        owner_type=OwnerType.USER,
+        owner_id=test_user.id,
+        limited_by=LimitSource.MANUAL,
+        set_by="admin@example.com",
+        created_at=datetime.now(UTC)
+    )
+    db.add(limit)
+    db.commit()
+
+    limit_service = LimitService(db)
+    result = limit_service.reset_limit(limit.owner_type, limit.owner_id, limit.resource)
+    assert result.max_value == limit.max_value
 
 def test_user_inherits_team_limits(db, test_team, test_team_user):
     """
@@ -584,7 +682,7 @@ def test_cp_limits_must_have_current_value(db, test_team):
     limit_service = LimitService(db)
 
     with pytest.raises(ValueError, match="Control plane limits must have current_value") as exc_info:
-        limit_service.overwrite_limit(
+        limit_service.set_limit(
             owner_type=OwnerType.TEAM,
             owner_id=test_team.id,
             resource_type=ResourceType.USER,
@@ -596,23 +694,46 @@ def test_cp_limits_must_have_current_value(db, test_team):
         )
 
 
-def test_dp_limits_must_not_have_current_value(db, test_team):
+def test_dp_limits_can_have_current_value(db, test_team):
     """
     Given: Attempting to create DP limit
     When: current_value is not None
-    Then: Should raise validation error or set to None
+    Then: current_value should be set
     """
     limit_service = LimitService(db)
 
     # This should succeed but set current_value to None
-    result = limit_service.overwrite_limit(
+    result = limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         resource_type=ResourceType.BUDGET,
         limit_type=LimitType.DATA_PLANE,
         unit=UnitType.DOLLAR,
         max_value=100.0,
-        current_value=50.0,  # This should be ignored/set to None
+        current_value=50.0,
+        limited_by=LimitSource.PRODUCT
+    )
+
+    assert result is not None
+    assert result.current_value == 50.0
+
+def test_dp_limits_can_not_have_current_value(db, test_team):
+    """
+    Given: Attempting to create DP limit
+    When: current_value is None
+    Then: current_value should be None
+    """
+    limit_service = LimitService(db)
+
+    # This should succeed but set current_value to None
+    result = limit_service.set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.BUDGET,
+        limit_type=LimitType.DATA_PLANE,
+        unit=UnitType.DOLLAR,
+        max_value=100.0,
+        current_value=None,
         limited_by=LimitSource.PRODUCT
     )
 

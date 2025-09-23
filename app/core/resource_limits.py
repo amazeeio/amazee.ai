@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBTeamProduct, DBProduct
+from app.schemas.limits import ResourceType
 from fastapi import HTTPException, status
 from typing import Optional
 import logging
@@ -186,6 +187,38 @@ def get_token_restrictions(db: Session, team_id: int) -> tuple[int, float, int]:
 
     return result.max_key_duration, result.max_max_spend, result.max_rpm_limit
 
-def get_team_limits(db: Session, team_id: int):
-    # TODO: Go through all products, and create a master list of the limits on all fields for this team.
-    pass
+def get_default_team_limit_for_resource(resource_type: ResourceType) -> float:
+    if resource_type == ResourceType.KEY:
+        return DEFAULT_TOTAL_KEYS
+    elif resource_type == ResourceType.VECTOR_DB:
+        return DEFAULT_VECTOR_DB_COUNT
+    elif resource_type == ResourceType.USER:
+        return DEFAULT_USER_COUNT
+    elif resource_type == ResourceType.BUDGET:
+        return DEFAULT_MAX_SPEND
+    elif resource_type == ResourceType.RPM:
+        return DEFAULT_RPM_PER_KEY
+    else:
+        raise ValueError(f"Unknown resource type {resource_type.value}")
+
+def get_team_product_limit_for_resource(db: Session, team_id: int, resource_type: ResourceType) -> Optional[float]:
+    if resource_type == ResourceType.KEY:
+        query = db.query(func.max(DBProduct.total_key_count))
+    elif resource_type == ResourceType.VECTOR_DB:
+        query = db.query(func.max(DBProduct.vector_db_count))
+    elif resource_type == ResourceType.USER:
+        query = db.query(func.max(DBProduct.user_count))
+    elif resource_type == ResourceType.BUDGET:
+        query = db.query(func.max(DBProduct.max_budget_per_key))
+    elif resource_type == ResourceType.RPM:
+        query = db.query(func.max(DBProduct.rpm_per_key))
+    else:
+        raise ValueError(f"Unknown resource type {resource_type.value}")
+
+    result = query.join(
+        DBTeamProduct, DBTeamProduct.product_id == DBProduct.id
+    ).filter(
+        DBTeamProduct.team_id == team_id
+    ).scalar()
+
+    return result
