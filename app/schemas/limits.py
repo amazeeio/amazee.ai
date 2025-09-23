@@ -57,14 +57,6 @@ class LimitedResourceCreate(LimitedResourceBase):
     model_config = {"from_attributes": True}
 
 
-class LimitedResourceUpdate(BaseModel):
-    max_value: Optional[float] = None
-    current_value: Optional[float] = None
-    limited_by: Optional[LimitSource] = None
-    set_by: Optional[str] = None
-    model_config = {"from_attributes": True}
-
-
 class LimitedResource(LimitedResourceBase):
     id: int
     created_at: datetime

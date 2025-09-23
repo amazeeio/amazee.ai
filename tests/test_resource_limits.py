@@ -7,6 +7,7 @@ from app.core.resource_limits import (
     check_team_user_limit,
     check_vector_db_limits,
     get_token_restrictions,
+    get_team_product_limit_for_resource,
     DEFAULT_KEY_DURATION,
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
@@ -14,6 +15,7 @@ from app.core.resource_limits import (
     DEFAULT_TOTAL_KEYS,
     DEFAULT_VECTOR_DB_COUNT
 )
+from app.schemas.limits import ResourceType
 
 def test_add_user_within_product_limit(db, test_team, test_product):
     """Test adding a user when within product user limit"""
@@ -1001,3 +1003,75 @@ def test_get_token_restrictions_team_not_found(db):
         get_token_restrictions(db, 99999)  # Non-existent team ID
     assert exc_info.value.status_code == 404
     assert "Team not found" in str(exc_info.value.detail)
+
+def test_get_product_max_by_type_no_products(db, test_team):
+    """
+    GIVEN: The team has no associated products
+    WHEN: Trying to determine the correct limit value for a resource
+    THEN: The default maximum value for the resource type is used
+    """
+    max_vectors = get_team_product_limit_for_resource(db, test_team.id, ResourceType.VECTOR_DB)
+    assert max_vectors is None
+
+def test_get_product_max_by_type_multiple_products(db, test_team):
+    """
+    GIVEN: The team has two associated products
+    WHEN: Trying to determin the correct limit value for a resource
+    THEN: The maximum value for the resource type is used
+    """
+    # Create two products with different vector DB limits
+    product1 = DBProduct(
+        id="prod_test1",
+        name="Test Product 1",
+        user_count=4,
+        keys_per_user=2,
+        total_key_count=10,
+        service_key_count=2,
+        max_budget_per_key=150.0,
+        rpm_per_key=1000,
+        vector_db_count=2,
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC)
+    )
+    product2 = DBProduct(
+        id="prod_test2",
+        name="Test Product 2",
+        user_count=3,
+        keys_per_user=2,
+        total_key_count=15,
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=800,
+        vector_db_count=3,
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(product1)
+    db.add(product2)
+    db.commit()
+
+    # Add both products to team
+    team_product1 = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=product1.id
+    )
+    team_product2 = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=product2.id
+    )
+    db.add(team_product1)
+    db.add(team_product2)
+    db.commit()
+
+    max_vectors = get_team_product_limit_for_resource(db, test_team.id, ResourceType.VECTOR_DB)
+    max_users = get_team_product_limit_for_resource(db, test_team.id, ResourceType.USER)
+    max_keys = get_team_product_limit_for_resource(db, test_team.id, ResourceType.KEY)
+    max_budget = get_team_product_limit_for_resource(db, test_team.id, ResourceType.BUDGET)
+    assert max_vectors == 3
+    assert max_users == 4
+    assert max_keys == 15
+    assert max_budget == 150.0
