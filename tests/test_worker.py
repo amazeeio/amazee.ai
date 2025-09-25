@@ -221,8 +221,35 @@ async def test_apply_product_already_active(db, test_team, test_product):
     assert test_team.last_payment > initial_last_payment
 
 @pytest.mark.asyncio
+@patch('app.core.worker.LimitService')
 @patch('app.core.worker.LiteLLMService')
-async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, db, test_team, test_product, test_region, test_team_user, test_team_key_creator):
+async def test_apply_product_calls_limit_service(mock_litellm, mock_limit_service, db, test_team, test_product):
+    """
+    Test that applying a product calls the limit service to set team limits.
+
+    GIVEN: A team and a product exist in the database
+    WHEN: The product is applied to the team
+    THEN: The limit service is called to set team limits
+    """
+    # Set stripe customer ID for the test team
+    test_team.stripe_customer_id = "cus_test123"
+    db.commit()
+
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
+    # Apply product to team
+    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
+
+    # Verify limit service was called with the correct team
+    mock_limit_service.assert_called_once_with(db)
+    mock_limit_instance.set_team_limits.assert_called_once_with(test_team)
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LimitService')
+@patch('app.core.worker.LiteLLMService')
+async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, mock_limit_service, db, test_team, test_product, test_region, test_team_user, test_team_key_creator):
     """
     Test that applying a product extends keys and sets max budget correctly.
 
@@ -274,6 +301,10 @@ async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, db, test
     mock_instance = mock_litellm.return_value
     mock_instance.set_key_restrictions = AsyncMock()
 
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
     # Apply product to team
     await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
 
@@ -298,6 +329,10 @@ async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, db, test
         assert restriction_calls[0][1]['budget_amount'] == test_product.max_budget_per_key
         assert restriction_calls[0][1]['rpm_limit'] == test_product.rpm_per_key
 
+    # Verify limit service was called with the correct team
+    mock_limit_service.assert_called_once_with(db)
+    mock_limit_instance.set_team_limits.assert_called_once_with(test_team)
+
     # Verify team was updated correctly
     db.refresh(test_team)
     assert len(test_team.active_products) == 1
@@ -305,7 +340,37 @@ async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, db, test
     assert test_team.last_payment is not None
 
 @pytest.mark.asyncio
-async def test_remove_product_success(db, test_team, test_product):
+@patch('app.core.worker.LimitService')
+async def test_remove_product_calls_limit_service(mock_limit_service, db, test_team, test_product):
+    """
+    Test that removing a product calls the limit service to set team limits.
+
+    GIVEN: A team with an active product
+    WHEN: The product is removed from the team
+    THEN: The limit service is called to set team limits
+    """
+    # Set stripe customer ID for the test team
+    test_team.stripe_customer_id = "cus_test123"
+    db.commit()
+
+    # First apply the product to ensure it exists
+    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
+
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
+    # Remove the product
+    await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
+
+    # Verify limit service was called with the correct team
+    # It should be called twice: once for apply_product_for_team and once for remove_product_from_team
+    assert mock_limit_service.call_count == 2
+    mock_limit_instance.set_team_limits.assert_called_with(test_team)
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LimitService')
+async def test_remove_product_success(mock_limit_service, db, test_team, test_product):
     """
     Test successful removal of a product from a team.
 
@@ -317,6 +382,10 @@ async def test_remove_product_success(db, test_team, test_product):
     test_team.stripe_customer_id = "cus_test123"
     db.commit()
 
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
     # First apply the product to ensure it exists
     await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
 
@@ -325,6 +394,10 @@ async def test_remove_product_success(db, test_team, test_product):
 
     # Refresh team from database
     db.refresh(test_team)
+
+    # Verify limit service was called with the correct team
+    mock_limit_service.assert_called_with(db)
+    mock_limit_instance.set_team_limits.assert_called_with(test_team)
 
     # Verify product was removed
     assert len(test_team.active_products) == 0
@@ -423,10 +496,40 @@ async def test_remove_product_multiple_products(db, test_team, test_product):
     assert test_team.active_products[0].product.id == second_product.id
 
 @pytest.mark.asyncio
+@patch('app.core.worker.LimitService')
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_basic_metrics(mock_litellm, mock_ses, db, test_team, test_product):
+async def test_monitor_teams_calls_limit_service(mock_litellm, mock_ses, mock_limit_service, db, test_team):
+    """
+    Test that monitor_teams calls the limit service to set team limits.
+
+    GIVEN: A team exists in the database
+    WHEN: The monitor_teams function runs
+    THEN: The limit service is called to set team limits
+    """
+    # Setup test data
+    test_team.created_at = datetime.now(UTC) - timedelta(days=15)  # 15 days old
+    db.add(test_team)
+    db.commit()
+
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
+    # Run monitoring
+    await monitor_teams(db)
+
+    # Verify limit service was called with the correct team
+    mock_limit_service.assert_called_with(db)
+    mock_limit_instance.set_team_limits.assert_called_with(test_team)
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LimitService')
+@patch('app.core.worker.SESService')
+@patch('app.core.worker.LiteLLMService')
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
+async def test_monitor_teams_basic_metrics(mock_litellm, mock_ses, mock_limit_service, db, test_team, test_product):
     """
     Test basic team monitoring metrics for teams with and without products.
     """
@@ -457,6 +560,10 @@ async def test_monitor_teams_basic_metrics(mock_litellm, mock_ses, db, test_team
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock(return_value={"info": {"spend": 0, "max_budget": 100, "key_alias": "test"}})
 
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
     # Run monitoring
     await monitor_teams(db)
 
@@ -472,16 +579,21 @@ async def test_monitor_teams_basic_metrics(mock_litellm, mock_ses, db, test_team
         team_name=team_with_payment.name
     )._value.get() == 10
 
+    # Verify limit service was called for both teams
+    assert mock_limit_service.call_count == 2  # Called once for each team
+    mock_limit_instance.set_team_limits.assert_called()
+
 @pytest.mark.parametrize("team_age,expected_days_remaining,template_name", [
     (23, 7, "team-expiring"),
     (25, 5, "team-expiring"),
     (30, 0, "trial-expired"),
 ])
 @pytest.mark.asyncio
+@patch('app.core.worker.LimitService')
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_notification_scenarios(mock_litellm, mock_ses, team_age, expected_days_remaining, template_name, db, test_team, test_team_admin):
+async def test_monitor_teams_notification_scenarios(mock_litellm, mock_ses, mock_limit_service, team_age, expected_days_remaining, template_name, db, test_team, test_team_admin):
     """
     Test notification scenarios for teams approaching or reaching expiration.
 
@@ -499,6 +611,10 @@ async def test_monitor_teams_notification_scenarios(mock_litellm, mock_ses, team
     mock_ses_instance = mock_ses.return_value
     mock_ses_instance.send_email = Mock()
 
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
     # Run monitoring
     await monitor_teams(db)
 
@@ -513,11 +629,16 @@ async def test_monitor_teams_notification_scenarios(mock_litellm, mock_ses, team
     if template_name == "team-expiring":
         assert call_args['template_data']['days_remaining'] == expected_days_remaining
 
+    # Verify limit service was called
+    mock_limit_service.assert_called_with(db)
+    mock_limit_instance.set_team_limits.assert_called_with(test_team)
+
 @pytest.mark.asyncio
+@patch('app.core.worker.LimitService')
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_key_expiration(mock_litellm, mock_ses, db, test_team, test_region, test_team_key_creator):
+async def test_monitor_teams_key_expiration(mock_litellm, mock_ses, mock_limit_service, db, test_team, test_region, test_team_key_creator):
     """
     Test key expiration for expired teams.
     """
@@ -552,6 +673,10 @@ async def test_monitor_teams_key_expiration(mock_litellm, mock_ses, db, test_tea
     })
     mock_litellm_instance.update_key_duration = AsyncMock()
 
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
     # Run monitoring
     await monitor_teams(db)
 
@@ -564,11 +689,16 @@ async def test_monitor_teams_key_expiration(mock_litellm, mock_ses, db, test_tea
         team_name=test_team.name
     )._value.get() == 1
 
+    # Verify limit service was called
+    mock_limit_service.assert_called_with(db)
+    mock_limit_instance.set_team_limits.assert_called_with(test_team)
+
 @pytest.mark.asyncio
+@patch('app.core.worker.LimitService')
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_key_spend(mock_litellm, mock_ses, db, test_team, test_region, test_team_key_creator):
+async def test_monitor_teams_key_spend(mock_litellm, mock_ses, mock_limit_service, db, test_team, test_region, test_team_key_creator):
     """
     Test key spend monitoring and metrics.
     """
@@ -597,6 +727,10 @@ async def test_monitor_teams_key_spend(mock_litellm, mock_ses, db, test_team, te
         }
     })
 
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
     # Run monitoring
     await monitor_teams(db)
 
@@ -616,13 +750,22 @@ async def test_monitor_teams_key_spend(mock_litellm, mock_ses, db, test_team, te
     # Verify key was not expired (team is not expired)
     mock_litellm_instance.update_key_duration.assert_not_called()
 
+    # Verify limit service was called
+    mock_limit_service.assert_called_with(db)
+    mock_limit_instance.set_team_limits.assert_called_with(test_team)
+
 @pytest.mark.asyncio
+@patch('app.core.worker.LimitService')
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
-async def test_monitor_teams_active_labels(mock_litellm, mock_ses, db, test_team):
+async def test_monitor_teams_active_labels(mock_litellm, mock_ses, mock_limit_service, db, test_team):
     """
     Test handling of active team labels.
     """
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
     # First run with test team
     await monitor_teams(db)
 
@@ -645,10 +788,15 @@ async def test_monitor_teams_active_labels(mock_litellm, mock_ses, db, test_team
     # Verify test team is no longer in active labels
     assert (str(test_team.id), test_team.name) not in active_team_labels
 
+    # Verify limit service was called
+    mock_limit_service.assert_called_with(db)
+    mock_limit_instance.set_team_limits.assert_called()
+
 @pytest.mark.asyncio
+@patch('app.core.worker.LimitService')
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
-async def test_monitor_teams_error_handling(mock_litellm, mock_ses, db, test_team, test_region):
+async def test_monitor_teams_error_handling(mock_litellm, mock_ses, mock_limit_service, db, test_team, test_region):
     """
     Test error handling in team monitoring.
     """
@@ -670,6 +818,10 @@ async def test_monitor_teams_error_handling(mock_litellm, mock_ses, db, test_tea
     mock_litellm_instance = mock_litellm.return_value
     mock_litellm_instance.get_key_info = AsyncMock(side_effect=Exception("API Error"))
 
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
     # Run monitoring - should not raise exception
     await monitor_teams(db)
 
@@ -679,11 +831,16 @@ async def test_monitor_teams_error_handling(mock_litellm, mock_ses, db, test_tea
         team_name=test_team.name
     )._value.get() is not None
 
+    # Verify limit service was called
+    mock_limit_service.assert_called_with(db)
+    mock_limit_instance.set_team_limits.assert_called_with(test_team)
+
 @pytest.mark.asyncio
+@patch('app.core.worker.LimitService')
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_last_monitored_recently(mock_litellm, mock_ses, db, test_team, test_team_admin):
+async def test_monitor_teams_last_monitored_recently(mock_litellm, mock_ses, mock_limit_service, db, test_team, test_team_admin):
     """
     Test that notifications are not sent when team was monitored recently (within 24 hours).
     """
@@ -700,6 +857,10 @@ async def test_monitor_teams_last_monitored_recently(mock_litellm, mock_ses, db,
     mock_ses_instance = mock_ses.return_value
     mock_ses_instance.send_email = Mock()
 
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
     # Run monitoring
     await monitor_teams(db)
 
@@ -711,11 +872,16 @@ async def test_monitor_teams_last_monitored_recently(mock_litellm, mock_ses, db,
     # Use approximate comparison due to timestamp precision differences
     assert abs((test_team.last_monitored - expected_last_monitored).total_seconds()) < 1
 
+    # Verify limit service was called
+    mock_limit_service.assert_called_with(db)
+    mock_limit_instance.set_team_limits.assert_called_with(test_team)
+
 @pytest.mark.asyncio
+@patch('app.core.worker.LimitService')
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_last_monitored_old(mock_litellm, mock_ses, db, test_team, test_team_admin):
+async def test_monitor_teams_last_monitored_old(mock_litellm, mock_ses, mock_limit_service, db, test_team, test_team_admin):
     """
     Test that notifications are sent when team was last monitored more than 24 hours ago.
     """
@@ -732,6 +898,10 @@ async def test_monitor_teams_last_monitored_old(mock_litellm, mock_ses, db, test
     mock_ses_instance = mock_ses.return_value
     mock_ses_instance.send_email = Mock()
 
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
     # Run monitoring
     await monitor_teams(db)
 
@@ -747,11 +917,16 @@ async def test_monitor_teams_last_monitored_old(mock_litellm, mock_ses, db, test
     assert test_team.last_monitored is not None
     assert test_team.last_monitored > old_last_monitored
 
+    # Verify limit service was called
+    mock_limit_service.assert_called_with(db)
+    mock_limit_instance.set_team_limits.assert_called_with(test_team)
+
 @pytest.mark.asyncio
+@patch('app.core.worker.LimitService')
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_last_monitored_none(mock_litellm, mock_ses, db, test_team, test_team_admin):
+async def test_monitor_teams_last_monitored_none(mock_litellm, mock_ses, mock_limit_service, db, test_team, test_team_admin):
     """
     Test that notifications are sent when team has never been monitored (last_monitored is None).
     """
@@ -767,6 +942,10 @@ async def test_monitor_teams_last_monitored_none(mock_litellm, mock_ses, db, tes
     mock_ses_instance = mock_ses.return_value
     mock_ses_instance.send_email = Mock()
 
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
     # Run monitoring
     await monitor_teams(db)
 
@@ -781,11 +960,16 @@ async def test_monitor_teams_last_monitored_none(mock_litellm, mock_ses, db, tes
     db.refresh(test_team)
     assert test_team.last_monitored is not None
 
+    # Verify limit service was called
+    mock_limit_service.assert_called_with(db)
+    mock_limit_instance.set_team_limits.assert_called_with(test_team)
+
 @pytest.mark.asyncio
+@patch('app.core.worker.LimitService')
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_metrics_always_emitted(mock_litellm, mock_ses, db, test_team):
+async def test_monitor_teams_metrics_always_emitted(mock_litellm, mock_ses, mock_limit_service, db, test_team):
     """
     Test that metrics are always emitted regardless of last_monitored status.
     """
@@ -795,6 +979,10 @@ async def test_monitor_teams_metrics_always_emitted(mock_litellm, mock_ses, db, 
     test_team.last_monitored = expected_last_monitored
     db.add(test_team)
     db.commit()
+
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
 
     # Run monitoring
     await monitor_teams(db)
@@ -810,11 +998,16 @@ async def test_monitor_teams_metrics_always_emitted(mock_litellm, mock_ses, db, 
     # Use approximate comparison due to timestamp precision differences
     assert abs((test_team.last_monitored - expected_last_monitored).total_seconds()) < 1
 
+    # Verify limit service was called
+    mock_limit_service.assert_called_with(db)
+    mock_limit_instance.set_team_limits.assert_called_with(test_team)
+
 @pytest.mark.asyncio
+@patch('app.core.worker.LimitService')
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_includes_renewal_period_check(mock_litellm, mock_ses, db, test_team, test_product, test_region):
+async def test_monitor_teams_includes_renewal_period_check(mock_litellm, mock_ses, mock_limit_service, db, test_team, test_product, test_region):
     """
     Test that the monitoring workflow includes renewal period checks when conditions are met.
 
@@ -847,6 +1040,10 @@ async def test_monitor_teams_includes_renewal_period_check(mock_litellm, mock_se
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock(return_value={"info": {"spend": 0, "max_budget": 100, "key_alias": "test"}})
 
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
     # Run monitoring
     await monitor_teams(db)
 
@@ -854,11 +1051,16 @@ async def test_monitor_teams_includes_renewal_period_check(mock_litellm, mock_se
     # The function should have been called to get key info for monitoring AND renewal period checks
     assert mock_instance.get_key_info.called
 
+    # Verify limit service was called
+    mock_limit_service.assert_called_with(db)
+    mock_limit_instance.set_team_limits.assert_called_with(test_team)
+
 @pytest.mark.asyncio
+@patch('app.core.worker.LimitService')
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_does_not_include_renewal_period_check_when_not_passed(mock_litellm, mock_ses, db, test_team, test_product, test_region):
+async def test_monitor_teams_does_not_include_renewal_period_check_when_not_passed(mock_litellm, mock_ses, mock_limit_service, db, test_team, test_product, test_region):
     """
     Test that the monitoring workflow does not include renewal period checks when conditions are not met.
 
@@ -891,12 +1093,20 @@ async def test_monitor_teams_does_not_include_renewal_period_check_when_not_pass
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock(return_value={"info": {"spend": 0, "max_budget": 100, "key_alias": "test"}})
 
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
     # Run monitoring
     await monitor_teams(db)
 
     # Verify that get_key_info was called (for monitoring) but no renewal period updates occurred
     # Since renewal period hasn't passed, the function should still be called but without renewal checks
     assert mock_instance.get_key_info.called
+
+    # Verify limit service was called
+    mock_limit_service.assert_called_with(db)
+    mock_limit_instance.set_team_limits.assert_called_with(test_team)
 
 @pytest.mark.asyncio
 @patch('app.core.worker.LiteLLMService')
@@ -1834,8 +2044,9 @@ async def test_monitor_team_keys_expiry_beyond_next_month(mock_litellm, db, test
     assert team_total == 10.0
 
 @pytest.mark.asyncio
+@patch('app.core.worker.LimitService')
 @patch('app.core.worker.LiteLLMService')
-async def test_monitor_teams_populates_team_metrics(mock_litellm_class, db, test_team, test_region):
+async def test_monitor_teams_populates_team_metrics(mock_litellm_class, mock_limit_service, db, test_team, test_region):
     """
     Test that monitor_teams function populates DBTeamMetrics table.
 
@@ -1866,6 +2077,10 @@ async def test_monitor_teams_populates_team_metrics(mock_litellm_class, db, test
         }
     }
 
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
     # Act
     await monitor_teams(db)
 
@@ -1876,10 +2091,15 @@ async def test_monitor_teams_populates_team_metrics(mock_litellm_class, db, test
     assert test_region.name in metrics.regions
     assert metrics.last_spend_calculation is not None
 
+    # Verify limit service was called
+    mock_limit_service.assert_called_with(db)
+    mock_limit_instance.set_team_limits.assert_called_with(test_team)
+
 
 @pytest.mark.asyncio
+@patch('app.core.worker.LimitService')
 @patch('app.core.worker.LiteLLMService')
-async def test_monitor_teams_updates_existing_metrics(mock_litellm_class, db, test_team, test_region):
+async def test_monitor_teams_updates_existing_metrics(mock_litellm_class, mock_limit_service, db, test_team, test_region):
     """
     Test that monitor_teams updates existing DBTeamMetrics records.
 
@@ -1923,6 +2143,10 @@ async def test_monitor_teams_updates_existing_metrics(mock_litellm_class, db, te
         }
     }
 
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
     # Act
     await monitor_teams(db)
 
@@ -1932,4 +2156,8 @@ async def test_monitor_teams_updates_existing_metrics(mock_litellm_class, db, te
     assert updated_metrics.total_spend == 125.75
     assert test_region.name in updated_metrics.regions
     assert updated_metrics.last_updated > old_update_date
+
+    # Verify limit service was called
+    mock_limit_service.assert_called_with(db)
+    mock_limit_instance.set_team_limits.assert_called_with(test_team)
 

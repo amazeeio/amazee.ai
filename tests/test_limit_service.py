@@ -3,7 +3,7 @@ from datetime import datetime, UTC
 from app.db.models import DBLimitedResource, DBTeamProduct
 from app.core.limit_service import LimitService, LimitNotFoundError
 from app.schemas.limits import TeamLimits, LimitType, ResourceType, UnitType, OwnerType, LimitSource
-from app.core.resource_limits import DEFAULT_USER_COUNT
+from app.core.resource_limits import DEFAULT_USER_COUNT, DEFAULT_KEYS_PER_USER
 
 
 def test_get_team_limits_returns_all_limits(db, test_team):
@@ -625,7 +625,6 @@ def test_user_inherits_team_limits(db, test_team, test_team_user):
     assert user_limits.limits[0].resource == ResourceType.KEY
     assert user_limits.limits[0].max_value == 5.0
 
-
 def test_user_override_supersedes_team_limit(db, test_team, test_team_user):
     """
     Given: User with individual limit overrides
@@ -672,6 +671,34 @@ def test_user_override_supersedes_team_limit(db, test_team, test_team_user):
     assert user_limits.limits[0].max_value == 10.0
     assert user_limits.limits[0].limited_by == LimitSource.MANUAL
 
+def test_user_limits_included_in_team_limits(db, test_team, test_team_user, test_product):
+    """
+    GIVEN: A team with a user with an override
+    WHEN: We call get_team_limits
+    THEN: The user override should be included
+    """
+    user_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.KEY,
+        unit=UnitType.COUNT,
+        max_value=10.0,
+        current_value=3.0,
+        owner_type=OwnerType.USER,
+        owner_id=test_team_user.id,
+        limited_by=LimitSource.MANUAL,
+        set_by="admin@example.com",
+        created_at=datetime.now(UTC)
+    )
+
+    db.add(user_limit)
+    db.commit()
+    db.refresh(test_team)
+
+    limit_service = LimitService(db)
+    limit_list = limit_service.get_team_limits(test_team)
+    assert len(limit_list.limits) == 1
+    assert limit_list.limits[0].owner_type == OwnerType.USER
+
 
 def test_cp_limits_must_have_current_value(db, test_team):
     """
@@ -692,7 +719,6 @@ def test_cp_limits_must_have_current_value(db, test_team):
             current_value=None,  # This should cause validation error
             limited_by=LimitSource.DEFAULT
         )
-
 
 def test_dp_limits_can_have_current_value(db, test_team):
     """
@@ -740,7 +766,6 @@ def test_dp_limits_can_not_have_current_value(db, test_team):
     assert result is not None
     assert result.current_value is None
 
-
 def test_unique_constraint_enforced(db, test_team):
     """
     Given: Existing limit for owner_type, owner_id, resource combination
@@ -779,3 +804,196 @@ def test_unique_constraint_enforced(db, test_team):
 
     with pytest.raises(Exception):  # Database constraint error
         db.commit()
+
+
+def test_set_team_limits_creates_default_limits(db, test_team):
+    """
+    Given: A team with no existing limits
+    When: Calling set_team_limits(team)
+    Then: Should create all default limits for the team
+    """
+    limit_service = LimitService(db)
+
+    # Initially no limits should exist
+    initial_limits = limit_service.get_team_limits(test_team)
+    assert len(initial_limits.limits) == 0
+
+    # Set team limits
+    limit_service.set_team_limits(test_team)
+
+    # Check that all default limits were created
+    team_limits = limit_service.get_team_limits(test_team)
+
+    # Should have all the supported resource types
+    expected_resources = {
+        ResourceType.USER,
+        ResourceType.KEY,
+        ResourceType.VECTOR_DB,
+        ResourceType.BUDGET,
+        ResourceType.RPM
+    }
+
+    actual_resources = {limit.resource for limit in team_limits.limits}
+    assert actual_resources == expected_resources
+
+    # All limits should be DEFAULT source
+    for limit in team_limits.limits:
+        assert limit.limited_by == LimitSource.DEFAULT
+        assert limit.owner_type == OwnerType.TEAM
+        assert limit.owner_id == test_team.id
+
+
+def test_set_team_limits_with_products_uses_product_limits(db, test_team, test_product):
+    """
+    Given: A team with associated products
+    When: Calling set_team_limits(team)
+    Then: Should use product limits where available, falling back to defaults
+    """
+    # Create team-product association
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id,
+        created_at=datetime.now(UTC)
+    )
+    db.add(team_product)
+    db.commit()
+
+    limit_service = LimitService(db)
+    limit_service.set_team_limits(test_team)
+
+    team_limits = limit_service.get_team_limits(test_team)
+
+    # Find the USER limit and check it uses product value
+    user_limit = next((l for l in team_limits.limits if l.resource == ResourceType.USER), None)
+    assert user_limit is not None
+    assert user_limit.max_value == test_product.user_count
+    assert user_limit.limited_by == LimitSource.PRODUCT
+
+    # Find the KEY limit and check it uses product value
+    key_limit = next((l for l in team_limits.limits if l.resource == ResourceType.KEY), None)
+    assert key_limit is not None
+    assert key_limit.max_value == test_product.total_key_count
+    assert key_limit.limited_by == LimitSource.PRODUCT
+
+
+def test_set_team_limits_preserves_manual_limits(db, test_team):
+    """
+    Given: A team with existing manual limits
+    When: Calling set_team_limits(team)
+    Then: Should not override manual limits, only set missing ones
+    """
+    # Create a manual limit first
+    manual_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.USER,
+        unit=UnitType.COUNT,
+        max_value=10.0,
+        current_value=2.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.MANUAL,
+        set_by="admin@example.com",
+        created_at=datetime.now(UTC)
+    )
+    db.add(manual_limit)
+    db.commit()
+
+    limit_service = LimitService(db)
+    limit_service.set_team_limits(test_team)
+
+    team_limits = limit_service.get_team_limits(test_team)
+
+    # Check that the manual limit was preserved
+    user_limit = next((l for l in team_limits.limits if l.resource == ResourceType.USER), None)
+    assert user_limit is not None
+    assert user_limit.max_value == 10.0
+    assert user_limit.limited_by == LimitSource.MANUAL
+    assert user_limit.set_by == "admin@example.com"
+
+    # Check that other limits were still created
+    assert len(team_limits.limits) >= 4  # Should have all other supported resources
+
+
+def test_set_team_limits_updates_product_limits(db, test_team, test_product):
+    """
+    Given: A team with existing default limits and new product association
+    When: Calling set_team_limits(team)
+    Then: Should update limits to use product values where available
+    """
+    # Create default limits first
+    default_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.KEY,
+        unit=UnitType.COUNT,
+        max_value=DEFAULT_KEYS_PER_USER,  # Default value
+        current_value=1.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.DEFAULT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(default_limit)
+    db.commit()
+
+    # Create team-product association
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id,
+        created_at=datetime.now(UTC)
+    )
+    db.add(team_product)
+    db.commit()
+
+    limit_service = LimitService(db)
+    limit_service.set_team_limits(test_team)
+
+    team_limits = limit_service.get_team_limits(test_team)
+
+    # Check that the limit was updated to use product value
+    key_limit = next((l for l in team_limits.limits if l.resource == ResourceType.KEY), None)
+    assert key_limit is not None
+    assert key_limit.max_value == test_product.total_key_count
+    assert key_limit.limited_by == LimitSource.PRODUCT
+
+
+def test_set_team_limits_preserves_current_value_when_updating(db, test_team, test_product):
+    """
+    Given: A team with existing limits that have current_value set
+    When: Calling set_team_limits(team) after adding a product
+    Then: Should preserve the existing current_value while updating max_value and source
+    """
+    # Create a default limit with existing usage
+    existing_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.USER,
+        unit=UnitType.COUNT,
+        max_value=DEFAULT_USER_COUNT,
+        current_value=2.0,  # Team already has 2 users
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.DEFAULT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(existing_limit)
+    db.commit()
+
+    # Create team-product association (product has higher user count)
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id,
+        created_at=datetime.now(UTC)
+    )
+    db.add(team_product)
+    db.commit()
+
+    limit_service = LimitService(db)
+    limit_service.set_team_limits(test_team)
+
+    team_limits = limit_service.get_team_limits(test_team)
+
+    # Check that current_value was preserved while max_value and source were updated
+    user_limit = next((l for l in team_limits.limits if l.resource == ResourceType.USER), None)
+    assert user_limit is not None
+    assert user_limit.max_value == test_product.user_count  # Updated to product value
+    assert user_limit.current_value == 2.0  # Preserved existing value
+    assert user_limit.limited_by == LimitSource.PRODUCT  # Updated source

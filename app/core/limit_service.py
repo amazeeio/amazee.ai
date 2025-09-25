@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import and_, or_, select
 from fastapi import HTTPException, status
 from typing import Optional, List
 from datetime import datetime, UTC
@@ -54,12 +54,20 @@ class LimitService:
         Returns:
             TeamLimits object containing all limits for the team
         """
-        limits = self.db.query(DBLimitedResource).filter(
+        user_ids = self.db.execute(select(DBUser.id).filter(DBUser.team_id == team.id)).scalars().all()
+        team_limits = self.db.query(DBLimitedResource).filter(
             and_(
                 DBLimitedResource.owner_type == OwnerType.TEAM,
                 DBLimitedResource.owner_id == team.id
             )
         ).all()
+        user_limits = self.db.query(DBLimitedResource).filter(
+            and_(
+                DBLimitedResource.owner_type == OwnerType.USER,
+                DBLimitedResource.owner_id.in_(user_ids)
+            )
+        ).all()
+        limits = team_limits + user_limits
 
         limit_schemas = [
             LimitedResource.model_validate(limit) for limit in limits
@@ -374,3 +382,91 @@ class LimitService:
             raise LimitNotFoundError(f"No limit found for {owner_type} {owner_id} resource {resource_type}")
 
         return self._reset_limit(limit)
+
+    def set_team_limits(self, team: DBTeam):
+        """
+        Goes through all available limits and applies them for a team. Will apply PRODUCT values by preference,
+        falling back to DEFAULt. Will not override MANUAL.
+        Intended to be used by the automated workflows when product associations change, or simply on a regular
+        cadence, this keeps everything in-sync to allow us to rely on the increment/decrement methods for CP limit
+        management.
+
+        Args:
+            team: The team for which limits are being applied
+        """
+        existing_limits = self.get_team_limits(team)
+
+        # Define all resource types that need limits
+        # Only include resources that are supported by the resource_limits functions
+        all_resources = [
+            ResourceType.USER,
+            ResourceType.KEY,
+            ResourceType.VECTOR_DB,
+            ResourceType.BUDGET,
+            ResourceType.RPM
+        ]
+
+        # Process each resource type
+        for resource_type in all_resources:
+            # Skip if manual limit already exists
+            existing_limit = next(
+                (l for l in existing_limits.limits if l.resource == resource_type),
+                None
+            )
+            if existing_limit and existing_limit.limited_by == LimitSource.MANUAL:
+                continue
+
+            # Determine limit type and unit based on resource
+            if resource_type in [ResourceType.USER, ResourceType.KEY, ResourceType.VECTOR_DB, ResourceType.GPT_INSTANCE]:
+                limit_type = LimitType.CONTROL_PLANE
+                unit = UnitType.COUNT
+                # Preserve existing current_value if updating, otherwise set to 0.0
+                if existing_limit and existing_limit.current_value is not None:
+                    current_value = existing_limit.current_value
+                else:
+                    current_value = 0.0  # CP limits need current_value
+            else:
+                limit_type = LimitType.DATA_PLANE
+                unit = self._get_unit_for_resource(resource_type)
+                # For DP limits, preserve existing current_value if it exists
+                if existing_limit and existing_limit.current_value is not None:
+                    current_value = existing_limit.current_value
+                else:
+                    current_value = None  # DP limits don't track current value by default
+
+            # Try to get product limit first, fall back to default
+            max_value = get_team_product_limit_for_resource(self.db, team.id, resource_type)
+            if max_value is not None:
+                limit_source = LimitSource.PRODUCT
+            else:
+                max_value = get_default_team_limit_for_resource(resource_type)
+                limit_source = LimitSource.DEFAULT
+
+            # Set the limit (this will update existing or create new)
+            self.set_limit(
+                owner_type=OwnerType.TEAM,
+                owner_id=team.id,
+                resource_type=resource_type,
+                limit_type=limit_type,
+                unit=unit,
+                max_value=max_value,
+                current_value=current_value,
+                limited_by=limit_source
+            )
+
+    def _get_unit_for_resource(self, resource_type: ResourceType) -> UnitType:
+        """
+        Get the appropriate unit type for a given resource type.
+
+        Args:
+            resource_type: The resource type
+
+        Returns:
+            The appropriate unit type
+        """
+        if resource_type == ResourceType.BUDGET:
+            return UnitType.DOLLAR
+        elif resource_type == ResourceType.STORAGE:
+            return UnitType.GB
+        else:
+            return UnitType.COUNT

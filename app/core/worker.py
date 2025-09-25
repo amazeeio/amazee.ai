@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.db.models import DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey, DBUser, DBRegion, DBTeamMetrics
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
+from app.core.limit_service import LimitService
 import logging
 from collections import defaultdict
 from app.core.resource_limits import get_token_restrictions
@@ -213,6 +214,9 @@ async def apply_product_for_team(db: Session, customer_id: str, product_id: str,
                     # Continue with other keys even if one fails
                     continue
 
+        # Ensure that limits are updated
+        limit_service = LimitService(db)
+        limit_service.set_team_limits(team)
         db.commit()
 
     except Exception as e:
@@ -243,6 +247,8 @@ async def remove_product_from_team(db: Session, customer_id: str, product_id: st
             return
         # Remove the product association
         db.delete(existing_association)
+        limit_service = LimitService(db)
+        limit_service.set_team_limits(team)
 
         db.commit()
     except Exception as e:
@@ -605,6 +611,10 @@ async def monitor_teams(db: Session):
                     last_updated=current_time
                 )
                 db.add(team_metrics)
+
+            # Ensure all limits are correct - will not override MANUAL limits
+            limit_service = LimitService(db)
+            limit_service.set_team_limits(team)
 
             # Update last_monitored timestamp only if notifications were sent
             if should_send_notifications:
