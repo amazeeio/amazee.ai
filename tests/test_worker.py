@@ -238,6 +238,7 @@ async def test_apply_product_calls_limit_service(mock_litellm, mock_limit_servic
     # Setup mock limit service
     mock_limit_instance = mock_limit_service.return_value
     mock_limit_instance.set_team_limits = Mock()
+    mock_limit_instance.get_token_restrictions = Mock(return_value=(30, 50.0, 1000))
 
     # Apply product to team
     await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
@@ -304,6 +305,7 @@ async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, mock_lim
     # Setup mock limit service
     mock_limit_instance = mock_limit_service.return_value
     mock_limit_instance.set_team_limits = Mock()
+    mock_limit_instance.get_token_restrictions = Mock(return_value=(30, 50.0, 1000))
 
     # Apply product to team
     await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
@@ -353,12 +355,13 @@ async def test_remove_product_calls_limit_service(mock_limit_service, db, test_t
     test_team.stripe_customer_id = "cus_test123"
     db.commit()
 
-    # First apply the product to ensure it exists
-    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
-
     # Setup mock limit service
     mock_limit_instance = mock_limit_service.return_value
     mock_limit_instance.set_team_limits = Mock()
+    mock_limit_instance.get_token_restrictions = Mock(return_value=(30, 50.0, 1000))
+
+    # First apply the product to ensure it exists
+    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
 
     # Remove the product
     await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
@@ -385,6 +388,7 @@ async def test_remove_product_success(mock_limit_service, db, test_team, test_pr
     # Setup mock limit service
     mock_limit_instance = mock_limit_service.return_value
     mock_limit_instance.set_team_limits = Mock()
+    mock_limit_instance.get_token_restrictions = Mock(return_value=(30, 50.0, 1000))
 
     # First apply the product to ensure it exists
     await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))

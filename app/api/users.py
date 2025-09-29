@@ -2,8 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 from app.core.config import settings
-from app.core.resource_limits import check_team_user_limit
+from app.core.limit_service import LimitService
 from app.db.database import get_db
+from app.core.dependencies import get_limit_service
 from app.schemas.models import User, UserUpdate, UserCreate, TeamOperation, UserRoleUpdate
 from app.db.models import DBUser, DBTeam
 from app.core.security import get_password_hash, get_role_min_system_admin, get_current_user_from_auth, get_role_min_team_admin
@@ -54,7 +55,8 @@ async def list_users(
 async def create_user(
     user: UserCreate,
     current_user: DBUser = Depends(get_current_user_from_auth),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    limit_service: LimitService = Depends(get_limit_service)
 ):
     """
     Create a new user. Accessible by admin users or team admins for their own team.
@@ -75,7 +77,7 @@ async def create_user(
         )
 
     if settings.ENABLE_LIMITS and user.team_id is not None:
-        check_team_user_limit(db, user.team_id)
+        limit_service.check_team_user_limit(user.team_id)
 
     # Validate role if provided
     if user.role and user.role not in UserRole.get_all_roles():

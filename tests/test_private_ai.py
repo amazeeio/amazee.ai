@@ -5,7 +5,7 @@ from datetime import datetime, UTC
 from app.core.security import get_password_hash
 from httpx import HTTPStatusError
 from fastapi import status, HTTPException
-from app.core.resource_limits import (
+from app.core.limit_service import (
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
 )
@@ -1533,17 +1533,16 @@ def test_create_too_many_vector_dbs(client, admin_token, test_region, db, test_t
 
 @patch("httpx.AsyncClient")
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
-def test_create_too_many_total_keys(mock_client_class, client, admin_token, test_region, db, test_team, test_team_user, mock_httpx_post_client):
-    """Test that when ENABLE_LIMITS is true, creating too many total keys fails"""
-    # Create a product with a specific total key limit for testing
-    key_count = 5
+def test_create_too_many_service_keys(mock_client_class, client, admin_token, test_region, db, test_team, mock_httpx_post_client):
+    """Test that when ENABLE_LIMITS is true, creating too many service keys fails"""
+    # Create a product with a specific service key limit for testing
+    service_key_count = 2
     test_product = DBProduct(
-        id="prod_test_total_limit",
-        name="Test Product Total Limit",
+        id="prod_test_service_limit",
+        name="Test Product Service Limit",
         user_count=5,
         keys_per_user=3,
-        total_key_count=key_count,  # Specific limit for testing
-        service_key_count=3,
+        service_key_count=service_key_count,  # Specific limit for testing
         max_budget_per_key=50.0,
         rpm_per_key=1000,
         vector_db_count=1,
@@ -1566,47 +1565,33 @@ def test_create_too_many_total_keys(mock_client_class, client, admin_token, test
     mock_client_class.return_value = mock_httpx_post_client
 
     team_id = test_team.id
-    user_id = test_team_user.id
     region_id = test_region.id
 
-    # Create keys up to the limit (5 keys)
-    for i in range(key_count):
-        if i % 2 == 0:
-            # Create service key
-            response = client.post(
-                "/private-ai-keys/token",
-                headers={"Authorization": f"Bearer {admin_token}"},
-                json={
-                    "region_id": region_id,
-                    "name": f"Service Key {i//2 + 1}",
-                    "team_id": team_id
-                }
-            )
-        else:
-            # Create user key
-            response = client.post(
-                "/private-ai-keys/token",
-                headers={"Authorization": f"Bearer {admin_token}"},
-                json={
-                    "region_id": region_id,
-                    "name": f"User Key {(i//2) + 1}",
-                    "owner_id": user_id
-                }
-            )
+    # Create service keys up to the limit
+    for i in range(service_key_count):
+        response = client.post(
+            "/private-ai-keys/token",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "region_id": region_id,
+                "name": f"Service Key {i + 1}",
+                "team_id": team_id
+            }
+        )
         assert response.status_code == 200
 
-    # Try to create one more key
+    # Try to create one more service key
     response = client.post(
         "/private-ai-keys/token",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "region_id": region_id,
-            "name": "Extra Key",
-            "owner_id": user_id
+            "name": "Extra Service Key",
+            "team_id": team_id
         }
     )
     assert response.status_code == 402
-    assert f"Team has reached the maximum LLM key limit of {key_count} keys" in response.json()["detail"]
+    assert "Entity has reached their maximum number of AI keys" in response.json()["detail"]
 
 @patch("httpx.AsyncClient")
 def test_delete_private_ai_key_with_only_vector_db(mock_client_class, client, admin_token, test_region, db, mock_httpx_post_client):

@@ -7,7 +7,7 @@ from app.services.ses import SESService
 from app.core.limit_service import LimitService
 import logging
 from collections import defaultdict
-from app.core.resource_limits import get_token_restrictions
+# get_token_restrictions is now available through LimitService
 from app.services.stripe import (
     get_product_id_from_session,
     get_product_id_from_subscription,
@@ -185,7 +185,8 @@ async def apply_product_for_team(db: Session, customer_id: str, product_id: str,
             db.add(team_product)
             db.commit()  # Commit the product association
 
-        days_left_in_period, max_max_spend, max_rpm_limit = get_token_restrictions(db, team.id)
+        limit_service = LimitService(db)
+        days_left_in_period, max_max_spend, max_rpm_limit = limit_service.get_token_restrictions(team.id)
 
         # Get all keys for the team grouped by region
         keys_by_region = get_team_keys_by_region(db, team.id)
@@ -215,7 +216,6 @@ async def apply_product_for_team(db: Session, customer_id: str, product_id: str,
                     continue
 
         # Ensure that limits are updated
-        limit_service = LimitService(db)
         limit_service.set_team_limits(team)
         db.commit()
 

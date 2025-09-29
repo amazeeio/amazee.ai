@@ -5,6 +5,7 @@ from fastapi import status
 import logging
 
 from app.db.database import get_db
+from app.core.dependencies import get_limit_service
 from app.schemas.models import (
     PrivateAIKey, PrivateAIKeyCreate, PrivateAIKeySpend,
     BudgetPeriodUpdate, LiteLLMToken, VectorDBCreate, VectorDB,
@@ -21,14 +22,7 @@ from app.core.security import (
 )
 from app.core.roles import UserRole
 from app.core.config import settings
-from app.core.resource_limits import (
-    check_key_limits,
-    check_vector_db_limits,
-    get_token_restrictions,
-    DEFAULT_KEY_DURATION,
-    DEFAULT_MAX_SPEND,
-    DEFAULT_RPM_PER_KEY
-)
+from app.core.limit_service import LimitService, DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
 
 router = APIRouter(
     tags=["private-ai-keys"]
@@ -83,6 +77,7 @@ async def create_vector_db(
     current_user = Depends(get_current_user_from_auth),
     user_role: UserRole = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
+    limit_service: LimitService = Depends(get_limit_service),
     store_result: bool = True
 ):
     """
@@ -133,7 +128,7 @@ async def create_vector_db(
             user = db.query(DBUser).filter(DBUser.id == owner_id).first()
             team_id = user.team_id  # Remove the FAKE_ID fallback
         if team_id:  # Only check limits if we have a valid team_id
-            check_vector_db_limits(db, team_id)
+            limit_service.check_vector_db_limits(team_id)
 
     try:
         # Create new postgres database
@@ -178,7 +173,8 @@ async def create_private_ai_key(
     private_ai_key: PrivateAIKeyCreate,
     current_user = Depends(get_current_user_from_auth),
     user_role: UserRole = Depends(get_private_ai_access),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    limit_service: LimitService = Depends(get_limit_service)
 ):
     """
     Create a new private AI key.
@@ -221,7 +217,7 @@ async def create_private_ai_key(
             )
 
         # First create the LiteLLM token
-        llm_token = await create_llm_token(private_ai_key, current_user, user_role, db, store_result=False)
+        llm_token = await create_llm_token(private_ai_key, current_user, user_role, db, limit_service, store_result=False)
 
         # Then create the vector database
         vector_db = VectorDBCreate(
@@ -230,7 +226,7 @@ async def create_private_ai_key(
             owner_id=private_ai_key.owner_id,
             team_id=private_ai_key.team_id
         )
-        db_info = await create_vector_db(vector_db, current_user, user_role, db, store_result=False)
+        db_info = await create_vector_db(vector_db, current_user, user_role, db, limit_service, store_result=False)
 
         # Store private AI key info in main application database
         new_key = DBPrivateAIKey(
@@ -294,6 +290,7 @@ async def create_llm_token(
     current_user = Depends(get_current_user_from_auth),
     user_role: UserRole = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
+    limit_service: LimitService = Depends(get_limit_service),
     store_result: bool = True
 ):
     """
@@ -361,9 +358,9 @@ async def create_llm_token(
 
     if owner.team_id or team_id:
         if settings.ENABLE_LIMITS:
-            check_key_limits(db, owner.team_id or team_id, owner_id)
+            limit_service.check_key_limits(owner.team_id or team_id, owner_id)
         # Limits are conditionally applied in LiteLLM service
-        days_left_in_period, max_max_spend, max_rpm_limit = get_token_restrictions(db, owner.team_id or team_id)
+        days_left_in_period, max_max_spend, max_rpm_limit = limit_service.get_token_restrictions(owner.team_id or team_id)
     else: # Super system users...
         days_left_in_period = DEFAULT_KEY_DURATION
         max_max_spend = DEFAULT_MAX_SPEND
