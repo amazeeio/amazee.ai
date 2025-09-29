@@ -14,11 +14,7 @@ from app.schemas.limits import (
     LimitType,
     ResourceType
     )
-from app.core.resource_limits import (
-    get_default_team_limit_for_resource,
-    get_team_product_limit_for_resource,
-    DEFAULT_KEYS_PER_USER
-    )
+# Import moved to avoid circular dependency - will import when needed
 import logging
 
 logger = logging.getLogger(__name__)
@@ -356,12 +352,21 @@ class LimitService:
             team_id = user.team_id
         else:
             raise ValueError(f"Unknown owner type, cannot reset limit {limit}")
-        max_value = get_team_product_limit_for_resource(self.db, team_id, limit.resource)
-        if not max_value:
-            max_value = get_default_team_limit_for_resource(limit.resource)
-            limit.limited_by = LimitSource.DEFAULT
+        from app.core.resource_limits import get_team_product_limit_for_resource, get_user_product_limit_for_resource, get_default_team_limit_for_resource, get_default_user_limit_for_resource
+        if limit.owner_type == OwnerType.USER and limit.resource == ResourceType.KEY:
+            max_value = get_user_product_limit_for_resource(self.db, team_id, limit.resource)
+            if not max_value:
+                max_value = get_default_user_limit_for_resource(limit.resource)
+                limit.limited_by = LimitSource.DEFAULT
+            else:
+                limit.limited_by = LimitSource.PRODUCT
         else:
-            limit.limited_by = LimitSource.PRODUCT
+            max_value = get_team_product_limit_for_resource(self.db, team_id, limit.resource)
+            if not max_value:
+                max_value = get_default_team_limit_for_resource(limit.resource)
+                limit.limited_by = LimitSource.DEFAULT
+            else:
+                limit.limited_by = LimitSource.PRODUCT
         limit.max_value = max_value
         limit.set_by = "reset"
 
@@ -435,6 +440,7 @@ class LimitService:
                     current_value = None  # DP limits don't track current value by default
 
             # Try to get product limit first, fall back to default
+            from app.core.resource_limits import get_team_product_limit_for_resource, get_default_team_limit_for_resource
             max_value = get_team_product_limit_for_resource(self.db, team.id, resource_type)
             if max_value is not None:
                 limit_source = LimitSource.PRODUCT
