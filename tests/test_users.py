@@ -464,4 +464,4 @@ def test_create_user_with_limits_enabled(client, team_admin_token, test_team, db
         }
     )
     assert response.status_code == 402
-    assert f"Team has reached the maximum user limit of {user_count} users" in response.json()["detail"]
+    assert f"Team has reached their maximum user limit" in response.json()["detail"]

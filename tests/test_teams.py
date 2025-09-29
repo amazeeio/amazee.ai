@@ -587,7 +587,7 @@ def test_extend_team_trial_success(mock_ses_class, mock_litellm_post, client, ad
     # Mock LiteLLM API response
     mock_litellm_post.return_value.status_code = 200
     mock_litellm_post.return_value.json.return_value = {"key": "test-private-key-123"}
-    mock_litellm_post.return_value.raise_for_status.return_value = None
+    mock_litellm_post.return_value.raise_for_status = MagicMock()
 
     # Create a test key for the team
     test_key = DBPrivateAIKey(
@@ -650,7 +650,7 @@ def test_extend_team_trial_litellm_error(mock_ses_class, mock_litellm_post, clie
 
     # Mock LiteLLM API error
     mock_litellm_post.return_value.status_code = 500
-    mock_litellm_post.return_value.raise_for_status.side_effect = Exception("API Error")
+    mock_litellm_post.return_value.raise_for_status = MagicMock(side_effect=Exception("API Error"))
 
     # Create a test key for the team
     test_key = DBPrivateAIKey(
@@ -697,7 +697,7 @@ def test_extend_team_trial_email_error(mock_ses_class, mock_litellm_post, client
     # Mock LiteLLM API success
     mock_litellm_post.return_value.status_code = 200
     mock_litellm_post.return_value.json.return_value = {"key": "test-private-key-123"}
-    mock_litellm_post.return_value.raise_for_status.return_value = None
+    mock_litellm_post.return_value.raise_for_status = MagicMock()
 
     # Create a test key for the team
     test_key = DBPrivateAIKey(
@@ -936,9 +936,9 @@ def test_merge_teams_endpoint_with_conflicts_delete_strategy(mock_get_key, mock_
 
     # Mock LiteLLM API responses
     mock_post.return_value.status_code = 200
-    mock_post.return_value.raise_for_status.return_value = None
+    mock_post.return_value.raise_for_status = MagicMock()
     mock_delete.return_value.status_code = 200
-    mock_delete.return_value.raise_for_status.return_value = None
+    mock_delete.return_value.raise_for_status = MagicMock()
 
     # Mock PostgresManager delete_database
     mock_delete_db.return_value = None
@@ -992,7 +992,7 @@ def test_merge_teams_endpoint_with_conflicts_rename_strategy(mock_post, client, 
 
     # Mock LiteLLM API response
     mock_post.return_value.status_code = 200
-    mock_post.return_value.raise_for_status.return_value = None
+    mock_post.return_value.raise_for_status = MagicMock()
 
     response = client.post(
         f"/teams/{target_team.id}/merge",
@@ -1117,7 +1117,7 @@ def test_merge_teams_with_users_and_keys(mock_post, client, admin_token, db, tes
 
     # Mock LiteLLM API response
     mock_post.return_value.status_code = 200
-    mock_post.return_value.raise_for_status.return_value = None
+    mock_post.return_value.raise_for_status = MagicMock()
 
     response = client.post(
         f"/teams/{target_team.id}/merge",

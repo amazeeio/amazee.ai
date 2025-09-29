@@ -1407,7 +1407,7 @@ def test_create_too_many_service_keys(mock_client_class, client, admin_token, te
         }
     )
     assert response.status_code == 402
-    assert f"Team has reached the maximum service LLM key limit of {key_count} keys" in response.json()["detail"]
+    assert f"Entity has reached their maximum number of AI keys" in response.json()["detail"]
 
 @patch("httpx.AsyncClient")
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
@@ -1471,7 +1471,7 @@ def test_create_too_many_user_keys(mock_client_class, client, admin_token, test_
         }
     )
     assert response.status_code == 402
-    assert f"User has reached the maximum LLM key limit of {key_count} keys" in response.json()["detail"]
+    assert f"Entity has reached their maximum number of AI keys" in response.json()["detail"]
 
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
 def test_create_too_many_vector_dbs(client, admin_token, test_region, db, test_team):
@@ -1529,7 +1529,7 @@ def test_create_too_many_vector_dbs(client, admin_token, test_region, db, test_t
         }
     )
     assert response.status_code == 402
-    assert f"Team has reached the maximum vector DB limit of {vector_db_count} databases" in response.json()["detail"]
+    assert f"Team has reached their maximum vector DB limit" in response.json()["detail"]
 
 @patch("httpx.AsyncClient")
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
