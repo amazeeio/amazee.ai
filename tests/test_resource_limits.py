@@ -2,12 +2,9 @@ import pytest
 from app.db.models import DBUser, DBProduct, DBTeamProduct, DBPrivateAIKey, DBTeam
 from datetime import datetime, UTC, timedelta
 from fastapi import HTTPException
-from app.core.resource_limits import (
-    check_key_limits,
-    check_team_user_limit,
-    check_vector_db_limits,
-    get_token_restrictions,
-    get_team_product_limit_for_resource,
+from app.core.limit_service import (
+    LimitService,
+    LimitNotFoundError,
     DEFAULT_KEY_DURATION,
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
@@ -16,7 +13,6 @@ from app.core.resource_limits import (
     DEFAULT_VECTOR_DB_COUNT
 )
 from app.schemas.limits import ResourceType, OwnerType, LimitType, UnitType, LimitSource
-from app.core.limit_service import LimitService, LimitNotFoundError
 
 def test_add_user_within_product_limit(db, test_team, test_product):
     """Test adding a user when within product user limit"""
@@ -29,7 +25,8 @@ def test_add_user_within_product_limit(db, test_team, test_product):
     db.commit()
 
     # Test that check_team_user_limit doesn't raise an exception
-    check_team_user_limit(db, test_team.id)
+    limit_service = LimitService(db)
+    limit_service.check_team_user_limit(test_team.id)
 
 def test_add_user_exceeding_product_limit(db, test_team, test_product):
     """Test adding a user when it would exceed product user limit"""
@@ -57,7 +54,8 @@ def test_add_user_exceeding_product_limit(db, test_team, test_product):
 
     # Test that check_team_user_limit raises an exception
     with pytest.raises(HTTPException) as exc_info:
-        check_team_user_limit(db, test_team.id)
+        limit_service = LimitService(db)
+        limit_service.check_team_user_limit(test_team.id)
     assert exc_info.value.status_code == 402
     assert f"Team has reached the maximum user limit of {test_product.user_count} users" in str(exc_info.value.detail)
 
@@ -107,7 +105,8 @@ def test_add_user_with_default_limit(db, test_team):
 
     # Test that check_team_user_limit raises an exception
     with pytest.raises(HTTPException) as exc_info:
-        check_team_user_limit(db, test_team.id)
+        limit_service = LimitService(db)
+        limit_service.check_team_user_limit(test_team.id)
     assert exc_info.value.status_code == 402
     assert f"Team has reached the maximum user limit of {test_product.user_count} users" in str(exc_info.value.detail)
 
@@ -172,7 +171,8 @@ def test_add_user_with_one_product(db, test_team):
 
     # Test that check_team_user_limit raises an exception
     with pytest.raises(HTTPException) as exc_info:
-        check_team_user_limit(db, test_team.id)
+        limit_service = LimitService(db)
+        limit_service.check_team_user_limit(test_team.id)
     assert exc_info.value.status_code == 402
     assert f"Team has reached the maximum user limit of {product1.user_count} users" in str(exc_info.value.detail)
 
@@ -228,7 +228,8 @@ def test_add_user_with_multiple_products(db, test_team):
 
     # Create and add users up to the higher product limit (5) since fallback now works correctly
     for i in range(5):
-        check_team_user_limit(db, test_team.id)
+        limit_service = LimitService(db)
+        limit_service.check_team_user_limit(test_team.id)
         user = DBUser(
             email=f"user{i}@example.com",
             hashed_password="hashed_password",
@@ -243,7 +244,8 @@ def test_add_user_with_multiple_products(db, test_team):
 
     # Test that check_team_user_limit raises an exception
     with pytest.raises(HTTPException) as exc_info:
-        check_team_user_limit(db, test_team.id)
+        limit_service = LimitService(db)
+        limit_service.check_team_user_limit(test_team.id)
     assert exc_info.value.status_code == 402
     assert "Team has reached their maximum user limit" in str(exc_info.value.detail)
 
@@ -258,7 +260,8 @@ def test_create_key_within_limits(db, test_team, test_product, test_region):
     db.commit()
 
     # Test that check_key_limits doesn't raise an exception
-    check_key_limits(db, test_team.id, None)
+    limit_service = LimitService(db)
+    limit_service.check_key_limits(test_team.id, None)
 
 # Key limit shape issue
 def test_create_key_exceeding_total_limit(db, test_team, test_product, test_region):
@@ -275,7 +278,8 @@ def test_create_key_exceeding_total_limit(db, test_team, test_product, test_regi
 
     # Create service keys up to the limit
     for i in range(test_product.service_key_count):
-        check_key_limits(db, test_team.id, None)
+        limit_service = LimitService(db)
+        limit_service.check_key_limits(test_team.id, None)
         key = DBPrivateAIKey(
             name=f"Test Service Key {i}",
             database_name=f"test_db_{i}",
@@ -293,7 +297,8 @@ def test_create_key_exceeding_total_limit(db, test_team, test_product, test_regi
 
     # Test that check_key_limits raises an exception
     with pytest.raises(HTTPException) as exc_info:
-        check_key_limits(db, test_team.id, None)
+        limit_service = LimitService(db)
+        limit_service.check_key_limits(test_team.id, None)
     assert exc_info.value.status_code == 402
     # Now that fallback creates a limit, subsequent calls use LimitService which returns generic message
     assert "Entity has reached their maximum number of AI keys" in str(exc_info.value.detail)
@@ -323,7 +328,8 @@ def test_create_key_exceeding_user_limit(db, test_team, test_product, test_regio
 
     # Create LLM tokens up to the user limit
     for i in range(test_product.keys_per_user):
-        check_key_limits(db, test_team.id, user.id)
+        limit_service = LimitService(db)
+        limit_service.check_key_limits(test_team.id, user.id)
         key = DBPrivateAIKey(
             name=f"Test Token {i}",
             database_name=f"test_db_{i}",
@@ -341,7 +347,8 @@ def test_create_key_exceeding_user_limit(db, test_team, test_product, test_regio
 
     # Test that check_key_limits raises an exception
     with pytest.raises(HTTPException) as exc_info:
-        check_key_limits(db, test_team.id, user.id)
+        limit_service = LimitService(db)
+        limit_service.check_key_limits(test_team.id, user.id)
     assert exc_info.value.status_code == 402
     # Now that fallback creates a limit, subsequent calls use LimitService which returns generic message
     assert "Entity has reached their maximum number of AI keys" in str(exc_info.value.detail)
@@ -375,7 +382,8 @@ def test_create_key_exceeding_service_key_limit(db, test_team, test_product, tes
 
     # Test that check_key_limits raises an exception
     with pytest.raises(HTTPException) as exc_info:
-        check_key_limits(db, test_team.id, None)
+        limit_service = LimitService(db)
+        limit_service.check_key_limits(test_team.id, None)
     assert exc_info.value.status_code == 402
     assert f"Team has reached the maximum service LLM key limit of {test_product.service_key_count} keys" in str(exc_info.value.detail)
 
@@ -427,7 +435,8 @@ def test_create_key_with_default_limits(db, test_team, test_region):
 
     # Test that check_key_limits raises an exception
     with pytest.raises(HTTPException) as exc_info:
-        check_key_limits(db, test_team.id, None)
+        limit_service = LimitService(db)
+        limit_service.check_key_limits(test_team.id, None)
     assert exc_info.value.status_code == 402
     assert f"Team has reached the maximum service LLM key limit of {test_product.service_key_count} keys" in str(exc_info.value.detail)
 
@@ -483,7 +492,8 @@ def test_create_key_with_multiple_products(db, test_team, test_region):
 
     # Create LLM tokens up to the higher total token limit (5)
     for i in range(5):
-        check_key_limits(db, test_team.id, None)
+        limit_service = LimitService(db)
+        limit_service.check_key_limits(test_team.id, None)
         key = DBPrivateAIKey(
             name=f"Test Token {i}",
             database_name=f"test_db_{i}",
@@ -501,7 +511,8 @@ def test_create_key_with_multiple_products(db, test_team, test_region):
 
     # Test that check_key_limits raises an exception
     with pytest.raises(HTTPException) as exc_info:
-        check_key_limits(db, test_team.id, None)
+        limit_service = LimitService(db)
+        limit_service.check_key_limits(test_team.id, None)
     assert exc_info.value.status_code == 402
     # Now that fallback creates a limit, subsequent calls use LimitService which returns generic message
     assert "Entity has reached their maximum number of AI keys" in str(exc_info.value.detail)
@@ -577,7 +588,8 @@ def test_create_key_with_multiple_users_default_limits(db, test_team, test_regio
 
     # Test that check_key_limits raises an exception when trying to create another user key
     with pytest.raises(HTTPException) as exc_info:
-        check_key_limits(db, test_team.id, user1.id)  # Try to create another key for user1
+        limit_service = LimitService(db)
+        limit_service.check_key_limits(test_team.id, user1.id)  # Try to create another key for user1
     assert exc_info.value.status_code == 402
     assert f"User has reached the maximum LLM key limit of {test_product.keys_per_user} keys" in str(exc_info.value.detail)
 
@@ -666,7 +678,8 @@ def test_create_key_with_mixed_service_and_user_keys(db, test_team, test_region)
 
     # Test that check_key_limits raises an exception when trying to create another service key
     with pytest.raises(HTTPException) as exc_info:
-        check_key_limits(db, test_team.id, None)  # Try to create another service key
+        limit_service = LimitService(db)
+        limit_service.check_key_limits(test_team.id, None)  # Try to create another service key
     assert exc_info.value.status_code == 402
     assert f"Team has reached the maximum service LLM key limit of {product.service_key_count} keys" in str(exc_info.value.detail)
 
@@ -681,7 +694,8 @@ def test_create_vector_db_within_limits(db, test_team, test_product):
     db.commit()
 
     # Test that check_vector_db_limits doesn't raise an exception
-    check_vector_db_limits(db, test_team.id)
+    limit_service = LimitService(db)
+    limit_service.check_vector_db_limits(test_team.id)
 
 def test_create_vector_db_exceeding_limit(db, test_team, test_product, test_region):
     """Test creating a vector DB when it would exceed the limit"""
@@ -710,7 +724,8 @@ def test_create_vector_db_exceeding_limit(db, test_team, test_product, test_regi
 
     # Test that check_vector_db_limits raises an exception
     with pytest.raises(HTTPException) as exc_info:
-        check_vector_db_limits(db, test_team.id)
+        limit_service = LimitService(db)
+        limit_service.check_vector_db_limits(test_team.id)
     assert exc_info.value.status_code == 402
     assert f"Team has reached the maximum vector DB limit of {test_product.vector_db_count} databases" in str(exc_info.value.detail)
 
@@ -761,7 +776,8 @@ def test_create_vector_db_with_default_limit(db, test_team, test_region):
 
     # Test that check_vector_db_limits raises an exception
     with pytest.raises(HTTPException) as exc_info:
-        check_vector_db_limits(db, test_team.id)
+        limit_service = LimitService(db)
+        limit_service.check_vector_db_limits(test_team.id)
     assert exc_info.value.status_code == 402
     assert f"Team has reached the maximum vector DB limit of {test_product.vector_db_count} databases" in str(exc_info.value.detail)
 
@@ -817,7 +833,8 @@ def test_create_vector_db_with_multiple_products(db, test_team, test_region):
 
     # Create vector DBs up to the higher product limit (3) since fallback now works correctly
     for i in range(3):
-        check_vector_db_limits(db, test_team.id)
+        limit_service = LimitService(db)
+        limit_service.check_vector_db_limits(test_team.id)
         key = DBPrivateAIKey(
             name=f"Test Vector DB {i}",
             database_name=f"test_db_{i}",
@@ -833,7 +850,8 @@ def test_create_vector_db_with_multiple_products(db, test_team, test_region):
 
     # Test that check_vector_db_limits raises an exception
     with pytest.raises(HTTPException) as exc_info:
-        check_vector_db_limits(db, test_team.id)
+        limit_service = LimitService(db)
+        limit_service.check_vector_db_limits(test_team.id)
     assert exc_info.value.status_code == 402
     assert "Team has reached their maximum vector DB limit" in str(exc_info.value.detail)
 
@@ -885,7 +903,8 @@ def test_create_vector_db_with_user_owned_key(db, test_team, test_region, test_t
 
     # Test that check_vector_db_limits raises an exception
     with pytest.raises(HTTPException) as exc_info:
-        check_vector_db_limits(db, test_team.id)
+        limit_service = LimitService(db)
+        limit_service.check_vector_db_limits(test_team.id)
     assert exc_info.value.status_code == 402
     assert f"Team has reached the maximum vector DB limit of {test_product.vector_db_count} databases" in str(exc_info.value.detail)
 
@@ -909,7 +928,7 @@ def test_check_team_user_limit_with_limit_service(db, test_team):
     )
 
     # Test that check_team_user_limit doesn't raise an exception
-    check_team_user_limit(db, test_team.id)
+    limit_service.check_team_user_limit(test_team.id)
 
 def test_check_team_user_limit_with_limit_service_at_capacity(db, test_team):
     """
@@ -932,7 +951,8 @@ def test_check_team_user_limit_with_limit_service_at_capacity(db, test_team):
 
     # Test that check_team_user_limit raises an exception
     with pytest.raises(HTTPException) as exc_info:
-        check_team_user_limit(db, test_team.id)
+        limit_service = LimitService(db)
+        limit_service.check_team_user_limit(test_team.id)
     assert exc_info.value.status_code == 402
     assert "Team has reached their maximum user limit" in str(exc_info.value.detail)
 
@@ -959,7 +979,8 @@ def test_check_team_user_limit_fallback_creates_limit(db, test_team, test_produc
         pass  # Expected
 
     # Call the function - should trigger fallback and create limit
-    check_team_user_limit(db, test_team.id)
+    limit_service = LimitService(db)
+    limit_service.check_team_user_limit(test_team.id)
 
     # Verify limit was created in the service by checking the team limits
     team = db.query(DBTeam).filter(DBTeam.id == test_team.id).first()
@@ -993,7 +1014,7 @@ def test_check_key_limits_with_limit_service(db, test_team):
     )
 
     # Test that check_key_limits doesn't raise an exception
-    check_key_limits(db, test_team.id, None)
+    limit_service.check_key_limits(test_team.id, None)
 
 def test_check_key_limits_with_limit_service_at_capacity(db, test_team):
     """
@@ -1016,7 +1037,8 @@ def test_check_key_limits_with_limit_service_at_capacity(db, test_team):
 
     # Test that check_key_limits raises an exception
     with pytest.raises(HTTPException) as exc_info:
-        check_key_limits(db, test_team.id, None)
+        limit_service = LimitService(db)
+        limit_service.check_key_limits(test_team.id, None)
     assert exc_info.value.status_code == 402
     assert "Entity has reached their maximum number of AI keys" in str(exc_info.value.detail)
 
@@ -1043,7 +1065,8 @@ def test_check_key_limits_fallback_creates_limit(db, test_team, test_product):
         pass  # Expected
 
     # Call the function - should trigger fallback and create limit
-    check_key_limits(db, test_team.id, None)
+    limit_service = LimitService(db)
+    limit_service.check_key_limits(test_team.id, None)
 
     # Verify limit was created in the service by checking the team limits
     team = db.query(DBTeam).filter(DBTeam.id == test_team.id).first()
@@ -1080,7 +1103,8 @@ def test_check_key_limits_fallback_creates_user_limit(db, test_team, test_produc
         pass  # Expected
 
     # Call the function - should trigger fallback and create limit
-    check_key_limits(db, test_team.id, test_team_user.id)
+    limit_service = LimitService(db)
+    limit_service.check_key_limits(test_team.id, test_team_user.id)
 
     # Verify limit was created in the service by checking the user limits
     user_limits = limit_service.get_user_limits(test_team_user)
@@ -1114,7 +1138,7 @@ def test_check_vector_db_limits_with_limit_service(db, test_team):
     )
 
     # Test that check_vector_db_limits doesn't raise an exception
-    check_vector_db_limits(db, test_team.id)
+    limit_service.check_vector_db_limits(test_team.id)
 
 def test_check_vector_db_limits_with_limit_service_at_capacity(db, test_team):
     """
@@ -1138,7 +1162,8 @@ def test_check_vector_db_limits_with_limit_service_at_capacity(db, test_team):
 
     # Test that check_vector_db_limits raises an exception
     with pytest.raises(HTTPException) as exc_info:
-        check_vector_db_limits(db, test_team.id)
+        limit_service = LimitService(db)
+        limit_service.check_vector_db_limits(test_team.id)
     assert exc_info.value.status_code == 402
     assert "Team has reached their maximum vector DB limit" in str(exc_info.value.detail)
 
@@ -1165,7 +1190,8 @@ def test_check_vector_db_limits_fallback_creates_limit(db, test_team, test_produ
         pass  # Expected
 
     # Call the function - should trigger fallback and create limit
-    check_vector_db_limits(db, test_team.id)
+    limit_service = LimitService(db)
+    limit_service.check_vector_db_limits(test_team.id)
 
     # Verify limit was created in the service by checking the team limits
     team = db.query(DBTeam).filter(DBTeam.id == test_team.id).first()
@@ -1181,7 +1207,8 @@ def test_check_vector_db_limits_fallback_creates_limit(db, test_team, test_produ
 
 def test_get_token_restrictions_default_limits(db, test_team):
     """Test getting token restrictions when team has no products (using default limits)"""
-    days_left, max_spend, rpm_limit = get_token_restrictions(db, test_team.id)
+    limit_service = LimitService(db)
+    days_left, max_spend, rpm_limit = limit_service.get_token_restrictions(test_team.id)
 
     # Should use default values since team has no products
     assert days_left == DEFAULT_KEY_DURATION  # 30 days
@@ -1198,7 +1225,8 @@ def test_get_token_restrictions_with_product(db, test_team, test_product):
     db.add(team_product)
     db.commit()
 
-    days_left, max_spend, rpm_limit = get_token_restrictions(db, test_team.id)
+    limit_service = LimitService(db)
+    days_left, max_spend, rpm_limit = limit_service.get_token_restrictions(test_team.id)
 
     # Should use product values
     assert days_left == test_product.renewal_period_days  # 30 days
@@ -1255,7 +1283,8 @@ def test_get_token_restrictions_with_multiple_products(db, test_team):
     db.add(team_product2)
     db.commit()
 
-    days_left, max_spend, rpm_limit = get_token_restrictions(db, test_team.id)
+    limit_service = LimitService(db)
+    days_left, max_spend, rpm_limit = limit_service.get_token_restrictions(test_team.id)
 
     # Should use the maximum values from both products
     assert days_left == product2.renewal_period_days  # 60 days
@@ -1278,7 +1307,8 @@ def test_get_token_restrictions_with_payment_history(db, test_team, test_product
     test_team.last_payment = now - timedelta(days=15)
     db.commit()
 
-    days_left, max_spend, rpm_limit = get_token_restrictions(db, test_team.id)
+    limit_service = LimitService(db)
+    days_left, max_spend, rpm_limit = limit_service.get_token_restrictions(test_team.id)
 
     # Should return the product's renewal_period_days, not calculated days left
     assert days_left == test_product.renewal_period_days  # 30 days
@@ -1287,11 +1317,11 @@ def test_get_token_restrictions_with_payment_history(db, test_team, test_product
 
 def test_get_token_restrictions_team_not_found(db):
     """Test getting token restrictions for non-existent team"""
-    from app.core.resource_limits import get_token_restrictions
     from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as exc_info:
-        get_token_restrictions(db, 99999)  # Non-existent team ID
+        limit_service = LimitService(db)
+        limit_service.get_token_restrictions(99999)  # Non-existent team ID
     assert exc_info.value.status_code == 404
     assert "Team not found" in str(exc_info.value.detail)
 
@@ -1324,7 +1354,8 @@ def test_get_token_restrictions_with_limit_service(db, test_team):
     )
 
     # Test that get_token_restrictions returns the limit service values
-    days_left, max_spend, rpm_limit = get_token_restrictions(db, test_team.id)
+    limit_service = LimitService(db)
+    days_left, max_spend, rpm_limit = limit_service.get_token_restrictions(test_team.id)
     assert days_left == DEFAULT_KEY_DURATION  # Still uses product/default for duration
     assert max_spend == 100.0  # From limit service
     assert rpm_limit == 1500.0  # From limit service
@@ -1366,7 +1397,8 @@ def test_get_token_restrictions_with_limit_service_and_products(db, test_team, t
     )
 
     # Test that get_token_restrictions returns the limit service values
-    days_left, max_spend, rpm_limit = get_token_restrictions(db, test_team.id)
+    limit_service = LimitService(db)
+    days_left, max_spend, rpm_limit = limit_service.get_token_restrictions(test_team.id)
     assert days_left == test_product.renewal_period_days  # Still uses product for duration
     assert max_spend == 200.0  # From limit service, not product
     assert rpm_limit == 2500.0  # From limit service, not product
@@ -1377,7 +1409,8 @@ def test_get_product_max_by_type_no_products(db, test_team):
     WHEN: Trying to determine the correct limit value for a resource
     THEN: The default maximum value for the resource type is used
     """
-    max_vectors = get_team_product_limit_for_resource(db, test_team.id, ResourceType.VECTOR_DB)
+    limit_service = LimitService(db)
+    max_vectors = limit_service.get_team_product_limit_for_resource(test_team.id, ResourceType.VECTOR_DB)
     assert max_vectors is None
 
 def test_get_product_max_by_type_multiple_products(db, test_team):
@@ -1434,10 +1467,11 @@ def test_get_product_max_by_type_multiple_products(db, test_team):
     db.add(team_product2)
     db.commit()
 
-    max_vectors = get_team_product_limit_for_resource(db, test_team.id, ResourceType.VECTOR_DB)
-    max_users = get_team_product_limit_for_resource(db, test_team.id, ResourceType.USER)
-    max_keys = get_team_product_limit_for_resource(db, test_team.id, ResourceType.KEY)
-    max_budget = get_team_product_limit_for_resource(db, test_team.id, ResourceType.BUDGET)
+    limit_service = LimitService(db)
+    max_vectors = limit_service.get_team_product_limit_for_resource(test_team.id, ResourceType.VECTOR_DB)
+    max_users = limit_service.get_team_product_limit_for_resource(test_team.id, ResourceType.USER)
+    max_keys = limit_service.get_team_product_limit_for_resource(test_team.id, ResourceType.KEY)
+    max_budget = limit_service.get_team_product_limit_for_resource(test_team.id, ResourceType.BUDGET)
     assert max_vectors == 3
     assert max_users == 4
     assert max_keys == 2  # Now returns max service_key_count, not total_key_count

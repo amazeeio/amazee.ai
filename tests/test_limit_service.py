@@ -3,7 +3,7 @@ from datetime import datetime, UTC
 from app.db.models import DBLimitedResource, DBTeamProduct
 from app.core.limit_service import LimitService, LimitNotFoundError
 from app.schemas.limits import TeamLimits, LimitType, ResourceType, UnitType, OwnerType, LimitSource
-from app.core.resource_limits import DEFAULT_USER_COUNT, DEFAULT_KEYS_PER_USER
+from app.core.limit_service import DEFAULT_USER_COUNT, DEFAULT_KEYS_PER_USER
 
 
 def test_get_team_limits_returns_all_limits(db, test_team):
@@ -568,7 +568,7 @@ def test_reset_user_limit_uses_team(db, test_team_user, test_team, test_product)
 
     limit_service = LimitService(db)
     result = limit_service.reset_limit(limit.owner_type, limit.owner_id, limit.resource)
-    assert result.max_value == test_product.total_key_count
+    assert result.max_value == test_product.service_key_count
 
 def test_reset_system_user_limit_does_nothing(db, test_user):
     """
@@ -872,7 +872,7 @@ def test_set_team_limits_with_products_uses_product_limits(db, test_team, test_p
     # Find the KEY limit and check it uses product value
     key_limit = next((l for l in team_limits.limits if l.resource == ResourceType.KEY), None)
     assert key_limit is not None
-    assert key_limit.max_value == test_product.total_key_count
+    assert key_limit.max_value == test_product.service_key_count
     assert key_limit.limited_by == LimitSource.PRODUCT
 
 
@@ -952,7 +952,7 @@ def test_set_team_limits_updates_product_limits(db, test_team, test_product):
     # Check that the limit was updated to use product value
     key_limit = next((l for l in team_limits.limits if l.resource == ResourceType.KEY), None)
     assert key_limit is not None
-    assert key_limit.max_value == test_product.total_key_count
+    assert key_limit.max_value == test_product.service_key_count
     assert key_limit.limited_by == LimitSource.PRODUCT
 
 

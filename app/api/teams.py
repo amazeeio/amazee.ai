@@ -12,7 +12,7 @@ from app.schemas.models import (
     Team, TeamCreate, TeamUpdate,
     TeamWithUsers, TeamMergeRequest, TeamMergeResponse
 )
-from app.core.resource_limits import DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
+from app.core.limit_service import DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
 from app.core.worker import get_team_keys_by_region, generate_pricing_url, get_team_admin_email

@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app.db.database import get_db
+from app.core.dependencies import get_limit_service
 from app.schemas.limits import (
     TeamLimits,
     LimitedResource,
@@ -23,7 +24,8 @@ router = APIRouter(
 @router.get("/teams/{team_id}", response_model=TeamLimits, dependencies=[Depends(get_role_min_system_admin)])
 async def get_team_limits(
     team_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    limit_service: LimitService = Depends(get_limit_service)
 ):
     """
     Get all effective limits for a team.
@@ -36,7 +38,6 @@ async def get_team_limits(
             detail="Team not found"
         )
     try:
-        limit_service = LimitService(db)
         return limit_service.get_team_limits(team)
     except Exception as e:
         logger.error(f"Error getting team limits for team {team_id}: {str(e)}")
@@ -49,7 +50,8 @@ async def get_team_limits(
 @router.get("/users/{user_id}", response_model=TeamLimits, dependencies=[Depends(get_role_min_system_admin)])
 async def get_user_limits(
     user_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    limit_service: LimitService = Depends(get_limit_service)
 ):
     """
     Get all effective limits for a user.
@@ -64,7 +66,6 @@ async def get_user_limits(
 
         )
     try:
-        limit_service = LimitService(db)
         return limit_service.get_user_limits(user)
     except HTTPException:
         raise
@@ -80,7 +81,8 @@ async def get_user_limits(
 async def overwrite_limit(
     request: OverwriteLimitRequest,
     current_user = Depends(get_current_user_from_auth),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    limit_service: LimitService = Depends(get_limit_service)
 ):
     """
     Create or update a limit (always creates MANUAL limits when set via API).
@@ -91,7 +93,6 @@ async def overwrite_limit(
     Only accessible by system administrators.
     """
     try:
-        limit_service = LimitService(db)
         result = limit_service.set_limit(
             owner_type=request.owner_type,
             owner_id=request.owner_id,
@@ -117,7 +118,8 @@ async def overwrite_limit(
 @router.post("/teams/{team_id}/reset", response_model=TeamLimits, dependencies=[Depends(get_role_min_system_admin)])
 async def reset_team_limits(
     team_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    limit_service: LimitService = Depends(get_limit_service)
 ):
     """
     Reset all limits for a team following cascade rules.
@@ -132,7 +134,6 @@ async def reset_team_limits(
             detail="Team not found"
         )
     try:
-        limit_service = LimitService(db)
         return limit_service.reset_team_limits(team)
     except Exception as e:
         logger.error(f"Error resetting team limits for team {team_id}: {str(e)}")
@@ -145,7 +146,8 @@ async def reset_team_limits(
 @router.post("/reset", response_model=LimitedResource, dependencies=[Depends(get_role_min_system_admin)])
 async def reset_limit(
     request: ResetLimitRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    limit_service: LimitService = Depends(get_limit_service)
 ):
     """
     Reset a specific limit following cascade rules.
@@ -154,7 +156,6 @@ async def reset_limit(
     Only accessible by system administrators.
     """
     try:
-        limit_service = LimitService(db)
         result = limit_service.reset_limit(
             request.owner_type,
             request.owner_id,
