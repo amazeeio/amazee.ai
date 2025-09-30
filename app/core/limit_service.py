@@ -67,20 +67,31 @@ class LimitService:
         Returns:
             TeamLimits object containing all limits for the team
         """
-        user_ids = self.db.execute(select(DBUser.id).filter(DBUser.team_id == team.id)).scalars().all()
+        # Get system default limits
+        system_limits = self.db.query(DBLimitedResource).filter(
+            DBLimitedResource.owner_type == OwnerType.SYSTEM
+        ).all()
+
+        # Get team limits
         team_limits = self.db.query(DBLimitedResource).filter(
             and_(
                 DBLimitedResource.owner_type == OwnerType.TEAM,
                 DBLimitedResource.owner_id == team.id
             )
         ).all()
-        user_limits = self.db.query(DBLimitedResource).filter(
-            and_(
-                DBLimitedResource.owner_type == OwnerType.USER,
-                DBLimitedResource.owner_id.in_(user_ids)
-            )
-        ).all()
-        limits = team_limits + user_limits
+
+        # Build effective limits: TEAM -> SYSTEM inheritance (no user limits in team view)
+        effective_limits = {}
+
+        # Start with system defaults
+        for limit in system_limits:
+            effective_limits[limit.resource] = limit
+
+        # Override with team limits
+        for limit in team_limits:
+            effective_limits[limit.resource] = limit
+
+        limits = list(effective_limits.values())
 
         limit_schemas = [
             LimitedResource.model_validate(limit) for limit in limits
@@ -115,10 +126,19 @@ class LimitService:
             )
         ).all()
 
-        # Build effective limits: user overrides take precedence
+        # Get system default limits
+        system_limits = self.db.query(DBLimitedResource).filter(
+            DBLimitedResource.owner_type == OwnerType.SYSTEM
+        ).all()
+
+        # Build effective limits: USER -> TEAM -> SYSTEM inheritance
         effective_limits = {}
 
-        # Start with team limits
+        # Start with system defaults
+        for limit in system_limits:
+            effective_limits[limit.resource] = limit
+
+        # Override with team limits
         for limit in team_limits:
             effective_limits[limit.resource] = limit
 
@@ -132,6 +152,23 @@ class LimitService:
         ]
 
         return TeamLimits(team_id=user.team_id, limits=limit_schemas)
+
+    def get_system_limits(self) -> TeamLimits:
+        """
+        Get all system default limits.
+
+        Returns:
+            TeamLimits object containing all system limits
+        """
+        system_limits = self.db.query(DBLimitedResource).filter(
+            DBLimitedResource.owner_type == OwnerType.SYSTEM
+        ).all()
+
+        limit_schemas = [
+            LimitedResource.model_validate(limit) for limit in system_limits
+        ]
+
+        return TeamLimits(team_id=0, limits=limit_schemas)
 
     def increment_resource(self, owner_type: OwnerType, owner_id: int, resource_type: ResourceType) -> bool:
         """
@@ -277,6 +314,10 @@ class LimitService:
         if limited_resource.limited_by == LimitSource.MANUAL and not limited_resource.set_by:
             raise ValueError("Manual limits must specify set_by")
 
+        # Business rule: SYSTEM limits can only have DEFAULT or MANUAL source
+        if limited_resource.owner_type == OwnerType.SYSTEM and limited_resource.limited_by not in [LimitSource.DEFAULT, LimitSource.MANUAL]:
+            raise ValueError("SYSTEM limits can only have DEFAULT or MANUAL source")
+
         # Check if limit already exists
         existing_limit = self.db.query(DBLimitedResource).filter(
             and_(
@@ -357,7 +398,9 @@ class LimitService:
         Returns:
             Updated limit
         """
-        if limit.owner_type == OwnerType.TEAM:
+        if limit.owner_type == OwnerType.SYSTEM:
+            raise ValueError("Cannot reset SYSTEM limits")
+        elif limit.owner_type == OwnerType.TEAM:
             logger.info(f"Setting resource {limit.resource} to product max for team {limit.owner_id}")
             team_id = limit.owner_id
         elif limit.owner_type == OwnerType.USER:
@@ -816,3 +859,99 @@ class LimitService:
         ).scalar()
 
         return result
+
+
+def setup_default_limits(db: Session) -> None:
+    """
+    Setup default system limits if ENABLE_LIMITS is true.
+    This function ensures that all default limits exist in the database
+    using the current constant values.
+
+    Args:
+        db: Database session
+    """
+    import os
+
+    # Only run if ENABLE_LIMITS is true
+    if not os.getenv('ENABLE_LIMITS', 'false').lower() in ('true', '1', 'yes'):
+        logger.info("ENABLE_LIMITS is not set to true, skipping default limits setup")
+        return
+
+    logger.info("Setting up default system limits")
+
+    limit_service = LimitService(db)
+
+    # Define all default limits to create
+    default_limits = [
+        # Control Plane limits
+        {
+            'resource': ResourceType.USER,
+            'limit_type': LimitType.CONTROL_PLANE,
+            'unit': UnitType.COUNT,
+            'max_value': DEFAULT_USER_COUNT,
+            'current_value': 0.0
+        },
+        {
+            'resource': ResourceType.KEY,
+            'limit_type': LimitType.CONTROL_PLANE,
+            'unit': UnitType.COUNT,
+            'max_value': DEFAULT_TOTAL_KEYS,
+            'current_value': 0.0
+        },
+        {
+            'resource': ResourceType.VECTOR_DB,
+            'limit_type': LimitType.CONTROL_PLANE,
+            'unit': UnitType.COUNT,
+            'max_value': DEFAULT_VECTOR_DB_COUNT,
+            'current_value': 0.0
+        },
+        # Data Plane limits
+        {
+            'resource': ResourceType.BUDGET,
+            'limit_type': LimitType.DATA_PLANE,
+            'unit': UnitType.DOLLAR,
+            'max_value': DEFAULT_MAX_SPEND,
+            'current_value': None
+        },
+        {
+            'resource': ResourceType.RPM,
+            'limit_type': LimitType.DATA_PLANE,
+            'unit': UnitType.COUNT,
+            'max_value': DEFAULT_RPM_PER_KEY,
+            'current_value': None
+        }
+    ]
+
+    # Create each default limit if it doesn't exist
+    for limit_config in default_limits:
+        try:
+            # Check if limit already exists
+            existing_limit = db.query(DBLimitedResource).filter(
+                and_(
+                    DBLimitedResource.owner_type == OwnerType.SYSTEM,
+                    DBLimitedResource.owner_id == 0,
+                    DBLimitedResource.resource == limit_config['resource']
+                )
+            ).first()
+
+            if not existing_limit:
+                # Create the limit
+                limit_service.set_limit(
+                    owner_type=OwnerType.SYSTEM,
+                    owner_id=0,
+                    resource_type=limit_config['resource'],
+                    limit_type=limit_config['limit_type'],
+                    unit=limit_config['unit'],
+                    max_value=limit_config['max_value'],
+                    current_value=limit_config['current_value'],
+                    limited_by=LimitSource.DEFAULT
+                )
+                logger.info(f"Created default limit for {limit_config['resource'].value}")
+            else:
+                logger.debug(f"Default limit for {limit_config['resource'].value} already exists")
+
+        except Exception as e:
+            logger.error(f"Failed to create default limit for {limit_config['resource'].value}: {str(e)}")
+            raise
+
+    logger.info("Default system limits setup completed")

@@ -30,6 +30,7 @@ class UnitType(Enum):
 
 
 class OwnerType(Enum):
+    SYSTEM = "system"
     TEAM = "team"
     USER = "user"
 
