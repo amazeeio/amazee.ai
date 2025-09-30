@@ -671,11 +671,11 @@ def test_user_override_supersedes_team_limit(db, test_team, test_team_user):
     assert user_limits.limits[0].max_value == 10.0
     assert user_limits.limits[0].limited_by == LimitSource.MANUAL
 
-def test_user_limits_included_in_team_limits(db, test_team, test_team_user, test_product):
+def test_user_limits_not_included_in_team_limits(db, test_team, test_team_user, test_product):
     """
     GIVEN: A team with a user with an override
     WHEN: We call get_team_limits
-    THEN: The user override should be included
+    THEN: The user override should NOT be included (team limits are independent)
     """
     user_limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
@@ -696,8 +696,8 @@ def test_user_limits_included_in_team_limits(db, test_team, test_team_user, test
 
     limit_service = LimitService(db)
     limit_list = limit_service.get_team_limits(test_team)
-    assert len(limit_list.limits) == 1
-    assert limit_list.limits[0].owner_type == OwnerType.USER
+    # Should have no limits since there are no team or system limits
+    assert len(limit_list.limits) == 0
 
 
 def test_cp_limits_must_have_current_value(db, test_team):
