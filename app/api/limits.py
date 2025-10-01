@@ -115,7 +115,7 @@ async def overwrite_limit(
         )
 
 
-@router.post("/teams/{team_id}/reset", response_model=TeamLimits, dependencies=[Depends(get_role_min_system_admin)])
+@router.post("/teams/{team_id}/reset", response_model=List[LimitedResource], dependencies=[Depends(get_role_min_system_admin)])
 async def reset_team_limits(
     team_id: int,
     db: Session = Depends(get_db),

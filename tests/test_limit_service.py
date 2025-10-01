@@ -10,7 +10,7 @@ def test_get_team_limits_returns_all_limits(db, test_team):
     """
     Given: A team with various limits set
     When: Calling get_team_limits(team_id)
-    Then: Should return TeamLimits object with all effective limits
+    Then: Should return a list of LimitedResource objects with all effective limits
     """
     # Create some limits for the team
     user_limit = DBLimitedResource(
@@ -620,9 +620,9 @@ def test_user_inherits_team_limits(db, test_team, test_team_user):
     user_limits = limit_service.get_user_limits(test_team_user)
 
     # User should inherit team limits
-    assert len(user_limits.limits) == 1
-    assert user_limits.limits[0].resource == ResourceType.KEY
-    assert user_limits.limits[0].max_value == 5.0
+    assert len(user_limits) == 1
+    assert user_limits[0].resource == ResourceType.KEY
+    assert user_limits[0].max_value == 5.0
 
 def test_user_override_supersedes_team_limit(db, test_team, test_team_user):
     """
@@ -665,10 +665,10 @@ def test_user_override_supersedes_team_limit(db, test_team, test_team_user):
     user_limits = limit_service.get_user_limits(test_team_user)
 
     # Should return user-specific limit, not team limit
-    assert len(user_limits.limits) == 1
-    assert user_limits.limits[0].resource == ResourceType.KEY
-    assert user_limits.limits[0].max_value == 10.0
-    assert user_limits.limits[0].limited_by == LimitSource.MANUAL
+    assert len(user_limits) == 1
+    assert user_limits[0].resource == ResourceType.KEY
+    assert user_limits[0].max_value == 10.0
+    assert user_limits[0].limited_by == LimitSource.MANUAL
 
 def test_user_limits_not_included_in_team_limits(db, test_team, test_team_user, test_product):
     """
@@ -696,7 +696,7 @@ def test_user_limits_not_included_in_team_limits(db, test_team, test_team_user, 
     limit_service = LimitService(db)
     limit_list = limit_service.get_team_limits(test_team)
     # Should have no limits since there are no team or system limits
-    assert len(limit_list.limits) == 0
+    assert len(limit_list) == 0
 
 
 def test_cp_limits_must_have_current_value(db, test_team):
@@ -815,7 +815,7 @@ def test_set_team_limits_creates_default_limits(db, test_team):
 
     # Initially no limits should exist
     initial_limits = limit_service.get_team_limits(test_team)
-    assert len(initial_limits.limits) == 0
+    assert len(initial_limits) == 0
 
     # Set team limits
     limit_service.set_team_limits(test_team)
@@ -832,11 +832,11 @@ def test_set_team_limits_creates_default_limits(db, test_team):
         ResourceType.RPM
     }
 
-    actual_resources = {limit.resource for limit in team_limits.limits}
+    actual_resources = {limit.resource for limit in team_limits}
     assert actual_resources == expected_resources
 
     # All limits should be DEFAULT source
-    for limit in team_limits.limits:
+    for limit in team_limits:
         assert limit.limited_by == LimitSource.DEFAULT
         assert limit.owner_type == OwnerType.TEAM
         assert limit.owner_id == test_team.id
@@ -863,13 +863,13 @@ def test_set_team_limits_with_products_uses_product_limits(db, test_team, test_p
     team_limits = limit_service.get_team_limits(test_team)
 
     # Find the USER limit and check it uses product value
-    user_limit = next((l for l in team_limits.limits if l.resource == ResourceType.USER), None)
+    user_limit = next((l for l in team_limits if l.resource == ResourceType.USER), None)
     assert user_limit is not None
     assert user_limit.max_value == test_product.user_count
     assert user_limit.limited_by == LimitSource.PRODUCT
 
     # Find the KEY limit and check it uses product value
-    key_limit = next((l for l in team_limits.limits if l.resource == ResourceType.KEY), None)
+    key_limit = next((l for l in team_limits if l.resource == ResourceType.KEY), None)
     assert key_limit is not None
     assert key_limit.max_value == test_product.service_key_count
     assert key_limit.limited_by == LimitSource.PRODUCT
@@ -903,14 +903,14 @@ def test_set_team_limits_preserves_manual_limits(db, test_team):
     team_limits = limit_service.get_team_limits(test_team)
 
     # Check that the manual limit was preserved
-    user_limit = next((l for l in team_limits.limits if l.resource == ResourceType.USER), None)
+    user_limit = next((l for l in team_limits if l.resource == ResourceType.USER), None)
     assert user_limit is not None
     assert user_limit.max_value == 10.0
     assert user_limit.limited_by == LimitSource.MANUAL
     assert user_limit.set_by == "admin@example.com"
 
     # Check that other limits were still created
-    assert len(team_limits.limits) >= 4  # Should have all other supported resources
+    assert len(team_limits) >= 4  # Should have all other supported resources
 
 
 def test_set_team_limits_updates_product_limits(db, test_team, test_product):
@@ -949,7 +949,7 @@ def test_set_team_limits_updates_product_limits(db, test_team, test_product):
     team_limits = limit_service.get_team_limits(test_team)
 
     # Check that the limit was updated to use product value
-    key_limit = next((l for l in team_limits.limits if l.resource == ResourceType.KEY), None)
+    key_limit = next((l for l in team_limits if l.resource == ResourceType.KEY), None)
     assert key_limit is not None
     assert key_limit.max_value == test_product.service_key_count
     assert key_limit.limited_by == LimitSource.PRODUCT
@@ -991,8 +991,139 @@ def test_set_team_limits_preserves_current_value_when_updating(db, test_team, te
     team_limits = limit_service.get_team_limits(test_team)
 
     # Check that current_value was preserved while max_value and source were updated
-    user_limit = next((l for l in team_limits.limits if l.resource == ResourceType.USER), None)
+    user_limit = next((l for l in team_limits if l.resource == ResourceType.USER), None)
     assert user_limit is not None
     assert user_limit.max_value == test_product.user_count  # Updated to product value
     assert user_limit.current_value == 2.0  # Preserved existing value
     assert user_limit.limited_by == LimitSource.PRODUCT  # Updated source
+
+
+def test_set_current_value_for_data_plane_budget_limit(db, test_team):
+    """
+    Given: A DATA_PLANE BUDGET limit with initial current_value
+    When: set_current_value is called with a new spend value
+    Then: current_value is updated to the new value and committed
+    """
+    # Create a DATA_PLANE BUDGET limit
+    budget_limit = DBLimitedResource(
+        limit_type=LimitType.DATA_PLANE,
+        resource=ResourceType.BUDGET,
+        unit=UnitType.DOLLAR,
+        max_value=100.0,
+        current_value=25.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.PRODUCT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(budget_limit)
+    db.commit()
+
+    limit_service = LimitService(db)
+    from app.schemas.limits import LimitedResource
+    limit_schema = LimitedResource.model_validate(budget_limit)
+
+    # Update the current value to new spend
+    limit_service.set_current_value(limit_schema, 45.75)
+
+    # Verify the value was updated
+    db.refresh(budget_limit)
+    assert budget_limit.current_value == 45.75
+
+
+def test_set_current_value_for_control_plane_count_at_zero(db, test_team):
+    """
+    Given: A CONTROL_PLANE COUNT limit with current_value = 0.0
+    When: set_current_value is called with an actual count
+    Then: current_value is set to the new value (allowed for initial set)
+    """
+    # Create a CONTROL_PLANE COUNT limit at zero
+    user_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.USER,
+        unit=UnitType.COUNT,
+        max_value=10.0,
+        current_value=0.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.DEFAULT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(user_limit)
+    db.commit()
+
+    limit_service = LimitService(db)
+    from app.schemas.limits import LimitedResource
+    limit_schema = LimitedResource.model_validate(user_limit)
+
+    # Set initial count
+    limit_service.set_current_value(limit_schema, 3.0)
+
+    # Verify the value was set
+    db.refresh(user_limit)
+    assert user_limit.current_value == 3.0
+
+
+def test_set_current_value_control_plane_count_already_set_raises_error(db, test_team):
+    """
+    Given: A CONTROL_PLANE COUNT limit with current_value > 0.0
+    When: set_current_value is called
+    Then: ValueError is raised with appropriate message
+    """
+    # Create a CONTROL_PLANE COUNT limit with non-zero value
+    key_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.KEY,
+        unit=UnitType.COUNT,
+        max_value=10.0,
+        current_value=5.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.PRODUCT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(key_limit)
+    db.commit()
+
+    limit_service = LimitService(db)
+    from app.schemas.limits import LimitedResource
+    limit_schema = LimitedResource.model_validate(key_limit)
+
+    # Attempting to set value again should raise error
+    with pytest.raises(ValueError, match="Control Plane counters must be incremented or decremented"):
+        limit_service.set_current_value(limit_schema, 7.0)
+
+
+def test_set_current_value_updates_correct_attribute(db, test_team):
+    """
+    Given: A DATA_PLANE BUDGET limit
+    When: set_current_value is called
+    Then: The database field 'current_value' is correctly updated (verifying typo fix)
+    """
+    # Create a limit
+    budget_limit = DBLimitedResource(
+        limit_type=LimitType.DATA_PLANE,
+        resource=ResourceType.BUDGET,
+        unit=UnitType.DOLLAR,
+        max_value=100.0,
+        current_value=0.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.DEFAULT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(budget_limit)
+    db.commit()
+
+    limit_service = LimitService(db)
+    from app.schemas.limits import LimitedResource
+    limit_schema = LimitedResource.model_validate(budget_limit)
+
+    # Update current value
+    limit_service.set_current_value(limit_schema, 123.45)
+
+    # Refresh and verify the correct attribute was updated
+    db.refresh(budget_limit)
+    assert budget_limit.current_value == 123.45
+    # Verify the object has the correct attribute name
+    assert hasattr(budget_limit, 'current_value')

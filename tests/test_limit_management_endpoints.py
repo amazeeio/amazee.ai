@@ -174,11 +174,11 @@ def test_get_team_limits_api_returns_all_limits(client: TestClient, admin_token,
 
     assert response.status_code == 200
     data = response.json()
-    assert data["team_id"] == test_team.id
-    assert len(data["limits"]) == 2
+    assert isinstance(data, list)
+    assert len(data) == 2
 
     # Check that we have both limits
-    resources = [limit["resource"] for limit in data["limits"]]
+    resources = [limit["resource"] for limit in data]
     assert "user" in resources
     assert "ai_key" in resources
 

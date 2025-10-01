@@ -157,6 +157,7 @@ class DBPrivateAIKey(Base):
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     team_id = Column(Integer, ForeignKey("teams.id"))
+    cached_spend = Column(Float, default=0.0, nullable=True)
 
     owner = relationship("DBUser", back_populates="private_ai_keys")
     region = relationship("DBRegion", back_populates="private_ai_keys")
@@ -175,7 +176,8 @@ class DBPrivateAIKey(Base):
             "region": self.region.name if self.region else None,
             "owner_id": self.owner_id,
             "team_id": self.team_id,
-            "created_at": self.created_at
+            "created_at": self.created_at,
+            "cached_spend": self.cached_spend
         }
 
 class DBAuditLog(Base):
