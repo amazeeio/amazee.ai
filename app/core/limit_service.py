@@ -7,7 +7,6 @@ from app.db.models import DBLimitedResource, DBUser, DBTeam, DBTeamProduct, DBPr
 from app.schemas.limits import (
     LimitedResource,
     LimitedResourceBase,
-    TeamLimits,
     OwnerType,
     UnitType,
     LimitSource,
@@ -57,7 +56,7 @@ class LimitService:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_team_limits(self, team: DBTeam) -> TeamLimits:
+    def get_team_limits(self, team: DBTeam) -> List[LimitedResource]:
         """
         Get all effective limits for a team.
 
@@ -65,7 +64,7 @@ class LimitService:
             team_id: ID of the team
 
         Returns:
-            TeamLimits object containing all limits for the team
+            List of LimitedResource objects containing all limits for the team
         """
         # Get system default limits
         system_limits = self.db.query(DBLimitedResource).filter(
@@ -97,9 +96,9 @@ class LimitService:
             LimitedResource.model_validate(limit) for limit in limits
         ]
 
-        return TeamLimits(team_id=team.id, limits=limit_schemas)
+        return limit_schemas
 
-    def get_user_limits(self, user: DBUser) -> TeamLimits:
+    def get_user_limits(self, user: DBUser) -> List[LimitedResource]:
         """
         Get all effective limits for a user.
         Users inherit team limits unless they have individual overrides.
@@ -108,7 +107,7 @@ class LimitService:
             user_id: ID of the user
 
         Returns:
-            TeamLimits object containing effective limits for the user
+            List of LimitedResource objects containing effective limits for the user
         """
         # Get user-specific limits
         user_limits = self.db.query(DBLimitedResource).filter(
@@ -151,14 +150,14 @@ class LimitService:
             for limit in effective_limits.values()
         ]
 
-        return TeamLimits(team_id=user.team_id, limits=limit_schemas)
+        return limit_schemas
 
-    def get_system_limits(self) -> TeamLimits:
+    def get_system_limits(self) -> List[LimitedResource]:
         """
         Get all system default limits.
 
         Returns:
-            TeamLimits object containing all system limits
+            List of LimitedResource objects containing all system limits
         """
         system_limits = self.db.query(DBLimitedResource).filter(
             DBLimitedResource.owner_type == OwnerType.SYSTEM
@@ -168,7 +167,7 @@ class LimitService:
             LimitedResource.model_validate(limit) for limit in system_limits
         ]
 
-        return TeamLimits(team_id=0, limits=limit_schemas)
+        return limit_schemas
 
     def increment_resource(self, owner_type: OwnerType, owner_id: int, resource_type: ResourceType) -> bool:
         """
@@ -367,7 +366,7 @@ class LimitService:
             self.db.commit()
             return new_limit
 
-    def reset_team_limits(self, team: DBTeam) -> TeamLimits:
+    def reset_team_limits(self, team: DBTeam) -> List[LimitedResource]:
         """
         Reset all limits for a team following cascade rules.
         MANUAL -> PRODUCT -> DEFAULT based on availability.
@@ -376,10 +375,10 @@ class LimitService:
             team_id: ID of the team
 
         Returns:
-            Updated team limits
+            List of updated LimitedResource objects for the team
         """
         team_limits = self.get_team_limits(team)
-        for limit in team_limits.limits:
+        for limit in team_limits:
             self._reset_limit(limit)
 
         # Do a fresh pull from the db after the updates

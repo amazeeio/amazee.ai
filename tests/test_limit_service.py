@@ -2,7 +2,7 @@ import pytest
 from datetime import datetime, UTC
 from app.db.models import DBLimitedResource, DBTeamProduct
 from app.core.limit_service import LimitService, LimitNotFoundError
-from app.schemas.limits import TeamLimits, LimitType, ResourceType, UnitType, OwnerType, LimitSource
+from app.schemas.limits import LimitType, ResourceType, UnitType, OwnerType, LimitSource
 from app.core.limit_service import DEFAULT_USER_COUNT, DEFAULT_KEYS_PER_USER
 
 
@@ -42,12 +42,11 @@ def test_get_team_limits_returns_all_limits(db, test_team):
     limit_service = LimitService(db)
     team_limits = limit_service.get_team_limits(test_team)
 
-    assert isinstance(team_limits, TeamLimits)
-    assert team_limits.team_id == test_team.id
-    assert len(team_limits.limits) == 2
+    assert isinstance(team_limits, list)
+    assert len(team_limits) == 2
 
     # Check that we have both limits
-    resources = [limit.resource for limit in team_limits.limits]
+    resources = [limit.resource for limit in team_limits]
     assert ResourceType.USER in resources
     assert ResourceType.KEY in resources
 

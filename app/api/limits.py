@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from typing import List
 from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.core.dependencies import get_limit_service
 from app.schemas.limits import (
-    TeamLimits,
     LimitedResource,
     OverwriteLimitRequest,
     ResetLimitRequest,
@@ -21,7 +21,7 @@ router = APIRouter(
 )
 
 
-@router.get("/teams/{team_id}", response_model=TeamLimits, dependencies=[Depends(get_role_min_system_admin)])
+@router.get("/teams/{team_id}", response_model=List[LimitedResource], dependencies=[Depends(get_role_min_system_admin)])
 async def get_team_limits(
     team_id: int,
     db: Session = Depends(get_db),
@@ -47,7 +47,7 @@ async def get_team_limits(
         )
 
 
-@router.get("/users/{user_id}", response_model=TeamLimits, dependencies=[Depends(get_role_min_system_admin)])
+@router.get("/users/{user_id}", response_model=List[LimitedResource], dependencies=[Depends(get_role_min_system_admin)])
 async def get_user_limits(
     user_id: int,
     db: Session = Depends(get_db),

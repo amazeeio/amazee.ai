@@ -65,10 +65,6 @@ class LimitedResource(LimitedResourceBase):
     model_config = {"from_attributes": True}
 
 
-class TeamLimits(BaseModel):
-    team_id: int
-    limits: List[LimitedResource]
-    model_config = {"from_attributes": True}
 
 
 class OverwriteLimitRequest(BaseModel):
