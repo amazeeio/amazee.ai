@@ -132,7 +132,7 @@ def test_inheritance_user_team_system(db: Session, test_team, test_team_user):
     user_limits = limit_service.get_user_limits(test_team_user)
 
     # Should find the system default limit
-    user_limit = next((l for l in user_limits.limits if l.resource == ResourceType.USER), None)
+    user_limit = next((l for l in user_limits if l.resource == ResourceType.USER), None)
     assert user_limit is not None
     assert user_limit.max_value == 5.0
     assert user_limit.owner_type == OwnerType.SYSTEM
@@ -176,7 +176,7 @@ def test_inheritance_team_overrides_system(db: Session, test_team, test_team_use
     user_limits = limit_service.get_user_limits(test_team_user)
 
     # Should find the team limit (not system)
-    user_limit = next((l for l in user_limits.limits if l.resource == ResourceType.USER), None)
+    user_limit = next((l for l in user_limits if l.resource == ResourceType.USER), None)
     assert user_limit is not None
     assert user_limit.max_value == 10.0
     assert user_limit.owner_type == OwnerType.TEAM
@@ -234,7 +234,7 @@ def test_inheritance_user_overrides_team_and_system(db: Session, test_team, test
     user_limits = limit_service.get_user_limits(test_team_user)
 
     # Should find the user limit (not team or system)
-    found_limit = next((l for l in user_limits.limits if l.resource == ResourceType.USER), None)
+    found_limit = next((l for l in user_limits if l.resource == ResourceType.USER), None)
     assert found_limit is not None
     assert found_limit.max_value == 15.0
     assert found_limit.owner_type == OwnerType.USER
@@ -276,6 +276,6 @@ def test_get_system_limits(db: Session):
     limit_service = LimitService(db)
     system_limits_result = limit_service.get_system_limits()
 
-    assert len(system_limits_result.limits) == 2
-    assert all(limit.owner_type == OwnerType.SYSTEM for limit in system_limits_result.limits)
-    assert all(limit.owner_id == 0 for limit in system_limits_result.limits)
+    assert len(system_limits_result) == 2
+    assert all(limit.owner_type == OwnerType.SYSTEM for limit in system_limits_result)
+    assert all(limit.owner_id == 0 for limit in system_limits_result)

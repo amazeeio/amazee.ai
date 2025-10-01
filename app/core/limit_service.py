@@ -169,6 +169,19 @@ class LimitService:
 
         return limit_schemas
 
+    def set_current_value(self, limit: LimitedResource, new_value: float):
+        """
+        Updates the current_value of a limit to a precise value.
+
+        Raises:
+            ValueError: When trying to set a COUNT CONTROL_PLANE limit which was not previously 0
+        """
+        if limit.limit_type == LimitType.CONTROL_PLANE and limit.unit == UnitType.COUNT and limit.current_value > 0.0:
+            raise ValueError("Control Plane counters must be incremented or decremented, and can only be set once.")
+        db_limit = self.db.execute(select(DBLimitedResource).filter(DBLimitedResource.id == limit.id)).scalar_one()
+        db_limit.current_value = new_value
+        self.db.commit()
+
     def increment_resource(self, owner_type: OwnerType, owner_id: int, resource_type: ResourceType) -> bool:
         """
         Increment the current value of a resource if within limits.
@@ -473,7 +486,7 @@ class LimitService:
         for resource_type in all_resources:
             # Skip if manual limit already exists
             existing_limit = next(
-                (l for l in existing_limits.limits if l.resource == resource_type),
+                (limit for limit in existing_limits if limit.resource == resource_type),
                 None
             )
             if existing_limit and existing_limit.limited_by == LimitSource.MANUAL:
@@ -756,7 +769,7 @@ class LimitService:
             team = self.db.query(DBTeam).filter(DBTeam.id == team_id).first()
             if team:
                 team_limits = self.get_team_limits(team)
-                for limit in team_limits.limits:
+                for limit in team_limits:
                     if limit.resource == ResourceType.BUDGET:
                         max_spend = limit.max_value
                     elif limit.resource == ResourceType.RPM:

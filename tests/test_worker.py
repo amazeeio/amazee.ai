@@ -12,7 +12,7 @@ from app.core.worker import (
     team_total_spend,
     active_team_labels,
     get_team_keys_by_region,
-    monitor_team_keys
+    reconcile_team_keys
 )
 from unittest.mock import AsyncMock, patch, Mock
 
@@ -584,7 +584,8 @@ async def test_monitor_teams_basic_metrics(mock_litellm, mock_ses, mock_limit_se
     )._value.get() == 10
 
     # Verify limit service was called for both teams
-    assert mock_limit_service.call_count == 2  # Called once for each team
+    # Called twice per team: once for set_team_limits and once inside reconcile_team_keys
+    assert mock_limit_service.call_count == 4  # 2 teams × 2 calls each
     mock_limit_instance.set_team_limits.assert_called()
 
 @pytest.mark.parametrize("team_age,expected_days_remaining,template_name", [
@@ -1185,7 +1186,7 @@ async def test_monitor_team_keys_with_renewal_period_updates(mock_litellm, db, t
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the combined function with renewal period days and budget amount
-    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
 
     # Verify LiteLLM service was initialized correctly
     mock_litellm.assert_called_once_with(
@@ -1280,7 +1281,7 @@ async def test_monitor_team_keys_with_renewal_period_updates_no_products(mock_li
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the combined function with renewal period days (no budget amount)
-    team_total = await monitor_team_keys(test_team, keys_by_region, False, 30, None)  # Use default 30 days, no budget amount
+    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, 30, None)  # Use default 30 days, no budget amount
 
     # Verify LiteLLM service was initialized correctly
     mock_litellm.assert_called_once_with(
@@ -1365,7 +1366,7 @@ async def test_monitor_team_keys_reset_time_alignment_heuristic(mock_litellm, db
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the function with renewal period days
-    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
 
     # Verify update_budget was called because of reset time alignment
     assert mock_instance.update_budget.call_count == 1
@@ -1434,7 +1435,7 @@ async def test_monitor_team_keys_none_budget_duration_handled(mock_litellm, db, 
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the function with renewal period days
-    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
 
     # Verify update_budget was called because budget_duration is None (forces update)
     assert mock_instance.update_budget.call_count == 1
@@ -1501,7 +1502,7 @@ async def test_monitor_team_keys_duration_mismatch_without_reset_time_alignment(
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the function with renewal period days
-    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
 
     # Verify update_budget was not called because reset time doesn't align
     assert mock_instance.update_budget.call_count == 0
@@ -1562,7 +1563,7 @@ async def test_monitor_team_keys_both_mismatch_with_reset_time_alignment(mock_li
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the function with renewal period days
-    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
 
     # Verify update_budget was called with both budget_amount and budget_duration
     assert mock_instance.update_budget.call_count == 1
@@ -1627,7 +1628,7 @@ async def test_monitor_team_keys_both_mismatch_without_reset_time_alignment(mock
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the function with renewal period days
-    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
 
     # Verify update_budget was called with only budget_amount
     assert mock_instance.update_budget.call_count == 1
@@ -1708,7 +1709,7 @@ async def test_monitor_team_keys_duration_parsing_different_units(mock_litellm, 
         mock_instance.update_budget.reset_mock()
 
         # Call the function with renewal period days
-        team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+        team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
 
         # Verify update_budget was called or not based on the test case
         if should_update:
@@ -1775,7 +1776,7 @@ async def test_monitor_team_keys_zero_duration_renewal(mock_litellm, db, test_te
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the function with renewal period days
-    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
 
     # Verify update_budget was called to fix the "0d" duration
     assert mock_instance.update_budget.call_count == 1
@@ -1834,7 +1835,7 @@ async def test_monitor_team_keys_update_budget_parameter_issue(mock_litellm, db,
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the function with renewal period days and budget amount
-    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
 
     # Verify update_budget was called with correct parameters
     assert mock_instance.update_budget.call_count == 1
@@ -1901,7 +1902,7 @@ async def test_monitor_team_keys_expiry_within_next_month(mock_litellm, db, test
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the function with renewal period days
-    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
 
     # Verify update_budget was called to update the duration for expiring key
     assert mock_instance.update_budget.call_count == 1
@@ -1970,7 +1971,7 @@ async def test_monitor_team_keys_expired_key(mock_litellm, db, test_team, test_p
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the function with renewal period days
-    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
 
     # Verify update_budget was called to update the duration for expired key
     assert mock_instance.update_budget.call_count == 1
@@ -2039,7 +2040,7 @@ async def test_monitor_team_keys_expiry_beyond_next_month(mock_litellm, db, test
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the function with renewal period days
-    team_total = await monitor_team_keys(test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
 
     # Verify update_budget was not called for expiry reasons
     assert mock_instance.update_budget.call_count == 0
@@ -2050,7 +2051,8 @@ async def test_monitor_team_keys_expiry_beyond_next_month(mock_litellm, db, test
 @pytest.mark.asyncio
 @patch('app.core.worker.LimitService')
 @patch('app.core.worker.LiteLLMService')
-async def test_monitor_teams_populates_team_metrics(mock_litellm_class, mock_limit_service, db, test_team, test_region):
+@patch('app.core.worker.SESService')
+async def test_monitor_teams_populates_team_metrics(mock_ses, mock_litellm_class, mock_limit_service, db, test_team, test_region):
     """
     Test that monitor_teams function populates DBTeamMetrics table.
 
@@ -2103,7 +2105,8 @@ async def test_monitor_teams_populates_team_metrics(mock_litellm_class, mock_lim
 @pytest.mark.asyncio
 @patch('app.core.worker.LimitService')
 @patch('app.core.worker.LiteLLMService')
-async def test_monitor_teams_updates_existing_metrics(mock_litellm_class, mock_limit_service, db, test_team, test_region):
+@patch('app.core.worker.SESService')
+async def test_monitor_teams_updates_existing_metrics(mock_ses, mock_litellm_class, mock_limit_service, db, test_team, test_region):
     """
     Test that monitor_teams updates existing DBTeamMetrics records.
 
@@ -2164,4 +2167,583 @@ async def test_monitor_teams_updates_existing_metrics(mock_litellm_class, mock_l
     # Verify limit service was called
     mock_limit_service.assert_called_with(db)
     mock_limit_instance.set_team_limits.assert_called_with(test_team)
+
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_reconcile_team_keys_updates_user_budget_limit(mock_litellm, db, test_team, test_region, test_team_user):
+    """
+    Given: A team with user-owned keys that have accumulated spend
+    When: reconcile_team_keys is called
+    Then: User's BUDGET limit current_value is updated with their total spend via set_current_value
+    """
+    from app.db.models import DBLimitedResource
+    from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType
+
+    # Create user budget limit
+    user_budget_limit = DBLimitedResource(
+        limit_type=LimitType.DATA_PLANE,
+        resource=ResourceType.BUDGET,
+        unit=UnitType.DOLLAR,
+        max_value=100.0,
+        current_value=0.0,
+        owner_type=OwnerType.USER,
+        owner_id=test_team_user.id,
+        limited_by=LimitSource.PRODUCT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(user_budget_limit)
+
+    # Create user-owned key
+    user_key = DBPrivateAIKey(
+        name="User Key",
+        litellm_token="user_token_123",
+        region=test_region,
+        owner_id=test_team_user.id
+    )
+    db.add(user_key)
+    db.commit()
+
+    # Setup mock LiteLLM service
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock(return_value={
+        "info": {
+            "spend": 45.50,
+            "max_budget": 100.0,
+            "key_alias": "user_key"
+        }
+    })
+
+    # Get keys by region
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+
+    # Call reconcile_team_keys
+    await reconcile_team_keys(db, test_team, keys_by_region, False)
+
+    # Verify user budget limit was updated
+    db.refresh(user_budget_limit)
+    assert user_budget_limit.current_value == 45.50
+
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_reconcile_team_keys_updates_service_key_budget_limit(mock_litellm, db, test_team, test_region):
+    """
+    Given: A team with service keys (no owner_id) that have accumulated spend
+    When: reconcile_team_keys is called
+    Then: Team's BUDGET limit current_value is updated with service key total spend via set_current_value
+    """
+    from app.db.models import DBLimitedResource
+    from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType
+
+    # Create team budget limit
+    team_budget_limit = DBLimitedResource(
+        limit_type=LimitType.DATA_PLANE,
+        resource=ResourceType.BUDGET,
+        unit=UnitType.DOLLAR,
+        max_value=200.0,
+        current_value=0.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.PRODUCT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(team_budget_limit)
+
+    # Create service key (no owner_id)
+    service_key = DBPrivateAIKey(
+        name="Service Key",
+        litellm_token="service_token_123",
+        region=test_region,
+        team_id=test_team.id
+    )
+    db.add(service_key)
+    db.commit()
+
+    # Setup mock LiteLLM service
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock(return_value={
+        "info": {
+            "spend": 75.25,
+            "max_budget": 200.0,
+            "key_alias": "service_key"
+        }
+    })
+
+    # Get keys by region
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+
+    # Call reconcile_team_keys
+    await reconcile_team_keys(db, test_team, keys_by_region, False)
+
+    # Verify team budget limit was updated
+    db.refresh(team_budget_limit)
+    assert team_budget_limit.current_value == 75.25
+
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_reconcile_team_keys_handles_multiple_users_with_varying_spend(mock_litellm, db, test_team, test_region, test_team_user):
+    """
+    Given: A team with multiple users, each with keys showing different spend amounts
+    When: reconcile_team_keys is called
+    Then: Each user's BUDGET limit is updated with their individual total spend
+    """
+    from app.db.models import DBLimitedResource, DBUser
+    from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType
+
+    # Create second user
+    second_user = DBUser(
+        email="second@test.com",
+        team_id=test_team.id,
+        role="member",
+        created_at=datetime.now(UTC)
+    )
+    db.add(second_user)
+    db.commit()
+
+    # Create budget limits for both users
+    user1_budget_limit = DBLimitedResource(
+        limit_type=LimitType.DATA_PLANE,
+        resource=ResourceType.BUDGET,
+        unit=UnitType.DOLLAR,
+        max_value=100.0,
+        current_value=0.0,
+        owner_type=OwnerType.USER,
+        owner_id=test_team_user.id,
+        limited_by=LimitSource.PRODUCT,
+        created_at=datetime.now(UTC)
+    )
+    user2_budget_limit = DBLimitedResource(
+        limit_type=LimitType.DATA_PLANE,
+        resource=ResourceType.BUDGET,
+        unit=UnitType.DOLLAR,
+        max_value=100.0,
+        current_value=0.0,
+        owner_type=OwnerType.USER,
+        owner_id=second_user.id,
+        limited_by=LimitSource.PRODUCT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(user1_budget_limit)
+    db.add(user2_budget_limit)
+
+    # Create keys for both users
+    user1_key = DBPrivateAIKey(
+        name="User 1 Key",
+        litellm_token="user1_token_123",
+        region=test_region,
+        owner_id=test_team_user.id
+    )
+    user2_key = DBPrivateAIKey(
+        name="User 2 Key",
+        litellm_token="user2_token_456",
+        region=test_region,
+        owner_id=second_user.id
+    )
+    db.add(user1_key)
+    db.add(user2_key)
+    db.commit()
+
+    # Setup mock LiteLLM service
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock(side_effect=[
+        {"info": {"spend": 30.0, "max_budget": 100.0, "key_alias": "user1_key"}},
+        {"info": {"spend": 50.5, "max_budget": 100.0, "key_alias": "user2_key"}}
+    ])
+
+    # Get keys by region
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+
+    # Call reconcile_team_keys
+    await reconcile_team_keys(db, test_team, keys_by_region, False)
+
+    # Verify each user's budget limit was updated correctly
+    db.refresh(user1_budget_limit)
+    db.refresh(user2_budget_limit)
+    assert user1_budget_limit.current_value == 30.0
+    assert user2_budget_limit.current_value == 50.5
+
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_reconcile_team_keys_separates_user_and_service_key_spend(mock_litellm, db, test_team, test_region, test_team_user):
+    """
+    Given: A team with both user-owned keys (5.0 spend) and service keys (10.0 spend)
+    When: reconcile_team_keys is called
+    Then: User limits show 5.0 and team limit shows 10.0 separately
+    """
+    from app.db.models import DBLimitedResource
+    from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType
+
+    # Create budget limits
+    user_budget_limit = DBLimitedResource(
+        limit_type=LimitType.DATA_PLANE,
+        resource=ResourceType.BUDGET,
+        unit=UnitType.DOLLAR,
+        max_value=100.0,
+        current_value=0.0,
+        owner_type=OwnerType.USER,
+        owner_id=test_team_user.id,
+        limited_by=LimitSource.PRODUCT,
+        created_at=datetime.now(UTC)
+    )
+    team_budget_limit = DBLimitedResource(
+        limit_type=LimitType.DATA_PLANE,
+        resource=ResourceType.BUDGET,
+        unit=UnitType.DOLLAR,
+        max_value=200.0,
+        current_value=0.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.PRODUCT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(user_budget_limit)
+    db.add(team_budget_limit)
+
+    # Create keys
+    user_key = DBPrivateAIKey(
+        name="User Key",
+        litellm_token="user_token_123",
+        region=test_region,
+        owner_id=test_team_user.id
+    )
+    service_key = DBPrivateAIKey(
+        name="Service Key",
+        litellm_token="service_token_456",
+        region=test_region,
+        team_id=test_team.id
+    )
+    db.add(user_key)
+    db.add(service_key)
+    db.commit()
+
+    # Setup mock LiteLLM service with a function that returns different values based on token
+    mock_instance = mock_litellm.return_value
+    async def mock_get_key_info(token):
+        if token == "service_token_456":
+            return {"info": {"spend": 10.0, "max_budget": 200.0, "key_alias": "service_key"}}
+        else:  # user_token_123
+            return {"info": {"spend": 5.0, "max_budget": 100.0, "key_alias": "user_key"}}
+    mock_instance.get_key_info = mock_get_key_info
+
+    # Get keys by region
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+
+    # Call reconcile_team_keys
+    await reconcile_team_keys(db, test_team, keys_by_region, False)
+
+    # Verify separation of spend
+    db.refresh(user_budget_limit)
+    db.refresh(team_budget_limit)
+    assert user_budget_limit.current_value == 5.0
+    assert team_budget_limit.current_value == 10.0
+
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_reconcile_team_keys_handles_missing_user_budget_limit(mock_litellm, db, test_team, test_region, test_team_user):
+    """
+    Given: A team with user keys but user has no BUDGET limit in database
+    When: reconcile_team_keys is called
+    Then: Operation continues without error
+    """
+    # Create user-owned key without creating budget limit
+    user_key = DBPrivateAIKey(
+        name="User Key",
+        litellm_token="user_token_123",
+        region=test_region,
+        owner_id=test_team_user.id
+    )
+    db.add(user_key)
+    db.commit()
+
+    # Setup mock LiteLLM service
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock(return_value={
+        "info": {
+            "spend": 25.0,
+            "max_budget": 100.0,
+            "key_alias": "user_key"
+        }
+    })
+
+    # Get keys by region
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+
+    # Call should not raise error even without budget limit
+    await reconcile_team_keys(db, test_team, keys_by_region, False)
+
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_reconcile_team_keys_handles_missing_team_budget_limit(mock_litellm, db, test_team, test_region):
+    """
+    Given: A team with service keys but team has no BUDGET limit in database
+    When: reconcile_team_keys is called
+    Then: Operation continues without error
+    """
+    # Create service key without creating budget limit
+    service_key = DBPrivateAIKey(
+        name="Service Key",
+        litellm_token="service_token_123",
+        region=test_region,
+        team_id=test_team.id
+    )
+    db.add(service_key)
+    db.commit()
+
+    # Setup mock LiteLLM service
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock(return_value={
+        "info": {
+            "spend": 50.0,
+            "max_budget": 200.0,
+            "key_alias": "service_key"
+        }
+    })
+
+    # Get keys by region
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+
+    # Call should not raise error even without budget limit
+    await reconcile_team_keys(db, test_team, keys_by_region, False)
+
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_reconcile_team_keys_accumulates_spend_for_multiple_user_keys(mock_litellm, db, test_team, test_region, test_team_user):
+    """
+    Given: A user with 3 keys showing spend of 5.0, 10.0, and 3.5
+    When: reconcile_team_keys is called
+    Then: User's BUDGET limit current_value is set to 18.5
+    """
+    from app.db.models import DBLimitedResource
+    from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType
+
+    # Create user budget limit
+    user_budget_limit = DBLimitedResource(
+        limit_type=LimitType.DATA_PLANE,
+        resource=ResourceType.BUDGET,
+        unit=UnitType.DOLLAR,
+        max_value=100.0,
+        current_value=0.0,
+        owner_type=OwnerType.USER,
+        owner_id=test_team_user.id,
+        limited_by=LimitSource.PRODUCT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(user_budget_limit)
+
+    # Create three keys for the user
+    key1 = DBPrivateAIKey(
+        name="User Key 1",
+        litellm_token="user_token_1",
+        region=test_region,
+        owner_id=test_team_user.id
+    )
+    key2 = DBPrivateAIKey(
+        name="User Key 2",
+        litellm_token="user_token_2",
+        region=test_region,
+        owner_id=test_team_user.id
+    )
+    key3 = DBPrivateAIKey(
+        name="User Key 3",
+        litellm_token="user_token_3",
+        region=test_region,
+        owner_id=test_team_user.id
+    )
+    db.add(key1)
+    db.add(key2)
+    db.add(key3)
+    db.commit()
+
+    # Setup mock LiteLLM service
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock(side_effect=[
+        {"info": {"spend": 5.0, "max_budget": 100.0, "key_alias": "key1"}},
+        {"info": {"spend": 10.0, "max_budget": 100.0, "key_alias": "key2"}},
+        {"info": {"spend": 3.5, "max_budget": 100.0, "key_alias": "key3"}}
+    ])
+
+    # Get keys by region
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+
+    # Call reconcile_team_keys
+    await reconcile_team_keys(db, test_team, keys_by_region, False)
+
+    # Verify accumulated spend
+    db.refresh(user_budget_limit)
+    assert user_budget_limit.current_value == 18.5
+
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_reconcile_team_keys_handles_zero_spend(mock_litellm, db, test_team, test_region, test_team_user):
+    """
+    Given: A team with keys that have 0.0 spend
+    When: reconcile_team_keys is called
+    Then: BUDGET limits are updated to 0.0 without error
+    """
+    from app.db.models import DBLimitedResource
+    from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType
+
+    # Create budget limits
+    user_budget_limit = DBLimitedResource(
+        limit_type=LimitType.DATA_PLANE,
+        resource=ResourceType.BUDGET,
+        unit=UnitType.DOLLAR,
+        max_value=100.0,
+        current_value=50.0,  # Start with non-zero
+        owner_type=OwnerType.USER,
+        owner_id=test_team_user.id,
+        limited_by=LimitSource.PRODUCT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(user_budget_limit)
+
+    # Create user key
+    user_key = DBPrivateAIKey(
+        name="User Key",
+        litellm_token="user_token_123",
+        region=test_region,
+        owner_id=test_team_user.id
+    )
+    db.add(user_key)
+    db.commit()
+
+    # Setup mock LiteLLM service with zero spend
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock(return_value={
+        "info": {
+            "spend": 0.0,
+            "max_budget": 100.0,
+            "key_alias": "user_key"
+        }
+    })
+
+    # Get keys by region
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+
+    # Call reconcile_team_keys
+    await reconcile_team_keys(db, test_team, keys_by_region, False)
+
+    # Verify zero spend was set
+    db.refresh(user_budget_limit)
+    assert user_budget_limit.current_value == 0.0
+
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_reconcile_team_keys_handles_none_spend_from_litellm(mock_litellm, db, test_team, test_region, test_team_user):
+    """
+    Given: Keys where LiteLLM returns None for spend
+    When: reconcile_team_keys is called
+    Then: Spend is treated as 0.0 and limits are updated correctly
+    """
+    from app.db.models import DBLimitedResource
+    from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType
+
+    # Create user budget limit
+    user_budget_limit = DBLimitedResource(
+        limit_type=LimitType.DATA_PLANE,
+        resource=ResourceType.BUDGET,
+        unit=UnitType.DOLLAR,
+        max_value=100.0,
+        current_value=25.0,
+        owner_type=OwnerType.USER,
+        owner_id=test_team_user.id,
+        limited_by=LimitSource.PRODUCT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(user_budget_limit)
+
+    # Create user key
+    user_key = DBPrivateAIKey(
+        name="User Key",
+        litellm_token="user_token_123",
+        region=test_region,
+        owner_id=test_team_user.id
+    )
+    db.add(user_key)
+    db.commit()
+
+    # Setup mock LiteLLM service with None spend
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock(return_value={
+        "info": {
+            "spend": None,  # LiteLLM returns None
+            "max_budget": 100.0,
+            "key_alias": "user_key"
+        }
+    })
+
+    # Get keys by region
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+
+    # Call reconcile_team_keys
+    await reconcile_team_keys(db, test_team, keys_by_region, False)
+
+    # Verify None was treated as 0.0
+    db.refresh(user_budget_limit)
+    assert user_budget_limit.current_value == 0.0
+
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LiteLLMService')
+async def test_reconcile_team_keys_defaultdict_initialization(mock_litellm, db, test_team, test_region, test_team_user):
+    """
+    Given: The reconcile_team_keys function with total_by_user defaultdict
+    When: Accumulating spend for a new user_id
+    Then: defaultdict properly initializes without KeyError or TypeError
+    """
+    from app.db.models import DBLimitedResource
+    from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType
+
+    # Create user budget limit
+    user_budget_limit = DBLimitedResource(
+        limit_type=LimitType.DATA_PLANE,
+        resource=ResourceType.BUDGET,
+        unit=UnitType.DOLLAR,
+        max_value=100.0,
+        current_value=0.0,
+        owner_type=OwnerType.USER,
+        owner_id=test_team_user.id,
+        limited_by=LimitSource.PRODUCT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(user_budget_limit)
+
+    # Create user key
+    user_key = DBPrivateAIKey(
+        name="User Key",
+        litellm_token="user_token_123",
+        region=test_region,
+        owner_id=test_team_user.id
+    )
+    db.add(user_key)
+    db.commit()
+
+    # Setup mock LiteLLM service
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock(return_value={
+        "info": {
+            "spend": 15.0,
+            "max_budget": 100.0,
+            "key_alias": "user_key"
+        }
+    })
+
+    # Get keys by region
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+
+    # This should not raise KeyError when accessing new user_id
+    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False)
+
+    # Verify it worked correctly
+    assert team_total == 15.0
+    db.refresh(user_budget_limit)
+    assert user_budget_limit.current_value == 15.0
 

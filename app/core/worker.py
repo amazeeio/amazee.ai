@@ -1,10 +1,12 @@
 import re
 from datetime import datetime, UTC, timedelta
 from sqlalchemy.orm import Session
-from app.db.models import DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey, DBUser, DBRegion, DBTeamMetrics
+from sqlalchemy import select, func, and_
+from app.db.models import DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey, DBUser, DBRegion, DBTeamMetrics, DBLimitedResource
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
 from app.core.limit_service import LimitService
+from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitedResource
 import logging
 from collections import defaultdict
 # get_token_restrictions is now available through LimitService
@@ -75,8 +77,7 @@ def get_team_keys_by_region(db: Session, team_id: int) -> Dict[DBRegion, List[DB
         Dictionary mapping regions to lists of keys
     """
     # Get all keys for the team with their regions
-    team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
-    team_user_ids = [user.id for user in team_users]
+    team_user_ids = db.execute(select(DBUser.id).filter(DBUser.team_id == team_id)).scalars().all()
     # Return keys owned by users in the team OR owned by the team
     team_keys = db.query(DBPrivateAIKey).filter(
         (DBPrivateAIKey.owner_id.in_(team_user_ids)) |
@@ -96,8 +97,6 @@ def get_team_keys_by_region(db: Session, team_id: int) -> Dict[DBRegion, List[DB
 
     logger.info(f"Found {len(team_keys)} keys in {len(keys_by_region)} regions for team {team_id}")
     return keys_by_region
-
-
 
 async def handle_stripe_event_background(event, db: Session):
     """
@@ -256,7 +255,8 @@ async def remove_product_from_team(db: Session, customer_id: str, product_id: st
         logger.error(f"Error removing product from team: {str(e)}")
         raise e
 
-async def monitor_team_keys(
+async def reconcile_team_keys(
+    db: Session,
     team: DBTeam,
     keys_by_region: Dict[DBRegion, List[DBPrivateAIKey]],
     expire_keys: bool,
@@ -277,6 +277,8 @@ async def monitor_team_keys(
         float: Total spend across all keys for the team
     """
     team_total = 0
+    total_by_user = defaultdict(float)
+    service_key_total = 0
     current_time = datetime.now(UTC)
 
     # Monitor keys for each region
@@ -298,6 +300,13 @@ async def monitor_team_keys(
                     current_spend = info.get("spend", 0) or 0.0
                     budget = info.get("max_budget", 0) or 0.0
                     key_alias = info.get("key_alias", f"key-{key.id}")  # Fallback to key-{id} if no alias
+                    # Caching a value for faster lookup
+                    key.cached_spend = current_spend
+                    key.updated_at = datetime.now(UTC)
+                    if key.owner_id:
+                        total_by_user[key.owner_id] += current_spend
+                    else:
+                        service_key_total += current_spend
 
                     # Check for renewal period update if renewal_period_days is provided
                     if renewal_period_days is not None:
@@ -442,7 +451,107 @@ async def monitor_team_keys(
             logger.error(f"Error initializing LiteLLM service for region {region.name}: {str(e)}")
             continue
 
+    limit_service = LimitService(db)
+    for user_id in total_by_user.keys():
+        limit = db.query(DBLimitedResource).filter(
+            and_(
+                DBLimitedResource.owner_type == OwnerType.USER,
+                DBLimitedResource.owner_id == user_id,
+                DBLimitedResource.resource == ResourceType.BUDGET
+            )
+        ).first()
+        if limit:
+            limit_schema = LimitedResource.model_validate(limit)
+            limit_service.set_current_value(limit_schema, total_by_user[user_id])
+
+    service_key_limit = db.query(DBLimitedResource).filter(
+        and_(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == team.id,
+            DBLimitedResource.resource == ResourceType.BUDGET
+        )
+    ).first()
+    if service_key_limit:
+        limit_schema = LimitedResource.model_validate(service_key_limit)
+        limit_service.set_current_value(limit_schema, service_key_total)
+
     return team_total
+
+def _monitor_team_freshness(team: DBTeam) -> int:
+    current_time = datetime.now(UTC)
+    # Calculate team age based on whether they have made a payment
+    if team.last_payment:
+        team_freshness = (current_time - team.last_payment.replace(tzinfo=UTC)).days
+    else:
+        team_freshness = (current_time - team.created_at.replace(tzinfo=UTC)).days
+
+    if team_freshness < 0:
+        logger.warning(f"Team {team.name} (ID: {team.id}) has a negative age: {team_freshness} days")
+        team_freshness = 0
+
+    # Post freshness metric (always emit metrics)
+    team_freshness_days.labels(
+        team_id=str(team.id),
+        team_name=team.name
+    ).set(team_freshness)
+
+    return team_freshness
+
+def _send_expiry_notification(db: Session, team: DBTeam, has_products: bool, should_send_notifications: bool, days_remaining: int, ses_service: SESService):
+    # Check for notification conditions for teams still in the trial (only if not recently monitored)
+    if not has_products and should_send_notifications:
+        # Find the admin email for the team
+        try:
+            admin_email = get_team_admin_email(db, team)
+        except ValueError:
+            logger.warning(f"No admin user found for team {team.name} (ID: {team.id}), skipping email notifications")
+            admin_email = None
+
+        if days_remaining == FIRST_EMAIL_DAYS_LEFT or days_remaining == SECOND_EMAIL_DAYS_LEFT:
+            logger.info(f"Team {team.name} (ID: {team.id}) is approaching expiration in {days_remaining} days")
+            # Send expiration notification email
+            try:
+                if admin_email:
+                    template_data = {
+                        "name": team.name,
+                        "days_remaining": days_remaining,
+                        "dashboard_url": generate_pricing_url(admin_email)
+                    }
+                    ses_service.send_email(
+                        to_addresses=[admin_email],
+                        template_name="team-expiring",
+                        template_data=template_data
+                    )
+                    logger.info(f"Sent expiration notification email to team {team.name} (ID: {team.id})")
+                else:
+                    logger.warning(f"No email found for team {team.name} (ID: {team.id})")
+            except Exception as e:
+                logger.error(f"Failed to send expiration notification email to team {team.name}: {str(e)}")
+        elif days_remaining == 0:
+            # Send expired email
+            try:
+                if admin_email:
+                    template_data = {
+                        "name": team.name,
+                        "dashboard_url": generate_pricing_url(admin_email)
+                    }
+                    ses_service.send_email(
+                        to_addresses=[admin_email],
+                        template_name="trial-expired",
+                        template_data=template_data
+                    )
+                    logger.info(f"Sent expired email to team {team.name} (ID: {team.id})")
+                else:
+                    logger.warning(f"No email found for team {team.name} (ID: {team.id})")
+            except Exception as e:
+                logger.error(f"Failed to send expired email to team {team.name}: {str(e)}")
+        elif days_remaining <= 0:
+            # Post expired metric
+            team_expired_metric.labels(
+                team_id=str(team.id),
+                team_name=team.name
+            ).inc()
+
 
 @monitor_teams_duration.time()
 async def monitor_teams(db: Session):
@@ -478,21 +587,8 @@ async def monitor_teams(db: Session):
                 DBTeamProduct.team_id == team.id
             ).first() is not None
 
-            # Calculate team age based on whether they have made a payment
-            if team.last_payment:
-                team_freshness = (current_time - team.last_payment.replace(tzinfo=UTC)).days
-            else:
-                team_freshness = (current_time - team.created_at.replace(tzinfo=UTC)).days
-
-            if team_freshness < 0:
-                logger.warning(f"Team {team.name} (ID: {team.id}) has a negative age: {team_freshness} days")
-                team_freshness = 0
-
-            # Post freshness metric (always emit metrics)
-            team_freshness_days.labels(
-                team_id=str(team.id),
-                team_name=team.name
-            ).set(team_freshness)
+            team_freshness = _monitor_team_freshness(team)
+            days_remaining = TRIAL_OVER_DAYS - team_freshness
 
             # Check if team was monitored within 24 hours
             should_send_notifications = settings.ENABLE_LIMITS
@@ -500,60 +596,7 @@ async def monitor_teams(db: Session):
                 hours_since_monitored = (current_time - team.last_monitored.replace(tzinfo=UTC)).total_seconds() / 3600
                 should_send_notifications = hours_since_monitored >= 24
 
-            # Check for notification conditions for teams still in the trial (only if not recently monitored)
-            days_remaining = TRIAL_OVER_DAYS - team_freshness
-            if not has_products and should_send_notifications:
-                # Find the admin email for the team
-                try:
-                    admin_email = get_team_admin_email(db, team)
-                except ValueError:
-                    logger.warning(f"No admin user found for team {team.name} (ID: {team.id}), skipping email notifications")
-                    admin_email = None
-
-                if days_remaining == FIRST_EMAIL_DAYS_LEFT or days_remaining == SECOND_EMAIL_DAYS_LEFT:
-                    logger.info(f"Team {team.name} (ID: {team.id}) is approaching expiration in {days_remaining} days")
-                    # Send expiration notification email
-                    try:
-                        if admin_email:
-                            template_data = {
-                                "name": team.name,
-                                "days_remaining": days_remaining,
-                                "dashboard_url": generate_pricing_url(admin_email)
-                            }
-                            ses_service.send_email(
-                                to_addresses=[admin_email],
-                                template_name="team-expiring",
-                                template_data=template_data
-                            )
-                            logger.info(f"Sent expiration notification email to team {team.name} (ID: {team.id})")
-                        else:
-                            logger.warning(f"No email found for team {team.name} (ID: {team.id})")
-                    except Exception as e:
-                        logger.error(f"Failed to send expiration notification email to team {team.name}: {str(e)}")
-                elif days_remaining == 0:
-                    # Send expired email
-                    try:
-                        if admin_email:
-                            template_data = {
-                                "name": team.name,
-                                "dashboard_url": generate_pricing_url(admin_email)
-                            }
-                            ses_service.send_email(
-                                to_addresses=[admin_email],
-                                template_name="trial-expired",
-                                template_data=template_data
-                            )
-                            logger.info(f"Sent expired email to team {team.name} (ID: {team.id})")
-                        else:
-                            logger.warning(f"No email found for team {team.name} (ID: {team.id})")
-                    except Exception as e:
-                        logger.error(f"Failed to send expired email to team {team.name}: {str(e)}")
-                elif days_remaining <= 0:
-                    # Post expired metric
-                    team_expired_metric.labels(
-                        team_id=str(team.id),
-                        team_name=team.name
-                    ).inc()
+            _send_expiry_notification(db, team, has_products, should_send_notifications, days_remaining, ses_service)
 
             # Get all keys for the team grouped by region
             keys_by_region = get_team_keys_by_region(db, team.id)
@@ -579,7 +622,7 @@ async def monitor_teams(db: Session):
                     max_budget_amount = max(products, key=lambda product: product.max_budget_per_key).max_budget_per_key
 
             # Monitor keys and get total spend (includes renewal period updates if applicable)
-            team_total = await monitor_team_keys(team, keys_by_region, expire_keys, renewal_period_days, max_budget_amount)
+            team_total = await reconcile_team_keys(db, team, keys_by_region, expire_keys, renewal_period_days, max_budget_amount)
 
             # Set the total spend metric for the team (always emit metrics)
             team_total_spend.labels(
@@ -615,6 +658,17 @@ async def monitor_teams(db: Session):
             # Ensure all limits are correct - will not override MANUAL limits
             limit_service = LimitService(db)
             limit_service.set_team_limits(team)
+            team_limits = limit_service.get_team_limits(team)
+            for limit in team_limits:
+                # set the value of the limit if not already set
+                if limit.unit == UnitType.COUNT and limit.current_value == 0.0:
+                    if limit.resource == ResourceType.USER:
+                        value = db.execute(func.count(DBUser).filter(DBUser.team_id == team.id))
+                    elif limit.resource == ResourceType.KEY:
+                        value = db.execute(func.count(DBPrivateAIKey).filter(DBPrivateAIKey.team_id == team.id, DBPrivateAIKey.litellm_token is not None))
+                    elif limit.resource == ResourceType.VECTOR_DB:
+                        value = db.execute(func.count(DBPrivateAIKey).filter(DBPrivateAIKey.team_id == team.id, DBPrivateAIKey.database_username is not None))
+                    limit_service.set_current_value(limit, value)
 
             # Update last_monitored timestamp only if notifications were sent
             if should_send_notifications:

@@ -987,7 +987,7 @@ def test_check_team_user_limit_fallback_creates_limit(db, test_team, test_produc
     team_limits = limit_service.get_team_limits(team)
 
     # Should have a USER limit now
-    user_limits = [limit for limit in team_limits.limits if limit.resource == ResourceType.USER]
+    user_limits = [limit for limit in team_limits if limit.resource == ResourceType.USER]
     assert len(user_limits) == 1
     user_limit = user_limits[0]
     # The fallback now correctly uses product values after fixing the query
@@ -1073,7 +1073,7 @@ def test_check_key_limits_fallback_creates_limit(db, test_team, test_product):
     team_limits = limit_service.get_team_limits(team)
 
     # Should have a KEY limit now
-    key_limits = [limit for limit in team_limits.limits if limit.resource == ResourceType.KEY]
+    key_limits = [limit for limit in team_limits if limit.resource == ResourceType.KEY]
     assert len(key_limits) == 1
     key_limit = key_limits[0]
     # The fallback should correctly use service_key_count (not total_key_count)
@@ -1110,7 +1110,7 @@ def test_check_key_limits_fallback_creates_user_limit(db, test_team, test_produc
     user_limits = limit_service.get_user_limits(test_team_user)
 
     # Should have a KEY limit now
-    key_limits = [limit for limit in user_limits.limits if limit.resource == ResourceType.KEY]
+    key_limits = [limit for limit in user_limits if limit.resource == ResourceType.KEY]
     assert len(key_limits) == 1
     key_limit = key_limits[0]
     # The fallback should correctly use product values
@@ -1198,7 +1198,7 @@ def test_check_vector_db_limits_fallback_creates_limit(db, test_team, test_produ
     team_limits = limit_service.get_team_limits(team)
 
     # Should have a VECTOR_DB limit now
-    vector_db_limits = [limit for limit in team_limits.limits if limit.resource == ResourceType.VECTOR_DB]
+    vector_db_limits = [limit for limit in team_limits if limit.resource == ResourceType.VECTOR_DB]
     assert len(vector_db_limits) == 1
     vector_db_limit = vector_db_limits[0]
     # The fallback correctly uses product values (vector DB query was already correct)
