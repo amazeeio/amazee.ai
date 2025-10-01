@@ -48,8 +48,7 @@ def test_admin_can_reset_team_limits(client, admin_token, test_team):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["team_id"] == test_team.id
-    assert "limits" in data
+    assert isinstance(data, list)
 
 
 def test_admin_can_reset_single_limit(client: TestClient, admin_token, test_team, db):
@@ -284,11 +283,11 @@ def test_get_user_limits_api(client: TestClient, admin_token, test_team, test_te
 
     assert response.status_code == 200
     data = response.json()
-    assert data["team_id"] == team_id
-    assert len(data["limits"]) == 1
+    assert isinstance(data, list)
+    assert len(data) == 1
 
     # Should return user-specific limit, not team limit
-    limit = data["limits"][0]
+    limit = data[0]
     assert limit["resource"] == "ai_key"
     assert limit["max_value"] == 10.0
     assert limit["limited_by"] == "manual"
