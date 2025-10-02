@@ -19,7 +19,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { Loader2, Plus } from "lucide-react"
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
+import { Loader2, Plus, ChevronsUpDown, Check } from "lucide-react"
+import { cn } from "@/lib/utils"
 
 interface Region {
   id: number
@@ -80,6 +94,8 @@ export function CreateAIKeyDialog({
     // Default to current user if available, otherwise "team"
     return currentUser?.id.toString() || "team"
   })
+  const [userSearchOpen, setUserSearchOpen] = React.useState(false)
+  const [userSearchTerm, setUserSearchTerm] = React.useState("")
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -124,8 +140,28 @@ export function CreateAIKeyDialog({
       setSelectedRegion("")
       setKeyType('full')
       setSelectedUserId(currentUser?.id.toString() || "team")
+      setUserSearchTerm("")
     }
     onOpenChange(newOpen)
+  }
+
+  // Filter team members based on search term
+  const filteredTeamMembers = React.useMemo(() => {
+    if (!userSearchTerm) return teamMembers
+    const searchLower = userSearchTerm.toLowerCase()
+    return teamMembers.filter(member =>
+      member.email.toLowerCase().includes(searchLower)
+    )
+  }, [teamMembers, userSearchTerm])
+
+  // Get display text for selected user
+  const getSelectedUserDisplay = () => {
+    if (selectedUserId === "team") return "Team (Shared)"
+    if (selectedUserId === currentUser?.id.toString() || selectedUserId === "self") {
+      return currentUser?.email || "Me"
+    }
+    const selectedMember = teamMembers.find(m => m.id.toString() === selectedUserId)
+    return selectedMember?.email || "Select user..."
   }
 
   const isFormValid = name && selectedRegion && (!showUserAssignment || selectedUserId)
@@ -209,35 +245,89 @@ export function CreateAIKeyDialog({
                 <label htmlFor="user" className="text-sm font-medium">
                   Assign to <span className="text-red-500">*</span>
                 </label>
-                <Select
-                  value={selectedUserId}
-                  onValueChange={setSelectedUserId}
-                  required
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select who will own this key" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {currentUser?.team_id && (
-                      <SelectItem value="team">Team (Shared)</SelectItem>
-                    )}
-                    <SelectItem value={currentUser?.id.toString() || "self"}>
-                      {currentUser?.email || "Me"}
-                    </SelectItem>
-                    {teamMembers.length > 0 && (
-                      <>
-                        {teamMembers
-                          .filter(member => member.id !== currentUser?.id)
-                          .map(member => (
-                            <SelectItem key={member.id} value={member.id.toString()}>
-                              {member.email}
-                            </SelectItem>
-                          ))}
-                      </>
-                    )}
-                  </SelectContent>
-                </Select>
-                                <p className="text-sm text-muted-foreground">
+                <Popover open={userSearchOpen} onOpenChange={setUserSearchOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      role="combobox"
+                      aria-expanded={userSearchOpen}
+                      className="w-full justify-between"
+                    >
+                      {getSelectedUserDisplay()}
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-full p-0" align="start">
+                    <Command>
+                      <CommandInput
+                        placeholder="Search users..."
+                        value={userSearchTerm}
+                        onValueChange={setUserSearchTerm}
+                      />
+                      <CommandList>
+                        <CommandEmpty>No users found.</CommandEmpty>
+                        <CommandGroup>
+                          {currentUser?.team_id && (
+                            <CommandItem
+                              value="team"
+                              onSelect={() => {
+                                setSelectedUserId("team")
+                                setUserSearchOpen(false)
+                                setUserSearchTerm("")
+                              }}
+                            >
+                              <Check
+                                className={cn(
+                                  "mr-2 h-4 w-4",
+                                  selectedUserId === "team" ? "opacity-100" : "opacity-0"
+                                )}
+                              />
+                              Team (Shared)
+                            </CommandItem>
+                          )}
+                          <CommandItem
+                            value={currentUser?.email || "self"}
+                            onSelect={() => {
+                              setSelectedUserId(currentUser?.id.toString() || "self")
+                              setUserSearchOpen(false)
+                              setUserSearchTerm("")
+                            }}
+                          >
+                            <Check
+                              className={cn(
+                                "mr-2 h-4 w-4",
+                                selectedUserId === currentUser?.id.toString() || selectedUserId === "self" ? "opacity-100" : "opacity-0"
+                              )}
+                            />
+                            {currentUser?.email || "Me"}
+                          </CommandItem>
+                          {filteredTeamMembers
+                            .filter(member => member.id !== currentUser?.id)
+                            .map(member => (
+                              <CommandItem
+                                key={member.id}
+                                value={member.email}
+                                onSelect={() => {
+                                  setSelectedUserId(member.id.toString())
+                                  setUserSearchOpen(false)
+                                  setUserSearchTerm("")
+                                }}
+                              >
+                                <Check
+                                  className={cn(
+                                    "mr-2 h-4 w-4",
+                                    selectedUserId === member.id.toString() ? "opacity-100" : "opacity-0"
+                                  )}
+                                />
+                                {member.email}
+                              </CommandItem>
+                            ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+                <p className="text-sm text-muted-foreground">
                   {teamMembers.length > 0
                     ? "Select 'Team (Shared)' to create a key accessible to all team members, or assign to a specific user"
                     : currentUser?.team_id
