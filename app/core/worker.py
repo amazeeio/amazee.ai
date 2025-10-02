@@ -497,7 +497,7 @@ def _monitor_team_freshness(team: DBTeam) -> int:
 
     return team_freshness
 
-def _send_expiry_notification(db: Session, team: DBTeam, has_products: bool, should_send_notifications: bool, days_remaining: int, ses_service: SESService):
+def _send_expiry_notification(db: Session, team: DBTeam, has_products: bool, should_send_notifications: bool, days_remaining: int, ses_service: Optional[SESService]):
     # Check for notification conditions for teams still in the trial (only if not recently monitored)
     if not has_products and should_send_notifications:
         # Find the admin email for the team
@@ -511,7 +511,7 @@ def _send_expiry_notification(db: Session, team: DBTeam, has_products: bool, sho
             logger.info(f"Team {team.name} (ID: {team.id}) is approaching expiration in {days_remaining} days")
             # Send expiration notification email
             try:
-                if admin_email:
+                if admin_email and ses_service:
                     template_data = {
                         "name": team.name,
                         "days_remaining": days_remaining,
@@ -523,6 +523,8 @@ def _send_expiry_notification(db: Session, team: DBTeam, has_products: bool, sho
                         template_data=template_data
                     )
                     logger.info(f"Sent expiration notification email to team {team.name} (ID: {team.id})")
+                elif admin_email and not ses_service:
+                    logger.warning(f"SES service not available, skipping expiration notification email for team {team.name} (ID: {team.id})")
                 else:
                     logger.warning(f"No email found for team {team.name} (ID: {team.id})")
             except Exception as e:
@@ -530,7 +532,7 @@ def _send_expiry_notification(db: Session, team: DBTeam, has_products: bool, sho
         elif days_remaining == 0:
             # Send expired email
             try:
-                if admin_email:
+                if admin_email and ses_service:
                     template_data = {
                         "name": team.name,
                         "dashboard_url": generate_pricing_url(admin_email)
@@ -541,6 +543,8 @@ def _send_expiry_notification(db: Session, team: DBTeam, has_products: bool, sho
                         template_data=template_data
                     )
                     logger.info(f"Sent expired email to team {team.name} (ID: {team.id})")
+                elif admin_email and not ses_service:
+                    logger.warning(f"SES service not available, skipping expired email for team {team.name} (ID: {team.id})")
                 else:
                     logger.warning(f"No email found for team {team.name} (ID: {team.id})")
             except Exception as e:
@@ -575,7 +579,7 @@ async def monitor_teams(db: Session):
             ses_service = SESService()
         except Exception as e:
             logger.error(f"Error initializing SES service: {str(e)}")
-            pass
+            ses_service = None
 
         logger.info(f"Found {len(teams)} teams to track")
         for team in teams:
@@ -663,11 +667,17 @@ async def monitor_teams(db: Session):
                 # set the value of the limit if not already set
                 if limit.unit == UnitType.COUNT and limit.current_value == 0.0:
                     if limit.resource == ResourceType.USER:
-                        value = db.execute(func.count(DBUser).filter(DBUser.team_id == team.id))
+                        value = db.execute(select(func.count()).select_from(DBUser).where(DBUser.team_id == team.id)).scalar()
                     elif limit.resource == ResourceType.KEY:
-                        value = db.execute(func.count(DBPrivateAIKey).filter(DBPrivateAIKey.team_id == team.id, DBPrivateAIKey.litellm_token is not None))
+                        value = db.execute(select(func.count()).select_from(DBPrivateAIKey).where(
+                            DBPrivateAIKey.team_id == team.id,
+                            DBPrivateAIKey.litellm_token.is_not(None)
+                        )).scalar()
                     elif limit.resource == ResourceType.VECTOR_DB:
-                        value = db.execute(func.count(DBPrivateAIKey).filter(DBPrivateAIKey.team_id == team.id, DBPrivateAIKey.database_username is not None))
+                        value = db.execute(select(func.count()).select_from(DBPrivateAIKey).where(
+                            DBPrivateAIKey.team_id == team.id,
+                            DBPrivateAIKey.database_username.is_not(None)
+                        )).scalar()
                     limit_service.set_current_value(limit, value)
 
             # Update last_monitored timestamp only if notifications were sent
