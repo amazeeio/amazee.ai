@@ -403,12 +403,10 @@ class LimitService:
         MANUAL -> PRODUCT -> DEFAULT based on availability.
 
         Args:
-            owner_type: OwnerType enum
-            owner_id: ID of the owner
-            resource_type: ResourceType enum
+            limit: LimitedResource Pydantic model to reset
 
         Returns:
-            Updated limit
+            Updated DBLimitedResource database model
         """
         if limit.owner_type == OwnerType.SYSTEM:
             raise ValueError("Cannot reset SYSTEM limits")
@@ -420,30 +418,38 @@ class LimitService:
             user = self.db.query(DBUser).filter(DBUser.id == limit.owner_id).first()
             if not user.team_id:
                 logger.warning(f"User {limit.owner_id} is a system user; cannot reset limit")
-                return limit
+                # Find and return the existing database model
+                return self.db.query(DBLimitedResource).filter(DBLimitedResource.id == limit.id).first()
             team_id = user.team_id
         else:
             raise ValueError(f"Unknown owner type, cannot reset limit {limit}")
+
+        # Calculate new values
         if limit.owner_type == OwnerType.USER and limit.resource == ResourceType.KEY:
             max_value = self.get_user_product_limit_for_resource(team_id, limit.resource)
             if not max_value:
                 max_value = self.get_default_user_limit_for_resource(limit.resource)
-                limit.limited_by = LimitSource.DEFAULT
+                new_limited_by = LimitSource.DEFAULT
             else:
-                limit.limited_by = LimitSource.PRODUCT
+                new_limited_by = LimitSource.PRODUCT
         else:
             max_value = self.get_team_product_limit_for_resource(team_id, limit.resource)
             if not max_value:
                 max_value = self.get_default_team_limit_for_resource(limit.resource)
-                limit.limited_by = LimitSource.DEFAULT
+                new_limited_by = LimitSource.DEFAULT
             else:
-                limit.limited_by = LimitSource.PRODUCT
-        limit.max_value = max_value
-        limit.set_by = "reset"
+                new_limited_by = LimitSource.PRODUCT
 
-        self.db.add(limit)
-        self.db.commit()
-        return limit
+        # Find the corresponding database model and update it
+        db_limit = self.db.query(DBLimitedResource).filter(DBLimitedResource.id == limit.id).first()
+        if db_limit:
+            db_limit.max_value = max_value
+            db_limit.limited_by = new_limited_by
+            db_limit.set_by = "reset"
+            self.db.commit()
+            return db_limit
+        else:
+            raise ValueError(f"Database model not found for limit {limit.id}")
 
     def reset_limit(self, owner_type: OwnerType, owner_id: int, resource_type: ResourceType) -> DBLimitedResource:
         limit = self.db.query(DBLimitedResource).filter(

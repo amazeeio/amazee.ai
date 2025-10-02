@@ -569,6 +569,43 @@ def test_reset_user_limit_uses_team(db, test_team_user, test_team, test_product)
     result = limit_service.reset_limit(limit.owner_type, limit.owner_id, limit.resource)
     assert result.max_value == test_product.service_key_count
 
+def test_reset_team_limits_handles_limited_resource_mapping_error(db, test_team):
+    """
+    GIVEN: A team with MANUAL limits that need to be reset
+    WHEN: Calling reset_team_limits with the team
+    THEN: Should successfully reset limits without mapping errors
+    """
+    # Create a MANUAL limit first
+    limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.KEY,
+        unit=UnitType.COUNT,
+        max_value=8.0,
+        current_value=3.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.MANUAL,
+        set_by="admin@example.com",
+        created_at=datetime.now(UTC)
+    )
+    db.add(limit)
+    db.commit()
+
+    limit_service = LimitService(db)
+
+    # This should not raise "Class 'app.schemas.limits.LimitedResource' is not mapped" error
+    result = limit_service.reset_team_limits(test_team)
+
+    assert isinstance(result, list)
+    assert len(result) > 0
+
+    # Check that the limit was reset (should be DEFAULT or PRODUCT, not MANUAL)
+    key_limit = next((l for l in result if l.resource == ResourceType.KEY), None)
+    assert key_limit is not None
+    assert key_limit.limited_by in [LimitSource.DEFAULT, LimitSource.PRODUCT]
+    assert key_limit.set_by == "reset"
+
+
 def test_reset_system_user_limit_does_nothing(db, test_user):
     """
     GIVEN: User in a team which has products

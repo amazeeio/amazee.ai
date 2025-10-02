@@ -2106,6 +2106,79 @@ async def test_monitor_teams_populates_team_metrics(mock_ses, mock_litellm_class
 @patch('app.core.worker.LimitService')
 @patch('app.core.worker.LiteLLMService')
 @patch('app.core.worker.SESService')
+async def test_monitor_teams_sql_count_error(mock_ses, mock_litellm_class, mock_limit_service, db, test_team):
+    """
+    Test that monitor_teams handles SQL count queries correctly without throwing SQL expression errors.
+
+    GIVEN: A team with no admin user and no keys
+    WHEN: The monitor_teams function runs and tries to count users and keys
+    THEN: The function should not throw a SQL expression error
+    """
+    # Setup test data - team with no admin user (like "Test Team 2 - Always Free")
+    test_team.created_at = datetime.now(UTC) - timedelta(days=15)
+    db.add(test_team)
+    db.commit()
+
+    # Mock limit service to return limits that need counting
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
+    # Create mock limits that will trigger the count queries
+    from app.schemas.limits import LimitedResource, ResourceType, UnitType, LimitType, OwnerType, LimitSource
+
+    mock_limits = [
+        LimitedResource(
+            id=1,
+            limit_type=LimitType.CONTROL_PLANE,
+            resource=ResourceType.USER,
+            unit=UnitType.COUNT,
+            max_value=10.0,
+            current_value=0.0,
+            owner_type=OwnerType.TEAM,
+            owner_id=test_team.id,
+            limited_by=LimitSource.DEFAULT,
+            created_at=datetime.now(UTC)
+        ),
+        LimitedResource(
+            id=2,
+            limit_type=LimitType.CONTROL_PLANE,
+            resource=ResourceType.KEY,
+            unit=UnitType.COUNT,
+            max_value=5.0,
+            current_value=0.0,
+            owner_type=OwnerType.TEAM,
+            owner_id=test_team.id,
+            limited_by=LimitSource.DEFAULT,
+            created_at=datetime.now(UTC)
+        ),
+        LimitedResource(
+            id=3,
+            limit_type=LimitType.CONTROL_PLANE,
+            resource=ResourceType.VECTOR_DB,
+            unit=UnitType.COUNT,
+            max_value=3.0,
+            current_value=0.0,
+            owner_type=OwnerType.TEAM,
+            owner_id=test_team.id,
+            limited_by=LimitSource.DEFAULT,
+            created_at=datetime.now(UTC)
+        )
+    ]
+
+    mock_limit_instance.get_team_limits.return_value = mock_limits
+    mock_limit_instance.set_current_value = Mock()
+
+    # This should not raise a SQL expression error
+    await monitor_teams(db)
+
+    # Verify the limit service was called
+    mock_limit_service.assert_called_with(db)
+    mock_limit_instance.set_team_limits.assert_called_with(test_team)
+
+@pytest.mark.asyncio
+@patch('app.core.worker.LimitService')
+@patch('app.core.worker.LiteLLMService')
+@patch('app.core.worker.SESService')
 async def test_monitor_teams_updates_existing_metrics(mock_ses, mock_litellm_class, mock_limit_service, db, test_team, test_region):
     """
     Test that monitor_teams updates existing DBTeamMetrics records.
