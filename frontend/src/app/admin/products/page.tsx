@@ -25,6 +25,7 @@ import { Label } from "@/components/ui/label";
 import { useToast } from '@/hooks/use-toast';
 import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
 import { TableActionButtons } from '@/components/ui/table-action-buttons';
+import { LimitsView } from '@/components/ui/limits-view';
 import { get, post, put, del } from '@/utils/api';
 import {
   Select,
@@ -114,6 +115,15 @@ export default function ProductsPage() {
     queryKey: ['pricing-tables'],
     queryFn: async () => {
       const response = await get('/pricing-tables/list');
+      return response.json();
+    },
+  });
+
+  // System Limits Query
+  const { data: systemLimits = [], isLoading: isLoadingSystemLimits } = useQuery({
+    queryKey: ['system-limits'],
+    queryFn: async () => {
+      const response = await get('/limits/system');
       return response.json();
     },
   });
@@ -449,6 +459,7 @@ export default function ProductsPage() {
         <TabsList>
           <TabsTrigger value="products">Products</TabsTrigger>
           <TabsTrigger value="pricing-tables">Pricing Tables</TabsTrigger>
+          <TabsTrigger value="system-limits">System Limits</TabsTrigger>
         </TabsList>
 
         <TabsContent value="products" className="space-y-4">
@@ -634,6 +645,39 @@ export default function ProductsPage() {
               ))}
             </TableBody>
           </Table>
+        </TabsContent>
+
+        <TabsContent value="system-limits" className="space-y-4">
+          <div className="flex justify-between items-center">
+            <div>
+              <h2 className="text-xl font-semibold">System Default Limits</h2>
+              <p className="text-sm text-muted-foreground">
+                These are the default limits applied to all teams and users when no product-specific or manual limits are set.
+              </p>
+            </div>
+          </div>
+
+          {isLoadingSystemLimits ? (
+            <div className="text-center py-8">
+              <p className="text-muted-foreground">Loading system limits...</p>
+            </div>
+          ) : systemLimits.length === 0 ? (
+            <div className="text-center py-8 border rounded-md">
+              <p className="text-muted-foreground mb-4">No system limits found.</p>
+              <p className="text-sm text-muted-foreground">
+                System limits are created automatically when teams and users are created, or you can create them manually using the limit management interface.
+              </p>
+            </div>
+          ) : (
+            <LimitsView
+              limits={systemLimits}
+              isLoading={isLoadingSystemLimits}
+              ownerType="system"
+              ownerId="0"
+              queryKey={['system-limits']}
+              showResetAll={false}
+            />
+          )}
         </TabsContent>
       </Tabs>
 

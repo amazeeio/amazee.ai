@@ -183,11 +183,11 @@ def test_get_team_limits_api_returns_all_limits(client: TestClient, admin_token,
     assert "ai_key" in resources
 
 
-def test_api_always_creates_manual_limits(client: TestClient, admin_token, test_team):
+def test_api_creates_manual_limits_for_teams_and_users(client: TestClient, admin_token, test_team):
     """
-    Given: Admin using the API to set limits
-    When: Calling overwrite_limit endpoint
-    Then: Should always create MANUAL limits with admin's email as set_by
+    Given: Admin using the API to set team/user limits
+    When: Calling overwrite_limit endpoint for team/user
+    Then: Should create MANUAL limits with admin's email as set_by
     """
     response = client.put(
         "/limits/overwrite",
@@ -291,6 +291,158 @@ def test_get_user_limits_api(client: TestClient, admin_token, test_team, test_te
     assert limit["resource"] == "ai_key"
     assert limit["max_value"] == 10.0
     assert limit["limited_by"] == "manual"
+
+
+def test_system_limits_are_created_as_manual_limits(client: TestClient, admin_token):
+    """
+    Given: Admin using the API to set system limits
+    When: Calling overwrite_limit endpoint with owner_type=system
+    Then: Should create MANUAL limits with admin's email as set_by
+    """
+    response = client.put(
+        "/limits/overwrite",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "owner_type": "system",
+            "owner_id": 0,  # System limits use owner_id=0
+            "resource_type": "user",
+            "limit_type": "control_plane",
+            "unit": "count",
+            "max_value": 5.0,
+            "current_value": 0.0
+        }
+    )
+    assert response.status_code == 200
+
+    data = response.json()
+    assert data["owner_type"] == "system"
+    assert data["owner_id"] == 0
+    assert data["resource"] == "user"
+    assert data["max_value"] == 5.0
+    assert data["limited_by"] == "manual"  # System limits set via API should be MANUAL
+    assert data["set_by"] == "admin@example.com"  # Should track who set the system limit
+
+
+def test_team_limits_are_created_as_manual_limits(client: TestClient, admin_token, test_team):
+    """
+    Given: Admin using the API to set team limits
+    When: Calling overwrite_limit endpoint with owner_type=team
+    Then: Should create MANUAL limits with admin's email as set_by
+    """
+    # Capture team ID before session closes
+    team_id = test_team.id
+
+    response = client.put(
+        "/limits/overwrite",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "owner_type": "team",
+            "owner_id": team_id,
+            "resource_type": "user",
+            "limit_type": "control_plane",
+            "unit": "count",
+            "max_value": 8.0,
+            "current_value": 3.0
+        }
+    )
+    assert response.status_code == 200
+
+    data = response.json()
+    assert data["owner_type"] == "team"
+    assert data["owner_id"] == team_id
+    assert data["resource"] == "user"
+    assert data["max_value"] == 8.0
+    assert data["limited_by"] == "manual"  # Team limits should be MANUAL
+    assert data["set_by"] == "admin@example.com"
+
+
+def test_user_limits_are_created_as_manual_limits(client: TestClient, admin_token, test_team_user):
+    """
+    Given: Admin using the API to set user limits
+    When: Calling overwrite_limit endpoint with owner_type=user
+    Then: Should create MANUAL limits with admin's email as set_by
+    """
+    # Capture user ID before session closes
+    user_id = test_team_user.id
+
+    response = client.put(
+        "/limits/overwrite",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "owner_type": "user",
+            "owner_id": user_id,
+            "resource_type": "ai_key",
+            "limit_type": "control_plane",
+            "unit": "count",
+            "max_value": 10.0,
+            "current_value": 2.0
+        }
+    )
+    assert response.status_code == 200
+
+    data = response.json()
+    assert data["owner_type"] == "user"
+    assert data["owner_id"] == user_id
+    assert data["resource"] == "ai_key"
+    assert data["max_value"] == 10.0
+    assert data["limited_by"] == "manual"  # User limits should be MANUAL
+    assert data["set_by"] == "admin@example.com"
+
+
+def test_get_system_limits_api(client: TestClient, admin_token, db):
+    """
+    Given: System with default limits
+    When: Calling GET /limits/system
+    Then: Should return all system default limits
+    """
+    # Create some system limits manually
+    from datetime import datetime, UTC
+    from app.db.models import DBLimitedResource
+    from app.schemas.limits import LimitType, ResourceType, UnitType, OwnerType, LimitSource
+
+    system_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.USER,
+        unit=UnitType.COUNT,
+        max_value=5.0,
+        current_value=0.0,
+        owner_type=OwnerType.SYSTEM,
+        owner_id=0,
+        limited_by=LimitSource.DEFAULT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(system_limit)
+    db.commit()
+
+    response = client.get(
+        "/limits/system",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert isinstance(data, list)
+    assert len(data) > 0
+
+    # Check that all returned limits are system limits
+    for limit in data:
+        assert limit["owner_type"] == "system"
+        assert limit["owner_id"] == 0
+        assert limit["limited_by"] == "default"
+
+
+def test_non_admin_cannot_access_system_limits_api(client: TestClient, test_token):
+    """
+    Given: Non-admin user credentials
+    When: Attempting to call system limits API
+    Then: Should return 403 Forbidden
+    """
+    response = client.get(
+        "/limits/system",
+        headers={"Authorization": f"Bearer {test_token}"}
+    )
+
+    assert response.status_code == 403
 
 
 def test_validation_errors_for_invalid_data(client: TestClient, admin_token, test_team):
