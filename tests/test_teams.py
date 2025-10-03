@@ -1,7 +1,10 @@
 from fastapi.testclient import TestClient
-from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBProduct, DBTeamProduct, DBRegion, DBTeamRegion
+from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBProduct, DBTeamProduct, DBRegion, DBTeamRegion, DBLimitedResource
 from app.main import app
 from app.core.security import get_password_hash
+from app.core.limit_service import LimitService, setup_default_limits
+from app.schemas.limits import OwnerType, LimitSource, ResourceType
+from app.core.config import settings
 from datetime import datetime, UTC
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -1423,3 +1426,118 @@ def test_merge_teams_with_both_teams_dedicated_regions_fails(client, admin_token
     ).first()
     assert source_team_region_exists is not None
     assert target_team_region_exists is not None
+
+
+def test_register_team_creates_default_limits(client, db):
+    """
+    Given: A new team is being created
+    When: The team registration endpoint is called
+    Then: Default limits should be created for the team
+
+    This test ensures that when a new team is created, default limits are automatically
+    set up for the team using the limit service.
+    """
+    # Enable limits for this test
+    settings.ENABLE_LIMITS = True
+
+    # Ensure system default limits exist first
+    setup_default_limits(db)
+
+    # Register a new team
+    response = client.post(
+        "/teams/",
+        json={
+            "name": "New Team",
+            "admin_email": "newteam@example.com",
+            "phone": "1234567890",
+            "billing_address": "123 New St, New City, 12345"
+        }
+    )
+
+    assert response.status_code == 201
+    team_data = response.json()
+    team_id = team_data["id"]
+
+    # Verify the team was created
+    db_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    assert db_team is not None
+    assert db_team.name == "New Team"
+
+    # Verify that default limits were created for the team
+    limit_service = LimitService(db)
+    team_limits = limit_service.get_team_limits(db_team)
+
+    # Should have all the expected resource types
+    expected_resources = {
+        ResourceType.USER,
+        ResourceType.KEY,
+        ResourceType.VECTOR_DB,
+        ResourceType.BUDGET,
+        ResourceType.RPM
+    }
+
+    actual_resources = {limit.resource for limit in team_limits}
+    assert actual_resources == expected_resources
+
+    # All limits should be DEFAULT source and owned by the team
+    for limit in team_limits:
+        assert limit.limited_by == LimitSource.DEFAULT
+        assert limit.owner_type == OwnerType.TEAM
+        assert limit.owner_id == team_id
+
+    # Verify specific default values
+    user_limit = next(limit for limit in team_limits if limit.resource == ResourceType.USER)
+    assert user_limit.max_value == 1.0  # DEFAULT_USER_COUNT
+
+    key_limit = next(limit for limit in team_limits if limit.resource == ResourceType.KEY)
+    assert key_limit.max_value == 5.0  # DEFAULT_SERVICE_KEYS
+
+    vector_db_limit = next(limit for limit in team_limits if limit.resource == ResourceType.VECTOR_DB)
+    assert vector_db_limit.max_value == 5.0  # DEFAULT_VECTOR_DB_COUNT
+
+    budget_limit = next(limit for limit in team_limits if limit.resource == ResourceType.BUDGET)
+    assert budget_limit.max_value == 27.0  # DEFAULT_MAX_SPEND
+
+    rpm_limit = next(limit for limit in team_limits if limit.resource == ResourceType.RPM)
+    assert rpm_limit.max_value == 500.0  # DEFAULT_RPM_PER_KEY
+
+
+def test_register_team_does_not_create_limits_when_disabled(client, db):
+    """
+    Given: ENABLE_LIMITS is set to false
+    When: A new team is created
+    Then: No default limits should be created for the team
+
+    This test ensures that when ENABLE_LIMITS is disabled, no limits are created
+    during team registration.
+    """
+    # Disable limits for this test
+    settings.ENABLE_LIMITS = False
+
+    # Register a new team
+    response = client.post(
+        "/teams/",
+        json={
+            "name": "New Team Without Limits",
+            "admin_email": "newteamnolimits@example.com",
+            "phone": "1234567890",
+            "billing_address": "123 New St, New City, 12345"
+        }
+    )
+
+    assert response.status_code == 201
+    team_data = response.json()
+    team_id = team_data["id"]
+
+    # Verify the team was created
+    db_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    assert db_team is not None
+    assert db_team.name == "New Team Without Limits"
+
+    # Verify that no limits were created for the team
+    limit_service = LimitService(db)
+    team_limits = limit_service.get_team_limits(db_team)
+
+    # Should have no team-specific limits (only system defaults if they exist)
+    team_specific_limits = [limit for limit in team_limits if limit.owner_type == OwnerType.TEAM]
+    assert len(team_specific_limits) == 0

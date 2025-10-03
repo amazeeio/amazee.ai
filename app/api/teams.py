@@ -12,7 +12,8 @@ from app.schemas.models import (
     Team, TeamCreate, TeamUpdate,
     TeamWithUsers, TeamMergeRequest, TeamMergeResponse
 )
-from app.core.limit_service import DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
+from app.core.limit_service import DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY, LimitService
+from app.core.config import settings
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
 from app.core.worker import get_team_keys_by_region, generate_pricing_url, get_team_admin_email
@@ -25,6 +26,24 @@ logger = logging.getLogger(__name__)
 router = APIRouter(
     tags=["teams"]
 )
+
+
+def _create_default_limits_for_team(team: DBTeam, db: Session) -> None:
+    """
+    Create default limits for a newly created team.
+
+    Args:
+        team: The team to create limits for
+        db: Database session
+    """
+    if settings.ENABLE_LIMITS:
+        try:
+            limit_service = LimitService(db)
+            limit_service.set_team_limits(team)
+            logger.info(f"Created default limits for team {team.id} ({team.name})")
+        except Exception as e:
+            logger.error(f"Failed to create default limits for team {team.id}: {str(e)}")
+            # Don't fail team creation if limit creation fails
 
 @router.post("", response_model=Team, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=Team, status_code=status.HTTP_201_CREATED)
@@ -64,6 +83,9 @@ async def register_team(
     db.add(db_team)
     db.commit()
     db.refresh(db_team)
+
+    # Create default limits for the team
+    _create_default_limits_for_team(db_team, db)
 
     return db_team
 

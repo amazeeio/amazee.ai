@@ -607,6 +607,7 @@ async def monitor_teams(db: Session):
             expire_keys = False
             # If the team has a product, expiry will be handled by a Stripe cancellation
             if not has_products and days_remaining <= 0 and should_send_notifications:
+                logger.info(f"Team {team.id} has {days_remaining} days remaining, expiring keys")
                 expire_keys = True
 
             # Determine if we should check for renewal period updates
