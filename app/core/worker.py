@@ -65,6 +65,61 @@ monitor_teams_duration = Summary(
 # Track active team labels to zero out metrics for inactive teams
 active_team_labels = set()
 
+def set_team_and_user_limits(db: Session, team: DBTeam):
+    """
+    Set limits for a team and all users in the team.
+
+    This function:
+    1. Sets team limits using the limit service
+    2. Sets user limits for all users in the team
+    3. Updates current values for COUNT-type limits based on actual database counts
+
+    Args:
+        db: Database session
+        team: The team to set limits for
+    """
+    # Ensure all limits are correct - will not override MANUAL limits
+    limit_service = LimitService(db)
+    limit_service.set_team_limits(team)
+
+    # Set user limits for all users in the team
+    team_users = db.query(DBUser).filter(DBUser.team_id == team.id).all()
+    for user in team_users:
+        limit_service.set_user_limits(user)
+
+    # Update current values for COUNT-type team limits
+    team_limits = limit_service.get_team_limits(team)
+    for limit in team_limits:
+        # Set the value of the limit if not already set
+        if limit.unit == UnitType.COUNT and limit.current_value == 0.0:
+            if limit.resource == ResourceType.USER:
+                value = db.execute(select(func.count()).select_from(DBUser).where(DBUser.team_id == team.id)).scalar()
+            elif limit.resource == ResourceType.KEY:
+                value = db.execute(select(func.count()).select_from(DBPrivateAIKey).where(
+                    DBPrivateAIKey.team_id == team.id,
+                    DBPrivateAIKey.litellm_token.is_not(None)
+                )).scalar()
+            elif limit.resource == ResourceType.VECTOR_DB:
+                value = db.execute(select(func.count()).select_from(DBPrivateAIKey).where(
+                    DBPrivateAIKey.team_id == team.id,
+                    DBPrivateAIKey.database_username.is_not(None)
+                )).scalar()
+            limit_service.set_current_value(limit, value)
+
+    # Update current values for COUNT-type user limits
+    for user in team_users:
+        user_limits = limit_service.get_user_limits(user)
+        for limit in user_limits:
+            # Set the value of the limit if not already set
+            if limit.unit == UnitType.COUNT and limit.current_value == 0.0:
+                if limit.resource == ResourceType.KEY:
+                    # Count keys owned by this specific user
+                    value = db.execute(select(func.count()).select_from(DBPrivateAIKey).where(
+                        DBPrivateAIKey.owner_id == user.id,
+                        DBPrivateAIKey.litellm_token.is_not(None)
+                    )).scalar()
+                    limit_service.set_current_value(limit, value)
+
 def get_team_keys_by_region(db: Session, team_id: int) -> Dict[DBRegion, List[DBPrivateAIKey]]:
     """
     Get all keys for a team grouped by region.
@@ -603,25 +658,7 @@ async def monitor_teams(db: Session):
                 db.add(team_metrics)
 
             # Ensure all limits are correct - will not override MANUAL limits
-            limit_service = LimitService(db)
-            limit_service.set_team_limits(team)
-            team_limits = limit_service.get_team_limits(team)
-            for limit in team_limits:
-                # set the value of the limit if not already set
-                if limit.unit == UnitType.COUNT and limit.current_value == 0.0:
-                    if limit.resource == ResourceType.USER:
-                        value = db.execute(select(func.count()).select_from(DBUser).where(DBUser.team_id == team.id)).scalar()
-                    elif limit.resource == ResourceType.KEY:
-                        value = db.execute(select(func.count()).select_from(DBPrivateAIKey).where(
-                            DBPrivateAIKey.team_id == team.id,
-                            DBPrivateAIKey.litellm_token.is_not(None)
-                        )).scalar()
-                    elif limit.resource == ResourceType.VECTOR_DB:
-                        value = db.execute(select(func.count()).select_from(DBPrivateAIKey).where(
-                            DBPrivateAIKey.team_id == team.id,
-                            DBPrivateAIKey.database_username.is_not(None)
-                        )).scalar()
-                    limit_service.set_current_value(limit, value)
+            set_team_and_user_limits(db, team)
 
             # Update last_monitored timestamp only if notifications were sent
             if should_send_notifications:

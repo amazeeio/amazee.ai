@@ -8,6 +8,7 @@ from app.schemas.limits import (
     OverwriteLimitRequest,
     ResetLimitRequest,
     LimitSource,
+    OwnerType,
 )
 from app.core.limit_service import LimitService, LimitNotFoundError
 from app.core.security import get_role_min_system_admin, get_current_user_from_auth
@@ -85,14 +86,15 @@ async def overwrite_limit(
     limit_service: LimitService = Depends(get_limit_service)
 ):
     """
-    Create or update a limit (always creates MANUAL limits when set via API).
+    Create or update a limit.
 
-    When limits are set via API by administrators, they are automatically
+    When limits are set via API by administrators, they are always
     treated as MANUAL limits since they're being set by a person.
 
     Only accessible by system administrators.
     """
     try:
+
         result = limit_service.set_limit(
             owner_type=request.owner_type,
             owner_id=request.owner_id,
@@ -101,8 +103,8 @@ async def overwrite_limit(
             unit=request.unit,
             max_value=request.max_value,
             current_value=request.current_value,
-            limited_by=LimitSource.MANUAL,  # Always MANUAL when set via API
-            set_by=current_user.email  # Use the admin's email who made the change
+            limited_by=LimitSource.MANUAL,
+            set_by=current_user.email  # Always track who made the change, even for system limits
         )
         return LimitedResource.model_validate(result)
     except HTTPException:
@@ -175,3 +177,23 @@ async def reset_limit(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to reset limit"
         )
+
+
+@router.get("/system", response_model=List[LimitedResource], dependencies=[Depends(get_role_min_system_admin)])
+async def get_system_limits(
+    limit_service: LimitService = Depends(get_limit_service)
+):
+    """
+    Get all system default limits.
+    Only accessible by system administrators.
+    """
+    try:
+        return limit_service.get_system_limits()
+    except Exception as e:
+        logger.error(f"Error getting system limits: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve system limits"
+        )
+
+
