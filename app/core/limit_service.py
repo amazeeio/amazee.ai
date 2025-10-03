@@ -536,6 +536,71 @@ class LimitService:
                 limited_by=limit_source
             )
 
+    def set_user_limits(self, user: DBUser):
+        """
+        Goes through all available user limits and applies them for a user. Will apply PRODUCT values by preference,
+        falling back to DEFAULT. Will not override MANUAL.
+        Intended to be used when a new user is created to set up their default limits.
+
+        Args:
+            user: The user for which limits are being applied
+        """
+        existing_limits = self.get_user_limits(user)
+
+        # Define all resource types that need user limits
+        # Users only get KEY limits - BUDGET and RPM are inherited from team
+        user_resources = [
+            ResourceType.KEY
+        ]
+
+        # Process each resource type
+        for resource_type in user_resources:
+            # Skip if manual limit already exists
+            existing_limit = next(
+                (limit for limit in existing_limits if limit.resource == resource_type),
+                None
+            )
+            if existing_limit and existing_limit.limited_by == LimitSource.MANUAL:
+                continue
+
+            # Determine limit type and unit based on resource
+            if resource_type == ResourceType.KEY:
+                limit_type = LimitType.CONTROL_PLANE
+                unit = UnitType.COUNT
+                # Preserve existing current_value if updating, otherwise set to 0.0
+                if existing_limit and existing_limit.current_value is not None:
+                    current_value = existing_limit.current_value
+                else:
+                    current_value = 0.0  # CP limits need current_value
+            else:
+                limit_type = LimitType.DATA_PLANE
+                unit = self._get_unit_for_resource(resource_type)
+                # For DP limits, preserve existing current_value if it exists
+                if existing_limit and existing_limit.current_value is not None:
+                    current_value = existing_limit.current_value
+                else:
+                    current_value = None  # DP limits don't track current value by default
+
+            # For users, only KEY limits are set - BUDGET and RPM are inherited from team
+            max_value = self.get_user_product_limit_for_resource(user.team_id, resource_type)
+            if max_value is not None:
+                limit_source = LimitSource.PRODUCT
+            else:
+                max_value = self.get_default_user_limit_for_resource(resource_type)
+                limit_source = LimitSource.DEFAULT
+
+            # Set the limit (this will update existing or create new)
+            self.set_limit(
+                owner_type=OwnerType.USER,
+                owner_id=user.id,
+                resource_type=resource_type,
+                limit_type=limit_type,
+                unit=unit,
+                max_value=max_value,
+                current_value=current_value,
+                limited_by=limit_source
+            )
+
     def _get_unit_for_resource(self, resource_type: ResourceType) -> UnitType:
         """
         Get the appropriate unit type for a given resource type.
