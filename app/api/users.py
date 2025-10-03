@@ -10,10 +10,31 @@ from app.db.models import DBUser, DBTeam
 from app.core.security import get_password_hash, get_role_min_system_admin, get_current_user_from_auth, get_role_min_team_admin
 from app.core.roles import UserRole
 from datetime import datetime, UTC
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     tags=["users"]
 )
+
+
+def _create_default_limits_for_user(user: DBUser, db: Session) -> None:
+    """
+    Create default limits for a newly created user.
+
+    Args:
+        user: The user to create limits for
+        db: Database session
+    """
+    if settings.ENABLE_LIMITS:
+        try:
+            limit_service = LimitService(db)
+            limit_service.set_user_limits(user)
+            logger.info(f"Created default limits for user {user.id} ({user.email})")
+        except Exception as e:
+            logger.error(f"Failed to create default limits for user {user.id}: {str(e)}")
+            # Don't fail user creation if limit creation fails
 
 @router.get("/search", response_model=List[User], dependencies=[Depends(get_role_min_system_admin)])
 async def search_users(
@@ -106,6 +127,9 @@ async def create_user(
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+
+    # Create default limits for the user
+    _create_default_limits_for_user(db_user, db)
 
     return db_user
 

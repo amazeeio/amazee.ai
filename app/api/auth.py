@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from fastapi import HTTPException, status, Response, Request, Form
 from jose import JWTError, jwt
 from app.core.config import settings
+from app.core.limit_service import LimitService
 
 from app.db.database import get_db
 from app.schemas.models import (
@@ -44,6 +45,25 @@ auth_logger = logging.getLogger(__name__)
 router = APIRouter(
     tags=["auth"]
 )
+
+
+def _create_default_limits_for_user(user: DBUser, db: Session) -> None:
+    """
+    Create default limits for a newly created user.
+
+    Args:
+        user: The user to create limits for
+        db: Database session
+    """
+    if settings.ENABLE_LIMITS:
+        try:
+            limit_service = LimitService(db)
+            limit_service.set_user_limits(user)
+            auth_logger.info(f"Created default limits for user {user.id} ({user.email})")
+        except Exception as e:
+            auth_logger.error(f"Failed to create default limits for user {user.id}: {str(e)}")
+            # Don't fail user creation if limit creation fails
+
 
 def get_cookie_domain():
     """Extract domain from COOKIE_DOMAIN or LAGOON_ROUTES for cookie settings."""
@@ -294,6 +314,10 @@ async def register(
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+
+    # Create default limits for the user
+    _create_default_limits_for_user(db_user, db)
+
     auth_logger.info(f"Successfully registered new user: {user.email}")
     return db_user
 
@@ -478,6 +502,10 @@ async def sign_in(
         db.add(user)
         db.commit()
         db.refresh(user)
+
+        # Create default limits for the user
+        _create_default_limits_for_user(user, db)
+
         auth_logger.info(f"Successfully created new user and team for: {sign_in_data.username}")
 
     auth_logger.info(f"Successful sign-in for user: {sign_in_data.username}")

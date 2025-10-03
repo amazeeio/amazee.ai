@@ -1,5 +1,8 @@
 import pytest
-from app.db.models import DBUser, DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey
+from app.db.models import DBUser, DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey, DBLimitedResource
+from app.core.limit_service import LimitService, DEFAULT_KEYS_PER_USER, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
+from app.schemas.limits import ResourceType, LimitSource, OwnerType, LimitType, UnitType
+from app.core.config import settings
 from datetime import datetime, UTC
 from unittest.mock import patch, AsyncMock
 
@@ -465,3 +468,229 @@ def test_create_user_with_limits_enabled(client, team_admin_token, test_team, db
     )
     assert response.status_code == 402
     assert f"Team has reached their maximum user limit" in response.json()["detail"]
+
+
+def test_create_user_creates_default_limits(client, admin_token, test_team, db):
+    """
+    Given: A new user is being created in a team
+    When: The user creation endpoint is called
+    Then: Default limits should be created for the user
+
+    This test ensures that when a new user is created, default limits are automatically
+    set up for the user using the limit service.
+    """
+    # Enable limits for this test
+    settings.ENABLE_LIMITS = True
+
+    # Ensure system default limits exist first
+    from app.core.limit_service import setup_default_limits
+    setup_default_limits(db)
+
+    # Create a new user in the team
+    response = client.post(
+        "/users/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "email": "newuser@example.com",
+            "password": "newpassword",
+            "team_id": test_team.id
+        }
+    )
+
+    assert response.status_code == 201
+    user_data = response.json()
+    user_id = user_data["id"]
+
+    # Verify the user was created
+    db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
+    assert db_user is not None
+    assert db_user.email == "newuser@example.com"
+    assert db_user.team_id == user_data["team_id"]
+
+    # Verify that default limits were created for the user
+    limit_service = LimitService(db)
+    user_limits = limit_service.get_user_limits(db_user)
+
+    # Should have user-specific limits for KEY only - BUDGET and RPM are inherited from team
+    user_specific_limits = [limit for limit in user_limits if limit.owner_type == OwnerType.USER]
+
+    # Find the user-specific KEY limit
+    key_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.KEY), None)
+
+    # Verify KEY limit exists and has correct values
+    assert key_limit is not None
+    assert key_limit.max_value == DEFAULT_KEYS_PER_USER
+    assert key_limit.limited_by == LimitSource.DEFAULT
+    assert key_limit.owner_type == OwnerType.USER
+    assert key_limit.owner_id == user_id
+    assert key_limit.limit_type == LimitType.CONTROL_PLANE
+    assert key_limit.unit == UnitType.COUNT
+    assert key_limit.current_value == 0.0
+
+    # Verify that BUDGET and RPM limits are inherited from team (not user-specific)
+    budget_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.BUDGET), None)
+    rpm_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.RPM), None)
+    assert budget_limit is None  # Should be inherited from team, not user-specific
+    assert rpm_limit is None     # Should be inherited from team, not user-specific
+
+
+def test_register_user_creates_default_limits(client, db):
+    """
+    Given: A new user is being registered via the auth endpoint
+    When: The user registration endpoint is called
+    Then: Default limits should be created for the user
+
+    This test ensures that when a new user is registered, default limits are automatically
+    set up for the user using the limit service.
+    """
+    # Enable limits for this test
+    settings.ENABLE_LIMITS = True
+
+    # Ensure system default limits exist first
+    from app.core.limit_service import setup_default_limits
+    setup_default_limits(db)
+
+    # Register a new user
+    response = client.post(
+        "/auth/register",
+        json={
+            "email": "newuser@example.com",
+            "password": "newpassword"
+        }
+    )
+
+    assert response.status_code == 200
+    user_data = response.json()
+    user_id = user_data["id"]
+
+    # Verify the user was created
+    db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
+    assert db_user is not None
+    assert db_user.email == "newuser@example.com"
+
+    # Verify that default limits were created for the user
+    limit_service = LimitService(db)
+    user_limits = limit_service.get_user_limits(db_user)
+
+    # Should have user-specific limits for KEY only - BUDGET and RPM are inherited from team
+    user_specific_limits = [limit for limit in user_limits if limit.owner_type == OwnerType.USER]
+
+    # Find the user-specific KEY limit
+    key_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.KEY), None)
+
+    # Verify KEY limit exists and has correct values
+    assert key_limit is not None
+    assert key_limit.max_value == DEFAULT_KEYS_PER_USER
+    assert key_limit.limited_by == LimitSource.DEFAULT
+    assert key_limit.owner_type == OwnerType.USER
+    assert key_limit.owner_id == user_id
+
+    # Verify that BUDGET and RPM limits are inherited from team (not user-specific)
+    budget_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.BUDGET), None)
+    rpm_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.RPM), None)
+    assert budget_limit is None  # Should be inherited from team, not user-specific
+    assert rpm_limit is None     # Should be inherited from team, not user-specific
+
+
+def test_create_user_does_not_create_limits_when_disabled(client, admin_token, test_team, db):
+    """
+    Given: ENABLE_LIMITS is false
+    When: A new user is created
+    Then: No default limits should be created for the user
+    """
+    # Disable limits for this test
+    settings.ENABLE_LIMITS = False
+
+    # Create a new user in the team
+    response = client.post(
+        "/users/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "email": "newuser@example.com",
+            "password": "newpassword",
+            "team_id": test_team.id
+        }
+    )
+
+    assert response.status_code == 201
+    user_data = response.json()
+    user_id = user_data["id"]
+
+    # Verify the user was created
+    db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
+    assert db_user is not None
+
+    # Verify that no user-specific limits were created
+    user_limits = db.query(DBLimitedResource).filter(
+        DBLimitedResource.owner_type == OwnerType.USER,
+        DBLimitedResource.owner_id == user_id
+    ).all()
+
+    assert len(user_limits) == 0
+
+
+def test_sign_in_creates_user_with_default_limits(client, db):
+    """
+    Given: A new user signs in via the sign-in endpoint (auto-creation)
+    When: The sign-in endpoint creates a new user and team
+    Then: Default limits should be created for the user
+
+    This test ensures that when a new user is auto-created during sign-in,
+    default limits are automatically set up for the user.
+    """
+    # Enable limits for this test
+    settings.ENABLE_LIMITS = True
+
+    # Ensure system default limits exist first
+    from app.core.limit_service import setup_default_limits
+    setup_default_limits(db)
+
+    # First register a user
+    register_response = client.post(
+        "/auth/register",
+        json={
+            "email": "newuser@example.com",
+            "password": "newpassword"
+        }
+    )
+    assert register_response.status_code == 200
+
+    # Then login with the user
+    response = client.post(
+        "/auth/login",
+        data={
+            "username": "newuser@example.com",
+            "password": "newpassword"
+        }
+    )
+
+    assert response.status_code == 200
+    token_data = response.json()
+    assert "access_token" in token_data
+
+    # Find the created user
+    db_user = db.query(DBUser).filter(DBUser.email == "newuser@example.com").first()
+    assert db_user is not None
+
+    # Verify that default limits were created for the user
+    limit_service = LimitService(db)
+    user_limits = limit_service.get_user_limits(db_user)
+
+    # Should have user-specific limits for KEY only - BUDGET and RPM are inherited from team
+    user_specific_limits = [limit for limit in user_limits if limit.owner_type == OwnerType.USER]
+
+    # Find the user-specific KEY limit
+    key_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.KEY), None)
+
+    # Verify KEY limit exists and has correct values
+    assert key_limit is not None
+    assert key_limit.max_value == DEFAULT_KEYS_PER_USER
+    assert key_limit.limited_by == LimitSource.DEFAULT
+    assert key_limit.owner_type == OwnerType.USER
+    assert key_limit.owner_id == db_user.id
+
+    # Verify that BUDGET and RPM limits are inherited from team (not user-specific)
+    budget_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.BUDGET), None)
+    rpm_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.RPM), None)
+    assert budget_limit is None  # Should be inherited from team, not user-specific
+    assert rpm_limit is None     # Should be inherited from team, not user-specific
