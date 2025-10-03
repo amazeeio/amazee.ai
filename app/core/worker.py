@@ -308,114 +308,56 @@ async def reconcile_team_keys(
                     else:
                         service_key_total += current_spend
 
-                    # Check for renewal period update if renewal_period_days is provided
-                    if renewal_period_days is not None:
-                        # Check current values and only update if they don't match the parameters
-                        current_budget_duration = info.get("budget_duration")
-                        current_max_budget = info.get("max_budget")
-                        budget_reset_at = info.get("budget_reset_at")
-                        expiry_date = info.get("expires")
-
+                    if expire_keys:
+                        logger.info(f"Key {key.id} expiring, setting duration to 0 days")
+                        await litellm_service.update_key_duration(key.litellm_token, "0d")
+                    else:
+                        update_data = {"litellm_token": key.litellm_token}
                         needs_update = False
-                        data = {"litellm_token": key.litellm_token}
-
-                        # Rule 1: If the budget amount mis-matches, always update that field
+                        current_max_budget = info.get("max_budget")
+                        # If the budget amount mis-matches, always update that field
                         if max_budget_amount is not None and current_max_budget != max_budget_amount:
-                            data["budget_amount"] = max_budget_amount
+                            update_data["budget_amount"] = max_budget_amount
                             needs_update = True
+                            logger.info(f"Key {key.id} has incorrect budget of {current_max_budget}, will change to {max_budget_amount}")
 
-                        # Rule 2: If the key is expired or expires within the next month, always update the budget duration
-                        if expiry_date is not None:
-                            try:
-                                # Parse the expiry date string into a datetime object
-                                parsed_expiry_date = datetime.fromisoformat(expiry_date.replace('Z', '+00:00'))
-                                # Check if key is expired or expires within the next month (30 days)
-                                one_month_from_now = current_time + timedelta(days=30)
-                                if parsed_expiry_date <= one_month_from_now:
-                                    needs_update = True
-                                    data["budget_duration"] = f"{renewal_period_days}d"
-                                    if parsed_expiry_date < current_time:
-                                        logger.info(f"Key {key.id} budget update triggered by expired key")
-                                    else:
-                                        logger.info(f"Key {key.id} budget update triggered by key expiring within next month (expires: {parsed_expiry_date})")
-                            except (ValueError, AttributeError) as e:
-                                logger.warning(f"Error parsing expiry date for key {key.id}: {str(e)}")
-
-                        # Rule 3: If budget_duration is None, always update it
-                        if current_budget_duration is None:
-                            data["budget_duration"] = f"{renewal_period_days}d"
+                        current_budget_duration = info.get("budget_duration")
+                        # If budget_duration is None, always update it
+                        if current_budget_duration is None and renewal_period_days is not None:
+                            update_data["budget_duration"] = f"{renewal_period_days}d"
                             needs_update = True
                             logger.info(f"Key {key.id} budget update triggered by None budget_duration")
-
-                        # Rule 4: If budget_duration is "0d", always update it (fix for expired keys)
-                        elif current_budget_duration == "0d":
-                            data["budget_duration"] = f"{renewal_period_days}d"
+                        # If budget_duration is "0d", always update it (fix for expired keys)
+                        elif current_budget_duration == "0d" and renewal_period_days is not None:
+                            update_data["budget_duration"] = f"{renewal_period_days}d"
                             needs_update = True
                             logger.info(f"Key {key.id} budget update triggered by 0d duration (expired key fix)")
 
-                        # Rule 5: If the duration mismatches, and the next reset time is within an hour of (now + current duration) then reset the duration
-                        else:
-                            expected_budget_duration = f"{renewal_period_days}d"
-                            if current_budget_duration != expected_budget_duration:
-                                # Check if reset time alignment heuristic is met
-                                should_update_duration = False
+                        expiry_date = info.get("expires")
+                        if expiry_date and renewal_period_days is not None:
+                            parsed_expiry_date = datetime.fromisoformat(expiry_date.replace('Z', '+00:00'))
+                            this_month = current_time + timedelta(days=30)
+                            if parsed_expiry_date <= this_month:
+                                update_data["budget_duration"] = f"{renewal_period_days}d"
+                                needs_update = True
+                                logger.info(f"Key {key.id} expires at {expiry_date}, updating to extend life.")
 
-                                if budget_reset_at:
-                                    try:
-                                        # Parse the current budget duration to get the time delta
-                                        # Support formats like: 10m, 2h, 30d, etc.
-                                        duration_match = re.match(r'(\d+)([mhd])', current_budget_duration)
-                                        if duration_match:
-                                            duration_value = int(duration_match.group(1))
-                                            duration_unit = duration_match.group(2)
-
-                                            # Calculate the time delta based on the unit
-                                            if duration_unit == 'm':
-                                                current_period_end = current_time + timedelta(minutes=duration_value)
-                                            elif duration_unit == 'h':
-                                                current_period_end = current_time + timedelta(hours=duration_value)
-                                            elif duration_unit == 'd':
-                                                current_period_end = current_time + timedelta(days=duration_value)
-                                            else:
-                                                # Unknown unit, skip duration update
-                                                logger.warning(f"Unknown duration unit '{duration_unit}' for key {key.id}, skipping duration update")
-                                                continue
-
-                                            # Parse the budget reset time
-                                            reset_time = datetime.fromisoformat(budget_reset_at.replace('Z', '+00:00'))
-
-                                            # Check if reset time is within 1 hour of current period end
-                                            time_diff = abs((reset_time - current_period_end).total_seconds())
-                                            if time_diff <= 3600:  # 1 hour in seconds
-                                                should_update_duration = True
-                                                logger.info(f"Key {key.id} duration update triggered by reset time alignment: reset at {reset_time}, period ends at {current_period_end}")
-                                    except (ValueError, AttributeError) as e:
-                                        logger.warning(f"Error parsing budget reset time for key {key.id}: {str(e)}")
-
-                                if should_update_duration:
-                                    data["budget_duration"] = expected_budget_duration
-                                    needs_update = True
-                        # Update when needs_update is True
                         if needs_update:
                             # Determine what the new budget_duration will be for logging
-                            new_budget_duration = data.get("budget_duration", current_budget_duration)
+                            new_budget_duration = update_data.get("budget_duration", current_budget_duration)
                             logger.info(f"Key {key.id} budget update triggered: changing from {current_budget_duration}, {current_max_budget} to {new_budget_duration}, {max_budget_amount}")
 
                             # Extract litellm_token and other parameters for update_budget call
-                            litellm_token = data.pop("litellm_token")
-                            budget_duration = data.get("budget_duration")
-                            budget_amount = data.get("budget_amount")
+                            litellm_token = update_data.pop("litellm_token")
+                            budget_duration = update_data.get("budget_duration")
+                            budget_amount = update_data.get("budget_amount")
 
                             # Call update_budget with correct parameter order
+                            # Always pass budget_duration as second positional argument (can be None)
                             await litellm_service.update_budget(litellm_token, budget_duration, budget_amount=budget_amount)
                             logger.info(f"Updated key {key.id} budget settings")
                         else:
                             logger.info(f"Key {key.id} budget settings already match the expected values, no update needed")
-
-                    # Set the key duration to 0 days to end its usability.
-                    if expire_keys:
-                        logger.info(f"Key {key.id} expiring, setting duration to 0 days")
-                        await litellm_service.update_key_duration(key.litellm_token, "0d")
 
                     # Add to team total
                     team_total += current_spend
