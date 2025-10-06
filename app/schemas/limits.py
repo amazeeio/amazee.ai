@@ -11,7 +11,8 @@ class LimitType(Enum):
 
 class ResourceType(Enum):
     # CP Type Resources
-    KEY = "ai_key"
+    USER_KEY = "user_key"        # Personal keys owned by users
+    SERVICE_KEY = "service_key"  # Team-owned service keys
     USER = "user"
     VECTOR_DB = "vector_db"
     GPT_INSTANCE = "gpt_instance"

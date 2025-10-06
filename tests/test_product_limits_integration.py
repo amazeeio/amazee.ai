@@ -38,7 +38,7 @@ def test_product_application_creates_product_limits(db: Session, test_team, test
     limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
-        resource_type=ResourceType.KEY,
+        resource_type=ResourceType.SERVICE_KEY,
         limit_type=LimitType.CONTROL_PLANE,
         unit=UnitType.COUNT,
         max_value=float(test_product.total_key_count),
@@ -147,7 +147,7 @@ def test_product_cannot_override_manual_limits(db: Session, test_team):
     limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
-        resource_type=ResourceType.KEY,
+        resource_type=ResourceType.SERVICE_KEY,
         limit_type=LimitType.CONTROL_PLANE,
         unit=UnitType.COUNT,
         max_value=20.0,
@@ -160,7 +160,7 @@ def test_product_cannot_override_manual_limits(db: Session, test_team):
     assert len(team_limits) == 2
 
     user_limit = next(l for l in team_limits if l.resource == ResourceType.USER)
-    key_limit = next(l for l in team_limits if l.resource == ResourceType.KEY)
+    key_limit = next(l for l in team_limits if l.resource == ResourceType.SERVICE_KEY)
 
     assert user_limit.limited_by == LimitSource.MANUAL
     assert key_limit.limited_by == LimitSource.PRODUCT
@@ -219,7 +219,7 @@ def test_multiple_products_uses_highest_limits(db: Session, test_team):
     limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
-        resource_type=ResourceType.KEY,
+        resource_type=ResourceType.SERVICE_KEY,
         limit_type=LimitType.CONTROL_PLANE,
         unit=UnitType.COUNT,
         max_value=10.0,  # Higher value from basic
@@ -232,7 +232,7 @@ def test_multiple_products_uses_highest_limits(db: Session, test_team):
     assert len(team_limits) == 2
 
     user_limit = next(l for l in team_limits if l.resource == ResourceType.USER)
-    key_limit = next(l for l in team_limits if l.resource == ResourceType.KEY)
+    key_limit = next(l for l in team_limits if l.resource == ResourceType.SERVICE_KEY)
 
     assert user_limit.max_value == 10.0  # From premium plan
     assert key_limit.max_value == 10.0   # From basic plan

@@ -1005,7 +1005,7 @@ def test_check_key_limits_with_limit_service(db, test_team):
     limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
-        resource_type=ResourceType.KEY,
+        resource_type=ResourceType.SERVICE_KEY,
         limit_type=LimitType.CONTROL_PLANE,
         unit=UnitType.COUNT,
         max_value=10.0,
@@ -1027,7 +1027,7 @@ def test_check_key_limits_with_limit_service_at_capacity(db, test_team):
     limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
-        resource_type=ResourceType.KEY,
+        resource_type=ResourceType.SERVICE_KEY,
         limit_type=LimitType.CONTROL_PLANE,
         unit=UnitType.COUNT,
         max_value=5.0,
@@ -1059,7 +1059,7 @@ def test_check_key_limits_fallback_creates_limit(db, test_team, test_product):
     # Verify no limit exists in the service initially
     limit_service = LimitService(db)
     try:
-        limit_service.increment_resource(OwnerType.TEAM, test_team.id, ResourceType.KEY)
+        limit_service.increment_resource(OwnerType.TEAM, test_team.id, ResourceType.SERVICE_KEY)
         assert False, "Should have raised LimitNotFoundError"
     except LimitNotFoundError:
         pass  # Expected
@@ -1073,7 +1073,7 @@ def test_check_key_limits_fallback_creates_limit(db, test_team, test_product):
     team_limits = limit_service.get_team_limits(team)
 
     # Should have a KEY limit now
-    key_limits = [limit for limit in team_limits if limit.resource == ResourceType.KEY]
+    key_limits = [limit for limit in team_limits if limit.resource == ResourceType.SERVICE_KEY]
     assert len(key_limits) == 1
     key_limit = key_limits[0]
     # The fallback should correctly use service_key_count (not total_key_count)
@@ -1097,7 +1097,7 @@ def test_check_key_limits_fallback_creates_user_limit(db, test_team, test_produc
     # Verify no limit exists in the service initially
     limit_service = LimitService(db)
     try:
-        limit_service.increment_resource(OwnerType.USER, test_team_user.id, ResourceType.KEY)
+        limit_service.increment_resource(OwnerType.USER, test_team_user.id, ResourceType.SERVICE_KEY)
         assert False, "Should have raised LimitNotFoundError"
     except LimitNotFoundError:
         pass  # Expected
@@ -1109,8 +1109,8 @@ def test_check_key_limits_fallback_creates_user_limit(db, test_team, test_produc
     # Verify limit was created in the service by checking the user limits
     user_limits = limit_service.get_user_limits(test_team_user)
 
-    # Should have a KEY limit now
-    key_limits = [limit for limit in user_limits if limit.resource == ResourceType.KEY]
+    # Should have a USER_KEY limit now
+    key_limits = [limit for limit in user_limits if limit.resource == ResourceType.USER_KEY]
     assert len(key_limits) == 1
     key_limit = key_limits[0]
     # The fallback should correctly use product values
@@ -1470,7 +1470,7 @@ def test_get_product_max_by_type_multiple_products(db, test_team):
     limit_service = LimitService(db)
     max_vectors = limit_service.get_team_product_limit_for_resource(test_team.id, ResourceType.VECTOR_DB)
     max_users = limit_service.get_team_product_limit_for_resource(test_team.id, ResourceType.USER)
-    max_keys = limit_service.get_team_product_limit_for_resource(test_team.id, ResourceType.KEY)
+    max_keys = limit_service.get_team_product_limit_for_resource(test_team.id, ResourceType.SERVICE_KEY)
     max_budget = limit_service.get_team_product_limit_for_resource(test_team.id, ResourceType.BUDGET)
     assert max_vectors == 3
     assert max_users == 4

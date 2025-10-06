@@ -1,9 +1,9 @@
 import pytest
 from datetime import datetime, UTC
 from app.db.models import DBLimitedResource, DBTeamProduct
-from app.core.limit_service import LimitService, LimitNotFoundError
+from app.core.limit_service import LimitService
 from app.schemas.limits import LimitType, ResourceType, UnitType, OwnerType, LimitSource
-from app.core.limit_service import DEFAULT_USER_COUNT, DEFAULT_KEYS_PER_USER
+from app.core.limit_service import DEFAULT_USER_COUNT, DEFAULT_SERVICE_KEYS
 
 
 def test_get_team_limits_returns_all_limits(db, test_team):
@@ -24,9 +24,9 @@ def test_get_team_limits_returns_all_limits(db, test_team):
         limited_by=LimitSource.PRODUCT,
         created_at=datetime.now(UTC)
     )
-    key_limit = DBLimitedResource(
+    service_key_limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
-        resource=ResourceType.KEY,
+        resource=ResourceType.SERVICE_KEY,
         unit=UnitType.COUNT,
         max_value=10.0,
         current_value=3.0,
@@ -36,7 +36,7 @@ def test_get_team_limits_returns_all_limits(db, test_team):
         created_at=datetime.now(UTC)
     )
     db.add(user_limit)
-    db.add(key_limit)
+    db.add(service_key_limit)
     db.commit()
 
     limit_service = LimitService(db)
@@ -48,7 +48,7 @@ def test_get_team_limits_returns_all_limits(db, test_team):
     # Check that we have both limits
     resources = [limit.resource for limit in team_limits]
     assert ResourceType.USER in resources
-    assert ResourceType.KEY in resources
+    assert ResourceType.SERVICE_KEY in resources
 
 
 def test_increment_resource_cp_limit_within_capacity(db, test_team):
@@ -60,7 +60,7 @@ def test_increment_resource_cp_limit_within_capacity(db, test_team):
     # Create a limit with available capacity
     limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
-        resource=ResourceType.KEY,
+        resource=ResourceType.SERVICE_KEY,
         unit=UnitType.COUNT,
         max_value=10.0,
         current_value=5.0,
@@ -73,7 +73,7 @@ def test_increment_resource_cp_limit_within_capacity(db, test_team):
     db.commit()
 
     limit_service = LimitService(db)
-    result = limit_service.increment_resource(OwnerType.TEAM, test_team.id, ResourceType.KEY)
+    result = limit_service.increment_resource(OwnerType.TEAM, test_team.id, ResourceType.SERVICE_KEY)
 
     assert result is True
 
@@ -265,7 +265,7 @@ def test_increment_resource_cp_non_count_type_should_fail(db, test_team):
     # Create a hypothetical CP limit with non-COUNT unit (this shouldn't exist in practice)
     limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
-        resource=ResourceType.KEY,  # Using KEY but with wrong unit type for testing
+        resource=ResourceType.SERVICE_KEY,  # Using KEY but with wrong unit type for testing
         unit=UnitType.DOLLAR,  # This should not be allowed for CP resources
         max_value=100.0,
         current_value=50.0,
@@ -281,7 +281,7 @@ def test_increment_resource_cp_non_count_type_should_fail(db, test_team):
 
     # This should raise an exception because only COUNT type resources can be incremented
     with pytest.raises(ValueError, match="Only COUNT type resources can be incremented/decremented"):
-        limit_service.increment_resource(OwnerType.TEAM, test_team.id, ResourceType.KEY)
+        limit_service.increment_resource(OwnerType.TEAM, test_team.id, ResourceType.SERVICE_KEY)
 
 
 def test_decrement_resource_cp_non_count_type_should_fail(db, test_team):
@@ -364,7 +364,7 @@ def test_overwrite_limit_product_can_override_default(db, test_team):
     # Create a DEFAULT limit
     limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
-        resource=ResourceType.KEY,
+        resource=ResourceType.SERVICE_KEY,
         unit=UnitType.COUNT,
         max_value=6.0,
         current_value=1.0,
@@ -380,7 +380,7 @@ def test_overwrite_limit_product_can_override_default(db, test_team):
     result = limit_service.set_limit(
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
-        resource_type=ResourceType.KEY,
+        resource_type=ResourceType.SERVICE_KEY,
         limit_type=LimitType.CONTROL_PLANE,
         unit=UnitType.COUNT,
         max_value=15.0,
@@ -547,7 +547,7 @@ def test_reset_user_limit_uses_team(db, test_team_user, test_team, test_product)
     # Create a MANUAL limit first
     limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
-        resource=ResourceType.KEY,
+        resource=ResourceType.SERVICE_KEY,
         unit=UnitType.COUNT,
         max_value=8.0,
         current_value=3.0,
@@ -578,7 +578,7 @@ def test_reset_team_limits_handles_limited_resource_mapping_error(db, test_team)
     # Create a MANUAL limit first
     limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
-        resource=ResourceType.KEY,
+        resource=ResourceType.SERVICE_KEY,
         unit=UnitType.COUNT,
         max_value=8.0,
         current_value=3.0,
@@ -600,7 +600,7 @@ def test_reset_team_limits_handles_limited_resource_mapping_error(db, test_team)
     assert len(result) > 0
 
     # Check that the limit was reset (should be DEFAULT or PRODUCT, not MANUAL)
-    key_limit = next((l for l in result if l.resource == ResourceType.KEY), None)
+    key_limit = next((l for l in result if l.resource == ResourceType.SERVICE_KEY), None)
     assert key_limit is not None
     assert key_limit.limited_by in [LimitSource.DEFAULT, LimitSource.PRODUCT]
     assert key_limit.set_by == "reset"
@@ -615,7 +615,7 @@ def test_reset_system_user_limit_does_nothing(db, test_user):
     # Create a MANUAL limit first
     limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
-        resource=ResourceType.KEY,
+        resource=ResourceType.SERVICE_KEY,
         unit=UnitType.COUNT,
         max_value=8.0,
         current_value=3.0,
@@ -641,7 +641,7 @@ def test_user_inherits_team_limits(db, test_team, test_team_user):
     # Create team limits
     team_limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
-        resource=ResourceType.KEY,
+        resource=ResourceType.SERVICE_KEY,
         unit=UnitType.COUNT,
         max_value=5.0,
         current_value=2.0,
@@ -658,7 +658,7 @@ def test_user_inherits_team_limits(db, test_team, test_team_user):
 
     # User should inherit team limits
     assert len(user_limits) == 1
-    assert user_limits[0].resource == ResourceType.KEY
+    assert user_limits[0].resource == ResourceType.SERVICE_KEY
     assert user_limits[0].max_value == 5.0
 
 def test_user_override_supersedes_team_limit(db, test_team, test_team_user):
@@ -670,7 +670,7 @@ def test_user_override_supersedes_team_limit(db, test_team, test_team_user):
     # Create team limit
     team_limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
-        resource=ResourceType.KEY,
+        resource=ResourceType.SERVICE_KEY,
         unit=UnitType.COUNT,
         max_value=5.0,
         current_value=2.0,
@@ -683,7 +683,7 @@ def test_user_override_supersedes_team_limit(db, test_team, test_team_user):
     # Create user override
     user_limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
-        resource=ResourceType.KEY,
+        resource=ResourceType.SERVICE_KEY,
         unit=UnitType.COUNT,
         max_value=10.0,
         current_value=3.0,
@@ -703,7 +703,7 @@ def test_user_override_supersedes_team_limit(db, test_team, test_team_user):
 
     # Should return user-specific limit, not team limit
     assert len(user_limits) == 1
-    assert user_limits[0].resource == ResourceType.KEY
+    assert user_limits[0].resource == ResourceType.SERVICE_KEY
     assert user_limits[0].max_value == 10.0
     assert user_limits[0].limited_by == LimitSource.MANUAL
 
@@ -715,7 +715,7 @@ def test_user_limits_not_included_in_team_limits(db, test_team, test_team_user, 
     """
     user_limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
-        resource=ResourceType.KEY,
+        resource=ResourceType.SERVICE_KEY,
         unit=UnitType.COUNT,
         max_value=10.0,
         current_value=3.0,
@@ -863,7 +863,7 @@ def test_set_team_limits_creates_default_limits(db, test_team):
     # Should have all the supported resource types
     expected_resources = {
         ResourceType.USER,
-        ResourceType.KEY,
+        ResourceType.SERVICE_KEY,
         ResourceType.VECTOR_DB,
         ResourceType.BUDGET,
         ResourceType.RPM
@@ -905,11 +905,11 @@ def test_set_team_limits_with_products_uses_product_limits(db, test_team, test_p
     assert user_limit.max_value == test_product.user_count
     assert user_limit.limited_by == LimitSource.PRODUCT
 
-    # Find the KEY limit and check it uses product value
-    key_limit = next((l for l in team_limits if l.resource == ResourceType.KEY), None)
-    assert key_limit is not None
-    assert key_limit.max_value == test_product.service_key_count
-    assert key_limit.limited_by == LimitSource.PRODUCT
+    # Find the SERVICE_KEY limit and check it uses product value
+    service_key_limit = next((l for l in team_limits if l.resource == ResourceType.SERVICE_KEY), None)
+    assert service_key_limit is not None
+    assert service_key_limit.max_value == test_product.service_key_count
+    assert service_key_limit.limited_by == LimitSource.PRODUCT
 
 
 def test_set_team_limits_preserves_manual_limits(db, test_team):
@@ -959,9 +959,9 @@ def test_set_team_limits_updates_product_limits(db, test_team, test_product):
     # Create default limits first
     default_limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
-        resource=ResourceType.KEY,
+        resource=ResourceType.SERVICE_KEY,
         unit=UnitType.COUNT,
-        max_value=DEFAULT_KEYS_PER_USER,  # Default value
+        max_value=DEFAULT_SERVICE_KEYS,  # Default value
         current_value=1.0,
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
@@ -986,10 +986,10 @@ def test_set_team_limits_updates_product_limits(db, test_team, test_product):
     team_limits = limit_service.get_team_limits(test_team)
 
     # Check that the limit was updated to use product value
-    key_limit = next((l for l in team_limits if l.resource == ResourceType.KEY), None)
-    assert key_limit is not None
-    assert key_limit.max_value == test_product.service_key_count
-    assert key_limit.limited_by == LimitSource.PRODUCT
+    service_key_limit = next((l for l in team_limits if l.resource == ResourceType.SERVICE_KEY), None)
+    assert service_key_limit is not None
+    assert service_key_limit.max_value == test_product.service_key_count
+    assert service_key_limit.limited_by == LimitSource.PRODUCT
 
 
 def test_set_team_limits_preserves_current_value_when_updating(db, test_team, test_product):
@@ -1110,7 +1110,7 @@ def test_set_current_value_control_plane_count_already_set_raises_error(db, test
     # Create a CONTROL_PLANE COUNT limit with non-zero value
     key_limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
-        resource=ResourceType.KEY,
+        resource=ResourceType.SERVICE_KEY,
         unit=UnitType.COUNT,
         max_value=10.0,
         current_value=5.0,
@@ -1234,7 +1234,7 @@ def test_get_team_limits_returns_team_limits_with_correct_owner_info(db, test_te
     # Create a system limit for KEY resource type
     system_limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
-        resource=ResourceType.KEY,
+        resource=ResourceType.SERVICE_KEY,
         unit=UnitType.COUNT,
         max_value=10.0,
         current_value=0.0,
@@ -1260,7 +1260,7 @@ def test_get_team_limits_returns_team_limits_with_correct_owner_info(db, test_te
     limit = team_limits[0]
     assert limit.owner_type == OwnerType.TEAM, f"Expected TEAM, got {limit.owner_type}"
     assert limit.owner_id == test_team.id, f"Expected team_id {test_team.id}, got {limit.owner_id}"
-    assert limit.resource == ResourceType.KEY
+    assert limit.resource == ResourceType.SERVICE_KEY
     assert limit.max_value == 10.0
     assert limit.limited_by == LimitSource.DEFAULT
 
@@ -1302,7 +1302,7 @@ def test_system_limit_change_updates_default_limits(db, test_team, test_team_use
     # Create user default limit (inherits from system)
     user_default_limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
-        resource=ResourceType.KEY,
+        resource=ResourceType.SERVICE_KEY,
         unit=UnitType.COUNT,
         max_value=1.0,  # Default user key limit
         current_value=0.0,
@@ -1316,7 +1316,7 @@ def test_system_limit_change_updates_default_limits(db, test_team, test_team_use
     # Create system limit for KEY resource
     initial_key_system_limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
-        resource=ResourceType.KEY,
+        resource=ResourceType.SERVICE_KEY,
         unit=UnitType.COUNT,
         max_value=1.0,
         current_value=0.0,
@@ -1348,7 +1348,7 @@ def test_system_limit_change_updates_default_limits(db, test_team, test_team_use
     limit_service.set_limit(
         owner_type=OwnerType.SYSTEM,
         owner_id=0,
-        resource_type=ResourceType.KEY,
+        resource_type=ResourceType.SERVICE_KEY,
         limit_type=LimitType.CONTROL_PLANE,
         unit=UnitType.COUNT,
         max_value=NEW_SYSTEM_KEY_LIMIT,
@@ -1365,7 +1365,7 @@ def test_system_limit_change_updates_default_limits(db, test_team, test_team_use
 
     # Verify that user default limit now reflects the new system default
     user_limits = limit_service.get_user_limits(test_team_user)
-    key_limit = next((l for l in user_limits if l.resource == ResourceType.KEY), None)
+    key_limit = next((l for l in user_limits if l.resource == ResourceType.SERVICE_KEY), None)
     assert key_limit is not None
     assert key_limit.max_value == NEW_SYSTEM_KEY_LIMIT
     assert key_limit.limited_by == LimitSource.DEFAULT

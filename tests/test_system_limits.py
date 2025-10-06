@@ -260,7 +260,7 @@ def test_get_system_limits(db: Session):
         ),
         DBLimitedResource(
             limit_type=LimitType.CONTROL_PLANE,
-            resource=ResourceType.KEY,
+            resource=ResourceType.SERVICE_KEY,
             unit=UnitType.COUNT,
             max_value=6.0,
             current_value=0.0,

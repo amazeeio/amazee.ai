@@ -1802,7 +1802,7 @@ async def test_monitor_teams_sql_count_error(mock_ses, mock_litellm_class, mock_
         LimitedResource(
             id=2,
             limit_type=LimitType.CONTROL_PLANE,
-            resource=ResourceType.KEY,
+            resource=ResourceType.SERVICE_KEY,
             unit=UnitType.COUNT,
             max_value=5.0,
             current_value=0.0,

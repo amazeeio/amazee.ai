@@ -30,7 +30,7 @@ def test_setup_default_limits_creates_all_defaults(db: Session):
     # Check specific limits exist
     resource_types = [limit.resource for limit in system_limits]
     assert ResourceType.USER in resource_types
-    assert ResourceType.KEY in resource_types
+    assert ResourceType.SERVICE_KEY in resource_types
     assert ResourceType.VECTOR_DB in resource_types
     assert ResourceType.BUDGET in resource_types
     assert ResourceType.RPM in resource_types
@@ -62,9 +62,9 @@ def test_setup_default_limits_uses_current_constant_values(db: Session):
     assert user_limit is not None
     assert user_limit.max_value == 1.0  # DEFAULT_USER_COUNT
 
-    key_limit = next((l for l in system_limits if l.resource == ResourceType.KEY), None)
+    key_limit = next((l for l in system_limits if l.resource == ResourceType.SERVICE_KEY), None)
     assert key_limit is not None
-    assert key_limit.max_value == 6.0  # DEFAULT_TOTAL_KEYS
+    assert key_limit.max_value == 5.0  # DEFAULT_SERVICE_KEYS
 
     vector_db_limit = next((l for l in system_limits if l.resource == ResourceType.VECTOR_DB), None)
     assert vector_db_limit is not None

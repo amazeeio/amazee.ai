@@ -1470,7 +1470,7 @@ def test_register_team_creates_default_limits(client, db):
     # Should have all the expected resource types
     expected_resources = {
         ResourceType.USER,
-        ResourceType.KEY,
+        ResourceType.SERVICE_KEY,
         ResourceType.VECTOR_DB,
         ResourceType.BUDGET,
         ResourceType.RPM
@@ -1489,7 +1489,7 @@ def test_register_team_creates_default_limits(client, db):
     user_limit = next(limit for limit in team_limits if limit.resource == ResourceType.USER)
     assert user_limit.max_value == 1.0  # DEFAULT_USER_COUNT
 
-    key_limit = next(limit for limit in team_limits if limit.resource == ResourceType.KEY)
+    key_limit = next(limit for limit in team_limits if limit.resource == ResourceType.SERVICE_KEY)
     assert key_limit.max_value == 5.0  # DEFAULT_SERVICE_KEYS
 
     vector_db_limit = next(limit for limit in team_limits if limit.resource == ResourceType.VECTOR_DB)

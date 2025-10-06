@@ -154,7 +154,7 @@ def test_get_team_limits_api_returns_all_limits(client: TestClient, admin_token,
     )
     key_limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
-        resource=ResourceType.KEY,
+        resource=ResourceType.SERVICE_KEY,
         unit=UnitType.COUNT,
         max_value=10.0,
         current_value=3.0,
@@ -180,7 +180,7 @@ def test_get_team_limits_api_returns_all_limits(client: TestClient, admin_token,
     # Check that we have both limits
     resources = [limit["resource"] for limit in data]
     assert "user" in resources
-    assert "ai_key" in resources
+    assert "service_key" in resources
 
 
 def test_api_creates_manual_limits_for_teams_and_users(client: TestClient, admin_token, test_team):
@@ -221,7 +221,7 @@ def test_api_automatically_handles_manual_limits(client: TestClient, admin_token
         json={
             "owner_type": "team",
             "owner_id": test_team.id,
-            "resource_type": "ai_key",
+            "resource_type": "service_key",
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 15.0,
@@ -244,7 +244,7 @@ def test_get_user_limits_api(client: TestClient, admin_token, test_team, test_te
     # Create team limit
     team_limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
-        resource=ResourceType.KEY,
+        resource=ResourceType.SERVICE_KEY,
         unit=UnitType.COUNT,
         max_value=5.0,
         current_value=2.0,
@@ -257,7 +257,7 @@ def test_get_user_limits_api(client: TestClient, admin_token, test_team, test_te
     # Create user override
     user_limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
-        resource=ResourceType.KEY,
+        resource=ResourceType.SERVICE_KEY,
         unit=UnitType.COUNT,
         max_value=10.0,
         current_value=3.0,
@@ -288,7 +288,7 @@ def test_get_user_limits_api(client: TestClient, admin_token, test_team, test_te
 
     # Should return user-specific limit, not team limit
     limit = data[0]
-    assert limit["resource"] == "ai_key"
+    assert limit["resource"] == "service_key"
     assert limit["max_value"] == 10.0
     assert limit["limited_by"] == "manual"
 
@@ -371,7 +371,7 @@ def test_user_limits_are_created_as_manual_limits(client: TestClient, admin_toke
         json={
             "owner_type": "user",
             "owner_id": user_id,
-            "resource_type": "ai_key",
+            "resource_type": "service_key",
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 10.0,
@@ -383,7 +383,7 @@ def test_user_limits_are_created_as_manual_limits(client: TestClient, admin_toke
     data = response.json()
     assert data["owner_type"] == "user"
     assert data["owner_id"] == user_id
-    assert data["resource"] == "ai_key"
+    assert data["resource"] == "service_key"
     assert data["max_value"] == 10.0
     assert data["limited_by"] == "manual"  # User limits should be MANUAL
     assert data["set_by"] == "admin@example.com"

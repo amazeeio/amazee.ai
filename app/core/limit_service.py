@@ -478,7 +478,7 @@ class LimitService:
             raise ValueError(f"Unknown owner type, cannot reset limit {limit}")
 
         # Calculate new values
-        if limit.owner_type == OwnerType.USER and limit.resource == ResourceType.KEY:
+        if limit.owner_type == OwnerType.USER and limit.resource == ResourceType.USER_KEY:
             max_value = self.get_user_product_limit_for_resource(team_id, limit.resource)
             if not max_value:
                 max_value = self.get_default_user_limit_for_resource(limit.resource)
@@ -535,7 +535,7 @@ class LimitService:
         # Only include resources that are supported by the resource_limits functions
         all_resources = [
             ResourceType.USER,
-            ResourceType.KEY,
+            ResourceType.SERVICE_KEY,
             ResourceType.VECTOR_DB,
             ResourceType.BUDGET,
             ResourceType.RPM
@@ -552,7 +552,7 @@ class LimitService:
                 continue
 
             # Determine limit type and unit based on resource
-            if resource_type in [ResourceType.USER, ResourceType.KEY, ResourceType.VECTOR_DB, ResourceType.GPT_INSTANCE]:
+            if resource_type in [ResourceType.USER, ResourceType.SERVICE_KEY, ResourceType.VECTOR_DB, ResourceType.GPT_INSTANCE]:
                 limit_type = LimitType.CONTROL_PLANE
                 unit = UnitType.COUNT
                 # Preserve existing current_value if updating, otherwise set to 0.0
@@ -601,9 +601,9 @@ class LimitService:
         existing_limits = self.get_user_limits(user)
 
         # Define all resource types that need user limits
-        # Users only get KEY limits - BUDGET and RPM are inherited from team
+        # Users only get USER_KEY limits - BUDGET and RPM are inherited from team
         user_resources = [
-            ResourceType.KEY
+            ResourceType.USER_KEY
         ]
 
         # Process each resource type
@@ -617,7 +617,7 @@ class LimitService:
                 continue
 
             # Determine limit type and unit based on resource
-            if resource_type == ResourceType.KEY:
+            if resource_type == ResourceType.USER_KEY:
                 limit_type = LimitType.CONTROL_PLANE
                 unit = UnitType.COUNT
                 # Preserve existing current_value if updating, otherwise set to 0.0
@@ -738,7 +738,7 @@ class LimitService:
         # First try the new service, and short circuit if it works
         try:
             if owner_id is not None:
-                user_limit = self.increment_resource(OwnerType.USER, owner_id, ResourceType.KEY)
+                user_limit = self.increment_resource(OwnerType.USER, owner_id, ResourceType.USER_KEY)
                 if not user_limit:
                     limit_check_route_counter.labels(function='check_key_limits', route='limit_service_at_capacity').inc()
                     raise HTTPException(
@@ -746,7 +746,7 @@ class LimitService:
                         detail=f"Entity has reached their maximum number of AI keys"
                     )
             else:
-                team_limit = self.increment_resource(OwnerType.TEAM, team_id, ResourceType.KEY)
+                team_limit = self.increment_resource(OwnerType.TEAM, team_id, ResourceType.SERVICE_KEY)
                 if not team_limit:
                     limit_check_route_counter.labels(function='check_key_limits', route='limit_service_at_capacity').inc()
                     raise HTTPException(
@@ -799,9 +799,9 @@ class LimitService:
         # At this point we know the limit needs to be created, and the values with which it should be created
         if owner_id is not None:
             # Create user-level limit
-            self.set_limit(OwnerType.USER, owner_id, ResourceType.KEY, LimitType.CONTROL_PLANE, UnitType.COUNT, result.max_keys_per_user, result.current_user_keys)
+            self.set_limit(OwnerType.USER, owner_id, ResourceType.USER_KEY, LimitType.CONTROL_PLANE, UnitType.COUNT, result.max_keys_per_user, result.current_user_keys)
             # Ensure the key in progress is recorded
-            increment = self.increment_resource(OwnerType.USER, owner_id, ResourceType.KEY)
+            increment = self.increment_resource(OwnerType.USER, owner_id, ResourceType.USER_KEY)
             if (result.current_user_keys >= result.max_keys_per_user) and not increment:
                 raise HTTPException(
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,
@@ -809,9 +809,9 @@ class LimitService:
                 )
         else:
             # Create team-level limit
-            self.set_limit(OwnerType.TEAM, team_id, ResourceType.KEY, LimitType.CONTROL_PLANE, UnitType.COUNT, result.max_service_keys, result.current_service_keys)
+            self.set_limit(OwnerType.TEAM, team_id, ResourceType.SERVICE_KEY, LimitType.CONTROL_PLANE, UnitType.COUNT, result.max_service_keys, result.current_service_keys)
             # Ensure the key in progress is recorded
-            increment = self.increment_resource(OwnerType.TEAM, team_id, ResourceType.KEY)
+            increment = self.increment_resource(OwnerType.TEAM, team_id, ResourceType.SERVICE_KEY)
             # Check service key limits (only for team-owned keys)
             if owner_id is None and result.current_service_keys >= result.max_service_keys:
                 raise HTTPException(
@@ -954,8 +954,8 @@ class LimitService:
             return system_limit.max_value
 
         # Fallback to hardcoded constants if no SYSTEM limit exists
-        if resource_type == ResourceType.KEY:
-            return DEFAULT_SERVICE_KEYS  # Changed from DEFAULT_TOTAL_KEYS
+        if resource_type == ResourceType.SERVICE_KEY:
+            return DEFAULT_SERVICE_KEYS
         elif resource_type == ResourceType.VECTOR_DB:
             return DEFAULT_VECTOR_DB_COUNT
         elif resource_type == ResourceType.USER:
@@ -985,13 +985,13 @@ class LimitService:
             return system_limit.max_value
 
         # Fallback to hardcoded constants if no SYSTEM limit exists
-        if resource_type == ResourceType.KEY:
-            return DEFAULT_KEYS_PER_USER  # Different from team service keys
+        if resource_type == ResourceType.USER_KEY:
+            return DEFAULT_KEYS_PER_USER
         else:
             raise ValueError(f"Unsupported resource type \"{resource_type.value}\" for user")
 
     def get_team_product_limit_for_resource(self, team_id: int, resource_type: ResourceType) -> Optional[float]:
-        if resource_type == ResourceType.KEY:
+        if resource_type == ResourceType.SERVICE_KEY:
             # For team keys, use service_key_count
             query = self.db.query(func.max(DBProduct.service_key_count))
         elif resource_type == ResourceType.VECTOR_DB:
@@ -1015,7 +1015,7 @@ class LimitService:
         return result
 
     def get_user_product_limit_for_resource(self, team_id: int, resource_type: ResourceType) -> Optional[float]:
-        if resource_type == ResourceType.KEY:
+        if resource_type == ResourceType.USER_KEY:
             # For user keys, use keys_per_user
             query = self.db.query(func.max(DBProduct.keys_per_user))
         else:
@@ -1063,10 +1063,17 @@ def setup_default_limits(db: Session) -> None:
             'current_value': 0.0
         },
         {
-            'resource': ResourceType.KEY,
+            'resource': ResourceType.USER_KEY,
             'limit_type': LimitType.CONTROL_PLANE,
             'unit': UnitType.COUNT,
-            'max_value': DEFAULT_TOTAL_KEYS,
+            'max_value': DEFAULT_KEYS_PER_USER,
+            'current_value': 0.0
+        },
+        {
+            'resource': ResourceType.SERVICE_KEY,
+            'limit_type': LimitType.CONTROL_PLANE,
+            'unit': UnitType.COUNT,
+            'max_value': DEFAULT_SERVICE_KEYS,
             'current_value': 0.0
         },
         {

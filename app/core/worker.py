@@ -94,7 +94,7 @@ def set_team_and_user_limits(db: Session, team: DBTeam):
         if limit.unit == UnitType.COUNT and limit.current_value == 0.0:
             if limit.resource == ResourceType.USER:
                 value = db.execute(select(func.count()).select_from(DBUser).where(DBUser.team_id == team.id)).scalar()
-            elif limit.resource == ResourceType.KEY:
+            elif limit.resource == ResourceType.SERVICE_KEY:
                 value = db.execute(select(func.count()).select_from(DBPrivateAIKey).where(
                     DBPrivateAIKey.team_id == team.id,
                     DBPrivateAIKey.litellm_token.is_not(None)
@@ -115,7 +115,7 @@ def set_team_and_user_limits(db: Session, team: DBTeam):
         for limit in user_limits:
             # Set the value of the limit if not already set
             if limit.unit == UnitType.COUNT and limit.current_value == 0.0:
-                if limit.resource == ResourceType.KEY:
+                if limit.resource == ResourceType.USER_KEY:
                     # Count keys owned by this specific user
                     value = db.execute(select(func.count()).select_from(DBPrivateAIKey).where(
                         DBPrivateAIKey.owner_id == user.id,

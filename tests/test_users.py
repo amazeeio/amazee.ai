@@ -515,7 +515,7 @@ def test_create_user_creates_default_limits(client, admin_token, test_team, db):
     user_specific_limits = [limit for limit in user_limits if limit.owner_type == OwnerType.USER]
 
     # Find the user-specific KEY limit
-    key_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.KEY), None)
+    key_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.USER_KEY), None)
 
     # Verify KEY limit exists and has correct values
     assert key_limit is not None
@@ -576,7 +576,7 @@ def test_register_user_creates_default_limits(client, db):
     user_specific_limits = [limit for limit in user_limits if limit.owner_type == OwnerType.USER]
 
     # Find the user-specific KEY limit
-    key_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.KEY), None)
+    key_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.USER_KEY), None)
 
     # Verify KEY limit exists and has correct values
     assert key_limit is not None
@@ -680,7 +680,7 @@ def test_sign_in_creates_user_with_default_limits(client, db):
     user_specific_limits = [limit for limit in user_limits if limit.owner_type == OwnerType.USER]
 
     # Find the user-specific KEY limit
-    key_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.KEY), None)
+    key_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.USER_KEY), None)
 
     # Verify KEY limit exists and has correct values
     assert key_limit is not None
