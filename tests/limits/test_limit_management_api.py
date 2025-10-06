@@ -221,7 +221,7 @@ def test_api_automatically_handles_manual_limits(client: TestClient, admin_token
         json={
             "owner_type": "team",
             "owner_id": test_team.id,
-            "resource_type": "service_key",
+                "resource_type": "service_key",
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 15.0,
@@ -371,7 +371,7 @@ def test_user_limits_are_created_as_manual_limits(client: TestClient, admin_toke
         json={
             "owner_type": "user",
             "owner_id": user_id,
-            "resource_type": "service_key",
+                "resource_type": "service_key",
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 10.0,
