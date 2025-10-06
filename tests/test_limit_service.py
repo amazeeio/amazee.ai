@@ -1263,3 +1263,154 @@ def test_get_team_limits_returns_team_limits_with_correct_owner_info(db, test_te
     assert limit.resource == ResourceType.KEY
     assert limit.max_value == 10.0
     assert limit.limited_by == LimitSource.DEFAULT
+
+
+def test_system_limit_change_updates_default_limits(db, test_team, test_team_user):
+    """
+    Given: a user and a team with default limits, and a set of system limits which are de-facto defaults
+    When: The system limit for a resource type is changed
+    Then: The max_value of the default limit on the user and team should reflect the new default
+    """
+    # Create initial system limit for USER resource
+    initial_system_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.USER,
+        unit=UnitType.COUNT,
+        max_value=5.0,
+        current_value=0.0,
+        owner_type=OwnerType.SYSTEM,
+        owner_id=0,
+        limited_by=LimitSource.DEFAULT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(initial_system_limit)
+
+    # Create team default limit (inherits from system)
+    team_default_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.USER,
+        unit=UnitType.COUNT,
+        max_value=5.0,  # Same as system default
+        current_value=2.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.DEFAULT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(team_default_limit)
+
+    # Create user default limit (inherits from system)
+    user_default_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.KEY,
+        unit=UnitType.COUNT,
+        max_value=1.0,  # Default user key limit
+        current_value=0.0,
+        owner_type=OwnerType.USER,
+        owner_id=test_team_user.id,
+        limited_by=LimitSource.DEFAULT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(user_default_limit)
+
+    # Create system limit for KEY resource
+    initial_key_system_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.KEY,
+        unit=UnitType.COUNT,
+        max_value=1.0,
+        current_value=0.0,
+        owner_type=OwnerType.SYSTEM,
+        owner_id=0,
+        limited_by=LimitSource.DEFAULT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(initial_key_system_limit)
+    db.commit()
+
+    limit_service = LimitService(db)
+
+    # Change the system limit for USER resource
+    NEW_SYSTEM_USER_LIMIT = 10.0
+    limit_service.set_limit(
+        owner_type=OwnerType.SYSTEM,
+        owner_id=0,
+        resource_type=ResourceType.USER,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=NEW_SYSTEM_USER_LIMIT,
+        current_value=0.0,
+        limited_by=LimitSource.DEFAULT
+    )
+
+    # Change the system limit for KEY resource
+    NEW_SYSTEM_KEY_LIMIT = 3.0
+    limit_service.set_limit(
+        owner_type=OwnerType.SYSTEM,
+        owner_id=0,
+        resource_type=ResourceType.KEY,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=NEW_SYSTEM_KEY_LIMIT,
+        current_value=0.0,
+        limited_by=LimitSource.DEFAULT
+    )
+
+    # Verify that team default limit now reflects the new system default
+    team_limits = limit_service.get_team_limits(test_team)
+    user_limit = next((l for l in team_limits if l.resource == ResourceType.USER), None)
+    assert user_limit is not None
+    assert user_limit.max_value == NEW_SYSTEM_USER_LIMIT
+    assert user_limit.limited_by == LimitSource.DEFAULT
+
+    # Verify that user default limit now reflects the new system default
+    user_limits = limit_service.get_user_limits(test_team_user)
+    key_limit = next((l for l in user_limits if l.resource == ResourceType.KEY), None)
+    assert key_limit is not None
+    assert key_limit.max_value == NEW_SYSTEM_KEY_LIMIT
+    assert key_limit.limited_by == LimitSource.DEFAULT
+
+
+def test_set_team_and_user_limits_handles_unsupported_resource_types(db, test_team, test_team_user):
+    """
+    Given: A team with COUNT-type limits for unsupported resource types (like GPT_INSTANCE)
+    When: Calling set_team_and_user_limits
+    Then: Should not raise 'cannot access local variable value' error
+
+    This test reproduces the bug where the worker tries to set current_value for COUNT-type
+    limits but doesn't handle all resource types, causing a NameError.
+    """
+    from app.core.worker import set_team_and_user_limits
+
+    # Create a COUNT-type limit for GPT_INSTANCE resource (this is a valid resource type
+    # but not handled in the worker logic)
+    gpt_instance_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.GPT_INSTANCE,  # GPT_INSTANCE is not handled in the worker logic
+        unit=UnitType.COUNT,  # COUNT type triggers the buggy code path
+        max_value=5.0,
+        current_value=0.0,  # This triggers the condition that causes the bug
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.DEFAULT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(gpt_instance_limit)
+
+    # Create a COUNT-type limit for STORAGE resource for a user
+    storage_count_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.STORAGE,  # STORAGE is not handled in the worker logic
+        unit=UnitType.COUNT,  # COUNT type triggers the buggy code path
+        max_value=100.0,
+        current_value=0.0,  # This triggers the condition that causes the bug
+        owner_type=OwnerType.USER,
+        owner_id=test_team_user.id,
+        limited_by=LimitSource.DEFAULT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(storage_count_limit)
+    db.commit()
+
+    # This should not raise a NameError about 'value' variable
+    set_team_and_user_limits(db, test_team)

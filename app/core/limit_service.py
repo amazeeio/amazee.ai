@@ -377,7 +377,7 @@ class LimitService:
 
             self.db.add(existing_limit)
             self.db.commit()
-            return existing_limit
+            result = existing_limit
 
         else:
             # Create new limit
@@ -396,7 +396,41 @@ class LimitService:
 
             self.db.add(new_limit)
             self.db.commit()
-            return new_limit
+            result = new_limit
+
+        # If this is a system limit change, update all default limits for the same resource
+        if limited_resource.owner_type == OwnerType.SYSTEM:
+            self._update_default_limits_for_resource(limited_resource.resource, limited_resource.max_value)
+
+        return result
+
+    def _update_default_limits_for_resource(self, resource_type: ResourceType, new_max_value: float) -> None:
+        """
+        Update all team and user limits that have limited_by=DEFAULT for the given resource type
+        to reflect the new system default value.
+
+        Args:
+            resource_type: The resource type to update
+            new_max_value: The new maximum value from the system limit
+        """
+        # Find all team and user limits with limited_by=DEFAULT for this resource
+        default_limits = self.db.query(DBLimitedResource).filter(
+            and_(
+                DBLimitedResource.resource == resource_type,
+                DBLimitedResource.limited_by == LimitSource.DEFAULT,
+                DBLimitedResource.owner_type.in_([OwnerType.TEAM, OwnerType.USER])
+            )
+        ).all()
+
+        # Update each default limit to reflect the new system default
+        for limit in default_limits:
+            limit.max_value = new_max_value
+            limit.updated_at = datetime.now(UTC)
+            self.db.add(limit)
+
+        if default_limits:
+            self.db.commit()
+            logger.info(f"Updated {len(default_limits)} default limits for resource {resource_type.value} to new system default {new_max_value}")
 
     def reset_team_limits(self, team: DBTeam) -> List[LimitedResource]:
         """

@@ -104,6 +104,9 @@ def set_team_and_user_limits(db: Session, team: DBTeam):
                     DBPrivateAIKey.team_id == team.id,
                     DBPrivateAIKey.database_username.is_not(None)
                 )).scalar()
+            else:
+                # Skip unsupported resource types - they don't need current_value updates
+                continue
             limit_service.set_current_value(limit, value)
 
     # Update current values for COUNT-type user limits
@@ -119,6 +122,9 @@ def set_team_and_user_limits(db: Session, team: DBTeam):
                         DBPrivateAIKey.litellm_token.is_not(None)
                     )).scalar()
                     limit_service.set_current_value(limit, value)
+                else:
+                    # Skip unsupported resource types - they don't need current_value updates
+                    continue
 
 def get_team_keys_by_region(db: Session, team_id: int) -> Dict[DBRegion, List[DBPrivateAIKey]]:
     """
