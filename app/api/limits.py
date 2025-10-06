@@ -68,8 +68,6 @@ async def get_user_limits(
         )
     try:
         return limit_service.get_user_limits(user)
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Error getting user limits for user {user_id}: {str(e)}")
         raise HTTPException(
@@ -107,8 +105,6 @@ async def overwrite_limit(
             set_by=current_user.email  # Always track who made the change, even for system limits
         )
         return LimitedResource.model_validate(result)
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Error overwriting limit: {str(e)}")
         raise HTTPException(
@@ -164,8 +160,6 @@ async def reset_limit(
             request.resource_type
         )
         return LimitedResource.model_validate(result)
-    except HTTPException:
-        raise
     except LimitNotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

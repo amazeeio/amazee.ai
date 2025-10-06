@@ -92,9 +92,28 @@ class LimitService:
 
         limits = list(effective_limits.values())
 
-        limit_schemas = [
-            LimitedResource.model_validate(limit) for limit in limits
-        ]
+        # Convert to schemas and create team limits for system limits
+        limit_schemas = []
+        for limit in limits:
+            # If this is a system limit, create a team limit so the admin can edit it
+            # (Since we're iterating through effective_limits, any system limit here means no team override exists)
+            if limit.owner_type == OwnerType.SYSTEM:
+                # Create a team limit based on the system limit
+                team_limit = self.set_limit(
+                    owner_type=OwnerType.TEAM,
+                    owner_id=team.id,
+                    resource_type=limit.resource,
+                    limit_type=limit.limit_type,
+                    unit=limit.unit,
+                    max_value=limit.max_value,
+                    current_value=limit.current_value,
+                    limited_by=LimitSource.DEFAULT  # Inherit the source from system limit
+                )
+                schema = LimitedResource.model_validate(team_limit)
+            else:
+                schema = LimitedResource.model_validate(limit)
+
+            limit_schemas.append(schema)
 
         return limit_schemas
 
@@ -884,6 +903,23 @@ class LimitService:
         return result.max_key_duration, final_max_spend, final_rpm_limit
 
     def get_default_team_limit_for_resource(self, resource_type: ResourceType) -> float:
+        """
+        Get the default team limit for a resource from the database SYSTEM limits.
+        Falls back to hardcoded constants if no SYSTEM limit exists.
+        """
+        # Try to get from database first
+        system_limit = self.db.query(DBLimitedResource).filter(
+            and_(
+                DBLimitedResource.owner_type == OwnerType.SYSTEM,
+                DBLimitedResource.owner_id == 0,
+                DBLimitedResource.resource == resource_type
+            )
+        ).first()
+
+        if system_limit:
+            return system_limit.max_value
+
+        # Fallback to hardcoded constants if no SYSTEM limit exists
         if resource_type == ResourceType.KEY:
             return DEFAULT_SERVICE_KEYS  # Changed from DEFAULT_TOTAL_KEYS
         elif resource_type == ResourceType.VECTOR_DB:
@@ -898,6 +934,23 @@ class LimitService:
             raise ValueError(f"Unknown resource type {resource_type.value}")
 
     def get_default_user_limit_for_resource(self, resource_type: ResourceType) -> float:
+        """
+        Get the default user limit for a resource from the database SYSTEM limits.
+        Falls back to hardcoded constants if no SYSTEM limit exists.
+        """
+        # Try to get from database first
+        system_limit = self.db.query(DBLimitedResource).filter(
+            and_(
+                DBLimitedResource.owner_type == OwnerType.SYSTEM,
+                DBLimitedResource.owner_id == 0,
+                DBLimitedResource.resource == resource_type
+            )
+        ).first()
+
+        if system_limit:
+            return system_limit.max_value
+
+        # Fallback to hardcoded constants if no SYSTEM limit exists
         if resource_type == ResourceType.KEY:
             return DEFAULT_KEYS_PER_USER  # Different from team service keys
         else:
@@ -916,7 +969,8 @@ class LimitService:
         elif resource_type == ResourceType.RPM:
             query = self.db.query(func.max(DBProduct.rpm_per_key))
         else:
-            raise ValueError(f"Unknown resource type {resource_type.value}")
+            # Allow for default values which might not be included on a product.
+            return None
 
         result = query.join(
             DBTeamProduct, DBTeamProduct.product_id == DBProduct.id

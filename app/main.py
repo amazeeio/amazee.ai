@@ -67,6 +67,8 @@ async def lifespan(app: FastAPI):
                 release_lock(lock_name, db)
             except Exception as release_error:
                 logger.error(f"Error releasing lock: {str(release_error)}")
+        finally:
+            db.close()
 
     # Set schedule based on environment
     if settings.ENV_SUFFIX == "local":

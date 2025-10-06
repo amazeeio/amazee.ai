@@ -676,6 +676,7 @@ export default function ProductsPage() {
               ownerId="0"
               queryKey={['system-limits']}
               showResetAll={false}
+              allowIndividualReset={false}
             />
           )}
         </TabsContent>

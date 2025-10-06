@@ -1164,3 +1164,102 @@ def test_set_current_value_updates_correct_attribute(db, test_team):
     assert budget_limit.current_value == 123.45
     # Verify the object has the correct attribute name
     assert hasattr(budget_limit, 'current_value')
+
+
+def test_reset_limit_uses_updated_system_default_values(db, test_team_user, test_team):
+    """
+    Given: A team with existing limits all set to default values, and the default limit for users has been modified
+    When: Reset limit is called for the user limit
+    Then: The value should match the _new_ default
+
+    This test demonstrates the bug where reset_limit uses hardcoded constants instead of
+    the current SYSTEM limit values from the database.
+    """
+    # Create a MANUAL user limit first (simulating an existing limit)
+    manual_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.USER,
+        unit=UnitType.COUNT,
+        max_value=8.0,
+        current_value=3.0,
+        owner_type=OwnerType.USER,
+        owner_id=test_team_user.id,
+        limited_by=LimitSource.MANUAL,
+        set_by="admin@example.com",
+        created_at=datetime.now(UTC)
+    )
+    db.add(manual_limit)
+
+    # Create a SYSTEM limit with a NEW default value (simulating updated default)
+    NEW_DEFAULT_USER_COUNT = 5.0  # Different from the constant DEFAULT_USER_COUNT = 1
+    system_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.USER,
+        unit=UnitType.COUNT,
+        max_value=NEW_DEFAULT_USER_COUNT,
+        current_value=0.0,
+        owner_type=OwnerType.SYSTEM,
+        owner_id=0,
+        limited_by=LimitSource.DEFAULT,
+        set_by="system",
+        created_at=datetime.now(UTC)
+    )
+    db.add(system_limit)
+    db.commit()
+
+    limit_service = LimitService(db)
+
+    # Reset the user limit - this should use the NEW system default value
+    result = limit_service.reset_limit(
+        owner_type=OwnerType.USER,
+        owner_id=test_team_user.id,
+        resource_type=ResourceType.USER
+    )
+
+    # The result should use the NEW system default, not the hardcoded constant
+    assert result.max_value == NEW_DEFAULT_USER_COUNT, f"Expected {NEW_DEFAULT_USER_COUNT}, got {result.max_value}"
+    assert result.limited_by == LimitSource.DEFAULT
+    assert result.set_by == "reset"
+
+def test_get_team_limits_returns_team_limits_with_correct_owner_info(db, test_team):
+    """
+    Given: A system limit exists for a resource type, but no team limit exists
+    When: Calling get_team_limits(team)
+    Then: Should return the system limit with owner_type=TEAM and owner_id=team.id
+
+    This test reproduces the exact bug described: when there's a system limit
+    but no team limit, get_team_limits returns the system limit with system
+    owner info, but the admin needs to see it as a team limit so they can edit it.
+    """
+    # Create a system limit for KEY resource type
+    system_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.KEY,
+        unit=UnitType.COUNT,
+        max_value=10.0,
+        current_value=0.0,
+        owner_type=OwnerType.SYSTEM,
+        owner_id=0,
+        limited_by=LimitSource.DEFAULT,
+        set_by="system",
+        created_at=datetime.now(UTC)
+    )
+    db.add(system_limit)
+    db.commit()
+
+    # No team limit exists for this resource type
+
+    limit_service = LimitService(db)
+    team_limits = limit_service.get_team_limits(test_team)
+
+    # Should return exactly one limit (the system limit)
+    assert len(team_limits) == 1
+
+    # The bug: this should be returned as a TEAM limit, not SYSTEM limit
+    # so the admin can edit it for this specific team
+    limit = team_limits[0]
+    assert limit.owner_type == OwnerType.TEAM, f"Expected TEAM, got {limit.owner_type}"
+    assert limit.owner_id == test_team.id, f"Expected team_id {test_team.id}, got {limit.owner_id}"
+    assert limit.resource == ResourceType.KEY
+    assert limit.max_value == 10.0
+    assert limit.limited_by == LimitSource.DEFAULT
