@@ -18,3 +18,43 @@ commit_args = ""
 
 [[tool.bumpversion.files]]
 filename = "app/__version__.py"
+
+[[tool.bumpversion.files]]
+filename = "helm/Chart.yaml"
+search = "version: {current_version}"
+replace = "version: {new_version}"
+
+[[tool.bumpversion.files]]
+filename = "helm/Chart.yaml"
+search = "appVersion: \"{current_version}\""
+replace = "appVersion: \"{new_version}\""
+
+[[tool.bumpversion.files]]
+filename = "helm/Chart.yaml"
+search = "- name: backend\n    version: {current_version}"
+replace = "- name: backend\n    version: {new_version}"
+
+[[tool.bumpversion.files]]
+filename = "helm/Chart.yaml"
+search = "- name: frontend\n    version: {current_version}"
+replace = "- name: frontend\n    version: {new_version}"
+
+[[tool.bumpversion.files]]
+filename = "helm/charts/backend/Chart.yaml"
+search = "version: {current_version}"
+replace = "version: {new_version}"
+
+[[tool.bumpversion.files]]
+filename = "helm/charts/backend/Chart.yaml"
+search = "appVersion: \"{current_version}\""
+replace = "appVersion: \"{new_version}\""
+
+[[tool.bumpversion.files]]
+filename = "helm/charts/frontend/Chart.yaml"
+search = "version: {current_version}"
+replace = "version: {new_version}"
+
+[[tool.bumpversion.files]]
+filename = "helm/charts/frontend/Chart.yaml"
+search = "appVersion: \"{current_version}\""
+replace = "appVersion: \"{new_version}\""
