@@ -13,6 +13,7 @@ from app.middleware.prometheus import PrometheusMiddleware
 from app.middleware.auth import AuthMiddleware
 from app.core.worker import monitor_teams
 from app.core.locking import try_acquire_lock, release_lock
+from app.__version__ import __version__
 from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -119,7 +120,7 @@ app = FastAPI(
     All authenticated endpoints require you to be logged in. The API will automatically use your session cookie
     or you can provide a Bearer token in the Authorization header.
     """,
-    version="1.0.0",
+    version=__version__,
     docs_url=None,  # Disable default /docs endpoint
     redoc_url=None,  # Disable default /redoc endpoint
     root_path_in_servers=True,
@@ -189,6 +190,10 @@ instrumentator.instrument(app).expose(app)
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+@app.get("/version", tags=["system"])
+async def get_version():
+    return {"version": __version__}
 
 # Include routers
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
