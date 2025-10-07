@@ -480,14 +480,14 @@ class LimitService:
         # Calculate new values
         if limit.owner_type == OwnerType.USER and limit.resource == ResourceType.USER_KEY:
             max_value = self.get_user_product_limit_for_resource(team_id, limit.resource)
-            if not max_value:
+            if max_value is None:
                 max_value = self.get_default_user_limit_for_resource(limit.resource)
                 new_limited_by = LimitSource.DEFAULT
             else:
                 new_limited_by = LimitSource.PRODUCT
         else:
             max_value = self.get_team_product_limit_for_resource(team_id, limit.resource)
-            if not max_value:
+            if max_value is None:
                 max_value = self.get_default_team_limit_for_resource(limit.resource)
                 new_limited_by = LimitSource.DEFAULT
             else:
@@ -960,6 +960,8 @@ class LimitService:
             return DEFAULT_VECTOR_DB_COUNT
         elif resource_type == ResourceType.USER:
             return DEFAULT_USER_COUNT
+        elif resource_type == ResourceType.USER_KEY:
+            return DEFAULT_KEYS_PER_USER
         elif resource_type == ResourceType.BUDGET:
             return DEFAULT_MAX_SPEND
         elif resource_type == ResourceType.RPM:
@@ -998,6 +1000,9 @@ class LimitService:
             query = self.db.query(func.max(DBProduct.vector_db_count))
         elif resource_type == ResourceType.USER:
             query = self.db.query(func.max(DBProduct.user_count))
+        elif resource_type == ResourceType.USER_KEY:
+            # For user keys at team level, use keys_per_user
+            query = self.db.query(func.max(DBProduct.keys_per_user))
         elif resource_type == ResourceType.BUDGET:
             query = self.db.query(func.max(DBProduct.max_budget_per_key))
         elif resource_type == ResourceType.RPM:

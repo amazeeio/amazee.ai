@@ -57,7 +57,8 @@ const LIMIT_TYPES = [
 
 const RESOURCE_TYPES = [
   // Control Plane Resources
-  { value: 'ai_key', label: 'AI Keys', limitType: 'control_plane' },
+  { value: 'user_key', label: 'User Keys', limitType: 'control_plane' },
+  { value: 'service_key', label: 'Service Keys', limitType: 'control_plane' },
   { value: 'user', label: 'Users', limitType: 'control_plane' },
   { value: 'vector_db', label: 'Vector DBs', limitType: 'control_plane' },
   { value: 'gpt_instance', label: 'GPT Instances', limitType: 'control_plane' },
@@ -294,7 +295,8 @@ export function LimitsView({
   // Get the unit for a given resource type
   const getUnitForResource = (resourceType: string): string => {
     const unitMapping: Record<string, string> = {
-      'ai_key': 'count',
+      'user_key': 'count',
+      'service_key': 'count',
       'user': 'count',
       'vector_db': 'count',
       'gpt_instance': 'count',
@@ -311,7 +313,8 @@ export function LimitsView({
 
   const formatResourceName = (resource: string): string => {
     const mapping: Record<string, string> = {
-      'ai_key': 'AI Keys',
+      'user_key': 'User Keys',
+      'service_key': 'Service Keys',
       'user': 'Users',
       'vector_db': 'Vector DBs',
       'gpt_instance': 'GPT Instances',

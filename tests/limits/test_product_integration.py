@@ -2,7 +2,7 @@ import pytest
 from datetime import datetime, UTC
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
-from app.db.models import DBLimitedResource, DBTeam, DBProduct, DBTeamProduct
+from app.db.models import DBLimitedResource, DBTeam, DBProduct, DBTeamProduct, DBUser
 from app.core.limit_service import LimitService
 from app.schemas.limits import LimitType, ResourceType, UnitType, OwnerType, LimitSource
 
@@ -332,3 +332,287 @@ def test_data_plane_limits_from_products(db: Session, test_team, test_product):
         assert limit.limit_type == LimitType.DATA_PLANE
         assert limit.current_value is None
         assert limit.limited_by == LimitSource.PRODUCT
+
+
+def test_reset_user_key_limit_with_zero_product_value(db: Session, test_team):
+    """
+    Given: A team has a product with keys_per_user set to 0
+    When: A user's USER_KEY limit is reset
+    Then: Should set the limit to 0 (the product value), not the default value
+    """
+    # Create a product with keys_per_user = 0 (valid product limit)
+    product = DBProduct(
+        id="prod_zero_keys",
+        name="Zero Keys Product",
+        user_count=5,
+        keys_per_user=0,  # Product explicitly sets this to 0
+        total_key_count=10,
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(product)
+
+    # Associate product with team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Create a user in the team
+    user = DBUser(
+        email="testuser@example.com",
+        hashed_password="hashed_password",
+        is_active=True,
+        is_admin=False,
+        role="user",
+        team_id=test_team.id,
+        created_at=datetime.now(UTC)
+    )
+    db.add(user)
+    db.commit()
+
+    # Create an existing USER_KEY limit with some value
+    limit_service = LimitService(db)
+    limit_service.set_limit(
+        owner_type=OwnerType.USER,
+        owner_id=user.id,
+        resource_type=ResourceType.USER_KEY,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=5.0,  # Some existing value
+        current_value=2.0,
+        limited_by=LimitSource.DEFAULT
+    )
+
+    # Reset the limit - should use product value (0), not default
+    result = limit_service.reset_limit(
+        owner_type=OwnerType.USER,
+        owner_id=user.id,
+        resource_type=ResourceType.USER_KEY
+    )
+
+    # Verify the limit was reset to 0 (product value), not default value
+    assert result.max_value == 0.0
+    assert result.limited_by == LimitSource.PRODUCT
+
+    # Also verify by fetching user limits
+    user_limits = limit_service.get_user_limits(user)
+    user_key_limit = next((limit for limit in user_limits if limit.resource == ResourceType.USER_KEY), None)
+    assert user_key_limit is not None
+    assert user_key_limit.max_value == 0.0
+    assert user_key_limit.limited_by == LimitSource.PRODUCT
+
+
+def test_reset_user_key_limit_with_product_value_not_zero(db: Session, test_team):
+    """
+    Given: A team has a product with keys_per_user set to 10 (default is 1)
+    When: A user's USER_KEY limit is reset
+    Then: Should set the limit to 10 (the product value), not 1 (the default value)
+    """
+    # Create a product with keys_per_user = 10
+    product = DBProduct(
+        id="prod_ten_keys",
+        name="Ten Keys Product",
+        user_count=5,
+        keys_per_user=10,  # Product sets this to 10, default is 1
+        total_key_count=50,
+        service_key_count=5,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(product)
+
+    # Associate product with team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Create a user in the team
+    user = DBUser(
+        email="testuser_ten@example.com",
+        hashed_password="hashed_password",
+        is_active=True,
+        is_admin=False,
+        role="user",
+        team_id=test_team.id,
+        created_at=datetime.now(UTC)
+    )
+    db.add(user)
+    db.commit()
+
+    # Create an existing USER_KEY limit with some value (simulating it was set before)
+    limit_service = LimitService(db)
+    limit_service.set_limit(
+        owner_type=OwnerType.USER,
+        owner_id=user.id,
+        resource_type=ResourceType.USER_KEY,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=3.0,  # Some old value
+        current_value=2.0,
+        limited_by=LimitSource.DEFAULT
+    )
+
+    # Reset the limit - should use product value (10), not default (1)
+    result = limit_service.reset_limit(
+        owner_type=OwnerType.USER,
+        owner_id=user.id,
+        resource_type=ResourceType.USER_KEY
+    )
+
+    # Verify the limit was reset to 10 (product value), not 1 (default value)
+    assert result.max_value == 10.0, f"Expected 10.0 (product value), got {result.max_value}"
+    assert result.limited_by == LimitSource.PRODUCT
+
+    # Also verify by fetching user limits
+    user_limits = limit_service.get_user_limits(user)
+    user_key_limit = next((limit for limit in user_limits if limit.resource == ResourceType.USER_KEY), None)
+    assert user_key_limit is not None
+    assert user_key_limit.max_value == 10.0
+    assert user_key_limit.limited_by == LimitSource.PRODUCT
+
+
+def test_reset_team_owned_user_key_limit_with_product(db: Session, test_team):
+    """
+    Given: A team has a product with keys_per_user set to 10, and a TEAM-owned USER_KEY limit
+    When: The TEAM-owned USER_KEY limit is reset
+    Then: Should set the limit to 10 (the product value), not 1 (the default value)
+
+    This tests the case where get_team_limits returns a USER_KEY resource with owner_type=TEAM
+    """
+    # Create a product with keys_per_user = 10
+    product = DBProduct(
+        id="prod_team_user_keys",
+        name="Team User Keys Product",
+        user_count=5,
+        keys_per_user=10,  # Product sets this to 10, default is 1
+        total_key_count=50,
+        service_key_count=5,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(product)
+
+    # Associate product with team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Create a TEAM-owned USER_KEY limit (this can happen from get_team_limits)
+    limit_service = LimitService(db)
+    limit_service.set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.USER_KEY,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=3.0,  # Some old value
+        current_value=0.0,
+        limited_by=LimitSource.DEFAULT
+    )
+
+    # Reset the limit - should use product value (10), not default (1)
+    result = limit_service.reset_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.USER_KEY
+    )
+
+    # Verify the limit was reset to 10 (product value), not 1 (default value)
+    assert result.max_value == 10.0, f"Expected 10.0 (product value), got {result.max_value}"
+    assert result.limited_by == LimitSource.PRODUCT
+
+    # Also verify by fetching team limits
+    team_limits = limit_service.get_team_limits(test_team)
+    user_key_limit = next((limit for limit in team_limits if limit.resource == ResourceType.USER_KEY), None)
+    assert user_key_limit is not None
+    assert user_key_limit.max_value == 10.0
+    assert user_key_limit.limited_by == LimitSource.PRODUCT
+
+
+def test_reset_team_limit_with_zero_product_value(db: Session, test_team):
+    """
+    Given: A team has a product with service_key_count set to 0
+    When: The team's SERVICE_KEY limit is reset
+    Then: Should set the limit to 0 (the product value), not the default value
+    """
+    # Create a product with service_key_count = 0 (valid product limit)
+    product = DBProduct(
+        id="prod_zero_service_keys",
+        name="Zero Service Keys Product",
+        user_count=5,
+        keys_per_user=2,
+        total_key_count=10,
+        service_key_count=0,  # Product explicitly sets this to 0
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(product)
+
+    # Associate product with team
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Create an existing SERVICE_KEY limit with some value
+    limit_service = LimitService(db)
+    limit_service.set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.SERVICE_KEY,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=5.0,  # Some existing value
+        current_value=2.0,
+        limited_by=LimitSource.DEFAULT
+    )
+
+    # Reset the limit - should use product value (0), not default
+    result = limit_service.reset_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.SERVICE_KEY
+    )
+
+    # Verify the limit was reset to 0 (product value), not default value
+    assert result.max_value == 0.0
+    assert result.limited_by == LimitSource.PRODUCT
+
+    # Also verify by fetching team limits
+    team_limits = limit_service.get_team_limits(test_team)
+    service_key_limit = next((limit for limit in team_limits if limit.resource == ResourceType.SERVICE_KEY), None)
+    assert service_key_limit is not None
+    assert service_key_limit.max_value == 0.0
+    assert service_key_limit.limited_by == LimitSource.PRODUCT
