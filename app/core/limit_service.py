@@ -35,6 +35,9 @@ DEFAULT_KEY_DURATION = 30
 DEFAULT_MAX_SPEND = 27.0
 DEFAULT_RPM_PER_KEY = 500
 
+# Reference collections
+control_plane_limits = [ResourceType.USER_KEY, ResourceType.SERVICE_KEY, ResourceType.USER, ResourceType.VECTOR_DB, ResourceType.GPT_INSTANCE]
+data_plane_limits = [ResourceType.BUDGET, ResourceType.RPM, ResourceType.STORAGE, ResourceType.DOCUMENT]
 
 class LimitNotFoundError(Exception):
     """Raised when a requested limit is not found."""
@@ -439,6 +442,11 @@ class LimitService:
         Returns:
             Updated DBLimitedResource database model
         """
+        # Should be verified before calling the function, but just-in-case
+        db_limit = self.db.query(DBLimitedResource).filter(DBLimitedResource.id == limit.id).first()
+        if not db_limit:
+            raise ValueError(f"Database model not found for limit {limit.id}")
+
         if limit.owner_type == OwnerType.SYSTEM:
             raise ValueError("Cannot reset SYSTEM limits")
         elif limit.owner_type == OwnerType.TEAM:
@@ -471,16 +479,12 @@ class LimitService:
             else:
                 new_limited_by = LimitSource.PRODUCT
 
-        # Find the corresponding database model and update it
-        db_limit = self.db.query(DBLimitedResource).filter(DBLimitedResource.id == limit.id).first()
-        if db_limit:
-            db_limit.max_value = max_value
-            db_limit.limited_by = new_limited_by
-            db_limit.set_by = "reset"
-            self.db.commit()
-            return db_limit
-        else:
-            raise ValueError(f"Database model not found for limit {limit.id}")
+        # Update in the db
+        db_limit.max_value = max_value
+        db_limit.limited_by = new_limited_by
+        db_limit.set_by = "reset"
+        self.db.commit()
+        return db_limit
 
     def reset_limit(self, owner_type: OwnerType, owner_id: int, resource_type: ResourceType) -> DBLimitedResource:
         limit = self.db.query(DBLimitedResource).filter(
@@ -519,33 +523,18 @@ class LimitService:
             ResourceType.RPM
         ]
 
+        limit_map = {}
+        for limit in existing_limits:
+            limit_map[limit.resource] = limit
+
         # Process each resource type
         for resource_type in all_resources:
             # Skip if manual limit already exists
-            existing_limit = next(
-                (limit for limit in existing_limits if limit.resource == resource_type),
-                None
-            )
+            existing_limit = limit_map.get(resource_type, None)
             if existing_limit and existing_limit.limited_by == LimitSource.MANUAL:
                 continue
 
-            # Determine limit type and unit based on resource
-            if resource_type in [ResourceType.USER, ResourceType.SERVICE_KEY, ResourceType.VECTOR_DB, ResourceType.GPT_INSTANCE]:
-                limit_type = LimitType.CONTROL_PLANE
-                unit = UnitType.COUNT
-                # Preserve existing current_value if updating, otherwise set to 0.0
-                if existing_limit and existing_limit.current_value is not None:
-                    current_value = existing_limit.current_value
-                else:
-                    current_value = 0.0  # CP limits need current_value
-            else:
-                limit_type = LimitType.DATA_PLANE
-                unit = self._get_unit_for_resource(resource_type)
-                # For DP limits, preserve existing current_value if it exists
-                if existing_limit and existing_limit.current_value is not None:
-                    current_value = existing_limit.current_value
-                else:
-                    current_value = None  # DP limits don't track current value by default
+            limit_type, unit, current_value = self._get_limit_details(resource_type, existing_limit)
 
             # Try to get product limit first, fall back to default
             max_value = self.get_team_product_limit_for_resource(team.id, resource_type)
@@ -584,34 +573,18 @@ class LimitService:
             ResourceType.USER_KEY
         ]
 
+        limit_map = {}
+        for limit in existing_limits:
+            limit_map[limit.resource] = limit
+
         # Process each resource type
         for resource_type in user_resources:
             # Skip if manual limit already exists
-            existing_limit = next(
-                (limit for limit in existing_limits if limit.resource == resource_type),
-                None
-            )
+            existing_limit = limit_map.get(resource_type, None)
             if existing_limit and existing_limit.limited_by == LimitSource.MANUAL:
                 continue
 
-            # Determine limit type and unit based on resource
-            if resource_type == ResourceType.USER_KEY:
-                limit_type = LimitType.CONTROL_PLANE
-                unit = UnitType.COUNT
-                # Preserve existing current_value if updating, otherwise set to 0.0
-                if existing_limit and existing_limit.current_value is not None:
-                    current_value = existing_limit.current_value
-                else:
-                    current_value = 0.0  # CP limits need current_value
-            else:
-                limit_type = LimitType.DATA_PLANE
-                unit = self._get_unit_for_resource(resource_type)
-                # For DP limits, preserve existing current_value if it exists
-                if existing_limit and existing_limit.current_value is not None:
-                    current_value = existing_limit.current_value
-                else:
-                    current_value = None  # DP limits don't track current value by default
-
+            limit_type, unit, current_value = self._get_limit_details(resource_type, existing_limit)
             # For users, only KEY limits are set - BUDGET and RPM are inherited from team
             max_value = self.get_user_product_limit_for_resource(user.team_id, resource_type)
             if max_value is not None:
@@ -631,6 +604,27 @@ class LimitService:
                 current_value=current_value,
                 limited_by=limit_source
             )
+
+    def _get_limit_details(self, resource_type: ResourceType, existing_limit = LimitedResource) -> tuple[LimitType, UnitType, float]:
+        # Determine limit type and unit based on resource
+        if resource_type in control_plane_limits:
+            limit_type = LimitType.CONTROL_PLANE
+            unit = UnitType.COUNT
+            # Preserve existing current_value if updating, otherwise set to 0.0
+            if existing_limit and existing_limit.current_value is not None:
+                current_value = existing_limit.current_value
+            else:
+                current_value = 0.0  # CP limits need current_value
+        else:
+            limit_type = LimitType.DATA_PLANE
+            unit = self._get_unit_for_resource(resource_type)
+            # For DP limits, preserve existing current_value if it exists
+            if existing_limit and existing_limit.current_value is not None:
+                current_value = existing_limit.current_value
+            else:
+                current_value = None  # DP limits don't track current value by default
+
+        return (limit_type, unit, current_value)
 
     def _get_unit_for_resource(self, resource_type: ResourceType) -> UnitType:
         """
