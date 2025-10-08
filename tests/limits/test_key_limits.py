@@ -106,7 +106,7 @@ def test_get_default_team_limit_uses_service_key_resource_type(db):
         os.environ.pop('ENABLE_LIMITS', None)
 
 
-def test_set_user_limits_uses_user_key_resource_type(db, test_user):
+def test_set_user_limits_uses_user_key_resource_type(db, test_team_user):
     """
     Given: A user with no existing limits
     When: Calling set_user_limits(user)
@@ -115,10 +115,10 @@ def test_set_user_limits_uses_user_key_resource_type(db, test_user):
     limit_service = LimitService(db)
 
     # Set user limits
-    limit_service.set_user_limits(test_user)
+    limit_service.set_user_limits(test_team_user)
 
     # Check that USER_KEY limit was created
-    user_limits = limit_service.get_user_limits(test_user)
+    user_limits = limit_service.get_user_limits(test_team_user)
     user_key_limit = next(
         (limit for limit in user_limits if limit.resource == ResourceType.USER_KEY), None)
     assert user_key_limit is not None

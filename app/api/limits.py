@@ -96,7 +96,7 @@ async def overwrite_limit(
         result = limit_service.set_limit(
             owner_type=request.owner_type,
             owner_id=request.owner_id,
-            resource_type=request.resource_type,
+            resource_type=request.resource,
             limit_type=request.limit_type,
             unit=request.unit,
             max_value=request.max_value,
@@ -157,7 +157,7 @@ async def reset_limit(
         result = limit_service.reset_limit(
             request.owner_type,
             request.owner_id,
-            request.resource_type
+            request.resource
         )
         return LimitedResource.model_validate(result)
     except LimitNotFoundError as e:

@@ -6,7 +6,7 @@ from datetime import datetime, UTC
 from app.db.models import DBLimitedResource, DBUser, DBTeam, DBTeamProduct, DBPrivateAIKey, DBProduct
 from app.schemas.limits import (
     LimitedResource,
-    LimitedResourceBase,
+    LimitedResourceCreate,
     OwnerType,
     UnitType,
     LimitSource,
@@ -137,26 +137,16 @@ class LimitService:
         ).all()
 
         # Get team limits
-        team_limits = self.db.query(DBLimitedResource).filter(
-            and_(
-                DBLimitedResource.owner_type == OwnerType.TEAM,
-                DBLimitedResource.owner_id == user.team_id
-            )
-        ).all()
-
-        # Get system default limits
-        system_limits = self.db.query(DBLimitedResource).filter(
-            DBLimitedResource.owner_type == OwnerType.SYSTEM
-        ).all()
+        team = self.db.query(DBTeam).filter(DBTeam.id == user.team_id).first()
+        if team:
+            team_limits = self.get_team_limits(team)
+        else:
+            team_limits = []
 
         # Build effective limits: USER -> TEAM -> SYSTEM inheritance
         effective_limits = {}
 
-        # Start with system defaults
-        for limit in system_limits:
-            effective_limits[limit.resource] = limit
-
-        # Override with team limits
+        # team limits already went through the system limits
         for limit in team_limits:
             effective_limits[limit.resource] = limit
 
@@ -219,24 +209,7 @@ class LimitService:
         Raises:
             ValueError: If trying to increment Data Plane resources or non-COUNT type resources
         """
-        limit = self.db.query(DBLimitedResource).filter(
-            and_(
-                DBLimitedResource.owner_type == owner_type,
-                DBLimitedResource.owner_id == owner_id,
-                DBLimitedResource.resource == resource_type
-            )
-        ).first()
-
-        if not limit:
-            raise LimitNotFoundError(f"No limit found for {owner_type} {owner_id} resource {resource_type}")
-
-        # Data Plane limits cannot be incremented/decremented
-        if limit.limit_type == LimitType.DATA_PLANE:
-            raise ValueError("Cannot increment/decrement Data Plane resources")
-
-        # Only COUNT type resources can be incremented/decremented
-        if limit.unit != UnitType.COUNT:
-            raise ValueError("Only COUNT type resources can be incremented/decremented")
+        limit = self._verify_control_plane_count(owner_type, owner_id, resource_type)
 
         # Control Plane limits: check capacity
         if limit.current_value >= limit.max_value:
@@ -267,16 +240,27 @@ class LimitService:
         Raises:
             ValueError: If trying to decrement Data Plane resources or non-COUNT type resources
         """
+        limit = self._verify_control_plane_count(owner_type, owner_id, resource_type)
+
+        # Control Plane limits: decrement (but not below 0)
+        if limit.current_value > 0:
+            limit.current_value -= 1
+            limit.updated_at = datetime.now(UTC)
+            self.db.commit()
+
+        return True
+
+    def _verify_control_plane_count(self, owner_type: OwnerType, owner_id: int, resource: ResourceType) -> DBLimitedResource:
         limit = self.db.query(DBLimitedResource).filter(
             and_(
                 DBLimitedResource.owner_type == owner_type,
                 DBLimitedResource.owner_id == owner_id,
-                DBLimitedResource.resource == resource_type
+                DBLimitedResource.resource == resource
             )
         ).first()
 
         if not limit:
-            raise LimitNotFoundError(f"No limit found for {owner_type} {owner_id} resource {resource_type}")
+            raise LimitNotFoundError(f"No limit found for {owner_type} {owner_id} resource {resource}")
 
         # Data Plane limits cannot be incremented/decremented
         if limit.limit_type == LimitType.DATA_PLANE:
@@ -286,13 +270,7 @@ class LimitService:
         if limit.unit != UnitType.COUNT:
             raise ValueError("Only COUNT type resources can be incremented/decremented")
 
-        # Control Plane limits: decrement (but not below 0)
-        if limit.current_value > 0:
-            limit.current_value -= 1
-            limit.updated_at = datetime.now(UTC)
-            self.db.commit()
-
-        return True
+        return limit
 
     def set_limit(
         self,
@@ -307,7 +285,7 @@ class LimitService:
         set_by: Optional[str] = None
     ) -> DBLimitedResource:
         logger.info(f"Overwriting {resource_type.value} limit for {owner_type.value} {owner_id}")
-        limit = LimitedResourceBase(
+        limit = LimitedResourceCreate(
             limit_type=limit_type,
             resource=resource_type,
             unit=unit,
@@ -320,7 +298,7 @@ class LimitService:
         )
         return self._set_limit(limited_resource=limit)
 
-    def _set_limit(self, limited_resource: LimitedResourceBase) -> DBLimitedResource:
+    def _set_limit(self, limited_resource: LimitedResourceCreate) -> DBLimitedResource:
         """
         Create or update a limit following source hierarchy rules.
 

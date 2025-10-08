@@ -17,7 +17,7 @@ def test_admin_can_overwrite_any_limit(client, admin_token, test_team):
         json={
             "owner_type": "team",
             "owner_id": test_team.id,
-            "resource_type": "user",
+            "resource": "user",
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 10.0,
@@ -79,7 +79,7 @@ def test_admin_can_reset_single_limit(client: TestClient, admin_token, test_team
         json={
             "owner_type": "team",
             "owner_id": test_team.id,
-            "resource_type": "user"
+            "resource": "user"
         }
     )
 
@@ -102,7 +102,7 @@ def test_non_admin_cannot_access_limit_apis(client: TestClient, test_token, test
         json={
             "owner_type": "team",
             "owner_id": test_team.id,
-            "resource_type": "user",
+            "resource": "user",
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 10.0,
@@ -127,7 +127,7 @@ def test_non_admin_cannot_access_limit_apis(client: TestClient, test_token, test
         json={
             "owner_type": "team",
             "owner_id": test_team.id,
-            "resource_type": "user"
+            "resource": "user"
         }
     )
 
@@ -195,7 +195,7 @@ def test_api_creates_manual_limits_for_teams_and_users(client: TestClient, admin
         json={
             "owner_type": "team",
             "owner_id": test_team.id,
-            "resource_type": "user",
+            "resource": "user",
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 8.0,
@@ -221,7 +221,7 @@ def test_api_automatically_handles_manual_limits(client: TestClient, admin_token
         json={
             "owner_type": "team",
             "owner_id": test_team.id,
-                "resource_type": "service_key",
+            "resource": "service_key",
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 15.0,
@@ -305,7 +305,7 @@ def test_system_limits_are_created_as_manual_limits(client: TestClient, admin_to
         json={
             "owner_type": "system",
             "owner_id": 0,  # System limits use owner_id=0
-            "resource_type": "user",
+            "resource": "user",
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 5.0,
@@ -338,7 +338,7 @@ def test_team_limits_are_created_as_manual_limits(client: TestClient, admin_toke
         json={
             "owner_type": "team",
             "owner_id": team_id,
-            "resource_type": "user",
+            "resource": "user",
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 8.0,
@@ -371,7 +371,7 @@ def test_user_limits_are_created_as_manual_limits(client: TestClient, admin_toke
         json={
             "owner_type": "user",
             "owner_id": user_id,
-                "resource_type": "service_key",
+            "resource": "service_key",
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 10.0,
@@ -458,7 +458,7 @@ def test_validation_errors_for_invalid_data(client: TestClient, admin_token, tes
         json={
             "owner_type": "invalid",
             "owner_id": test_team.id,
-            "resource_type": "user",
+            "resource": "user",
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 10.0,
@@ -474,7 +474,7 @@ def test_validation_errors_for_invalid_data(client: TestClient, admin_token, tes
         json={
             "owner_type": "team",
             "owner_id": test_team.id,
-            "resource_type": "invalid_resource",
+            "resource": "invalid_resource",
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 10.0,

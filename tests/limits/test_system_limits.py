@@ -137,7 +137,8 @@ def test_inheritance_user_team_system(db: Session, test_team, test_team_user):
     user_limit = next((l for l in user_limits if l.resource == ResourceType.USER), None)
     assert user_limit is not None
     assert user_limit.max_value == 5.0
-    assert user_limit.owner_type == OwnerType.SYSTEM
+    assert user_limit.owner_type == OwnerType.TEAM
+    assert user_limit.limited_by == LimitSource.DEFAULT
 
 
 def test_inheritance_team_overrides_system(db: Session, test_team, test_team_user):
