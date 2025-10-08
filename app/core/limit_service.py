@@ -521,7 +521,7 @@ class LimitService:
     def set_team_limits(self, team: DBTeam):
         """
         Goes through all available limits and applies them for a team. Will apply PRODUCT values by preference,
-        falling back to DEFAULt. Will not override MANUAL.
+        falling back to DEFAULT. Will not override MANUAL.
         Intended to be used by the automated workflows when product associations change, or simply on a regular
         cadence, this keeps everything in-sync to allow us to rely on the increment/decrement methods for CP limit
         management.
