@@ -10,6 +10,33 @@ This repository contains the backend and frontend services for the amazee.ai app
 - **Database**: PostgreSQL
 - **Testing**: Pytest (backend), Jest (frontend)
 - **Containerization**: Docker & Docker Compose
+- **Orchestration**: Kubernetes with Helm
+
+## 📦 Versioning
+
+This project uses semantic versioning (MAJOR.MINOR.PATCH). Version information is maintained in:
+- `app/__version__.py` - Python application version
+- `helm/Chart.yaml` - Main Helm chart version
+- `helm/charts/backend/Chart.yaml` - Backend chart version
+- `helm/charts/frontend/Chart.yaml` - Frontend chart version
+
+To bump the version across all files:
+
+```bash
+# Install bump-my-version (if not already installed)
+pip install bump-my-version
+
+# Bump patch version (2.0.0 -> 2.0.1)
+bump-my-version bump patch
+
+# Bump minor version (2.0.0 -> 2.1.0)
+bump-my-version bump minor
+
+# Bump major version (2.0.0 -> 3.0.0)
+bump-my-version bump major
+```
+
+The version bump will automatically update all version references and create a git tag.
 
 ## 📋 Prerequisites
 

@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from fastapi import HTTPException, status, Response, Request, Form
 from jose import JWTError, jwt
 from app.core.config import settings
+from app.core.limit_service import LimitService
 
 from app.db.database import get_db
 from app.schemas.models import (
@@ -37,6 +38,8 @@ from app.core.security import (
 from app.services.dynamodb import DynamoDBService
 from app.services.ses import SESService
 from app.api.teams import register_team
+from app.api.users import _create_user_in_db
+from app.core.roles import UserRole
 from app.core.worker import generate_pricing_url
 
 auth_logger = logging.getLogger(__name__)
@@ -284,18 +287,82 @@ async def register(
             detail="Email already registered"
         )
 
-    # Create new user
-    hashed_password = get_password_hash(user.password)
-    db_user = DBUser(
-        email=user.email,
-        hashed_password=hashed_password,
-        is_admin=False  # Force is_admin to be False for all new registrations
-    )
-    db.add(db_user)
-    db.commit()
-    db.refresh(db_user)
+    db_user = _create_user_in_db(user, db)
     auth_logger.info(f"Successfully registered new user: {user.email}")
     return db_user
+
+@router.post("/sign-in", response_model=Token)
+async def sign_in(
+    request: Request,
+    response: Response,
+    sign_in_data: Optional[SignInData] = Depends(get_sign_in_data),
+    db: Session = Depends(get_db)
+):
+    """
+    Sign in using a verification code instead of a password.
+
+    Accepts both application/x-www-form-urlencoded and application/json formats.
+
+    Form data:
+    - **username**: Your email address
+    - **verification_code**: The verification code sent to your email
+
+    JSON data:
+    - **username**: Your email address
+    - **verification_code**: The verification code sent to your email
+
+    On successful sign in, an access token will be set as an HTTP-only cookie and also returned in the response.
+    Use this token for subsequent authenticated requests.
+
+    If the user doesn't exist, they will be automatically registered and a new team will be created
+    with them as the admin.
+    """
+    if not sign_in_data:
+        auth_logger.warning("Sign-in attempt with invalid data format")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid sign in data. Please provide username and verification code in either form data or JSON format."
+        )
+
+    auth_logger.info(f"Sign-in attempt for user: {sign_in_data.username}")
+    # Verify the code using DynamoDB first
+    dynamodb_service = DynamoDBService()
+    stored_code = dynamodb_service.read_validation_code(sign_in_data.username)
+
+    if not stored_code or stored_code.get('code').upper() != sign_in_data.verification_code.upper():
+        auth_logger.warning(f"Invalid verification code for user: {sign_in_data.username}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or verification code"
+        )
+
+    # Get user from database after verifying the code
+    user = db.query(DBUser).filter(DBUser.email == sign_in_data.username).first()
+
+    # If user doesn't exist, create a new user and team
+    if not user:
+        auth_logger.info(f"Creating new user and team for: {sign_in_data.username}")
+        # First create the team
+        team_data = TeamCreate(
+            name=f"Team {sign_in_data.username}",
+            admin_email=sign_in_data.username,
+            phone="",  # Required by schema but not used for auto-created teams
+            billing_address=""  # Required by schema but not used for auto-created teams
+        )
+        team = await register_team(team_data, db)
+
+        user_data = UserCreate(
+            email=sign_in_data.username,
+            password=None,
+            team_id=team.id,
+            role=UserRole.ADMIN
+        )
+        user = _create_user_in_db(user_data, db)
+
+        auth_logger.info(f"Successfully created new user and team for: {sign_in_data.username}")
+
+    auth_logger.info(f"Successful sign-in for user: {sign_in_data.username}")
+    return create_and_set_access_token(response, user.email, user)
 
 def generate_validation_token(email: str) -> str:
     """
@@ -407,81 +474,6 @@ async def validate_email(
     return {
         "message": "Validation code has been generated and sent"
     }
-
-@router.post("/sign-in", response_model=Token)
-async def sign_in(
-    request: Request,
-    response: Response,
-    sign_in_data: Optional[SignInData] = Depends(get_sign_in_data),
-    db: Session = Depends(get_db)
-):
-    """
-    Sign in using a verification code instead of a password.
-
-    Accepts both application/x-www-form-urlencoded and application/json formats.
-
-    Form data:
-    - **username**: Your email address
-    - **verification_code**: The verification code sent to your email
-
-    JSON data:
-    - **username**: Your email address
-    - **verification_code**: The verification code sent to your email
-
-    On successful sign in, an access token will be set as an HTTP-only cookie and also returned in the response.
-    Use this token for subsequent authenticated requests.
-
-    If the user doesn't exist, they will be automatically registered and a new team will be created
-    with them as the admin.
-    """
-    if not sign_in_data:
-        auth_logger.warning("Sign-in attempt with invalid data format")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid sign in data. Please provide username and verification code in either form data or JSON format."
-        )
-
-    auth_logger.info(f"Sign-in attempt for user: {sign_in_data.username}")
-    # Verify the code using DynamoDB first
-    dynamodb_service = DynamoDBService()
-    stored_code = dynamodb_service.read_validation_code(sign_in_data.username)
-
-    if not stored_code or stored_code.get('code').upper() != sign_in_data.verification_code.upper():
-        auth_logger.warning(f"Invalid verification code for user: {sign_in_data.username}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or verification code"
-        )
-
-    # Get user from database after verifying the code
-    user = db.query(DBUser).filter(DBUser.email == sign_in_data.username).first()
-
-    # If user doesn't exist, create a new user and team
-    if not user:
-        auth_logger.info(f"Creating new user and team for: {sign_in_data.username}")
-        # First create the team
-        team_data = TeamCreate(
-            name=f"Team {sign_in_data.username}",
-            admin_email=sign_in_data.username,
-            phone="",  # Required by schema but not used for auto-created teams
-            billing_address=""  # Required by schema but not used for auto-created teams
-        )
-        team = await register_team(team_data, db)
-
-        # Create new user without password since they're using verification code
-        user = DBUser(
-            email=sign_in_data.username,
-            hashed_password="",  # Empty password since they'll use verification code
-            role="admin",  # Set role to admin for new users
-            team_id=team.id  # Associate user with the team
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-        auth_logger.info(f"Successfully created new user and team for: {sign_in_data.username}")
-
-    auth_logger.info(f"Successful sign-in for user: {sign_in_data.username}")
-    return create_and_set_access_token(response, user.email, user)
 
 # API Token routes (as apposed to AI Token routes)
 def generate_api_token() -> str:

@@ -293,7 +293,7 @@ async def create_test_keys(count: int):
                 litellm_token=litellm_token,
                 litellm_api_url=region.litellm_api_url,
                 owner_id=None,
-                team_id=None if team_id is None else team_id,
+                team_id=team_id,
                 name=key_name,
                 region_id = region.id
             )

@@ -35,6 +35,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { LimitsView, LimitedResource } from '@/components/ui/limits-view';
 
 import { TableActionButtons } from '@/components/ui/table-action-buttons';
 import { TableFilters, FilterField } from '@/components/ui/table-filters';
@@ -126,6 +127,7 @@ interface SpendInfo {
   budget_duration: string | null;
   budget_reset_at: string | null;
 }
+
 
 type SortField = 'name' | 'admin_email' | 'is_active' | 'created_at' | null;
 type SortDirection = 'asc' | 'desc';
@@ -372,6 +374,17 @@ export default function TeamsPage() {
     queryFn: async () => {
       if (!expandedTeamId) return [];
       const response = await get(`/private-ai-keys?team_id=${expandedTeamId}`);
+      return response.json();
+    },
+    enabled: !!expandedTeamId,
+  });
+
+  // Get team limits when expanded
+  const { data: teamLimits = [], isLoading: isLoadingTeamLimits } = useQuery<LimitedResource[]>({
+    queryKey: ['team-limits', expandedTeamId],
+    queryFn: async () => {
+      if (!expandedTeamId) return [];
+      const response = await get(`/limits/teams/${expandedTeamId}`);
       return response.json();
     },
     enabled: !!expandedTeamId,
@@ -781,6 +794,36 @@ export default function TeamsPage() {
     },
   });
 
+
+  const resetAllTeamLimitsMutation = useMutation({
+    mutationFn: async (teamId: string) => {
+      try {
+        const response = await post(`/limits/teams/${teamId}/reset`, {});
+        return response.json();
+      } catch (error) {
+        if (error instanceof Error) {
+          throw new Error(`Failed to reset all team limits: ${error.message}`);
+        } else {
+          throw new Error('An unexpected error occurred while resetting all team limits.');
+        }
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['team-limits', expandedTeamId] });
+      toast({
+        title: 'Success',
+        description: 'All team limits reset successfully',
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
   const handleCreateTeam = (e: React.FormEvent) => {
     e.preventDefault();
     createTeamMutation.mutate({
@@ -876,6 +919,7 @@ export default function TeamsPage() {
       renameSuffix: conflictResolutionStrategy === 'rename' ? renameSuffix : undefined,
     });
   };
+
 
   // Searchable Select Component using Command
   const SearchableSelect = ({
@@ -1108,6 +1152,7 @@ export default function TeamsPage() {
                                         <TabsTrigger value="users">Users</TabsTrigger>
                                         <TabsTrigger value="products">Products</TabsTrigger>
                                         <TabsTrigger value="shared-keys">Shared Keys</TabsTrigger>
+                                        <TabsTrigger value="limits">Limits</TabsTrigger>
                                       </TabsList>
                                       <TabsContent value="details" className="mt-4">
                                         <Card>
@@ -1419,6 +1464,18 @@ export default function TeamsPage() {
                                             </div>
                                           )}
                                         </div>
+                                      </TabsContent>
+                                      <TabsContent value="limits" className="mt-4">
+                                        <LimitsView
+                                          limits={teamLimits}
+                                          isLoading={isLoadingTeamLimits}
+                                          ownerType="team"
+                                          ownerId={expandedTeam.id}
+                                          queryKey={['team-limits', expandedTeam.id]}
+                                          showResetAll={true}
+                                          onResetAll={() => resetAllTeamLimitsMutation.mutate(expandedTeam.id)}
+                                          isResettingAll={resetAllTeamLimitsMutation.isPending}
+                                        />
                                       </TabsContent>
                                     </Tabs>
                                   </div>

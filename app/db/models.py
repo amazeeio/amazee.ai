@@ -1,8 +1,9 @@
-from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime, JSON, Float, Table
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime, JSON, Float, Table, Enum
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime, UTC
 from sqlalchemy.sql import func
 from sqlalchemy import UniqueConstraint
+from app.schemas.limits import LimitType, ResourceType, UnitType, OwnerType, LimitSource
 
 Base = declarative_base()
 
@@ -156,6 +157,7 @@ class DBPrivateAIKey(Base):
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     team_id = Column(Integer, ForeignKey("teams.id"))
+    cached_spend = Column(Float, default=0.0, nullable=True)
 
     owner = relationship("DBUser", back_populates="private_ai_keys")
     region = relationship("DBRegion", back_populates="private_ai_keys")
@@ -174,7 +176,8 @@ class DBPrivateAIKey(Base):
             "region": self.region.name if self.region else None,
             "owner_id": self.owner_id,
             "team_id": self.team_id,
-            "created_at": self.created_at
+            "created_at": self.created_at,
+            "cached_spend": self.cached_spend
         }
 
 class DBAuditLog(Base):
@@ -238,4 +241,33 @@ class DBPricingTable(Base):
     # Ensure only one active table per type
     __table_args__ = (
         UniqueConstraint('table_type', 'is_active', name='uq_pricing_table_type_active'),
+    )
+
+class DBLimitedResource(Base):
+    """
+    Unified limit management for both Control Plane and Data Plane resources.
+
+    Control Plane (CP) limits are enforced by amazee.ai and must have current_value.
+    Data Plane (DP) limits are enforced by external systems and have current_value=None.
+
+    Source hierarchy: MANUAL > PRODUCT > DEFAULT
+    Users inherit team limits unless they have individual overrides.
+    """
+    __tablename__ = "limited_resources"
+
+    id = Column(Integer, primary_key=True, index=True)
+    limit_type = Column(Enum(LimitType), nullable=False)
+    resource = Column(Enum(ResourceType), nullable=False)
+    unit = Column(Enum(UnitType), nullable=False)
+    max_value = Column(Float, nullable=False)
+    current_value = Column(Float, nullable=True)  # None for DP limits, required for CP limits
+    owner_type = Column(Enum(OwnerType), nullable=False)
+    owner_id = Column(Integer, nullable=False)
+    limited_by = Column(Enum(LimitSource), nullable=False)
+    set_by = Column(String, nullable=True)        # Required if limited_by is "manual"
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint('owner_type', 'owner_id', 'resource', name='uq_owner_resource'),
     )
