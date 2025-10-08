@@ -77,7 +77,6 @@ async def create_user(
     user: UserCreate,
     current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db),
-    limit_service: LimitService = Depends(get_limit_service)
 ):
     """
     Create a new user. Accessible by admin users or team admins for their own team.
@@ -97,6 +96,10 @@ async def create_user(
             detail="Not authorized to perform this action"
         )
 
+    return _create_user_in_db(user, db)
+
+def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
+    limit_service = get_limit_service(db)
     if settings.ENABLE_LIMITS and user.team_id is not None:
         limit_service.check_team_user_limit(user.team_id)
 
@@ -132,6 +135,8 @@ async def create_user(
     _create_default_limits_for_user(db_user, db)
 
     return db_user
+
+
 
 @router.get("/{user_id}", response_model=User)
 async def get_user(
