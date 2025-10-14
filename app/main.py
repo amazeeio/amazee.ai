@@ -5,7 +5,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
-from app.api import auth, private_ai_keys, users, regions, audit, teams, billing, products, pricing_tables
+from app.api import auth, private_ai_keys, users, regions, audit, teams, billing, products, pricing_tables, limits
 from app.core.config import settings
 from app.db.database import get_db
 from app.middleware.audit import AuditLogMiddleware
@@ -13,6 +13,7 @@ from app.middleware.prometheus import PrometheusMiddleware
 from app.middleware.auth import AuthMiddleware
 from app.core.worker import monitor_teams
 from app.core.locking import try_acquire_lock, release_lock
+from app.__version__ import __version__
 from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -67,6 +68,8 @@ async def lifespan(app: FastAPI):
                 release_lock(lock_name, db)
             except Exception as release_error:
                 logger.error(f"Error releasing lock: {str(release_error)}")
+        finally:
+            db.close()
 
     # Set schedule based on environment
     if settings.ENV_SUFFIX == "local":
@@ -117,7 +120,7 @@ app = FastAPI(
     All authenticated endpoints require you to be logged in. The API will automatically use your session cookie
     or you can provide a Bearer token in the Authorization header.
     """,
-    version="1.0.0",
+    version=__version__,
     docs_url=None,  # Disable default /docs endpoint
     redoc_url=None,  # Disable default /redoc endpoint
     root_path_in_servers=True,
@@ -188,6 +191,10 @@ instrumentator.instrument(app).expose(app)
 async def health_check():
     return {"status": "healthy"}
 
+@app.get("/version", tags=["system"])
+async def get_version():
+    return {"version": __version__}
+
 # Include routers
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(private_ai_keys.router, prefix="/private-ai-keys", tags=["private-ai-keys"])
@@ -198,6 +205,7 @@ app.include_router(teams.router, prefix="/teams", tags=["teams"])
 app.include_router(billing.router, prefix="/billing", tags=["billing"])
 app.include_router(products.router, prefix="/products", tags=["products"])
 app.include_router(pricing_tables.router, prefix="/pricing-tables", tags=["pricing-tables"])
+app.include_router(limits.router, prefix="/limits", tags=["limits"])
 
 @app.get("/", include_in_schema=False)
 async def custom_swagger_ui_html():

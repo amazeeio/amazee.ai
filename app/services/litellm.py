@@ -1,7 +1,7 @@
 import httpx
 from fastapi import HTTPException, status
 import logging
-from app.core.resource_limits import DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
+from app.core.limit_service import DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
 from app.core.config import settings
 from typing import Optional
 
