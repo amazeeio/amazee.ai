@@ -2,17 +2,39 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 from app.core.config import settings
-from app.core.resource_limits import check_team_user_limit
+from app.core.limit_service import LimitService
 from app.db.database import get_db
+from app.core.dependencies import get_limit_service
 from app.schemas.models import User, UserUpdate, UserCreate, TeamOperation, UserRoleUpdate
 from app.db.models import DBUser, DBTeam
 from app.core.security import get_password_hash, get_role_min_system_admin, get_current_user_from_auth, get_role_min_team_admin
 from app.core.roles import UserRole
 from datetime import datetime, UTC
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     tags=["users"]
 )
+
+
+def _create_default_limits_for_user(user: DBUser, db: Session) -> None:
+    """
+    Create default limits for a newly created user.
+
+    Args:
+        user: The user to create limits for
+        db: Database session
+    """
+    if settings.ENABLE_LIMITS:
+        try:
+            limit_service = LimitService(db)
+            limit_service.set_user_limits(user)
+            logger.info(f"Created default limits for user {user.id} ({user.email})")
+        except Exception as e:
+            logger.error(f"Failed to create default limits for user {user.id}: {str(e)}")
+            # Don't fail user creation if limit creation fails
 
 @router.get("/search", response_model=List[User], dependencies=[Depends(get_role_min_system_admin)])
 async def search_users(
@@ -54,7 +76,7 @@ async def list_users(
 async def create_user(
     user: UserCreate,
     current_user: DBUser = Depends(get_current_user_from_auth),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Create a new user. Accessible by admin users or team admins for their own team.
@@ -74,8 +96,12 @@ async def create_user(
             detail="Not authorized to perform this action"
         )
 
+    return _create_user_in_db(user, db)
+
+def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
+    limit_service = get_limit_service(db)
     if settings.ENABLE_LIMITS and user.team_id is not None:
-        check_team_user_limit(db, user.team_id)
+        limit_service.check_team_user_limit(user.team_id)
 
     # Validate role if provided
     if user.role and user.role not in UserRole.get_all_roles():
@@ -105,7 +131,12 @@ async def create_user(
     db.commit()
     db.refresh(db_user)
 
+    # Create default limits for the user
+    _create_default_limits_for_user(db_user, db)
+
     return db_user
+
+
 
 @router.get("/{user_id}", response_model=User)
 async def get_user(

@@ -1,12 +1,15 @@
 import re
 from datetime import datetime, UTC, timedelta
 from sqlalchemy.orm import Session
-from app.db.models import DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey, DBUser, DBRegion, DBTeamMetrics
+from sqlalchemy import select, func, and_
+from app.db.models import DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey, DBUser, DBRegion, DBTeamMetrics, DBLimitedResource
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
+from app.core.limit_service import LimitService
+from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitedResource
 import logging
 from collections import defaultdict
-from app.core.resource_limits import get_token_restrictions
+# get_token_restrictions is now available through LimitService
 from app.services.stripe import (
     get_product_id_from_session,
     get_product_id_from_subscription,
@@ -62,6 +65,67 @@ monitor_teams_duration = Summary(
 # Track active team labels to zero out metrics for inactive teams
 active_team_labels = set()
 
+def set_team_and_user_limits(db: Session, team: DBTeam):
+    """
+    Set limits for a team and all users in the team.
+
+    This function:
+    1. Sets team limits using the limit service
+    2. Sets user limits for all users in the team
+    3. Updates current values for COUNT-type limits based on actual database counts
+
+    Args:
+        db: Database session
+        team: The team to set limits for
+    """
+    # Ensure all limits are correct - will not override MANUAL limits
+    limit_service = LimitService(db)
+    limit_service.set_team_limits(team)
+
+    # Set user limits for all users in the team
+    team_users = db.query(DBUser).filter(DBUser.team_id == team.id).all()
+    for user in team_users:
+        limit_service.set_user_limits(user)
+
+    # Update current values for COUNT-type team limits
+    team_limits = limit_service.get_team_limits(team)
+    for limit in team_limits:
+        # Set the value of the limit if not already set
+        if limit.unit == UnitType.COUNT and limit.current_value == 0.0:
+            if limit.resource == ResourceType.USER:
+                value = db.execute(select(func.count()).select_from(DBUser).where(DBUser.team_id == team.id)).scalar()
+            elif limit.resource == ResourceType.SERVICE_KEY:
+                value = db.execute(select(func.count()).select_from(DBPrivateAIKey).where(
+                    DBPrivateAIKey.team_id == team.id,
+                    DBPrivateAIKey.litellm_token.is_not(None)
+                )).scalar()
+            elif limit.resource == ResourceType.VECTOR_DB:
+                value = db.execute(select(func.count()).select_from(DBPrivateAIKey).where(
+                    DBPrivateAIKey.team_id == team.id,
+                    DBPrivateAIKey.database_username.is_not(None)
+                )).scalar()
+            else:
+                # Skip unsupported resource types - they don't need current_value updates
+                continue
+            limit_service.set_current_value(limit, value)
+
+    # Update current values for COUNT-type user limits
+    for user in team_users:
+        user_limits = limit_service.get_user_limits(user)
+        for limit in user_limits:
+            # Set the value of the limit if not already set
+            if limit.unit == UnitType.COUNT and limit.current_value == 0.0:
+                if limit.resource == ResourceType.USER_KEY:
+                    # Count keys owned by this specific user
+                    value = db.execute(select(func.count()).select_from(DBPrivateAIKey).where(
+                        DBPrivateAIKey.owner_id == user.id,
+                        DBPrivateAIKey.litellm_token.is_not(None)
+                    )).scalar()
+                    limit_service.set_current_value(limit, value)
+                else:
+                    # Skip unsupported resource types - they don't need current_value updates
+                    continue
+
 def get_team_keys_by_region(db: Session, team_id: int) -> Dict[DBRegion, List[DBPrivateAIKey]]:
     """
     Get all keys for a team grouped by region.
@@ -74,8 +138,7 @@ def get_team_keys_by_region(db: Session, team_id: int) -> Dict[DBRegion, List[DB
         Dictionary mapping regions to lists of keys
     """
     # Get all keys for the team with their regions
-    team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
-    team_user_ids = [user.id for user in team_users]
+    team_user_ids = db.execute(select(DBUser.id).filter(DBUser.team_id == team_id)).scalars().all()
     # Return keys owned by users in the team OR owned by the team
     team_keys = db.query(DBPrivateAIKey).filter(
         (DBPrivateAIKey.owner_id.in_(team_user_ids)) |
@@ -95,8 +158,6 @@ def get_team_keys_by_region(db: Session, team_id: int) -> Dict[DBRegion, List[DB
 
     logger.info(f"Found {len(team_keys)} keys in {len(keys_by_region)} regions for team {team_id}")
     return keys_by_region
-
-
 
 async def handle_stripe_event_background(event, db: Session):
     """
@@ -184,7 +245,8 @@ async def apply_product_for_team(db: Session, customer_id: str, product_id: str,
             db.add(team_product)
             db.commit()  # Commit the product association
 
-        days_left_in_period, max_max_spend, max_rpm_limit = get_token_restrictions(db, team.id)
+        limit_service = LimitService(db)
+        days_left_in_period, max_max_spend, max_rpm_limit = limit_service.get_token_restrictions(team.id)
 
         # Get all keys for the team grouped by region
         keys_by_region = get_team_keys_by_region(db, team.id)
@@ -213,6 +275,8 @@ async def apply_product_for_team(db: Session, customer_id: str, product_id: str,
                     # Continue with other keys even if one fails
                     continue
 
+        # Ensure that limits are updated
+        limit_service.set_team_limits(team)
         db.commit()
 
     except Exception as e:
@@ -243,6 +307,8 @@ async def remove_product_from_team(db: Session, customer_id: str, product_id: st
             return
         # Remove the product association
         db.delete(existing_association)
+        limit_service = LimitService(db)
+        limit_service.set_team_limits(team)
 
         db.commit()
     except Exception as e:
@@ -250,7 +316,8 @@ async def remove_product_from_team(db: Session, customer_id: str, product_id: st
         logger.error(f"Error removing product from team: {str(e)}")
         raise e
 
-async def monitor_team_keys(
+async def reconcile_team_keys(
+    db: Session,
     team: DBTeam,
     keys_by_region: Dict[DBRegion, List[DBPrivateAIKey]],
     expire_keys: bool,
@@ -271,6 +338,8 @@ async def monitor_team_keys(
         float: Total spend across all keys for the team
     """
     team_total = 0
+    total_by_user = defaultdict(float)
+    service_key_total = 0
     current_time = datetime.now(UTC)
 
     # Monitor keys for each region
@@ -292,115 +361,64 @@ async def monitor_team_keys(
                     current_spend = info.get("spend", 0) or 0.0
                     budget = info.get("max_budget", 0) or 0.0
                     key_alias = info.get("key_alias", f"key-{key.id}")  # Fallback to key-{id} if no alias
+                    # Caching a value for faster lookup
+                    key.cached_spend = current_spend
+                    key.updated_at = datetime.now(UTC)
+                    if key.owner_id:
+                        total_by_user[key.owner_id] += current_spend
+                    else:
+                        service_key_total += current_spend
 
-                    # Check for renewal period update if renewal_period_days is provided
-                    if renewal_period_days is not None:
-                        # Check current values and only update if they don't match the parameters
-                        current_budget_duration = info.get("budget_duration")
-                        current_max_budget = info.get("max_budget")
-                        budget_reset_at = info.get("budget_reset_at")
-                        expiry_date = info.get("expires")
-
+                    if expire_keys:
+                        logger.info(f"Key {key.id} expiring, setting duration to 0 days")
+                        await litellm_service.update_key_duration(key.litellm_token, "0d")
+                    else:
+                        update_data = {"litellm_token": key.litellm_token}
                         needs_update = False
-                        data = {"litellm_token": key.litellm_token}
-
-                        # Rule 1: If the budget amount mis-matches, always update that field
+                        current_max_budget = info.get("max_budget")
+                        # If the budget amount mis-matches, always update that field
                         if max_budget_amount is not None and current_max_budget != max_budget_amount:
-                            data["budget_amount"] = max_budget_amount
+                            update_data["budget_amount"] = max_budget_amount
                             needs_update = True
+                            logger.info(f"Key {key.id} has incorrect budget of {current_max_budget}, will change to {max_budget_amount}")
 
-                        # Rule 2: If the key is expired or expires within the next month, always update the budget duration
-                        if expiry_date is not None:
-                            try:
-                                # Parse the expiry date string into a datetime object
-                                parsed_expiry_date = datetime.fromisoformat(expiry_date.replace('Z', '+00:00'))
-                                # Check if key is expired or expires within the next month (30 days)
-                                one_month_from_now = current_time + timedelta(days=30)
-                                if parsed_expiry_date <= one_month_from_now:
-                                    needs_update = True
-                                    data["budget_duration"] = f"{renewal_period_days}d"
-                                    if parsed_expiry_date < current_time:
-                                        logger.info(f"Key {key.id} budget update triggered by expired key")
-                                    else:
-                                        logger.info(f"Key {key.id} budget update triggered by key expiring within next month (expires: {parsed_expiry_date})")
-                            except (ValueError, AttributeError) as e:
-                                logger.warning(f"Error parsing expiry date for key {key.id}: {str(e)}")
-
-                        # Rule 3: If budget_duration is None, always update it
-                        if current_budget_duration is None:
-                            data["budget_duration"] = f"{renewal_period_days}d"
+                        current_budget_duration = info.get("budget_duration")
+                        # If budget_duration is None, always update it
+                        if current_budget_duration is None and renewal_period_days is not None:
+                            update_data["budget_duration"] = f"{renewal_period_days}d"
                             needs_update = True
                             logger.info(f"Key {key.id} budget update triggered by None budget_duration")
-
-                        # Rule 4: If budget_duration is "0d", always update it (fix for expired keys)
-                        elif current_budget_duration == "0d":
-                            data["budget_duration"] = f"{renewal_period_days}d"
+                        # If budget_duration is "0d", always update it (fix for expired keys)
+                        elif current_budget_duration == "0d" and renewal_period_days is not None:
+                            update_data["budget_duration"] = f"{renewal_period_days}d"
                             needs_update = True
                             logger.info(f"Key {key.id} budget update triggered by 0d duration (expired key fix)")
 
-                        # Rule 5: If the duration mismatches, and the next reset time is within an hour of (now + current duration) then reset the duration
-                        else:
-                            expected_budget_duration = f"{renewal_period_days}d"
-                            if current_budget_duration != expected_budget_duration:
-                                # Check if reset time alignment heuristic is met
-                                should_update_duration = False
+                        expiry_date = info.get("expires")
+                        if expiry_date and renewal_period_days is not None:
+                            parsed_expiry_date = datetime.fromisoformat(expiry_date.replace('Z', '+00:00'))
+                            this_month = current_time + timedelta(days=30)
+                            if parsed_expiry_date <= this_month:
+                                update_data["budget_duration"] = f"{renewal_period_days}d"
+                                needs_update = True
+                                logger.info(f"Key {key.id} expires at {expiry_date}, updating to extend life.")
 
-                                if budget_reset_at:
-                                    try:
-                                        # Parse the current budget duration to get the time delta
-                                        # Support formats like: 10m, 2h, 30d, etc.
-                                        duration_match = re.match(r'(\d+)([mhd])', current_budget_duration)
-                                        if duration_match:
-                                            duration_value = int(duration_match.group(1))
-                                            duration_unit = duration_match.group(2)
-
-                                            # Calculate the time delta based on the unit
-                                            if duration_unit == 'm':
-                                                current_period_end = current_time + timedelta(minutes=duration_value)
-                                            elif duration_unit == 'h':
-                                                current_period_end = current_time + timedelta(hours=duration_value)
-                                            elif duration_unit == 'd':
-                                                current_period_end = current_time + timedelta(days=duration_value)
-                                            else:
-                                                # Unknown unit, skip duration update
-                                                logger.warning(f"Unknown duration unit '{duration_unit}' for key {key.id}, skipping duration update")
-                                                continue
-
-                                            # Parse the budget reset time
-                                            reset_time = datetime.fromisoformat(budget_reset_at.replace('Z', '+00:00'))
-
-                                            # Check if reset time is within 1 hour of current period end
-                                            time_diff = abs((reset_time - current_period_end).total_seconds())
-                                            if time_diff <= 3600:  # 1 hour in seconds
-                                                should_update_duration = True
-                                                logger.info(f"Key {key.id} duration update triggered by reset time alignment: reset at {reset_time}, period ends at {current_period_end}")
-                                    except (ValueError, AttributeError) as e:
-                                        logger.warning(f"Error parsing budget reset time for key {key.id}: {str(e)}")
-
-                                if should_update_duration:
-                                    data["budget_duration"] = expected_budget_duration
-                                    needs_update = True
-                        # Update when needs_update is True
                         if needs_update:
                             # Determine what the new budget_duration will be for logging
-                            new_budget_duration = data.get("budget_duration", current_budget_duration)
+                            new_budget_duration = update_data.get("budget_duration", current_budget_duration)
                             logger.info(f"Key {key.id} budget update triggered: changing from {current_budget_duration}, {current_max_budget} to {new_budget_duration}, {max_budget_amount}")
 
                             # Extract litellm_token and other parameters for update_budget call
-                            litellm_token = data.pop("litellm_token")
-                            budget_duration = data.get("budget_duration")
-                            budget_amount = data.get("budget_amount")
+                            litellm_token = update_data.pop("litellm_token")
+                            budget_duration = update_data.get("budget_duration")
+                            budget_amount = update_data.get("budget_amount")
 
                             # Call update_budget with correct parameter order
+                            # Always pass budget_duration as second positional argument (can be None)
                             await litellm_service.update_budget(litellm_token, budget_duration, budget_amount=budget_amount)
                             logger.info(f"Updated key {key.id} budget settings")
                         else:
                             logger.info(f"Key {key.id} budget settings already match the expected values, no update needed")
-
-                    # Set the key duration to 0 days to end its usability.
-                    if expire_keys:
-                        logger.info(f"Key {key.id} expiring, setting duration to 0 days")
-                        await litellm_service.update_key_duration(key.litellm_token, "0d")
 
                     # Add to team total
                     team_total += current_spend
@@ -436,7 +454,111 @@ async def monitor_team_keys(
             logger.error(f"Error initializing LiteLLM service for region {region.name}: {str(e)}")
             continue
 
+    limit_service = LimitService(db)
+    for user_id in total_by_user.keys():
+        limit = db.query(DBLimitedResource).filter(
+            and_(
+                DBLimitedResource.owner_type == OwnerType.USER,
+                DBLimitedResource.owner_id == user_id,
+                DBLimitedResource.resource == ResourceType.BUDGET
+            )
+        ).first()
+        if limit:
+            limit_schema = LimitedResource.model_validate(limit)
+            limit_service.set_current_value(limit_schema, total_by_user[user_id])
+
+    service_key_limit = db.query(DBLimitedResource).filter(
+        and_(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == team.id,
+            DBLimitedResource.resource == ResourceType.BUDGET
+        )
+    ).first()
+    if service_key_limit:
+        limit_schema = LimitedResource.model_validate(service_key_limit)
+        limit_service.set_current_value(limit_schema, service_key_total)
+
     return team_total
+
+def _monitor_team_freshness(team: DBTeam) -> int:
+    current_time = datetime.now(UTC)
+    # Calculate team age based on whether they have made a payment
+    if team.last_payment:
+        team_freshness = (current_time - team.last_payment.replace(tzinfo=UTC)).days
+    else:
+        team_freshness = (current_time - team.created_at.replace(tzinfo=UTC)).days
+
+    if team_freshness < 0:
+        logger.warning(f"Team {team.name} (ID: {team.id}) has a negative age: {team_freshness} days")
+        team_freshness = 0
+
+    # Post freshness metric (always emit metrics)
+    team_freshness_days.labels(
+        team_id=str(team.id),
+        team_name=team.name
+    ).set(team_freshness)
+
+    return team_freshness
+
+def _send_expiry_notification(db: Session, team: DBTeam, has_products: bool, should_send_notifications: bool, days_remaining: int, ses_service: Optional[SESService]):
+    # Check for notification conditions for teams still in the trial (only if not recently monitored)
+    if not has_products and should_send_notifications:
+        # Find the admin email for the team
+        try:
+            admin_email = get_team_admin_email(db, team)
+        except ValueError:
+            logger.warning(f"No admin user found for team {team.name} (ID: {team.id}), skipping email notifications")
+            admin_email = None
+
+        if days_remaining == FIRST_EMAIL_DAYS_LEFT or days_remaining == SECOND_EMAIL_DAYS_LEFT:
+            logger.info(f"Team {team.name} (ID: {team.id}) is approaching expiration in {days_remaining} days")
+            # Send expiration notification email
+            try:
+                if admin_email and ses_service:
+                    template_data = {
+                        "name": team.name,
+                        "days_remaining": days_remaining,
+                        "dashboard_url": generate_pricing_url(admin_email)
+                    }
+                    ses_service.send_email(
+                        to_addresses=[admin_email],
+                        template_name="team-expiring",
+                        template_data=template_data
+                    )
+                    logger.info(f"Sent expiration notification email to team {team.name} (ID: {team.id})")
+                elif admin_email and not ses_service:
+                    logger.warning(f"SES service not available, skipping expiration notification email for team {team.name} (ID: {team.id})")
+                else:
+                    logger.warning(f"No email found for team {team.name} (ID: {team.id})")
+            except Exception as e:
+                logger.error(f"Failed to send expiration notification email to team {team.name}: {str(e)}")
+        elif days_remaining == 0:
+            # Send expired email
+            try:
+                if admin_email and ses_service:
+                    template_data = {
+                        "name": team.name,
+                        "dashboard_url": generate_pricing_url(admin_email)
+                    }
+                    ses_service.send_email(
+                        to_addresses=[admin_email],
+                        template_name="trial-expired",
+                        template_data=template_data
+                    )
+                    logger.info(f"Sent expired email to team {team.name} (ID: {team.id})")
+                elif admin_email and not ses_service:
+                    logger.warning(f"SES service not available, skipping expired email for team {team.name} (ID: {team.id})")
+                else:
+                    logger.warning(f"No email found for team {team.name} (ID: {team.id})")
+            except Exception as e:
+                logger.error(f"Failed to send expired email to team {team.name}: {str(e)}")
+        elif days_remaining <= 0:
+            # Post expired metric
+            team_expired_metric.labels(
+                team_id=str(team.id),
+                team_name=team.name
+            ).inc()
+
 
 @monitor_teams_duration.time()
 async def monitor_teams(db: Session):
@@ -460,7 +582,7 @@ async def monitor_teams(db: Session):
             ses_service = SESService()
         except Exception as e:
             logger.error(f"Error initializing SES service: {str(e)}")
-            pass
+            ses_service = None
 
         logger.info(f"Found {len(teams)} teams to track")
         for team in teams:
@@ -472,21 +594,8 @@ async def monitor_teams(db: Session):
                 DBTeamProduct.team_id == team.id
             ).first() is not None
 
-            # Calculate team age based on whether they have made a payment
-            if team.last_payment:
-                team_freshness = (current_time - team.last_payment.replace(tzinfo=UTC)).days
-            else:
-                team_freshness = (current_time - team.created_at.replace(tzinfo=UTC)).days
-
-            if team_freshness < 0:
-                logger.warning(f"Team {team.name} (ID: {team.id}) has a negative age: {team_freshness} days")
-                team_freshness = 0
-
-            # Post freshness metric (always emit metrics)
-            team_freshness_days.labels(
-                team_id=str(team.id),
-                team_name=team.name
-            ).set(team_freshness)
+            team_freshness = _monitor_team_freshness(team)
+            days_remaining = TRIAL_OVER_DAYS - team_freshness
 
             # Check if team was monitored within 24 hours
             should_send_notifications = settings.ENABLE_LIMITS
@@ -494,66 +603,14 @@ async def monitor_teams(db: Session):
                 hours_since_monitored = (current_time - team.last_monitored.replace(tzinfo=UTC)).total_seconds() / 3600
                 should_send_notifications = hours_since_monitored >= 24
 
-            # Check for notification conditions for teams still in the trial (only if not recently monitored)
-            days_remaining = TRIAL_OVER_DAYS - team_freshness
-            if not has_products and should_send_notifications:
-                # Find the admin email for the team
-                try:
-                    admin_email = get_team_admin_email(db, team)
-                except ValueError:
-                    logger.warning(f"No admin user found for team {team.name} (ID: {team.id}), skipping email notifications")
-                    admin_email = None
-
-                if days_remaining == FIRST_EMAIL_DAYS_LEFT or days_remaining == SECOND_EMAIL_DAYS_LEFT:
-                    logger.info(f"Team {team.name} (ID: {team.id}) is approaching expiration in {days_remaining} days")
-                    # Send expiration notification email
-                    try:
-                        if admin_email:
-                            template_data = {
-                                "name": team.name,
-                                "days_remaining": days_remaining,
-                                "dashboard_url": generate_pricing_url(admin_email)
-                            }
-                            ses_service.send_email(
-                                to_addresses=[admin_email],
-                                template_name="team-expiring",
-                                template_data=template_data
-                            )
-                            logger.info(f"Sent expiration notification email to team {team.name} (ID: {team.id})")
-                        else:
-                            logger.warning(f"No email found for team {team.name} (ID: {team.id})")
-                    except Exception as e:
-                        logger.error(f"Failed to send expiration notification email to team {team.name}: {str(e)}")
-                elif days_remaining == 0:
-                    # Send expired email
-                    try:
-                        if admin_email:
-                            template_data = {
-                                "name": team.name,
-                                "dashboard_url": generate_pricing_url(admin_email)
-                            }
-                            ses_service.send_email(
-                                to_addresses=[admin_email],
-                                template_name="trial-expired",
-                                template_data=template_data
-                            )
-                            logger.info(f"Sent expired email to team {team.name} (ID: {team.id})")
-                        else:
-                            logger.warning(f"No email found for team {team.name} (ID: {team.id})")
-                    except Exception as e:
-                        logger.error(f"Failed to send expired email to team {team.name}: {str(e)}")
-                elif days_remaining <= 0:
-                    # Post expired metric
-                    team_expired_metric.labels(
-                        team_id=str(team.id),
-                        team_name=team.name
-                    ).inc()
+            _send_expiry_notification(db, team, has_products, should_send_notifications, days_remaining, ses_service)
 
             # Get all keys for the team grouped by region
             keys_by_region = get_team_keys_by_region(db, team.id)
             expire_keys = False
             # If the team has a product, expiry will be handled by a Stripe cancellation
             if not has_products and days_remaining <= 0 and should_send_notifications:
+                logger.info(f"Team {team.id} has {days_remaining} days remaining, expiring keys")
                 expire_keys = True
 
             # Determine if we should check for renewal period updates
@@ -573,7 +630,7 @@ async def monitor_teams(db: Session):
                     max_budget_amount = max(products, key=lambda product: product.max_budget_per_key).max_budget_per_key
 
             # Monitor keys and get total spend (includes renewal period updates if applicable)
-            team_total = await monitor_team_keys(team, keys_by_region, expire_keys, renewal_period_days, max_budget_amount)
+            team_total = await reconcile_team_keys(db, team, keys_by_region, expire_keys, renewal_period_days, max_budget_amount)
 
             # Set the total spend metric for the team (always emit metrics)
             team_total_spend.labels(
@@ -605,6 +662,9 @@ async def monitor_teams(db: Session):
                     last_updated=current_time
                 )
                 db.add(team_metrics)
+
+            # Ensure all limits are correct - will not override MANUAL limits
+            set_team_and_user_limits(db, team)
 
             # Update last_monitored timestamp only if notifications were sent
             if should_send_notifications:

@@ -39,6 +39,8 @@ import {
   Collapsible,
   CollapsibleContent,
 } from '@/components/ui/collapsible';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { LimitsView, LimitedResource } from '@/components/ui/limits-view';
 import React from 'react';
 
 interface User {
@@ -151,6 +153,17 @@ export default function UsersPage() {
       return spendData;
     },
     enabled: !!expandedUserId && userAIKeys.length > 0,
+  });
+
+  // Get user limits when expanded
+  const { data: userLimits = [], isLoading: isLoadingUserLimits } = useQuery<LimitedResource[]>({
+    queryKey: ['user-limits', expandedUserId],
+    queryFn: async () => {
+      if (!expandedUserId) return [];
+      const response = await get(`/limits/users/${expandedUserId}`);
+      return response.json();
+    },
+    enabled: !!expandedUserId,
   });
 
   // Fetch teams
@@ -377,6 +390,35 @@ export default function UsersPage() {
       toast({
         title: 'Success',
         description: 'User deleted successfully',
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const resetAllUserLimitsMutation = useMutation({
+    mutationFn: async (userId: string) => {
+      try {
+        const response = await post(`/limits/users/${userId}/reset`, {});
+        return response.json();
+      } catch (error) {
+        if (error instanceof Error) {
+          throw new Error(`Failed to reset all user limits: ${error.message}`);
+        } else {
+          throw new Error('An unexpected error occurred while resetting all user limits.');
+        }
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['user-limits', expandedUserId] });
+      toast({
+        title: 'Success',
+        description: 'All user limits reset successfully',
       });
     },
     onError: (error: Error) => {
@@ -739,67 +781,88 @@ export default function UsersPage() {
                       <TableCell colSpan={8} className="p-0">
                         <Collapsible open={expandedUserId === user.id}>
                           <CollapsibleContent className="p-4 bg-muted/30">
-                            {isLoadingUserAIKeys ? (
+                            {isLoadingUserAIKeys || isLoadingUserLimits ? (
                               <div className="flex justify-center items-center py-8">
                                 <Loader2 className="h-8 w-8 animate-spin" />
                               </div>
                             ) : (
-                              <div className="space-y-4">
-                                <h3 className="text-lg font-medium">AI Keys</h3>
-                                {userAIKeys.length > 0 ? (
-                                  <div className="rounded-md border">
-                                    <Table>
-                                      <TableHeader>
-                                        <TableRow>
-                                          <TableHead>Name</TableHead>
-                                          <TableHead>Region</TableHead>
-                                          <TableHead>Database</TableHead>
-                                          <TableHead>Created At</TableHead>
-                                          <TableHead>Spend</TableHead>
-                                          <TableHead>Budget</TableHead>
-                                        </TableRow>
-                                      </TableHeader>
-                                      <TableBody>
-                                        {userAIKeys.map((key) => {
-                                          const spendInfo = spendMap[key.id];
-                                          return (
-                                            <TableRow key={key.id}>
-                                              <TableCell>{key.name}</TableCell>
-                                              <TableCell>{key.region}</TableCell>
-                                              <TableCell>{key.database_name}</TableCell>
-                                              <TableCell>
-                                                {new Date(key.created_at).toLocaleDateString()}
-                                              </TableCell>
-                                              <TableCell>
-                                                {spendInfo ? (
-                                                  <span>
-                                                    ${spendInfo.spend.toFixed(2)}
-                                                  </span>
-                                                ) : (
-                                                  <span className="text-muted-foreground">Loading...</span>
-                                                )}
-                                              </TableCell>
-                                              <TableCell>
-                                                {spendInfo?.max_budget ? (
-                                                  <span>
-                                                    ${spendInfo.max_budget.toFixed(2)}
-                                                  </span>
-                                                ) : (
-                                                  <span className="text-muted-foreground">No limit</span>
-                                                )}
-                                              </TableCell>
-
-                                            </TableRow>
-                                          );
-                                        })}
-                                      </TableBody>
-                                    </Table>
-                                  </div>
-                                ) : (
-                                  <div className="text-center py-8 border rounded-md">
-                                    <p className="text-muted-foreground">No AI keys found for this user.</p>
-                                  </div>
-                                )}
+                              <div className="space-y-6">
+                                <Tabs defaultValue="ai-keys">
+                                  <TabsList>
+                                    <TabsTrigger value="ai-keys">AI Keys</TabsTrigger>
+                                    <TabsTrigger value="limits">Limits</TabsTrigger>
+                                  </TabsList>
+                                  <TabsContent value="ai-keys" className="mt-4">
+                                    <div className="space-y-4">
+                                      <h3 className="text-lg font-medium">AI Keys</h3>
+                                      {userAIKeys.length > 0 ? (
+                                        <div className="rounded-md border">
+                                          <Table>
+                                            <TableHeader>
+                                              <TableRow>
+                                                <TableHead>Name</TableHead>
+                                                <TableHead>Region</TableHead>
+                                                <TableHead>Database</TableHead>
+                                                <TableHead>Created At</TableHead>
+                                                <TableHead>Spend</TableHead>
+                                                <TableHead>Budget</TableHead>
+                                              </TableRow>
+                                            </TableHeader>
+                                            <TableBody>
+                                              {userAIKeys.map((key) => {
+                                                const spendInfo = spendMap[key.id];
+                                                return (
+                                                  <TableRow key={key.id}>
+                                                    <TableCell>{key.name}</TableCell>
+                                                    <TableCell>{key.region}</TableCell>
+                                                    <TableCell>{key.database_name}</TableCell>
+                                                    <TableCell>
+                                                      {new Date(key.created_at).toLocaleDateString()}
+                                                    </TableCell>
+                                                    <TableCell>
+                                                      {spendInfo ? (
+                                                        <span>
+                                                          ${spendInfo.spend.toFixed(2)}
+                                                        </span>
+                                                      ) : (
+                                                        <span className="text-muted-foreground">Loading...</span>
+                                                      )}
+                                                    </TableCell>
+                                                    <TableCell>
+                                                      {spendInfo?.max_budget ? (
+                                                        <span>
+                                                          ${spendInfo.max_budget.toFixed(2)}
+                                                        </span>
+                                                      ) : (
+                                                        <span className="text-muted-foreground">No limit</span>
+                                                      )}
+                                                    </TableCell>
+                                                  </TableRow>
+                                                );
+                                              })}
+                                            </TableBody>
+                                          </Table>
+                                        </div>
+                                      ) : (
+                                        <div className="text-center py-8 border rounded-md">
+                                          <p className="text-muted-foreground">No AI keys found for this user.</p>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </TabsContent>
+                                  <TabsContent value="limits" className="mt-4">
+                                    <LimitsView
+                                      limits={userLimits}
+                                      isLoading={isLoadingUserLimits}
+                                      ownerType="user"
+                                      ownerId={user.id}
+                                      queryKey={['user-limits', user.id]}
+                                      showResetAll={true}
+                                      onResetAll={() => resetAllUserLimitsMutation.mutate(user.id)}
+                                      isResettingAll={resetAllUserLimitsMutation.isPending}
+                                    />
+                                  </TabsContent>
+                                </Tabs>
                               </div>
                             )}
                           </CollapsibleContent>
