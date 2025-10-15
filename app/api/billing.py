@@ -79,7 +79,8 @@ async def handle_events(
         event = decode_stripe_event(payload, signature, webhook_secret)
 
         # Add the event handling to background tasks
-        background_tasks.add_task(handle_stripe_event_background, event, db)
+        # Note: Don't pass the request-scoped db session to background task
+        background_tasks.add_task(handle_stripe_event_background, event)
 
         return Response(
             status_code=status.HTTP_200_OK,

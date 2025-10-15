@@ -3,6 +3,7 @@ from datetime import datetime, UTC, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, and_
 from app.db.models import DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey, DBUser, DBRegion, DBTeamMetrics, DBLimitedResource
+from app.db.database import get_db
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
 from app.core.limit_service import LimitService
@@ -159,11 +160,14 @@ def get_team_keys_by_region(db: Session, team_id: int) -> Dict[DBRegion, List[DB
     logger.info(f"Found {len(team_keys)} keys in {len(keys_by_region)} regions for team {team_id}")
     return keys_by_region
 
-async def handle_stripe_event_background(event, db: Session):
+async def handle_stripe_event_background(event):
     """
     Background task to handle Stripe webhook events.
     This runs in a separate thread to avoid blocking the webhook response.
+    Creates its own database session to avoid using the request-scoped session.
     """
+    # Create a new database session for this background task
+    db = next(get_db())
     try:
         event_type = event.type
         if not event_type in KNOWN_EVENTS:
@@ -200,6 +204,8 @@ async def handle_stripe_event_background(event, db: Session):
             await remove_product_from_team(db, customer_id, product_id)
     except Exception as e:
         logger.error(f"Error in background event handler: {str(e)}")
+    finally:
+        db.close()
 
 async def apply_product_for_team(db: Session, customer_id: str, product_id: str, start_date: datetime):
     """

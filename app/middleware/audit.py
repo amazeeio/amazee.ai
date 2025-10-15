@@ -11,9 +11,8 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 class AuditLogMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, db: Session):
+    def __init__(self, app):
         super().__init__(app)
-        self.db = db
 
     async def dispatch(self, request: Request, call_next):
         # Skip audit logging for certain paths

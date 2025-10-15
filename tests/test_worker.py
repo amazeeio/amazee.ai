@@ -60,17 +60,21 @@ async def test_handle_stripe_events_remove_product(event_type, object_type, get_
     db.add(team_product)
     db.commit()
 
+    # Store IDs before calling the background task
+    team_id = test_team.id
+    product_id = test_product.id
+
     # Act
     with patch(f'app.core.worker.{get_product_func}', new_callable=AsyncMock) as mock_get_product:
-        mock_get_product.return_value = test_product.id
-        await handle_stripe_event_background(mock_event, db)
+        mock_get_product.return_value = product_id
+        await handle_stripe_event_background(mock_event)
 
     # Assert
     mock_get_product.assert_called_once_with(mock_object.id)
     # Verify team-product association was removed
     team_product = db.query(DBTeamProduct).filter(
-        DBTeamProduct.team_id == test_team.id,
-        DBTeamProduct.product_id == test_product.id
+        DBTeamProduct.team_id == team_id,
+        DBTeamProduct.product_id == product_id
     ).first()
     assert team_product is None
 
@@ -81,7 +85,7 @@ async def test_handle_unknown_event_type(db):
     mock_event.type = "unknown.event.type"
 
     # Act
-    await handle_stripe_event_background(mock_event, db)
+    await handle_stripe_event_background(mock_event)
 
     # No assertion needed as we're just verifying no error occurs
 

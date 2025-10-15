@@ -167,7 +167,7 @@ app.add_middleware(
     allowed_hosts=settings.ALLOWED_HOSTS
 )
 
-app.add_middleware(AuditLogMiddleware, db=next(get_db()))
+app.add_middleware(AuditLogMiddleware)
 
 # Setup Prometheus instrumentation
 instrumentator = Instrumentator(
