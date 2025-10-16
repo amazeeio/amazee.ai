@@ -115,7 +115,7 @@ export function LimitsView({
     mutationFn: async (limitData: {
       owner_type: string;
       owner_id: number;
-      resource_type: string;
+      resource: string;
       limit_type: string;
       unit: string;
       max_value: number;
@@ -154,7 +154,7 @@ export function LimitsView({
     mutationFn: async (limitData: {
       owner_type: string;
       owner_id: number;
-      resource_type: string;
+      resource: string;
     }) => {
       try {
         const response = await post('/limits/reset', limitData);
@@ -187,7 +187,7 @@ export function LimitsView({
     mutationFn: async (limitData: {
       owner_type: string;
       owner_id: number;
-      resource_type: string;
+      resource: string;
       limit_type: string;
       unit: string;
       max_value: number;
@@ -236,7 +236,7 @@ export function LimitsView({
     updateLimitMutation.mutate({
       owner_type: limit.owner_type,
       owner_id: limit.owner_id,
-      resource_type: limit.resource,
+      resource: limit.resource,
       limit_type: limit.limit_type,
       unit: limit.unit,
       max_value: editMaxValue,
@@ -248,7 +248,7 @@ export function LimitsView({
     resetLimitMutation.mutate({
       owner_type: limit.owner_type,
       owner_id: limit.owner_id,
-      resource_type: limit.resource,
+      resource: limit.resource,
     });
   };
 
@@ -278,7 +278,7 @@ export function LimitsView({
     createLimitMutation.mutate({
       owner_type: ownerType,
       owner_id: parseInt(ownerId),
-      resource_type: newResourceType,
+      resource: newResourceType,
       limit_type: newLimitType,
       unit: unit,
       max_value: newMaxValue,
