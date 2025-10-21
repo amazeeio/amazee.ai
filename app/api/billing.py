@@ -6,7 +6,7 @@ from datetime import datetime, UTC
 from app.db.database import get_db
 from app.core.security import get_role_min_specific_team_admin, get_role_min_system_admin
 from app.db.models import DBTeam, DBSystemSecret, DBProduct, DBTeamProduct
-from app.schemas.models import PricingTableSession, SubscriptionCreate, SubscriptionResponse
+from app.schemas.models import PricingTableSession, SubscriptionCreate, SubscriptionResponse, PortalRequest
 from app.services.stripe import (
     decode_stripe_event,
     create_portal_session,
@@ -97,6 +97,7 @@ async def handle_events(
 @router.post("/teams/{team_id}/portal", dependencies=[Depends(get_role_min_specific_team_admin)])
 async def get_portal(
     team_id: int,
+    portal_request: PortalRequest = PortalRequest(),
     db: Session = Depends(get_db)
 ):
     """
@@ -105,6 +106,7 @@ async def get_portal(
 
     Args:
         team_id: The ID of the team to create the portal session for
+        portal_request: Optional request body with return_url parameter
 
     Returns:
         Redirects to the Stripe Customer Portal URL
@@ -123,7 +125,7 @@ async def get_portal(
         )
 
     try:
-        return_url = get_return_url(team_id)
+        return_url = portal_request.return_url if portal_request.return_url else get_return_url(team_id)
         # Create portal session using the service
         portal_url = await create_portal_session(team.stripe_customer_id, return_url)
 

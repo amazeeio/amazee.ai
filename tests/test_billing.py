@@ -5,6 +5,11 @@ from fastapi import HTTPException, status
 
 @patch('app.api.billing.create_portal_session', new_callable=AsyncMock)
 def test_get_portal_existing_customer(mock_create_portal, client, db, test_team, team_admin_token):
+    """
+    GIVEN: A team with an existing Stripe customer ID
+    WHEN: Creating a portal session without custom return_url
+    THEN: The portal session is created with default return URL
+    """
     # Arrange
     test_team.stripe_customer_id = "cus_123"
     db.add(test_team)
@@ -26,6 +31,38 @@ def test_get_portal_existing_customer(mock_create_portal, client, db, test_team,
     mock_create_portal.assert_called_once_with(
         "cus_123",
         f"http://localhost:3000/teams/{test_team.id}/dashboard"
+    )
+
+@patch('app.api.billing.create_portal_session', new_callable=AsyncMock)
+def test_get_portal_with_custom_return_url(mock_create_portal, client, db, test_team, team_admin_token):
+    """
+    GIVEN: A team with an existing Stripe customer ID
+    WHEN: Creating a portal session with a custom return_url
+    THEN: The portal session is created with the provided return URL
+    """
+    # Arrange
+    test_team.stripe_customer_id = "cus_123"
+    db.add(test_team)
+    db.commit()
+
+    custom_return_url = "https://example.com/custom/path"
+    mock_portal_url = "https://billing.stripe.com/portal/123"
+    mock_create_portal.return_value = mock_portal_url
+
+    # Act
+    response = client.post(
+        f"/billing/teams/{test_team.id}/portal",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"return_url": custom_return_url},
+        follow_redirects=False
+    )
+
+    # Assert
+    assert response.status_code == 303
+    assert response.headers["location"] == mock_portal_url
+    mock_create_portal.assert_called_once_with(
+        "cus_123",
+        custom_return_url
     )
 
 @patch('app.api.billing.create_portal_session', new_callable=AsyncMock)

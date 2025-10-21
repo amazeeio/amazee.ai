@@ -364,6 +364,10 @@ class SubscriptionResponse(BaseModel):
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
+class PortalRequest(BaseModel):
+    return_url: Optional[str] = None
+    model_config = ConfigDict(from_attributes=True)
+
 # Sales Dashboard schemas
 class SalesProduct(BaseModel):
     id: str
