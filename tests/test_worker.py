@@ -65,8 +65,10 @@ async def test_handle_stripe_events_remove_product(event_type, object_type, get_
     product_id = test_product.id
 
     # Act
-    with patch(f'app.core.worker.{get_product_func}', new_callable=AsyncMock) as mock_get_product:
+    with patch(f'app.core.worker.{get_product_func}', new_callable=AsyncMock) as mock_get_product, \
+         patch('app.core.worker.get_subscribed_products_for_customer', new_callable=AsyncMock) as mock_get_subscriptions:
         mock_get_product.return_value = product_id
+        mock_get_subscriptions.return_value = []  # No active subscriptions (allowing removal)
         await handle_stripe_event_background(mock_event)
 
     # Assert
@@ -348,7 +350,8 @@ async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, mock_lim
 
 @pytest.mark.asyncio
 @patch('app.core.worker.LimitService')
-async def test_remove_product_calls_limit_service(mock_limit_service, db, test_team, test_product):
+@patch('app.core.worker.get_subscribed_products_for_customer', new_callable=AsyncMock)
+async def test_remove_product_calls_limit_service(mock_get_subscriptions, mock_limit_service, db, test_team, test_product):
     """
     Test that removing a product calls the limit service to set team limits.
 
@@ -368,6 +371,9 @@ async def test_remove_product_calls_limit_service(mock_limit_service, db, test_t
     # First apply the product to ensure it exists
     await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
 
+    # Mock Stripe API to return no active subscriptions (allowing removal)
+    mock_get_subscriptions.return_value = []  # No active subscriptions
+
     # Remove the product
     await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
 
@@ -378,7 +384,8 @@ async def test_remove_product_calls_limit_service(mock_limit_service, db, test_t
 
 @pytest.mark.asyncio
 @patch('app.core.worker.LimitService')
-async def test_remove_product_success(mock_limit_service, db, test_team, test_product):
+@patch('app.core.worker.get_subscribed_products_for_customer', new_callable=AsyncMock)
+async def test_remove_product_success(mock_get_subscriptions, mock_limit_service, db, test_team, test_product):
     """
     Test successful removal of a product from a team.
 
@@ -397,6 +404,9 @@ async def test_remove_product_success(mock_limit_service, db, test_team, test_pr
 
     # First apply the product to ensure it exists
     await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
+
+    # Mock Stripe API to return no active subscriptions (allowing removal)
+    mock_get_subscriptions.return_value = []  # No active subscriptions
 
     # Remove the product
     await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
@@ -459,7 +469,8 @@ async def test_remove_product_not_active(db, test_team, test_product):
     assert result is None
 
 @pytest.mark.asyncio
-async def test_remove_product_multiple_products(db, test_team, test_product):
+@patch('app.core.worker.get_subscribed_products_for_customer', new_callable=AsyncMock)
+async def test_remove_product_multiple_products(mock_get_subscriptions, db, test_team, test_product):
     """
     Test removing one product while keeping others active.
 
@@ -493,6 +504,9 @@ async def test_remove_product_multiple_products(db, test_team, test_product):
     # Apply both products to the team
     await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
     await apply_product_for_team(db, test_team.stripe_customer_id, second_product.id, datetime.now(UTC))
+
+    # Mock Stripe API to return no active subscriptions (allowing removal)
+    mock_get_subscriptions.return_value = []  # No active subscriptions
 
     # Remove only the first product
     await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
@@ -2481,4 +2495,80 @@ async def test_reconcile_team_keys_defaultdict_initialization(mock_litellm, db, 
     assert team_total == 15.0
     db.refresh(user_budget_limit)
     assert user_budget_limit.current_value == 15.0
+
+@pytest.mark.asyncio
+@patch('app.core.worker.get_subscribed_products_for_customer', new_callable=AsyncMock)
+async def test_remove_product_should_verify_subscription_status(mock_get_subscriptions, db, test_team, test_product):
+    """
+    Test that product removal verifies subscription is inactive before removing.
+
+    GIVEN: A team with an active product and an active subscription in Stripe
+    WHEN: A checkout.session.expired event occurs
+    THEN: The product should NOT be removed because the subscription is still active
+    """
+    # Set up team with stripe customer ID
+    test_team.stripe_customer_id = "cus_test123"
+    db.commit()
+
+    # Create team-product association
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Mock get_subscribed_products_for_customer to return active subscription
+    mock_get_subscriptions.return_value = [("sub_123", test_product.id)]
+
+    # Attempt to remove product (simulating checkout.session.expired event)
+    result = await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
+
+    # Verify the function was called to check subscription status
+    mock_get_subscriptions.assert_called_once_with(test_team.stripe_customer_id)
+
+    # Verify product was NOT removed because subscription is still active
+    remaining_association = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == test_team.id,
+        DBTeamProduct.product_id == test_product.id
+    ).first()
+    assert remaining_association is not None, "Product should not be removed when subscription is still active"
+
+@pytest.mark.asyncio
+@patch('app.core.worker.get_subscribed_products_for_customer', new_callable=AsyncMock)
+async def test_remove_product_removes_when_subscription_inactive(mock_get_subscriptions, db, test_team, test_product):
+    """
+    Test that product removal works correctly when subscription is inactive.
+
+    GIVEN: A team with an active product but no active subscription in Stripe
+    WHEN: A checkout.session.expired event occurs
+    THEN: The product should be removed because the subscription is inactive
+    """
+    # Set up team with stripe customer ID
+    test_team.stripe_customer_id = "cus_test123"
+    db.commit()
+
+    # Create team-product association
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Mock get_subscribed_products_for_customer to return no active subscriptions
+    mock_get_subscriptions.return_value = []  # No active subscriptions
+
+    # Attempt to remove product (simulating checkout.session.expired event)
+    result = await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
+
+    # Verify the function was called to check subscription status
+    mock_get_subscriptions.assert_called_once_with(test_team.stripe_customer_id)
+
+    # Verify product was removed because subscription is inactive
+    remaining_association = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == test_team.id,
+        DBTeamProduct.product_id == test_product.id
+    ).first()
+    assert remaining_association is None, "Product should be removed when subscription is inactive"
 

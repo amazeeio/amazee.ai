@@ -14,6 +14,7 @@ from collections import defaultdict
 from app.services.stripe import (
     get_product_id_from_session,
     get_product_id_from_subscription,
+    get_subscribed_products_for_customer,
     KNOWN_EVENTS,
     SUBSCRIPTION_SUCCESS_EVENTS,
     SESSION_FAILURE_EVENTS,
@@ -311,6 +312,20 @@ async def remove_product_from_team(db: Session, customer_id: str, product_id: st
         if not existing_association:
             logger.error(f"Product {product_id} not found for team {customer_id}")
             return
+
+        # Verify that the subscription is no longer active in Stripe before removing
+        try:
+            stripe_subscriptions = await get_subscribed_products_for_customer(customer_id)
+            for stripe_subscription_id, stripe_product_id in stripe_subscriptions:
+                if stripe_product_id == product_id:
+                    logger.warning(f"Product {product_id} is still active in Stripe subscription {stripe_subscription_id}. Not removing from team {customer_id}")
+                    return
+        except Exception as stripe_error:
+            logger.error(f"Error checking Stripe subscription status for customer {customer_id}: {str(stripe_error)}")
+            # If we can't check Stripe status, we should not remove the product to be safe
+            logger.warning(f"Unable to verify Stripe subscription status. Not removing product {product_id} from team {customer_id}")
+            return
+
         # Remove the product association
         db.delete(existing_association)
         limit_service = LimitService(db)
