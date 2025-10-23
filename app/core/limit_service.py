@@ -344,9 +344,6 @@ class LimitService:
             if existing_limit.limited_by == LimitSource.MANUAL and limited_resource.limited_by != LimitSource.MANUAL:
                 raise ValueError("Cannot override manual limit with non-manual limit")
 
-            if existing_limit.limited_by == LimitSource.PRODUCT and limited_resource.limited_by == LimitSource.DEFAULT:
-                raise ValueError("Cannot override product limit with default limit")
-
             # Update existing limit
             existing_limit.limit_type = limited_resource.limit_type
             existing_limit.unit = limited_resource.unit
