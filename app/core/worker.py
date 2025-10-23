@@ -14,6 +14,7 @@ from collections import defaultdict
 from app.services.stripe import (
     get_product_id_from_session,
     get_product_id_from_subscription,
+    get_subscribed_products_for_customer,
     KNOWN_EVENTS,
     SUBSCRIPTION_SUCCESS_EVENTS,
     SESSION_FAILURE_EVENTS,
@@ -44,6 +45,12 @@ team_expired_metric = Counter(
     "team_expired_total",
     "Total number of teams that have expired without products",
     ["team_id", "team_name"]
+)
+
+team_monitoring_failed_metric = Counter(
+    "team_monitoring_failed_total",
+    "Total number of teams that failed to be monitored due to errors",
+    ["team_id", "team_name", "error_type"]
 )
 
 key_spend_percentage = Gauge(
@@ -311,6 +318,20 @@ async def remove_product_from_team(db: Session, customer_id: str, product_id: st
         if not existing_association:
             logger.error(f"Product {product_id} not found for team {customer_id}")
             return
+
+        # Verify that the subscription is no longer active in Stripe before removing
+        try:
+            stripe_subscriptions = await get_subscribed_products_for_customer(customer_id)
+            for stripe_subscription_id, stripe_product_id in stripe_subscriptions:
+                if stripe_product_id == product_id:
+                    logger.warning(f"Product {product_id} is still active in Stripe subscription {stripe_subscription_id}. Not removing from team {customer_id}")
+                    return
+        except Exception as stripe_error:
+            logger.error(f"Error checking Stripe subscription status for customer {customer_id}: {str(stripe_error)}")
+            # If we can't check Stripe status, we should not remove the product to be safe
+            logger.warning(f"Unable to verify Stripe subscription status. Not removing product {product_id} from team {customer_id}")
+            return
+
         # Remove the product association
         db.delete(existing_association)
         limit_service = LimitService(db)
@@ -565,6 +586,62 @@ def _send_expiry_notification(db: Session, team: DBTeam, has_products: bool, sho
                 team_name=team.name
             ).inc()
 
+async def reconcile_team_product_associations(db: Session, team: DBTeam):
+    """
+    Reconcile team product associations with Stripe subscriptions.
+
+    This function ensures that the team's product associations in the database
+    match what they are actually subscribed to in Stripe.
+
+    Args:
+        db: Database session
+        team: The team to reconcile
+    """
+    if not team.stripe_customer_id:
+        logger.info(f"Team {team.id} has no stripe_customer_id, skipping product reconciliation")
+        return
+
+    try:
+        # Get current subscriptions from Stripe
+        stripe_subscriptions = await get_subscribed_products_for_customer(team.stripe_customer_id)
+        stripe_product_ids = {product_id for _, product_id in stripe_subscriptions}
+
+        # Get current product associations in database
+        current_associations = db.query(DBTeamProduct).filter(
+            DBTeamProduct.team_id == team.id
+        ).all()
+        current_product_ids = {assoc.product_id for assoc in current_associations}
+
+        logger.info(f"Team {team.id}: Stripe products {stripe_product_ids}, DB products {current_product_ids}")
+
+        # Add missing products (in Stripe but not in DB)
+        for product_id in stripe_product_ids - current_product_ids:
+            # Verify the product exists in our database
+            product = db.query(DBProduct).filter(DBProduct.id == product_id).first()
+            if product:
+                team_product = DBTeamProduct(
+                    team_id=team.id,
+                    product_id=product_id
+                )
+                db.add(team_product)
+                logger.info(f"Added product {product_id} to team {team.id}")
+            else:
+                logger.warning(f"Product {product_id} found in Stripe but not in database for team {team.id}")
+
+        # Remove extra products (in DB but not in Stripe)
+        for assoc in current_associations:
+            if assoc.product_id not in stripe_product_ids:
+                db.delete(assoc)
+                logger.info(f"Removed product {assoc.product_id} from team {team.id}")
+
+        # Commit the changes
+        db.commit()
+
+    except Exception as e:
+        logger.error(f"Error reconciling product associations for team {team.id}: {str(e)}")
+        db.rollback()
+        raise e
+
 
 @monitor_teams_duration.time()
 async def monitor_teams(db: Session):
@@ -592,89 +669,102 @@ async def monitor_teams(db: Session):
 
         logger.info(f"Found {len(teams)} teams to track")
         for team in teams:
-            team_label = (str(team.id), team.name)
-            current_team_labels.add(team_label)
+            try:
+                team_label = (str(team.id), team.name)
+                current_team_labels.add(team_label)
 
-            # Check if team has any products
-            has_products = db.query(DBTeamProduct).filter(
-                DBTeamProduct.team_id == team.id
-            ).first() is not None
+                # Reconcile product associations with Stripe before any other processing
+                await reconcile_team_product_associations(db, team)
 
-            team_freshness = _monitor_team_freshness(team)
-            days_remaining = TRIAL_OVER_DAYS - team_freshness
-
-            # Check if team was monitored within 24 hours
-            should_send_notifications = settings.ENABLE_LIMITS
-            if team.last_monitored:
-                hours_since_monitored = (current_time - team.last_monitored.replace(tzinfo=UTC)).total_seconds() / 3600
-                should_send_notifications = hours_since_monitored >= 24
-
-            _send_expiry_notification(db, team, has_products, should_send_notifications, days_remaining, ses_service)
-
-            # Get all keys for the team grouped by region
-            keys_by_region = get_team_keys_by_region(db, team.id)
-            expire_keys = False
-            # If the team has a product, expiry will be handled by a Stripe cancellation
-            if not has_products and days_remaining <= 0 and should_send_notifications:
-                logger.info(f"Team {team.id} has {days_remaining} days remaining, expiring keys")
-                expire_keys = True
-
-            # Determine if we should check for renewal period updates
-            renewal_period_days = None
-            max_budget_amount = None
-            if has_products and team.last_payment:
-                # Get the product with the longest renewal period
-                active_products = db.query(DBTeamProduct).filter(
+                # Check if team has any products
+                has_products = db.query(DBTeamProduct).filter(
                     DBTeamProduct.team_id == team.id
-                ).all()
-                product_ids = [tp.product_id for tp in active_products]
-                products = db.query(DBProduct).filter(DBProduct.id.in_(product_ids)).all()
+                ).first() is not None
 
-                if products:
-                    max_renewal_product = max(products, key=lambda product: product.renewal_period_days)
-                    renewal_period_days = max_renewal_product.renewal_period_days
-                    max_budget_amount = max(products, key=lambda product: product.max_budget_per_key).max_budget_per_key
+                team_freshness = _monitor_team_freshness(team)
+                days_remaining = TRIAL_OVER_DAYS - team_freshness
 
-            # Monitor keys and get total spend (includes renewal period updates if applicable)
-            team_total = await reconcile_team_keys(db, team, keys_by_region, expire_keys, renewal_period_days, max_budget_amount)
+                # Check if team was monitored within 24 hours
+                should_send_notifications = settings.ENABLE_LIMITS
+                if team.last_monitored:
+                    hours_since_monitored = (current_time - team.last_monitored.replace(tzinfo=UTC)).total_seconds() / 3600
+                    should_send_notifications = hours_since_monitored >= 24
 
-            # Set the total spend metric for the team (always emit metrics)
-            team_total_spend.labels(
-                team_id=str(team.id),
-                team_name=team.name
-            ).set(team_total)
+                _send_expiry_notification(db, team, has_products, should_send_notifications, days_remaining, ses_service)
 
-            # Update or create team metrics record
-            regions_list = list(keys_by_region.keys())
-            region_names = [region.name for region in regions_list]
+                # Get all keys for the team grouped by region
+                keys_by_region = get_team_keys_by_region(db, team.id)
+                expire_keys = False
+                # If the team has a product, expiry will be handled by a Stripe cancellation
+                if not has_products and days_remaining <= 0 and should_send_notifications:
+                    logger.info(f"Team {team.id} has {days_remaining} days remaining, expiring keys")
+                    expire_keys = True
 
-            # Check if metrics record exists
-            team_metrics = db.query(DBTeamMetrics).filter(DBTeamMetrics.team_id == team.id).first()
+                # Determine if we should check for renewal period updates
+                renewal_period_days = None
+                max_budget_amount = None
+                if has_products and team.last_payment:
+                    # Get the product with the longest renewal period
+                    active_products = db.query(DBTeamProduct).filter(
+                        DBTeamProduct.team_id == team.id
+                    ).all()
+                    product_ids = [tp.product_id for tp in active_products]
+                    products = db.query(DBProduct).filter(DBProduct.id.in_(product_ids)).all()
 
-            if team_metrics:
-                logger.info(f"metrics last updated at {team_metrics.last_updated}, curent time is {current_time}")
-                # Update existing metrics
-                team_metrics.total_spend = team_total
-                team_metrics.last_spend_calculation = current_time
-                team_metrics.regions = region_names
-                team_metrics.last_updated = current_time
-            else:
-                # Create new metrics record
-                team_metrics = DBTeamMetrics(
-                    team_id=team.id,
-                    total_spend=team_total,
-                    last_spend_calculation=current_time,
-                    regions=region_names,
-                    last_updated=current_time
-                )
-                db.add(team_metrics)
+                    if products:
+                        max_renewal_product = max(products, key=lambda product: product.renewal_period_days)
+                        renewal_period_days = max_renewal_product.renewal_period_days
+                        max_budget_amount = max(products, key=lambda product: product.max_budget_per_key).max_budget_per_key
 
-            # Ensure all limits are correct - will not override MANUAL limits
-            set_team_and_user_limits(db, team)
+                # Monitor keys and get total spend (includes renewal period updates if applicable)
+                team_total = await reconcile_team_keys(db, team, keys_by_region, expire_keys, renewal_period_days, max_budget_amount)
 
-            # Update last_monitored timestamp only if notifications were sent
-            if should_send_notifications:
-                team.last_monitored = current_time
+                # Set the total spend metric for the team (always emit metrics)
+                team_total_spend.labels(
+                    team_id=str(team.id),
+                    team_name=team.name
+                ).set(team_total)
+
+                # Update or create team metrics record
+                regions_list = list(keys_by_region.keys())
+                region_names = [region.name for region in regions_list]
+
+                # Check if metrics record exists
+                team_metrics = db.query(DBTeamMetrics).filter(DBTeamMetrics.team_id == team.id).first()
+
+                if team_metrics:
+                    logger.info(f"metrics last updated at {team_metrics.last_updated}, curent time is {current_time}")
+                    # Update existing metrics
+                    team_metrics.total_spend = team_total
+                    team_metrics.last_spend_calculation = current_time
+                    team_metrics.regions = region_names
+                    team_metrics.last_updated = current_time
+                else:
+                    # Create new metrics record
+                    team_metrics = DBTeamMetrics(
+                        team_id=team.id,
+                        total_spend=team_total,
+                        last_spend_calculation=current_time,
+                        regions=region_names,
+                        last_updated=current_time
+                    )
+                    db.add(team_metrics)
+
+                # Ensure all limits are correct - will not override MANUAL limits
+                set_team_and_user_limits(db, team)
+
+                # Update last_monitored timestamp only if notifications were sent
+                if should_send_notifications:
+                    team.last_monitored = current_time
+            except Exception as error:
+                logger.error(f"Unable to process team {team.id} due to {str(error)}, continuing with next team.")
+                # Record the monitoring failure metric
+                error_type = type(error).__name__
+                team_monitoring_failed_metric.labels(
+                    team_id=str(team.id),
+                    team_name=team.name,
+                    error_type=error_type
+                ).inc()
 
         # Commit the database changes
         db.commit()
