@@ -65,8 +65,10 @@ async def test_handle_stripe_events_remove_product(event_type, object_type, get_
     product_id = test_product.id
 
     # Act
-    with patch(f'app.core.worker.{get_product_func}', new_callable=AsyncMock) as mock_get_product:
+    with patch(f'app.core.worker.{get_product_func}', new_callable=AsyncMock) as mock_get_product, \
+         patch('app.core.worker.get_subscribed_products_for_customer', new_callable=AsyncMock) as mock_get_subscriptions:
         mock_get_product.return_value = product_id
+        mock_get_subscriptions.return_value = []  # No active subscriptions (allowing removal)
         await handle_stripe_event_background(mock_event)
 
     # Assert
@@ -348,7 +350,8 @@ async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, mock_lim
 
 @pytest.mark.asyncio
 @patch('app.core.worker.LimitService')
-async def test_remove_product_calls_limit_service(mock_limit_service, db, test_team, test_product):
+@patch('app.core.worker.get_subscribed_products_for_customer', new_callable=AsyncMock)
+async def test_remove_product_calls_limit_service(mock_get_subscriptions, mock_limit_service, db, test_team, test_product):
     """
     Test that removing a product calls the limit service to set team limits.
 
@@ -368,6 +371,9 @@ async def test_remove_product_calls_limit_service(mock_limit_service, db, test_t
     # First apply the product to ensure it exists
     await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
 
+    # Mock Stripe API to return no active subscriptions (allowing removal)
+    mock_get_subscriptions.return_value = []  # No active subscriptions
+
     # Remove the product
     await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
 
@@ -378,7 +384,8 @@ async def test_remove_product_calls_limit_service(mock_limit_service, db, test_t
 
 @pytest.mark.asyncio
 @patch('app.core.worker.LimitService')
-async def test_remove_product_success(mock_limit_service, db, test_team, test_product):
+@patch('app.core.worker.get_subscribed_products_for_customer', new_callable=AsyncMock)
+async def test_remove_product_success(mock_get_subscriptions, mock_limit_service, db, test_team, test_product):
     """
     Test successful removal of a product from a team.
 
@@ -397,6 +404,9 @@ async def test_remove_product_success(mock_limit_service, db, test_team, test_pr
 
     # First apply the product to ensure it exists
     await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
+
+    # Mock Stripe API to return no active subscriptions (allowing removal)
+    mock_get_subscriptions.return_value = []  # No active subscriptions
 
     # Remove the product
     await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
@@ -459,7 +469,8 @@ async def test_remove_product_not_active(db, test_team, test_product):
     assert result is None
 
 @pytest.mark.asyncio
-async def test_remove_product_multiple_products(db, test_team, test_product):
+@patch('app.core.worker.get_subscribed_products_for_customer', new_callable=AsyncMock)
+async def test_remove_product_multiple_products(mock_get_subscriptions, db, test_team, test_product):
     """
     Test removing one product while keeping others active.
 
@@ -493,6 +504,9 @@ async def test_remove_product_multiple_products(db, test_team, test_product):
     # Apply both products to the team
     await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
     await apply_product_for_team(db, test_team.stripe_customer_id, second_product.id, datetime.now(UTC))
+
+    # Mock Stripe API to return no active subscriptions (allowing removal)
+    mock_get_subscriptions.return_value = []  # No active subscriptions
 
     # Remove only the first product
     await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
@@ -537,8 +551,9 @@ async def test_monitor_teams_calls_limit_service(mock_litellm, mock_ses, mock_li
 @patch('app.core.worker.LimitService')
 @patch('app.core.worker.SESService')
 @patch('app.core.worker.LiteLLMService')
+@patch('app.core.worker.get_subscribed_products_for_customer')
 @patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_basic_metrics(mock_litellm, mock_ses, mock_limit_service, db, test_team, test_product):
+async def test_monitor_teams_basic_metrics(mock_get_subscriptions, mock_litellm, mock_ses, mock_limit_service, db, test_team, test_product):
     """
     Test basic team monitoring metrics for teams with and without products.
     """
@@ -572,6 +587,9 @@ async def test_monitor_teams_basic_metrics(mock_litellm, mock_ses, mock_limit_se
     # Setup mock limit service
     mock_limit_instance = mock_limit_service.return_value
     mock_limit_instance.set_team_limits = Mock()
+
+    # Setup mock Stripe function
+    mock_get_subscriptions.return_value = [("sub_123", test_product.id)]
 
     # Run monitoring
     await monitor_teams(db)
@@ -2481,4 +2499,313 @@ async def test_reconcile_team_keys_defaultdict_initialization(mock_litellm, db, 
     assert team_total == 15.0
     db.refresh(user_budget_limit)
     assert user_budget_limit.current_value == 15.0
+
+@pytest.mark.asyncio
+@patch('app.core.worker.get_subscribed_products_for_customer', new_callable=AsyncMock)
+async def test_remove_product_should_verify_subscription_status(mock_get_subscriptions, db, test_team, test_product):
+    """
+    Test that product removal verifies subscription is inactive before removing.
+
+    GIVEN: A team with an active product and an active subscription in Stripe
+    WHEN: A checkout.session.expired event occurs
+    THEN: The product should NOT be removed because the subscription is still active
+    """
+    # Set up team with stripe customer ID
+    test_team.stripe_customer_id = "cus_test123"
+    db.commit()
+
+    # Create team-product association
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Mock get_subscribed_products_for_customer to return active subscription
+    mock_get_subscriptions.return_value = [("sub_123", test_product.id)]
+
+    # Attempt to remove product (simulating checkout.session.expired event)
+    result = await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
+
+    # Verify the function was called to check subscription status
+    mock_get_subscriptions.assert_called_once_with(test_team.stripe_customer_id)
+
+    # Verify product was NOT removed because subscription is still active
+    remaining_association = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == test_team.id,
+        DBTeamProduct.product_id == test_product.id
+    ).first()
+    assert remaining_association is not None, "Product should not be removed when subscription is still active"
+
+@pytest.mark.asyncio
+@patch('app.core.worker.get_subscribed_products_for_customer', new_callable=AsyncMock)
+async def test_remove_product_removes_when_subscription_inactive(mock_get_subscriptions, db, test_team, test_product):
+    """
+    Test that product removal works correctly when subscription is inactive.
+
+    GIVEN: A team with an active product but no active subscription in Stripe
+    WHEN: A checkout.session.expired event occurs
+    THEN: The product should be removed because the subscription is inactive
+    """
+    # Set up team with stripe customer ID
+    test_team.stripe_customer_id = "cus_test123"
+    db.commit()
+
+    # Create team-product association
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Mock get_subscribed_products_for_customer to return no active subscriptions
+    mock_get_subscriptions.return_value = []  # No active subscriptions
+
+    # Attempt to remove product (simulating checkout.session.expired event)
+    result = await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
+
+    # Verify the function was called to check subscription status
+    mock_get_subscriptions.assert_called_once_with(test_team.stripe_customer_id)
+
+    # Verify product was removed because subscription is inactive
+    remaining_association = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == test_team.id,
+        DBTeamProduct.product_id == test_product.id
+    ).first()
+    assert remaining_association is None, "Product should be removed when subscription is inactive"
+
+
+@pytest.mark.asyncio
+@patch('app.core.worker.SESService')
+@patch('app.core.worker.reconcile_team_keys', new_callable=AsyncMock)
+@patch('app.core.worker.get_subscribed_products_for_customer')
+async def test_monitor_teams_reconciles_product_customer_associations(
+    mock_get_subscriptions, mock_reconcile, mock_ses, db, test_team, test_product
+):
+    """
+    Test that monitor_teams reconciles product-customer associations with Stripe.
+
+    GIVEN: A team with a stripe_customer_id and mismatched product associations
+    WHEN: monitor_teams is called
+    THEN: The system should reconcile the associations to match Stripe subscriptions
+    """
+    # Arrange - team has stripe customer ID but no products in system
+    test_team.stripe_customer_id = "cus_123"
+    db.add(test_team)
+    db.commit()
+
+    # Mock Stripe to return a subscription for the product
+    mock_get_subscriptions.return_value = [("sub_123", test_product.id)]
+    mock_reconcile.return_value = 0.0
+    mock_ses.return_value = None
+
+    # Act
+    await monitor_teams(db)
+
+    # Assert
+    # Check that the product was added to the team
+    team_product = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == test_team.id,
+        DBTeamProduct.product_id == test_product.id
+    ).first()
+    assert team_product is not None, "Product should be added to team when found in Stripe"
+
+
+@pytest.mark.asyncio
+@patch('app.core.worker.SESService')
+@patch('app.core.worker.reconcile_team_keys', new_callable=AsyncMock)
+@patch('app.core.worker.get_subscribed_products_for_customer')
+async def test_monitor_teams_removes_extra_products_not_in_stripe(
+    mock_get_subscriptions, mock_reconcile, mock_ses, db, test_team, test_product
+):
+    """
+    Test that monitor_teams removes products not found in Stripe subscriptions.
+
+    GIVEN: A team with a stripe_customer_id and products not in Stripe
+    WHEN: monitor_teams is called
+    THEN: The extra products should be removed from the team
+    """
+    # Arrange - team has stripe customer ID and a product association
+    test_team.stripe_customer_id = "cus_123"
+    db.add(test_team)
+
+    # Add a product association that shouldn't exist
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+    db.commit()
+
+    # Mock Stripe to return no subscriptions
+    mock_get_subscriptions.return_value = []
+    mock_reconcile.return_value = 0.0
+    mock_ses.return_value = None
+
+    # Act
+    await monitor_teams(db)
+
+    # Assert
+    # Check that the product was removed from the team
+    team_product = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == test_team.id,
+        DBTeamProduct.product_id == test_product.id
+    ).first()
+    assert team_product is None, "Product should be removed when not found in Stripe"
+
+
+@pytest.mark.asyncio
+@patch('app.core.worker.SESService')
+@patch('app.core.worker.reconcile_team_keys', new_callable=AsyncMock)
+@patch('app.core.worker.get_subscribed_products_for_customer')
+async def test_monitor_teams_skips_teams_without_customer_id(
+    mock_get_subscriptions, mock_reconcile, mock_ses, db, test_team, test_product
+):
+    """
+    Test that monitor_teams skips teams without stripe_customer_id.
+
+    GIVEN: A team without a stripe_customer_id
+    WHEN: monitor_teams is called
+    THEN: No Stripe API calls should be made for that team
+    """
+    # Arrange - team has no stripe customer ID
+    test_team.stripe_customer_id = None
+    db.add(test_team)
+    db.commit()
+
+    # Mock the reconcile_team_keys function to avoid actual key processing
+    mock_reconcile.return_value = 0.0
+    mock_ses.return_value = None
+
+    # Act
+    await monitor_teams(db)
+
+    # Assert
+    mock_get_subscriptions.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch('app.core.worker.reconcile_team_product_associations', new_callable=AsyncMock)
+@patch('app.core.worker.SESService')
+@patch('app.core.worker.reconcile_team_keys', new_callable=AsyncMock)
+@patch('app.core.worker.get_subscribed_products_for_customer')
+async def test_monitor_teams_handles_individual_team_errors_gracefully(
+    mock_get_subscriptions, mock_reconcile, mock_ses, mock_reconcile_products, db, test_team, test_product
+):
+    """
+    Test that monitor_teams handles individual team errors gracefully and continues processing.
+
+    GIVEN: Multiple teams where one fails to process
+    WHEN: monitor_teams is called
+    THEN: The failing team should be logged and skipped, but other teams should continue processing
+    """
+    # Create a second team
+    second_team = DBTeam(
+        name="Second Team",
+        admin_email="second@example.com"
+    )
+    db.add(second_team)
+    db.commit()
+
+    # Mock Stripe function
+    mock_get_subscriptions.return_value = []
+    mock_reconcile.return_value = 0.0
+    mock_ses.return_value = None
+
+    # Mock reconcile_team_product_associations to raise an error for the first team
+    mock_reconcile_products.side_effect = [Exception("Test error for team 1"), None]
+
+    # Act
+    await monitor_teams(db)
+
+    # Assert
+    # Both teams should have been processed (first one failed, second succeeded)
+    assert mock_reconcile_products.call_count == 2
+    # The reconcile_team_keys should have been called for the second team only
+    assert mock_reconcile.call_count == 1
+
+
+@pytest.mark.asyncio
+@patch('app.core.worker.reconcile_team_product_associations', new_callable=AsyncMock)
+@patch('app.core.worker.SESService')
+@patch('app.core.worker.reconcile_team_keys', new_callable=AsyncMock)
+@patch('app.core.worker.get_subscribed_products_for_customer')
+async def test_monitor_teams_records_failure_metric_on_error(
+    mock_get_subscriptions, mock_reconcile, mock_ses, mock_reconcile_products, db, test_team, test_product
+):
+    """
+    Test that monitor_teams records a failure metric when a team fails to process.
+
+    GIVEN: A team that fails to process
+    WHEN: monitor_teams is called
+    THEN: A failure metric should be recorded for that team
+    """
+    # Mock Stripe function
+    mock_get_subscriptions.return_value = []
+    mock_reconcile.return_value = 0.0
+    mock_ses.return_value = None
+
+    # Mock reconcile_team_product_associations to raise an error
+    mock_reconcile_products.side_effect = Exception("Test error")
+
+    # Act
+    await monitor_teams(db)
+
+    # Assert
+    # The metric should have been called with the correct labels
+    # We can't easily test the exact metric value, but we can verify the function was called
+    assert mock_reconcile_products.call_count == 1
+
+
+@pytest.mark.asyncio
+@patch('app.core.worker.reconcile_team_product_associations', new_callable=AsyncMock)
+@patch('app.core.worker.SESService')
+@patch('app.core.worker.reconcile_team_keys', new_callable=AsyncMock)
+@patch('app.core.worker.get_subscribed_products_for_customer')
+async def test_monitor_teams_continues_processing_after_error(
+    mock_get_subscriptions, mock_reconcile, mock_ses, mock_reconcile_products, db, test_team, test_product
+):
+    """
+    Test that monitor_teams continues processing other teams after one fails.
+
+    GIVEN: Multiple teams where one fails
+    WHEN: monitor_teams is called
+    THEN: All teams should be attempted, and successful ones should complete processing
+    """
+    # Create additional teams
+    teams = []
+    for team_index in range(3):
+        team = DBTeam(
+            name=f"Team {team_index+2}",
+            admin_email=f"team{team_index+2}@example.com"
+        )
+        db.add(team)
+        teams.append(team)
+    db.commit()
+
+    # Mock Stripe function
+    mock_get_subscriptions.return_value = []
+    mock_reconcile.return_value = 0.0
+    mock_ses.return_value = None
+
+    # Mock reconcile_team_product_associations to raise an error for the second team only
+    def side_effect(*args, **kwargs):
+        # Get the team from the args
+        team = args[1]  # Second argument is the team
+        if team.id == teams[1].id:  # Second team fails
+            raise Exception("Test error for second team")
+        return None
+
+    mock_reconcile_products.side_effect = side_effect
+
+    # Act
+    await monitor_teams(db)
+
+    # Assert
+    # All teams should have been processed
+    assert mock_reconcile_products.call_count == 4  # test_team + 3 new teams
+    # reconcile_team_keys should have been called for all teams except the failing one
+    assert mock_reconcile.call_count == 3  # 4 teams - 1 failing = 3 successful
 

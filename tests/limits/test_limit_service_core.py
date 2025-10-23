@@ -321,11 +321,11 @@ def test_overwrite_limit_product_cannot_override_manual(db, test_team):
         )
 
 
-def test_overwrite_limit_default_cannot_override_anything(db, test_team):
+def test_overwrite_limit_default_can_override_product(db, test_team):
     """
-    Given: Existing PRODUCT or MANUAL limit
-    When: Calling overwrite_limit with limited_by="default"
-    Then: Should raise exception or return error
+    Given: Existing PRODUCT limit
+    When: Calling set_limit with limited_by="default"
+    Then: Should successfully update the limit (needed when products are removed)
     """
     # Create a PRODUCT limit
     limit = DBLimitedResource(
@@ -344,7 +344,55 @@ def test_overwrite_limit_default_cannot_override_anything(db, test_team):
 
     limit_service = LimitService(db)
 
-    with pytest.raises(ValueError, match="Cannot override"):
+    # This should now succeed - we allow product to default transitions
+    limit_service.set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.VECTOR_DB,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=5.0,
+        current_value=1.0,
+        limited_by=LimitSource.DEFAULT
+    )
+
+    # Verify the limit was updated
+    updated_limit = db.query(DBLimitedResource).filter(
+        DBLimitedResource.owner_type == OwnerType.TEAM,
+        DBLimitedResource.owner_id == test_team.id,
+        DBLimitedResource.resource == ResourceType.VECTOR_DB
+    ).first()
+
+    assert updated_limit is not None
+    assert updated_limit.limited_by == LimitSource.DEFAULT
+    assert updated_limit.max_value == 5.0
+
+
+def test_overwrite_limit_default_cannot_override_manual(db, test_team):
+    """
+    Given: Existing MANUAL limit
+    When: Calling set_limit with limited_by="default"
+    Then: Should raise exception (manual limits should still be protected)
+    """
+    # Create a MANUAL limit
+    limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.VECTOR_DB,
+        unit=UnitType.COUNT,
+        max_value=3.0,
+        current_value=1.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.MANUAL,
+        created_at=datetime.now(UTC)
+    )
+    db.add(limit)
+    db.commit()
+
+    limit_service = LimitService(db)
+
+    # This should still raise an error - manual limits are protected
+    with pytest.raises(ValueError, match="Cannot override manual limit"):
         limit_service.set_limit(
             owner_type=OwnerType.TEAM,
             owner_id=test_team.id,
@@ -355,3 +403,53 @@ def test_overwrite_limit_default_cannot_override_anything(db, test_team):
             current_value=1.0,
             limited_by=LimitSource.DEFAULT
         )
+
+
+def test_set_limit_allows_product_to_default_transition(db, test_team):
+    """
+    Test that set_limit allows transitioning from PRODUCT to DEFAULT limit source.
+
+    GIVEN: A team with a PRODUCT limit
+    WHEN: Setting a DEFAULT limit for the same resource
+    THEN: The transition should be allowed (this is needed when products are removed)
+    """
+    # Create a product limit first
+    product_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.USER,
+        unit=UnitType.COUNT,
+        max_value=10.0,
+        current_value=3.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.PRODUCT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(product_limit)
+    db.commit()
+
+    limit_service = LimitService(db)
+
+    # This should NOT raise an error - we need to allow product to default transitions
+    limit_service.set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.USER,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=5.0,
+        current_value=2.0,
+        limited_by=LimitSource.DEFAULT
+    )
+
+    # Verify the limit was updated
+    updated_limit = db.query(DBLimitedResource).filter(
+        DBLimitedResource.owner_type == OwnerType.TEAM,
+        DBLimitedResource.owner_id == test_team.id,
+        DBLimitedResource.resource == ResourceType.USER
+    ).first()
+
+    assert updated_limit is not None
+    assert updated_limit.limited_by == LimitSource.DEFAULT
+    assert updated_limit.max_value == 5.0
+    assert updated_limit.current_value == 2.0
