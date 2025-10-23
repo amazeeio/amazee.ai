@@ -105,11 +105,13 @@ def set_team_and_user_limits(db: Session, team: DBTeam):
             elif limit.resource == ResourceType.SERVICE_KEY:
                 value = db.execute(select(func.count()).select_from(DBPrivateAIKey).where(
                     DBPrivateAIKey.team_id == team.id,
+                    DBPrivateAIKey.owner_id.is_(None),  # Service keys have no owner
                     DBPrivateAIKey.litellm_token.is_not(None)
                 )).scalar()
             elif limit.resource == ResourceType.VECTOR_DB:
                 value = db.execute(select(func.count()).select_from(DBPrivateAIKey).where(
                     DBPrivateAIKey.team_id == team.id,
+                    DBPrivateAIKey.owner_id.is_(None),  # Only count team-owned vector DBs
                     DBPrivateAIKey.database_username.is_not(None)
                 )).scalar()
             else:

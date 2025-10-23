@@ -129,8 +129,8 @@ def test_set_team_and_user_limits_updates_current_values(mock_limit_service_clas
     set_team_and_user_limits(db, test_team)
 
     # Verify current values were set correctly
-    # Should be called for team limits: USER (2 users), KEY (2 keys), VECTOR_DB (0 vector dbs)
-    # Plus user limits: KEY (1 key per user) for each user
+    # Should be called for team limits: USER (2 users), SERVICE_KEY (1 service key), VECTOR_DB (0 vector dbs)
+    # Plus user limits: USER_KEY (1 key per user) for each user
     assert mock_limit_service.set_current_value.call_count == 5  # 3 team + 2 user calls
 
     # Check that set_current_value was called with correct values
@@ -143,7 +143,7 @@ def test_set_team_and_user_limits_updates_current_values(mock_limit_service_clas
 
     # Verify the team limit counts are correct
     assert team_user_call[0][1] == 2  # 2 users in team
-    assert team_key_call[0][1] == 2   # 2 keys total (1 team + 1 user)
+    assert team_key_call[0][1] == 1   # 1 service key (team_key with owner_id=None)
     assert vector_db_call[0][1] == 0  # 0 vector dbs
 
     # Verify user key limits were updated (should be called twice, once per user)
