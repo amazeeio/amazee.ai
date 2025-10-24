@@ -308,7 +308,6 @@ async def get_subscribed_products_for_customer(customer_id: str) -> list[(str, s
     """
     try:
         items = stripe.Subscription.list(customer=customer_id, expand=['data.plan.product'])
-        logger.info(f"{items}")
     except Exception as e:
         logger.error(f"Failed to get subscriptions for customer {customer_id}, {str(e)}")
         raise HTTPException(
