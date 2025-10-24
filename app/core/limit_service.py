@@ -706,7 +706,10 @@ class LimitService:
         """
         # First try the new service, and short circuit if it works
         try:
+            # Before trying to increment, validate and correct the current count if needed
             if owner_id is not None:
+                # For user keys, validate the user's key count
+                self._validate_and_correct_user_key_count(owner_id)
                 user_limit = self.increment_resource(OwnerType.USER, owner_id, ResourceType.USER_KEY)
                 if not user_limit:
                     limit_check_route_counter.labels(function='check_key_limits', route='limit_service_at_capacity').inc()
@@ -715,6 +718,8 @@ class LimitService:
                         detail=f"Entity has reached their maximum number of AI keys"
                     )
             else:
+                # For service keys, validate the team's service key count
+                self._validate_and_correct_service_key_count(team_id)
                 team_limit = self.increment_resource(OwnerType.TEAM, team_id, ResourceType.SERVICE_KEY)
                 if not team_limit:
                     limit_check_route_counter.labels(function='check_key_limits', route='limit_service_at_capacity').inc()
@@ -1004,6 +1009,71 @@ class LimitService:
         ).scalar()
 
         return result
+
+    def _validate_and_correct_service_key_count(self, team_id: int) -> None:
+        """
+        Validate and correct the service key count for a team if it's inaccurate.
+
+        Args:
+            team_id: ID of the team to validate
+        """
+        # Get the current limit
+        limit = self.db.query(DBLimitedResource).filter(
+            and_(
+                DBLimitedResource.owner_type == OwnerType.TEAM,
+                DBLimitedResource.owner_id == team_id,
+                DBLimitedResource.resource == ResourceType.SERVICE_KEY
+            )
+        ).first()
+
+        if not limit:
+            return  # No limit exists, will be created by the fallback logic
+
+        # Count actual service keys in the database
+        actual_count = self.db.execute(select(func.count()).select_from(DBPrivateAIKey).where(
+            DBPrivateAIKey.team_id == team_id,
+            DBPrivateAIKey.owner_id.is_(None),  # Service keys have no owner
+            DBPrivateAIKey.litellm_token.isnot(None)
+        )).scalar()
+
+        # If the stored count is different from the actual count, correct it
+        if limit.current_value != actual_count:
+            logger.info(f"Correcting service key count for team {team_id}: {limit.current_value} -> {actual_count}")
+            limit.current_value = actual_count
+            limit.updated_at = datetime.now(UTC)
+            self.db.commit()
+
+    def _validate_and_correct_user_key_count(self, user_id: int) -> None:
+        """
+        Validate and correct the user key count for a user if it's inaccurate.
+
+        Args:
+            user_id: ID of the user to validate
+        """
+        # Get the current limit
+        limit = self.db.query(DBLimitedResource).filter(
+            and_(
+                DBLimitedResource.owner_type == OwnerType.USER,
+                DBLimitedResource.owner_id == user_id,
+                DBLimitedResource.resource == ResourceType.USER_KEY
+            )
+        ).first()
+
+        if not limit:
+            return  # No limit exists, will be created by the fallback logic
+
+        # Count actual user keys in the database
+        actual_count = self.db.execute(select(func.count()).select_from(DBPrivateAIKey).where(
+            DBPrivateAIKey.owner_id == user_id,
+            DBPrivateAIKey.litellm_token.isnot(None)
+        )).scalar()
+
+        # If the stored count is different from the actual count, correct it
+        if limit.current_value != actual_count:
+            logger.info(f"Correcting user key count for user {user_id}: {limit.current_value} -> {actual_count}")
+            limit.current_value = actual_count
+            limit.updated_at = datetime.now(UTC)
+            self.db.commit()
 
 
 def setup_default_limits(db: Session) -> None:

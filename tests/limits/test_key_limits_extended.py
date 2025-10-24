@@ -476,6 +476,18 @@ def test_check_key_limits_with_limit_service_at_capacity(db, test_team):
     WHEN: Checking key limits
     THEN: The limit service is used first and raises an exception
     """
+    # First create actual service keys to reach the limit
+    # Create 5 service keys to actually reach the limit
+    for i in range(5):
+        key = DBPrivateAIKey(
+            team_id=test_team.id,
+            owner_id=None,  # Service keys have no owner
+            litellm_token=f"service_key_{i}",
+            created_at=datetime.now(UTC)
+        )
+        db.add(key)
+    db.commit()
+
     # Set up a limit in the new service at capacity
     limit_service = LimitService(db)
     limit_service.set_limit(
