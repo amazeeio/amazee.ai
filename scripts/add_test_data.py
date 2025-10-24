@@ -32,7 +32,13 @@ def create_test_data():
             "Test Team 2 - Always Free",
             "Test Team 3 - With Product",
             "Test Team 4 - With Payment History",
-            "Test Team 5 - No Products"
+            "Test Team 5 - No Products",
+            "Test Team 6 - 95 Days With Product",
+            "Test Team 7 - 95 Days No Product",
+            "Test Team 8 - 80 Days With Product",
+            "Test Team 9 - 80 Days No Product",
+            "Test Team 10 - 75 Days With Product",
+            "Test Team 11 - 75 Days No Product"
         ]:
             existing_team = db.query(DBTeam).filter(DBTeam.name == team_name).first()
             if existing_team:
@@ -89,7 +95,7 @@ def create_test_data():
                 hashed_password=get_password_hash("testpassword123"),
                 is_active=True,
                 is_admin=False,
-                role="user",
+                role="admin",
                 team_id=team1.id,
                 created_at=datetime.now(UTC) - timedelta(days=32)
             )
@@ -120,7 +126,7 @@ def create_test_data():
                 hashed_password=get_password_hash("testpassword123"),
                 is_active=True,
                 is_admin=False,
-                role="user",
+                role="admin",
                 team_id=team2.id,
                 created_at=datetime.now(UTC) - timedelta(days=20)
             )
@@ -151,7 +157,7 @@ def create_test_data():
                 hashed_password=get_password_hash("testpassword123"),
                 is_active=True,
                 is_admin=False,
-                role="user",
+                role="admin",
                 team_id=team3.id,
                 created_at=datetime.now(UTC)
             )
@@ -193,7 +199,7 @@ def create_test_data():
                 hashed_password=get_password_hash("testpassword123"),
                 is_active=True,
                 is_admin=False,
-                role="user",
+                role="admin",
                 team_id=team4.id,
                 created_at=datetime.now(UTC) - timedelta(days=40)
             )
@@ -235,7 +241,7 @@ def create_test_data():
                 hashed_password=get_password_hash("testpassword123"),
                 is_active=True,
                 is_admin=False,
-                role="user",
+                role="admin",
                 team_id=team5.id,
                 created_at=datetime.now(UTC) - timedelta(days=20)
             )
@@ -249,6 +255,228 @@ def create_test_data():
             team5 = existing_teams["Test Team 5 - No Products"]
             print(f"\n5. Team 5 already exists: {team5.name} (ID: {team5.id})")
 
+        # 6. Team created 95 days ago with product
+        if "Test Team 6 - 95 Days With Product" not in existing_teams:
+            print("\n6. Creating team with one user and product (created 95 days ago)...")
+            team6 = DBTeam(
+                name="Test Team 6 - 95 Days With Product",
+                admin_email="admin6@test.com",
+                is_active=True,
+                is_always_free=False,
+                created_at=datetime.now(UTC) - timedelta(days=95)
+            )
+            db.add(team6)
+            db.commit()
+            db.refresh(team6)
+
+            user6 = DBUser(
+                email="user6@test.com",
+                hashed_password=get_password_hash("testpassword123"),
+                is_active=True,
+                is_admin=False,
+                role="admin",
+                team_id=team6.id,
+                created_at=datetime.now(UTC) - timedelta(days=95)
+            )
+            db.add(user6)
+            db.commit()
+
+            # Create team-product association
+            team_product6 = DBTeamProduct(
+                team_id=team6.id,
+                product_id=selected_product.id
+            )
+            db.add(team_product6)
+            db.commit()
+
+            print(f"   Created team: {team6.name} (ID: {team6.id})")
+            print(f"   Created user: {user6.email} (ID: {user6.id})")
+            print(f"   Associated with product: {selected_product.name} (ID: {selected_product.id})")
+        else:
+            team6 = existing_teams["Test Team 6 - 95 Days With Product"]
+            print(f"\n6. Team 6 already exists: {team6.name} (ID: {team6.id})")
+
+        # 7. Team created 95 days ago without product
+        if "Test Team 7 - 95 Days No Product" not in existing_teams:
+            print("\n7. Creating team with one user, no products (created 95 days ago)...")
+            team7 = DBTeam(
+                name="Test Team 7 - 95 Days No Product",
+                admin_email="admin7@test.com",
+                is_active=True,
+                is_always_free=False,
+                created_at=datetime.now(UTC) - timedelta(days=95)
+            )
+            db.add(team7)
+            db.commit()
+            db.refresh(team7)
+
+            user7 = DBUser(
+                email="user7@test.com",
+                hashed_password=get_password_hash("testpassword123"),
+                is_active=True,
+                is_admin=False,
+                role="admin",
+                team_id=team7.id,
+                created_at=datetime.now(UTC) - timedelta(days=95)
+            )
+            db.add(user7)
+            db.commit()
+
+            print(f"   Created team: {team7.name} (ID: {team7.id})")
+            print(f"   Created user: {user7.email} (ID: {user7.id})")
+            print(f"   No products associated")
+        else:
+            team7 = existing_teams["Test Team 7 - 95 Days No Product"]
+            print(f"\n7. Team 7 already exists: {team7.name} (ID: {team7.id})")
+
+        # 8. Team created 80 days ago with product
+        if "Test Team 8 - 80 Days With Product" not in existing_teams:
+            print("\n8. Creating team with one user and product (created 80 days ago)...")
+            team8 = DBTeam(
+                name="Test Team 8 - 80 Days With Product",
+                admin_email="admin8@test.com",
+                is_active=True,
+                is_always_free=False,
+                created_at=datetime.now(UTC) - timedelta(days=80)
+            )
+            db.add(team8)
+            db.commit()
+            db.refresh(team8)
+
+            user8 = DBUser(
+                email="user8@test.com",
+                hashed_password=get_password_hash("testpassword123"),
+                is_active=True,
+                is_admin=False,
+                role="admin",
+                team_id=team8.id,
+                created_at=datetime.now(UTC) - timedelta(days=80)
+            )
+            db.add(user8)
+            db.commit()
+
+            # Create team-product association
+            team_product8 = DBTeamProduct(
+                team_id=team8.id,
+                product_id=selected_product.id
+            )
+            db.add(team_product8)
+            db.commit()
+
+            print(f"   Created team: {team8.name} (ID: {team8.id})")
+            print(f"   Created user: {user8.email} (ID: {user8.id})")
+            print(f"   Associated with product: {selected_product.name} (ID: {selected_product.id})")
+        else:
+            team8 = existing_teams["Test Team 8 - 80 Days With Product"]
+            print(f"\n8. Team 8 already exists: {team8.name} (ID: {team8.id})")
+
+        # 9. Team created 80 days ago without product
+        if "Test Team 9 - 80 Days No Product" not in existing_teams:
+            print("\n9. Creating team with one user, no products (created 80 days ago)...")
+            team9 = DBTeam(
+                name="Test Team 9 - 80 Days No Product",
+                admin_email="admin9@test.com",
+                is_active=True,
+                is_always_free=False,
+                created_at=datetime.now(UTC) - timedelta(days=80)
+            )
+            db.add(team9)
+            db.commit()
+            db.refresh(team9)
+
+            user9 = DBUser(
+                email="user9@test.com",
+                hashed_password=get_password_hash("testpassword123"),
+                is_active=True,
+                is_admin=False,
+                role="admin",
+                team_id=team9.id,
+                created_at=datetime.now(UTC) - timedelta(days=80)
+            )
+            db.add(user9)
+            db.commit()
+
+            print(f"   Created team: {team9.name} (ID: {team9.id})")
+            print(f"   Created user: {user9.email} (ID: {user9.id})")
+            print(f"   No products associated")
+        else:
+            team9 = existing_teams["Test Team 9 - 80 Days No Product"]
+            print(f"\n9. Team 9 already exists: {team9.name} (ID: {team9.id})")
+
+        # 10. Team created 75 days ago with product
+        if "Test Team 10 - 75 Days With Product" not in existing_teams:
+            print("\n10. Creating team with one user and product (created 75 days ago)...")
+            team10 = DBTeam(
+                name="Test Team 10 - 75 Days With Product",
+                admin_email="admin10@test.com",
+                is_active=True,
+                is_always_free=False,
+                created_at=datetime.now(UTC) - timedelta(days=75)
+            )
+            db.add(team10)
+            db.commit()
+            db.refresh(team10)
+
+            user10 = DBUser(
+                email="user10@test.com",
+                hashed_password=get_password_hash("testpassword123"),
+                is_active=True,
+                is_admin=False,
+                role="admin",
+                team_id=team10.id,
+                created_at=datetime.now(UTC) - timedelta(days=75)
+            )
+            db.add(user10)
+            db.commit()
+
+            # Create team-product association
+            team_product10 = DBTeamProduct(
+                team_id=team10.id,
+                product_id=selected_product.id
+            )
+            db.add(team_product10)
+            db.commit()
+
+            print(f"   Created team: {team10.name} (ID: {team10.id})")
+            print(f"   Created user: {user10.email} (ID: {user10.id})")
+            print(f"   Associated with product: {selected_product.name} (ID: {selected_product.id})")
+        else:
+            team10 = existing_teams["Test Team 10 - 75 Days With Product"]
+            print(f"\n10. Team 10 already exists: {team10.name} (ID: {team10.id})")
+
+        # 11. Team created 75 days ago without product
+        if "Test Team 11 - 75 Days No Product" not in existing_teams:
+            print("\n11. Creating team with one user, no products (created 75 days ago)...")
+            team11 = DBTeam(
+                name="Test Team 11 - 75 Days No Product",
+                admin_email="admin11@test.com",
+                is_active=True,
+                is_always_free=False,
+                created_at=datetime.now(UTC) - timedelta(days=75)
+            )
+            db.add(team11)
+            db.commit()
+            db.refresh(team11)
+
+            user11 = DBUser(
+                email="user11@test.com",
+                hashed_password=get_password_hash("testpassword123"),
+                is_active=True,
+                is_admin=False,
+                role="admin",
+                team_id=team11.id,
+                created_at=datetime.now(UTC) - timedelta(days=75)
+            )
+            db.add(user11)
+            db.commit()
+
+            print(f"   Created team: {team11.name} (ID: {team11.id})")
+            print(f"   Created user: {user11.email} (ID: {user11.id})")
+            print(f"   No products associated")
+        else:
+            team11 = existing_teams["Test Team 11 - 75 Days No Product"]
+            print(f"\n11. Team 11 already exists: {team11.name} (ID: {team11.id})")
+
         print("\n✅ Test data created successfully!")
         print(f"\nSummary:")
         print(f"- Team 1: {team1.name} (created 32 days ago)")
@@ -256,7 +484,13 @@ def create_test_data():
         print(f"- Team 3: {team3.name} (with product association)")
         print(f"- Team 4: {team4.name} (payment history, product association, created 40 days ago)")
         print(f"- Team 5: {team5.name} (no products, created 20 days ago)")
-        print(f"- Total users created: 5")
+        print(f"- Team 6: {team6.name} (with product, created 95 days ago)")
+        print(f"- Team 7: {team7.name} (no products, created 95 days ago)")
+        print(f"- Team 8: {team8.name} (with product, created 80 days ago)")
+        print(f"- Team 9: {team9.name} (no products, created 80 days ago)")
+        print(f"- Team 10: {team10.name} (with product, created 75 days ago)")
+        print(f"- Team 11: {team11.name} (no products, created 75 days ago)")
+        print(f"- Total users created: 11")
         print(f"- Product used: {selected_product.name}")
 
     except Exception as e:
