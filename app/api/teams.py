@@ -92,24 +92,48 @@ async def register_team(
 @router.get("", response_model=List[Team], dependencies=[Depends(get_role_min_system_admin)])
 @router.get("/", response_model=List[Team], dependencies=[Depends(get_role_min_system_admin)])
 async def list_teams(
+    include_deleted: bool = False,
     db: Session = Depends(get_db)
 ):
     """
     List all teams. Only accessible by admin users.
+
+    Args:
+        include_deleted: If True, include soft-deleted teams in the results. Defaults to False.
     """
-    return db.query(DBTeam).all()
+    query = db.query(DBTeam)
+
+    if not include_deleted:
+        query = query.filter(DBTeam.deleted_at.is_(None))
+
+    return query.all()
 
 @router.get("/{team_id}", response_model=TeamWithUsers, dependencies=[Depends(get_role_min_specific_team_admin)])
 async def get_team(
     team_id: int,
-    db: Session = Depends(get_db)
+    include_deleted: bool = False,
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user_from_auth)
 ):
     """
     Get a team by ID. Accessible by admin users or users associated with the team.
+
+    Args:
+        team_id: The ID of the team to retrieve
+        include_deleted: If True, allow retrieval of soft-deleted teams. Only available to system admins.
     """
-    # Check if team exists
-    db_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    # Build query based on include_deleted flag
+    query = db.query(DBTeam).filter(DBTeam.id == team_id)
+
+    if not include_deleted:
+        query = query.filter(DBTeam.deleted_at.is_(None))
+
+    db_team = query.first()
     if not db_team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    # Only system admins can access soft-deleted teams
+    if include_deleted and db_team.deleted_at and not current_user.is_admin:
         raise HTTPException(status_code=404, detail="Team not found")
 
     # Convert directly to TeamWithUsers model
@@ -126,8 +150,11 @@ async def update_team(
     Update a team. Accessible by admin users or team admins.
     Only system admins can toggle the always-free status.
     """
-    # Check if team exists
-    db_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    # Check if team exists and is not soft-deleted
+    db_team = db.query(DBTeam).filter(
+        DBTeam.id == team_id,
+        DBTeam.deleted_at.is_(None)
+    ).first()
     if not db_team:
         raise HTTPException(status_code=404, detail="Team not found")
 

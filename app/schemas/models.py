@@ -260,6 +260,8 @@ class Team(TeamBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
     last_payment: Optional[datetime] = None
+    deleted_at: Optional[datetime] = None
+    retention_warning_sent_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
 class TeamWithUsers(Team):

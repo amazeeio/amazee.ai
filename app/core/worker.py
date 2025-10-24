@@ -59,6 +59,25 @@ key_spend_percentage = Gauge(
     ["team_id", "team_name", "key_alias"]
 )
 
+# Retention metrics
+team_retention_warning_sent_total = Counter(
+    "team_retention_warning_sent_total",
+    "Total number of retention warnings sent to teams",
+    ["team_id", "team_name"]
+)
+
+team_retention_deleted_total = Counter(
+    "team_retention_deleted_total",
+    "Total number of teams deleted due to retention policy",
+    ["team_id", "team_name"]
+)
+
+team_days_since_activity = Gauge(
+    "team_days_since_activity",
+    "Days since last activity for each team",
+    ["team_id", "team_name"]
+)
+
 team_total_spend = Gauge(
     "team_total_spend",
     "Total spend across all keys in a team for the current budget period",
@@ -390,9 +409,12 @@ async def reconcile_team_keys(
                     current_spend = info.get("spend", 0) or 0.0
                     budget = info.get("max_budget", 0) or 0.0
                     key_alias = info.get("key_alias", f"key-{key.id}")  # Fallback to key-{id} if no alias
-                    # Caching a value for faster lookup
-                    key.cached_spend = current_spend
-                    key.updated_at = datetime.now(UTC)
+
+                    # Only update cached_spend and updated_at if spend has actually changed
+                    if key.cached_spend != current_spend:
+                        key.cached_spend = current_spend
+                        key.updated_at = datetime.now(UTC)
+                        logger.info(f"Key {key.id} spend updated from {key.cached_spend} to {current_spend}")
                     if key.owner_id:
                         total_by_user[key.owner_id] += current_spend
                     else:
@@ -529,6 +551,167 @@ def _monitor_team_freshness(team: DBTeam) -> int:
 
     return team_freshness
 
+def _calculate_last_team_activity(db: Session, team: DBTeam) -> Optional[datetime]:
+    """
+    Calculate the last activity date for a team based on:
+    - Any product association (team is active if any product exists)
+    - Most recent key updated_at (indicates usage)
+    - Most recent user created_at
+    - Most recent key created_at
+
+    Args:
+        db: Database session
+        team: The team to check
+
+    Returns:
+        The most recent activity date, or None if no activity found
+    """
+    # Check if team has any product associations - if so, team is active
+    has_products = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == team.id
+    ).first() is not None
+
+    if has_products:
+        # Team has products, return current time to indicate team is active
+        return datetime.now(UTC)
+
+    activity_dates = []
+
+    # Check most recent key update (usage indicator)
+    recent_key_update = db.query(DBPrivateAIKey).filter(
+        DBPrivateAIKey.team_id == team.id,
+        DBPrivateAIKey.updated_at.isnot(None)
+    ).order_by(DBPrivateAIKey.updated_at.desc()).first()
+
+    if recent_key_update:
+        activity_dates.append(recent_key_update.updated_at)
+
+    # Check most recent user creation
+    recent_user = db.query(DBUser).filter(
+        DBUser.team_id == team.id
+    ).order_by(DBUser.created_at.desc()).first()
+
+    if recent_user:
+        activity_dates.append(recent_user.created_at)
+
+    # Check most recent key creation
+    recent_key_creation = db.query(DBPrivateAIKey).filter(
+        DBPrivateAIKey.team_id == team.id
+    ).order_by(DBPrivateAIKey.created_at.desc()).first()
+
+    if recent_key_creation:
+        activity_dates.append(recent_key_creation.created_at)
+
+    # Return the most recent activity date
+    return max(activity_dates) if activity_dates else None
+
+def _check_team_retention_policy(db: Session, team: DBTeam, current_time: datetime, ses_service: Optional[SESService]) -> None:
+    """
+    Check and apply team retention policy for inactive teams.
+
+    Args:
+        db: Database session
+        team: The team to check
+        current_time: Current timestamp
+        ses_service: SES service instance for sending emails
+    """
+    # Check team retention policy (only for non-deleted teams)
+    if team.deleted_at:
+        return  # Team already soft-deleted, skip retention check
+
+    last_activity = _calculate_last_team_activity(db, team)
+
+    if last_activity:
+        days_since_activity = (current_time - last_activity.replace(tzinfo=UTC)).days
+    else:
+        # No activity found, use team creation date
+        days_since_activity = (current_time - team.created_at.replace(tzinfo=UTC)).days
+
+    # Emit activity metric
+    team_days_since_activity.labels(
+        team_id=str(team.id),
+        team_name=team.name
+    ).set(days_since_activity)
+
+    # Check if team should get a warning (>76 days inactive AND no warning sent)
+    should_get_warning = days_since_activity > 76 and not team.retention_warning_sent_at
+
+    # Check if team should be deleted (warning was sent AND 14+ days have passed)
+    should_delete = team.retention_warning_sent_at is not None
+    if should_delete:
+        days_since_warning = (current_time - team.retention_warning_sent_at.replace(tzinfo=UTC)).days
+        should_delete = days_since_warning >= 14
+
+    if should_delete:
+        logger.info(f"Team {team.id} ({team.name}) has been inactive for {days_since_activity} days and warning was sent {days_since_warning} days ago, soft-deleting team")
+
+        # Soft delete the team
+        team.deleted_at = current_time
+        db.commit()
+
+        # Emit deletion metric
+        team_retention_deleted_total.labels(
+            team_id=str(team.id),
+            team_name=team.name
+        ).inc()
+
+        logger.info(f"Soft-deleted team {team.id} ({team.name}) due to {days_since_activity} days of inactivity and 14+ days since warning")
+    elif should_get_warning:
+        logger.info(f"Team {team.id} ({team.name}) has been inactive for {days_since_activity} days, sending retention warning")
+        _send_retention_warning(db, team, ses_service)
+    elif days_since_activity <= 76 and team.retention_warning_sent_at:
+        # Team has become active again (within 76 days), reset warning timestamp
+        logger.info(f"Team {team.id} ({team.name}) has become active again, resetting retention warning timestamp")
+        team.retention_warning_sent_at = None
+        db.commit()
+
+def _send_retention_warning(db: Session, team: DBTeam, ses_service: Optional[SESService]) -> None:
+    """
+    Send retention warning email to team admin.
+
+    Args:
+        db: Database session
+        team: The team to send warning to
+        ses_service: SES service instance
+    """
+    if not ses_service:
+        logger.warning(f"Cannot send retention warning for team {team.id} - SES service not available")
+        return
+
+    try:
+        # Generate dashboard URL
+        dashboard_url = generate_pricing_url(team.id)
+
+        # Send retention warning email
+        template_data = {
+            "name": team.name,
+            "dashboard_url": dashboard_url
+        }
+
+        success = ses_service.send_email(
+            to_addresses=[team.admin_email],
+            template_name="team-retention-warning",
+            template_data=template_data
+        )
+
+        if success:
+            # Update warning sent timestamp
+            team.retention_warning_sent_at = datetime.now(UTC)
+            db.commit()
+
+            # Emit metrics
+            team_retention_warning_sent_total.labels(
+                team_id=str(team.id),
+                team_name=team.name
+            ).inc()
+
+            logger.info(f"Sent retention warning email to team {team.id} ({team.name})")
+        else:
+            logger.error(f"Failed to send retention warning email to team {team.id} ({team.name})")
+
+    except Exception as e:
+        logger.error(f"Error sending retention warning email to team {team.id}: {str(e)}")
+
 def _send_expiry_notification(db: Session, team: DBTeam, has_products: bool, should_send_notifications: bool, days_remaining: int, ses_service: Optional[SESService]):
     # Check for notification conditions for teams still in the trial (only if not recently monitored)
     if not has_products and should_send_notifications:
@@ -656,8 +839,8 @@ async def monitor_teams(db: Session):
     """
     logger.info("Monitoring teams")
     try:
-        # Get all teams
-        teams = db.query(DBTeam).all()
+        # Get all non-deleted teams
+        teams = db.query(DBTeam).filter(DBTeam.deleted_at.is_(None)).all()
         current_time = datetime.now(UTC)
 
         # Track current active team labels
@@ -683,6 +866,10 @@ async def monitor_teams(db: Session):
                     DBTeamProduct.team_id == team.id
                 ).first() is not None
 
+                # Check team retention policy first
+                _check_team_retention_policy(db, team, current_time, ses_service)
+
+                # Now handle trial expiry notifications and key expiry (after retention checks)
                 team_freshness = _monitor_team_freshness(team)
                 days_remaining = TRIAL_OVER_DAYS - team_freshness
 
