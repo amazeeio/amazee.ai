@@ -11,9 +11,9 @@ from app.core.worker import (
     key_spend_percentage,
     team_total_spend,
     active_team_labels,
-    get_team_keys_by_region,
     reconcile_team_keys
 )
+from app.core.team_service import get_team_keys_by_region
 from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType
 from unittest.mock import AsyncMock, patch, Mock
 

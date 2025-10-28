@@ -158,7 +158,10 @@ No new environment variables needed - uses existing:
 - Set `deleted_at` timestamp rather than actually deleting records
 - Keeps audit trail and allows potential recovery
 - Related resources (keys, users, limits) remain in DB but team is inaccessible
-- Future enhancement: Hard delete after extended period (e.g., 1 year)
+- **Keys are expired in LiteLLM** when team is soft-deleted (set duration to 0s)
+- **Keys and users from soft-deleted teams are hidden** from list APIs
+- **Hard delete after 60 days** - Permanently removes team and all related resources
+- **System admins can restore** soft-deleted teams (resets `deleted_at` and un-expires keys)
 
 ### Activity Calculation
 
@@ -206,3 +209,113 @@ Track last activity via existing timestamps:
 **Documentation:**
 
 - `docs/design/TeamRetentionPolicy.md` - Copy of this plan for team review
+
+## Extension: Soft-Delete Cascade, Restore, and Hard Delete
+
+### Overview
+
+This extension adds the following capabilities:
+1. **Soft-delete cascade behavior** - Users are deactivated, keys are expired in LiteLLM, and both keys and users are hidden from list APIs
+2. **Restore functionality** - System admins can restore soft-deleted teams (reactivates users and un-expires keys)
+3. **Hard deletion** - Teams soft-deleted for 60+ days are permanently removed
+
+### Soft-Delete Cascade Behavior
+
+When a team is soft-deleted (after 90 days of inactivity):
+
+**Users are deactivated:**
+- All users in the team have `is_active` set to `False`
+- Prevents login and API access for users of inactive teams
+
+**Keys are expired in LiteLLM:**
+- All team keys are set to `duration=0s` in LiteLLM
+- Keys become immediately unusable
+- Prevents any API usage from inactive teams
+
+**Keys and users are filtered from list APIs:**
+- `list_private_ai_keys()` - Filters out keys from soft-deleted teams
+- `list_users()` - Filters out inactive users (`is_active = False`) and users from soft-deleted teams
+- `search_users()` - Filters out inactive users and users from soft-deleted teams
+- Teams with `deleted_at != null` are excluded unless `include_deleted=true` is passed (admin only)
+
+### Restore Functionality
+
+**Endpoint:** `POST /teams/{team_id}/restore`
+
+**Access:** System admins only
+
+**Behavior:**
+- Resets `deleted_at` to `null`
+- Resets `retention_warning_sent_at` to `null`
+- Reactivates all users in the team (sets `is_active` back to `True`)
+- Un-expires all team keys in LiteLLM (sets back to default duration)
+- Team and all related resources become active again
+- All existing data (keys, users, limits) is preserved
+
+### Hard Delete After 60 Days
+
+**Job:** `hard_delete_expired_teams()` in `app/core/worker.py`
+
+**Schedule:**
+- Local: Every hour at :30
+- Production: Daily at 3 AM UTC
+
+**Process:**
+1. Find teams where `deleted_at <= (now - 60 days)`
+2. For each team:
+   - Delete from LiteLLM first (call `delete_key()` for each key)
+   - Delete `DBTeamMetrics`
+   - Delete `DBLimitedResource` (team and user resources)
+   - Delete `DBPrivateAIKey` (team and user keys)
+   - Delete `DBUser` (team members)
+   - Delete `DBTeamProduct` associations
+   - Delete `DBTeamRegion` associations
+   - Delete `DBTeam` record
+3. Emit `team_hard_deleted_total` metric
+
+**Manual Trigger:**
+- Script: `scripts/trigger_hard_delete_job.py`
+- Uses locking to prevent concurrent execution
+
+### Frontend Changes
+
+**Teams Admin Page** (`frontend/src/app/admin/teams/page.tsx`):
+
+**Show Deleted Teams Toggle:**
+- Switch component added to filter section
+- When enabled, includes soft-deleted teams in list
+- Teams API called with `?include_deleted=true`
+
+**Visual Indicators:**
+- Deleted teams shown with 50% opacity
+- "DELETED" badge displayed instead of Active/Inactive status
+- Deletion date visible in team details
+
+**Restore Button:**
+- Appears only for soft-deleted teams
+- Replaces normal action buttons (Extend Trial, Subscribe, Delete)
+- Calls `/teams/{id}/restore` endpoint
+- Shows loading spinner during restoration
+
+### Metrics
+
+**Hard Delete Metrics:**
+- `team_hard_deleted_total` - Counter for permanently deleted teams
+- `hard_delete_teams_duration_seconds` - Summary of job execution time
+
+### Files Added/Modified
+
+**Backend:**
+- `app/core/worker.py` - Add soft-delete cascade logic, hard delete function
+- `app/api/teams.py` - Add restore endpoint
+- `app/api/private_ai_keys.py` - Add soft-delete filters
+- `app/api/users.py` - Add soft-delete filters
+- `app/main.py` - Schedule hard delete job
+- `scripts/trigger_hard_delete_job.py` - Manual trigger script (new)
+
+**Frontend:**
+- `frontend/src/app/admin/teams/page.tsx` - Add restore UI
+- `frontend/src/components/ui/switch.tsx` - Switch component (new)
+
+**Documentation:**
+- `docs/design/TeamRetentionPolicy.md` - Updated with extensions

@@ -434,8 +434,15 @@ async def list_private_ai_keys(
         - Returns keys owned by users in their team AND keys owned by their team
     If user is not admin:
         - Returns their own keys, and keys for their team, ignoring owner_id and team_id parameters
+
+    Keys from soft-deleted teams are excluded from the results.
     """
-    query = db.query(DBPrivateAIKey)
+    query = db.query(DBPrivateAIKey).outerjoin(DBTeam, DBPrivateAIKey.team_id == DBTeam.id)
+
+    # Exclude keys from soft-deleted teams
+    query = query.filter(
+        (DBPrivateAIKey.team_id.is_(None)) | (DBTeam.deleted_at.is_(None))
+    )
 
     if current_user.is_admin:
         if owner_id is not None:
