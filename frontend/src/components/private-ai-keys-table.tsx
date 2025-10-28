@@ -51,6 +51,7 @@ export function PrivateAIKeysTable({
   const [keyTypeFilter, setKeyTypeFilter] = useState<KeyType>('all');
   const [nameFilter, setNameFilter] = useState('');
   const [regionFilter, setRegionFilter] = useState('');
+  const [databaseNameFilter, setDatabaseNameFilter] = useState('');
 
   const togglePasswordVisibility = (keyId: number | string) => {
     setShowPassword(prev => ({
@@ -71,6 +72,7 @@ export function PrivateAIKeysTable({
   const clearFilters = () => {
     setNameFilter('');
     setRegionFilter('');
+    setDatabaseNameFilter('');
     setKeyTypeFilter('all');
   };
 
@@ -88,6 +90,13 @@ export function PrivateAIKeysTable({
     if (regionFilter.trim()) {
       filteredKeys = filteredKeys.filter(key =>
         key.region?.toLowerCase().includes(regionFilter.toLowerCase())
+      );
+    }
+
+    // Apply database name filter
+    if (databaseNameFilter.trim()) {
+      filteredKeys = filteredKeys.filter(key =>
+        key.database_name?.toLowerCase().includes(databaseNameFilter.toLowerCase())
       );
     }
 
@@ -143,7 +152,7 @@ export function PrivateAIKeysTable({
     return filteredKeys;
   };
 
-  const hasActiveFilters = Boolean(nameFilter.trim() || regionFilter.trim() || keyTypeFilter !== 'all');
+  const hasActiveFilters = Boolean(nameFilter.trim() || regionFilter.trim() || databaseNameFilter.trim() || keyTypeFilter !== 'all');
 
   // Filter fields configuration
   const filterFields: FilterField[] = [
@@ -162,6 +171,14 @@ export function PrivateAIKeysTable({
       placeholder: 'Filter by region...',
       value: regionFilter,
       onChange: setRegionFilter,
+    },
+    {
+      key: 'databaseName',
+      label: 'Filter by Database Name',
+      type: 'search',
+      placeholder: 'Filter by database name...',
+      value: databaseNameFilter,
+      onChange: setDatabaseNameFilter,
     },
     {
       key: 'type',
