@@ -38,7 +38,8 @@ def create_test_data():
             "Test Team 8 - 80 Days With Product",
             "Test Team 9 - 80 Days No Product",
             "Test Team 10 - 75 Days With Product",
-            "Test Team 11 - 75 Days No Product"
+            "Test Team 11 - 75 Days No Product",
+            "Test Team 12 - 95 Days Retention Warning"
         ]:
             existing_team = db.query(DBTeam).filter(DBTeam.name == team_name).first()
             if existing_team:
@@ -477,6 +478,41 @@ def create_test_data():
             team11 = existing_teams["Test Team 11 - 75 Days No Product"]
             print(f"\n11. Team 11 already exists: {team11.name} (ID: {team11.id})")
 
+        # 12. Team created 95 days ago without product, retention warning sent 14 days ago
+        if "Test Team 12 - 95 Days Retention Warning" not in existing_teams:
+            print("\n12. Creating team with one user, no products (created 95 days ago, retention warning sent 14 days ago)...")
+            team12 = DBTeam(
+                name="Test Team 12 - 95 Days Retention Warning",
+                admin_email="admin12@test.com",
+                is_active=True,
+                is_always_free=False,
+                created_at=datetime.now(UTC) - timedelta(days=95),
+                retention_warning_sent_at=datetime.now(UTC) - timedelta(days=14)
+            )
+            db.add(team12)
+            db.commit()
+            db.refresh(team12)
+
+            user12 = DBUser(
+                email="user12@test.com",
+                hashed_password=get_password_hash("testpassword123"),
+                is_active=True,
+                is_admin=False,
+                role="admin",
+                team_id=team12.id,
+                created_at=datetime.now(UTC) - timedelta(days=95)
+            )
+            db.add(user12)
+            db.commit()
+
+            print(f"   Created team: {team12.name} (ID: {team12.id})")
+            print(f"   Created user: {user12.email} (ID: {user12.id})")
+            print(f"   Retention warning sent: {team12.retention_warning_sent_at.strftime('%Y-%m-%d')}")
+            print(f"   No products associated")
+        else:
+            team12 = existing_teams["Test Team 12 - 95 Days Retention Warning"]
+            print(f"\n12. Team 12 already exists: {team12.name} (ID: {team12.id})")
+
         print("\n✅ Test data created successfully!")
         print(f"\nSummary:")
         print(f"- Team 1: {team1.name} (created 32 days ago)")
@@ -490,7 +526,8 @@ def create_test_data():
         print(f"- Team 9: {team9.name} (no products, created 80 days ago)")
         print(f"- Team 10: {team10.name} (with product, created 75 days ago)")
         print(f"- Team 11: {team11.name} (no products, created 75 days ago)")
-        print(f"- Total users created: 11")
+        print(f"- Team 12: {team12.name} (no products, created 95 days ago, retention warning sent 14 days ago)")
+        print(f"- Total users created: 12")
         print(f"- Product used: {selected_product.name}")
 
     except Exception as e:
@@ -511,6 +548,14 @@ async def create_test_keys(count: int):
         if not region:
             print(f"No active regions, not creating test keys")
             return
+
+        # Check if test keys already exist
+        existing_key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.name == "auto_test_0").first()
+        if existing_key:
+            print(f"⚠️  Test keys already exist (found auto_test_0), skipping key creation")
+            return
+
+        print(f"Creating {count} test keys for team {team.name}...")
         litellm = LiteLLMService(region.litellm_api_url, region.litellm_api_key)
         team_id = team.id
         for i in range(0, count):
@@ -533,7 +578,7 @@ async def create_test_keys(count: int):
             )
             db.add(db_token)
             db.commit()
-            print(f"Created LLM token {key_name} int team {team.name}")
+            print(f"Created LLM token {key_name} in team {team.name}")
 
     except Exception as e:
         print(f"failed to create test keys {str(e)}")

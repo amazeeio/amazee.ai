@@ -359,8 +359,9 @@ def soft_delete_team_for_test(db, team: DBTeam, deleted_at: datetime = None):
     if deleted_at is None:
         deleted_at = datetime.now(UTC)
 
-    # Set deleted_at timestamp
+    # Set deleted_at timestamp and deactivate team
     team.deleted_at = deleted_at
+    team.is_active = False
 
     # Deactivate all users in the team
     db.query(DBUser).filter(DBUser.team_id == team.id).update(

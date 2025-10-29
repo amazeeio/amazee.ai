@@ -344,10 +344,10 @@ export default function TeamsPage() {
 
   // Get team details when expanded
   const { data: expandedTeam, isLoading: isLoadingTeamDetails } = useQuery<Team>({
-    queryKey: ['team', expandedTeamId],
+    queryKey: ['team', expandedTeamId, includeDeleted],
     queryFn: async () => {
       if (!expandedTeamId) return null;
-      const response = await get(`/teams/${expandedTeamId}`);
+      const response = await get(`/teams/${expandedTeamId}?include_deleted=${includeDeleted}`);
       return response.json();
     },
     enabled: !!expandedTeamId,
@@ -521,7 +521,7 @@ export default function TeamsPage() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId] });
+      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId, includeDeleted] });
       queryClient.invalidateQueries({ queryKey: ['teams'] });
 
       toast({
@@ -556,7 +556,7 @@ export default function TeamsPage() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId] });
+      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId, includeDeleted] });
       queryClient.invalidateQueries({ queryKey: ['teams'] });
 
       toast({
@@ -590,7 +590,7 @@ export default function TeamsPage() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId] });
+      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId, includeDeleted] });
       queryClient.invalidateQueries({ queryKey: ['teams'] });
 
       toast({
@@ -621,7 +621,7 @@ export default function TeamsPage() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId] });
+      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId, includeDeleted] });
       queryClient.invalidateQueries({ queryKey: ['teams'] });
 
       toast({
@@ -714,7 +714,7 @@ export default function TeamsPage() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId] });
+      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId, includeDeleted] });
       queryClient.invalidateQueries({ queryKey: ['teams'] });
       queryClient.invalidateQueries({ queryKey: ['team-products', selectedTeamId] });
 
@@ -775,7 +775,7 @@ export default function TeamsPage() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['teams'] });
-      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId] });
+      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId, includeDeleted] });
       setExpandedTeamId(null);
 
       toast({
@@ -810,7 +810,7 @@ export default function TeamsPage() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team', expandedTeamId] });
+      queryClient.invalidateQueries({ queryKey: ['team', expandedTeamId, includeDeleted] });
       queryClient.invalidateQueries({ queryKey: ['teams'] });
       queryClient.invalidateQueries({ queryKey: ['team-products', expandedTeamId] });
 

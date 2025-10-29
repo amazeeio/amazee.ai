@@ -71,8 +71,9 @@ async def soft_delete_team(db: Session, team: DBTeam, current_time: datetime = N
 
     logger.info(f"Soft deleting team {team.id} ({team.name})")
 
-    # Set deleted_at timestamp
+    # Set deleted_at timestamp and deactivate team
     team.deleted_at = current_time
+    team.is_active = False
 
     # Deactivate all users in the team
     users_deactivated = db.query(DBUser).filter(DBUser.team_id == team.id).update(
@@ -158,9 +159,10 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> None:
         logger.error(f"Failed to un-expire keys for team {team.id}: {str(restore_error)}")
         # Don't block restoration if key un-expiration fails
 
-    # Reset deletion and warning timestamps
+    # Reset deletion and warning timestamps and reactivate team
     team.deleted_at = None
     team.retention_warning_sent_at = None
+    team.is_active = True
     team.updated_at = datetime.now(UTC)
 
     # Reactivate all users in the team
