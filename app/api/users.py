@@ -44,8 +44,15 @@ async def search_users(
     """
     Search users by email pattern. Only accessible by admin users.
     Returns a list of users whose email matches the search pattern.
+    Only returns active users from non-deleted teams.
     """
-    users = db.query(DBUser).filter(DBUser.email.ilike(f"%{email}%")).limit(10).all()
+    users = db.query(DBUser).outerjoin(
+        DBTeam, DBUser.team_id == DBTeam.id
+    ).filter(
+        DBUser.email.ilike(f"%{email}%"),
+        DBUser.is_active == True,
+        (DBUser.team_id.is_(None)) | (DBTeam.deleted_at.is_(None))
+    ).limit(10).all()
     return users
 
 @router.get("", response_model=List[User], dependencies=[Depends(get_role_min_team_admin)])
@@ -56,13 +63,27 @@ async def list_users(
 ):
     """
     List users. Accessible by admin users or team admins for their team members.
+    Users from soft-deleted teams and inactive users are excluded from the results.
     """
     if current_user.is_admin:
         # Use LEFT JOIN to get all users and their team information in a single query
-        users = db.query(DBUser, DBTeam.name.label('team_name')).outerjoin(DBTeam, DBUser.team_id == DBTeam.id).all()
+        # Exclude users from soft-deleted teams and inactive users
+        users = db.query(DBUser, DBTeam.name.label('team_name')).outerjoin(
+            DBTeam, DBUser.team_id == DBTeam.id
+        ).filter(
+            DBUser.is_active == True,
+            (DBUser.team_id.is_(None)) | (DBTeam.deleted_at.is_(None))
+        ).all()
     else:
         # Return only users in the team admin's team with team information
-        users = db.query(DBUser, DBTeam.name.label('team_name')).join(DBTeam, DBUser.team_id == DBTeam.id).filter(DBUser.team_id == current_user.team_id).all()
+        # Exclude if team is soft-deleted or user is inactive
+        users = db.query(DBUser, DBTeam.name.label('team_name')).join(
+            DBTeam, DBUser.team_id == DBTeam.id
+        ).filter(
+            DBUser.team_id == current_user.team_id,
+            DBUser.is_active == True,
+            DBTeam.deleted_at.is_(None)
+        ).all()
 
     # Map the results to DBUser objects with team_name
     result = []

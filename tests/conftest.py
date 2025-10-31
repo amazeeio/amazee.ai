@@ -338,3 +338,35 @@ def mock_httpx_combined_client():
     mock_client.__aexit__.return_value = None
 
     return mock_client
+
+
+# Helper function for soft-deleting teams in tests
+def soft_delete_team_for_test(db, team: DBTeam, deleted_at: datetime = None):
+    """
+    Helper function to properly soft-delete a team in tests.
+
+    This mimics the production soft-delete behavior:
+    - Sets team.deleted_at timestamp
+    - Deactivates all users in the team
+
+    Note: Key expiration in LiteLLM should be mocked in tests.
+
+    Args:
+        db: Database session
+        team: The team to soft delete
+        deleted_at: Optional timestamp (defaults to now)
+    """
+    if deleted_at is None:
+        deleted_at = datetime.now(UTC)
+
+    # Set deleted_at timestamp and deactivate team
+    team.deleted_at = deleted_at
+    team.is_active = False
+
+    # Deactivate all users in the team
+    db.query(DBUser).filter(DBUser.team_id == team.id).update(
+        {"is_active": False},
+        synchronize_session=False
+    )
+
+    db.commit()

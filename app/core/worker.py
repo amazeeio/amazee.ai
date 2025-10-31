@@ -2,10 +2,11 @@ import re
 from datetime import datetime, UTC, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, and_
-from app.db.models import DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey, DBUser, DBRegion, DBTeamMetrics, DBLimitedResource
+from app.db.models import DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey, DBUser, DBRegion, DBTeamMetrics, DBLimitedResource, DBTeamRegion
 from app.db.database import get_db
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
+from app.core.team_service import get_team_keys_by_region, soft_delete_team
 from app.core.limit_service import LimitService
 from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitedResource
 import logging
@@ -59,15 +60,45 @@ key_spend_percentage = Gauge(
     ["team_id", "team_name", "key_alias"]
 )
 
+# Retention metrics
+team_retention_warning_sent_total = Counter(
+    "team_retention_warning_sent_total",
+    "Total number of retention warnings sent to teams",
+    ["team_id", "team_name"]
+)
+
+team_retention_deleted_total = Counter(
+    "team_retention_deleted_total",
+    "Total number of teams deleted due to retention policy",
+    ["team_id", "team_name"]
+)
+
+team_days_since_activity = Gauge(
+    "team_days_since_activity",
+    "Days since last activity for each team",
+    ["team_id", "team_name"]
+)
+
 team_total_spend = Gauge(
     "team_total_spend",
     "Total spend across all keys in a team for the current budget period",
     ["team_id", "team_name"]
 )
 
+team_hard_deleted_total = Counter(
+    "team_hard_deleted_total",
+    "Total number of teams hard deleted after retention period",
+    ["team_id", "team_name"]
+)
+
 monitor_teams_duration = Summary(
     "monitor_teams_duration_seconds",
     "Time taken to complete the monitor_teams task"
+)
+
+hard_delete_teams_duration = Summary(
+    "hard_delete_teams_duration_seconds",
+    "Time spent executing the hard delete teams job"
 )
 
 # Track active team labels to zero out metrics for inactive teams
@@ -136,38 +167,6 @@ def set_team_and_user_limits(db: Session, team: DBTeam):
                     # Skip unsupported resource types - they don't need current_value updates
                     continue
 
-def get_team_keys_by_region(db: Session, team_id: int) -> Dict[DBRegion, List[DBPrivateAIKey]]:
-    """
-    Get all keys for a team grouped by region.
-
-    Args:
-        db: Database session
-        team_id: ID of the team to get keys for
-
-    Returns:
-        Dictionary mapping regions to lists of keys
-    """
-    # Get all keys for the team with their regions
-    team_user_ids = db.execute(select(DBUser.id).filter(DBUser.team_id == team_id)).scalars().all()
-    # Return keys owned by users in the team OR owned by the team
-    team_keys = db.query(DBPrivateAIKey).filter(
-        (DBPrivateAIKey.owner_id.in_(team_user_ids)) |
-        (DBPrivateAIKey.team_id == team_id)
-    ).all()
-
-    # Group keys by region
-    keys_by_region = defaultdict(list)
-    for key in team_keys:
-        if not key.litellm_token:
-            logger.warning(f"Key {key.id} has no LiteLLM token, skipping")
-            continue
-        if not key.region:
-            logger.warning(f"Key {key.id} has no region, skipping")
-            continue
-        keys_by_region[key.region].append(key)
-
-    logger.info(f"Found {len(team_keys)} keys in {len(keys_by_region)} regions for team {team_id}")
-    return keys_by_region
 
 async def handle_stripe_event_background(event):
     """
@@ -390,9 +389,12 @@ async def reconcile_team_keys(
                     current_spend = info.get("spend", 0) or 0.0
                     budget = info.get("max_budget", 0) or 0.0
                     key_alias = info.get("key_alias", f"key-{key.id}")  # Fallback to key-{id} if no alias
-                    # Caching a value for faster lookup
-                    key.cached_spend = current_spend
-                    key.updated_at = datetime.now(UTC)
+
+                    # Only update cached_spend and updated_at if spend has actually changed
+                    if key.cached_spend != current_spend:
+                        key.cached_spend = current_spend
+                        key.updated_at = datetime.now(UTC)
+                        logger.info(f"Key {key.id} spend updated from {key.cached_spend} to {current_spend}")
                     if key.owner_id:
                         total_by_user[key.owner_id] += current_spend
                     else:
@@ -529,6 +531,168 @@ def _monitor_team_freshness(team: DBTeam) -> int:
 
     return team_freshness
 
+def _calculate_last_team_activity(db: Session, team: DBTeam) -> Optional[datetime]:
+    """
+    Calculate the last activity date for a team based on:
+    - Any product association (team is active if any product exists)
+    - Most recent key updated_at (indicates usage)
+    - Most recent user created_at
+    - Most recent key created_at
+
+    Args:
+        db: Database session
+        team: The team to check
+
+    Returns:
+        The most recent activity date, or None if no activity found
+    """
+    # Check if team has any product associations - if so, team is active
+    has_products = db.query(DBTeamProduct).filter(
+        DBTeamProduct.team_id == team.id
+    ).first() is not None
+
+    if has_products:
+        # Team has products, return current time to indicate team is active
+        return datetime.now(UTC)
+
+    activity_dates = []
+
+    # Check most recent key update (usage indicator)
+    recent_key_update = db.query(DBPrivateAIKey).filter(
+        DBPrivateAIKey.team_id == team.id,
+        DBPrivateAIKey.updated_at.isnot(None)
+    ).order_by(DBPrivateAIKey.updated_at.desc()).first()
+
+    if recent_key_update:
+        activity_dates.append(recent_key_update.updated_at)
+
+    # Check most recent user creation
+    recent_user = db.query(DBUser).filter(
+        DBUser.team_id == team.id
+    ).order_by(DBUser.created_at.desc()).first()
+
+    if recent_user:
+        activity_dates.append(recent_user.created_at)
+
+    # Check most recent key creation
+    recent_key_creation = db.query(DBPrivateAIKey).filter(
+        DBPrivateAIKey.team_id == team.id
+    ).order_by(DBPrivateAIKey.created_at.desc()).first()
+
+    if recent_key_creation:
+        activity_dates.append(recent_key_creation.created_at)
+
+    # Return the most recent activity date
+    return max(activity_dates) if activity_dates else None
+
+async def _check_team_retention_policy(db: Session, team: DBTeam, current_time: datetime, ses_service: Optional[SESService]) -> None:
+    """
+    Check and apply team retention policy for inactive teams.
+
+    Uses centralized soft_delete_team() service function for consistency.
+
+    Args:
+        db: Database session
+        team: The team to check
+        current_time: Current timestamp
+        ses_service: SES service instance for sending emails
+    """
+    # Check team retention policy (only for non-deleted teams)
+    if team.deleted_at:
+        return  # Team already soft-deleted, skip retention check
+
+    last_activity = _calculate_last_team_activity(db, team)
+
+    if last_activity:
+        days_since_activity = (current_time - last_activity.replace(tzinfo=UTC)).days
+    else:
+        # No activity found, use team creation date
+        days_since_activity = (current_time - team.created_at.replace(tzinfo=UTC)).days
+
+    # Emit activity metric
+    team_days_since_activity.labels(
+        team_id=str(team.id),
+        team_name=team.name
+    ).set(days_since_activity)
+
+    # Check if team should get a warning (>76 days inactive AND no warning sent)
+    should_get_warning = days_since_activity > 76 and not team.retention_warning_sent_at
+
+    # Check if team should be deleted (warning was sent AND 14+ days have passed)
+    should_delete = team.retention_warning_sent_at is not None
+    if should_delete:
+        days_since_warning = (current_time - team.retention_warning_sent_at.replace(tzinfo=UTC)).days
+        should_delete = days_since_warning >= 14
+
+    if should_delete:
+        logger.info(f"Team {team.id} ({team.name}) has been inactive for {days_since_activity} days and warning was sent {days_since_warning} days ago, soft-deleting team")
+
+        # Use centralized soft_delete_team service function
+        await soft_delete_team(db, team, current_time)
+
+        # Emit deletion metric
+        team_retention_deleted_total.labels(
+            team_id=str(team.id),
+            team_name=team.name
+        ).inc()
+
+        logger.info(f"Soft-deleted team {team.id} ({team.name}) due to {days_since_activity} days of inactivity and 14+ days since warning")
+        return
+
+    elif should_get_warning:
+        logger.info(f"Team {team.id} ({team.name}) has been inactive for {days_since_activity} days, sending retention warning")
+        _send_retention_warning(db, team, ses_service)
+    elif days_since_activity <= 76 and team.retention_warning_sent_at:
+        # Team has become active again (within 76 days), reset warning timestamp
+        logger.info(f"Team {team.id} ({team.name}) has become active again, resetting retention warning timestamp")
+        team.retention_warning_sent_at = None
+        db.commit()
+
+def _send_retention_warning(db: Session, team: DBTeam, ses_service: Optional[SESService]) -> None:
+    """
+    Send retention warning email to team admin.
+
+    Args:
+        db: Database session
+        team: The team to send warning to
+        ses_service: SES service instance
+    """
+    if not ses_service:
+        logger.warning(f"Cannot send retention warning for team {team.id} - SES service not available")
+        return
+
+    try:
+        # Send retention warning email
+        soft_delete_date = (datetime.now(UTC) + timedelta(days=14)).strftime("%b %d, %Y")
+        template_data = {
+            "name": team.name,
+            "soft_delete_date": soft_delete_date
+        }
+
+        success = ses_service.send_email(
+            to_addresses=[team.admin_email],
+            template_name="team-retention-warning",
+            template_data=template_data
+        )
+
+        if success:
+            # Update warning sent timestamp
+            team.retention_warning_sent_at = datetime.now(UTC)
+            db.commit()
+
+            # Emit metrics
+            team_retention_warning_sent_total.labels(
+                team_id=str(team.id),
+                team_name=team.name
+            ).inc()
+
+            logger.info(f"Sent retention warning email to team {team.id} ({team.name})")
+        else:
+            logger.error(f"Failed to send retention warning email to team {team.id} ({team.name})")
+
+    except Exception as e:
+        logger.error(f"Error sending retention warning email to team {team.id}: {str(e)}")
+
 def _send_expiry_notification(db: Session, team: DBTeam, has_products: bool, should_send_notifications: bool, days_remaining: int, ses_service: Optional[SESService]):
     # Check for notification conditions for teams still in the trial (only if not recently monitored)
     if not has_products and should_send_notifications:
@@ -656,8 +820,8 @@ async def monitor_teams(db: Session):
     """
     logger.info("Monitoring teams")
     try:
-        # Get all teams
-        teams = db.query(DBTeam).all()
+        # Get all non-deleted teams
+        teams = db.query(DBTeam).filter(DBTeam.deleted_at.is_(None)).all()
         current_time = datetime.now(UTC)
 
         # Track current active team labels
@@ -683,6 +847,10 @@ async def monitor_teams(db: Session):
                     DBTeamProduct.team_id == team.id
                 ).first() is not None
 
+                # Check team retention policy first (soft-delete handles key expiration internally)
+                await _check_team_retention_policy(db, team, current_time, ses_service)
+
+                # Now handle trial expiry notifications and key expiry (after retention checks)
                 team_freshness = _monitor_team_freshness(team)
                 days_remaining = TRIAL_OVER_DAYS - team_freshness
 
@@ -697,7 +865,8 @@ async def monitor_teams(db: Session):
                 # Get all keys for the team grouped by region
                 keys_by_region = get_team_keys_by_region(db, team.id)
                 expire_keys = False
-                # If the team has a product, expiry will be handled by a Stripe cancellation
+
+                # Expire if team trial has expired (if team has a product, expiry will be handled by Stripe)
                 if not has_products and days_remaining <= 0 and should_send_notifications:
                     logger.info(f"Team {team.id} has {days_remaining} days remaining, expiring keys")
                     expire_keys = True
@@ -784,6 +953,111 @@ async def monitor_teams(db: Session):
 
     except Exception as e:
         logger.error(f"Error in team monitoring task: {str(e)}")
+        raise e
+
+@hard_delete_teams_duration.time()
+async def hard_delete_expired_teams(db: Session):
+    """
+    Hard deletion job for teams that have been soft-deleted for 60+ days.
+    Cascades deletion to all related resources (keys, users, limits, metrics, etc.).
+    Runs less frequently than monitor_teams (daily at 3 AM).
+    """
+    logger.info("Starting hard delete job for expired teams")
+    try:
+        # Calculate cutoff date (60 days ago)
+        cutoff_date = datetime.now(UTC) - timedelta(days=60)
+
+        # Query all teams that have been soft-deleted for 60+ days
+        teams_to_delete = db.query(DBTeam).filter(
+            DBTeam.deleted_at.is_not(None),
+            DBTeam.deleted_at <= cutoff_date
+        ).all()
+
+        logger.info(f"Found {len(teams_to_delete)} teams eligible for hard deletion")
+
+        for team in teams_to_delete:
+            try:
+                logger.info(f"Hard deleting team {team.id} ({team.name}), soft-deleted on {team.deleted_at}")
+
+                # Get user IDs first (needed for cleaning up user resources)
+                team_user_ids = db.execute(select(DBUser.id).filter(DBUser.team_id == team.id)).scalars().all()
+
+                # 1. Delete team and user limited resources
+                db.query(DBLimitedResource).filter(
+                    DBLimitedResource.owner_type == OwnerType.TEAM,
+                    DBLimitedResource.owner_id == team.id
+                ).delete(synchronize_session=False)
+                if team_user_ids:
+                    db.query(DBLimitedResource).filter(
+                        DBLimitedResource.owner_type == OwnerType.USER,
+                        DBLimitedResource.owner_id.in_(team_user_ids)
+                    ).delete(synchronize_session=False)
+                logger.info(f"Deleted limited resources for team {team.id} and its users")
+
+                # 2. Delete keys from LiteLLM and database (use helper to group by region)
+                keys_by_region = get_team_keys_by_region(db, team.id)
+
+                # Delete from LiteLLM first
+                for region, region_keys in keys_by_region.items():
+                    try:
+                        litellm_service = LiteLLMService(
+                            api_url=region.litellm_api_url,
+                            api_key=region.litellm_api_key
+                        )
+                        for key in region_keys:
+                            if key.litellm_token:
+                                try:
+                                    await litellm_service.delete_key(key.litellm_token)
+                                    logger.info(f"Deleted key {key.id} from LiteLLM in region {region.name}")
+                                except Exception as key_error:
+                                    logger.error(f"Failed to delete key {key.id} from LiteLLM: {str(key_error)}")
+                    except Exception as region_error:
+                        logger.error(f"Failed to delete keys from region {region.name}: {str(region_error)}")
+
+                # Delete keys from database
+                total_keys = sum(len(keys) for keys in keys_by_region.values())
+                db.query(DBPrivateAIKey).filter(
+                    (DBPrivateAIKey.team_id == team.id) |
+                    (DBPrivateAIKey.owner_id.in_(team_user_ids))
+                ).delete(synchronize_session=False)
+                logger.info(f"Deleted {total_keys} keys from database for team {team.id}")
+
+                # 3. Delete users in the team
+                db.query(DBUser).filter(DBUser.team_id == team.id).delete()
+                logger.info(f"Deleted {len(team_user_ids)} users for team {team.id}")
+
+                # 4. Delete team product associations
+                db.query(DBTeamProduct).filter(DBTeamProduct.team_id == team.id).delete()
+                logger.info(f"Deleted product associations for team {team.id}")
+
+                # 5. Delete team region associations
+                db.query(DBTeamRegion).filter(DBTeamRegion.team_id == team.id).delete()
+                logger.info(f"Deleted region associations for team {team.id}")
+
+                # 6. Delete the team itself (DBTeamMetrics will be auto-deleted via cascade)
+                db.delete(team)
+
+                # Commit after each team to avoid rolling back everything on error
+                db.commit()
+
+                # Emit metric
+                team_hard_deleted_total.labels(
+                    team_id=str(team.id),
+                    team_name=team.name
+                ).inc()
+
+                logger.info(f"Successfully hard deleted team {team.id} ({team.name})")
+
+            except Exception as team_error:
+                logger.error(f"Failed to hard delete team {team.id}: {str(team_error)}")
+                db.rollback()
+                # Continue with next team
+
+        logger.info(f"Hard delete job completed. Processed {len(teams_to_delete)} teams")
+
+    except Exception as e:
+        logger.error(f"Error in hard delete job: {str(e)}")
+        db.rollback()
         raise e
 
 def get_team_admin_email(db: Session, team: DBTeam) -> str:

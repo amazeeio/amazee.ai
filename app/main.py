@@ -11,7 +11,7 @@ from app.db.database import get_db
 from app.middleware.audit import AuditLogMiddleware
 from app.middleware.prometheus import PrometheusMiddleware
 from app.middleware.auth import AuthMiddleware
-from app.core.worker import monitor_teams
+from app.core.worker import monitor_teams, hard_delete_expired_teams
 from app.core.locking import try_acquire_lock, release_lock
 from app.__version__ import __version__
 from contextlib import asynccontextmanager
@@ -73,8 +73,7 @@ async def lifespan(app: FastAPI):
 
     # Set schedule based on environment
     if settings.ENV_SUFFIX == "local":
-        # Run every 10 minutes in local environment
-        cron_trigger = CronTrigger(minute='*/10', timezone=UTC, jitter=5)
+        cron_trigger = CronTrigger(minute='*/10', timezone=UTC, jitter=180)
     else:
         # Run every hour in other environments with jitter
         cron_trigger = CronTrigger(hour='*', minute=0, timezone=UTC, jitter=60)
@@ -83,6 +82,49 @@ async def lifespan(app: FastAPI):
         monitor_teams_job,
         trigger=cron_trigger,
         id='monitor_teams',
+        replace_existing=True
+    )
+
+    # Hard delete job for teams that have been soft-deleted for 60+ days
+    async def hard_delete_teams_job():
+        db = next(get_db())
+        lock_name = "hard_delete_teams"
+
+        try:
+            # Try to acquire the lock
+            if try_acquire_lock(lock_name, db, lock_timeout=10):
+                logger.info("Acquired hard_delete_teams lock, executing job")
+                try:
+                    await hard_delete_expired_teams(db)
+                except Exception as e:
+                    logger.error(f"Error in hard_delete_expired_teams background task: {str(e)}")
+                finally:
+                    # Always release the lock when done
+                    release_lock(lock_name, db)
+            else:
+                logger.info("Another process has the hard_delete_teams lock, skipping execution")
+        except Exception as e:
+            logger.error(f"Error in hard_delete_teams job: {str(e)}")
+            # Try to release lock in case of error
+            try:
+                release_lock(lock_name, db)
+            except Exception as release_error:
+                logger.error(f"Error releasing lock: {str(release_error)}")
+        finally:
+            db.close()
+
+    # Set schedule based on environment for hard delete job
+    if settings.ENV_SUFFIX == "local":
+        # In local env, run every hour at :30 for testing
+        hard_delete_trigger = CronTrigger(hour='*', minute=30, timezone=UTC)
+    else:
+        # In production, run daily at 3 AM
+        hard_delete_trigger = CronTrigger(hour=3, minute=0, timezone=UTC)
+
+    scheduler.add_job(
+        hard_delete_teams_job,
+        trigger=hard_delete_trigger,
+        id='hard_delete_teams',
         replace_existing=True
     )
 
