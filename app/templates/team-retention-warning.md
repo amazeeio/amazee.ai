@@ -1,24 +1,19 @@
-Your amazee.ai team will be deleted in 2 weeks due to inactivity
+Your amazee.ai account has been inactive for 90 days
 Hi {{name}},
 
-Your amazee.ai team has been inactive for 90 days and will be automatically deleted in 2 weeks to comply with our data retention policy.
+We noticed you haven't used your amazee.ai account in about 90 days, and wanted to give you a heads up about what happens next.
 
-**What counts as activity:**
-- Using any AI keys (API calls or usage)
-- Creating new users, keys, or resources
-- Having an active subscription/product
+**What's happening**: Your account will be deactivated in 2 weeks (around {{soft_delete_date}}) due to inactivity. If it stays inactive, we'll permanently delete all your data 60 days after that.
 
-**How to keep your team:**
-Simply log in to your dashboard and use any of your AI keys, or create a new resource. Any activity will reset the 90-day timer.
+**Want to keep your account?** Just log in and use it. Any activity—running a query, creating a key, or using any of your AI services—resets the clock completely.
 
-{{dashboard_url}}
+**What gets deleted:**
+- Soft delete (in 2 weeks): Your account becomes inaccessible, but we keep your data for 60 more days in case you come back
+- Hard delete (60 days later): Everything is permanently removed—users, keys, configurations, usage history, and any stored data
 
-**What happens if deleted:**
-- Your team and all associated data will be removed
-- This includes users, keys, configurations, and usage history
-- You can always create a new team when you're ready to start again
+**Why we do this:** We take data privacy seriously. If you're not actively using amazee.ai, we don't want to hold onto your information indefinitely. This policy helps us keep your data safe and our systems clean.
 
-If you have any questions or need assistance, please email ai.support@amazee.io.
+**Have questions?** Reach out to us at ai.support@amazee.io—we're here to help.
 
-Thanks for using amazee.ai!
-The amazee.ai Team
+Thanks for trying amazee.ai. We'd love to see you back.
+—The amazee.ai team

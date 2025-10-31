@@ -662,13 +662,11 @@ def _send_retention_warning(db: Session, team: DBTeam, ses_service: Optional[SES
         return
 
     try:
-        # Generate dashboard URL
-        dashboard_url = generate_pricing_url(team.id)
-
         # Send retention warning email
+        soft_delete_date = (datetime.now(UTC) + timedelta(days=14)).strftime("%b %d, %Y")
         template_data = {
             "name": team.name,
-            "dashboard_url": dashboard_url
+            "soft_delete_date": soft_delete_date
         }
 
         success = ses_service.send_email(
