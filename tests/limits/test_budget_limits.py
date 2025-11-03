@@ -314,7 +314,7 @@ def test_get_product_max_by_type_multiple_products(db, test_team):
     assert max_budget == 150.0
 
 
-@patch('app.services.litellm.LiteLLMService')
+@patch('app.core.team_service.LiteLLMService')
 def test_overwrite_team_budget_limit_propagates_to_keys(mock_litellm_class, client, admin_token, test_team, test_region, db):
     """
     GIVEN: A team with multiple private AI keys
@@ -358,9 +358,20 @@ def test_overwrite_team_budget_limit_propagates_to_keys(mock_litellm_class, clie
     days_left, _, _ = limit_service.get_token_restrictions(test_team.id)
     budget_duration = f"{days_left}d"
 
-    # Set up the mock instance
-    mock_litellm_instance = AsyncMock()
-    mock_litellm_class.return_value = mock_litellm_instance
+    # Set up the mock instance - track calls across threads using a thread-safe list
+    import threading
+    captured_calls = []
+    call_lock = threading.Lock()
+
+    async def mock_update_budget(*args, **kwargs):
+        with call_lock:
+            captured_calls.append((args, kwargs))
+
+    def create_mock_instance(*args, **kwargs):
+        mock_instance = AsyncMock()
+        mock_instance.update_budget = mock_update_budget
+        return mock_instance
+    mock_litellm_class.side_effect = create_mock_instance
 
     # Update the team's budget limit via API
     response = client.put(
@@ -379,24 +390,34 @@ def test_overwrite_team_budget_limit_propagates_to_keys(mock_litellm_class, clie
     assert response.status_code == 200
 
     # Wait for the background thread to execute (propagation happens in ThreadPoolExecutor)
-    time.sleep(2.0)  # Give more time for background thread to complete
+    # Wait up to 5 seconds for completion, checking every 100ms
+    max_wait = 50
+    waited = 0
+    while waited < max_wait:
+        time.sleep(0.1)
+        waited += 1
+        with call_lock:
+            if len(captured_calls) >= 2:
+                break
 
     # Verify that update_budget was called for both keys with the new budget
-    assert mock_litellm_instance.update_budget.call_count == 2
+    with call_lock:
+        assert len(captured_calls) == 2, f"Expected 2 calls but got {len(captured_calls)}. Calls: {captured_calls}"
 
     # Verify the calls were made with correct parameters
-    call_args_list = mock_litellm_instance.update_budget.call_args_list
     called_tokens = set()
+    with call_lock:
+        for args, kwargs in captured_calls:
+            # update_budget may be called with positional or keyword arguments
+            litellm_token = args[0] if args and len(args) > 0 else kwargs.get("litellm_token")
+            budget_duration_arg = args[1] if args and len(args) > 1 else kwargs.get("budget_duration")
+            budget_amount = kwargs.get("budget_amount")
 
-    for call_args in call_args_list:
-        if call_args:
-            args, kwargs = call_args
-            if args and len(args) > 0:
-                called_tokens.add(args[0])  # litellm_token
-                if len(args) > 1:
-                    assert args[1] == budget_duration  # budget_duration from team's token restrictions
-                assert kwargs.get("budget_amount") == 150.0  # budget_amount
+            assert litellm_token is not None, f"Expected litellm_token but got args={args}, kwargs={kwargs}"
+            called_tokens.add(litellm_token)
+            assert budget_duration_arg == budget_duration, f"Expected budget_duration {budget_duration} but got {budget_duration_arg}"
+            assert budget_amount == 150.0, f"Expected budget_amount 150.0 but got {budget_amount}"
 
     # Verify both keys were updated
-    assert "token1" in called_tokens
-    assert "token2" in called_tokens
+    assert "token1" in called_tokens, f"Expected token1 in {called_tokens}"
+    assert "token2" in called_tokens, f"Expected token2 in {called_tokens}"

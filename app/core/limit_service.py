@@ -315,57 +315,6 @@ class LimitService:
         result = self._set_limit(limited_resource=limit)
         return result
 
-    async def propagate_team_budget_to_keys(self, team_id: int, budget_amount: float) -> None:
-        """
-        Propagate a team budget limit change to all keys belonging to the team.
-
-        This method updates all keys (both user-owned and team-owned) in LiteLLM
-        with the new budget amount when a team's budget limit is changed.
-
-        Args:
-            team_id: ID of the team whose keys should be updated
-            budget_amount: New budget amount to set for all keys
-
-        Note:
-            Errors during key updates are logged but don't raise exceptions.
-            This ensures that limit updates succeed even if some key updates fail.
-        """
-        # Import here to avoid circular import
-        from app.services.litellm import LiteLLMService
-        from app.core.worker import get_team_keys_by_region
-
-        try:
-            keys_by_region = get_team_keys_by_region(self.db, team_id)
-
-            # Get budget_duration from team's token restrictions (all keys should have same duration)
-            days_left, _, _ = self.get_token_restrictions(team_id)
-            budget_duration = f"{days_left}d"
-
-            # Update keys for each region
-            for region, keys in keys_by_region.items():
-                litellm_service = LiteLLMService(
-                    api_url=region.litellm_api_url,
-                    api_key=region.litellm_api_key
-                )
-
-                # Update each key's budget via LiteLLM
-                for key in keys:
-                    try:
-                        # Update budget using the team's budget_duration
-                        await litellm_service.update_budget(
-                            litellm_token=key.litellm_token,
-                            budget_duration=budget_duration,
-                            budget_amount=budget_amount
-                        )
-                        logger.info(f"Updated key {key.id} budget to {budget_amount} in LiteLLM after team budget limit change")
-                    except Exception as key_error:
-                        logger.error(f"Failed to update key {key.id} budget in LiteLLM: {str(key_error)}")
-                        # Continue with other keys even if one fails
-                        continue
-        except Exception as propagation_error:
-            logger.error(f"Error propagating budget limit to keys for team {team_id}: {str(propagation_error)}")
-            # Don't raise - allow limit update to succeed even if propagation fails
-
     def _set_limit(self, limited_resource: LimitedResourceCreate) -> DBLimitedResource:
         """
         Create or update a limit following source hierarchy rules.
@@ -464,6 +413,13 @@ class LimitService:
             team_id: ID of the team whose keys should be updated
             budget_amount: New budget amount to set for all keys
         """
+        # Import here to avoid circular import
+        from app.core.team_service import propagate_team_budget_to_keys
+
+        # Get budget_duration from team's token restrictions (all keys should have same duration)
+        days_left, _, _ = self.get_token_restrictions(team_id)
+        budget_duration = f"{days_left}d"
+
         def run_async_propagation():
             """Helper to run async propagation in a new event loop."""
             try:
@@ -471,7 +427,7 @@ class LimitService:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
-                    loop.run_until_complete(self.propagate_team_budget_to_keys(team_id, budget_amount))
+                    loop.run_until_complete(propagate_team_budget_to_keys(self.db, team_id, budget_amount, budget_duration))
                 finally:
                     loop.close()
             except Exception as thread_error:
