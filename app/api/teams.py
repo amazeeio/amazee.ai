@@ -16,7 +16,8 @@ from app.core.limit_service import DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFA
 from app.core.config import settings
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
-from app.core.worker import get_team_keys_by_region, generate_pricing_url, get_team_admin_email
+from app.core.worker import generate_pricing_url, get_team_admin_email
+from app.core.team_service import get_team_keys_by_region, restore_soft_deleted_team, soft_delete_team
 from app.api.private_ai_keys import delete_private_ai_key
 from app.schemas.models import SalesTeamsResponse, SalesProduct, SalesTeam
 
@@ -92,24 +93,48 @@ async def register_team(
 @router.get("", response_model=List[Team], dependencies=[Depends(get_role_min_system_admin)])
 @router.get("/", response_model=List[Team], dependencies=[Depends(get_role_min_system_admin)])
 async def list_teams(
+    include_deleted: bool = False,
     db: Session = Depends(get_db)
 ):
     """
     List all teams. Only accessible by admin users.
+
+    Args:
+        include_deleted: If True, include soft-deleted teams in the results. Defaults to False.
     """
-    return db.query(DBTeam).all()
+    query = db.query(DBTeam)
+
+    if not include_deleted:
+        query = query.filter(DBTeam.deleted_at.is_(None))
+
+    return query.all()
 
 @router.get("/{team_id}", response_model=TeamWithUsers, dependencies=[Depends(get_role_min_specific_team_admin)])
 async def get_team(
     team_id: int,
-    db: Session = Depends(get_db)
+    include_deleted: bool = False,
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user_from_auth)
 ):
     """
     Get a team by ID. Accessible by admin users or users associated with the team.
+
+    Args:
+        team_id: The ID of the team to retrieve
+        include_deleted: If True, allow retrieval of soft-deleted teams. Only available to system admins.
     """
-    # Check if team exists
-    db_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    # Build query based on include_deleted flag
+    query = db.query(DBTeam).filter(DBTeam.id == team_id)
+
+    if not include_deleted:
+        query = query.filter(DBTeam.deleted_at.is_(None))
+
+    db_team = query.first()
     if not db_team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    # Only system admins can access soft-deleted teams
+    if include_deleted and db_team.deleted_at and not current_user.is_admin:
         raise HTTPException(status_code=404, detail="Team not found")
 
     # Convert directly to TeamWithUsers model
@@ -126,8 +151,11 @@ async def update_team(
     Update a team. Accessible by admin users or team admins.
     Only system admins can toggle the always-free status.
     """
-    # Check if team exists
-    db_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    # Check if team exists and is not soft-deleted
+    db_team = db.query(DBTeam).filter(
+        DBTeam.id == team_id,
+        DBTeam.deleted_at.is_(None)
+    ).first()
     if not db_team:
         raise HTTPException(status_code=404, detail="Team not found")
 
@@ -252,6 +280,61 @@ async def extend_team_trial(
         # Don't fail the request if email fails
 
     return {"message": "Team trial extended successfully"}
+
+@router.post("/{team_id}/restore", dependencies=[Depends(get_role_min_system_admin)])
+async def restore_team(
+    team_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Restore a soft-deleted team. Only accessible by system admins.
+    Uses centralized restore_soft_deleted_team() service function.
+    """
+    # Find team by ID (including soft-deleted teams)
+    db_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if not db_team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    # Check if team is actually soft-deleted
+    if not db_team.deleted_at:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Team is not deleted and cannot be restored"
+        )
+
+    # Use centralized restore function
+    await restore_soft_deleted_team(db, db_team)
+
+    db.refresh(db_team)
+    return {"message": "Team restored successfully"}
+
+@router.post("/{team_id}/soft-delete", dependencies=[Depends(get_role_min_system_admin)])
+async def manual_soft_delete_team(
+    team_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Manually soft-delete a team (e.g., for abuse cases). Only accessible by system admins.
+    Uses centralized soft_delete_team() service function.
+
+    This will:
+    - Set deleted_at timestamp
+    - Deactivate all users
+    - Expire all keys in LiteLLM
+    """
+    # Find team by ID (excluding already soft-deleted teams)
+    db_team = db.query(DBTeam).filter(
+        DBTeam.id == team_id,
+        DBTeam.deleted_at.is_(None)
+    ).first()
+    if not db_team:
+        raise HTTPException(status_code=404, detail="Team not found or already deleted")
+
+    # Use centralized soft-delete function
+    await soft_delete_team(db, db_team)
+
+    db.refresh(db_team)
+    return {"message": "Team soft-deleted successfully"}
 
 @router.get("/sales/list-teams", response_model=SalesTeamsResponse, dependencies=[Depends(check_sales_or_higher)])
 async def list_teams_for_sales(
