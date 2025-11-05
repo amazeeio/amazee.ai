@@ -36,6 +36,8 @@ import { Badge } from '@/components/ui/badge';
 import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { LimitsView, LimitedResource } from '@/components/ui/limits-view';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 
 import { TableActionButtons } from '@/components/ui/table-action-buttons';
 import { TableFilters, FilterField } from '@/components/ui/table-filters';
@@ -93,6 +95,8 @@ interface Team {
   users?: TeamUser[];
   products?: Product[];
   is_always_free: boolean;
+  deleted_at?: string;
+  retention_warning_sent_at?: string;
 }
 
 interface User {
@@ -162,6 +166,7 @@ export default function TeamsPage() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [sortField, setSortField] = useState<SortField>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+  const [includeDeleted, setIncludeDeleted] = useState(false);
 
   useEffect(() => {
     const config = getCachedConfig();
@@ -198,9 +203,9 @@ export default function TeamsPage() {
 
   // Queries
   const { data: teams = [], isLoading: isLoadingTeams } = useQuery<Team[]>({
-    queryKey: ['teams'],
+    queryKey: ['teams', includeDeleted],
     queryFn: async () => {
-      const response = await get('/teams');
+      const response = await get(`/teams?include_deleted=${includeDeleted}`);
       const data = await response.json();
       return data;
     },
@@ -339,10 +344,10 @@ export default function TeamsPage() {
 
   // Get team details when expanded
   const { data: expandedTeam, isLoading: isLoadingTeamDetails } = useQuery<Team>({
-    queryKey: ['team', expandedTeamId],
+    queryKey: ['team', expandedTeamId, includeDeleted],
     queryFn: async () => {
       if (!expandedTeamId) return null;
-      const response = await get(`/teams/${expandedTeamId}`);
+      const response = await get(`/teams/${expandedTeamId}?include_deleted=${includeDeleted}`);
       return response.json();
     },
     enabled: !!expandedTeamId,
@@ -516,7 +521,7 @@ export default function TeamsPage() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId] });
+      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId, includeDeleted] });
       queryClient.invalidateQueries({ queryKey: ['teams'] });
 
       toast({
@@ -551,7 +556,7 @@ export default function TeamsPage() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId] });
+      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId, includeDeleted] });
       queryClient.invalidateQueries({ queryKey: ['teams'] });
 
       toast({
@@ -585,7 +590,7 @@ export default function TeamsPage() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId] });
+      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId, includeDeleted] });
       queryClient.invalidateQueries({ queryKey: ['teams'] });
 
       toast({
@@ -616,12 +621,41 @@ export default function TeamsPage() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId] });
+      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId, includeDeleted] });
       queryClient.invalidateQueries({ queryKey: ['teams'] });
 
       toast({
         title: 'Success',
         description: 'Trial extended successfully',
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const restoreTeamMutation = useMutation({
+    mutationFn: async (teamId: string) => {
+      try {
+        const response = await post(`/teams/${teamId}/restore`, {});
+        return response.json();
+      } catch (error) {
+        if (error instanceof Error) {
+          throw new Error(`Failed to restore team: ${error.message}`);
+        } else {
+          throw new Error('An unexpected error occurred while restoring the team.');
+        }
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['teams'] });
+      toast({
+        title: 'Success',
+        description: 'Team has been restored successfully',
       });
     },
     onError: (error: Error) => {
@@ -680,7 +714,7 @@ export default function TeamsPage() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId] });
+      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId, includeDeleted] });
       queryClient.invalidateQueries({ queryKey: ['teams'] });
       queryClient.invalidateQueries({ queryKey: ['team-products', selectedTeamId] });
 
@@ -741,7 +775,7 @@ export default function TeamsPage() {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['teams'] });
-      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId] });
+      queryClient.invalidateQueries({ queryKey: ['team', selectedTeamId, includeDeleted] });
       setExpandedTeamId(null);
 
       toast({
@@ -776,7 +810,7 @@ export default function TeamsPage() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team', expandedTeamId] });
+      queryClient.invalidateQueries({ queryKey: ['team', expandedTeamId, includeDeleted] });
       queryClient.invalidateQueries({ queryKey: ['teams'] });
       queryClient.invalidateQueries({ queryKey: ['team-products', expandedTeamId] });
 
@@ -1043,6 +1077,17 @@ export default function TeamsPage() {
           filteredItems={filteredAndSortedTeams.length}
         />
 
+        <div className="flex items-center space-x-2 py-2">
+          <Switch
+            id="include-deleted"
+            checked={includeDeleted}
+            onCheckedChange={setIncludeDeleted}
+          />
+          <Label htmlFor="include-deleted" className="cursor-pointer">
+            Show deleted teams
+          </Label>
+        </div>
+
         {isLoadingTeams ? (
           <div className="flex justify-center items-center h-64">
             <Loader2 className="h-8 w-8 animate-spin" />
@@ -1102,7 +1147,7 @@ export default function TeamsPage() {
                   paginatedData.map((team) => (
                     <React.Fragment key={team.id}>
                       <TableRow
-                        className="cursor-pointer hover:bg-muted/50"
+                        className={`cursor-pointer hover:bg-muted/50 ${team.deleted_at ? 'opacity-50' : ''}`}
                         onClick={() => toggleTeamExpansion(team.id)}
                       >
                         <TableCell>
@@ -1116,18 +1161,26 @@ export default function TeamsPage() {
                         <TableCell>{team.admin_email}</TableCell>
                         <TableCell>
                           <div className="flex flex-col gap-1">
-                            <span
-                              className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${team.is_active
-                                ? 'bg-green-100 text-green-800'
-                                : 'bg-red-100 text-red-800'
-                                }`}
-                            >
-                              {team.is_active ? 'Active' : 'Inactive'}
-                            </span>
-                            {isTeamExpired(team) && (
-                              <span className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-600 text-white">
-                                Expired
+                            {team.deleted_at ? (
+                              <span className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-gray-800 text-white">
+                                DELETED
                               </span>
+                            ) : (
+                              <>
+                                <span
+                                  className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${team.is_active
+                                    ? 'bg-green-100 text-green-800'
+                                    : 'bg-red-100 text-red-800'
+                                    }`}
+                                >
+                                  {team.is_active ? 'Active' : 'Inactive'}
+                                </span>
+                                {isTeamExpired(team) && (
+                                  <span className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-red-600 text-white">
+                                    Expired
+                                  </span>
+                                )}
+                              </>
                             )}
                           </div>
                         </TableCell>
@@ -1220,32 +1273,47 @@ export default function TeamsPage() {
                                               )}
                                             </div>
                                             <div className="flex justify-end space-x-2 mt-4">
-                                              <Button
-                                                variant="outline"
-                                                onClick={() => openSubscribeToProductDialog(expandedTeam.id)}
-                                              >
-                                                Subscribe to Product
-                                              </Button>
-                                              <Button
-                                                variant="outline"
-                                                onClick={() => extendTrialMutation.mutate(expandedTeam.id)}
-                                                disabled={extendTrialMutation.isPending}
-                                              >
-                                                {extendTrialMutation.isPending ? (
-                                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                                ) : null}
-                                                Extend Trial
-                                              </Button>
+                                              {expandedTeam.deleted_at ? (
+                                                <Button
+                                                  variant="default"
+                                                  onClick={() => restoreTeamMutation.mutate(expandedTeam.id)}
+                                                  disabled={restoreTeamMutation.isPending}
+                                                >
+                                                  {restoreTeamMutation.isPending ? (
+                                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                  ) : null}
+                                                  Restore Team
+                                                </Button>
+                                              ) : (
+                                                <>
+                                                  <Button
+                                                    variant="outline"
+                                                    onClick={() => openSubscribeToProductDialog(expandedTeam.id)}
+                                                  >
+                                                    Subscribe to Product
+                                                  </Button>
+                                                  <Button
+                                                    variant="outline"
+                                                    onClick={() => extendTrialMutation.mutate(expandedTeam.id)}
+                                                    disabled={extendTrialMutation.isPending}
+                                                  >
+                                                    {extendTrialMutation.isPending ? (
+                                                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                                    ) : null}
+                                                    Extend Trial
+                                                  </Button>
 
-                                              {(!expandedTeam.users || expandedTeam.users.length === 0) && (
-                                                <DeleteConfirmationDialog
-                                                  title="Delete Team"
-                                                  description="Are you sure you want to delete this team? This action cannot be undone."
-                                                  triggerText="Delete Team"
-                                                  onConfirm={() => deleteTeamMutation.mutate(expandedTeam.id)}
-                                                  isLoading={deleteTeamMutation.isPending}
-                                                  size="default"
-                                                />
+                                                  {(!expandedTeam.users || expandedTeam.users.length === 0) && (
+                                                    <DeleteConfirmationDialog
+                                                      title="Delete Team"
+                                                      description="Are you sure you want to delete this team? This action cannot be undone."
+                                                      triggerText="Delete Team"
+                                                      onConfirm={() => deleteTeamMutation.mutate(expandedTeam.id)}
+                                                      isLoading={deleteTeamMutation.isPending}
+                                                      size="default"
+                                                    />
+                                                  )}
+                                                </>
                                               )}
                                             </div>
                                           </CardContent>

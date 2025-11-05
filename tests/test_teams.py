@@ -5,8 +5,9 @@ from app.core.security import get_password_hash
 from app.core.limit_service import LimitService, setup_default_limits
 from app.schemas.limits import OwnerType, LimitSource, ResourceType
 from app.core.config import settings
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timedelta
 from unittest.mock import patch, MagicMock, AsyncMock
+from tests.conftest import soft_delete_team_for_test
 
 client = TestClient(app)
 
@@ -1541,3 +1542,234 @@ def test_register_team_does_not_create_limits_when_disabled(client, db):
     # Should have no team-specific limits (only system defaults if they exist)
     team_specific_limits = [limit for limit in team_limits if limit.owner_type == OwnerType.TEAM]
     assert len(team_specific_limits) == 0
+
+
+def test_restored_team_appears_in_normal_list(client, admin_token, db, test_team):
+    """
+    Given: A team that was soft-deleted and then restored
+    When: Listing teams without include_deleted parameter
+    Then: Should include the restored team in the results
+    """
+    # Soft delete the team
+    soft_delete_team_for_test(db, test_team)
+    test_team.retention_warning_sent_at = datetime.now(UTC) - timedelta(days=10)
+    db.commit()
+
+    # Restore the team
+    response = client.post(f"/teams/{test_team.id}/restore", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 200
+
+    # List teams
+    response = client.get("/teams", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 200
+    teams = response.json()
+
+    # Should include the restored team
+    team_ids = [team["id"] for team in teams]
+    assert test_team.id in team_ids
+
+    # Verify deleted_at is null
+    restored_team = next(team for team in teams if team["id"] == test_team.id)
+    assert restored_team["deleted_at"] is None
+
+
+def test_restored_team_can_be_updated(client, admin_token, db, test_team):
+    """
+    Given: A team that was soft-deleted and then restored
+    When: Updating the team
+    Then: Should successfully update the team
+    """
+    # Soft delete the team
+    soft_delete_team_for_test(db, test_team)
+
+    # Restore the team
+    response = client.post(f"/teams/{test_team.id}/restore", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 200
+
+    # Update the team
+    response = client.put(
+        f"/teams/{test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"phone": "9999999999"}
+    )
+    assert response.status_code == 200
+    updated_team = response.json()
+    assert updated_team["phone"] == "9999999999"
+
+
+def test_restored_team_users_are_accessible(client, admin_token, db, test_team):
+    """
+    Given: A team with users that was soft-deleted and then restored
+    When: Listing users
+    Then: Should include users from the restored team
+    """
+    # Create a user in the team
+    user = DBUser(
+        email="restored@example.com",
+        team_id=test_team.id,
+        is_active=True
+    )
+    db.add(user)
+    db.commit()
+
+    team_id = test_team.id  # Store ID before soft-delete detaches the object
+
+    # Soft delete the team
+    soft_delete_team_for_test(db, test_team)
+
+    # Verify user is not in list
+    response = client.get("/users", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 200
+    users = response.json()
+    user_emails = [u["email"] for u in users]
+    assert "restored@example.com" not in user_emails
+
+    # Restore the team
+    response = client.post(f"/teams/{team_id}/restore", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 200
+
+    # Verify user is now in list
+    response = client.get("/users", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 200
+    users = response.json()
+    user_emails = [u["email"] for u in users]
+    assert "restored@example.com" in user_emails
+
+
+def test_soft_deleted_teams_hidden_by_default(client, admin_token, db):
+    """
+    Given: A soft-deleted team and a normal team
+    When: Listing teams without include_deleted parameter
+    Then: Should only include the normal team
+    """
+    # Create two teams
+    team1 = DBTeam(
+        name="Normal Team",
+        admin_email="normal@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC)
+    )
+    team2 = DBTeam(
+        name="Deleted Team",
+        admin_email="deleted@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        deleted_at=datetime.now(UTC)
+    )
+    db.add_all([team1, team2])
+    db.commit()
+
+    # List teams without include_deleted
+    response = client.get("/teams", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 200
+    teams = response.json()
+
+    team_names = [team["name"] for team in teams]
+    assert "Normal Team" in team_names
+    assert "Deleted Team" not in team_names
+
+
+def test_soft_deleted_teams_shown_with_flag(client, admin_token, db):
+    """
+    Given: A soft-deleted team and a normal team
+    When: Listing teams with include_deleted=true parameter
+    Then: Should include both teams
+    """
+    # Create two teams
+    team1 = DBTeam(
+        name="Normal Team Flag",
+        admin_email="normalflag@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC)
+    )
+    team2 = DBTeam(
+        name="Deleted Team Flag",
+        admin_email="deletedflag@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        deleted_at=datetime.now(UTC)
+    )
+    db.add_all([team1, team2])
+    db.commit()
+
+    # List teams with include_deleted=true
+    response = client.get("/teams?include_deleted=true", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 200
+    teams = response.json()
+
+    team_names = [team["name"] for team in teams]
+    assert "Normal Team Flag" in team_names
+    assert "Deleted Team Flag" in team_names
+
+    # Verify deleted team has deleted_at field
+    deleted_team = next(team for team in teams if team["name"] == "Deleted Team Flag")
+    assert deleted_team["deleted_at"] is not None
+
+
+def test_get_soft_deleted_team_returns_404_by_default(client, admin_token, db, test_team):
+    """
+    Given: A soft-deleted team
+    When: Getting the team without include_deleted parameter
+    Then: Should return 404 Not Found
+    """
+    # Soft delete the team
+    soft_delete_team_for_test(db, test_team)
+
+    response = client.get(f"/teams/{test_team.id}", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 404
+
+
+def test_get_soft_deleted_team_with_flag_for_admin(client, admin_token, db, test_team):
+    """
+    Given: A soft-deleted team and an admin user
+    When: Getting the team with include_deleted=true parameter
+    Then: Should return the team details
+    """
+    # Soft delete the team
+    soft_delete_team_for_test(db, test_team)
+
+    response = client.get(f"/teams/{test_team.id}?include_deleted=true", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 200
+    team = response.json()
+    assert team["id"] == test_team.id
+    assert team["deleted_at"] is not None
+
+
+def test_restored_team_keys_are_accessible(client, admin_token, db, test_team, test_region):
+    """
+    Given: A team with keys that was soft-deleted and then restored
+    When: Listing private AI keys
+    Then: Should include keys from the restored team
+    """
+    # Create a key in the team
+    key = DBPrivateAIKey(
+        name="restored-key",
+        litellm_token="restored-token",
+        team_id=test_team.id,
+        region_id=test_region.id
+    )
+    db.add(key)
+    db.commit()
+
+    team_id = test_team.id  # Store ID before soft-delete detaches the object
+
+    # Soft delete the team
+    soft_delete_team_for_test(db, test_team)
+
+    # Verify key is not in list
+    response = client.get("/private-ai-keys", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 200
+    keys = response.json()
+    key_names = [k.get("name") for k in keys]
+    assert "restored-key" not in key_names
+
+    # Restore the team
+    response = client.post(f"/teams/{team_id}/restore", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 200
+
+    # Verify key is now in list
+    response = client.get("/private-ai-keys", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 200
+    keys = response.json()
+    key_names = [k.get("name") for k in keys]
+    assert "restored-key" in key_names
