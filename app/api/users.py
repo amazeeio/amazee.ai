@@ -5,7 +5,7 @@ from app.core.config import settings
 from app.core.limit_service import LimitService
 from app.db.database import get_db
 from app.core.dependencies import get_limit_service
-from app.schemas.models import User, UserUpdate, UserCreate, TeamOperation, UserRoleUpdate
+from app.schemas.models import User, UserUpdate, UserCreate, TeamOperation, UserRoleUpdate, TeamCreate
 from app.db.models import DBUser, DBTeam
 from app.core.security import get_password_hash, get_role_min_system_admin, get_current_user_from_auth, get_role_min_team_admin
 from app.core.roles import UserRole
@@ -13,6 +13,9 @@ from datetime import datetime, UTC
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Import register_team to avoid circular import issues
+from app.api.teams import register_team
 
 router = APIRouter(
     tags=["users"]
@@ -117,9 +120,22 @@ async def create_user(
             detail="Not authorized to perform this action"
         )
 
-    return _create_user_in_db(user, db)
+    return await _create_user_in_db(user, db)
 
-def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
+async def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
+    # Auto-create team if no team_id provided and user is not a system admin
+    if user.team_id is None and not user.is_admin:
+        logger.info(f"Auto-creating team for user: {user.email}")
+        team_data = TeamCreate(
+            name=f"Team {user.email}",
+            admin_email=user.email,
+            phone="",  # Empty as per invitation-only design
+            billing_address=""  # Empty as per invitation-only design
+        )
+        team = await register_team(team_data, db)
+        user.team_id = team.id
+        logger.info(f"Auto-created team {team.id} for user: {user.email}")
+
     limit_service = get_limit_service(db)
     if settings.ENABLE_LIMITS and user.team_id is not None:
         limit_service.check_team_user_limit(user.team_id)

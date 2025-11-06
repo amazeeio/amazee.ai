@@ -30,11 +30,7 @@ const verificationFormSchema = z.object({
   verificationCode: z.string().min(1, 'Verification code is required'),
 });
 
-interface PasswordlessLoginFormProps {
-  onSwitchToPassword: () => void;
-}
-
-export function PasswordlessLoginForm({ onSwitchToPassword }: PasswordlessLoginFormProps) {
+export function PasswordlessLoginForm() {
   const router = useRouter();
   const { toast } = useToast();
   const { setUser } = useAuth();
@@ -274,27 +270,6 @@ export function PasswordlessLoginForm({ onSwitchToPassword }: PasswordlessLoginF
           </form>
         </Form>
       )}
-
-      <div className="relative">
-        <div className="absolute inset-0 flex items-center">
-          <span className="w-full border-t" />
-        </div>
-        <div className="relative flex justify-center text-xs uppercase">
-          <span className="bg-background px-2 text-muted-foreground">
-            Or
-          </span>
-        </div>
-      </div>
-
-      <div className="text-center text-sm">
-        <Button
-          variant="link"
-          className="text-sm"
-          onClick={onSwitchToPassword}
-        >
-          Sign in with password
-        </Button>
-      </div>
     </div>
   );
 }

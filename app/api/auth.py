@@ -23,8 +23,7 @@ from app.schemas.models import (
     UserUpdate,
     EmailValidation,
     LoginData,
-    SignInData,
-    TeamCreate
+    SignInData
 )
 from app.db.models import (
     DBUser, DBAPIToken
@@ -37,7 +36,6 @@ from app.core.security import (
 )
 from app.services.dynamodb import DynamoDBService
 from app.services.ses import SESService
-from app.api.teams import register_team
 from app.api.users import _create_user_in_db
 from app.core.roles import UserRole
 from app.core.worker import generate_pricing_url
@@ -287,7 +285,7 @@ async def register(
             detail="Email already registered"
         )
 
-    db_user = _create_user_in_db(user, db)
+    db_user = await _create_user_in_db(user, db)
     auth_logger.info(f"Successfully registered new user: {user.email}")
     return db_user
 
@@ -314,8 +312,8 @@ async def sign_in(
     On successful sign in, an access token will be set as an HTTP-only cookie and also returned in the response.
     Use this token for subsequent authenticated requests.
 
-    If the user doesn't exist, they will be automatically registered and a new team will be created
-    with them as the admin.
+    Note: This endpoint requires that the user account already exists. Contact your administrator
+    if you need access.
     """
     if not sign_in_data:
         auth_logger.warning("Sign-in attempt with invalid data format")
@@ -339,27 +337,13 @@ async def sign_in(
     # Get user from database after verifying the code
     user = db.query(DBUser).filter(DBUser.email == sign_in_data.username).first()
 
-    # If user doesn't exist, create a new user and team
+    # If user doesn't exist, return error
     if not user:
-        auth_logger.info(f"Creating new user and team for: {sign_in_data.username}")
-        # First create the team
-        team_data = TeamCreate(
-            name=f"Team {sign_in_data.username}",
-            admin_email=sign_in_data.username,
-            phone="",  # Required by schema but not used for auto-created teams
-            billing_address=""  # Required by schema but not used for auto-created teams
+        auth_logger.warning(f"Sign-in attempt for non-existent user: {sign_in_data.username}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No account found. Please contact your administrator for access."
         )
-        team = await register_team(team_data, db)
-
-        user_data = UserCreate(
-            email=sign_in_data.username,
-            password=None,
-            team_id=team.id,
-            role=UserRole.ADMIN
-        )
-        user = _create_user_in_db(user_data, db)
-
-        auth_logger.info(f"Successfully created new user and team for: {sign_in_data.username}")
 
     auth_logger.info(f"Successful sign-in for user: {sign_in_data.username}")
     return create_and_set_access_token(response, user.email, user)
