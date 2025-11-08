@@ -24,6 +24,7 @@ class UserCreate(UserBase):
     password: Optional[str] = None
     team_id: Optional[int] = None
     role: Optional[str] = None
+    max_budget: Optional[float] = None
     model_config = ConfigDict(from_attributes=True)
 
 class UserUpdate(BaseModel):
