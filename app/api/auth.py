@@ -10,14 +10,14 @@ from sqlalchemy.orm import Session
 from urllib.parse import urlparse
 from jose import JWTError, jwt
 from app.core.config import settings
-from app.core.limit_service import LimitService, DEFAULT_KEY_DURATION, DEFAULT_RPM_PER_KEY
+from app.core.limit_service import LimitService, DEFAULT_KEY_DURATION
 from app.core.dependencies import get_limit_service
 
 from app.db.database import get_db
-from app.db.postgres import PostgresManager
 from app.services.litellm import LiteLLMService
 from app.schemas.models import (
     Token,
+    TrialAccessResponse,
     User,
     UserCreate,
     APIToken,
@@ -28,13 +28,10 @@ from app.schemas.models import (
     LoginData,
     SignInData,
     TeamCreate,
-    PrivateAIKey,
     PrivateAIKeyCreate,
-    VectorDBCreate
 )
-from pydantic import BaseModel
 from app.db.models import (
-    DBUser, DBAPIToken, DBRegion, DBTeam, DBPrivateAIKey
+    DBUser, DBAPIToken, DBRegion
 )
 from app.core.security import (
     verify_password,
@@ -46,6 +43,7 @@ from app.services.dynamodb import DynamoDBService
 from app.services.ses import SESService
 from app.api.teams import register_team
 from app.api.users import _create_user_in_db
+from app.api.private_ai_keys import create_private_ai_key
 from app.core.roles import UserRole
 from app.core.worker import generate_pricing_url
 
@@ -690,13 +688,6 @@ def send_validation_url(email: str) -> None:
 
     auth_logger.info(f"Successfully sent validation URL to: {email}")
 
-class TrialAccessResponse(BaseModel):
-    """Response model for trial access generation including user info"""
-    key: PrivateAIKey
-    user: User
-    team_id: int
-    team_name: str
-
 @router.post("/generate-trial-access", response_model=TrialAccessResponse)
 async def generate_trial_access(
     db: Session = Depends(get_db),
@@ -714,145 +705,90 @@ async def generate_trial_access(
     This function reuses the same logic as the /private-ai-keys endpoint but creates
     the user and team first, then creates the private AI key with a limited budget.
     """
-    litellm_token = None
-    key_credentials = None
-    region = None
+    # Get default region by name and ensure it is active
+    region = db.query(DBRegion).filter(DBRegion.name == settings.DEFAULT_AI_TOKEN_REGION, DBRegion.is_active == True).first()
 
-    try:
-        # Get default region by name and ensure it is active
-        region = db.query(DBRegion).filter(DBRegion.name == settings.DEFAULT_AI_TOKEN_REGION, DBRegion.is_active == True).first()
+    # If no region is found, try to get the first active region
+    if not region:
+        region = db.query(DBRegion).filter(DBRegion.is_active == True).first()
 
-        # If no region is found, try to get the first active region
-        if not region:
-            region = db.query(DBRegion).filter(DBRegion.is_active == True).first()
-
-        # If still no region is found, raise an error
-        if not region:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"No region available for trial access: {settings.DEFAULT_AI_TOKEN_REGION}"
-            )
-
-        # Create user
-        user_email = f"trial-{int(time.time())}-{secrets.token_urlsafe(8)}@example.com"
-        user_data = UserCreate(
-            email=user_email,
-            password=None,
-            team_id=None,
-            role=None,
-        )
-        user = _create_user_in_db(user_data, db)
-
-        # Create team with user as admin
-        team_data = TeamCreate(
-            name=f"Trial Team {user.email}",
-            admin_email=user.email,
-            phone="",
-            billing_address=""
-        )
-        team = await register_team(team_data, db)
-
-        # Update user to be part of the team and set as admin
-        user.team_id = team.id
-        user.role = UserRole.ADMIN
-        db.commit()
-        db.refresh(user)
-
-        # Create private AI key name
-        key_name = f"Trial Access Key for {user.email}"
-
-        # Create LiteLLM token and VectorDB using the same logic as /private-ai-keys endpoint
-        litellm_service = LiteLLMService(
-            api_url=region.litellm_api_url,
-            api_key=region.litellm_api_key
-        )
-
-        # Use AI_TRIAL_MAX_BUDGET as max budget for trial
-        trial_max_budget = settings.AI_TRIAL_MAX_BUDGET
-
-        # Get token restrictions
-        if settings.ENABLE_LIMITS:
-            limit_service.check_key_limits(team.id, user.id)
-            days_left_in_period, _, max_rpm_limit = limit_service.get_token_restrictions(team.id)
-        else:
-            days_left_in_period = DEFAULT_KEY_DURATION
-            max_rpm_limit = DEFAULT_RPM_PER_KEY
-
-        litellm_token = await litellm_service.create_key(
-            email=user.email,
-            name=key_name,
-            user_id=user.id,
-            team_id=LiteLLMService.format_team_id(region.name, team.id),
-            duration=f"{days_left_in_period}d",
-            max_budget=trial_max_budget,
-            rpm_limit=max_rpm_limit
-        )
-
-        # Create vector database
-        if settings.ENABLE_LIMITS:
-            limit_service.check_vector_db_limits(team.id)
-
-        postgres_manager = PostgresManager(region=region)
-        key_credentials = await postgres_manager.create_database()
-
-        # Store private AI key info in main application database
-        new_key = DBPrivateAIKey(
-            database_name=key_credentials["database_name"],
-            name=key_name,
-            database_host=key_credentials["database_host"],
-            database_username=key_credentials["database_username"],
-            database_password=key_credentials["database_password"],
-            litellm_token=litellm_token,
-            litellm_api_url=region.litellm_api_url,
-            owner_id=user.id,
-            team_id=team.id,
-            region_id=region.id
-        )
-        db.add(new_key)
-        db.commit()
-        db.refresh(new_key)
-
-        key_data = new_key.to_dict()
-        private_ai_key = PrivateAIKey.model_validate(key_data)
-
-        # Return response with key, user, and team info
-        return TrialAccessResponse(
-            key=private_ai_key,
-            user=user,
-            team_id=team.id,
-            team_name=team.name
-        )
-
-    except HTTPException:
-        # Re-raise HTTP exceptions as-is
-        raise
-    except Exception as e:
-        auth_logger.error(f"Failed to create trial access: {str(e)}", exc_info=True)
-        db.rollback()
-
-        # Cleanup resources on failure
-        try:
-            if litellm_token and region:
-                # Delete LiteLLM token
-                litellm_service = LiteLLMService(
-                    api_url=region.litellm_api_url,
-                    api_key=region.litellm_api_key
-                )
-                await litellm_service.delete_key(litellm_token)
-                auth_logger.info(f"Cleaned up LiteLLM token after failure")
-        except Exception as cleanup_error:
-            auth_logger.error(f"Failed to cleanup LiteLLM token: {str(cleanup_error)}", exc_info=True)
-
-        try:
-            if key_credentials and region:
-                # Delete vector database
-                postgres_manager = PostgresManager(region=region)
-                await postgres_manager.delete_database(key_credentials["database_name"])
-                auth_logger.info(f"Cleaned up vector database after failure")
-        except Exception as cleanup_error:
-            auth_logger.error(f"Failed to cleanup vector database: {str(cleanup_error)}", exc_info=True)
-
+    # If still no region is found, raise an error
+    if not region:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create trial access: {str(e)}"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No region available for trial access: {settings.DEFAULT_AI_TOKEN_REGION}"
         )
+
+    # Create user
+    user_email = f"trial-{int(time.time())}-{secrets.token_urlsafe(8)}@example.com"
+    user_data = UserCreate(
+        email=user_email,
+        password=None,
+        team_id=None,
+        role=None,
+    )
+    user = _create_user_in_db(user_data, db)
+
+    # Create team with user as admin
+    team_data = TeamCreate(
+        name=f"Trial Team {user.email}",
+        admin_email=user.email,
+        phone="",
+        billing_address=""
+    )
+    team = await register_team(team_data, db)
+
+    # Update user to be part of the team and set as admin
+    user.team_id = team.id
+    user.role = UserRole.ADMIN
+    db.commit()
+    db.refresh(user)
+
+    # Create private AI key name
+    key_name = f"Trial Access Key for {user.email}"
+
+    # Create private AI key using the same logic as /private-ai-keys endpoint
+    private_ai_key_create = PrivateAIKeyCreate(
+        region_id=region.id,
+        name=key_name,
+        owner_id=user.id,
+        team_id=None
+    )
+
+    # Call create_private_ai_key as a regular function (not as an endpoint)
+    # Pass the user as current_user and ADMIN as user_role
+    private_ai_key = await create_private_ai_key(
+        private_ai_key=private_ai_key_create,
+        current_user=user,
+        user_role=UserRole.ADMIN,
+        db=db,
+        limit_service=limit_service
+    )
+
+    # Update the budget to the trial budget
+    trial_max_budget = settings.AI_TRIAL_MAX_BUDGET
+
+    # Get budget_duration for the update_budget call
+    if settings.ENABLE_LIMITS:
+        days_left_in_period, _, _ = limit_service.get_token_restrictions(team.id)
+    else:
+        days_left_in_period = DEFAULT_KEY_DURATION
+
+    # Update the budget to the trial budget
+    litellm_service = LiteLLMService(
+        api_url=region.litellm_api_url,
+        api_key=region.litellm_api_key
+    )
+    await litellm_service.update_budget(
+        litellm_token=private_ai_key.litellm_token,
+        budget_duration=f"{days_left_in_period}d",
+        budget_amount=trial_max_budget
+    )
+
+    # Return response with key, user, and team info
+    return TrialAccessResponse(
+        key=private_ai_key,
+        user=user,
+        team_id=team.id,
+        team_name=team.name
+    )
