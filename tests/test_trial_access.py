@@ -5,12 +5,21 @@ from app.db.models import DBUser, DBTeam, DBPrivateAIKey, DBRegion
 from datetime import datetime, UTC
 from fastapi import status, HTTPException
 from httpx import HTTPStatusError
+from app.schemas.limits import (
+    LimitSource,
+    OwnerType,
+    ResourceType,
+    LimitType,
+    UnitType,
+)
 
 
 @patch("httpx.AsyncClient")
 @patch("app.db.postgres.PostgresManager.create_database")
 @patch("app.services.litellm.LiteLLMService.create_key")
 @patch("app.core.config.settings.DEFAULT_AI_TOKEN_REGION", "test-region")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+@patch("app.core.limit_service.LimitService.get_token_restrictions")
 def test_generate_trial_access_success(
     mock_create_key,
     mock_create_db,
@@ -18,7 +27,8 @@ def test_generate_trial_access_success(
     client,
     test_region,
     db,
-    mock_httpx_post_client
+    mock_httpx_post_client,
+    mock_get_token_restrictions
 ):
     """
     Given no existing trial account
@@ -27,6 +37,9 @@ def test_generate_trial_access_success(
     """
     # Setup mocks
     mock_client_class.return_value = mock_httpx_post_client
+
+    # Mock get_token_restrictions to return trial budget
+    mock_get_token_restrictions.return_value = (settings.DEFAULT_KEY_DURATION, settings.AI_TRIAL_MAX_BUDGET, settings.DEFAULT_RPM_PER_KEY)
 
     # Mock LiteLLM key creation
     mock_create_key.return_value = "trial-litellm-token-123"
@@ -92,6 +105,28 @@ def test_generate_trial_access_success(
     assert call_kwargs["max_budget"] == settings.AI_TRIAL_MAX_BUDGET
     assert call_kwargs["email"] == user_data["email"]
     assert call_kwargs["name"] == key_data["name"]
+
+    # Verify team budget limit was set
+    team_budget_limit = db.query(db.models.DBLimitedResource).filter(
+        db.models.DBLimitedResource.owner_type == OwnerType.TEAM,
+        db.models.DBLimitedResource.owner_id == data["team_id"],
+        db.models.DBLimitedResource.resource == ResourceType.BUDGET
+    ).first()
+    assert team_budget_limit is not None
+    assert team_budget_limit.max_value == settings.AI_TRIAL_MAX_BUDGET
+    assert team_budget_limit.limited_by == LimitSource.MANUAL
+    assert team_budget_limit.set_by == "system-trial-generation"
+
+    # Verify user budget limit was set
+    user_budget_limit = db.query(db.models.DBLimitedResource).filter(
+        db.models.DBLimitedResource.owner_type == OwnerType.USER,
+        db.models.DBLimitedResource.owner_id == user_data["id"],
+        db.models.DBLimitedResource.resource == ResourceType.BUDGET
+    ).first()
+    assert user_budget_limit is not None
+    assert user_budget_limit.max_value == settings.AI_TRIAL_MAX_BUDGET
+    assert user_budget_limit.limited_by == LimitSource.MANUAL
+    assert user_budget_limit.set_by == "system-trial-generation"
 
 
 @patch("app.core.config.settings.DEFAULT_AI_TOKEN_REGION", "test-region")

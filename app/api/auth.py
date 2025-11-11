@@ -46,6 +46,14 @@ from app.api.users import _create_user_in_db
 from app.api.private_ai_keys import create_private_ai_key
 from app.core.roles import UserRole
 from app.core.worker import generate_pricing_url
+from app.core.limit_service import (
+    LimitService,
+    OwnerType,
+    ResourceType,
+    LimitType,
+    UnitType,
+    LimitSource,
+)
 
 auth_logger = logging.getLogger(__name__)
 
@@ -744,6 +752,34 @@ async def generate_trial_access(
     db.commit()
     db.refresh(user)
 
+    # Set initial budget for the team and user
+    if settings.ENABLE_LIMITS:
+        trial_max_budget = settings.AI_TRIAL_MAX_BUDGET
+        # Set team budget
+        limit_service.set_limit(
+            owner_type=OwnerType.TEAM,
+            owner_id=team.id,
+            resource_type=ResourceType.BUDGET,
+            limit_type=LimitType.DATA_PLANE,
+            unit=UnitType.DOLLAR,
+            max_value=trial_max_budget,
+            current_value=None,
+            limited_by=LimitSource.MANUAL,
+            set_by="system-trial-generation"
+        )
+        # Set user budget
+        limit_service.set_limit(
+            owner_type=OwnerType.USER,
+            owner_id=user.id,
+            resource_type=ResourceType.BUDGET,
+            limit_type=LimitType.DATA_PLANE,
+            unit=UnitType.DOLLAR,
+            max_value=trial_max_budget,
+            current_value=None,
+            limited_by=LimitSource.MANUAL,
+            set_by="system-trial-generation"
+        )
+
     # Create private AI key name
     key_name = f"Trial Access Key for {user.email}"
 
@@ -752,7 +788,7 @@ async def generate_trial_access(
         region_id=region.id,
         name=key_name,
         owner_id=user.id,
-        team_id=None
+        team_id=team.id
     )
 
     # Call create_private_ai_key as a regular function (not as an endpoint)

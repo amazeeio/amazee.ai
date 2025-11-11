@@ -38,7 +38,8 @@ def _validate_permissions_and_get_ownership_info(
     owner_id: Optional[int],
     team_id: Optional[int],
     current_user: DBUser,
-    user_role: UserRole
+    user_role: UserRole,
+    db: Session
 ) -> tuple[Optional[int], Optional[int]]:
     """
     Helper function to determine ownership information based on user role and input.
@@ -47,6 +48,13 @@ def _validate_permissions_and_get_ownership_info(
     # If no owner_id or team_id is specified, use the current user's ID
     if owner_id is None and team_id is None:
         owner_id = current_user.id
+
+    # If owner_id is provided and team_id is None, derive team_id from the owner
+    if owner_id is not None and team_id is None:
+        # Fetch the owner user to get their team_id
+        owner_user = db.query(DBUser).filter(DBUser.id == owner_id).first()
+        if owner_user and owner_user.team_id:
+            team_id = owner_user.team_id
 
     # Fail fast without having to do DB lookups
     team_users : list[UserRole] = [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR]
@@ -109,7 +117,8 @@ async def create_vector_db(
         vector_db.owner_id,
         vector_db.team_id,
         current_user,
-        user_role
+        user_role,
+        db
     )
 
     # Get the region
@@ -322,7 +331,8 @@ async def create_llm_token(
         private_ai_key.owner_id,
         private_ai_key.team_id,
         current_user,
-        user_role
+        user_role,
+        db
     )
 
     # Get the region
@@ -396,7 +406,7 @@ async def create_llm_token(
             litellm_token=litellm_token,
             litellm_api_url=region.litellm_api_url,
             owner_id=owner_id,
-            team_id=None if team_id is None else team_id,
+            team_id=team_id,
             name=private_ai_key.name,
             region_id = private_ai_key.region_id
         )
