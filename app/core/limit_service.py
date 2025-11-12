@@ -14,7 +14,20 @@ from app.schemas.limits import (
     ResourceType
     )
 import logging
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from prometheus_client import Counter
+
+# Shared executor for budget propagation to avoid creating too many threads
+_budget_propagation_executor = None
+
+def _get_budget_propagation_executor():
+    """Get or create the shared executor for budget propagation."""
+    global _budget_propagation_executor
+    if _budget_propagation_executor is None:
+        # Limit to 5 workers to prevent fork-bomb scenarios
+        _budget_propagation_executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="budget_propagation")
+    return _budget_propagation_executor
 
 logger = logging.getLogger(__name__)
 
@@ -299,7 +312,8 @@ class LimitService:
             limited_by=limited_by,
             set_by=set_by
         )
-        return self._set_limit(limited_resource=limit)
+        result = self._set_limit(limited_resource=limit)
+        return result
 
     def _set_limit(self, limited_resource: LimitedResourceCreate) -> DBLimitedResource:
         """
@@ -380,7 +394,53 @@ class LimitService:
         if limited_resource.owner_type == OwnerType.SYSTEM:
             self._update_default_limits_for_resource(limited_resource.resource, limited_resource.max_value)
 
+        # If this is a team budget limit update, propagate to all team keys
+        if limited_resource.owner_type == OwnerType.TEAM and limited_resource.resource == ResourceType.BUDGET:
+            self._trigger_team_budget_propagation(limited_resource.owner_id, limited_resource.max_value)
+
         return result
+
+    def _trigger_team_budget_propagation(self, team_id: int, budget_amount: float) -> None:
+        """
+        Trigger propagation of team budget limit to keys.
+
+        This method handles the async nature of propagation from a synchronous context.
+        It uses a shared thread pool executor to prevent creating too many threads,
+        especially when updating budgets for teams with many keys or when multiple
+        updates happen concurrently.
+
+        Args:
+            team_id: ID of the team whose keys should be updated
+            budget_amount: New budget amount to set for all keys
+        """
+        # Import here to avoid circular import
+        from app.core.team_service import propagate_team_budget_to_keys
+
+        # Get budget_duration from team's token restrictions (all keys should have same duration)
+        days_left, _, _ = self.get_token_restrictions(team_id)
+        budget_duration = f"{days_left}d"
+
+        def run_async_propagation():
+            """Helper to run async propagation in a new event loop."""
+            try:
+                # Create a new event loop for this thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(propagate_team_budget_to_keys(self.db, team_id, budget_amount, budget_duration))
+                finally:
+                    loop.close()
+            except Exception as thread_error:
+                logger.error(f"Error in async propagation thread for team {team_id}: {str(thread_error)}")
+
+        try:
+            # Use shared executor to limit concurrent threads and prevent fork-bomb
+            executor = _get_budget_propagation_executor()
+            executor.submit(run_async_propagation)
+            logger.info(f"Triggered async propagation of budget limit for team {team_id}")
+        except Exception as propagation_error:
+            logger.error(f"Error triggering budget limit propagation for team {team_id}: {str(propagation_error)}")
+            # Don't raise - allow limit update to succeed even if propagation fails
 
     def _update_default_limits_for_resource(self, resource_type: ResourceType, new_max_value: float) -> None:
         """

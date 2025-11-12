@@ -1,8 +1,11 @@
+import time
 import pytest
 from datetime import datetime, UTC, timedelta
-from app.db.models import DBUser, DBProduct, DBTeamProduct
+from unittest.mock import patch, AsyncMock
+from app.db.models import DBUser, DBProduct, DBTeamProduct, DBPrivateAIKey
 from app.core.limit_service import LimitService
 from app.schemas.limits import ResourceType, OwnerType, LimitType, UnitType, LimitSource
+from app.core.security import get_password_hash
 from app.core.limit_service import (
     DEFAULT_KEY_DURATION,
     DEFAULT_MAX_SPEND,
@@ -11,7 +14,11 @@ from app.core.limit_service import (
 
 
 def test_get_token_restrictions_default_limits(db, test_team):
-    """Test getting token restrictions when team has no products (using default limits)"""
+    """
+    GIVEN: A team with no products
+    WHEN: Getting token restrictions
+    THEN: Default limits are returned
+    """
     limit_service = LimitService(db)
     days_left, max_spend, rpm_limit = limit_service.get_token_restrictions(test_team.id)
 
@@ -22,7 +29,11 @@ def test_get_token_restrictions_default_limits(db, test_team):
 
 
 def test_get_token_restrictions_with_product(db, test_team, test_product):
-    """Test getting token restrictions when team has a product"""
+    """
+    GIVEN: A team with a product
+    WHEN: Getting token restrictions
+    THEN: Product limits are returned
+    """
     # Add product to team
     team_product = DBTeamProduct(
         team_id=test_team.id,
@@ -41,7 +52,11 @@ def test_get_token_restrictions_with_product(db, test_team, test_product):
 
 
 def test_get_token_restrictions_with_multiple_products(db, test_team):
-    """Test getting token restrictions when team has multiple products with different limits"""
+    """
+    GIVEN: A team with multiple products with different limits
+    WHEN: Getting token restrictions
+    THEN: Maximum values from all products are returned
+    """
     # Create two products with different limits
     product1 = DBProduct(
         id="prod_test1",
@@ -100,7 +115,11 @@ def test_get_token_restrictions_with_multiple_products(db, test_team):
 
 
 def test_get_token_restrictions_with_payment_history(db, test_team, test_product):
-    """Test getting token restrictions when team has payment history"""
+    """
+    GIVEN: A team with payment history
+    WHEN: Getting token restrictions
+    THEN: Product renewal period is returned, not calculated days left
+    """
     # Add product to team
     team_product = DBTeamProduct(
         team_id=test_team.id,
@@ -125,7 +144,11 @@ def test_get_token_restrictions_with_payment_history(db, test_team, test_product
 
 
 def test_get_token_restrictions_team_not_found(db):
-    """Test getting token restrictions for non-existent team"""
+    """
+    GIVEN: A non-existent team ID
+    WHEN: Getting token restrictions
+    THEN: HTTPException with 404 status is raised
+    """
     from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as exc_info:
@@ -217,9 +240,9 @@ def test_get_token_restrictions_with_limit_service_and_products(db, test_team, t
 
 def test_get_product_max_by_type_no_products(db, test_team):
     """
-    GIVEN: The team has no associated products
-    WHEN: Trying to determine the correct limit value for a resource
-    THEN: The default maximum value for the resource type is used
+    GIVEN: A team with no associated products
+    WHEN: Getting the product limit for a resource
+    THEN: None is returned
     """
     limit_service = LimitService(db)
     max_vectors = limit_service.get_team_product_limit_for_resource(test_team.id, ResourceType.VECTOR_DB)
@@ -228,9 +251,9 @@ def test_get_product_max_by_type_no_products(db, test_team):
 
 def test_get_product_max_by_type_multiple_products(db, test_team):
     """
-    GIVEN: The team has two associated products
-    WHEN: Trying to determin the correct limit value for a resource
-    THEN: The maximum value for the resource type is used
+    GIVEN: A team with two associated products
+    WHEN: Getting the product limit for a resource
+    THEN: The maximum value across all products is returned
     """
     # Create two products with different vector DB limits
     product1 = DBProduct(
@@ -289,3 +312,112 @@ def test_get_product_max_by_type_multiple_products(db, test_team):
     assert max_users == 4
     assert max_keys == 2  # Now returns max service_key_count, not total_key_count
     assert max_budget == 150.0
+
+
+@patch('app.core.team_service.LiteLLMService')
+def test_overwrite_team_budget_limit_propagates_to_keys(mock_litellm_class, client, admin_token, test_team, test_region, db):
+    """
+    GIVEN: A team with multiple private AI keys
+    WHEN: The team's budget limit is updated via the overwrite_limit API
+    THEN: All keys belonging to the team should have their budgets updated in LiteLLM
+    """
+    # Create a user in the team
+    team_user = DBUser(
+        email="teamuser@example.com",
+        hashed_password=get_password_hash("password123"),
+        is_active=True,
+        team_id=test_team.id
+    )
+    db.add(team_user)
+    db.commit()
+    db.refresh(team_user)
+
+    # Create multiple keys for the team (both user-owned and team-owned)
+    key1 = DBPrivateAIKey(
+        name="Key 1",
+        litellm_token="token1",
+        litellm_api_url=test_region.litellm_api_url,
+        team_id=test_team.id,
+        owner_id=team_user.id,
+        region_id=test_region.id
+    )
+    key2 = DBPrivateAIKey(
+        name="Key 2",
+        litellm_token="token2",
+        litellm_api_url=test_region.litellm_api_url,
+        team_id=test_team.id,
+        owner_id=None,  # Service key
+        region_id=test_region.id
+    )
+    db.add(key1)
+    db.add(key2)
+    db.commit()
+
+    # Get budget duration from limit service (as the code does)
+    limit_service = LimitService(db)
+    days_left, _, _ = limit_service.get_token_restrictions(test_team.id)
+    budget_duration = f"{days_left}d"
+
+    # Set up the mock instance - track calls across threads using a thread-safe list
+    import threading
+    captured_calls = []
+    call_lock = threading.Lock()
+
+    async def mock_update_budget(*args, **kwargs):
+        with call_lock:
+            captured_calls.append((args, kwargs))
+
+    def create_mock_instance(*args, **kwargs):
+        mock_instance = AsyncMock()
+        mock_instance.update_budget = mock_update_budget
+        return mock_instance
+    mock_litellm_class.side_effect = create_mock_instance
+
+    # Update the team's budget limit via API
+    response = client.put(
+        "/limits/overwrite",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "owner_type": "team",
+            "owner_id": test_team.id,
+            "resource": "max_budget",
+            "limit_type": "data_plane",
+            "unit": "dollar",
+            "max_value": 150.0
+        }
+    )
+
+    assert response.status_code == 200
+
+    # Wait for the background thread to execute (propagation happens in ThreadPoolExecutor)
+    # Wait up to 5 seconds for completion, checking every 100ms
+    max_wait = 50
+    waited = 0
+    while waited < max_wait:
+        time.sleep(0.1)
+        waited += 1
+        with call_lock:
+            if len(captured_calls) >= 2:
+                break
+
+    # Verify that update_budget was called for both keys with the new budget
+    with call_lock:
+        assert len(captured_calls) == 2, f"Expected 2 calls but got {len(captured_calls)}. Calls: {captured_calls}"
+
+    # Verify the calls were made with correct parameters
+    called_tokens = set()
+    with call_lock:
+        for args, kwargs in captured_calls:
+            # update_budget may be called with positional or keyword arguments
+            litellm_token = args[0] if args and len(args) > 0 else kwargs.get("litellm_token")
+            budget_duration_arg = args[1] if args and len(args) > 1 else kwargs.get("budget_duration")
+            budget_amount = kwargs.get("budget_amount")
+
+            assert litellm_token is not None, f"Expected litellm_token but got args={args}, kwargs={kwargs}"
+            called_tokens.add(litellm_token)
+            assert budget_duration_arg == budget_duration, f"Expected budget_duration {budget_duration} but got {budget_duration_arg}"
+            assert budget_amount == 150.0, f"Expected budget_amount 150.0 but got {budget_amount}"
+
+    # Verify both keys were updated
+    assert "token1" in called_tokens, f"Expected token1 in {called_tokens}"
+    assert "token2" in called_tokens, f"Expected token2 in {called_tokens}"
