@@ -834,6 +834,7 @@ async def monitor_teams(db: Session):
             ses_service = None
 
         logger.info(f"Found {len(teams)} teams to track")
+        limit_service = LimitService(db)
         for team in teams:
             try:
                 team_label = (str(team.id), team.name)
@@ -875,7 +876,13 @@ async def monitor_teams(db: Session):
                 renewal_period_days = None
                 max_budget_amount = None
                 if has_products and team.last_payment:
-                    # Get the product with the longest renewal period
+                    # Get budget from active limits (source of truth)
+                    team_limits = limit_service.get_team_limits(team)
+                    budget_limit = next((limit for limit in team_limits if limit.resource == ResourceType.BUDGET), None)
+                    if budget_limit:
+                        max_budget_amount = budget_limit.max_value
+
+                    # Get the product with the longest renewal period (renewal period not stored in limits)
                     active_products = db.query(DBTeamProduct).filter(
                         DBTeamProduct.team_id == team.id
                     ).all()
@@ -885,7 +892,6 @@ async def monitor_teams(db: Session):
                     if products:
                         max_renewal_product = max(products, key=lambda product: product.renewal_period_days)
                         renewal_period_days = max_renewal_product.renewal_period_days
-                        max_budget_amount = max(products, key=lambda product: product.max_budget_per_key).max_budget_per_key
 
                 # Monitor keys and get total spend (includes renewal period updates if applicable)
                 team_total = await reconcile_team_keys(db, team, keys_by_region, expire_keys, renewal_period_days, max_budget_amount)

@@ -89,6 +89,9 @@ async def overwrite_limit(
     When limits are set via API by administrators, they are always
     treated as MANUAL limits since they're being set by a person.
 
+    When a team budget limit is updated, it propagates to all keys
+    belonging to that team.
+
     Only accessible by system administrators.
     """
     try:

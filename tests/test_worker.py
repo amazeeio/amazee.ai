@@ -14,7 +14,7 @@ from app.core.worker import (
     reconcile_team_keys
 )
 from app.core.team_service import get_team_keys_by_region
-from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType
+from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType, LimitedResource
 from unittest.mock import AsyncMock, patch, Mock
 
 @pytest.mark.parametrize("event_type,object_type,get_product_func", [
@@ -607,8 +607,8 @@ async def test_monitor_teams_basic_metrics(mock_get_subscriptions, mock_litellm,
     )._value.get() == 10
 
     # Verify limit service was called for both teams
-    # Called twice per team: once for set_team_limits and once inside reconcile_team_keys
-    assert mock_limit_service.call_count == 4  # 2 teams × 2 calls each
+    # Called once at start of monitor_teams, then once per team in set_team_and_user_limits, then once per team in reconcile_team_keys
+    assert mock_limit_service.call_count == 5  # 1 at start + 2 teams (set_team_and_user_limits) + 2 teams (reconcile_team_keys)
     mock_limit_instance.set_team_limits.assert_called()
 
 @pytest.mark.parametrize("team_age,expected_days_remaining,template_name", [
@@ -1978,6 +1978,117 @@ async def test_reconcile_team_keys_updates_user_budget_limit(mock_litellm, db, t
     # Verify user budget limit was updated
     db.refresh(user_budget_limit)
     assert user_budget_limit.current_value == 45.50
+
+
+@pytest.mark.asyncio
+@patch('app.core.worker.reconcile_team_keys', new_callable=AsyncMock)
+@patch('app.core.worker.LimitService')
+@patch('app.core.worker.LiteLLMService')
+@patch('app.core.worker.SESService')
+@patch('app.core.worker.get_subscribed_products_for_customer')
+@patch('app.core.config.settings.ENABLE_LIMITS', True)
+async def test_monitor_teams_uses_budget_from_limits_not_products(mock_get_subscriptions, mock_ses, mock_litellm, mock_limit_service, mock_reconcile, db, test_team, test_product, test_region):
+    """
+    GIVEN: A team with a product (budget 50.0) and a budget limit (200.0)
+    WHEN: monitor_teams is called
+    THEN: reconcile_team_keys should be called with budget from limits (200.0), not from products (50.0)
+    """
+
+    # Setup team with product and last_payment
+    test_team.last_payment = datetime.now(UTC) - timedelta(days=10)
+    db.add(test_team)
+
+    # Add product to team (has budget of 50.0)
+    team_product = DBTeamProduct(
+        team_id=test_team.id,
+        product_id=test_product.id
+    )
+    db.add(team_product)
+
+    # Create budget limit for team with different budget (200.0)
+    team_budget_limit = DBLimitedResource(
+        limit_type=LimitType.DATA_PLANE,
+        resource=ResourceType.BUDGET,
+        unit=UnitType.DOLLAR,
+        max_value=200.0,  # Different from product's 50.0
+        current_value=0.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.PRODUCT,
+        created_at=datetime.now(UTC)
+    )
+    db.add(team_budget_limit)
+
+    # Create a key for the team
+    test_key = DBPrivateAIKey(
+        name="test-key",
+        team_id=test_team.id,
+        region_id=test_region.id,
+        litellm_token="test-token-123",
+        created_at=datetime.now(UTC)
+    )
+    db.add(test_key)
+    db.commit()
+
+    # Setup mock LiteLLM service
+    mock_litellm_instance = mock_litellm.return_value
+    mock_litellm_instance.get_key_info = AsyncMock(return_value={
+        "info": {
+            "spend": 10.0,
+            "max_budget": 100.0,
+            "key_alias": "test-key"
+        }
+    })
+
+    # Setup mock limit service - return the team limits including our budget limit
+    mock_limit_instance = mock_limit_service.return_value
+    mock_budget_limit = LimitedResource(
+        id=1,
+        limit_type=LimitType.DATA_PLANE,
+        resource=ResourceType.BUDGET,
+        unit=UnitType.DOLLAR,
+        max_value=200.0,
+        current_value=0.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.PRODUCT,
+        created_at=datetime.now(UTC),
+        updated_at=None
+    )
+    mock_limit_instance.get_team_limits = Mock(return_value=[mock_budget_limit])
+    mock_limit_instance.set_team_limits = Mock()
+
+    # Setup mock Stripe function
+    mock_get_subscriptions.return_value = [("sub_123", test_product.id)]
+
+    # Setup mock reconcile_team_keys
+    mock_reconcile.return_value = 10.0
+
+    # Run monitoring
+    await monitor_teams(db)
+
+    # Verify reconcile_team_keys was called
+    assert mock_reconcile.called, "reconcile_team_keys should have been called"
+
+    # Get the call arguments - check all calls to find the one for our team
+    calls = mock_reconcile.call_args_list
+    assert len(calls) > 0, "reconcile_team_keys should have been called at least once"
+
+    # Find the call for our team (calls might include other teams from fixtures)
+    team_call = None
+    for call in calls:
+        call_args = call[0]  # positional args
+        if len(call_args) > 1 and call_args[1].id == test_team.id:
+            team_call = call
+            break
+
+    assert team_call is not None, f"reconcile_team_keys should have been called for team {test_team.id}"
+
+    # Arguments are: (db, team, keys_by_region, expire_keys, renewal_period_days, max_budget_amount)
+    called_max_budget_amount = team_call[0][5]  # 6th positional argument (0-indexed)
+
+    # Verify that budget came from limits (200.0), not from products (50.0)
+    assert called_max_budget_amount == 200.0, f"Expected budget from limits (200.0), but got {called_max_budget_amount}"
 
 
 @pytest.mark.asyncio

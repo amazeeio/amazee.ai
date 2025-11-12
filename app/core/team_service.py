@@ -176,3 +176,49 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> None:
 
     logger.info(f"Successfully restored team {team.id} ({team.name})")
 
+
+async def propagate_team_budget_to_keys(db: Session, team_id: int, budget_amount: float, budget_duration: str) -> None:
+    """
+    Propagate a team budget limit change to all keys belonging to the team.
+
+    This function updates all keys (both user-owned and team-owned) in LiteLLM
+    with the new budget amount when a team's budget limit is changed.
+
+    Args:
+        db: Database session
+        team_id: ID of the team whose keys should be updated
+        budget_amount: New budget amount to set for all keys
+        budget_duration: Budget duration string (e.g., "30d")
+
+    Note:
+        Errors during key updates are logged but don't raise exceptions.
+        This ensures that limit updates succeed even if some key updates fail.
+    """
+    try:
+        keys_by_region = get_team_keys_by_region(db, team_id)
+
+        # Update keys for each region
+        for region, keys in keys_by_region.items():
+            litellm_service = LiteLLMService(
+                api_url=region.litellm_api_url,
+                api_key=region.litellm_api_key
+            )
+
+            # Update each key's budget via LiteLLM
+            for key in keys:
+                try:
+                    # Update budget using the provided budget_duration
+                    await litellm_service.update_budget(
+                        litellm_token=key.litellm_token,
+                        budget_duration=budget_duration,
+                        budget_amount=budget_amount
+                    )
+                    logger.info(f"Updated key {key.id} budget to {budget_amount} in LiteLLM after team budget limit change")
+                except Exception as key_error:
+                    logger.error(f"Failed to update key {key.id} budget in LiteLLM: {str(key_error)}")
+                    # Continue with other keys even if one fails
+                    continue
+    except Exception as propagation_error:
+        logger.error(f"Error propagating budget limit to keys for team {team_id}: {str(propagation_error)}")
+        # Don't raise - allow limit update to succeed even if propagation fails
+
