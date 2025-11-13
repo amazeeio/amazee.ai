@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app app/
 COPY scripts scripts/
 
-# Copy Lagon environment variables
+# Copy Lagoon environment variables
 COPY .lagoon.env .
 
 # Script to initialize the database and start the server

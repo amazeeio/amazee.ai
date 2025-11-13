@@ -168,6 +168,12 @@ class PrivateAIKeyDetail(PrivateAIKey):
     metadata: Optional[dict] = None
     model_config = ConfigDict(from_attributes=True)
 
+class TrialAccessResponse(BaseModel):
+    key: PrivateAIKey
+    user: User
+    team_id: int
+    team_name: str
+
 class BudgetPeriodUpdate(BaseModel):
     budget_duration: str
 
