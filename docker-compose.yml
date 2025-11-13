@@ -34,6 +34,9 @@ services:
         condition: service_healthy
     labels:
       lagoon.type: python
+    networks:
+      - amazeeai-network
+      - default
 
   frontend:
     build:
@@ -51,6 +54,9 @@ services:
       - NEXT_PUBLIC_API_URL=http://localhost:8800
     labels:
       lagoon.type: node
+    networks:
+      - amazeeai-network
+      - default
 
   litellm:
     image: ghcr.io/berriai/litellm-database:main-latest
@@ -70,6 +76,9 @@ services:
       start_period: 40s  # Wait 40 seconds after container start before beginning health checks
     labels:
       lagoon.type: none
+    networks:
+      - amazeeai-network
+      - default
 
   litellm_db:
     image: postgres:16
@@ -104,6 +113,9 @@ services:
       - backend
     labels:
       lagoon.type: none
+    networks:
+      - amazeeai-network
+      - default
 
   grafana:
     image: grafana/grafana:latest
@@ -120,10 +132,16 @@ services:
       - prometheus
     labels:
       lagoon.type: none
-
+    networks:
+      - amazeeai-network
+      - default
 volumes:
   postgres_data:
   litellm_postgres_data:
     name: litellm_postgres_data  # Named volume for Postgres data persistence
   prometheus_data:
   grafana_data:
+
+networks:
+  amazeeai-network:
+    external: true
