@@ -698,6 +698,7 @@ def send_validation_url(email: str) -> None:
 
 @router.post("/generate-trial-access", response_model=TrialAccessResponse)
 async def generate_trial_access(
+    response: Response,
     db: Session = Depends(get_db),
     limit_service: LimitService = Depends(get_limit_service)
 ) -> TrialAccessResponse:
@@ -787,7 +788,6 @@ async def generate_trial_access(
     private_ai_key_create = PrivateAIKeyCreate(
         region_id=region.id,
         name=key_name,
-        owner_id=user.id,
         team_id=team.id
     )
 
@@ -821,10 +821,13 @@ async def generate_trial_access(
         budget_amount=trial_max_budget
     )
 
+    token = create_and_set_access_token(response, user.email, user)
+
     # Return response with key, user, and team info
     return TrialAccessResponse(
         key=private_ai_key,
         user=user,
+        token=token,
         team_id=team.id,
         team_name=team.name
     )

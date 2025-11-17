@@ -171,6 +171,7 @@ class PrivateAIKeyDetail(PrivateAIKey):
 class TrialAccessResponse(BaseModel):
     key: PrivateAIKey
     user: User
+    token: Token
     team_id: int
     team_name: str
 
