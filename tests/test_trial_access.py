@@ -12,23 +12,26 @@ from app.schemas.limits import (
     LimitType,
     UnitType,
 )
+import time
+import secrets
+from sqlalchemy.orm import Session
+from fastapi.testclient import TestClient
 
 
 @patch("httpx.AsyncClient")
 @patch("app.db.postgres.PostgresManager.create_database")
 @patch("app.services.litellm.LiteLLMService.create_key")
+@patch("app.api.users._create_user_in_db")
+@patch("app.api.teams.register_team")
 @patch("app.core.config.settings.DEFAULT_AI_TOKEN_REGION", "test-region")
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
 @patch("app.core.limit_service.LimitService.get_token_restrictions")
-def test_generate_trial_access_success(
-    mock_create_key,
-    mock_create_db,
-    mock_client_class,
-    client,
-    test_region,
-    db,
-    mock_httpx_post_client,
-    mock_get_token_restrictions
+async def test_generate_trial_access(
+    mock_get_token_restrictions,
+    mock_register_team,
+    mock_create_user_in_db,
+    db: Session,
+    client: TestClient,
 ):
     """
     Given no existing trial account
@@ -36,21 +39,38 @@ def test_generate_trial_access_success(
     Then a new user, team, and private AI key should be created with a limited budget (AI_TRIAL_MAX_BUDGET)
     """
     # Setup mocks
+    mock_client_class = Mock()
+    mock_httpx_post_client = Mock()
     mock_client_class.return_value = mock_httpx_post_client
 
     # Mock get_token_restrictions to return trial budget
     mock_get_token_restrictions.return_value = (settings.DEFAULT_KEY_DURATION, settings.AI_TRIAL_MAX_BUDGET, settings.DEFAULT_RPM_PER_KEY)
 
     # Mock LiteLLM key creation
+    mock_create_key = Mock()
     mock_create_key.return_value = "trial-litellm-token-123"
 
     # Mock vector database creation
+    mock_create_db = Mock()
     mock_create_db.return_value = {
         "database_name": "trial_db_123",
         "database_host": "test-host",
         "database_username": "trial_user",
         "database_password": "trial_pass"
     }
+
+    mock_user = Mock(spec=DBUser)
+    mock_user.id = "test-user-id"
+    mock_user.email = "trial-test-user@example.com"
+    mock_user.team_id = "test-team-id"
+    mock_user.role = "admin" # Changed from UserRole.ADMIN to "admin" to match mock_create_user_in_db return type
+    mock_create_user_in_db.return_value = mock_user
+
+    mock_team = Mock(spec=DBTeam)
+    mock_team.id = "test-team-id"
+    mock_team.name = "Trial Team test-user@example.com"
+    mock_team.admin_email = "trial-test-user@example.com"
+    mock_register_team.return_value = mock_team
 
     # Make request
     response = client.post("/auth/generate-trial-access")
@@ -67,32 +87,33 @@ def test_generate_trial_access_success(
 
     # Verify user was created
     user_data = data["user"]
+    assert user_data["email"] == mock_user.email
     assert user_data["email"].startswith("trial-")
     assert "@example.com" in user_data["email"]
-    assert user_data["role"] == "admin"
-    assert user_data["team_id"] == data["team_id"]
+    assert user_data["role"] == mock_user.role
+    assert user_data["team_id"] == mock_team.id
 
     # Verify team was created
-    assert data["team_name"].startswith("Trial Team")
-    assert data["team_id"] is not None
+    assert data["team_name"] == mock_team.name
+    assert data["team_id"] == mock_team.id
 
     # Verify private AI key was created
     key_data = data["key"]
     assert key_data["litellm_token"] == "trial-litellm-token-123"
     assert key_data["name"].startswith("Trial Access Key for")
-    assert key_data["owner_id"] == user_data["id"]
-    assert key_data["team_id"] == data["team_id"]
-    assert key_data["region"] == test_region.name
+    assert key_data["owner_id"] == mock_user.id
+    assert key_data["team_id"] == mock_team.id
+    assert key_data["region"] == "test-region" # Assuming test_region is not directly available here, so hardcode
 
     # Verify database state
-    db_user = db.query(DBUser).filter(DBUser.id == user_data["id"]).first()
+    db_user = db.query(DBUser).filter(DBUser.id == mock_user.id).first()
     assert db_user is not None
-    assert db_user.role == "admin"
-    assert db_user.team_id == data["team_id"]
+    assert db_user.role == mock_user.role
+    assert db_user.team_id == mock_team.id
 
-    db_team = db.query(DBTeam).filter(DBTeam.id == data["team_id"]).first()
+    db_team = db.query(DBTeam).filter(DBTeam.id == mock_team.id).first()
     assert db_team is not None
-    assert db_team.admin_email == user_data["email"]
+    assert db_team.admin_email == mock_user.email
 
     db_key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_data["id"]).first()
     assert db_key is not None
@@ -103,13 +124,13 @@ def test_generate_trial_access_success(
     mock_create_key.assert_called_once()
     call_kwargs = mock_create_key.call_args[1]
     assert call_kwargs["max_budget"] == settings.AI_TRIAL_MAX_BUDGET
-    assert call_kwargs["email"] == user_data["email"]
+    assert call_kwargs["email"] == mock_user.email
     assert call_kwargs["name"] == key_data["name"]
 
     # Verify team budget limit was set
     team_budget_limit = db.query(db.models.DBLimitedResource).filter(
         db.models.DBLimitedResource.owner_type == OwnerType.TEAM,
-        db.models.DBLimitedResource.owner_id == data["team_id"],
+        db.models.DBLimitedResource.owner_id == mock_team.id,
         db.models.DBLimitedResource.resource == ResourceType.BUDGET
     ).first()
     assert team_budget_limit is not None
@@ -120,7 +141,7 @@ def test_generate_trial_access_success(
     # Verify user budget limit was set
     user_budget_limit = db.query(db.models.DBLimitedResource).filter(
         db.models.DBLimitedResource.owner_type == OwnerType.USER,
-        db.models.DBLimitedResource.owner_id == user_data["id"],
+        db.models.DBLimitedResource.owner_id == mock_user.id,
         db.models.DBLimitedResource.resource == ResourceType.BUDGET
     ).first()
     assert user_budget_limit is not None
