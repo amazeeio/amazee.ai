@@ -1,0 +1,26 @@
+name: lint
+on:
+  pull_request:
+    branches:
+    - main
+  merge_group:
+    types:
+    - checks_requested
+permissions: {}
+jobs:
+  lint-python:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+    - uses: astral-sh/ruff-action@57714a7c8a2e59f32539362ba31877a1957dded1 # v3.5.1
+  lint-actions:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+    - uses: docker://rhysd/actionlint:1.7.0@sha256:601d6faeefa07683a4a79f756f430a1850b34d575d734b1d1324692202bf312e # v1.7.0
+      with:
+        args: -color
