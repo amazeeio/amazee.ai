@@ -2,7 +2,8 @@ name: Publish Docker Images
 
 on:
   push:
-    branches: [ dev ]
+    branches:
+    - dev
 
 env:
   REGISTRY: ghcr.io
@@ -15,6 +16,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # required by attest-build-provenance
+      id-token: write
+      attestations: write
 
     steps:
     - name: Checkout repository
@@ -41,6 +45,7 @@ jobs:
           type=sha,prefix={{branch}}-
 
     - name: Build and push backend Docker image
+      id: docker-build-push
       uses: docker/build-push-action@v5
       with:
         context: .
@@ -51,11 +56,21 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
+    - name: Attest container image
+      uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+      with:
+        subject-digest: ${{steps.docker-build-push.outputs.digest}}
+        subject-name: ghcr.io/${{github.repository}}-backend
+        push-to-registry: true
+
   build-and-push-frontend:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+      # required by attest-build-provenance
+      id-token: write
+      attestations: write
 
     steps:
     - name: Checkout repository
@@ -82,6 +97,7 @@ jobs:
           type=sha,prefix={{branch}}-
 
     - name: Build and push frontend Docker image
+      id: docker-build-push
       uses: docker/build-push-action@v5
       with:
         context: ./frontend
@@ -91,3 +107,10 @@ jobs:
         labels: ${{ steps.meta-frontend.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+
+    - name: Attest container image
+      uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+      with:
+        subject-digest: ${{steps.docker-build-push.outputs.digest}}
+        subject-name: ghcr.io/${{github.repository}}-frontend
+        push-to-registry: true
