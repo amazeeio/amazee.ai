@@ -1,0 +1,58 @@
+version: 2
+updates:
+- package-ecosystem: github-actions
+  commit-message:
+    prefix: chore
+    include: scope
+  directory: /
+  schedule:
+    interval: monthly
+  groups:
+    github-actions:
+      patterns:
+      - "*"
+      update-types:
+      - "minor"
+      - "patch"
+- package-ecosystem: docker
+  commit-message:
+    prefix: chore
+    include: scope
+  directory: /
+  schedule:
+    interval: monthly
+  groups:
+    docker:
+      patterns:
+      - "*"
+      update-types:
+      - "minor"
+      - "patch"
+- package-ecosystem: pip
+  commit-message:
+    prefix: chore
+    include: scope
+  directory: /
+  schedule:
+    interval: monthly
+  groups:
+    pip:
+      patterns:
+      - "*"
+      update-types:
+      - "minor"
+      - "patch"
+- package-ecosystem: npm
+  commit-message:
+    prefix: chore
+    include: scope
+  directory: /
+  schedule:
+    interval: monthly
+  groups:
+    pip:
+      patterns:
+      - "*"
+      update-types:
+      - "minor"
+      - "patch"

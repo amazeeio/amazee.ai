@@ -1,5 +1,8 @@
 # amazee.ai
 
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11464/badge)](https://www.bestpractices.dev/projects/11464)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/amazeeio/amazee.ai/badge)](https://securityscorecards.dev/viewer/?uri=github.com/amazeeio/amazee.ai)
+
 This repository contains the backend and frontend services for the amazee.ai application. The project is built using a modern tech stack including Python FastAPI for the backend, Next.js with TypeScript for the frontend, and PostgreSQL for the database.
 
 
