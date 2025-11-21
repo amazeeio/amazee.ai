@@ -1,4 +1,4 @@
-amazeeai Verification Code
+amazee.ai Verification Code
 Hi and welcome to amazee.ai,
 
 We’re excited to have you onboard!
