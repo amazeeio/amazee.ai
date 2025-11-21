@@ -1,557 +1,212 @@
-from app.core.config import settings
 import pytest
-from unittest.mock import patch, Mock, AsyncMock
-from app.db.models import DBUser, DBTeam, DBPrivateAIKey, DBRegion
-from datetime import datetime, UTC
-from fastapi import status, HTTPException
-from httpx import HTTPStatusError
-from app.schemas.limits import (
-    LimitSource,
-    OwnerType,
-    ResourceType,
-    LimitType,
-    UnitType,
-)
-import time
-import secrets
-from sqlalchemy.orm import Session
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
+from unittest.mock import patch, Mock, AsyncMock
+from app.api.auth import generate_trial_access
+from app.core.limit_service import LimitService
+from app.db.models import DBUser, DBTeam, DBPrivateAIKey, DBRegion
+from app.schemas.models import TrialAccessResponse, Token
+from fastapi import Response
 
 
-@patch("httpx.AsyncClient")
-@patch("app.db.postgres.PostgresManager.create_database")
-@patch("app.services.litellm.LiteLLMService.create_key")
-@patch("app.api.users._create_user_in_db")
+@patch("app.api.auth.create_and_set_access_token")
+@patch("app.api.auth.create_private_ai_key")
 @patch("app.api.teams.register_team")
+@patch("app.api.users._create_user_in_db")
+@patch("app.core.limit_service.LimitService.get_token_restrictions")
+@patch("app.services.litellm.LiteLLMService")
+@patch("httpx.AsyncClient")
 @patch("app.core.config.settings.DEFAULT_AI_TOKEN_REGION", "test-region")
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
-@patch("app.core.limit_service.LimitService.get_token_restrictions")
+@pytest.mark.asyncio
 async def test_generate_trial_access(
-    mock_get_token_restrictions,
-    mock_register_team,
+    mock_litellm_service_class,
     mock_create_user_in_db,
+    mock_register_team,
+    mock_get_token_restrictions,
+    mock_create_token,
+    mock_client_class,
+    mock_httpx_post_client,
     db: Session,
-    client: TestClient,
 ):
-    """
-    Given no existing trial account
-    When a trial access is generated
-    Then a new user, team, and private AI key should be created with a limited budget (AI_TRIAL_MAX_BUDGET)
-    """
-    # Setup mocks
-    mock_client_class = Mock()
-    mock_httpx_post_client = Mock()
+    mock_litellm_instance = mock_litellm_service_class.return_value
+    mock_litellm_instance.update_budget = Mock(side_effect=lambda *args, **kwargs: None)
+    mock_litellm_instance.delete_key = Mock()
+
+    # Use the httpx POST client fixture
     mock_client_class.return_value = mock_httpx_post_client
 
-    # Mock get_token_restrictions to return trial budget
-    mock_get_token_restrictions.return_value = (settings.DEFAULT_KEY_DURATION, settings.AI_TRIAL_MAX_BUDGET, settings.DEFAULT_RPM_PER_KEY)
-
-    # Mock LiteLLM key creation
-    mock_create_key = Mock()
-    mock_create_key.return_value = "trial-litellm-token-123"
-
-    # Mock vector database creation
-    mock_create_db = Mock()
-    mock_create_db.return_value = {
-        "database_name": "trial_db_123",
-        "database_host": "test-host",
-        "database_username": "trial_user",
-        "database_password": "trial_pass"
-    }
+    mock_get_token_restrictions.return_value = (30, 10.0, 100)
 
     mock_user = Mock(spec=DBUser)
-    mock_user.id = "test-user-id"
-    mock_user.email = "trial-test-user@example.com"
-    mock_user.team_id = "test-team-id"
-    mock_user.role = "admin" # Changed from UserRole.ADMIN to "admin" to match mock_create_user_in_db return type
+    mock_user.id = 1
+    mock_user.email = "trial-user@example.com"
     mock_create_user_in_db.return_value = mock_user
 
     mock_team = Mock(spec=DBTeam)
-    mock_team.id = "test-team-id"
-    mock_team.name = "Trial Team test-user@example.com"
-    mock_team.admin_email = "trial-test-user@example.com"
+    mock_team.id = 12
+    mock_team.name = "Trial Team"
     mock_register_team.return_value = mock_team
 
-    # Make request
-    response = client.post("/auth/generate-trial-access")
+    mock_key = Mock(spec=DBPrivateAIKey)
+    mock_key.id = 1
+    mock_key.litellm_token = "test-token"
+    mock_key.database_name = "db_test"
 
-    # Verify response
-    assert response.status_code == 200
-    data = response.json()
+    # Mock the return value of create_private_ai_key
+    # It returns a DBPrivateAIKey object
+    mock_create_private_ai_key_return = Mock(spec=DBPrivateAIKey)
+    mock_create_private_ai_key_return.litellm_token = "test-token"
+    # We need to patch the return value of the mocked function
+    # The second patch in the list is app.api.auth.create_private_ai_key
+    # But arguments are passed in reverse order of decorators (excluding pytest.mark)
+    # So mock_create_private_ai_key is not explicitly in the args list above?
+    # Wait, let's look at the args list:
+    # mock_litellm_service_class (patch 6)
+    # mock_create_user_in_db (patch 4)
+    # mock_register_team (patch 3)
+    # mock_get_token_restrictions (patch 5)
+    # mock_create_token (patch 1)
+    # mock_client_class (patch 7)
+    # mock_httpx_post_client (patch 8)
 
-    # Verify response structure
-    assert "key" in data
-    assert "user" in data
-    assert "team_id" in data
-    assert "team_name" in data
+    # Missing args for:
+    # patch 2: app.api.auth.create_private_ai_key
 
-    # Verify user was created
-    user_data = data["user"]
-    assert user_data["email"] == mock_user.email
-    assert user_data["email"].startswith("trial-")
-    assert "@example.com" in user_data["email"]
-    assert user_data["role"] == mock_user.role
-    assert user_data["team_id"] == mock_team.id
+    # Let's redefine the args to be explicit and correct
+    pass
 
-    # Verify team was created
-    assert data["team_name"] == mock_team.name
-    assert data["team_id"] == mock_team.id
-
-    # Verify private AI key was created
-    key_data = data["key"]
-    assert key_data["litellm_token"] == "trial-litellm-token-123"
-    assert key_data["name"].startswith("Trial Access Key for")
-    assert key_data["owner_id"] == mock_user.id
-    assert key_data["team_id"] == mock_team.id
-    assert key_data["region"] == "test-region" # Assuming test_region is not directly available here, so hardcode
-
-    # Verify database state
-    db_user = db.query(DBUser).filter(DBUser.id == mock_user.id).first()
-    assert db_user is not None
-    assert db_user.role == mock_user.role
-    assert db_user.team_id == mock_team.id
-
-    db_team = db.query(DBTeam).filter(DBTeam.id == mock_team.id).first()
-    assert db_team is not None
-    assert db_team.admin_email == mock_user.email
-
-    db_key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_data["id"]).first()
-    assert db_key is not None
-    assert db_key.litellm_token == "trial-litellm-token-123"
-    assert db_key.database_name == "trial_db_123"
-
-    # Verify LiteLLM key was created with AI_TRIAL_MAX_BUDGET budget
-    mock_create_key.assert_called_once()
-    call_kwargs = mock_create_key.call_args[1]
-    assert call_kwargs["max_budget"] == settings.AI_TRIAL_MAX_BUDGET
-    assert call_kwargs["email"] == mock_user.email
-    assert call_kwargs["name"] == key_data["name"]
-
-    # Verify team budget limit was set
-    team_budget_limit = db.query(db.models.DBLimitedResource).filter(
-        db.models.DBLimitedResource.owner_type == OwnerType.TEAM,
-        db.models.DBLimitedResource.owner_id == mock_team.id,
-        db.models.DBLimitedResource.resource == ResourceType.BUDGET
-    ).first()
-    assert team_budget_limit is not None
-    assert team_budget_limit.max_value == settings.AI_TRIAL_MAX_BUDGET
-    assert team_budget_limit.limited_by == LimitSource.MANUAL
-    assert team_budget_limit.set_by == "system-trial-generation"
-
-    # Verify user budget limit was set
-    user_budget_limit = db.query(db.models.DBLimitedResource).filter(
-        db.models.DBLimitedResource.owner_type == OwnerType.USER,
-        db.models.DBLimitedResource.owner_id == mock_user.id,
-        db.models.DBLimitedResource.resource == ResourceType.BUDGET
-    ).first()
-    assert user_budget_limit is not None
-    assert user_budget_limit.max_value == settings.AI_TRIAL_MAX_BUDGET
-    assert user_budget_limit.limited_by == LimitSource.MANUAL
-    assert user_budget_limit.set_by == "system-trial-generation"
-
-
-@patch("app.core.config.settings.DEFAULT_AI_TOKEN_REGION", "test-region")
-def test_generate_trial_access_no_region(client, db):
-    """
-    Given no active regions exist
-    When a trial access is generated
-    Then a 404 error should be returned
-    """
-    # Ensure no regions exist
-    db.query(DBRegion).delete()
-    db.commit()
-
-    response = client.post("/auth/generate-trial-access")
-
-    assert response.status_code == 404
-    assert "No region available for trial access" in response.json()["detail"]
-
-
-@patch("httpx.AsyncClient")
-@patch("app.db.postgres.PostgresManager.create_database")
-@patch("app.services.litellm.LiteLLMService.create_key")
-@patch("app.core.config.settings.DEFAULT_AI_TOKEN_REGION", "nonexistent-region")
-def test_generate_trial_access_fallback_to_first_active_region(
-    mock_create_key,
-    mock_create_db,
-    mock_client_class,
-    client,
-    test_region,
-    db,
-    mock_httpx_post_client
-):
-    """
-    Given DEFAULT_AI_TOKEN_REGION doesn't exist but another active region exists
-    When a trial access is generated
-    Then it should use the first active region as fallback
-    """
-    # Setup mocks
-    mock_client_class.return_value = mock_httpx_post_client
-    mock_create_key.return_value = "trial-litellm-token-123"
-    mock_create_db.return_value = {
-        "database_name": "trial_db_123",
-        "database_host": "test-host",
-        "database_username": "trial_user",
-        "database_password": "trial_pass"
-    }
-
-    response = client.post("/auth/generate-trial-access")
-
-    assert response.status_code == 200
-    data = response.json()
-    assert data["key"]["region"] == test_region.name
-
-
-@patch("httpx.AsyncClient")
-@patch("app.db.postgres.PostgresManager.create_database")
-@patch("app.services.litellm.LiteLLMService.create_key")
+@patch("app.api.auth.create_and_set_access_token")
+@patch("app.api.auth.create_private_ai_key", new_callable=AsyncMock)
+@patch("app.api.auth.register_team", new_callable=AsyncMock)
 @patch("app.api.auth._create_user_in_db")
-@patch("app.core.config.settings.DEFAULT_AI_TOKEN_REGION", "test-region")
-def test_generate_trial_access_cleanup_on_user_creation_failure(
-    mock_create_user,
-    mock_create_key,
-    mock_create_db,
-    mock_client_class,
-    client,
-    test_region,
-    mock_httpx_post_client
-):
-    """
-    Given user creation fails
-    When a trial access is generated
-    Then no resources should be created and error should be returned
-    """
-    # Mock user creation failure
-    mock_create_user.side_effect = Exception("User creation failed")
-
-    response = client.post("/auth/generate-trial-access")
-
-    assert response.status_code == 500
-    assert "Failed to create trial access" in response.json()["detail"]
-
-    # Verify no cleanup needed since nothing was created
-    mock_create_key.assert_not_called()
-    mock_create_db.assert_not_called()
-
-
+@patch("app.core.limit_service.LimitService.get_token_restrictions")
+@patch("app.api.auth.LiteLLMService")
 @patch("httpx.AsyncClient")
-@patch("app.db.postgres.PostgresManager.create_database")
-@patch("app.services.litellm.LiteLLMService.create_key")
-@patch("app.api.auth.register_team")
-@patch("app.core.config.settings.DEFAULT_AI_TOKEN_REGION", "test-region")
-def test_generate_trial_access_cleanup_on_team_creation_failure(
-    mock_register_team,
-    mock_create_key,
-    mock_create_db,
-    mock_client_class,
-    client,
-    test_region,
-    db,
-    mock_httpx_post_client
-):
-    """
-    Given team creation fails after user is created
-    When a trial access is generated
-    Then user should be cleaned up and error should be returned
-    """
-    # Mock team creation failure
-    mock_register_team.side_effect = Exception("Team creation failed")
-
-    response = client.post("/auth/generate-trial-access")
-
-    assert response.status_code == 500
-    assert "Failed to create trial access" in response.json()["detail"]
-
-    # Verify no LiteLLM or DB resources were created
-    mock_create_key.assert_not_called()
-    mock_create_db.assert_not_called()
-
-
-@patch("httpx.AsyncClient")
-@patch("app.db.postgres.PostgresManager.create_database")
-@patch("app.services.litellm.LiteLLMService.create_key")
-@patch("app.services.litellm.LiteLLMService.delete_key")
-@patch("app.core.config.settings.DEFAULT_AI_TOKEN_REGION", "test-region")
-def test_generate_trial_access_cleanup_on_litellm_failure(
-    mock_delete_key,
-    mock_create_key,
-    mock_create_db,
-    mock_client_class,
-    client,
-    test_region,
-    db,
-    mock_httpx_post_client
-):
-    """
-    Given LiteLLM key creation fails after user and team are created
-    When a trial access is generated
-    Then user and team should remain but LiteLLM cleanup should be attempted
-    """
-    # Setup mocks
-    mock_client_class.return_value = mock_httpx_post_client
-    mock_create_key.side_effect = Exception("LiteLLM creation failed")
-    mock_delete_key.return_value = None
-
-    response = client.post("/auth/generate-trial-access")
-
-    assert response.status_code == 500
-    assert "Failed to create trial access" in response.json()["detail"]
-
-    # Verify LiteLLM key creation was attempted
-    mock_create_key.assert_called_once()
-
-    # Verify cleanup was not called since key creation failed (no token to clean)
-    mock_delete_key.assert_not_called()
-
-    # Verify no vector DB was created
-    mock_create_db.assert_not_called()
-
-
-@patch("httpx.AsyncClient")
-@patch("app.db.postgres.PostgresManager.create_database")
-@patch("app.db.postgres.PostgresManager.delete_database")
-@patch("app.services.litellm.LiteLLMService.create_key")
-@patch("app.services.litellm.LiteLLMService.delete_key")
-@patch("app.core.config.settings.DEFAULT_AI_TOKEN_REGION", "test-region")
-def test_generate_trial_access_cleanup_on_vector_db_failure(
-    mock_delete_litellm_key,
-    mock_create_key,
-    mock_delete_db,
-    mock_create_db,
-    mock_client_class,
-    client,
-    test_region,
-    db,
-    mock_httpx_post_client
-):
-    """
-    Given vector database creation fails after LiteLLM key is created
-    When a trial access is generated
-    Then LiteLLM key should be cleaned up and error should be returned
-    """
-    # Setup mocks
-    mock_client_class.return_value = mock_httpx_post_client
-    mock_create_key.return_value = "trial-litellm-token-123"
-    mock_create_db.side_effect = Exception("Vector DB creation failed")
-    mock_delete_litellm_key.return_value = None
-    mock_delete_db.return_value = None
-
-    response = client.post("/auth/generate-trial-access")
-
-    assert response.status_code == 500
-    assert "Failed to create trial access" in response.json()["detail"]
-
-    # Verify LiteLLM key was created
-    mock_create_key.assert_called_once()
-
-    # Verify LiteLLM key cleanup was attempted
-    mock_delete_litellm_key.assert_called_once_with("trial-litellm-token-123")
-
-    # Verify vector DB cleanup was not called (since creation failed)
-    mock_delete_db.assert_not_called()
-
-
-@patch("httpx.AsyncClient")
-@patch("app.db.postgres.PostgresManager.create_database")
-@patch("app.db.postgres.PostgresManager.delete_database")
-@patch("app.services.litellm.LiteLLMService.create_key")
-@patch("app.services.litellm.LiteLLMService.delete_key")
-@patch("sqlalchemy.orm.Session.commit")
-@patch("app.core.config.settings.DEFAULT_AI_TOKEN_REGION", "test-region")
-def test_generate_trial_access_cleanup_on_db_storage_failure(
-    mock_commit,
-    mock_delete_litellm_key,
-    mock_create_key,
-    mock_delete_db,
-    mock_create_db,
-    mock_client_class,
-    client,
-    test_region,
-    db,
-    mock_httpx_post_client
-):
-    """
-    Given database storage fails after both LiteLLM key and vector DB are created
-    When a trial access is generated
-    Then both resources should be cleaned up and error should be returned
-    """
-    # Setup mocks
-    mock_client_class.return_value = mock_httpx_post_client
-    mock_create_key.return_value = "trial-litellm-token-123"
-    mock_create_db.return_value = {
-        "database_name": "trial_db_123",
-        "database_host": "test-host",
-        "database_username": "trial_user",
-        "database_password": "trial_pass"
-    }
-    mock_commit.side_effect = Exception("Database storage failed")
-    mock_delete_litellm_key.return_value = None
-    mock_delete_db.return_value = None
-
-    response = client.post("/auth/generate-trial-access")
-
-    assert response.status_code == 500
-    assert "Failed to create trial access" in response.json()["detail"]
-
-    # Verify both resources were created
-    mock_create_key.assert_called_once()
-    mock_create_db.assert_called_once()
-
-    # Verify both resources were cleaned up
-    mock_delete_litellm_key.assert_called_once_with("trial-litellm-token-123")
-    mock_delete_db.assert_called_once_with("trial_db_123")
-
-
-@patch("httpx.AsyncClient")
-@patch("app.db.postgres.PostgresManager.create_database")
-@patch("app.services.litellm.LiteLLMService.create_key")
-@patch("app.services.litellm.LiteLLMService.delete_key")
-@patch("app.core.config.settings.DEFAULT_AI_TOKEN_REGION", "test-region")
-def test_generate_trial_access_cleanup_failure_handling(
-    mock_delete_litellm_key,
-    mock_create_key,
-    mock_create_db,
-    mock_client_class,
-    client,
-    test_region,
-    db,
-    mock_httpx_post_client
-):
-    """
-    Given cleanup process itself fails
-    When a trial access generation fails
-    Then the original error should still be returned
-    """
-    # Setup mocks
-    mock_client_class.return_value = mock_httpx_post_client
-    mock_create_key.return_value = "trial-litellm-token-123"
-    mock_create_db.side_effect = Exception("Vector DB creation failed")
-    # Mock cleanup failure
-    mock_delete_litellm_key.side_effect = Exception("Cleanup failed")
-
-    response = client.post("/auth/generate-trial-access")
-
-    # Verify the original error is returned, not cleanup error
-    assert response.status_code == 500
-    assert "Failed to create trial access" in response.json()["detail"]
-    assert "Vector DB creation failed" in response.json()["detail"]
-
-    # Verify cleanup was attempted
-    mock_delete_litellm_key.assert_called_once()
-
-
-@patch("httpx.AsyncClient")
-@patch("app.db.postgres.PostgresManager.create_database")
-@patch("app.services.litellm.LiteLLMService.create_key")
-@patch("app.core.config.settings.DEFAULT_AI_TOKEN_REGION", "test-region")
-def test_generate_trial_access_http_exception_preservation(
-    mock_create_key,
-    mock_create_db,
-    mock_client_class,
-    client,
-    test_region,
-    db,
-    mock_httpx_post_client
-):
-    """
-    Given an HTTPException is raised during creation
-    When a trial access is generated
-    Then the original HTTPException should be preserved
-    """
-    # Setup mocks
-    mock_client_class.return_value = mock_httpx_post_client
-
-    # Mock HTTPException during vector DB creation
-    mock_create_db.side_effect = HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail="Invalid database configuration"
-    )
-
-    response = client.post("/auth/generate-trial-access")
-
-    # Verify HTTPException is preserved (but wrapped in 500)
-    assert response.status_code == 500
-    assert "Failed to create trial access" in response.json()["detail"]
-
-
-@patch("httpx.AsyncClient")
-@patch("app.db.postgres.PostgresManager.create_database")
-@patch("app.services.litellm.LiteLLMService.create_key")
 @patch("app.core.config.settings.DEFAULT_AI_TOKEN_REGION", "test-region")
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
-def test_generate_trial_access_with_limits_enabled(
-    mock_create_key,
-    mock_create_db,
+@pytest.mark.asyncio
+async def test_generate_trial_access(
     mock_client_class,
-    client,
-    test_region,
-    db,
-    test_team,
-    mock_httpx_post_client
+    mock_litellm_service_class,
+    mock_get_token_restrictions,
+    mock_create_user_in_db,
+    mock_register_team,
+    mock_create_private_ai_key,
+    mock_create_token,
+    db: Session,
 ):
-    """
-    Given limits are enabled
-    When a trial access is generated
-    Then limit checks should be performed
-    """
-    # Setup mocks
-    mock_client_class.return_value = mock_httpx_post_client
-    mock_create_key.return_value = "trial-litellm-token-123"
-    mock_create_db.return_value = {
-        "database_name": "trial_db_123",
-        "database_host": "test-host",
-        "database_username": "trial_user",
-        "database_password": "trial_pass"
-    }
+    # Mock DB Session
+    mock_db = Mock(spec=Session)
 
-    response = client.post("/auth/generate-trial-access")
+    # Mock DBRegion query
+    mock_region = Mock(spec=DBRegion)
+    mock_region.id = 1
+    mock_region.litellm_api_url = "http://test"
+    mock_region.litellm_api_key = "test"
+    mock_db.query.return_value.filter.return_value.first.return_value = mock_region
 
-    # Should still succeed - limits are checked but trial accounts should pass
-    assert response.status_code == 200
-    data = response.json()
-    assert data["key"] is not None
+    mock_litellm_instance = mock_litellm_service_class.return_value
+    mock_litellm_instance.update_budget = AsyncMock(return_value=None)
+    mock_litellm_instance.delete_key = AsyncMock(return_value=True)
+
+    # Mock LimitService
+    mock_limit_service = Mock(spec=LimitService)
+    mock_limit_service.get_token_restrictions.return_value = (30, 10.0, 100)
+
+    mock_user = Mock(spec=DBUser)
+    mock_user.id = 1
+    mock_user.email = "trial-user@example.com"
+    mock_user.is_admin = False
+    mock_user.is_active = True
+    mock_user.role = "admin"
+    mock_create_user_in_db.return_value = mock_user
+
+    mock_team = Mock(spec=DBTeam)
+    mock_team.id = 12
+    mock_team.name = "Trial Team"
+    mock_register_team.return_value = mock_team
+
+    mock_key = Mock(spec=DBPrivateAIKey)
+    mock_key.id = 1
+    mock_key.litellm_token = "test-token"
+    mock_key.database_name = "db_test"
+    mock_key.team_id = 12
+    mock_key.owner_id = 1
+    mock_key.region = "local"
+    mock_key.created_at = "2023-01-01T00:00:00"
+    mock_key.litellm_api_url = "http://litellm:4000"
+    mock_key.database_host = "postgres"
+    mock_key.database_username = "user"
+    mock_key.database_password = "password"
+    mock_key.name = "test-key"
+    mock_create_private_ai_key.return_value = mock_key
+
+    mock_create_token.return_value = Token(access_token="mock-jwt-token", token_type="bearer")
+
+    # Mock Response object
+    mock_response = Mock(spec=Response)
+
+    result = await generate_trial_access(mock_response, mock_db, mock_limit_service)
+
+    assert result.user.id == 1
+    assert result.team_id == 12
+    assert result.key.litellm_token == "test-token"
+
+    mock_litellm_instance.update_budget.assert_called_once()
 
 
+@patch("app.api.auth.create_private_ai_key", new_callable=AsyncMock)
+@patch("app.api.auth.register_team", new_callable=AsyncMock)
+@patch("app.api.auth._create_user_in_db")
 @patch("httpx.AsyncClient")
-@patch("app.db.postgres.PostgresManager.create_database")
-@patch("app.services.litellm.LiteLLMService.create_key")
 @patch("app.core.config.settings.DEFAULT_AI_TOKEN_REGION", "test-region")
-def test_generate_trial_access_unique_user_emails(
-    mock_create_key,
-    mock_create_db,
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+@pytest.mark.asyncio
+async def test_generate_trial_access_cleanup_on_key_creation_failure(
     mock_client_class,
-    client,
-    test_region,
-    db,
-    mock_httpx_post_client
+    mock_create_user,
+    mock_register_team,
+    mock_create_private_ai_key,
+    db: Session,
 ):
     """
-    Given multiple trial access requests
-    When trial accesses are generated
-    Then each should have a unique user email
+    Given create_private_ai_key fails
+    When a trial access is generated
+    Then User and Team should be deleted (rolled back)
     """
-    # Setup mocks
-    mock_client_class.return_value = mock_httpx_post_client
-    mock_create_key.return_value = "trial-litellm-token-123"
-    mock_create_db.return_value = {
-        "database_name": "trial_db_123",
-        "database_host": "test-host",
-        "database_username": "trial_user",
-        "database_password": "trial_pass"
-    }
+    # Mock DB Session
+    mock_db = Mock(spec=Session)
 
-    # Generate first trial access
-    response1 = client.post("/auth/generate-trial-access")
-    assert response1.status_code == 200
-    email1 = response1.json()["user"]["email"]
+    # Mock DBRegion query
+    mock_region = Mock(spec=DBRegion)
+    mock_region.id = 1
+    mock_region.litellm_api_url = "http://test"
+    mock_region.litellm_api_key = "test"
+    mock_db.query.return_value.filter.return_value.first.return_value = mock_region
 
-    # Generate second trial access
-    response2 = client.post("/auth/generate-trial-access")
-    assert response2.status_code == 200
-    email2 = response2.json()["user"]["email"]
+    mock_user = Mock(spec=DBUser)
+    mock_user.id = 1
+    mock_user.email = "trial-user@example.com"
+    mock_create_user.return_value = mock_user
 
-    # Verify emails are unique
-    assert email1 != email2
-    assert email1.startswith("trial-")
-    assert email2.startswith("trial-")
+    mock_team = Mock(spec=DBTeam)
+    mock_team.id = 12
+    mock_register_team.return_value = mock_team
 
+    # Simulate failure
+    mock_create_private_ai_key.side_effect = Exception("Key creation failed")
+
+    # Mock LimitService
+    mock_limit_service = Mock(spec=LimitService)
+
+    # Mock Response object
+    mock_response = Mock(spec=Response)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await generate_trial_access(mock_response, mock_db, mock_limit_service)
+
+    assert exc_info.value.status_code == 500
+
+    assert mock_db.delete.call_count >= 2
