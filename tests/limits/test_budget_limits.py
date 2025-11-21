@@ -1,3 +1,5 @@
+import logging
+import threading
 import time
 import pytest
 from datetime import datetime, UTC, timedelta
@@ -312,6 +314,178 @@ def test_get_product_max_by_type_multiple_products(db, test_team):
     assert max_users == 4
     assert max_keys == 2  # Now returns max service_key_count, not total_key_count
     assert max_budget == 150.0
+
+
+@patch('app.core.team_service.LiteLLMService')
+def test_budget_propagation_session_isolation(mock_litellm_class, db, test_team, test_region):
+    """
+    GIVEN: A team with keys and a LimitService instance
+    WHEN: _trigger_team_budget_propagation is called and the original session is closed
+    THEN: The propagation should still work because it creates its own session
+
+    This test verifies the fix for the SQLAlchemy session isolation issue where
+    background threads were incorrectly reusing the request's session.
+    """
+    # Create a user in the team
+    team_user = DBUser(
+        email="sessiontest@example.com",
+        hashed_password=get_password_hash("password123"),
+        is_active=True,
+        team_id=test_team.id
+    )
+    db.add(team_user)
+    db.commit()
+    db.refresh(team_user)
+
+    # Create a key for the team
+    key1 = DBPrivateAIKey(
+        name="Session Test Key",
+        litellm_token="session_test_token",
+        litellm_api_url=test_region.litellm_api_url,
+        team_id=test_team.id,
+        owner_id=team_user.id,
+        region_id=test_region.id
+    )
+    db.add(key1)
+    db.commit()
+
+    # Track calls
+    captured_calls = []
+    call_lock = threading.Lock()
+
+    async def mock_update_budget(*args, **kwargs):
+        with call_lock:
+            captured_calls.append((args, kwargs))
+
+    def create_mock_instance(*args, **kwargs):
+        mock_instance = AsyncMock()
+        mock_instance.update_budget = mock_update_budget
+        return mock_instance
+    mock_litellm_class.side_effect = create_mock_instance
+
+    # Create a LimitService and call the method that triggers background propagation
+    limit_service = LimitService(db)
+
+    # Call the actual method that has the bug - it spawns a background thread
+    limit_service._trigger_team_budget_propagation(test_team.id, 100.0)
+
+    # Simulate what happens in production: close the original session immediately
+    # This is what FastAPI does after the request completes
+    db.close()
+
+    # Wait for background thread to complete
+    max_wait = 50  # 5 seconds
+    waited = 0
+    while waited < max_wait:
+        time.sleep(0.1)
+        waited += 1
+        with call_lock:
+            if len(captured_calls) >= 1:
+                break
+
+    # Verify the call was made successfully
+    with call_lock:
+        assert len(captured_calls) == 1, f"Expected 1 call but got {len(captured_calls)}"
+
+        # Verify correct parameters
+        args, kwargs = captured_calls[0]
+        assert kwargs.get("budget_amount") == 100.0
+
+
+@patch('app.core.team_service.LiteLLMService')
+def test_budget_propagation_works_after_session_close(mock_litellm_class, db, test_team, test_region):
+    """
+    GIVEN: A team with keys and budget limits
+    WHEN: The limit is updated via set_limit and the original session is immediately closed
+    THEN: The background propagation should still work (uses its own session)
+
+    This test verifies the fix for SQLAlchemy session isolation errors:
+    - "This session is in 'prepared' state"
+    - "Instance is not bound to a Session"
+    """
+    # Create a user in the team
+    team_user = DBUser(
+        email="sessiontest@example.com",
+        hashed_password=get_password_hash("password123"),
+        is_active=True,
+        team_id=test_team.id
+    )
+    db.add(team_user)
+    db.commit()
+    db.refresh(team_user)
+
+    # Create a key for the team
+    key1 = DBPrivateAIKey(
+        name="Session Test Key",
+        litellm_token="session_test_token",
+        litellm_api_url=test_region.litellm_api_url,
+        team_id=test_team.id,
+        owner_id=team_user.id,
+        region_id=test_region.id
+    )
+    db.add(key1)
+    db.commit()
+
+    # Track calls and errors
+    captured_calls = []
+    propagation_errors = []
+    call_lock = threading.Lock()
+
+    async def mock_update_budget(*args, **kwargs):
+        with call_lock:
+            captured_calls.append((args, kwargs))
+
+    def create_mock_instance(*args, **kwargs):
+        mock_instance = AsyncMock()
+        mock_instance.update_budget = mock_update_budget
+        return mock_instance
+    mock_litellm_class.side_effect = create_mock_instance
+
+    # Patch logger.error to capture propagation errors
+    original_error = logging.getLogger('app.core.team_service').error
+    def capture_error(msg, *args, **kwargs):
+        with call_lock:
+            propagation_errors.append(msg)
+        original_error(msg, *args, **kwargs)
+
+    with patch.object(logging.getLogger('app.core.team_service'), 'error', capture_error):
+        # Create limit service and set a budget limit - this triggers _trigger_team_budget_propagation
+        limit_service = LimitService(db)
+        limit_service.set_limit(
+            owner_type=OwnerType.TEAM,
+            owner_id=test_team.id,
+            resource_type=ResourceType.BUDGET,
+            limit_type=LimitType.DATA_PLANE,
+            unit=UnitType.DOLLAR,
+            max_value=150.0,
+            limited_by=LimitSource.DEFAULT
+        )
+
+        # Immediately close the session - this simulates what happens when the request ends
+        # The background thread should still work because it creates its own session
+        db.close()
+
+        # Wait for background thread to complete
+        max_wait = 50  # 5 seconds
+        waited = 0
+        while waited < max_wait:
+            time.sleep(0.1)
+            waited += 1
+            with call_lock:
+                if len(captured_calls) >= 1 or len(propagation_errors) >= 1:
+                    break
+
+    # Verify no errors occurred during propagation
+    with call_lock:
+        error_msgs = [e for e in propagation_errors if 'Error propagating budget' in e or 'is not bound to a Session' in e]
+        assert len(error_msgs) == 0, f"Propagation errors occurred: {error_msgs}"
+
+        # Verify the propagation succeeded
+        assert len(captured_calls) == 1, f"Expected 1 call but got {len(captured_calls)}. Background propagation failed."
+
+        # Verify correct parameters
+        args, kwargs = captured_calls[0]
+        assert kwargs.get("budget_amount") == 150.0
 
 
 @patch('app.core.team_service.LiteLLMService')

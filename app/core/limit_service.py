@@ -415,23 +415,33 @@ class LimitService:
         """
         # Import here to avoid circular import
         from app.core.team_service import propagate_team_budget_to_keys
+        from app.db.database import get_db
 
         # Get budget_duration from team's token restrictions (all keys should have same duration)
         days_left, _, _ = self.get_token_restrictions(team_id)
         budget_duration = f"{days_left}d"
 
         def run_async_propagation():
-            """Helper to run async propagation in a new event loop."""
+            """Helper to run async propagation in a new event loop with its own session.
+
+            Creates a new database session for this thread because SQLAlchemy sessions
+            are not thread-safe. The request session may be closed or in an inconsistent
+            state by the time this background thread runs.
+            """
+            # Create a new database session for this background thread
+            db = next(get_db())
             try:
                 # Create a new event loop for this thread
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
-                    loop.run_until_complete(propagate_team_budget_to_keys(self.db, team_id, budget_amount, budget_duration))
+                    loop.run_until_complete(propagate_team_budget_to_keys(db, team_id, budget_amount, budget_duration))
                 finally:
                     loop.close()
             except Exception as thread_error:
                 logger.error(f"Error in async propagation thread for team {team_id}: {str(thread_error)}")
+            finally:
+                db.close()
 
         try:
             # Use shared executor to limit concurrent threads and prevent fork-bomb

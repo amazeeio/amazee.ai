@@ -73,7 +73,11 @@ class LiteLLMService:
                 return key
         except httpx.HTTPStatusError as e:
             error_msg = str(e)
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
             if hasattr(e, 'response') and e.response is not None:
+                # Preserve 4xx status codes from LiteLLM (client errors)
+                if 400 <= e.response.status_code < 500:
+                    status_code = e.response.status_code
                 try:
                     error_details = e.response.json()
                     error_msg = f"Status {e.response.status_code}: {error_details}"
@@ -81,7 +85,7 @@ class LiteLLMService:
                     error_msg = f"Status {e.response.status_code}: {e.response.text}"
             logger.error(f"Error creating LiteLLM key: {error_msg}")
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=status_code,
                 detail=f"Failed to create LiteLLM key: {error_msg}"
             )
 
