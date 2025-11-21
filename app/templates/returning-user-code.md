@@ -1,4 +1,4 @@
-amazeeai Verification Code
+amazee.ai Verification Code
 Welcome back to amazee.ai.
 
 It's great to see you again. For security purposes please use this verification code:
