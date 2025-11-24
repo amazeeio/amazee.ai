@@ -86,16 +86,25 @@ async def list_products(
         # Get products associated with the team
         return db.query(DBProduct).join(DBTeamProduct).filter(DBTeamProduct.team_id == team_id).all()
 
-    # If no team_id provided, return all products
-    return db.query(DBProduct).all()
+    # If no team_id provided
+    if current_user.is_admin:
+        # System admins can see all products
+        return db.query(DBProduct).all()
+    else:
+        # Non-system-admins only see their own team's products
+        return db.query(DBProduct).join(DBTeamProduct).filter(
+            DBTeamProduct.team_id == current_user.team_id
+        ).all()
 
 @router.get("/{product_id}", response_model=Product, dependencies=[Depends(get_role_min_team_admin)])
 async def get_product(
     product_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_from_auth)
 ):
     """
     Get a specific product by ID. Only accessible by team admin users or higher privileges.
+    Non-system-admins can only view products associated with their team.
     """
     product = db.query(DBProduct).filter(DBProduct.id == product_id).first()
     if not product:
@@ -103,6 +112,19 @@ async def get_product(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Product not found"
         )
+
+    # Non-system-admins can only view products associated with their team
+    if not current_user.is_admin:
+        team_product = db.query(DBTeamProduct).filter(
+            DBTeamProduct.product_id == product_id,
+            DBTeamProduct.team_id == current_user.team_id
+        ).first()
+        if not team_product:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Product not found"
+            )
+
     return product
 
 @router.put("/{product_id}", response_model=Product, dependencies=[Depends(get_role_min_system_admin)])
