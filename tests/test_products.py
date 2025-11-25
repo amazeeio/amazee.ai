@@ -124,7 +124,7 @@ def test_create_product_unauthorized(client, test_token, db):
     )
     assert response.status_code == 403
 
-def test_list_products_as_team_admin(client, team_admin_token, db):
+def test_list_products_as_team_admin(client, team_admin_token, db, test_team):
     """
     Test that a team admin can list products.
 
@@ -167,6 +167,11 @@ def test_list_products_as_team_admin(client, team_admin_token, db):
     db.add(db_product2)
     db.commit()
 
+    # Associate products with the team admin's team
+    db.add(DBTeamProduct(team_id=test_team.id, product_id=db_product1.id))
+    db.add(DBTeamProduct(team_id=test_team.id, product_id=db_product2.id))
+    db.commit()
+
     response = client.get(
         "/products/",
         headers={"Authorization": f"Bearer {team_admin_token}"}
@@ -191,7 +196,7 @@ def test_list_products_unauthorized(client, test_token, db):
     )
     assert response.status_code == 403
 
-def test_get_product_as_team_admin(client, team_admin_token, db):
+def test_get_product_as_team_admin(client, team_admin_token, db, test_team):
     """
     Test that a team admin can get a specific product.
 
@@ -216,6 +221,10 @@ def test_get_product_as_team_admin(client, team_admin_token, db):
         created_at=datetime.now(UTC)
     )
     db.add(db_product)
+    db.commit()
+
+    # Associate product with the team admin's team
+    db.add(DBTeamProduct(team_id=test_team.id, product_id=db_product.id))
     db.commit()
 
     response = client.get(
