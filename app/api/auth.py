@@ -1,20 +1,48 @@
 import logging
 import secrets
 import os
+import time
 import email_validator
 
 from typing import Optional, List, Union
+
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Form
 from sqlalchemy.orm import Session
 from urllib.parse import urlparse
-from fastapi import HTTPException, status, Response, Request, Form
 from jose import JWTError, jwt
+
 from app.core.config import settings
-from app.core.limit_service import LimitService
+from app.core.dependencies import get_limit_service
+from app.core.roles import UserRole
+from app.core.security import (
+    verify_password,
+    get_password_hash,
+    create_access_token,
+    get_current_user_from_auth,
+)
+from app.core.limit_service import (
+    LimitService,
+    OwnerType,
+    ResourceType,
+    LimitType,
+    UnitType,
+    LimitSource,
+    DEFAULT_KEY_DURATION,
+)
+from app.core.worker import generate_pricing_url
 
 from app.db.database import get_db
+from app.db.models import (
+    DBUser, DBAPIToken, DBRegion
+)
+
+from app.services.litellm import LiteLLMService
+from app.services.dynamodb import DynamoDBService
+from app.services.ses import SESService
+
 from app.schemas.models import (
     Token,
+    TrialAccessResponse,
     User,
     UserCreate,
     APIToken,
@@ -24,23 +52,13 @@ from app.schemas.models import (
     EmailValidation,
     LoginData,
     SignInData,
-    TeamCreate
+    TeamCreate,
+    PrivateAIKeyCreate,
 )
-from app.db.models import (
-    DBUser, DBAPIToken
-)
-from app.core.security import (
-    verify_password,
-    get_password_hash,
-    create_access_token,
-    get_current_user_from_auth,
-)
-from app.services.dynamodb import DynamoDBService
-from app.services.ses import SESService
+
 from app.api.teams import register_team
 from app.api.users import _create_user_in_db
-from app.core.roles import UserRole
-from app.core.worker import generate_pricing_url
+from app.api.private_ai_keys import create_private_ai_key
 
 auth_logger = logging.getLogger(__name__)
 
@@ -682,3 +700,160 @@ def send_validation_url(email: str) -> None:
         )
 
     auth_logger.info(f"Successfully sent validation URL to: {email}")
+
+@router.post("/generate-trial-access", response_model=TrialAccessResponse)
+async def generate_trial_access(
+    response: Response,
+    db: Session = Depends(get_db),
+    limit_service: LimitService = Depends(get_limit_service)
+) -> TrialAccessResponse:
+    """
+    Generate a trial access account using the time and a random string.
+    Creates a new user, team (with user as admin), and private AI key by calling
+    the /private-ai-keys endpoint logic.
+    The AI key will have a limited max budget.
+
+    Returns the private AI key (which includes both LiteLLM token and VectorDB credentials),
+    along with user and team information.
+
+    This function reuses the same logic as the /private-ai-keys endpoint but creates
+    the user and team first, then creates the private AI key with a limited budget.
+    """
+    # Get default region by name and ensure it is active
+    region = db.query(DBRegion).filter(DBRegion.name == settings.DEFAULT_AI_TOKEN_REGION, DBRegion.is_active == True).first()
+
+    # If no region is found, try to get the first active region
+    if not region:
+        region = db.query(DBRegion).filter(DBRegion.is_active == True).first()
+
+    # If still no region is found, raise an error
+    if not region:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No region available for trial access: {settings.DEFAULT_AI_TOKEN_REGION}"
+        )
+
+    litellm_service = LiteLLMService(
+        api_url=region.litellm_api_url,
+        api_key=region.litellm_api_key
+    )
+
+    user = None
+    team = None
+    private_ai_key = None
+
+    try:
+        # Create user
+        user_email = f"trial-{int(time.time())}-{secrets.token_urlsafe(8)}@example.com"
+        user_data = UserCreate(
+            email=user_email,
+            password=None,
+            team_id=None,
+            role=None,
+        )
+        user = _create_user_in_db(user_data, db)
+
+        # Create team with user as admin
+        team_data = TeamCreate(
+            name=f"Trial Team {user.email}",
+            admin_email=user.email,
+            phone="",
+            billing_address=""
+        )
+        team = await register_team(team_data, db)
+
+        # Update user to be part of the team and set as admin
+        user.team_id = team.id
+        user.role = UserRole.ADMIN
+        db.commit()
+        db.refresh(user)
+
+        # Set initial budget for the team and user
+        if settings.ENABLE_LIMITS:
+            trial_max_budget = settings.AI_TRIAL_MAX_BUDGET
+            # Set team budget
+            limit_service.set_limit(
+                owner_type=OwnerType.TEAM,
+                owner_id=team.id,
+                resource_type=ResourceType.BUDGET,
+                limit_type=LimitType.DATA_PLANE,
+                unit=UnitType.DOLLAR,
+                max_value=trial_max_budget,
+                current_value=None,
+                limited_by=LimitSource.MANUAL,
+                set_by="system-trial-generation"
+            )
+            # Set user budget
+            limit_service.set_limit(
+                owner_type=OwnerType.USER,
+                owner_id=user.id,
+                resource_type=ResourceType.BUDGET,
+                limit_type=LimitType.DATA_PLANE,
+                unit=UnitType.DOLLAR,
+                max_value=trial_max_budget,
+                current_value=None,
+                limited_by=LimitSource.MANUAL,
+                set_by="system-trial-generation"
+            )
+
+        # Create private AI key name
+        key_name = f"Trial Access Key for {user.email}"
+
+        # Create private AI key using the same logic as /private-ai-keys endpoint
+        private_ai_key_create = PrivateAIKeyCreate(
+            region_id=region.id,
+            name=key_name,
+            team_id=team.id
+        )
+
+        # Call create_private_ai_key as a regular function (not as an endpoint)
+        # Pass the user as current_user and ADMIN as user_role
+        private_ai_key = await create_private_ai_key(
+            private_ai_key=private_ai_key_create,
+            current_user=user,
+            user_role=UserRole.ADMIN,
+            db=db,
+            limit_service=limit_service
+        )
+
+        # Update the budget to the trial budget
+        trial_max_budget = settings.AI_TRIAL_MAX_BUDGET
+
+        # Get budget_duration for the update_budget call
+        if settings.ENABLE_LIMITS:
+            days_left_in_period, _, _ = limit_service.get_token_restrictions(team.id)
+        else:
+            days_left_in_period = DEFAULT_KEY_DURATION
+
+        # Update the budget to the trial budget
+        await litellm_service.update_budget(
+            litellm_token=private_ai_key.litellm_token,
+            budget_duration=f"{days_left_in_period}d",
+            budget_amount=trial_max_budget
+        )
+
+        token = create_and_set_access_token(response, user.email, user)
+
+        # Return response with key, user, and team info
+        return TrialAccessResponse(
+            key=private_ai_key,
+            user=user,
+            token=token,
+            team_id=team.id,
+            team_name=team.name
+        )
+
+    except Exception as e:
+        auth_logger.error(f"Failed to create anonymous trial account: {e}")
+        if user:
+            db.delete(user)
+        if team:
+            db.delete(team)
+        if private_ai_key:
+            await litellm_service.delete_key(private_ai_key.litellm_token)
+        db.commit()
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create anonymous trial account."
+        )
