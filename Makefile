@@ -117,3 +117,7 @@ migration-downgrade:
 migration-stamp:
 	@read -p "Enter revision to stamp: " revision; \
 	python3 scripts/manage_migrations.py stamp "$$revision"
+
+.PHONY: lint
+lint:
+	ruff check
