@@ -154,11 +154,13 @@ async def create_vector_db(
             db.add(db_ai_key)
             db.commit()
             db.refresh(db_ai_key)
+            return VectorDB.model_validate(db_ai_key.to_dict())
         else:
-            db_ai_key.region = region
             db_ai_key.id = FAKE_ID
 
-        return VectorDB.model_validate(db_ai_key.to_dict())
+            key_data = db_ai_key.to_dict()
+            key_data["region"] = region.name
+            return VectorDB.model_validate(key_data)
     except Exception as e:
         logger.error(f"Failed to create vector database: {str(e)}", exc_info=True)
         db.rollback()
@@ -399,16 +401,17 @@ async def create_llm_token(
             region_id = private_ai_key.region_id
         )
 
-        # If store_result is True, store the LiteLLM token info in DBPrivateAIKey
         if store_result:
             db.add(db_token)
             db.commit()
             db.refresh(db_token)
+            return LiteLLMToken.model_validate(db_token.to_dict())
         else:
-            db_token.region = region
             db_token.id = FAKE_ID
 
-        return LiteLLMToken.model_validate(db_token.to_dict())
+            token_data = db_token.to_dict()
+            token_data["region"] = region.name
+            return LiteLLMToken.model_validate(token_data)
     except Exception as e:
         logger.error(f"Failed to create LiteLLM token: {str(e)}", exc_info=True)
         raise HTTPException(
