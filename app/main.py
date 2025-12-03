@@ -9,6 +9,7 @@ from app.api import auth, private_ai_keys, users, regions, audit, teams, billing
 from app.core.config import settings
 from app.db.database import get_db
 from app.middleware.audit import AuditLogMiddleware
+from app.middleware.caching import CacheControlMiddleware
 from app.middleware.prometheus import PrometheusMiddleware
 from app.middleware.auth import AuthMiddleware
 from app.core.worker import monitor_teams, hard_delete_expired_teams
@@ -210,6 +211,7 @@ app.add_middleware(
 )
 
 app.add_middleware(AuditLogMiddleware)
+app.add_middleware(CacheControlMiddleware)
 
 # Setup Prometheus instrumentation
 instrumentator = Instrumentator(
