@@ -6,8 +6,18 @@ from app.services.ses import SESService
 from botocore.exceptions import ClientError
 from datetime import datetime, timedelta, UTC
 
-def test_read_template_success(mock_sts_client):
+@pytest.fixture
+def mock_templates_dir():
+    """Fixture to mock the templates directory."""
+    mock_dir = MagicMock()
+    mock_file = MagicMock()
+    mock_dir.__truediv__.return_value = mock_file
+    return mock_dir, mock_file
+
+def test_read_template_success(mock_sts_client, mock_templates_dir):
     """Test successful template reading and markdown conversion."""
+    mock_dir, mock_file = mock_templates_dir
+
     # Sample markdown content
     markdown_content = """Test Subject
 This is a **bold** test template.
@@ -20,19 +30,14 @@ This is a **bold** test template.
 <li>Item 2</li>
 </ul>"""
 
+    mock_file.exists.return_value = True
+    mock_file.read_text.return_value = markdown_content
+
     with patch('app.services.ses.role_name', 'test-role'), \
          patch('app.services.ses.ses_region', 'eu-central-1'):
 
         service = SESService()
-
-        # Mock the templates directory and file
-        mock_templates_dir = MagicMock()
-        service.templates_dir = mock_templates_dir
-
-        mock_file = MagicMock()
-        mock_file.exists.return_value = True
-        mock_file.read_text.return_value = markdown_content
-        mock_templates_dir.__truediv__.return_value = mock_file
+        service.templates_dir = mock_dir
 
         subject, text_content, html_content = service._read_template('test_template')
 
@@ -40,39 +45,31 @@ This is a **bold** test template.
         assert text_content == markdown_content.split('\n', 1)[1].strip()
         assert html_content == expected_html
 
-def test_read_template_not_found(mock_sts_client):
+def test_read_template_not_found(mock_sts_client, mock_templates_dir):
     """Test template reading fails when file doesn't exist."""
+    mock_dir, mock_file = mock_templates_dir
+    mock_file.exists.return_value = False
+
     with patch('app.services.ses.role_name', 'test-role'), \
          patch('app.services.ses.ses_region', 'eu-central-1'):
 
         service = SESService()
-
-        # Mock the templates directory and file
-        mock_templates_dir = MagicMock()
-        service.templates_dir = mock_templates_dir
-
-        mock_file = MagicMock()
-        mock_file.exists.return_value = False
-        mock_templates_dir.__truediv__.return_value = mock_file
+        service.templates_dir = mock_dir
 
         with pytest.raises(FileNotFoundError, match="Template nonexistent not found"):
             service._read_template('nonexistent')
 
-def test_read_template_empty(mock_sts_client):
+def test_read_template_empty(mock_sts_client, mock_templates_dir):
     """Test template reading with empty content."""
+    mock_dir, mock_file = mock_templates_dir
+    mock_file.exists.return_value = True
+    mock_file.read_text.return_value = 'Test Subject'
+
     with patch('app.services.ses.role_name', 'test-role'), \
          patch('app.services.ses.ses_region', 'eu-central-1'):
 
         service = SESService()
-
-        # Mock the templates directory and file
-        mock_templates_dir = MagicMock()
-        service.templates_dir = mock_templates_dir
-
-        mock_file = MagicMock()
-        mock_file.exists.return_value = True
-        mock_file.read_text.return_value = 'Test Subject'
-        mock_templates_dir.__truediv__.return_value = mock_file
+        service.templates_dir = mock_dir
 
         subject, text_content, html_content = service._read_template('empty_template')
 
@@ -80,10 +77,15 @@ def test_read_template_empty(mock_sts_client):
         assert text_content == ""
         assert html_content == ""
 
-def test_create_or_update_template_new(mock_sts_client):
+def test_create_or_update_template_new(mock_sts_client, mock_templates_dir):
     """Test creating a new template."""
+    mock_dir, mock_file = mock_templates_dir
+
     markdown_content = """Test Subject
 This is a test template."""
+
+    mock_file.exists.return_value = True
+    mock_file.read_text.return_value = markdown_content
 
     mock_ses = MagicMock()
     mock_ses.get_email_template.side_effect = ClientError(
@@ -116,15 +118,7 @@ This is a test template."""
          patch('boto3.client', side_effect=boto3_side_effect):
 
         service = SESService()
-
-        # Mock the templates directory and file
-        mock_templates_dir = MagicMock()
-        service.templates_dir = mock_templates_dir
-
-        mock_file = MagicMock()
-        mock_file.exists.return_value = True
-        mock_file.read_text.return_value = markdown_content
-        mock_templates_dir.__truediv__.return_value = mock_file
+        service.templates_dir = mock_dir
 
         result = service.create_or_update_template('test_template')
 
@@ -136,10 +130,15 @@ This is a test template."""
         assert 'Text' in call_args['TemplateContent']
         assert 'Html' in call_args['TemplateContent']
 
-def test_create_or_update_template_existing(mock_sts_client):
+def test_create_or_update_template_existing(mock_sts_client, mock_templates_dir):
     """Test updating an existing template."""
+    mock_dir, mock_file = mock_templates_dir
+
     markdown_content = """Test Subject
 This is a test template."""
+
+    mock_file.exists.return_value = True
+    mock_file.read_text.return_value = markdown_content
 
     mock_ses = MagicMock()
     mock_ses.get_email_template.return_value = {'TemplateName': 'test_template-test'}
@@ -169,15 +168,7 @@ This is a test template."""
          patch('boto3.client', side_effect=boto3_side_effect):
 
         service = SESService()
-
-        # Mock the templates directory and file
-        mock_templates_dir = MagicMock()
-        service.templates_dir = mock_templates_dir
-
-        mock_file = MagicMock()
-        mock_file.exists.return_value = True
-        mock_file.read_text.return_value = markdown_content
-        mock_templates_dir.__truediv__.return_value = mock_file
+        service.templates_dir = mock_dir
 
         result = service.create_or_update_template('test_template')
 
