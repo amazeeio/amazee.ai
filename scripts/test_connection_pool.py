@@ -12,7 +12,7 @@ import time
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from sqlalchemy import text
-from app.db.database import engine, get_db
+from app.db.database import engine
 
 def check_pool_status():
     """Check and display current pool status."""
@@ -64,7 +64,7 @@ def check_pool_status():
             """))
             row = result.fetchone()
 
-            print(f"\nPostgreSQL Connection Stats:")
+            print("\nPostgreSQL Connection Stats:")
             print(f"  Total DB connections:     {row[0]}")
             print(f"  Idle connections:         {row[1]}")
             print(f"  Active connections:       {row[2]}")

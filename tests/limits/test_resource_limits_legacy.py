@@ -1,9 +1,8 @@
 import pytest
 from datetime import datetime, UTC
 from fastapi import HTTPException
-from app.db.models import DBUser, DBProduct, DBTeamProduct, DBPrivateAIKey
+from app.db.models import DBUser, DBTeamProduct
 from app.core.limit_service import LimitService
-from app.schemas.limits import ResourceType, OwnerType, LimitType, UnitType, LimitSource
 
 
 def test_legacy_resource_limits_integration(db, test_team, test_product):

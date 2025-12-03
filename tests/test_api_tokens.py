@@ -1,5 +1,3 @@
-import pytest
-from fastapi.testclient import TestClient
 from app.db.models import DBAPIToken
 
 def test_create_api_token(client, test_token, test_user):

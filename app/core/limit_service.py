@@ -725,7 +725,7 @@ class LimitService:
                 limit_check_route_counter.labels(function='check_team_user_limit', route='limit_service_at_capacity').inc()
                 raise HTTPException(
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                    detail=f"Team has reached their maximum user limit."
+                    detail="Team has reached their maximum user limit."
                 )
             limit_check_route_counter.labels(function='check_team_user_limit', route='limit_service_success').inc()
             return
@@ -785,7 +785,7 @@ class LimitService:
                     limit_check_route_counter.labels(function='check_key_limits', route='limit_service_at_capacity').inc()
                     raise HTTPException(
                         status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                        detail=f"Entity has reached their maximum number of AI keys"
+                        detail="Entity has reached their maximum number of AI keys"
                     )
             else:
                 # For service keys, validate the team's service key count
@@ -795,7 +795,7 @@ class LimitService:
                     limit_check_route_counter.labels(function='check_key_limits', route='limit_service_at_capacity').inc()
                     raise HTTPException(
                         status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                        detail=f"Entity has reached their maximum number of AI keys"
+                        detail="Entity has reached their maximum number of AI keys"
                     )
             limit_check_route_counter.labels(function='check_key_limits', route='limit_service_success').inc()
             return
@@ -878,7 +878,7 @@ class LimitService:
                 limit_check_route_counter.labels(function='check_vector_db_limits', route='limit_service_at_capacity').inc()
                 raise HTTPException(
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                    detail=f"Team has reached their maximum vector DB limit."
+                    detail="Team has reached their maximum vector DB limit."
                 )
             limit_check_route_counter.labels(function='check_vector_db_limits', route='limit_service_success').inc()
             return
@@ -1158,7 +1158,7 @@ def setup_default_limits(db: Session) -> None:
     import os
 
     # Only run if ENABLE_LIMITS is true
-    if not os.getenv('ENABLE_LIMITS', 'false').lower() in ('true', '1', 'yes'):
+    if os.getenv('ENABLE_LIMITS', 'false').lower() not in ('true', '1', 'yes'):
         logger.info("ENABLE_LIMITS is not set to true, skipping default limits setup")
         return
 

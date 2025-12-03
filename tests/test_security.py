@@ -1,5 +1,4 @@
 import pytest
-from unittest.mock import AsyncMock, patch
 from fastapi import HTTPException
 from app.core.security import check_sales_or_higher, get_role_min_system_admin
 from app.core.roles import UserRole

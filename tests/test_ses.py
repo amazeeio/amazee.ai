@@ -1,8 +1,7 @@
 import pytest
-from unittest.mock import patch, MagicMock, mock_open
-from datetime import datetime, timedelta, UTC
-import os
 import pathlib
+from unittest.mock import patch, MagicMock
+import os
 import json
 from app.services.ses import SESService
 from botocore.exceptions import ClientError
@@ -23,8 +22,8 @@ This is a **bold** test template.
 
     # Mock the template file
     mock_template_path = pathlib.Path('app/templates/test_template.md')
-    with patch('pathlib.Path.exists', return_value=True), \
-         patch('pathlib.Path.read_text', return_value=markdown_content):
+    with patch.object(mock_template_path, 'exists', return_value=True), \
+         patch.object(mock_template_path, 'read_text', return_value=markdown_content):
 
         service = SESService()
         subject, text_content, html_content = service._read_template('test_template')
@@ -35,15 +34,17 @@ This is a **bold** test template.
 
 def test_read_template_not_found(mock_sts_client):
     """Test template reading fails when file doesn't exist."""
-    with patch('pathlib.Path.exists', return_value=False):
+    mock_template_path = pathlib.Path('app/templates/test_template.md')
+    with patch.object(mock_template_path, 'exists', return_value=False):
         service = SESService()
         with pytest.raises(FileNotFoundError, match="Template nonexistent not found"):
             service._read_template('nonexistent')
 
 def test_read_template_empty(mock_sts_client):
     """Test template reading with empty content."""
-    with patch('pathlib.Path.exists', return_value=True), \
-         patch('pathlib.Path.read_text', return_value='Test Subject'):
+    mock_template_path = pathlib.Path('app/templates/test_template.md')
+    with patch.object(mock_template_path, 'exists', return_value=True), \
+         patch.object(mock_template_path, 'read_text', return_value='Test Subject'):
 
         service = SESService()
         subject, text_content, html_content = service._read_template('empty_template')

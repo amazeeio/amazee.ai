@@ -1,6 +1,6 @@
 import pytest
 from datetime import datetime, UTC, timedelta
-from unittest.mock import Mock, patch, AsyncMock, MagicMock
+from unittest.mock import patch, AsyncMock
 from sqlalchemy.orm import Session
 
 from app.db.models import (
@@ -480,7 +480,7 @@ async def test_hard_delete_rollback_on_error(mock_litellm, db: Session, test_tea
         pass  # Job should handle errors internally
 
     # Verify team still exists (rollback occurred)
-    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    db.query(DBTeam).filter(DBTeam.id == team_id).first()
     # Team might be deleted or might not be, depending on where error occurred
     # The important thing is that the job didn't crash
 
