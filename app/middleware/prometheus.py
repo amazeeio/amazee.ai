@@ -53,7 +53,8 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
             "/auth/login",
             "/auth/register",
             "/auth/validate-email",
-            "/auth/sign-in"
+            "/auth/sign-in",
+            "/auth/generate-trial-access"
         ]
 
         response = await call_next(request)
