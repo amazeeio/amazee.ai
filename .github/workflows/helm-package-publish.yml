@@ -137,7 +137,7 @@ jobs:
           for chart in */; do
             chart_name=$(basename "$chart")
             echo "Testing chart: $chart_name"
-            helm template test-$chart_name "$chart_name" > /dev/null
+            helm template "test-$chart_name" "$chart_name" > /dev/null
             echo "✅ $chart_name chart template test passed"
           done
 
