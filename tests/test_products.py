@@ -1,7 +1,4 @@
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
-from app.db.models import DBProduct, DBUser, DBTeam, DBTeamProduct
+from app.db.models import DBProduct, DBTeam, DBTeamProduct
 from datetime import datetime, UTC
 
 def test_create_product_as_system_admin(client, admin_token, db):

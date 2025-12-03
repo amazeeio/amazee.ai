@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, Query, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import Optional
 from datetime import datetime
-from sqlalchemy import distinct, text, cast, String
+from sqlalchemy import distinct, cast, String
 from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
 from app.schemas.models import AuditLogResponse, PaginatedAuditLogResponse, AuditLogMetadata

@@ -1,11 +1,10 @@
 import pytest
-from unittest.mock import patch, MagicMock, mock_open
-from datetime import datetime, timedelta, UTC
+from unittest.mock import patch, MagicMock
 import os
-import pathlib
 import json
 from app.services.ses import SESService
 from botocore.exceptions import ClientError
+from datetime import datetime, timedelta, UTC
 
 def test_read_template_success(mock_sts_client):
     """Test successful template reading and markdown conversion."""
@@ -21,12 +20,20 @@ This is a **bold** test template.
 <li>Item 2</li>
 </ul>"""
 
-    # Mock the template file
-    mock_template_path = pathlib.Path('app/templates/test_template.md')
-    with patch('pathlib.Path.exists', return_value=True), \
-         patch('pathlib.Path.read_text', return_value=markdown_content):
+    with patch('app.services.ses.role_name', 'test-role'), \
+         patch('app.services.ses.ses_region', 'eu-central-1'):
 
         service = SESService()
+
+        # Mock the templates directory and file
+        mock_templates_dir = MagicMock()
+        service.templates_dir = mock_templates_dir
+
+        mock_file = MagicMock()
+        mock_file.exists.return_value = True
+        mock_file.read_text.return_value = markdown_content
+        mock_templates_dir.__truediv__.return_value = mock_file
+
         subject, text_content, html_content = service._read_template('test_template')
 
         assert subject == "Test Subject"
@@ -35,17 +42,38 @@ This is a **bold** test template.
 
 def test_read_template_not_found(mock_sts_client):
     """Test template reading fails when file doesn't exist."""
-    with patch('pathlib.Path.exists', return_value=False):
+    with patch('app.services.ses.role_name', 'test-role'), \
+         patch('app.services.ses.ses_region', 'eu-central-1'):
+
         service = SESService()
+
+        # Mock the templates directory and file
+        mock_templates_dir = MagicMock()
+        service.templates_dir = mock_templates_dir
+
+        mock_file = MagicMock()
+        mock_file.exists.return_value = False
+        mock_templates_dir.__truediv__.return_value = mock_file
+
         with pytest.raises(FileNotFoundError, match="Template nonexistent not found"):
             service._read_template('nonexistent')
 
 def test_read_template_empty(mock_sts_client):
     """Test template reading with empty content."""
-    with patch('pathlib.Path.exists', return_value=True), \
-         patch('pathlib.Path.read_text', return_value='Test Subject'):
+    with patch('app.services.ses.role_name', 'test-role'), \
+         patch('app.services.ses.ses_region', 'eu-central-1'):
 
         service = SESService()
+
+        # Mock the templates directory and file
+        mock_templates_dir = MagicMock()
+        service.templates_dir = mock_templates_dir
+
+        mock_file = MagicMock()
+        mock_file.exists.return_value = True
+        mock_file.read_text.return_value = 'Test Subject'
+        mock_templates_dir.__truediv__.return_value = mock_file
+
         subject, text_content, html_content = service._read_template('empty_template')
 
         assert subject == "Test Subject"
@@ -63,11 +91,41 @@ This is a test template."""
         'GetEmailTemplate'
     )
 
-    with patch('pathlib.Path.exists', return_value=True), \
-         patch('pathlib.Path.read_text', return_value=markdown_content), \
-         patch('boto3.client', return_value=mock_ses):
+    # Mock STS for auth
+    mock_sts = MagicMock()
+    mock_sts.get_caller_identity.return_value = {'Account': '123456789012'}
+    mock_sts.assume_role.return_value = {
+        'Credentials': {
+            'AccessKeyId': 'test-access-key',
+            'SecretAccessKey': 'test-secret-key',
+            'SessionToken': 'test-session-token',
+            'Expiration': datetime.now(UTC) + timedelta(hours=1)
+        }
+    }
+
+    def boto3_side_effect(service_name, **kwargs):
+        if service_name == 'sesv2':
+            return mock_ses
+        if service_name == 'sts':
+            return mock_sts
+        return MagicMock()
+
+    with patch('app.services.ses.role_name', 'test-role'), \
+         patch('app.services.ses.ses_region', 'eu-central-1'), \
+         patch('app.services.ses.env_suffix', 'test'), \
+         patch('boto3.client', side_effect=boto3_side_effect):
 
         service = SESService()
+
+        # Mock the templates directory and file
+        mock_templates_dir = MagicMock()
+        service.templates_dir = mock_templates_dir
+
+        mock_file = MagicMock()
+        mock_file.exists.return_value = True
+        mock_file.read_text.return_value = markdown_content
+        mock_templates_dir.__truediv__.return_value = mock_file
+
         result = service.create_or_update_template('test_template')
 
         assert result is True
@@ -86,11 +144,41 @@ This is a test template."""
     mock_ses = MagicMock()
     mock_ses.get_email_template.return_value = {'TemplateName': 'test_template-test'}
 
-    with patch('pathlib.Path.exists', return_value=True), \
-         patch('pathlib.Path.read_text', return_value=markdown_content), \
-         patch('boto3.client', return_value=mock_ses):
+    # Mock STS for auth
+    mock_sts = MagicMock()
+    mock_sts.get_caller_identity.return_value = {'Account': '123456789012'}
+    mock_sts.assume_role.return_value = {
+        'Credentials': {
+            'AccessKeyId': 'test-access-key',
+            'SecretAccessKey': 'test-secret-key',
+            'SessionToken': 'test-session-token',
+            'Expiration': datetime.now(UTC) + timedelta(hours=1)
+        }
+    }
+
+    def boto3_side_effect(service_name, **kwargs):
+        if service_name == 'sesv2':
+            return mock_ses
+        if service_name == 'sts':
+            return mock_sts
+        return MagicMock()
+
+    with patch('app.services.ses.role_name', 'test-role'), \
+         patch('app.services.ses.ses_region', 'eu-central-1'), \
+         patch('app.services.ses.env_suffix', 'test'), \
+         patch('boto3.client', side_effect=boto3_side_effect):
 
         service = SESService()
+
+        # Mock the templates directory and file
+        mock_templates_dir = MagicMock()
+        service.templates_dir = mock_templates_dir
+
+        mock_file = MagicMock()
+        mock_file.exists.return_value = True
+        mock_file.read_text.return_value = markdown_content
+        mock_templates_dir.__truediv__.return_value = mock_file
+
         result = service.create_or_update_template('test_template')
 
         assert result is True
@@ -111,7 +199,29 @@ def test_send_email_success(mock_sts_client):
         'code': '123456'
     }
 
-    with patch('boto3.client', return_value=mock_ses), \
+    # Mock STS for auth
+    mock_sts = MagicMock()
+    mock_sts.get_caller_identity.return_value = {'Account': '123456789012'}
+    mock_sts.assume_role.return_value = {
+        'Credentials': {
+            'AccessKeyId': 'test-access-key',
+            'SecretAccessKey': 'test-secret-key',
+            'SessionToken': 'test-session-token',
+            'Expiration': datetime.now(UTC) + timedelta(hours=1)
+        }
+    }
+
+    def boto3_side_effect(service_name, **kwargs):
+        if service_name == 'sesv2':
+            return mock_ses
+        if service_name == 'sts':
+            return mock_sts
+        return MagicMock()
+
+    with patch('app.services.ses.role_name', 'test-role'), \
+         patch('app.services.ses.ses_region', 'eu-central-1'), \
+         patch('app.services.ses.env_suffix', 'test'), \
+         patch('boto3.client', side_effect=boto3_side_effect), \
          patch.dict(os.environ, {'SES_SENDER_EMAIL': 'test@example.com'}):
 
         service = SESService()
@@ -137,7 +247,29 @@ def test_send_email_failure(mock_sts_client):
         'SendEmail'
     )
 
-    with patch('boto3.client', return_value=mock_ses), \
+    # Mock STS for auth
+    mock_sts = MagicMock()
+    mock_sts.get_caller_identity.return_value = {'Account': '123456789012'}
+    mock_sts.assume_role.return_value = {
+        'Credentials': {
+            'AccessKeyId': 'test-access-key',
+            'SecretAccessKey': 'test-secret-key',
+            'SessionToken': 'test-session-token',
+            'Expiration': datetime.now(UTC) + timedelta(hours=1)
+        }
+    }
+
+    def boto3_side_effect(service_name, **kwargs):
+        if service_name == 'sesv2':
+            return mock_ses
+        if service_name == 'sts':
+            return mock_sts
+        return MagicMock()
+
+    with patch('app.services.ses.role_name', 'test-role'), \
+         patch('app.services.ses.ses_region', 'eu-central-1'), \
+         patch('app.services.ses.env_suffix', 'test'), \
+         patch('boto3.client', side_effect=boto3_side_effect), \
          patch.dict(os.environ, {'SES_SENDER_EMAIL': 'test@example.com'}):
 
         service = SESService()

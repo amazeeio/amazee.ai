@@ -1,6 +1,6 @@
 import pytest
 from fastapi import HTTPException
-from app.core.rbac import RBACDependency, require_system_admin, require_team_admin, require_key_creator_or_higher, require_read_only_or_higher, require_sales_or_higher
+from app.core.rbac import require_system_admin, require_team_admin, require_key_creator_or_higher, require_read_only_or_higher, require_sales_or_higher
 from app.core.roles import UserRole
 from app.db.models import DBUser
 

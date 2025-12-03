@@ -1,5 +1,5 @@
 from fastapi.testclient import TestClient
-from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBProduct, DBTeamProduct, DBRegion, DBTeamRegion, DBLimitedResource
+from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBProduct, DBTeamProduct, DBRegion, DBTeamRegion
 from app.main import app
 from app.core.security import get_password_hash
 from app.core.limit_service import LimitService, setup_default_limits

@@ -1,6 +1,5 @@
-import pytest
 from app.db.models import DBUser, DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey, DBLimitedResource
-from app.core.limit_service import LimitService, DEFAULT_KEYS_PER_USER, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
+from app.core.limit_service import LimitService, DEFAULT_KEYS_PER_USER
 from app.schemas.limits import ResourceType, LimitSource, OwnerType, LimitType, UnitType
 from app.core.config import settings
 from datetime import datetime, UTC
@@ -467,7 +466,7 @@ def test_create_user_with_limits_enabled(client, team_admin_token, test_team, db
         }
     )
     assert response.status_code == 402
-    assert f"Team has reached their maximum user limit" in response.json()["detail"]
+    assert "Team has reached their maximum user limit" in response.json()["detail"]
 
 
 def test_create_user_creates_default_limits(client, admin_token, test_team, db):

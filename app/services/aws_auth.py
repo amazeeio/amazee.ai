@@ -2,7 +2,6 @@ import boto3
 from botocore.exceptions import ClientError
 from typing import Dict, Any, Callable
 from datetime import datetime, timedelta, UTC
-import os
 
 _credentials_map: Dict[str, Dict[str, Any]] = {}
 

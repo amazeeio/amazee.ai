@@ -1,6 +1,6 @@
 import pytest
 import asyncio
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import patch, MagicMock
 from app.services.stripe import create_zero_rated_stripe_subscription
 from fastapi import HTTPException
 import stripe

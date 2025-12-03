@@ -50,7 +50,7 @@ async def search_users(
         DBTeam, DBUser.team_id == DBTeam.id
     ).filter(
         DBUser.email.ilike(f"%{email}%"),
-        DBUser.is_active == True,
+        DBUser.is_active.is_(True),
         (DBUser.team_id.is_(None)) | (DBTeam.deleted_at.is_(None))
     ).limit(10).all()
     return users
@@ -71,7 +71,7 @@ async def list_users(
         users = db.query(DBUser, DBTeam.name.label('team_name')).outerjoin(
             DBTeam, DBUser.team_id == DBTeam.id
         ).filter(
-            DBUser.is_active == True,
+            DBUser.is_active.is_(True),
             (DBUser.team_id.is_(None)) | (DBTeam.deleted_at.is_(None))
         ).all()
     else:
@@ -81,7 +81,7 @@ async def list_users(
             DBTeam, DBUser.team_id == DBTeam.id
         ).filter(
             DBUser.team_id == current_user.team_id,
-            DBUser.is_active == True,
+            DBUser.is_active.is_(True),
             DBTeam.deleted_at.is_(None)
         ).all()
 

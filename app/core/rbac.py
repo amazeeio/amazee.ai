@@ -1,6 +1,6 @@
-from fastapi import Depends, HTTPException, status
-from typing import List, Union, Set, Callable
-from app.core.roles import UserRole, UserType
+from fastapi import HTTPException, status
+from typing import List
+from app.core.roles import UserRole
 from app.db.models import DBUser
 import logging
 

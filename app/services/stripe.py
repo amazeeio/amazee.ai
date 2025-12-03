@@ -44,12 +44,12 @@ def decode_stripe_event( payload: bytes, signature: str, webhook_secret: str) ->
         return event
 
     # If the signature doesn't match, assume bad intent
-    except stripe.error.SignatureVerificationError as e:
+    except stripe.error.SignatureVerificationError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Not found"
         )
-    except ValueError as e:
+    except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid payload"

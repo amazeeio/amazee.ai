@@ -1,12 +1,11 @@
 import pytest
 from datetime import datetime, UTC, timedelta
-from fastapi import HTTPException
 from jose import jwt
 from app.core.worker import generate_token, generate_pricing_url, get_team_admin_email
 from app.core.config import settings
 from app.db.models import DBUser, DBTeam
 from app.core.security import create_access_token
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 def test_generate_team_admin_token(db, test_team, test_team_admin):
     """Test generating a JWT token for a team admin"""
