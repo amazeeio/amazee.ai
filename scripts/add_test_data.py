@@ -9,7 +9,7 @@ import asyncio
 # Add the parent directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker
 from app.db.database import engine
 from app.db.models import DBTeam, DBUser, DBProduct, DBTeamProduct, DBRegion, DBPrivateAIKey
 from app.core.security import get_password_hash
@@ -251,7 +251,7 @@ def create_test_data():
 
             print(f"   Created team: {team5.name} (ID: {team5.id})")
             print(f"   Created user: {user5.email} (ID: {user5.id})")
-            print(f"   No products associated")
+            print("   No products associated")
         else:
             team5 = existing_teams["Test Team 5 - No Products"]
             print(f"\n5. Team 5 already exists: {team5.name} (ID: {team5.id})")
@@ -325,7 +325,7 @@ def create_test_data():
 
             print(f"   Created team: {team7.name} (ID: {team7.id})")
             print(f"   Created user: {user7.email} (ID: {user7.id})")
-            print(f"   No products associated")
+            print("   No products associated")
         else:
             team7 = existing_teams["Test Team 7 - 95 Days No Product"]
             print(f"\n7. Team 7 already exists: {team7.name} (ID: {team7.id})")
@@ -399,7 +399,7 @@ def create_test_data():
 
             print(f"   Created team: {team9.name} (ID: {team9.id})")
             print(f"   Created user: {user9.email} (ID: {user9.id})")
-            print(f"   No products associated")
+            print("   No products associated")
         else:
             team9 = existing_teams["Test Team 9 - 80 Days No Product"]
             print(f"\n9. Team 9 already exists: {team9.name} (ID: {team9.id})")
@@ -473,7 +473,7 @@ def create_test_data():
 
             print(f"   Created team: {team11.name} (ID: {team11.id})")
             print(f"   Created user: {user11.email} (ID: {user11.id})")
-            print(f"   No products associated")
+            print("   No products associated")
         else:
             team11 = existing_teams["Test Team 11 - 75 Days No Product"]
             print(f"\n11. Team 11 already exists: {team11.name} (ID: {team11.id})")
@@ -508,13 +508,13 @@ def create_test_data():
             print(f"   Created team: {team12.name} (ID: {team12.id})")
             print(f"   Created user: {user12.email} (ID: {user12.id})")
             print(f"   Retention warning sent: {team12.retention_warning_sent_at.strftime('%Y-%m-%d')}")
-            print(f"   No products associated")
+            print("   No products associated")
         else:
             team12 = existing_teams["Test Team 12 - 95 Days Retention Warning"]
             print(f"\n12. Team 12 already exists: {team12.name} (ID: {team12.id})")
 
         print("\n✅ Test data created successfully!")
-        print(f"\nSummary:")
+        print("\nSummary:")
         print(f"- Team 1: {team1.name} (created 32 days ago)")
         print(f"- Team 2: {team2.name} (always_free=True, created 20 days ago)")
         print(f"- Team 3: {team3.name} (with product association)")
@@ -527,7 +527,7 @@ def create_test_data():
         print(f"- Team 10: {team10.name} (with product, created 75 days ago)")
         print(f"- Team 11: {team11.name} (no products, created 75 days ago)")
         print(f"- Team 12: {team12.name} (no products, created 95 days ago, retention warning sent 14 days ago)")
-        print(f"- Total users created: 12")
+        print("- Total users created: 12")
         print(f"- Product used: {selected_product.name}")
 
     except Exception as e:
@@ -544,15 +544,15 @@ async def create_test_keys(count: int):
 
     try:
         team = db.query(DBTeam).first()
-        region = db.query(DBRegion).filter(DBRegion.is_active == True).first()
+        region = db.query(DBRegion).filter(DBRegion.is_active.is_(True)).first()
         if not region:
-            print(f"No active regions, not creating test keys")
+            print("No active regions, not creating test keys")
             return
 
         # Check if test keys already exist
         existing_key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.name == "auto_test_0").first()
         if existing_key:
-            print(f"⚠️  Test keys already exist (found auto_test_0), skipping key creation")
+            print("⚠️  Test keys already exist (found auto_test_0), skipping key creation")
             return
 
         print(f"Creating {count} test keys for team {team.name}...")

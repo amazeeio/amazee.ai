@@ -1,4 +1,3 @@
-import pytest
 from datetime import datetime, UTC, timedelta
 from app.core.locking import try_acquire_lock, release_lock
 from app.db.models import DBSystemSecret

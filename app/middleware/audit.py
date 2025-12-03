@@ -1,6 +1,5 @@
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
-from sqlalchemy.orm import Session
 from app.db.models import DBAuditLog
 from app.db.database import get_db
 from app.middleware.prometheus import audit_events_total, audit_event_duration_seconds

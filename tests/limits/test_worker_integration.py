@@ -1,7 +1,6 @@
-import pytest
 from datetime import datetime, UTC
 from unittest.mock import Mock, patch
-from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBLimitedResource
+from app.db.models import DBUser, DBPrivateAIKey, DBLimitedResource
 from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType
 from app.core.worker import set_team_and_user_limits
 

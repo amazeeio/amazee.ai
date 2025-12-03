@@ -6,7 +6,6 @@ Script to wait for PostgreSQL database to be ready and create it if it doesn't e
 import sys
 import psycopg2
 import os
-import re
 from urllib.parse import urlparse
 import time
 
@@ -29,7 +28,7 @@ def create_database_if_not_exists():
     except psycopg2.OperationalError as e:
         # If database doesn't exist, try to create it
         if "does not exist" in str(e) or "database" in str(e).lower():
-            print(f"Database does not exist, attempting to create it...")
+            print("Database does not exist, attempting to create it...")
             try:
                 # Connect to postgres database to create the target database
                 conn = psycopg2.connect(base_url)

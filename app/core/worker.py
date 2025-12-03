@@ -1,4 +1,3 @@
-import re
 from datetime import datetime, UTC, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, and_
@@ -178,13 +177,13 @@ async def handle_stripe_event_background(event):
     db = next(get_db())
     try:
         event_type = event.type
-        if not event_type in KNOWN_EVENTS:
+        if event_type not in KNOWN_EVENTS:
             logger.info(f"Unknown event type: {event_type}")
             return
         event_object = event.data.object
         customer_id = event_object.customer
         if not customer_id:
-            logger.warning(f"No customer ID found in event, cannot complete processing")
+            logger.warning("No customer ID found in event, cannot complete processing")
             return
         # Success Events
         if event_type in SUBSCRIPTION_SUCCESS_EVENTS:

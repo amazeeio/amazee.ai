@@ -1,6 +1,5 @@
-from app.services.aws_auth import _check_credentials, _assume_role, get_credentials
+from app.services.aws_auth import _check_credentials, get_credentials
 from datetime import datetime, timedelta, UTC
-import pytest
 
 def test_check_credentials_refresh(mock_sts_client):
     """Test that credentials are refreshed when they are about to expire."""

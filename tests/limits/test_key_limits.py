@@ -1,4 +1,3 @@
-import pytest
 
 from app.db.models import DBLimitedResource
 from app.core.limit_service import LimitService

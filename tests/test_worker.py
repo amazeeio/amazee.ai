@@ -1517,7 +1517,7 @@ async def test_reconcile_team_keys_update_budget_parameter_issue(mock_litellm, d
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the function with renewal period days and budget amount
-    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+    await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
 
     # Verify update_budget was called with correct parameters
     assert mock_instance.update_budget.call_count == 1
@@ -2637,7 +2637,7 @@ async def test_remove_product_should_verify_subscription_status(mock_get_subscri
     mock_get_subscriptions.return_value = [("sub_123", test_product.id)]
 
     # Attempt to remove product (simulating checkout.session.expired event)
-    result = await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
+    await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
 
     # Verify the function was called to check subscription status
     mock_get_subscriptions.assert_called_once_with(test_team.stripe_customer_id)
@@ -2675,7 +2675,7 @@ async def test_remove_product_removes_when_subscription_inactive(mock_get_subscr
     mock_get_subscriptions.return_value = []  # No active subscriptions
 
     # Attempt to remove product (simulating checkout.session.expired event)
-    result = await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
+    await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
 
     # Verify the function was called to check subscription status
     mock_get_subscriptions.assert_called_once_with(test_team.stripe_customer_id)

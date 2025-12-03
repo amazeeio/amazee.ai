@@ -1,7 +1,7 @@
 import pytest
 from datetime import datetime, UTC
 from fastapi import HTTPException
-from app.db.models import DBUser, DBProduct, DBTeamProduct, DBPrivateAIKey, DBTeam
+from app.db.models import DBProduct, DBTeamProduct, DBPrivateAIKey, DBTeam
 from app.core.limit_service import LimitService
 from app.schemas.limits import ResourceType, OwnerType, LimitType, UnitType, LimitSource
 

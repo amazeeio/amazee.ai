@@ -2,7 +2,7 @@ import pytest
 from datetime import datetime, UTC
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
-from app.db.models import DBLimitedResource, DBTeam, DBProduct, DBTeamProduct, DBUser
+from app.db.models import DBLimitedResource, DBProduct, DBTeamProduct, DBUser
 from app.core.limit_service import LimitService
 from app.schemas.limits import LimitType, ResourceType, UnitType, OwnerType, LimitSource
 
@@ -159,8 +159,8 @@ def test_product_cannot_override_manual_limits(db: Session, test_team):
     team_limits = limit_service.get_team_limits(test_team)
     assert len(team_limits) == 2
 
-    user_limit = next(l for l in team_limits if l.resource == ResourceType.USER)
-    key_limit = next(l for l in team_limits if l.resource == ResourceType.SERVICE_KEY)
+    user_limit = next(limit for limit in team_limits if limit.resource == ResourceType.USER)
+    key_limit = next(limit for limit in team_limits if limit.resource == ResourceType.SERVICE_KEY)
 
     assert user_limit.limited_by == LimitSource.MANUAL
     assert key_limit.limited_by == LimitSource.PRODUCT
@@ -231,8 +231,8 @@ def test_multiple_products_uses_highest_limits(db: Session, test_team):
     team_limits = limit_service.get_team_limits(test_team)
     assert len(team_limits) == 2
 
-    user_limit = next(l for l in team_limits if l.resource == ResourceType.USER)
-    key_limit = next(l for l in team_limits if l.resource == ResourceType.SERVICE_KEY)
+    user_limit = next(limit for limit in team_limits if limit.resource == ResourceType.USER)
+    key_limit = next(limit for limit in team_limits if limit.resource == ResourceType.SERVICE_KEY)
 
     assert user_limit.max_value == 10.0  # From premium plan
     assert key_limit.max_value == 10.0   # From basic plan

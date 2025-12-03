@@ -1,9 +1,8 @@
 import pytest
 from datetime import datetime, UTC
-from app.db.models import DBLimitedResource, DBTeamProduct
+from app.db.models import DBLimitedResource
 from app.core.limit_service import LimitService
 from app.schemas.limits import LimitType, ResourceType, UnitType, OwnerType, LimitSource
-from app.core.limit_service import DEFAULT_USER_COUNT, DEFAULT_SERVICE_KEYS
 
 
 def test_get_team_limits_returns_all_limits(db, test_team):

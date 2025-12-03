@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import patch, AsyncMock
 from app.db.models import DBTeamProduct
 from fastapi import HTTPException, status

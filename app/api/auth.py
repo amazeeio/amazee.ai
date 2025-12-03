@@ -7,10 +7,8 @@ from typing import Optional, List, Union
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Form
 from sqlalchemy.orm import Session
 from urllib.parse import urlparse
-from fastapi import HTTPException, status, Response, Request, Form
 from jose import JWTError, jwt
 from app.core.config import settings
-from app.core.limit_service import LimitService
 
 from app.db.database import get_db
 from app.schemas.models import (

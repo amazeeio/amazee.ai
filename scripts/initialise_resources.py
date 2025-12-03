@@ -31,7 +31,7 @@ def init_database() -> Session:
     alembic_cfg = alembic.config.Config(os.path.join(os.path.dirname(__file__), "..", "app", "migrations", "alembic.ini"))
     alembic_cfg.set_main_option("script_location", "app/migrations")
 
-    if not "alembic_version" in existing_tables:
+    if "alembic_version" not in existing_tables:
         alembic.command.ensure_version(alembic_cfg)
 
     if not existing_tables:
@@ -59,7 +59,7 @@ def init_database() -> Session:
     db = SessionLocal()
 
     try:
-        admin_exists = db.query(DBUser).filter(DBUser.is_admin == True).first()
+        admin_exists = db.query(DBUser).filter(DBUser.is_admin.is_(True)).first()
         if not admin_exists:
             print("Creating initial admin user...")
             admin_user = DBUser(
