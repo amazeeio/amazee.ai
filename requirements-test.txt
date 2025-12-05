@@ -3,6 +3,6 @@ pytest-asyncio==0.23.5
 pytest-cov==4.1.0
 httpx==0.28.1
 requests-mock==1.12.1
-faker==22.7.0
+faker==38.2.0
 pytest-env==1.1.5
 bump-my-version==0.28.1
