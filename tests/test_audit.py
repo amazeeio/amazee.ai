@@ -1,4 +1,3 @@
-import pytest
 from datetime import datetime, UTC, timedelta
 from app.db.models import DBAuditLog, DBUser
 from app.core.security import get_password_hash

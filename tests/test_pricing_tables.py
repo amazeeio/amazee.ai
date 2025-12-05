@@ -1,4 +1,3 @@
-import pytest
 from fastapi import status
 from datetime import datetime, UTC
 from app.db.models import DBUser, DBPricingTable
@@ -21,7 +20,7 @@ def test_create_pricing_table_system_admin(client, db, admin_token):
     # Verify in database
     pricing_table = db.query(DBPricingTable).filter(
         DBPricingTable.table_type == "standard",
-        DBPricingTable.is_active == True
+        DBPricingTable.is_active.is_(True)
     ).first()
     assert pricing_table is not None
     assert pricing_table.pricing_table_id == "test_pricing_table_123"
@@ -178,7 +177,7 @@ def test_update_existing_pricing_table(client, db, test_admin):
     # Verify only one pricing table exists with updated value
     pricing_tables = db.query(DBPricingTable).filter(
         DBPricingTable.table_type == "standard",
-        DBPricingTable.is_active == True
+        DBPricingTable.is_active.is_(True)
     ).all()
     assert len(pricing_tables) == 1
     assert pricing_tables[0].pricing_table_id == "updated_pricing_table"
@@ -241,7 +240,7 @@ def test_create_always_free_pricing_table(client, db, admin_token):
     # Verify in database
     pricing_table = db.query(DBPricingTable).filter(
         DBPricingTable.table_type == "always_free",
-        DBPricingTable.is_active == True
+        DBPricingTable.is_active.is_(True)
     ).first()
     assert pricing_table is not None
     assert pricing_table.pricing_table_id == "test_always_free_table_123"
@@ -267,7 +266,7 @@ def test_create_gpt_pricing_table(client, db, admin_token):
     # Verify in database
     pricing_table = db.query(DBPricingTable).filter(
         DBPricingTable.table_type == "gpt",
-        DBPricingTable.is_active == True
+        DBPricingTable.is_active.is_(True)
     ).first()
     assert pricing_table is not None
     assert pricing_table.pricing_table_id == "test_gpt_table_123"
@@ -361,7 +360,7 @@ def test_update_always_free_pricing_table(client, db, admin_token):
     # Verify only one always-free pricing table exists with updated value
     pricing_tables = db.query(DBPricingTable).filter(
         DBPricingTable.table_type == "always_free",
-        DBPricingTable.is_active == True
+        DBPricingTable.is_active.is_(True)
     ).all()
     assert len(pricing_tables) == 1
     assert pricing_tables[0].pricing_table_id == "updated_always_free_table"
@@ -465,7 +464,7 @@ def test_update_pricing_table_with_custom_publishable_key(client, db, admin_toke
     # Verify in database
     pricing_table = db.query(DBPricingTable).filter(
         DBPricingTable.table_type == "standard",
-        DBPricingTable.is_active == True
+        DBPricingTable.is_active.is_(True)
     ).first()
     assert pricing_table.pricing_table_id == "updated_pricing_table"
     assert pricing_table.stripe_publishable_key == "pk_updated_key"

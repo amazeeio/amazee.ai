@@ -32,7 +32,7 @@ async def create_pricing_table(
     # Check if the table already exists
     existing_table = db.query(DBPricingTable).filter(
         DBPricingTable.table_type == pricing_table.table_type,
-        DBPricingTable.is_active == True
+        DBPricingTable.is_active.is_(True)
     ).first()
 
     if existing_table:
@@ -98,7 +98,7 @@ async def get_pricing_table(
     # Get the pricing table
     pricing_table = db.query(DBPricingTable).filter(
         DBPricingTable.table_type == table_type,
-        DBPricingTable.is_active == True
+        DBPricingTable.is_active.is_(True)
     ).first()
 
     if not pricing_table:
@@ -132,7 +132,7 @@ async def delete_pricing_table(
 
     pricing_table = db.query(DBPricingTable).filter(
         DBPricingTable.table_type == table_type,
-        DBPricingTable.is_active == True
+        DBPricingTable.is_active.is_(True)
     ).first()
     if not pricing_table:
         raise HTTPException(
@@ -156,7 +156,7 @@ async def get_all_pricing_tables(
     """
     # Get all active pricing tables
     pricing_tables = db.query(DBPricingTable).filter(
-        DBPricingTable.is_active == True
+        DBPricingTable.is_active.is_(True)
     ).all()
 
     # Build response dictionary

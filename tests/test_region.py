@@ -1,7 +1,6 @@
-import pytest
 from fastapi import HTTPException
 from app.db.models import DBTeam, DBRegion
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch
 
 @patch("app.api.regions.validate_litellm_endpoint")
 @patch("app.api.regions.validate_database_connection")
@@ -389,7 +388,7 @@ def test_delete_region_success(client, admin_token, db):
 
     # Verify the region is marked as inactive by querying fresh from DB
     deleted_region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
-    assert deleted_region.is_active == False
+    assert not deleted_region.is_active
 
 def test_delete_region_non_admin(client, test_token, test_region):
     """
@@ -436,7 +435,7 @@ def test_delete_region_with_active_keys(mock_client_class, client, admin_token, 
         }
     )
     assert response.status_code == 200
-    test_key = response.json()
+    response.json()
 
     response = client.delete(
         f"/regions/{test_region.id}",
@@ -464,7 +463,7 @@ def test_delete_region_with_active_vector_db(mock_client_class, client, admin_to
         }
     )
     assert response.status_code == 200
-    test_db = response.json()
+    response.json()
 
     response = client.delete(
         f"/regions/{test_region.id}",
@@ -726,7 +725,7 @@ def test_create_dedicated_region(mock_validate_db, mock_validate_litellm, client
     assert response.status_code == 200
     data = response.json()
     assert data["name"] == region_data["name"]
-    assert data["is_dedicated"] == True
+    assert data["is_dedicated"]
 
     # Verify validation functions were called
     mock_validate_litellm.assert_called_once_with(

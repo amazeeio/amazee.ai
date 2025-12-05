@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from typing import List, Optional
+from typing import List
 from datetime import datetime, UTC
 import logging
 
@@ -350,7 +350,7 @@ async def list_teams_for_sales(
         unreachable_endpoints = set()
 
         # Pre-fetch all regions once to avoid repeated queries
-        all_regions = db.query(DBRegion).filter(DBRegion.is_active == True).all()
+        all_regions = db.query(DBRegion).filter(DBRegion.is_active.is_(True)).all()
         regions_map = {r.id: r for r in all_regions}
 
         # Get all teams with their basic information
@@ -362,7 +362,7 @@ async def list_teams_for_sales(
             # Get team products
             team_products = db.query(DBTeamProduct).join(DBProduct).filter(
                 DBTeamProduct.team_id == team.id,
-                DBProduct.active == True
+                DBProduct.active.is_(True)
             ).all()
 
             products = [
@@ -421,7 +421,7 @@ async def list_teams_for_sales(
                             key_data = await litellm_service.get_key_info(key.litellm_token)
                             key_spend = key_data.get("info", {}).get("spend", 0.0)
                             total_spend += float(key_spend)
-                        except Exception as e:
+                        except Exception:
                             # Track unreachable endpoint for logging at the end (only once per region)
                             region = regions_map[key.region_id]
                             endpoint_info = f"Region: {region.name}"
@@ -662,7 +662,7 @@ async def merge_teams(
             # Get region info
             region = db.query(DBRegion).filter(
                 DBRegion.id == region_id,
-                DBRegion.is_active == True
+                DBRegion.is_active.is_(True)
             ).first()
 
             # Initialize LiteLLM service for this region

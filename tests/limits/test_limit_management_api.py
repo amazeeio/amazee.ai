@@ -1,4 +1,3 @@
-import pytest
 from datetime import datetime, UTC
 from fastapi.testclient import TestClient
 from app.db.models import DBLimitedResource
@@ -74,7 +73,7 @@ def test_admin_can_reset_single_limit(client: TestClient, admin_token, test_team
     db.commit()
 
     response = client.post(
-        f"/limits/reset",
+        "/limits/reset",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "owner_type": "team",
@@ -122,7 +121,7 @@ def test_non_admin_cannot_access_limit_apis(client: TestClient, test_token, test
 
     # Test reset single limit
     response = client.post(
-        f"/limits/reset",
+        "/limits/reset",
         headers={"Authorization": f"Bearer {test_token}"},
         json={
             "owner_type": "team",
@@ -272,8 +271,9 @@ def test_get_user_limits_api(client: TestClient, admin_token, test_team, test_te
     db.add(user_limit)
     db.commit()
 
+
+
     # Capture IDs before session closes
-    team_id = test_team.id
     user_id = test_team_user.id
 
     response = client.get(

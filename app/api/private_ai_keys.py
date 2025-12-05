@@ -115,7 +115,7 @@ async def create_vector_db(
     # Get the region
     region = db.query(DBRegion).filter(
         DBRegion.id == vector_db.region_id,
-        DBRegion.is_active == True
+        DBRegion.is_active.is_(True)
     ).first()
     if not region:
         raise HTTPException(
@@ -154,11 +154,13 @@ async def create_vector_db(
             db.add(db_ai_key)
             db.commit()
             db.refresh(db_ai_key)
+            return VectorDB.model_validate(db_ai_key.to_dict())
         else:
-            db_ai_key.region = region
             db_ai_key.id = FAKE_ID
 
-        return VectorDB.model_validate(db_ai_key.to_dict())
+            key_data = db_ai_key.to_dict()
+            key_data["region"] = region.name
+            return VectorDB.model_validate(key_data)
     except Exception as e:
         logger.error(f"Failed to create vector database: {str(e)}", exc_info=True)
         db.rollback()
@@ -208,7 +210,7 @@ async def create_private_ai_key(
         # Get the region first for cleanup purposes
         region = db.query(DBRegion).filter(
             DBRegion.id == private_ai_key.region_id,
-            DBRegion.is_active == True
+            DBRegion.is_active.is_(True)
         ).first()
         if not region:
             raise HTTPException(
@@ -262,7 +264,7 @@ async def create_private_ai_key(
                     api_key=region.litellm_api_key
                 )
                 await litellm_service.delete_key(llm_token.litellm_token)
-                logger.info(f"Cleaned up LiteLLM token after failure")
+                logger.info("Cleaned up LiteLLM token after failure")
         except Exception as cleanup_error:
             logger.error(f"Failed to cleanup LiteLLM token: {str(cleanup_error)}", exc_info=True)
 
@@ -271,7 +273,7 @@ async def create_private_ai_key(
                 # Delete vector database
                 postgres_manager = PostgresManager(region=region)
                 await postgres_manager.delete_database(db_info.database_name)
-                logger.info(f"Cleaned up vector database after failure")
+                logger.info("Cleaned up vector database after failure")
         except Exception as cleanup_error:
             logger.error(f"Failed to cleanup vector database: {str(cleanup_error)}", exc_info=True)
 
@@ -326,7 +328,7 @@ async def create_llm_token(
     # Get the region
     region = db.query(DBRegion).filter(
         DBRegion.id == private_ai_key.region_id,
-        DBRegion.is_active == True
+        DBRegion.is_active.is_(True)
     ).first()
     if not region:
         raise HTTPException(
@@ -399,16 +401,17 @@ async def create_llm_token(
             region_id = private_ai_key.region_id
         )
 
-        # If store_result is True, store the LiteLLM token info in DBPrivateAIKey
         if store_result:
             db.add(db_token)
             db.commit()
             db.refresh(db_token)
+            return LiteLLMToken.model_validate(db_token.to_dict())
         else:
-            db_token.region = region
             db_token.id = FAKE_ID
 
-        return LiteLLMToken.model_validate(db_token.to_dict())
+            token_data = db_token.to_dict()
+            token_data["region"] = region.name
+            return LiteLLMToken.model_validate(token_data)
     except Exception as e:
         logger.error(f"Failed to create LiteLLM token: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -573,7 +576,7 @@ def _get_key_if_allowed(key_id: int, current_user: DBUser, user_role: UserRole, 
             # For user-owned keys, check if the owner is in the viewer's team
             owner = db.query(DBUser).filter(DBUser.id == private_ai_key.owner_id).first()
             if not owner or owner.team_id != current_user.team_id:
-                logger.warning(f"Keys owned by different teams")
+                logger.warning("Keys owned by different teams")
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Private AI Key not found"

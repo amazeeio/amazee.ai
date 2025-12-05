@@ -2,8 +2,8 @@ import pytest
 import os
 from unittest.mock import patch
 from sqlalchemy.orm import Session
-from app.db.models import DBLimitedResource, DBTeam, DBUser
-from app.core.limit_service import LimitService, LimitNotFoundError, setup_default_limits
+from app.db.models import DBLimitedResource
+from app.core.limit_service import LimitService, setup_default_limits
 from app.schemas.limits import LimitType, ResourceType, UnitType, OwnerType, LimitSource
 
 
@@ -134,7 +134,7 @@ def test_inheritance_user_team_system(db: Session, test_team, test_team_user):
     user_limits = limit_service.get_user_limits(test_team_user)
 
     # Should find the system default limit
-    user_limit = next((l for l in user_limits if l.resource == ResourceType.USER), None)
+    user_limit = next((limit for limit in user_limits if limit.resource == ResourceType.USER), None)
     assert user_limit is not None
     assert user_limit.max_value == 5.0
     assert user_limit.owner_type == OwnerType.TEAM
@@ -179,7 +179,7 @@ def test_inheritance_team_overrides_system(db: Session, test_team, test_team_use
     user_limits = limit_service.get_user_limits(test_team_user)
 
     # Should find the team limit (not system)
-    user_limit = next((l for l in user_limits if l.resource == ResourceType.USER), None)
+    user_limit = next((limit for limit in user_limits if limit.resource == ResourceType.USER), None)
     assert user_limit is not None
     assert user_limit.max_value == 10.0
     assert user_limit.owner_type == OwnerType.TEAM
@@ -237,7 +237,7 @@ def test_inheritance_user_overrides_team_and_system(db: Session, test_team, test
     user_limits = limit_service.get_user_limits(test_team_user)
 
     # Should find the user limit (not team or system)
-    found_limit = next((l for l in user_limits if l.resource == ResourceType.USER), None)
+    found_limit = next((limit for limit in user_limits if limit.resource == ResourceType.USER), None)
     assert found_limit is not None
     assert found_limit.max_value == 15.0
     assert found_limit.owner_type == OwnerType.USER
@@ -335,23 +335,23 @@ def test_setup_default_limits_uses_current_constant_values(db: Session):
     system_limits = limit_service.get_system_limits()
 
     # Find specific limits and verify values match constants
-    user_limit = next((l for l in system_limits if l.resource == ResourceType.USER), None)
+    user_limit = next((limit for limit in system_limits if limit.resource == ResourceType.USER), None)
     assert user_limit is not None
     assert user_limit.max_value == 1.0  # DEFAULT_USER_COUNT
 
-    key_limit = next((l for l in system_limits if l.resource == ResourceType.SERVICE_KEY), None)
+    key_limit = next((limit for limit in system_limits if limit.resource == ResourceType.SERVICE_KEY), None)
     assert key_limit is not None
     assert key_limit.max_value == 5.0  # DEFAULT_SERVICE_KEYS
 
-    vector_db_limit = next((l for l in system_limits if l.resource == ResourceType.VECTOR_DB), None)
+    vector_db_limit = next((limit for limit in system_limits if limit.resource == ResourceType.VECTOR_DB), None)
     assert vector_db_limit is not None
     assert vector_db_limit.max_value == 5.0  # DEFAULT_VECTOR_DB_COUNT
 
-    budget_limit = next((l for l in system_limits if l.resource == ResourceType.BUDGET), None)
+    budget_limit = next((limit for limit in system_limits if limit.resource == ResourceType.BUDGET), None)
     assert budget_limit is not None
     assert budget_limit.max_value == 27.0  # DEFAULT_MAX_SPEND
 
-    rpm_limit = next((l for l in system_limits if l.resource == ResourceType.RPM), None)
+    rpm_limit = next((limit for limit in system_limits if limit.resource == ResourceType.RPM), None)
     assert rpm_limit is not None
     assert rpm_limit.max_value == 500.0  # DEFAULT_RPM_PER_KEY
 
@@ -380,7 +380,7 @@ def test_setup_default_limits_idempotent(db: Session):
 
     # Should have same limit values
     for first_limit in first_run_limits:
-        second_limit = next((l for l in second_run_limits if l.resource == first_limit.resource), None)
+        second_limit = next((limit for limit in second_run_limits if limit.resource == first_limit.resource), None)
         assert second_limit is not None
         assert second_limit.max_value == first_limit.max_value
         assert second_limit.limit_type == first_limit.limit_type

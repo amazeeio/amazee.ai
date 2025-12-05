@@ -29,7 +29,7 @@ class PostgresManager:
                 user=self.admin_user,
                 password=self.admin_password
             )
-            logger.info(f"Successfully connected to PostgreSQL as admin user")
+            logger.info("Successfully connected to PostgreSQL as admin user")
         except asyncpg.exceptions.PostgresError as e:
             logger.error(f"Failed to connect to PostgreSQL: {str(e)}")
             logger.error(f"Connection details: host={self.host}, port={self.port}, user={self.admin_user}")

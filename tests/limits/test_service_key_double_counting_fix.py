@@ -1,6 +1,6 @@
 import pytest
 from datetime import datetime, UTC
-from app.db.models import DBPrivateAIKey, DBUser, DBTeam, DBProduct, DBTeamProduct, DBLimitedResource
+from app.db.models import DBPrivateAIKey, DBUser, DBProduct, DBTeamProduct, DBLimitedResource
 from app.core.limit_service import LimitService
 from app.core.worker import set_team_and_user_limits
 from app.schemas.limits import LimitType, ResourceType, UnitType, OwnerType, LimitSource
@@ -244,7 +244,7 @@ def test_production_scenario_multiple_check_key_limits_calls(db, test_team_with_
     ).first()
 
     if service_key_limit:
-        first_call_count = service_key_limit.current_value
+        _ = service_key_limit.current_value
     else:
         pytest.fail("No service key limit found after first call")
 

@@ -8,7 +8,6 @@ from app.schemas.limits import (
     OverwriteLimitRequest,
     ResetLimitRequest,
     LimitSource,
-    OwnerType,
 )
 from app.core.limit_service import LimitService, LimitNotFoundError
 from app.core.security import get_role_min_system_admin, get_current_user_from_auth
