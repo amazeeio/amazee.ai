@@ -10,7 +10,7 @@ python-multipart==0.0.18
 asyncpg==0.30.0
 psycopg2-binary==2.9.10
 requests==2.32.4
-python-dotenv==1.1.0
+python-dotenv==1.2.1
 alembic==1.15.2
 boto3==1.42.3
 markdown==3.10
