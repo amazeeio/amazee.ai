@@ -1,12 +1,11 @@
 import pytest
 from fastapi import HTTPException
-from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 from unittest.mock import patch, Mock, AsyncMock
 from app.api.auth import generate_trial_access
 from app.core.limit_service import LimitService
 from app.db.models import DBUser, DBTeam, DBPrivateAIKey, DBRegion
-from app.schemas.models import TrialAccessResponse, Token
+from app.schemas.models import Token
 from fastapi import Response
 
 
