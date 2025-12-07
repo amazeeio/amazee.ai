@@ -16,7 +16,7 @@ from fastapi import Response
 @patch("app.core.limit_service.LimitService.get_token_restrictions")
 @patch("app.api.auth.LiteLLMService")
 @patch("httpx.AsyncClient")
-@patch("app.core.config.settings.DEFAULT_AI_TOKEN_REGION", "test-region")
+@patch("app.core.config.settings.AI_TRIAL_REGION", "test-region")
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
 @pytest.mark.asyncio
 async def test_generate_trial_access(
@@ -93,7 +93,7 @@ async def test_generate_trial_access(
 @patch("app.api.auth.register_team", new_callable=AsyncMock)
 @patch("app.api.auth._create_user_in_db")
 @patch("httpx.AsyncClient")
-@patch("app.core.config.settings.DEFAULT_AI_TOKEN_REGION", "test-region")
+@patch("app.core.config.settings.AI_TRIAL_REGION", "test-region")
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
 @pytest.mark.asyncio
 async def test_generate_trial_access_cleanup_on_key_creation_failure(

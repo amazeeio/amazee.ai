@@ -62,7 +62,7 @@ curl -X POST http://localhost:8800/auth/generate-trial-access
 
 ```json
 {
-  "detail": "No region available for trial access: <DEFAULT_AI_TOKEN_REGION>"
+  "detail": "No region available for trial access: <AI_TRIAL_REGION>"
 }
 ```
 
@@ -121,7 +121,7 @@ The endpoint includes comprehensive error handling and resource cleanup:
 
 ### Environment Variables
 
-- `DEFAULT_AI_TOKEN_REGION`: (Optional) Name of the default region to use. If not set or region not found, the first active region will be used.
+- `AI_TRIAL_REGION`: (Optional) Name of the default region to use. If not set or region not found, the first active region will be used.
 - `AI_TRIAL_MAX_BUDGET`: (Optional) Limit to use for the max budget for trial tokens. Defaults to 2.00.
 - `ENABLE_LIMITS`: (Optional) If set to `"true"`, limit checks will be performed. Defaults to `false`.
 
