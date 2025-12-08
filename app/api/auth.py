@@ -709,8 +709,7 @@ def send_validation_url(email: str) -> None:
 async def generate_trial_access(
     response: Response,
     db: Session = Depends(get_db),
-    team_limit_service: LimitService = Depends(get_limit_service),
-    user_limit_service: LimitService = Depends(get_limit_service),
+    limit_service: LimitService = Depends(get_limit_service),
 ) -> TrialAccessResponse:
     """
     Generate an anonymous trial access.
@@ -761,7 +760,7 @@ async def generate_trial_access(
             db.commit()
             db.refresh(team)
             # Ensure team has limit set
-            result_team_limit = team_limit_service.set_limit(
+            team_limit = limit_service.set_limit(
                 owner_type=OwnerType.TEAM,
                 owner_id=team.id,
                 resource_type=ResourceType.BUDGET,
@@ -772,7 +771,7 @@ async def generate_trial_access(
                 limited_by=LimitSource.MANUAL,
                 set_by=set_by_context
             )
-            LimitedResource.model_validate(result_team_limit)
+            LimitedResource.model_validate(team_limit)
 
         # Ensure team has an admin user
         admin_user = db.query(DBUser).filter(
@@ -805,7 +804,7 @@ async def generate_trial_access(
         db.refresh(user)
 
         # Set initial budget for the user
-        result_user_limit = user_limit_service.set_limit(
+        user_limit = limit_service.set_limit(
             owner_type=OwnerType.USER,
             owner_id=user.id,
             resource_type=ResourceType.BUDGET,
@@ -816,7 +815,7 @@ async def generate_trial_access(
             limited_by=LimitSource.MANUAL,
             set_by=set_by_context
         )
-        LimitedResource.model_validate(result_user_limit)
+        LimitedResource.model_validate(user_limit)
 
         # Create private AI key name with a timestamp
         key_name = f"Trial Key for {user.email} {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -836,7 +835,7 @@ async def generate_trial_access(
             current_user=admin_user,
             user_role=UserRole.ADMIN,
             db=db,
-            limit_service=user_limit_service
+            limit_service=limit_service
         )
 
         # Update the budget to the trial budget
@@ -844,7 +843,7 @@ async def generate_trial_access(
 
         # Get budget_duration for the update_budget call
         if settings.ENABLE_LIMITS:
-            days_left_in_period, _, _ = user_limit_service.get_token_restrictions(user.id)
+            days_left_in_period, _, _ = limit_service.get_token_restrictions(team.id)
         else:
             days_left_in_period = DEFAULT_KEY_DURATION
 
