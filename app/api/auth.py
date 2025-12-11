@@ -24,7 +24,6 @@ from app.core.security import (
     verify_password,
 )
 from app.core.limit_service import (
-    DEFAULT_KEY_DURATION,
     LimitedResource,
     LimitService,
     LimitSource,
