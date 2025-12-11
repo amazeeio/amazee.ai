@@ -63,10 +63,6 @@ async def test_generate_trial_access(mock_auth_deps, db: Session):
 
     mock_db.query.side_effect = get_mock_query
 
-    mock_litellm_instance = mock_auth_deps["litellm_cls"].return_value
-    mock_litellm_instance.update_budget = AsyncMock(return_value=None)
-    mock_litellm_instance.delete_key = AsyncMock(return_value=True)
-
     # Mock LimitService
     mock_limit_service = Mock(spec=LimitService)
     mock_limit_service.get_token_restrictions.return_value = (30, 10.0, 100)
