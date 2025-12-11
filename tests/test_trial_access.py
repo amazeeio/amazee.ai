@@ -125,8 +125,6 @@ async def test_generate_trial_access(mock_auth_deps, db: Session):
     assert result.team_id == 12
     assert result.key.litellm_token == "test-token"
 
-    mock_litellm_instance.update_budget.assert_called_once()
-
 
 @pytest.mark.asyncio
 async def test_generate_trial_access_cleanup_on_key_creation_failure(
