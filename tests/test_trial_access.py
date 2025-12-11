@@ -50,16 +50,16 @@ async def test_generate_trial_access(mock_auth_deps, db: Session):
     mock_region.name = "test-region"
 
     def get_mock_query(model):
-        q = Mock()
+        mock_query = Mock()
         if model == DBRegion:
-            q.filter.return_value.first.return_value = mock_region
+            mock_query.filter.return_value.first.return_value = mock_region
         elif model == DBTeam:
-            q.filter.return_value.first.return_value = None # Force create team
+            mock_query.filter.return_value.first.return_value = None # Force create team
         elif model == DBUser:
-             q.filter.return_value.first.return_value = None
+            mock_query.filter.return_value.first.return_value = None
         else:
-             q.filter.return_value.first.return_value = None
-        return q
+            mock_query.filter.return_value.first.return_value = None
+        return mock_query
 
     mock_db.query.side_effect = get_mock_query
 

@@ -734,9 +734,6 @@ async def generate_trial_access(
         api_key=region.litellm_api_key
     )
 
-    user = None
-    team = None
-    private_ai_key = None
     set_by_context = "anonymous-trial-generation"
     trial_max_budget = settings.AI_TRIAL_MAX_BUDGET
 
@@ -757,8 +754,6 @@ async def generate_trial_access(
                 is_active=True
             )
             team = await register_team(team_data, db)
-            db.commit()
-            db.refresh(team)
             # Ensure team has limit set
             team_limit = limit_service.set_limit(
                 owner_type=OwnerType.TEAM,
@@ -772,23 +767,22 @@ async def generate_trial_access(
                 set_by=set_by_context
             )
             LimitedResource.model_validate(team_limit)
-
-        # Ensure team has an admin user
-        admin_user = db.query(DBUser).filter(
-            DBUser.team_id == team.id,
-            DBUser.role == UserRole.ADMIN
-        ).first()
-        if not admin_user:
-            auth_logger.info(f"Creating admin user for team: {team.id}")
-            admin_user_data = UserCreate(
-                email=settings.AI_TRIAL_TEAM_EMAIL,
-                password=None,
-                team_id=team.id,
-                role=UserRole.ADMIN,
-            )
-            admin_user = _create_user_in_db(admin_user_data, db)
-            db.commit()
-            db.refresh(admin_user)
+            # Ensure team has an admin user
+            admin_user = db.query(DBUser).filter(
+                DBUser.team_id == team.id,
+                DBUser.role == UserRole.ADMIN
+            ).first()
+            if not admin_user:
+                auth_logger.info(f"Creating admin user for team: {team.id}")
+                admin_user_data = UserCreate(
+                    email=settings.AI_TRIAL_TEAM_EMAIL,
+                    password=None,
+                    team_id=team.id,
+                    role=UserRole.ADMIN,
+                )
+                admin_user = _create_user_in_db(admin_user_data, db)
+                db.commit()
+                db.refresh(admin_user)
 
         # Generate new user and add to team
         user_email = f"trial-{int(time.time())}-{uuid.uuid4().hex[:8]}@example.com"
@@ -838,22 +832,7 @@ async def generate_trial_access(
             limit_service=limit_service
         )
 
-        # Update the budget to the trial budget
-        trial_max_budget = settings.AI_TRIAL_MAX_BUDGET
-
-        # Get budget_duration for the update_budget call
-        if settings.ENABLE_LIMITS:
-            days_left_in_period, _, _ = limit_service.get_token_restrictions(team.id)
-        else:
-            days_left_in_period = DEFAULT_KEY_DURATION
-
-        # Update the budget to the trial budget
-        await litellm_service.update_budget(
-            litellm_token=private_ai_key.litellm_token,
-            budget_duration=f"{days_left_in_period}d",
-            budget_amount=trial_max_budget
-        )
-
+        # Get the Auth Bearer Token
         token = create_and_set_access_token(response, user.email, user)
 
         # Return response with key, user, and team info
