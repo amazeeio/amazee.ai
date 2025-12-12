@@ -735,6 +735,7 @@ async def generate_trial_access(
 
     user = None
     team = None
+    admin_user = None
     private_ai_key = None
     set_by_context = "anonymous-trial-generation"
     trial_max_budget = settings.AI_TRIAL_MAX_BUDGET
