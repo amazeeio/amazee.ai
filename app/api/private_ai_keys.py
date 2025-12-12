@@ -371,9 +371,14 @@ async def create_llm_token(
     if team is not None:
         owner_email = team.admin_email
         litellm_team = team.id
-    else:
+    elif owner is not None:
         owner_email = owner.email
         litellm_team = owner.team_id or FAKE_ID
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Owner or team not found"
+        )
 
     try:
         # Generate LiteLLM token
