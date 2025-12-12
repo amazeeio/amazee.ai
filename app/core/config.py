@@ -29,13 +29,16 @@ class Settings(BaseSettings):
     DYNAMODB_REGION: str = "eu-west-1"
     SES_REGION: str = "eu-west-1"
     ENABLE_LIMITS: bool = os.getenv("ENABLE_LIMITS", "false") == "true"
+    AI_TRIAL_MAX_BUDGET: float = os.getenv("AI_TRIAL_MAX_BUDGET", 2.0)
+    AI_TRIAL_TEAM_EMAIL: str = os.getenv("AI_TRIAL_TEAM_EMAIL", "anonymous-trial-user@example.com")
+    AI_TRIAL_REGION: str = os.getenv("AI_TRIAL_REGION", "eu-west-1")
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "sk_test_string")
     STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "pk_test_string")
     WEBHOOK_SIG: str = os.getenv("WEBHOOK_SIG", "whsec_test_1234567890")
     ENABLE_METRICS: bool = os.getenv("ENABLE_METRICS", "false") == "true"
     PROMETHEUS_API_KEY: str = os.getenv("PROMETHEUS_API_KEY", "")
 
-    model_config = ConfigDict(env_file=".env")
+    model_config = ConfigDict(env_file=".env", extra="ignore")
     main_route: str = os.getenv("LAGOON_ROUTE", "http://localhost:8800")
     frontend_route: str = os.getenv("FRONTEND_ROUTE", "http://localhost:3000")
 
