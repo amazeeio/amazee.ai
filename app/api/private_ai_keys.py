@@ -338,7 +338,7 @@ async def create_llm_token(
 
     # Get the owner user if different from current user
     owner = None
-    if owner_id is not None and owner_id != current_user.id:
+    if owner_id is not None and current_user is not None and owner_id != current_user.id:
         owner = db.query(DBUser).filter(DBUser.id == owner_id).first()
         if not owner or (user_role == "admin" and owner.team_id != current_user.team_id):
             raise HTTPException(
