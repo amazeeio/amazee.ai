@@ -358,7 +358,7 @@ async def create_llm_token(
                 detail="Team not found"
             )
 
-    if owner.team_id or team_id:
+    if (owner is not None and owner.team_id) or team_id:
         if settings.ENABLE_LIMITS:
             limit_service.check_key_limits(owner.team_id or team_id, owner_id)
         # Limits are conditionally applied in LiteLLM service
