@@ -744,6 +744,13 @@ async def generate_trial_access(
         # Find the AI trial team
         team = db.query(DBTeam).filter(DBTeam.admin_email == settings.AI_TRIAL_TEAM_EMAIL, DBTeam.is_active).first()
 
+        # Find the admin user of the team
+        if team:
+            admin_user = db.query(DBUser).filter(
+                DBUser.team_id == team.id,
+                DBUser.role == UserRole.ADMIN
+            ).first()
+
         # If the trial team is not found, create it
         if not team:
             auth_logger.info(f"Creating new trial team for: {settings.AI_TRIAL_TEAM_EMAIL}")
@@ -771,21 +778,16 @@ async def generate_trial_access(
             )
             LimitedResource.model_validate(team_limit)
             # Ensure team has an admin user
-            admin_user = db.query(DBUser).filter(
-                DBUser.team_id == team.id,
-                DBUser.role == UserRole.ADMIN
-            ).first()
-            if not admin_user:
-                auth_logger.info(f"Creating admin user for team: {team.id}")
-                admin_user_data = UserCreate(
-                    email=settings.AI_TRIAL_TEAM_EMAIL,
-                    password=None,
-                    team_id=team.id,
-                    role=UserRole.ADMIN,
-                )
-                admin_user = _create_user_in_db(admin_user_data, db)
-                db.commit()
-                db.refresh(admin_user)
+            auth_logger.info(f"Creating admin user for team: {team.id}")
+            admin_user_data = UserCreate(
+                email=settings.AI_TRIAL_TEAM_EMAIL,
+                password=None,
+                team_id=team.id,
+                role=UserRole.ADMIN,
+            )
+            admin_user = _create_user_in_db(admin_user_data, db)
+            db.commit()
+            db.refresh(admin_user)
 
         # Generate new user and add to team
         user_email = f"trial-{int(time.time())}-{uuid.uuid4().hex[:8]}@example.com"
