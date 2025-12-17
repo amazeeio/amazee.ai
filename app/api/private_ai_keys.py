@@ -338,7 +338,7 @@ async def create_llm_token(
 
     # Get the owner user if different from current user
     owner = None
-    if owner_id is not None and owner_id != current_user.id:
+    if owner_id is not None and current_user is not None and owner_id != current_user.id:
         owner = db.query(DBUser).filter(DBUser.id == owner_id).first()
         if not owner or (user_role == "admin" and owner.team_id != current_user.team_id):
             raise HTTPException(
@@ -358,7 +358,7 @@ async def create_llm_token(
                 detail="Team not found"
             )
 
-    if owner.team_id or team_id:
+    if (owner is not None and owner.team_id) or team_id:
         if settings.ENABLE_LIMITS:
             limit_service.check_key_limits(owner.team_id or team_id, owner_id)
         # Limits are conditionally applied in LiteLLM service
@@ -371,9 +371,14 @@ async def create_llm_token(
     if team is not None:
         owner_email = team.admin_email
         litellm_team = team.id
-    else:
+    elif owner is not None:
         owner_email = owner.email
         litellm_team = owner.team_id or FAKE_ID
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Owner or team not found"
+        )
 
     try:
         # Generate LiteLLM token
