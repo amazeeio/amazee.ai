@@ -1137,3 +1137,62 @@ def generate_pricing_url(admin_email: str, validity_hours: int = 24) -> str:
     # Add the token as a query parameter
     return f"{url}?token={token}"
 
+async def monitor_trial_users(db: Session):
+    """
+    Monitor trial users and expire them if they have exceeded their budget.
+    """
+    logger.info("Monitoring trial users")
+    try:
+        # Get trial team
+        trial_team = db.query(DBTeam).filter(DBTeam.admin_email == settings.AI_TRIAL_TEAM_EMAIL).first()
+        if not trial_team:
+            logger.info("Trial team not found, skipping")
+            return
+
+        # Get all active users in the trial team (excluding admin)
+        users = db.query(DBUser).filter(
+            DBUser.team_id == trial_team.id,
+            DBUser.is_active,
+            DBUser.role == "user"
+        ).all()
+
+        for user in users:
+            # Check budget limit
+            user_limit = db.query(DBLimitedResource).filter(
+                and_(
+                    DBLimitedResource.owner_type == OwnerType.USER,
+                    DBLimitedResource.owner_id == user.id,
+                    DBLimitedResource.resource == ResourceType.BUDGET
+                )
+            ).first()
+
+            if user_limit and user_limit.current_value is not None:
+                # Check if usage has been used up
+                if user_limit.current_value >= user_limit.max_value:
+                    logger.info(f"Trial user {user.email} (ID: {user.id}) has fully used up their budget ({user_limit.current_value} >= {user_limit.max_value}). Setting for removal.")
+
+                    # 1. Disable user
+                    user.is_active = False
+                    user.updated_at = datetime.now(UTC)
+
+                    # 2. Disable keys (set duration to 0)
+                    keys = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.owner_id == user.id).all()
+                    for key in keys:
+                        if key.litellm_token and key.region:
+                            try:
+                                litellm_service = LiteLLMService(
+                                    api_url=key.region.litellm_api_url,
+                                    api_key=key.region.litellm_api_key
+                                )
+                                await litellm_service.update_key_duration(key.litellm_token, "0d")
+                                logger.info(f"Set duration to 0d for key {key.id}")
+                            except Exception as e:
+                                logger.error(f"Failed to expire key {key.id}: {e}")
+
+        db.commit()
+        logger.info(f"Finished monitoring {len(users)} trial users")
+
+    except Exception as e:
+        logger.error(f"Error in trial user monitoring: {e}")
+        db.rollback()
+
