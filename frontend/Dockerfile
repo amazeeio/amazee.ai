@@ -1,4 +1,4 @@
-FROM uselagoon/node-22:25.12.1 AS builder
+FROM uselagoon/node-22:25.12.1@sha256:2988e452b032e33b98fb5102ae6685b3bbbf0bb3f1f24fdf6dc5f87198b32a7a AS builder
 
 WORKDIR /app
 
@@ -15,7 +15,7 @@ COPY . .
 RUN npm run build
 
 # Production stage
-FROM uselagoon/node-22:25.12.1
+FROM uselagoon/node-22:25.12.1@sha256:2988e452b032e33b98fb5102ae6685b3bbbf0bb3f1f24fdf6dc5f87198b32a7a
 
 WORKDIR /app
 

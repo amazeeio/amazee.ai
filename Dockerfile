@@ -1,4 +1,4 @@
-FROM uselagoon/python-3.12:latest
+FROM uselagoon/python-3.12:latest@sha256:95ce70836290f0d6eb1fbf236ff70f36a906a6a6d3ea846ddd02c3df63c7526a
 
 RUN apk add bash --no-cache
 RUN apk add curl --no-cache
