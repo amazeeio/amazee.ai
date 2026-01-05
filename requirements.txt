@@ -1,5 +1,5 @@
-fastapi==0.125.0
-uvicorn==0.38.0
+fastapi==0.128.0
+uvicorn==0.40.0
 sqlalchemy==2.0.45
 pydantic==2.12.5
 pydantic-settings==2.12.0
@@ -12,12 +12,12 @@ psycopg2-binary==2.9.11
 requests==2.32.5
 python-dotenv==1.2.1
 alembic==1.17.2
-boto3==1.42.18
+boto3==1.42.21
 markdown==3.10
 email-validator==2.3.0
 prometheus-client==0.23.1
 prometheus-fastapi-instrumentator==7.1.0
 stripe==12.5.1
 six==1.17.0
-apscheduler==3.11.1
+apscheduler==3.11.2
 httpx==0.28.1
