@@ -47,7 +47,6 @@ The version bump will automatically update all version references and create a g
 - Make (for running convenience commands)
 - Node.js and npm (for local frontend development)
 - Python 3.x (for local backend development)
-- Terraform for creating AWS resources (+default credentials with sufficient permissions)
 
 ## 🛠️ Setup & Installation
 
@@ -55,14 +54,6 @@ The version bump will automatically update all version references and create a g
    ```bash
    git clone [repository-url]
    cd [repository-name]
-   ```
-
-1. Run terraform in the dev account you are using locally
-   ```bash
-   cd terraform
-   terraform init
-   terraform apply -var "aws_account_id=your-cool-dev-account"
-   cd ../
    ```
 
 1. Install node dependencies
@@ -167,7 +158,6 @@ Access the services at:
 ├── docs/                  # Documentation around design decisions
 ├── frontend/              # React frontend application
 ├── tests/                 # Backend tests
-├── terraform/             # Terraform configuration for remote resources
 ├── scripts/               # Utility scripts
 ├── docker-compose.yml     # Docker services configuration
 ├── Dockerfile             # Backend service Dockerfile
@@ -189,10 +179,6 @@ Access the services at:
 
 ### Frontend
 - `NEXT_PUBLIC_API_URL`: Backend API URL
-
-## 🌍 Terraform
-
-This project includes the default terraform details needed to set up remote AWS resources (IAM roles and users, DDB tables, etc).
 
 ## 👥 Contributing
 
