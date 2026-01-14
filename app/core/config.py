@@ -5,6 +5,9 @@ import os
 class Settings(BaseSettings):
     # Database settings
     DATABASE_URL: str = "postgresql://postgres:postgres@postgres/postgres_service"
+    DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "50"))
+    DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "50"))
+    DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
 
     # JWT settings
     SECRET_KEY: str = "your-secret-key-here"  # In production, use environment variable
