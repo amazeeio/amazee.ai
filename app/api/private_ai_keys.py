@@ -123,6 +123,13 @@ async def create_vector_db(
             detail="Region not found or inactive"
         )
 
+    # Check if team forces user keys
+    if team_id:
+        team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+        if team and team.force_user_keys:
+            team_id = None
+            owner_id = current_user.id
+
     if settings.ENABLE_LIMITS:
         if not team_id: # if the team_id is not set we have already validated the owner_id
             user = db.query(DBUser).filter(DBUser.id == owner_id).first()
@@ -357,6 +364,13 @@ async def create_llm_token(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Team not found"
             )
+        
+        # Check if team forces user keys
+        if team.force_user_keys:
+            team_id = None
+            team = None
+            owner_id = current_user.id
+            owner = current_user
 
     if (owner is not None and owner.team_id) or team_id:
         if settings.ENABLE_LIMITS:
