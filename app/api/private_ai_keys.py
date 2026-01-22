@@ -481,6 +481,10 @@ async def list_private_ai_keys(
     else:
         # Check if user is a team admin
         if current_user.team_id is not None:
+            # Check if team enforces user keys
+            user_team = db.query(DBTeam).filter(DBTeam.id == current_user.team_id).first()
+            force_user_keys = user_team.force_user_keys if user_team else False
+
             if current_user.role == UserRole.TEAM_ADMIN:
                 # Get all users in the team
                 team_users = db.query(DBUser).filter(DBUser.team_id == current_user.team_id).all()
@@ -491,11 +495,16 @@ async def list_private_ai_keys(
                     (DBPrivateAIKey.team_id == current_user.team_id)
                 )
             else:
-                # Non-admin users can see their own keys and team-owned keys
-                query = query.filter(
-                    (DBPrivateAIKey.owner_id == current_user.id) |
-                    (DBPrivateAIKey.team_id == current_user.team_id)
-                )
+                # Non-admin users
+                if force_user_keys:
+                    # If force_user_keys is enabled, users can only see their own keys
+                    query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
+                else:
+                    # Otherwise, can see their own keys and team-owned keys
+                    query = query.filter(
+                        (DBPrivateAIKey.owner_id == current_user.id) |
+                        (DBPrivateAIKey.team_id == current_user.team_id)
+                    )
         else:
             # Regular users can only see their own keys
             query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
