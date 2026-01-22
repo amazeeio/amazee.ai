@@ -95,7 +95,7 @@ interface Team {
   users?: TeamUser[];
   products?: Product[];
   is_always_free: boolean;
-  force_user_keys: boolean;
+  force_user_keys?: boolean;
   deleted_at?: string;
   retention_warning_sent_at?: string;
 }

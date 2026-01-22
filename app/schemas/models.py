@@ -259,13 +259,13 @@ class TeamUpdate(BaseModel):
     billing_address: Optional[str] = None
     is_active: Optional[bool] = None
     is_always_free: Optional[bool] = None
-    force_user_keys: Optional[bool] = None
+    force_user_keys: Optional[bool] = False
 
 class Team(TeamBase):
     id: int
     is_active: bool
     is_always_free: bool
-    force_user_keys: bool
+    force_user_keys: Optional[bool] = False
     created_at: datetime
     updated_at: Optional[datetime] = None
     last_payment: Optional[datetime] = None
