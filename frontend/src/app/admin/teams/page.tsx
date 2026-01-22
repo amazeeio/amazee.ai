@@ -25,7 +25,7 @@ import {
 } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Plus, ChevronDown, ChevronRight, UserPlus, ChevronUp, ChevronsUpDown, Search } from 'lucide-react';
-import { get, post, del } from '@/utils/api';
+import { get, post, put, del } from '@/utils/api';
 import {
   Collapsible,
   CollapsibleContent,
@@ -95,6 +95,7 @@ interface Team {
   users?: TeamUser[];
   products?: Product[];
   is_always_free: boolean;
+  force_user_keys: boolean;
   deleted_at?: string;
   retention_warning_sent_at?: string;
 }
@@ -159,6 +160,14 @@ export default function TeamsPage() {
   const [selectedSourceTeamId, setSelectedSourceTeamId] = useState('');
   const [conflictResolutionStrategy, setConflictResolutionStrategy] = useState<'delete' | 'rename' | 'cancel'>('rename');
   const [renameSuffix, setRenameSuffix] = useState('_merged');
+
+  // Edit Team State
+  const [isEditingTeam, setIsEditingTeam] = useState(false);
+  const [editingTeam, setEditingTeam] = useState<Team | null>(null);
+  const [editFormName, setEditFormName] = useState('');
+  const [editFormPhone, setEditFormPhone] = useState('');
+  const [editFormBillingAddress, setEditFormBillingAddress] = useState('');
+  const [editFormForceUserKeys, setEditFormForceUserKeys] = useState(false);
 
   // Filter and sort state
   const [nameFilter, setNameFilter] = useState('');
@@ -796,6 +805,39 @@ export default function TeamsPage() {
     },
   });
 
+  const updateTeamMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: string; data: Record<string, unknown> }) => {
+      try {
+        const response = await put(`/teams/${id}`, data);
+        return response.json();
+      } catch (error) {
+        if (error instanceof Error) {
+          throw new Error(`Failed to update team: ${error.message}`);
+        } else {
+          throw new Error('An unexpected error occurred while updating the team.');
+        }
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['team', expandedTeamId, includeDeleted] });
+      queryClient.invalidateQueries({ queryKey: ['teams'] });
+      
+      toast({
+        title: 'Success',
+        description: 'Team updated successfully',
+      });
+      setIsEditingTeam(false);
+      setEditingTeam(null);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Error',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+  });
+
   const cancelSubscriptionMutation = useMutation({
     mutationFn: async ({ teamId, productId }: { teamId: string; productId: string }) => {
       try {
@@ -857,6 +899,30 @@ export default function TeamsPage() {
       });
     },
   });
+
+  const openEditTeamDialog = (team: Team) => {
+    setEditingTeam(team);
+    setEditFormName(team.name);
+    setEditFormPhone(team.phone || '');
+    setEditFormBillingAddress(team.billing_address || '');
+    setEditFormForceUserKeys(team.force_user_keys || false);
+    setIsEditingTeam(true);
+  };
+
+  const handleUpdateTeam = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingTeam) return;
+
+    updateTeamMutation.mutate({
+      id: editingTeam.id,
+      data: {
+        name: editFormName,
+        phone: editFormPhone,
+        billing_address: editFormBillingAddress,
+        force_user_keys: editFormForceUserKeys,
+      },
+    });
+  };
 
   const handleCreateTeam = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1239,6 +1305,12 @@ export default function TeamsPage() {
                                                   {expandedTeam.is_active ? "Active" : "Inactive"}
                                                 </Badge>
                                               </div>
+                                              <div>
+                                                <p className="text-sm font-medium text-muted-foreground">Force User Keys</p>
+                                                <Badge variant={expandedTeam.force_user_keys ? "default" : "outline"}>
+                                                  {expandedTeam.force_user_keys ? "Enabled" : "Disabled"}
+                                                </Badge>
+                                              </div>
                                               {isTeamExpired(expandedTeam) && (
                                                 <div>
                                                   <p className="text-sm font-medium text-muted-foreground">Expiration Status</p>
@@ -1286,6 +1358,12 @@ export default function TeamsPage() {
                                                 </Button>
                                               ) : (
                                                 <>
+                                                  <Button
+                                                    variant="outline"
+                                                    onClick={() => openEditTeamDialog(expandedTeam)}
+                                                  >
+                                                    Edit Team
+                                                  </Button>
                                                   <Button
                                                     variant="outline"
                                                     onClick={() => openSubscribeToProductDialog(expandedTeam.id)}
@@ -1898,6 +1976,89 @@ export default function TeamsPage() {
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   )}
                   Merge Teams
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        {/* Dialog for editing a team */}
+        <Dialog open={isEditingTeam} onOpenChange={setIsEditingTeam}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Edit Team</DialogTitle>
+              <DialogDescription>
+                Update team information.
+              </DialogDescription>
+            </DialogHeader>
+            <form onSubmit={handleUpdateTeam}>
+              <div className="grid gap-4 py-4">
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <label htmlFor="edit-name" className="text-right text-sm font-medium">
+                    Name
+                  </label>
+                  <Input
+                    id="edit-name"
+                    value={editFormName}
+                    onChange={(e) => setEditFormName(e.target.value)}
+                    className="col-span-3"
+                    required
+                  />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <label htmlFor="edit-phone" className="text-right text-sm font-medium">
+                    Phone
+                  </label>
+                  <Input
+                    id="edit-phone"
+                    value={editFormPhone}
+                    onChange={(e) => setEditFormPhone(e.target.value)}
+                    className="col-span-3"
+                  />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <label htmlFor="edit-address" className="text-right text-sm font-medium">
+                    Billing Address
+                  </label>
+                  <Input
+                    id="edit-address"
+                    value={editFormBillingAddress}
+                    onChange={(e) => setEditFormBillingAddress(e.target.value)}
+                    className="col-span-3"
+                  />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <label htmlFor="edit-force-keys" className="text-right text-sm font-medium">
+                    Force User Keys
+                  </label>
+                  <div className="flex items-center space-x-2 col-span-3">
+                    <Switch
+                      id="edit-force-keys"
+                      checked={editFormForceUserKeys}
+                      onCheckedChange={setEditFormForceUserKeys}
+                    />
+                    <Label htmlFor="edit-force-keys">
+                      Require users to provide their own keys
+                    </Label>
+                  </div>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsEditingTeam(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={updateTeamMutation.isPending}
+                >
+                  {updateTeamMutation.isPending && (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  )}
+                  Update Team
                 </Button>
               </DialogFooter>
             </form>
