@@ -821,7 +821,7 @@ export default function TeamsPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['team', expandedTeamId, includeDeleted] });
       queryClient.invalidateQueries({ queryKey: ['teams'] });
-      
+
       toast({
         title: 'Success',
         description: 'Team updated successfully',
