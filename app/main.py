@@ -182,7 +182,7 @@ app = FastAPI(
 )
 
 # Get allowed origins from environment
-default_origins = ["http://localhost:8080", "http://localhost:3000", "http://localhost:8800"]
+default_origins = ["http://localhost:8080", "http://localhost:3000", "http://localhost:3001", "http://localhost:8800"]
 lagoon_routes = os.getenv("LAGOON_ROUTES", "").split(",")
 allowed_origins = default_origins + [route.strip() for route in lagoon_routes if route.strip()]
 
@@ -198,7 +198,7 @@ app.add_middleware(PrometheusMiddleware)
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
