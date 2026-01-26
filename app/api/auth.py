@@ -136,7 +136,7 @@ def create_and_set_access_token(response: Response, user_email: str, user: Optio
     """
     # Create access token
     access_token = create_access_token(
-        data={"sub": user_email}
+        data={"sub": user_email.lower()}
     )
 
     # Get cookie domain from LAGOON_ROUTES
@@ -393,6 +393,9 @@ def generate_validation_token(email: str) -> str:
     Returns:
         str: The generated validation token (8 characters, alphanumeric, uppercase)
     """
+    # Ensure email is lowercased for consistency
+    email = email.lower()
+
     # Generate an 8-character alphanumeric code in uppercase
     code = ''.join(secrets.choice('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') for _ in range(8))
 
@@ -413,6 +416,9 @@ def send_validation_code(email: str, db: Session) -> None:
     Raises:
         HTTPException: If email sending fails
     """
+    # Ensure email is lowercased for consistency
+    email = email.lower()
+
     # Generate and store validation code
     code = generate_validation_token(email)
 
@@ -478,6 +484,9 @@ async def validate_email(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email is required"
         )
+
+    # Ensure email is lowercased for consistency
+    email = email.lower()
 
     auth_logger.info(f"Email validation attempt for: {email}")
     try:
@@ -678,6 +687,9 @@ def send_validation_url(email: str) -> None:
     Raises:
         HTTPException: If email sending fails
     """
+    # Ensure email is lowercased for consistency
+    email = email.lower()
+
     # Generate validation URL using the existing function
     validation_url = generate_pricing_url(email, validity_hours=1)
 
