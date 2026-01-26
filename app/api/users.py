@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+
+from sqlalchemy import func
 from typing import List
 from app.core.config import settings
 from app.core.limit_service import LimitService
@@ -103,7 +105,7 @@ async def create_user(
     Create a new user. Accessible by admin users or team admins for their own team.
     """
     # Check if email already exists
-    db_user = db.query(DBUser).filter(DBUser.email == user.email).first()
+    db_user = db.query(DBUser).filter(func.lower(DBUser.email) == user.email.lower()).first()
     if db_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

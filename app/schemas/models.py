@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, field_validator
 from typing import Optional, List, ClassVar, Literal, Dict
 from datetime import datetime
 from sqlalchemy.orm import relationship
@@ -10,15 +10,37 @@ class Token(BaseModel):
 class TokenData(BaseModel):
     email: Optional[EmailStr] = None
 
+    @field_validator('email', mode='before')
+    @classmethod
+    def lower_case_email(cls, v):
+        if v is None:
+            return v
+        return v.lower()
+
 class EmailValidation(BaseModel):
     email: EmailStr
 
+    @field_validator('email', mode='before')
+    @classmethod
+    def lower_case_email(cls, v):
+        return v.lower()
+
 class LoginData(BaseModel):
     username: EmailStr  # Using username to match OAuth2 form field
+
+    @field_validator('username', mode='before')
+    @classmethod
+    def lower_case_username(cls, v):
+        return v.lower()
     password: str
 
 class UserBase(BaseModel):
     email: EmailStr
+
+    @field_validator('email', mode='before')
+    @classmethod
+    def lower_case_email(cls, v):
+        return v.lower()
 
 class UserCreate(UserBase):
     password: Optional[str] = None
@@ -28,6 +50,13 @@ class UserCreate(UserBase):
 
 class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
+
+    @field_validator('email', mode='before')
+    @classmethod
+    def lower_case_email(cls, v):
+        if v is None:
+            return v
+        return v.lower()
     is_admin: Optional[bool] = None
     current_password: Optional[str] = None
     new_password: Optional[str] = None
@@ -246,6 +275,11 @@ class AuditLogMetadata(BaseModel):
 class TeamBase(BaseModel):
     name: str
     admin_email: EmailStr
+
+    @field_validator('admin_email', mode='before')
+    @classmethod
+    def lower_case_admin_email(cls, v):
+        return v.lower()
     phone: Optional[str] = None
     billing_address: Optional[str] = None
 
@@ -255,6 +289,13 @@ class TeamCreate(TeamBase):
 class TeamUpdate(BaseModel):
     name: Optional[str] = None
     admin_email: Optional[EmailStr] = None
+
+    @field_validator('admin_email', mode='before')
+    @classmethod
+    def lower_case_admin_email(cls, v):
+        if v is None:
+            return v
+        return v.lower()
     phone: Optional[str] = None
     billing_address: Optional[str] = None
     is_active: Optional[bool] = None
@@ -303,6 +344,11 @@ class UserRoleUpdate(BaseModel):
 
 class SignInData(BaseModel):
     username: EmailStr
+
+    @field_validator('username', mode='before')
+    @classmethod
+    def lower_case_username(cls, v):
+        return v.lower()
     verification_code: str
 
 class CheckoutSessionCreate(BaseModel):
