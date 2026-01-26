@@ -1,8 +1,6 @@
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
-import pytest
 from app.db.models import DBUser
-from app.core.config import settings
 
 def test_create_user_uppercase_email_is_stored_lowercase(client: TestClient, admin_token: str, db: Session):
     """
@@ -54,7 +52,6 @@ def test_register_case_insensitive_duplicate_check(client: TestClient, test_user
     When registering a new user with same email but different casing
     Then registration should fail
     """
-    email = test_user.email # "test@example.com"
     mixed_case_email = "Test@Example.com"
 
     response = client.post(
