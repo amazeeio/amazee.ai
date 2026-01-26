@@ -1,24 +1,33 @@
-from pydantic import BaseModel, ConfigDict, EmailStr
-from typing import Optional, List, ClassVar, Literal, Dict
+from pydantic import BaseModel, ConfigDict, EmailStr, AfterValidator
+from typing import Optional, List, ClassVar, Literal, Dict, Annotated
 from datetime import datetime
 from sqlalchemy.orm import relationship
+
+def lowercase_email(v: str) -> str:
+    """Validator to lowercase email addresses."""
+    if v is None:
+        return v
+    return v.lower()
+
+# Custom type for case-insensitive emails
+CaseInsensitiveEmailStr = Annotated[EmailStr, AfterValidator(lowercase_email)]
 
 class Token(BaseModel):
     access_token: str
     token_type: str
 
 class TokenData(BaseModel):
-    email: Optional[EmailStr] = None
+    email: Optional[CaseInsensitiveEmailStr] = None
 
 class EmailValidation(BaseModel):
-    email: EmailStr
+    email: CaseInsensitiveEmailStr
 
 class LoginData(BaseModel):
-    username: EmailStr  # Using username to match OAuth2 form field
+    username: CaseInsensitiveEmailStr  # Using username to match OAuth2 form field
     password: str
 
 class UserBase(BaseModel):
-    email: EmailStr
+    email: CaseInsensitiveEmailStr
 
 class UserCreate(UserBase):
     password: Optional[str] = None
@@ -27,7 +36,7 @@ class UserCreate(UserBase):
     model_config = ConfigDict(from_attributes=True)
 
 class UserUpdate(BaseModel):
-    email: Optional[EmailStr] = None
+    email: Optional[CaseInsensitiveEmailStr] = None
     is_admin: Optional[bool] = None
     current_password: Optional[str] = None
     new_password: Optional[str] = None
@@ -245,7 +254,7 @@ class AuditLogMetadata(BaseModel):
 # Team schemas
 class TeamBase(BaseModel):
     name: str
-    admin_email: EmailStr
+    admin_email: CaseInsensitiveEmailStr
     phone: Optional[str] = None
     billing_address: Optional[str] = None
 
@@ -254,7 +263,7 @@ class TeamCreate(TeamBase):
 
 class TeamUpdate(BaseModel):
     name: Optional[str] = None
-    admin_email: Optional[EmailStr] = None
+    admin_email: Optional[CaseInsensitiveEmailStr] = None
     phone: Optional[str] = None
     billing_address: Optional[str] = None
     is_active: Optional[bool] = None
@@ -302,7 +311,7 @@ class UserRoleUpdate(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class SignInData(BaseModel):
-    username: EmailStr
+    username: CaseInsensitiveEmailStr
     verification_code: str
 
 class CheckoutSessionCreate(BaseModel):

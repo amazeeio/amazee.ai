@@ -11,6 +11,7 @@ from typing import Optional, List, Union
 
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Form
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from urllib.parse import urlparse
 from jose import JWTError, jwt
 
@@ -60,7 +61,7 @@ from app.schemas.models import (
 )
 
 from app.api.teams import register_team
-from app.api.users import _create_user_in_db
+from app.api.users import _create_user_in_db, get_user_by_email
 from app.api.private_ai_keys import create_private_ai_key
 
 auth_logger = logging.getLogger(__name__)
@@ -135,7 +136,7 @@ def create_and_set_access_token(response: Response, user_email: str, user: Optio
     """
     # Create access token
     access_token = create_access_token(
-        data={"sub": user_email}
+        data={"sub": user_email.lower()}
     )
 
     # Get cookie domain from LAGOON_ROUTES
@@ -196,7 +197,7 @@ async def login(
         )
 
     auth_logger.info(f"Login attempt for user: {login_data.username}")
-    user = db.query(DBUser).filter(DBUser.email == login_data.username).first()
+    user = get_user_by_email(db, login_data.username)
     if not user or not verify_password(login_data.password, user.hashed_password):
         auth_logger.warning(f"Failed login attempt for user: {login_data.username}")
         raise HTTPException(
@@ -269,11 +270,8 @@ async def update_user_me(
                 detail="Current password is required to update email"
             )
         # Check if email is already taken
-        existing_user = db.query(DBUser).filter(
-            DBUser.email == user_update.email,
-            DBUser.id != current_user.id
-        ).first()
-        if existing_user:
+        existing_user = get_user_by_email(db, user_update.email)
+        if existing_user and existing_user.id != current_user.id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email already registered"
@@ -300,7 +298,7 @@ async def register(
     """
     auth_logger.info(f"Registration attempt for user: {user.email}")
     # Check if user with this email exists
-    db_user = db.query(DBUser).filter(DBUser.email == user.email).first()
+    db_user = get_user_by_email(db, user.email)
     if db_user:
         auth_logger.warning(f"Registration failed - email already exists: {user.email}")
         raise HTTPException(
@@ -358,7 +356,7 @@ async def sign_in(
         )
 
     # Get user from database after verifying the code
-    user = db.query(DBUser).filter(DBUser.email == sign_in_data.username).first()
+    user = get_user_by_email(db, sign_in_data.username)
 
     # If user doesn't exist, create a new user and team
     if not user:
@@ -395,6 +393,9 @@ def generate_validation_token(email: str) -> str:
     Returns:
         str: The generated validation token (8 characters, alphanumeric, uppercase)
     """
+    # Ensure email is lowercased for consistency
+    email = email.lower()
+
     # Generate an 8-character alphanumeric code in uppercase
     code = ''.join(secrets.choice('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') for _ in range(8))
 
@@ -415,11 +416,14 @@ def send_validation_code(email: str, db: Session) -> None:
     Raises:
         HTTPException: If email sending fails
     """
+    # Ensure email is lowercased for consistency
+    email = email.lower()
+
     # Generate and store validation code
     code = generate_validation_token(email)
 
     # Determine if user exists to choose appropriate template
-    user = db.query(DBUser).filter(DBUser.email == email).first()
+    user = get_user_by_email(db, email)
     email_template = 'returning-user-code' if user else 'new-user-code'
 
     auth_logger.info(f"Sending validation code to {'existing' if user else 'new'} user: {email}")
@@ -480,6 +484,9 @@ async def validate_email(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email is required"
         )
+
+    # Ensure email is lowercased for consistency
+    email = email.lower()
 
     auth_logger.info(f"Email validation attempt for: {email}")
     try:
@@ -635,7 +642,7 @@ async def validate_jwt(
             algorithms=[settings.ALGORITHM]
         )
         email: str = payload.get("sub")
-        user = db.query(DBUser).filter(DBUser.email == email).first()
+        user = get_user_by_email(db, email)
         if not user:
             raise credentials_exception
 
@@ -680,6 +687,9 @@ def send_validation_url(email: str) -> None:
     Raises:
         HTTPException: If email sending fails
     """
+    # Ensure email is lowercased for consistency
+    email = email.lower()
+
     # Generate validation URL using the existing function
     validation_url = generate_pricing_url(email, validity_hours=1)
 
@@ -742,7 +752,7 @@ async def generate_trial_access(
 
     try:
         # Find the AI trial team
-        team = db.query(DBTeam).filter(DBTeam.admin_email == settings.AI_TRIAL_TEAM_EMAIL, DBTeam.is_active).first()
+        team = db.query(DBTeam).filter(func.lower(DBTeam.admin_email) == settings.AI_TRIAL_TEAM_EMAIL.lower(), DBTeam.is_active).first()
 
         # Find the admin user of the team
         if team:

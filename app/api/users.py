@@ -1,6 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
+
+from sqlalchemy import func
+
+from typing import List, Optional
+
 from app.core.config import settings
 from app.core.limit_service import LimitService
 from app.db.database import get_db
@@ -13,6 +17,12 @@ from datetime import datetime, UTC
 import logging
 
 logger = logging.getLogger(__name__)
+
+def get_user_by_email(db: Session, email: str) -> Optional[DBUser]:
+    """
+    Get a user by email (case-insensitive).
+    """
+    return db.query(DBUser).filter(func.lower(DBUser.email) == email.lower()).first()
 
 router = APIRouter(
     tags=["users"]
@@ -103,7 +113,7 @@ async def create_user(
     Create a new user. Accessible by admin users or team admins for their own team.
     """
     # Check if email already exists
-    db_user = db.query(DBUser).filter(DBUser.email == user.email).first()
+    db_user = get_user_by_email(db, user.email)
     if db_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
