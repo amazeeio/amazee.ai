@@ -5,6 +5,7 @@ from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status, Cookie, Header, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import logging
+from app.api.users import get_user_by_email
 from app.core.config import settings
 from app.db.database import get_db
 from sqlalchemy.orm import Session
@@ -68,7 +69,7 @@ async def get_current_user(
         raise credentials_exception
 
     email: str = payload.get("sub")
-    user = db.query(DBUser).filter(DBUser.email == email).first()
+    user = get_user_by_email(db, email)
     if user is None:
         raise credentials_exception
     return user
