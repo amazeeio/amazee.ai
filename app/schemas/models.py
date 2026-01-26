@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, field_validator, AfterValidator
+from pydantic import BaseModel, ConfigDict, EmailStr, AfterValidator
 from typing import Optional, List, ClassVar, Literal, Dict, Annotated
 from datetime import datetime
 from sqlalchemy.orm import relationship
