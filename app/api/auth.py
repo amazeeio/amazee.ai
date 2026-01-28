@@ -12,7 +12,7 @@ from typing import Optional, List, Union
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Form
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 from jose import JWTError, jwt
 
 from app.core.config import settings
@@ -60,6 +60,8 @@ from app.schemas.models import (
     PrivateAIKeyCreate,
     ForgotPasswordRequest,
     ResetPasswordRequest,
+    VerifyResetCodeRequest,
+    VerifyResetCodeResponse,
 )
 
 from app.api.teams import register_team
@@ -507,26 +509,20 @@ async def validate_email(
 
 def send_password_reset_email(email: str) -> None:
     """
-    Generate and send a password reset URL to the specified email address.
+    Generate and send a password reset code to the specified email address.
     """
     # Ensure email is lowercased for consistency
     email = email.lower()
 
-    # Generate token with specific type
-    payload = {
-        "sub": email,
-        "type": "password_reset"
-    }
-    # 1 hour expiration
-    token = create_access_token(data=payload, expires_delta=timedelta(hours=1))
+    # Generate a 12-character alphanumeric code in uppercase
+    code = ''.join(secrets.choice('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') for _ in range(12))
 
-    # Get the frontend URL from settings
-    base_url = settings.frontend_route
-    path = '/auth/reset-password'
-    url = urljoin(base_url, path)
-    reset_url = f"{url}?token={token}"
+    # Store the code in DynamoDB with a prefix to avoid collision with sign-in codes
+    dynamodb_service = DynamoDBService()
+    # using "reset:" prefix for the key
+    dynamodb_service.write_validation_code(f"reset:{email}", code)
 
-    auth_logger.info(f"Sending password reset URL to user: {email}")
+    auth_logger.info(f"Sending password reset code to user: {email}")
 
     # Send the email
     ses_service = SESService()
@@ -534,7 +530,7 @@ def send_password_reset_email(email: str) -> None:
         to_addresses=[email],
         template_name='reset-password',
         template_data={
-            'reset_url': reset_url
+            'code': code
         }
     )
 
@@ -554,7 +550,7 @@ async def forgot_password(
 ):
     """
     Initiate the password reset process.
-    Sends an email with a reset link if the user exists.
+    Sends an email with a reset code if the user exists.
     """
     user = get_user_by_email(db, request.email)
     
@@ -565,7 +561,42 @@ async def forgot_password(
     else:
         auth_logger.info(f"Password reset requested for non-existent email: {request.email}")
         
-    return {"message": "If an account exists with this email, a password reset link has been sent."}
+    return {"message": "If an account exists with this email, a password reset code has been sent."}
+
+@router.post("/verify-reset-code", response_model=VerifyResetCodeResponse)
+async def verify_reset_code(
+    request: VerifyResetCodeRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Verify the password reset code.
+    Returns a reset token if the code is valid.
+    """
+    email = request.email.lower()
+    
+    # Verify the code using DynamoDB
+    dynamodb_service = DynamoDBService()
+    stored_data = dynamodb_service.read_validation_code(f"reset:{email}")
+
+    if not stored_data or stored_data.get('code') != request.code.upper():
+        auth_logger.warning(f"Invalid reset code for user: {email}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or verification code"
+        )
+
+    # Generate token with specific type
+    payload = {
+        "sub": email,
+        "type": "password_reset"
+    }
+    # 1 hour expiration for the token to complete the reset
+    token = create_access_token(data=payload, expires_delta=timedelta(hours=1))
+    
+    return VerifyResetCodeResponse(
+        reset_token=token,
+        message="Code verified successfully"
+    )
 
 @router.post("/reset-password")
 async def reset_password(
