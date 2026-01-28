@@ -17,7 +17,7 @@ markdown==3.10
 email-validator==2.3.0
 prometheus-client==0.23.1
 prometheus-fastapi-instrumentator==7.1.0
-stripe==12.5.1
+stripe==14.1.0
 six==1.17.0
 apscheduler==3.11.2
 httpx==0.28.1
