@@ -4,7 +4,7 @@ import secrets
 import os
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 import email_validator
 
 from typing import Optional, List, Union
@@ -12,7 +12,7 @@ from typing import Optional, List, Union
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request, Form
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from jose import JWTError, jwt
 
 from app.core.config import settings
@@ -58,6 +58,8 @@ from app.schemas.models import (
     SignInData,
     TeamCreate,
     PrivateAIKeyCreate,
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
 )
 
 from app.api.teams import register_team
@@ -502,6 +504,117 @@ async def validate_email(
     return {
         "message": "Validation code has been generated and sent"
     }
+
+def send_password_reset_email(email: str) -> None:
+    """
+    Generate and send a password reset URL to the specified email address.
+    """
+    # Ensure email is lowercased for consistency
+    email = email.lower()
+
+    # Generate token with specific type
+    payload = {
+        "sub": email,
+        "type": "password_reset"
+    }
+    # 1 hour expiration
+    token = create_access_token(data=payload, expires_delta=timedelta(hours=1))
+
+    # Get the frontend URL from settings
+    base_url = settings.frontend_route
+    path = '/auth/reset-password'
+    url = urljoin(base_url, path)
+    reset_url = f"{url}?token={token}"
+
+    auth_logger.info(f"Sending password reset URL to user: {email}")
+
+    # Send the email
+    ses_service = SESService()
+    email_sent = ses_service.send_email(
+        to_addresses=[email],
+        template_name='reset-password',
+        template_data={
+            'reset_url': reset_url
+        }
+    )
+
+    if not email_sent:
+        auth_logger.error(f"Failed to send password reset email to {email}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send password reset email"
+        )
+
+    auth_logger.info(f"Successfully sent password reset email to: {email}")
+
+@router.post("/forgot-password")
+async def forgot_password(
+    request: ForgotPasswordRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Initiate the password reset process.
+    Sends an email with a reset link if the user exists.
+    """
+    user = get_user_by_email(db, request.email)
+    
+    # We always return success to prevent email enumeration
+    # But we only send the email if the user exists
+    if user:
+        send_password_reset_email(request.email)
+    else:
+        auth_logger.info(f"Password reset requested for non-existent email: {request.email}")
+        
+    return {"message": "If an account exists with this email, a password reset link has been sent."}
+
+@router.post("/reset-password")
+async def reset_password(
+    request: ResetPasswordRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Reset password using a valid token.
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    try:
+        # Decode token
+        payload = jwt.decode(
+            request.token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM]
+        )
+        email: str = payload.get("sub")
+        token_type: str = payload.get("type")
+
+        # Verify it's a password reset token
+        if token_type != "password_reset":
+            raise credentials_exception
+
+        if not email:
+            raise credentials_exception
+
+        # Get user
+        user = get_user_by_email(db, email)
+        if not user:
+            raise credentials_exception
+
+        # Update password
+        user.hashed_password = get_password_hash(request.new_password)
+        db.commit()
+
+        auth_logger.info(f"Password successfully reset for user: {email}")
+        return {"message": "Password updated successfully"}
+
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token"
+        )
 
 # API Token routes (as apposed to AI Token routes)
 def generate_api_token() -> str:

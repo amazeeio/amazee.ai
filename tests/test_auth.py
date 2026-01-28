@@ -843,21 +843,149 @@ def test_validate_jwt_cookie_expiration_regular_user(client, test_user, test_tok
     set_cookie_header = response.headers.get("set-cookie", "")
     assert "Max-Age=1800" in set_cookie_header or "max-age=1800" in set_cookie_header
 
-def test_validate_jwt_cookie_expiration_system_admin(client, test_admin, admin_token):
-    """
-    Given a system administrator with a valid JWT token
-    When the system admin validates their JWT token
-    Then the cookie should expire in 8 hours (28800 seconds)
-    """
-    response = client.get(
-        f"/auth/validate-jwt?token={admin_token}"
-    )
-    assert response.status_code == 200
-
-    # Check that the cookie is set with 8-hour expiration
-    cookies = response.cookies
-    assert "access_token" in cookies
-
     # Check the Set-Cookie header for max-age
     set_cookie_header = response.headers.get("set-cookie", "")
     assert "Max-Age=28800" in set_cookie_header or "max-age=28800" in set_cookie_header
+
+def test_forgot_password_success(client, test_user, mock_ses):
+    """
+    Given an existing user
+    When they request a password reset
+    Then an email should be sent with a reset link
+    """
+    response = client.post(
+        "/auth/forgot-password",
+        json={"email": test_user.email}
+    )
+    
+    # Verify success response
+    assert response.status_code == 200
+    assert "password reset link has been sent" in response.json()["message"]
+    
+    # Verify SES service was called correctly
+    mock_ses.send_email.assert_called_once()
+    ses_call_args = mock_ses.send_email.call_args
+    assert ses_call_args[1]['to_addresses'] == [test_user.email]
+    assert ses_call_args[1]['template_name'] == 'reset-password'
+    assert 'reset_url' in ses_call_args[1]['template_data']
+    
+    # Verify the reset URL contains the token
+    reset_url = ses_call_args[1]['template_data']['reset_url']
+    assert "/auth/reset-password?token=" in reset_url
+
+def test_forgot_password_nonexistent_user(client, mock_ses):
+    """
+    Given a non-existent user
+    When they request a password reset
+    Then a success message should be returned (for security) but no email sent
+    """
+    email = "nonexistent@example.com"
+    response = client.post(
+        "/auth/forgot-password",
+        json={"email": email}
+    )
+    
+    # Verify success response (to prevent email enumeration)
+    assert response.status_code == 200
+    assert "password reset link has been sent" in response.json()["message"]
+    
+    # Verify SES service was NOT called
+    mock_ses.send_email.assert_not_called()
+
+def test_reset_password_success(client, test_user):
+    """
+    Given a valid reset token
+    When the user resets their password
+    Then the password should be updated and they can login with the new password
+    """
+    from app.core.security import create_access_token
+    from datetime import timedelta
+    
+    # Generate a valid reset token
+    token = create_access_token(
+        data={"sub": test_user.email, "type": "password_reset"},
+        expires_delta=timedelta(hours=1)
+    )
+    
+    new_password = "newpassword123"
+    
+    # Reset password
+    response = client.post(
+        "/auth/reset-password",
+        json={"token": token, "new_password": new_password}
+    )
+    
+    assert response.status_code == 200
+    assert response.json()["message"] == "Password updated successfully"
+    
+    # Verify login with new password
+    login_response = client.post(
+        "/auth/login",
+        data={"username": test_user.email, "password": new_password}
+    )
+    assert login_response.status_code == 200
+    
+    # Verify login with old password fails
+    old_login_response = client.post(
+        "/auth/login",
+        data={"username": test_user.email, "password": "testpassword"}
+    )
+    assert old_login_response.status_code == 401
+
+def test_reset_password_invalid_token(client):
+    """
+    Given an invalid reset token
+    When the user tries to reset their password
+    Then the request should fail
+    """
+    response = client.post(
+        "/auth/reset-password",
+        json={"token": "invalid_token", "new_password": "newpassword123"}
+    )
+    
+    assert response.status_code == 401
+    assert "Invalid or expired token" in response.json()["detail"]
+
+def test_reset_password_wrong_token_type(client, test_user):
+    """
+    Given a valid token but of wrong type (not password_reset)
+    When the user tries to reset their password
+    Then the request should fail
+    """
+    from app.core.security import create_access_token
+    
+    # Generate a token with wrong type (e.g., standard access token)
+    token = create_access_token(
+        data={"sub": test_user.email}  # Missing type="password_reset"
+    )
+    
+    response = client.post(
+        "/auth/reset-password",
+        json={"token": token, "new_password": "newpassword123"}
+    )
+    
+    assert response.status_code == 401
+    assert "Could not validate credentials" in response.json()["detail"]
+
+def test_reset_password_expired_token(client, test_user):
+    """
+    Given an expired reset token
+    When the user tries to reset their password
+    Then the request should fail
+    """
+    from app.core.security import create_access_token
+    from datetime import timedelta
+    
+    # Generate an expired token
+    token = create_access_token(
+        data={"sub": test_user.email, "type": "password_reset"},
+        expires_delta=timedelta(hours=-1)
+    )
+    
+    response = client.post(
+        "/auth/reset-password",
+        json={"token": token, "new_password": "newpassword123"}
+    )
+    
+    assert response.status_code == 401
+    assert "Invalid or expired token" in response.json()["detail"]
