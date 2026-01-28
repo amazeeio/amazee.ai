@@ -841,17 +841,13 @@ def test_validate_jwt_cookie_expiration_regular_user(client, test_user, test_tok
 
     # Check the Set-Cookie header for max-age
     set_cookie_header = response.headers.get("set-cookie", "")
-    assert "Max-Age=1800" in set_cookie_header or "max-age=1800" in set_cookie_header
-
-    # Check the Set-Cookie header for max-age
-    set_cookie_header = response.headers.get("set-cookie", "")
     assert "Max-Age=28800" in set_cookie_header or "max-age=28800" in set_cookie_header
 
-def test_forgot_password_success(client, test_user, mock_ses):
+def test_forgot_password_success(client, test_user, mock_ses, mock_dynamodb):
     """
     Given an existing user
     When they request a password reset
-    Then an email should be sent with a reset link
+    Then an email should be sent with a reset code and stored in DynamoDB
     """
     response = client.post(
         "/auth/forgot-password",
@@ -860,20 +856,26 @@ def test_forgot_password_success(client, test_user, mock_ses):
     
     # Verify success response
     assert response.status_code == 200
-    assert "password reset link has been sent" in response.json()["message"]
+    assert "password reset code has been sent" in response.json()["message"]
     
     # Verify SES service was called correctly
     mock_ses.send_email.assert_called_once()
     ses_call_args = mock_ses.send_email.call_args
     assert ses_call_args[1]['to_addresses'] == [test_user.email]
     assert ses_call_args[1]['template_name'] == 'reset-password'
-    assert 'reset_url' in ses_call_args[1]['template_data']
+    assert 'code' in ses_call_args[1]['template_data']
     
-    # Verify the reset URL contains the token
-    reset_url = ses_call_args[1]['template_data']['reset_url']
-    assert "/auth/reset-password?token=" in reset_url
+    # Verify code format
+    code = ses_call_args[1]['template_data']['code']
+    assert len(code) == 12
+    
+    # Verify DynamoDB was called to store the code
+    mock_dynamodb.write_validation_code.assert_called_once()
+    dynamodb_call_args = mock_dynamodb.write_validation_code.call_args
+    assert dynamodb_call_args[0][0] == f"reset:{test_user.email}"
+    assert dynamodb_call_args[0][1] == code
 
-def test_forgot_password_nonexistent_user(client, mock_ses):
+def test_forgot_password_nonexistent_user(client, mock_ses, mock_dynamodb):
     """
     Given a non-existent user
     When they request a password reset
@@ -887,10 +889,66 @@ def test_forgot_password_nonexistent_user(client, mock_ses):
     
     # Verify success response (to prevent email enumeration)
     assert response.status_code == 200
-    assert "password reset link has been sent" in response.json()["message"]
+    assert "password reset code has been sent" in response.json()["message"]
     
     # Verify SES service was NOT called
     mock_ses.send_email.assert_not_called()
+    
+    # Verify DynamoDB was NOT called
+    mock_dynamodb.write_validation_code.assert_not_called()
+
+def test_verify_reset_code_success(client, test_user, mock_dynamodb):
+    """
+    Given a user with a valid reset code
+    When they verify the code
+    Then a reset token should be returned
+    """
+    email = test_user.email
+    code = "TESTCODE1234"
+    
+    # Mock the read_validation_code to return our test code
+    mock_dynamodb.read_validation_code.return_value = {
+        'email': f"reset:{email}",
+        'code': code,
+        'ttl': 1234567890
+    }
+    
+    response = client.post(
+        "/auth/verify-reset-code",
+        json={"email": email, "code": code}
+    )
+    
+    assert response.status_code == 200
+    data = response.json()
+    assert "reset_token" in data
+    assert data["message"] == "Code verified successfully"
+    
+    # Verify DynamoDB was queried correctly
+    mock_dynamodb.read_validation_code.assert_called_once_with(f"reset:{email}")
+
+def test_verify_reset_code_invalid(client, test_user, mock_dynamodb):
+    """
+    Given a user with an invalid reset code
+    When they try to verify the code
+    Then the request should fail
+    """
+    email = test_user.email
+    code = "WRONGCODE123"
+    
+    # Mock the read_validation_code to return a different code
+    mock_dynamodb.read_validation_code.return_value = {
+        'email': f"reset:{email}",
+        'code': "CORRECTCODE12",
+        'ttl': 1234567890
+    }
+    
+    response = client.post(
+        "/auth/verify-reset-code",
+        json={"email": email, "code": code}
+    )
+    
+    assert response.status_code == 401
+    assert "Incorrect email or verification code" in response.json()["detail"]
 
 def test_reset_password_success(client, test_user):
     """
