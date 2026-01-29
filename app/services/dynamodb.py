@@ -84,12 +84,13 @@ class DynamoDBService:
     def read_validation_code(self, email: str) -> Optional[Dict[str, Any]]:
         """
         Read a verification code record from the table.
+        Checks TTL and returns None if the record is expired.
 
         Args:
             email (str): Email address to look up
 
         Returns:
-            Optional[Dict[str, Any]]: The record if found, None otherwise
+            Optional[Dict[str, Any]]: The record if found and valid, None otherwise
         """
         try:
             table = self.dynamodb.Table(VALIDATION_CODE_TABLE_NAME)
@@ -98,6 +99,18 @@ class DynamoDBService:
                     'email': email
                 }
             )
-            return response.get('Item')
+            item = response.get('Item')
+            
+            if not item:
+                return None
+                
+            # Check TTL if present
+            if 'ttl' in item:
+                current_timestamp = int(datetime.now(UTC).timestamp())
+                if item['ttl'] < current_timestamp:
+                    logger.info(f"Record for {email} has expired (TTL: {item['ttl']})")
+                    return None
+            
+            return item
         except ClientError:
             return None

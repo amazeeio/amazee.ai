@@ -4,7 +4,7 @@ import secrets
 import os
 import time
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 import email_validator
 
 from typing import Optional, List, Union
@@ -557,7 +557,23 @@ async def forgot_password(
     # We always return success to prevent email enumeration
     # But we only send the email if the user exists
     if user:
-        send_password_reset_email(request.email)
+        # Rate limiting: Check if a code was recently sent
+        dynamodb_service = DynamoDBService()
+        existing_code = dynamodb_service.read_validation_code(f"reset:{request.email.lower()}")
+        
+        should_send = True
+        if existing_code and 'updated_at' in existing_code:
+            try:
+                updated_at = datetime.fromisoformat(existing_code['updated_at'])
+                # If code was generated less than 60 seconds ago, skip sending
+                if (datetime.now(UTC) - updated_at).total_seconds() < 60:
+                    auth_logger.info(f"Rate limit hit for password reset: {request.email}")
+                    should_send = False
+            except ValueError:
+                pass  # If date parsing fails, proceed with sending
+        
+        if should_send:
+            send_password_reset_email(request.email)
     else:
         auth_logger.info(f"Password reset requested for non-existent email: {request.email}")
         

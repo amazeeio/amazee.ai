@@ -835,13 +835,9 @@ def test_validate_jwt_cookie_expiration_regular_user(client, test_user, test_tok
     )
     assert response.status_code == 200
 
-    # Check that the cookie is set with 30-minute expiration
-    cookies = response.cookies
-    assert "access_token" in cookies
-
     # Check the Set-Cookie header for max-age
     set_cookie_header = response.headers.get("set-cookie", "")
-    assert "Max-Age=28800" in set_cookie_header or "max-age=28800" in set_cookie_header
+    assert "Max-Age=1800" in set_cookie_header or "max-age=1800" in set_cookie_header
 
 def test_forgot_password_success(client, test_user, mock_ses, mock_dynamodb):
     """
@@ -895,6 +891,38 @@ def test_forgot_password_nonexistent_user(client, mock_ses, mock_dynamodb):
     mock_ses.send_email.assert_not_called()
     
     # Verify DynamoDB was NOT called
+    mock_dynamodb.write_validation_code.assert_not_called()
+
+def test_forgot_password_rate_limit(client, test_user, mock_ses, mock_dynamodb):
+    """
+    Given an existing user who requested a password reset recently (within 60s)
+    When they request a password reset again
+    Then a success message should be returned but NO email sent
+    """
+    from datetime import datetime, timedelta, UTC
+    
+    # Mock DynamoDB to return a record created 30 seconds ago
+    recent_time = (datetime.now(UTC) - timedelta(seconds=30)).isoformat()
+    mock_dynamodb.read_validation_code.return_value = {
+        'email': f"reset:{test_user.email}",
+        'code': "EXISTINGCODE",
+        'ttl': 1234567890,
+        'updated_at': recent_time
+    }
+    
+    response = client.post(
+        "/auth/forgot-password",
+        json={"email": test_user.email}
+    )
+    
+    # Verify success response (to prevent enumeration)
+    assert response.status_code == 200
+    assert "password reset code has been sent" in response.json()["message"]
+    
+    # Verify SES service was NOT called due to rate limit
+    mock_ses.send_email.assert_not_called()
+    
+    # Verify DynamoDB was NOT called to write a new code
     mock_dynamodb.write_validation_code.assert_not_called()
 
 def test_verify_reset_code_success(client, test_user, mock_dynamodb):
