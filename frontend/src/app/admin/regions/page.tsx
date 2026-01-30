@@ -45,6 +45,7 @@ interface Team {
 interface Region {
   id: string;
   name: string;
+  label: string;
   postgres_host: string;
   postgres_port: number;
   postgres_admin_user: string;
@@ -65,6 +66,7 @@ export default function RegionsPage() {
   const [selectedRegionForTeams, setSelectedRegionForTeams] = useState<Region | null>(null);
   const [newRegion, setNewRegion] = useState({
     name: '',
+    label: '',
     postgres_host: '',
     postgres_port: 5432,
     postgres_admin_user: '',
@@ -120,6 +122,7 @@ export default function RegionsPage() {
       setIsAddingRegion(false);
       setNewRegion({
         name: '',
+        label: '',
         postgres_host: '',
         postgres_port: 5432,
         postgres_admin_user: '',
@@ -167,6 +170,7 @@ export default function RegionsPage() {
     mutationFn: async (regionData: Region) => {
       type UpdateData = {
         name: string;
+        label: string;
         postgres_host: string;
         postgres_port: number;
         postgres_admin_user: string;
@@ -179,6 +183,7 @@ export default function RegionsPage() {
 
       const updateData: UpdateData = {
         name: regionData.name,
+        label: regionData.label,
         postgres_host: regionData.postgres_host,
         postgres_port: regionData.postgres_port,
         postgres_admin_user: regionData.postgres_admin_user,
@@ -372,6 +377,15 @@ export default function RegionsPage() {
                       />
                     </div>
                     <div className="space-y-2">
+                      <label className="text-sm font-medium">Label</label>
+                      <Input
+                        value={newRegion.label}
+                        onChange={(e) => setNewRegion({ ...newRegion, label: e.target.value })}
+                        placeholder="us-east-1"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-2">
                       <label className="text-sm font-medium">Postgres Host</label>
                       <Input
                         value={newRegion.postgres_host}
@@ -429,7 +443,7 @@ export default function RegionsPage() {
                       />
                     </div>
                   </div>
-                                    <div className="flex items-center space-x-2">
+                  <div className="flex items-center space-x-2">
                     <input
                       type="checkbox"
                       id="is_dedicated"
@@ -467,6 +481,7 @@ export default function RegionsPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
+                  <TableHead>Label</TableHead>
                   <TableHead>Postgres Host</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead>Status</TableHead>
@@ -478,6 +493,7 @@ export default function RegionsPage() {
                 {paginatedData.map((region) => (
                   <TableRow key={region.id}>
                     <TableCell>{region.name}</TableCell>
+                    <TableCell>{region.label}</TableCell>
                     <TableCell>{region.postgres_host}</TableCell>
                     <TableCell>
                       <Badge variant={region.is_dedicated ? "default" : "secondary"}>
@@ -552,6 +568,15 @@ export default function RegionsPage() {
                       />
                     </div>
                     <div className="space-y-2">
+                      <label className="text-sm font-medium">Label</label>
+                      <Input
+                        value={editingRegion.label}
+                        onChange={(e) => setEditingRegion({ ...editingRegion, label: e.target.value })}
+                        placeholder="US East 1"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-2">
                       <label className="text-sm font-medium">Postgres Host</label>
                       <Input
                         value={editingRegion.postgres_host}
@@ -607,7 +632,7 @@ export default function RegionsPage() {
                       />
                     </div>
                   </div>
-                                    <div className="flex items-center space-x-2">
+                  <div className="flex items-center space-x-2">
                     <input
                       type="checkbox"
                       id="edit_is_dedicated"

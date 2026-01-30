@@ -52,6 +52,7 @@ class DBRegion(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True)
+    label = Column(String)
     postgres_host = Column(String)
     postgres_port = Column(Integer, default=5432)
     postgres_admin_user = Column(String)
