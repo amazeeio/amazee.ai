@@ -19,8 +19,7 @@ from app.services.ses import SESService
 from app.core.worker import generate_pricing_url, get_team_admin_email
 from app.core.team_service import get_team_keys_by_region, restore_soft_deleted_team, soft_delete_team
 from app.api.private_ai_keys import delete_private_ai_key
-from app.schemas.models import SalesTeamsResponse, SalesProduct, SalesTeam, TeamRegionBudget
-from app.schemas.limits import ResourceType
+from app.schemas.models import SalesTeamsResponse, SalesProduct, SalesTeam
 
 
 logger = logging.getLogger(__name__)
@@ -218,106 +217,6 @@ async def delete_team(
     db.commit()
 
     return {"message": "Team deleted successfully"}
-
-@router.get(
-    "/{team_id}/regions/{region_id}/budget",
-    response_model=TeamRegionBudget,
-    dependencies=[Depends(get_role_min_specific_team_admin)]
-)
-async def get_team_region_budget(
-    team_id: int,
-    region_id: int,
-    db: Session = Depends(get_db)
-):
-    """
-    Get total budget and spend for a team in a specific region.
-    """
-    team = db.query(DBTeam).filter(
-        DBTeam.id == team_id,
-        DBTeam.deleted_at.is_(None)
-    ).first()
-    if not team:
-        raise HTTPException(status_code=404, detail="Team not found")
-
-    region = db.query(DBRegion).filter(
-        DBRegion.id == region_id,
-        DBRegion.is_active.is_(True)
-    ).first()
-    if not region:
-        raise HTTPException(status_code=404, detail="Region not found")
-
-    team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
-    team_user_ids = [user.id for user in team_users]
-
-    team_keys = db.query(DBPrivateAIKey).filter(
-        DBPrivateAIKey.region_id == region_id,
-        (DBPrivateAIKey.team_id == team_id) |
-        (DBPrivateAIKey.owner_id.in_(team_user_ids))
-    ).all()
-
-    limit_service = LimitService(db)
-    total_spend = 0.0
-    total_budget = 0.0
-
-    litellm_service = LiteLLMService(
-        api_url=region.litellm_api_url,
-        api_key=region.litellm_api_key
-    )
-
-    for key in team_keys:
-        if not key.litellm_token:
-            continue
-
-        key_spend = 0.0
-        max_budget = None
-        try:
-            key_info = await litellm_service.get_key_info(key.litellm_token)
-            info = key_info.get("info", {})
-            key_spend = float(info.get("spend", 0.0) or 0.0)
-            max_budget = info.get("max_budget")
-        except Exception as exc:
-            logger.warning(
-                "Failed to get LiteLLM info for key %s in region %s: %s",
-                key.id,
-                region.name,
-                str(exc)
-            )
-            if key.cached_spend is not None:
-                key_spend = float(key.cached_spend)
-
-        total_spend += key_spend
-
-        if max_budget is None:
-            try:
-                if key.owner_id:
-                    owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
-                    limits = limit_service.get_user_limits(owner) if owner else []
-                else:
-                    limits = limit_service.get_team_limits(team)
-
-                budget_limit = next(
-                    (limit for limit in limits if limit.resource == ResourceType.BUDGET),
-                    None
-                )
-                max_budget = budget_limit.max_value if budget_limit else None
-            except Exception:
-                max_budget = None
-
-            if max_budget is None:
-                try:
-                    max_budget = limit_service.get_default_team_limit_for_resource(ResourceType.BUDGET)
-                except Exception:
-                    max_budget = DEFAULT_MAX_SPEND
-
-        total_budget += float(max_budget or 0.0)
-
-    return TeamRegionBudget(
-        team_id=team_id,
-        region_id=region_id,
-        region_name=region.name,
-        total_spend=round(total_spend, 4),
-        total_budget=round(total_budget, 4)
-    )
 
 @router.post("/{team_id}/extend-trial", dependencies=[Depends(get_role_min_system_admin)])
 async def extend_team_trial(
