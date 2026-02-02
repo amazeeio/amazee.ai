@@ -443,6 +443,7 @@ async def create_llm_token(
 async def list_private_ai_keys(
     owner_id: Optional[int] = None,
     team_id: Optional[int] = None,
+    region_id: Optional[int] = None,
     current_user = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
@@ -458,6 +459,7 @@ async def list_private_ai_keys(
         - Returns their own keys, and keys for their team, ignoring owner_id and team_id parameters
 
     Keys from soft-deleted teams are excluded from the results.
+    Optionally filters results by region_id.
     """
     query = db.query(DBPrivateAIKey).outerjoin(DBTeam, DBPrivateAIKey.team_id == DBTeam.id)
 
@@ -465,6 +467,9 @@ async def list_private_ai_keys(
     query = query.filter(
         (DBPrivateAIKey.team_id.is_(None)) | (DBTeam.deleted_at.is_(None))
     )
+
+    if region_id is not None:
+        query = query.filter(DBPrivateAIKey.region_id == region_id)
 
     if current_user.is_admin:
         if owner_id is not None:
