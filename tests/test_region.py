@@ -65,6 +65,7 @@ def test_create_region_duplicate_name(mock_validate_db, mock_validate_litellm, c
 
     region_data = {
         "name": test_region.name,  # Use existing region name
+        "label": "New Region",
         "postgres_host": "new-host",
         "postgres_port": 5432,
         "postgres_admin_user": "new-admin",
@@ -103,6 +104,7 @@ def test_create_region_litellm_validation_fails(mock_validate_db, mock_validate_
 
     region_data = {
         "name": "new-region",
+        "label": "New Region",
         "postgres_host": "new-host",
         "postgres_port": 5432,
         "postgres_admin_user": "new-admin",
@@ -141,6 +143,7 @@ def test_create_region_database_validation_fails(mock_validate_db, mock_validate
 
     region_data = {
         "name": "new-region",
+        "label": "New Region",
         "postgres_host": "invalid-host",
         "postgres_port": 5432,
         "postgres_admin_user": "invalid-admin",
