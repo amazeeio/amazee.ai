@@ -1,0 +1,81 @@
+# LiteLLM Budget Enforcement: Known Issues for Engineering
+
+**AI surfaced this so double check for accuracy**
+
+---
+
+## Context
+
+Are using LiteLLM's budget system (`max_budget`) as the enforcement mechanism? When a customer's spend reaches their budget, LiteLLM should reject requests with HTTP 400.
+
+AI reviewed LiteLLM's GitHub issues and found several budget enforcement bugs that have been reported. 
+
+---
+
+## Known Issues
+
+### 1. Team Budgets Override User Budgets
+
+**Issue:** [#12905](https://github.com/BerriAI/litellm/issues/12905)
+
+If a virtual key belongs to a team, the team's budget is enforced instead of the user's budget. User-level budget limits are ignored.
+
+**Impact for us:** If we use teams (which we plan to), we need to set budgets at the team or key level, not user level. Or ensure our key/team structure accounts for this.
+
+**Action:** Confirm our data model. Are we setting `max_budget` on keys directly, or relying on user/team budgets?
+
+---
+
+### 2. Historical Bug: Budget Enforcement Bypassed Entirely
+
+**Issue:** [PR #9658](https://github.com/BerriAI/litellm/pull/9658)
+
+There was a bug where exceeding a budget did nothing - requests continued to succeed. This could result in unlimited spending.
+
+**Status:** Fixed in PR #9658.
+
+**Action:** Confirm we're on a LiteLLM version that includes this fix. 
+
+---
+
+### 3. AzureOpenAI Client Library Bypass
+
+**Issue:** [#12977](https://github.com/BerriAI/litellm/issues/12977)
+
+When the same API key is used with the AzureOpenAI client library (instead of the standard OpenAI client), budget enforcement can be bypassed.
+
+**Impact for us:** Unclear as I don't think we have anything on Azure
+
+---
+
+### 4. Model-Level Budget Enforcement Issues
+
+**Issue:** [#10052](https://github.com/BerriAI/litellm/issues/10052)
+
+Per-model budget limits within a key may not be reliably enforced. Requests can succeed even after the model-specific budget should be exhausted.
+
+**Impact for us:** If we set per-model budgets, they might not work. Global key budgets seem more reliable.
+
+**Action:** Use global `max_budget` per key, not per-model budgets, for v1.
+
+---
+
+### 5. Error Messages Lack Detail
+
+**Issue:** [#4208](https://github.com/BerriAI/litellm/issues/4208), [#14144](https://github.com/BerriAI/litellm/issues/14144)
+
+When budget is exceeded, the error message doesn't always clearly state which budget was exceeded (key vs user vs team).
+
+**Impact for us:** Debugging customer issues may be harder. We should log the full error response.
+
+**Action:** Ensure our error handling captures and logs the complete LiteLLM error response for debugging.
+
+---
+
+## References
+
+- [LiteLLM Virtual Keys Docs](https://docs.litellm.ai/docs/proxy/virtual_keys)
+- [LiteLLM Budgets & Rate Limits](https://docs.litellm.ai/docs/proxy/users)
+- [Budget enforcement fix PR](https://github.com/BerriAI/litellm/pull/9658)
+- [Team budget override issue](https://github.com/BerriAI/litellm/issues/12905)
+- [Error message improvement request](https://github.com/BerriAI/litellm/issues/4208)
