@@ -5,9 +5,26 @@ import { LoginForm } from "@/components/auth/login-form";
 import { PasswordlessLoginForm } from "@/components/auth/passwordless-login-form";
 import { getConfig } from "@/utils/config";
 
-export default function LoginPage() {
+function LoginContent() {
   const [isLoading, setIsLoading] = useState(true);
   const [isPasswordless, setIsPasswordless] = useState(false);
+  const searchParams = useSearchParams();
+  const { toast } = useToast();
+
+  useEffect(() => {
+    if (searchParams?.get('expired') === 'true') {
+      toast({
+        variant: "destructive",
+        title: "Session Expired",
+        description: "Your session has expired. Please log in again.",
+      });
+      
+      // Clean up the URL
+      const url = new URL(window.location.href);
+      url.searchParams.delete('expired');
+      window.history.replaceState({}, '', url);
+    }
+  }, [searchParams, toast]);
 
   useEffect(() => {
     async function loadConfig() {
@@ -114,5 +131,13 @@ export default function LoginPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <LoginContent />
+    </Suspense>
   );
 }

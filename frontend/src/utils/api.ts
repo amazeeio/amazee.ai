@@ -36,10 +36,11 @@ export async function fetchApi(endpoint: string, options: RequestInit = {}) {
   }
 
   if (!response.ok) {
-    const error = await response
-      .json()
-      .catch(() => ({ message: response.statusText }));
-    throw new Error(error.detail || error.message || "API call failed");
+    if (response.status === 401 && typeof window !== 'undefined' && !window.location.pathname.startsWith('/auth/login')) {
+      window.location.href = '/auth/login?expired=true';
+    }
+    const error = await response.json().catch(() => ({ message: response.statusText }));
+    throw new Error(error.detail || error.message || 'API call failed');
   }
 
   return response;
@@ -108,10 +109,11 @@ export async function fetchApiWithToken(
   }
 
   if (!response.ok) {
-    const error = await response
-      .json()
-      .catch(() => ({ message: response.statusText }));
-    throw new Error(error.detail || error.message || "API call failed");
+    if (response.status === 401 && typeof window !== 'undefined' && !window.location.pathname.startsWith('/auth/login')) {
+      window.location.href = '/auth/login?expired=true';
+    }
+    const error = await response.json().catch(() => ({ message: response.statusText }));
+    throw new Error(error.detail || error.message || 'API call failed');
   }
 
   return response;
