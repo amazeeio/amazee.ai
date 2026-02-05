@@ -381,7 +381,7 @@ export default function RegionsPage() {
                       <Input
                         value={newRegion.label}
                         onChange={(e) => setNewRegion({ ...newRegion, label: e.target.value })}
-                        placeholder="us-east-1"
+                        placeholder="US East 1"
                         required
                       />
                     </div>
