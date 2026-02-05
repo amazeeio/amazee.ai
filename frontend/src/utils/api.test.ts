@@ -58,6 +58,7 @@ describe('API utilities with MSW', () => {
       id: 1,
       name: 'Test Key',
       region: 'us-east-1',
+      label: 'US East 1',
       status: 'active',
       created_at: '2024-01-01T00:00:00Z'
     })

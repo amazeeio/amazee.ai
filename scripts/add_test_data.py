@@ -77,7 +77,7 @@ def create_test_data():
         selected_product = random.choice(existing_products)
         print(f"Selected product for teams: {selected_product.name} (ID: {selected_product.id})")
 
-                # 1. Team with one user, created 32 days ago
+        # 1. Team with one user, created 32 days ago
         if "Test Team 1" not in existing_teams:
             print("\n1. Creating team with one user (created 32 days ago)...")
             team1 = DBTeam(
@@ -108,7 +108,7 @@ def create_test_data():
             team1 = existing_teams["Test Team 1"]
             print(f"\n1. Team 1 already exists: {team1.name} (ID: {team1.id})")
 
-                # 2. Team with one user, always_free=True, created 20 days ago
+        # 2. Team with one user, always_free=True, created 20 days ago
         if "Test Team 2 - Always Free" not in existing_teams:
             print("\n2. Creating team with one user, always_free=True (created 20 days ago)...")
             team2 = DBTeam(
@@ -139,7 +139,7 @@ def create_test_data():
             team2 = existing_teams["Test Team 2 - Always Free"]
             print(f"\n2. Team 2 already exists: {team2.name} (ID: {team2.id})")
 
-                # 3. Team with one user and product association
+        # 3. Team with one user and product association
         if "Test Team 3 - With Product" not in existing_teams:
             print("\n3. Creating team with one user and product association...")
             team3 = DBTeam(
@@ -180,7 +180,7 @@ def create_test_data():
             team3 = existing_teams["Test Team 3 - With Product"]
             print(f"\n3. Team 3 already exists: {team3.name} (ID: {team3.id})")
 
-                # 4. Team with one user, created 40 days ago, with payment 35 days ago, and product association
+        # 4. Team with one user, created 40 days ago, with payment 35 days ago, and product association
         if "Test Team 4 - With Payment History" not in existing_teams:
             print("\n4. Creating team with one user, payment history, and product association...")
             team4 = DBTeam(
@@ -223,7 +223,7 @@ def create_test_data():
             team4 = existing_teams["Test Team 4 - With Payment History"]
             print(f"\n4. Team 4 already exists: {team4.name} (ID: {team4.id})")
 
-                # 5. Team with one user, no products, created 20 days ago
+        # 5. Team with one user, no products, created 20 days ago
         if "Test Team 5 - No Products" not in existing_teams:
             print("\n5. Creating team with one user, no products (created 20 days ago)...")
             team5 = DBTeam(
