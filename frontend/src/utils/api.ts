@@ -13,7 +13,7 @@ const defaultOptions: RequestInit = {
   },
 };
 
-export async function fetchApi(endpoint: string, options: RequestInit = {}) {
+export async function fetchApi(endpoint: string, options: RequestInit = {}): Promise<Response> {
   const apiUrl = await getApiUrl();
   const url = `${apiUrl}${endpoint.startsWith("/") ? endpoint : `/${endpoint}`}`;
 
@@ -36,8 +36,12 @@ export async function fetchApi(endpoint: string, options: RequestInit = {}) {
   }
 
   if (!response.ok) {
-    if (response.status === 401 && typeof window !== 'undefined' && !window.location.pathname.startsWith('/auth/login')) {
+    if (response.status === 401 && typeof window !== 'undefined' && !window.location.pathname.startsWith('/auth/')) {
+      // Clear the access token cookie to prevent middleware from redirecting back
+      document.cookie = 'access_token=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT;';
       window.location.href = '/auth/login?expired=true';
+      // Return a promise that never resolves to stop execution while redirecting
+      return new Promise(() => {}) as Promise<Response>;
     }
     const error = await response.json().catch(() => ({ message: response.statusText }));
     throw new Error(error.detail || error.message || 'API call failed');
@@ -80,11 +84,7 @@ export async function del(endpoint: string, options: RequestInit = {}) {
 }
 
 // API functions that use Bearer token instead of cookies
-export async function fetchApiWithToken(
-  endpoint: string,
-  token: string,
-  options: RequestInit = {},
-) {
+export async function fetchApiWithToken(endpoint: string, token: string, options: RequestInit = {}): Promise<Response> {
   const apiUrl = await getApiUrl();
   const url = `${apiUrl}${endpoint.startsWith("/") ? endpoint : `/${endpoint}`}`;
 
@@ -109,8 +109,12 @@ export async function fetchApiWithToken(
   }
 
   if (!response.ok) {
-    if (response.status === 401 && typeof window !== 'undefined' && !window.location.pathname.startsWith('/auth/login')) {
+    if (response.status === 401 && typeof window !== 'undefined' && !window.location.pathname.startsWith('/auth/')) {
+      // Clear the access token cookie to prevent middleware from redirecting back
+      document.cookie = 'access_token=; path=/; expires=Thu, 01 Jan 1970 00:00:01 GMT;';
       window.location.href = '/auth/login?expired=true';
+      // Return a promise that never resolves to stop execution while redirecting
+      return new Promise(() => {}) as Promise<Response>;
     }
     const error = await response.json().catch(() => ({ message: response.statusText }));
     throw new Error(error.detail || error.message || 'API call failed');
