@@ -731,6 +731,10 @@ async def generate_trial_access(
     # Get default region by name and ensure it is active
     region = db.query(DBRegion).filter(DBRegion.name == settings.AI_TRIAL_REGION, DBRegion.is_active).first()
 
+    # Try region ID if region name is not found
+    if not region:
+        region = db.query(DBRegion).filter(DBRegion.id == settings.AI_TRIAL_REGION, DBRegion.is_active).first()
+
     # If no region is found, raise an error
     if not region:
         raise HTTPException(
