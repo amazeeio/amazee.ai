@@ -27,6 +27,7 @@ def test_create_private_ai_key(mock_client_class, client, test_token, test_regio
     assert response.status_code == 200
     data = response.json()
     assert data["region"] == test_region.name
+    assert data["region_label"] == test_region.label
     assert data["litellm_token"] == "test-private-key-123"
     assert data["owner_id"] == test_user.id
     assert data["id"] != -1
@@ -71,6 +72,7 @@ def test_list_private_ai_keys(client, test_token, test_region, db, test_user):
     assert len(data) > 0
     assert data[0]["database_name"] == "test-db"
     assert data[0]["region"] == test_region.name
+    assert data[0]["region_label"] == test_region.label
     assert data[0]["owner_id"] == test_user.id
 
 @patch("httpx.AsyncClient")
@@ -183,6 +185,7 @@ def test_create_team_private_ai_key(mock_client_class, client, test_team, team_a
     assert response.status_code == 200
     data = response.json()
     assert data["region"] == test_region.name
+    assert data["region_label"] == test_region.label
     assert data["litellm_token"] == "test-private-key-123"
     assert data["team_id"] == test_team.id
     assert data["owner_id"] is None
@@ -204,6 +207,7 @@ def test_create_private_ai_key_without_owner_or_team(mock_client_class, client, 
     assert response.status_code == 200
     data = response.json()
     assert data["region"] == test_region.name
+    assert data["region_label"] == test_region.label
     assert data["litellm_token"] == "test-private-key-123"
     assert data["owner_id"] is not None  # Should be set to admin's ID
     assert data["team_id"] is None
@@ -230,6 +234,7 @@ def test_create_team_private_ai_key_as_key_creator(mock_client_class, client, te
     assert response.status_code == 200
     data = response.json()
     assert data["region"] == test_region.name
+    assert data["region_label"] == test_region.label
     assert data["litellm_token"] == "test-private-key-123"
     assert data["team_id"] == test_team_id
     assert data["owner_id"] is None

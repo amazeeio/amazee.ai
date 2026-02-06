@@ -16,6 +16,7 @@ def test_create_region(mock_validate_db, mock_validate_litellm, client, admin_to
 
     region_data = {
         "name": "new-region",
+        "label": "New Region",
         "postgres_host": "new-host",
         "postgres_port": 5432,
         "postgres_admin_user": "new-admin",
@@ -33,6 +34,7 @@ def test_create_region(mock_validate_db, mock_validate_litellm, client, admin_to
     assert response.status_code == 200
     data = response.json()
     assert data["name"] == region_data["name"]
+    assert data["label"] == region_data["label"]
     assert data["postgres_host"] == region_data["postgres_host"]
     assert data["litellm_api_url"] == region_data["litellm_api_url"]
     assert "id" in data
@@ -63,6 +65,7 @@ def test_create_region_duplicate_name(mock_validate_db, mock_validate_litellm, c
 
     region_data = {
         "name": test_region.name,  # Use existing region name
+        "label": "New Region",
         "postgres_host": "new-host",
         "postgres_port": 5432,
         "postgres_admin_user": "new-admin",
@@ -101,6 +104,7 @@ def test_create_region_litellm_validation_fails(mock_validate_db, mock_validate_
 
     region_data = {
         "name": "new-region",
+        "label": "New Region",
         "postgres_host": "new-host",
         "postgres_port": 5432,
         "postgres_admin_user": "new-admin",
@@ -139,6 +143,7 @@ def test_create_region_database_validation_fails(mock_validate_db, mock_validate
 
     region_data = {
         "name": "new-region",
+        "label": "New Region",
         "postgres_host": "invalid-host",
         "postgres_port": 5432,
         "postgres_admin_user": "invalid-admin",
@@ -164,6 +169,7 @@ def test_create_region_non_admin(client, test_token):
     """Test that non-admin users cannot create regions"""
     region_data = {
         "name": "new-region",
+        "label": "New Region",
         "postgres_host": "new-host",
         "postgres_port": 5432,
         "postgres_admin_user": "new-admin",
@@ -195,6 +201,7 @@ def test_get_region(client, admin_token, test_region):
     assert response.status_code == 200
     data = response.json()
     assert data["id"] == test_region.id
+    assert data["label"] == test_region.label
     assert data["name"] == test_region.name
     assert data["postgres_host"] == test_region.postgres_host
 
@@ -234,6 +241,7 @@ def test_update_region(client, admin_token, test_region):
     """
     update_data = {
         "name": "updated-region-name",
+        "label": "Updated Region",
         "postgres_host": "updated-host",
         "postgres_port": 5433,
         "postgres_admin_user": "updated-admin",
@@ -253,6 +261,7 @@ def test_update_region(client, admin_token, test_region):
     assert response.status_code == 200
     data = response.json()
     assert data["name"] == update_data["name"]
+    assert data["label"] == update_data["label"]
     assert data["postgres_host"] == update_data["postgres_host"]
     assert data["postgres_port"] == update_data["postgres_port"]
 
@@ -265,6 +274,7 @@ def test_update_region_duplicate_name(client, admin_token, test_region, db):
     # Create another region
     other_region = DBRegion(
         name="other-region",
+        label="Other Region",
         postgres_host="other-host",
         postgres_port=5432,
         postgres_admin_user="other-admin",
@@ -280,6 +290,7 @@ def test_update_region_duplicate_name(client, admin_token, test_region, db):
 
     update_data = {
         "name": other_region.name,  # Use the other region's name
+        "label": "Updated Region",
         "postgres_host": "updated-host",
         "postgres_port": 5433,
         "postgres_admin_user": "updated-admin",
@@ -307,6 +318,7 @@ def test_update_region_non_admin(client, test_token, test_region):
     """
     update_data = {
         "name": "updated-region-name",
+        "label": "Updated Region",
         "postgres_host": "updated-host",
         "postgres_port": 5433,
         "postgres_admin_user": "updated-admin",
@@ -334,6 +346,7 @@ def test_update_non_existent_region(client, admin_token):
     """
     update_data = {
         "name": "updated-region-name",
+        "label": "Updated Region",
         "postgres_host": "updated-host",
         "postgres_port": 5433,
         "postgres_admin_user": "updated-admin",
@@ -362,6 +375,7 @@ def test_delete_region_success(client, admin_token, db):
     # Create a region for deletion
     region_to_delete = DBRegion(
         name="region-to-delete",
+        label="Region to Delete",
         postgres_host="delete-host",
         postgres_port=5432,
         postgres_admin_user="delete-admin",
@@ -483,6 +497,7 @@ def test_list_admin_regions(client, admin_token, db, test_region):
     # Create an inactive region
     inactive_region = DBRegion(
         name="inactive-region",
+        label="Inactive Region",
         postgres_host="inactive-host",
         postgres_port=5432,
         postgres_admin_user="inactive-admin",
@@ -534,6 +549,7 @@ def test_list_regions_regular_user_sees_non_dedicated_only(client, test_token, d
     if not dedicated_region:
         dedicated_region = DBRegion(
             name="dedicated-region",
+            label="Dedicated Region",
             postgres_host="dedicated-host",
             postgres_port=5432,
             postgres_admin_user="dedicated-admin",
@@ -556,6 +572,7 @@ def test_list_regions_regular_user_sees_non_dedicated_only(client, test_token, d
     regions = response.json()
     assert len(regions) == 1
     assert regions[0]["name"] == test_region.name
+    assert regions[0]["label"] == test_region.label
     assert regions[0]["name"] != "dedicated-region"
 
 def test_list_regions_admin_sees_all_regions(client, admin_token, db, test_region):
@@ -569,6 +586,7 @@ def test_list_regions_admin_sees_all_regions(client, admin_token, db, test_regio
     if not dedicated_region:
         dedicated_region = DBRegion(
             name="dedicated-region",
+            label="Dedicated Region",
             postgres_host="dedicated-host",
             postgres_port=5432,
             postgres_admin_user="dedicated-admin",
@@ -605,6 +623,7 @@ def test_list_regions_team_member_sees_team_dedicated_regions(client, team_admin
     if not dedicated_region:
         dedicated_region = DBRegion(
             name="team-dedicated-region",
+            label="Team Dedicated Region",
             postgres_host="team-dedicated-host",
             postgres_port=5432,
             postgres_admin_user="team-dedicated-admin",
@@ -660,6 +679,7 @@ def test_list_regions_team_member_does_not_see_other_team_dedicated_regions(clie
     if not dedicated_region:
         dedicated_region = DBRegion(
             name="other-team-dedicated-region",
+            label="Other Team Dedicated Region",
             postgres_host="other-team-dedicated-host",
             postgres_port=5432,
             postgres_admin_user="other-team-dedicated-admin",
@@ -691,6 +711,7 @@ def test_list_regions_team_member_does_not_see_other_team_dedicated_regions(clie
     regions = response.json()
     assert len(regions) == 1
     assert regions[0]["name"] == test_region.name
+    assert regions[0]["label"] == test_region.label
     assert "other-team-dedicated-region" not in [r["name"] for r in regions]
 
 @patch("app.api.regions.validate_litellm_endpoint")
@@ -707,6 +728,7 @@ def test_create_dedicated_region(mock_validate_db, mock_validate_litellm, client
 
     region_data = {
         "name": "new-dedicated-region",
+        "label": "New Dedicated Region",
         "postgres_host": "new-dedicated-host",
         "postgres_port": 5432,
         "postgres_admin_user": "new-dedicated-admin",
@@ -725,6 +747,7 @@ def test_create_dedicated_region(mock_validate_db, mock_validate_litellm, client
     assert response.status_code == 200
     data = response.json()
     assert data["name"] == region_data["name"]
+    assert data["label"] == region_data["label"]
     assert data["is_dedicated"]
 
     # Verify validation functions were called
@@ -747,6 +770,7 @@ def test_create_dedicated_region_non_admin_fails(client, test_token):
     """
     region_data = {
         "name": "new-dedicated-region",
+        "label": "New Dedicated Region",
         "postgres_host": "new-dedicated-host",
         "postgres_port": 5432,
         "postgres_admin_user": "new-dedicated-admin",
@@ -774,6 +798,7 @@ def test_associate_team_with_dedicated_region(client, admin_token, db, test_team
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-for-association",
+        label="Dedicated Region for Association",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",
@@ -818,6 +843,7 @@ def test_associate_team_with_region_non_admin_fails(client, test_token, db, test
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-for-non-admin-test",
+        label="Dedicated Region for Non-Admin Test",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",
@@ -862,6 +888,7 @@ def test_associate_non_existent_team_with_region(client, admin_token, db):
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-for-non-existent-team",
+        label="Dedicated Region for Non-Existent Team",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",
@@ -892,6 +919,7 @@ def test_associate_team_with_already_associated_region(client, admin_token, db, 
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-for-duplicate-association",
+        label="Dedicated Region for Duplicate Association",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",
@@ -932,6 +960,7 @@ def test_disassociate_team_from_dedicated_region(client, admin_token, db, test_t
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-for-disassociation",
+        label="Dedicated Region for Disassociation",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",
@@ -971,6 +1000,7 @@ def test_disassociate_team_from_region_non_admin_fails(client, test_token, db, t
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-for-non-admin-disassociation",
+        label="Dedicated Region for Non-Admin Disassociation",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",
@@ -1001,6 +1031,7 @@ def test_disassociate_team_from_non_existent_association(client, admin_token, db
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-for-non-existent-disassociation",
+        label="Dedicated Region for Non-Existent Disassociation",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",
@@ -1031,6 +1062,7 @@ def test_list_teams_for_dedicated_region(client, admin_token, db, test_team):
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-for-team-listing",
+        label="Dedicated Region for Team Listing",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",
@@ -1073,6 +1105,7 @@ def test_list_teams_for_dedicated_region_non_admin_fails(client, test_token, db)
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-for-non-admin-team-listing",
+        label="Dedicated Region for Non-Admin Team Listing",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",
@@ -1131,6 +1164,7 @@ def test_list_teams_for_dedicated_region_with_no_associations(client, admin_toke
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-with-no-teams",
+        label="Dedicated Region with No Teams",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",

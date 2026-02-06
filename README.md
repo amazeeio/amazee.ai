@@ -89,7 +89,7 @@ make backend-test-regex # Waits for a string which pytest will parse to only col
 ```
 
 ### 💳 Testing Stripe
-See [[tests/stripe_test_trigger.md]] for detailed instructions on testing integration with Stripe for billing purposes.
+See [[tests/stripe_test_trigger.md]] for detailed instructions on testing Stripe integration for billing.
 
 ### Frontend Tests
 ```bash
@@ -148,6 +148,31 @@ The development environment includes:
 Access the services at:
 - Frontend: http://localhost:3000
 - Backend API: http://localhost:8800
+
+
+## 🛠️ Development Workflow
+
+We follow a structured branching and deployment process to ensure stability across environments.
+
+### 1. Feature Development
+* **Default Branch**: `dev` is the default branch, and it is linked to the `dev` environment on Lagoon.
+* **Branching**: Always create new feature branches from `dev`. Bugfixes can potentially be created from the `main` branch if they need to be merged into `main` and `prod` faster than in-progress `dev` work.
+* **Review**: Create a Pull Request (PR) back into `dev`. All PRs must be reviewed and tested locally before merging.
+
+### 2. Testing & Staging
+* **Dev Testing**: After merging, verify your changes on the `dev` environment.
+* **Staging**: Once verified on dev, create a PR from `dev` to `main`. The `main` branch serves as our **Stage** environment.
+
+### 3. Production Deployment
+* **Lagoon**: Deployments are managed via Lagoon.
+* **Promotion**: Deploy to **Prod** by promoting the build from the `main` branch directly on the Lagoon Dashboard or via Lagoon CLI.
+
+## 👥 Contributing
+
+1. Create a new branch from `dev`: `git checkout -b feature/my-feature`
+2. Make your changes and commit.
+3. Run the test suite: `make test-all`
+4. Submit a pull request to the `dev` branch.
 
 
 ## 📁 Project Structure

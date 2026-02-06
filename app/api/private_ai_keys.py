@@ -364,7 +364,7 @@ async def create_llm_token(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Team not found"
             )
-        
+
         # Check if team forces user keys
         if team.force_user_keys:
             team_id = None

@@ -74,6 +74,7 @@ class APITokenResponse(APITokenBase):
 
 class RegionBase(BaseModel):
     name: str
+    label: Optional[str] = None
     postgres_host: str
     postgres_port: int = 5432
     postgres_admin_user: str
@@ -88,6 +89,7 @@ class RegionCreate(RegionBase):
 
 class RegionUpdate(BaseModel):
     name: str
+    label: Optional[str] = None
     postgres_host: str
     postgres_port: int
     postgres_admin_user: str
@@ -101,6 +103,7 @@ class RegionUpdate(BaseModel):
 class RegionResponse(BaseModel):
     id: int
     name: str
+    label: Optional[str] = None
     postgres_host: str
     litellm_api_url: str
     is_active: bool
@@ -123,6 +126,7 @@ class PrivateAIKeyBase(BaseModel):
     litellm_token: Optional[str] = None
     litellm_api_url: Optional[str] = None
     region: Optional[str] = None
+    region_label: Optional[str] = None
     created_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
