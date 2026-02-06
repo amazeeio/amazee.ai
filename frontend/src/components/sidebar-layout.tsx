@@ -192,7 +192,7 @@ export function SidebarLayout({
   }
 
   // Don't show the sidebar on the public auth pages and upgrade page
-  const publicAuthPaths = ['/auth/login', '/auth/register', '/auth/forgot-password', '/auth/reset-password'];
+  const publicAuthPaths = ['/auth/login', '/auth/register', '/auth/forgot-password', '/auth/verify-reset-code', '/auth/reset-password'];
   if (publicAuthPaths.includes(pathname || '') || pathname === '/upgrade') {
     return <>{children}</>;
   }

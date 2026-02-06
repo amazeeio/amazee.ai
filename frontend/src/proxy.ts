@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const token = request.cookies.get('access_token')?.value;
   const { pathname } = request.nextUrl;
 
   // Auth paths that should redirect to dashboard when logged in
-  const authPaths = ['/auth/login', '/auth/register'];
+  const authPaths = ['/auth/login', '/auth/register', '/auth/forgot-password', '/auth/reset-password', '/auth/verify-reset-code'];
 
   // Public paths that don't require authentication
   const publicPaths = [...authPaths, '/api/config', '/upgrade'];
