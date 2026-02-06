@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
 import * as z from 'zod';
@@ -30,12 +30,17 @@ const formSchema = z.object({
 
 export function ResetPasswordForm() {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const token = searchParams.get('token');
-  
+  const [token, setToken] = useState<string | null>(null);
+
   const [success, setSuccess] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Read token from sessionStorage on mount (client-side only)
+  useEffect(() => {
+    const storedToken = sessionStorage.getItem('reset_token');
+    setToken(storedToken);
+  }, []);
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -75,6 +80,8 @@ export function ResetPasswordForm() {
       }
 
       setSuccess('Password successfully reset. You can now login.');
+      // Clear the token from sessionStorage after successful reset
+      sessionStorage.removeItem('reset_token');
       setTimeout(() => {
         router.push('/auth/login');
       }, 3000);

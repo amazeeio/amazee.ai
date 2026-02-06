@@ -105,8 +105,9 @@ export function ForgotPasswordForm() {
         throw new Error(result.detail || 'Failed to verify code');
       }
 
-      // Redirect to reset password page with token
-      router.push(`/auth/reset-password?token=${result.reset_token}`);
+      // Store token securely in sessionStorage and redirect
+      sessionStorage.setItem('reset_token', result.reset_token);
+      router.push('/auth/reset-password');
     } catch (error) {
       setError(error instanceof Error ? error.message : 'An error occurred');
     } finally {
@@ -188,11 +189,11 @@ export function ForgotPasswordForm() {
             >
               {isLoading ? 'Verifying...' : 'Verify Code'}
             </Button>
-            
+
             <div className="text-center mt-2">
-              <Button 
-                variant="link" 
-                type="button" 
+              <Button
+                variant="link"
+                type="button"
                 onClick={() => setStep('email')}
                 className="text-xs"
               >
