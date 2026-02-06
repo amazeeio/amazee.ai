@@ -290,6 +290,7 @@ def test_update_region_duplicate_name(client, admin_token, test_region, db):
 
     update_data = {
         "name": other_region.name,  # Use the other region's name
+        "label": "Updated Region",
         "postgres_host": "updated-host",
         "postgres_port": 5433,
         "postgres_admin_user": "updated-admin",
@@ -571,6 +572,7 @@ def test_list_regions_regular_user_sees_non_dedicated_only(client, test_token, d
     regions = response.json()
     assert len(regions) == 1
     assert regions[0]["name"] == test_region.name
+    assert regions[0]["label"] == test_region.label
     assert regions[0]["name"] != "dedicated-region"
 
 def test_list_regions_admin_sees_all_regions(client, admin_token, db, test_region):
@@ -709,6 +711,7 @@ def test_list_regions_team_member_does_not_see_other_team_dedicated_regions(clie
     regions = response.json()
     assert len(regions) == 1
     assert regions[0]["name"] == test_region.name
+    assert regions[0]["label"] == test_region.label
     assert "other-team-dedicated-region" not in [r["name"] for r in regions]
 
 @patch("app.api.regions.validate_litellm_endpoint")

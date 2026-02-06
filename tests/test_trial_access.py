@@ -48,6 +48,7 @@ async def test_generate_trial_access(mock_auth_deps, db: Session):
     mock_region.litellm_api_url = "http://test"
     mock_region.litellm_api_key = "test"
     mock_region.name = "test-region"
+    mock_region.label = "Test Region"
 
     def get_mock_query(model):
         mock_query = Mock()

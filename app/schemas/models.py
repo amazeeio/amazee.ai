@@ -126,6 +126,7 @@ class PrivateAIKeyBase(BaseModel):
     litellm_token: Optional[str] = None
     litellm_api_url: Optional[str] = None
     region: Optional[str] = None
+    region_label: Optional[str] = None
     created_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 

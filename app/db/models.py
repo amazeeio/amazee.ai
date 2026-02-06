@@ -178,6 +178,7 @@ class DBPrivateAIKey(Base):
             "litellm_token": self.litellm_token,
             "litellm_api_url": self.litellm_api_url or "",
             "region": self.region.name if self.region else None,
+            "region_label": self.region.label if self.region else None,
             "owner_id": self.owner_id,
             "team_id": self.team_id,
             "created_at": self.created_at,
