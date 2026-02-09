@@ -9,7 +9,7 @@
 
 ## Reporting a Vulnerability
 
-We ask that all suspected vulnerabilities be privately and responsibly disclosed by [contacting our security team](mailto:security+amazeeai@amazee.io).
+We ask that all suspected vulnerabilities be privately and responsibly disclosed by [contacting our security team](mailto:security+amazeeai@amazee.io) or by using the private vulnerability reporting form at [amazeeio/amazee.ai/security](https://github.com/amazeeio/amazee.ai/security).
 
 ## Communication
 
