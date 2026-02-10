@@ -321,6 +321,21 @@ class SignInData(BaseModel):
     username: CaseInsensitiveEmailStr
     verification_code: str
 
+class ForgotPasswordRequest(BaseModel):
+    email: CaseInsensitiveEmailStr
+
+class VerifyResetCodeRequest(BaseModel):
+    email: CaseInsensitiveEmailStr
+    code: str
+
+class VerifyResetCodeResponse(BaseModel):
+    reset_token: str
+    message: str
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
 class CheckoutSessionCreate(BaseModel):
     price_lookup_token: str
 

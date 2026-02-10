@@ -52,6 +52,9 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
         is_auth_endpoint = request.url.path in [
             "/auth/login",
             "/auth/register",
+            "/auth/forgot-password",
+            "/auth/verify-reset-code",
+            "/auth/reset-password",
             "/auth/validate-email",
             "/auth/sign-in",
             "/auth/generate-trial-access"

@@ -4,7 +4,7 @@ import secrets
 import os
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, UTC
 import email_validator
 
 from typing import Optional, List, Union
@@ -58,6 +58,10 @@ from app.schemas.models import (
     SignInData,
     TeamCreate,
     PrivateAIKeyCreate,
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
+    VerifyResetCodeRequest,
+    VerifyResetCodeResponse,
 )
 
 from app.api.teams import register_team
@@ -502,6 +506,162 @@ async def validate_email(
     return {
         "message": "Validation code has been generated and sent"
     }
+
+def send_password_reset_email(email: str) -> None:
+    """
+    Generate and send a password reset code to the specified email address.
+    """
+    # Ensure email is lowercased for consistency
+    email = email.lower()
+
+    # Generate a 12-character alphanumeric code in uppercase
+    code = ''.join(secrets.choice('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') for _ in range(12))
+
+    # Store the code in DynamoDB with a prefix to avoid collision with sign-in codes
+    dynamodb_service = DynamoDBService()
+    # using "reset:" prefix for the key
+    dynamodb_service.write_validation_code(f"reset:{email}", code)
+
+    auth_logger.info(f"Sending password reset code to user: {email}")
+
+    # Send the email
+    ses_service = SESService()
+    email_sent = ses_service.send_email(
+        to_addresses=[email],
+        template_name='reset-password',
+        template_data={
+            'code': code
+        }
+    )
+
+    if not email_sent:
+        auth_logger.error(f"Failed to send password reset email to {email}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send password reset email"
+        )
+
+    auth_logger.info(f"Successfully sent password reset email to: {email}")
+
+@router.post("/forgot-password")
+async def forgot_password(
+    request: ForgotPasswordRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Initiate the password reset process.
+    Sends an email with a reset code if the user exists.
+    """
+    user = get_user_by_email(db, request.email)
+    
+    # We always return success to prevent email enumeration
+    # But we only send the email if the user exists
+    if user:
+        # Rate limiting: Check if a code was recently sent
+        dynamodb_service = DynamoDBService()
+        existing_code = dynamodb_service.read_validation_code(f"reset:{request.email.lower()}")
+        
+        should_send = True
+        if existing_code and 'updated_at' in existing_code:
+            try:
+                updated_at = datetime.fromisoformat(existing_code['updated_at'])
+                # If code was generated less than 60 seconds ago, skip sending
+                if (datetime.now(UTC) - updated_at).total_seconds() < 60:
+                    auth_logger.info(f"Rate limit hit for password reset: {request.email}")
+                    should_send = False
+            except ValueError:
+                pass  # If date parsing fails, proceed with sending
+        
+        if should_send:
+            send_password_reset_email(request.email)
+    else:
+        auth_logger.info(f"Password reset requested for non-existent email: {request.email}")
+        
+    return {"message": "If an account exists with this email, a password reset code has been sent."}
+
+@router.post("/verify-reset-code", response_model=VerifyResetCodeResponse)
+async def verify_reset_code(
+    request: VerifyResetCodeRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Verify the password reset code.
+    Returns a reset token if the code is valid.
+    """
+    email = request.email.lower()
+    
+    # Verify the code using DynamoDB
+    dynamodb_service = DynamoDBService()
+    stored_data = dynamodb_service.read_validation_code(f"reset:{email}")
+
+    if not stored_data or stored_data.get('code') != request.code.upper():
+        auth_logger.warning(f"Invalid reset code for user: {email}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or verification code"
+        )
+
+    # Generate token with specific type
+    payload = {
+        "sub": email,
+        "type": "password_reset"
+    }
+    # 1 hour expiration for the token to complete the reset
+    token = create_access_token(data=payload, expires_delta=timedelta(hours=1))
+    
+    return VerifyResetCodeResponse(
+        reset_token=token,
+        message="Code verified successfully"
+    )
+
+@router.post("/reset-password")
+async def reset_password(
+    request: ResetPasswordRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Reset password using a valid token.
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    try:
+        # Decode token
+        payload = jwt.decode(
+            request.token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM]
+        )
+        email: str = payload.get("sub")
+        token_type: str = payload.get("type")
+
+        # Verify it's a password reset token
+        if token_type != "password_reset":
+            raise credentials_exception
+
+        if not email:
+            raise credentials_exception
+
+        # Get user
+        user = get_user_by_email(db, email)
+        if not user:
+            raise credentials_exception
+
+        # Update password
+        user.hashed_password = get_password_hash(request.new_password)
+        db.commit()
+
+        auth_logger.info(f"Password successfully reset for user: {email}")
+        return {"message": "Password updated successfully"}
+
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token"
+        )
 
 # API Token routes (as apposed to AI Token routes)
 def generate_api_token() -> str:

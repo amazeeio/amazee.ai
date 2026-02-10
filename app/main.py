@@ -311,7 +311,7 @@ def custom_openapi():
                 del operation["parameters"]
 
             # Remove security from non-protected endpoints
-            if path_name in ["/auth/login", "/auth/register", "/health", "/auth/generate-trial-access"]:
+            if path_name in ["/auth/login", "/auth/register", "/auth/forgot-password", "/auth/reset-password", "/auth/verify-reset-code", "/health", "/auth/generate-trial-access"]:
                 if "security" in operation:
                     del operation["security"]
 

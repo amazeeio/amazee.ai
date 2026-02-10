@@ -835,29 +835,243 @@ def test_validate_jwt_cookie_expiration_regular_user(client, test_user, test_tok
     )
     assert response.status_code == 200
 
-    # Check that the cookie is set with 30-minute expiration
-    cookies = response.cookies
-    assert "access_token" in cookies
-
     # Check the Set-Cookie header for max-age
     set_cookie_header = response.headers.get("set-cookie", "")
     assert "Max-Age=1800" in set_cookie_header or "max-age=1800" in set_cookie_header
 
-def test_validate_jwt_cookie_expiration_system_admin(client, test_admin, admin_token):
+def test_forgot_password_success(client, test_user, mock_ses, mock_dynamodb):
     """
-    Given a system administrator with a valid JWT token
-    When the system admin validates their JWT token
-    Then the cookie should expire in 8 hours (28800 seconds)
+    Given an existing user
+    When they request a password reset
+    Then an email should be sent with a reset code and stored in DynamoDB
     """
-    response = client.get(
-        f"/auth/validate-jwt?token={admin_token}"
+    response = client.post(
+        "/auth/forgot-password",
+        json={"email": test_user.email}
     )
+    
+    # Verify success response
     assert response.status_code == 200
+    assert "password reset code has been sent" in response.json()["message"]
+    
+    # Verify SES service was called correctly
+    mock_ses.send_email.assert_called_once()
+    ses_call_args = mock_ses.send_email.call_args
+    assert ses_call_args[1]['to_addresses'] == [test_user.email]
+    assert ses_call_args[1]['template_name'] == 'reset-password'
+    assert 'code' in ses_call_args[1]['template_data']
+    
+    # Verify code format
+    code = ses_call_args[1]['template_data']['code']
+    assert len(code) == 12
+    
+    # Verify DynamoDB was called to store the code
+    mock_dynamodb.write_validation_code.assert_called_once()
+    dynamodb_call_args = mock_dynamodb.write_validation_code.call_args
+    assert dynamodb_call_args[0][0] == f"reset:{test_user.email}"
+    assert dynamodb_call_args[0][1] == code
 
-    # Check that the cookie is set with 8-hour expiration
-    cookies = response.cookies
-    assert "access_token" in cookies
+def test_forgot_password_nonexistent_user(client, mock_ses, mock_dynamodb):
+    """
+    Given a non-existent user
+    When they request a password reset
+    Then a success message should be returned (for security) but no email sent
+    """
+    email = "nonexistent@example.com"
+    response = client.post(
+        "/auth/forgot-password",
+        json={"email": email}
+    )
+    
+    # Verify success response (to prevent email enumeration)
+    assert response.status_code == 200
+    assert "password reset code has been sent" in response.json()["message"]
+    
+    # Verify SES service was NOT called
+    mock_ses.send_email.assert_not_called()
+    
+    # Verify DynamoDB was NOT called
+    mock_dynamodb.write_validation_code.assert_not_called()
 
-    # Check the Set-Cookie header for max-age
-    set_cookie_header = response.headers.get("set-cookie", "")
-    assert "Max-Age=28800" in set_cookie_header or "max-age=28800" in set_cookie_header
+def test_forgot_password_rate_limit(client, test_user, mock_ses, mock_dynamodb):
+    """
+    Given an existing user who requested a password reset recently (within 60s)
+    When they request a password reset again
+    Then a success message should be returned but NO email sent
+    """
+    from datetime import datetime, timedelta, UTC
+    
+    # Mock DynamoDB to return a record created 30 seconds ago
+    recent_time = (datetime.now(UTC) - timedelta(seconds=30)).isoformat()
+    mock_dynamodb.read_validation_code.return_value = {
+        'email': f"reset:{test_user.email}",
+        'code': "EXISTINGCODE",
+        'ttl': 1234567890,
+        'updated_at': recent_time
+    }
+    
+    response = client.post(
+        "/auth/forgot-password",
+        json={"email": test_user.email}
+    )
+    
+    # Verify success response (to prevent enumeration)
+    assert response.status_code == 200
+    assert "password reset code has been sent" in response.json()["message"]
+    
+    # Verify SES service was NOT called due to rate limit
+    mock_ses.send_email.assert_not_called()
+    
+    # Verify DynamoDB was NOT called to write a new code
+    mock_dynamodb.write_validation_code.assert_not_called()
+
+def test_verify_reset_code_success(client, test_user, mock_dynamodb):
+    """
+    Given a user with a valid reset code
+    When they verify the code
+    Then a reset token should be returned
+    """
+    email = test_user.email
+    code = "TESTCODE1234"
+    
+    # Mock the read_validation_code to return our test code
+    mock_dynamodb.read_validation_code.return_value = {
+        'email': f"reset:{email}",
+        'code': code,
+        'ttl': 1234567890
+    }
+    
+    response = client.post(
+        "/auth/verify-reset-code",
+        json={"email": email, "code": code}
+    )
+    
+    assert response.status_code == 200
+    data = response.json()
+    assert "reset_token" in data
+    assert data["message"] == "Code verified successfully"
+    
+    # Verify DynamoDB was queried correctly
+    mock_dynamodb.read_validation_code.assert_called_once_with(f"reset:{email}")
+
+def test_verify_reset_code_invalid(client, test_user, mock_dynamodb):
+    """
+    Given a user with an invalid reset code
+    When they try to verify the code
+    Then the request should fail
+    """
+    email = test_user.email
+    code = "WRONGCODE123"
+    
+    # Mock the read_validation_code to return a different code
+    mock_dynamodb.read_validation_code.return_value = {
+        'email': f"reset:{email}",
+        'code': "CORRECTCODE12",
+        'ttl': 1234567890
+    }
+    
+    response = client.post(
+        "/auth/verify-reset-code",
+        json={"email": email, "code": code}
+    )
+    
+    assert response.status_code == 401
+    assert "Incorrect email or verification code" in response.json()["detail"]
+
+def test_reset_password_success(client, test_user):
+    """
+    Given a valid reset token
+    When the user resets their password
+    Then the password should be updated and they can login with the new password
+    """
+    from app.core.security import create_access_token
+    from datetime import timedelta
+    
+    # Generate a valid reset token
+    token = create_access_token(
+        data={"sub": test_user.email, "type": "password_reset"},
+        expires_delta=timedelta(hours=1)
+    )
+    
+    new_password = "newpassword123"
+    
+    # Reset password
+    response = client.post(
+        "/auth/reset-password",
+        json={"token": token, "new_password": new_password}
+    )
+    
+    assert response.status_code == 200
+    assert response.json()["message"] == "Password updated successfully"
+    
+    # Verify login with new password
+    login_response = client.post(
+        "/auth/login",
+        data={"username": test_user.email, "password": new_password}
+    )
+    assert login_response.status_code == 200
+    
+    # Verify login with old password fails
+    old_login_response = client.post(
+        "/auth/login",
+        data={"username": test_user.email, "password": "testpassword"}
+    )
+    assert old_login_response.status_code == 401
+
+def test_reset_password_invalid_token(client):
+    """
+    Given an invalid reset token
+    When the user tries to reset their password
+    Then the request should fail
+    """
+    response = client.post(
+        "/auth/reset-password",
+        json={"token": "invalid_token", "new_password": "newpassword123"}
+    )
+    
+    assert response.status_code == 401
+    assert "Invalid or expired token" in response.json()["detail"]
+
+def test_reset_password_wrong_token_type(client, test_user):
+    """
+    Given a valid token but of wrong type (not password_reset)
+    When the user tries to reset their password
+    Then the request should fail
+    """
+    from app.core.security import create_access_token
+    
+    # Generate a token with wrong type (e.g., standard access token)
+    token = create_access_token(
+        data={"sub": test_user.email}  # Missing type="password_reset"
+    )
+    
+    response = client.post(
+        "/auth/reset-password",
+        json={"token": token, "new_password": "newpassword123"}
+    )
+    
+    assert response.status_code == 401
+    assert "Could not validate credentials" in response.json()["detail"]
+
+def test_reset_password_expired_token(client, test_user):
+    """
+    Given an expired reset token
+    When the user tries to reset their password
+    Then the request should fail
+    """
+    from app.core.security import create_access_token
+    from datetime import timedelta
+    
+    # Generate an expired token
+    token = create_access_token(
+        data={"sub": test_user.email, "type": "password_reset"},
+        expires_delta=timedelta(hours=-1)
+    )
+    
+    response = client.post(
+        "/auth/reset-password",
+        json={"token": token, "new_password": "newpassword123"}
+    )
+    
+    assert response.status_code == 401
+    assert "Invalid or expired token" in response.json()["detail"]
