@@ -1,15 +1,15 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useToast } from '@/hooks/use-toast';
-import { get, post, del, put } from '@/utils/api';
-import { useAuth } from '@/hooks/use-auth';
-import { PrivateAIKeysTable } from '@/components/private-ai-keys-table';
-import { CreateAIKeyDialog } from '@/components/create-ai-key-dialog';
-import { PrivateAIKey } from '@/types/private-ai-key';
-import { User } from '@/types/user';
-import { usePrivateAIKeysData } from '@/hooks/use-private-ai-keys-data';
+import { useState } from "react";
+import { CreateAIKeyDialog } from "@/components/create-ai-key-dialog";
+import { PrivateAIKeysTable } from "@/components/private-ai-keys-table";
+import { useAuth } from "@/hooks/use-auth";
+import { usePrivateAIKeysData } from "@/hooks/use-private-ai-keys-data";
+import { useToast } from "@/hooks/use-toast";
+import { PrivateAIKey } from "@/types/private-ai-key";
+import { User } from "@/types/user";
+import { get, post, del, put } from "@/utils/api";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 export default function TeamAIKeysPage() {
   const { toast } = useToast();
@@ -19,47 +19,59 @@ export default function TeamAIKeysPage() {
 
   // Fetch team members
   const { data: teamMembersFull = [] } = useQuery<User[]>({
-    queryKey: ['team-members'],
+    queryKey: ["team-members"],
     queryFn: async () => {
-      const response = await get('teams/members');
+      const response = await get("teams/members");
       return response.json();
     },
   });
 
   // Fetch private AI keys
-  const { data: keys = [], isLoading: isLoadingKeys } = useQuery<PrivateAIKey[]>({
-    queryKey: ['private-ai-keys'],
+  const { data: keys = [], isLoading: isLoadingKeys } = useQuery<
+    PrivateAIKey[]
+  >({
+    queryKey: ["private-ai-keys"],
     queryFn: async () => {
-      const response = await get('private-ai-keys');
+      const response = await get("private-ai-keys");
       return response.json();
     },
   });
 
   // Use shared hook for data fetching (only for team details and regions)
-  const { teamDetails, teamMembers, regions } = usePrivateAIKeysData(keys, new Set());
+  const { teamDetails, teamMembers, regions } = usePrivateAIKeysData(
+    keys,
+    new Set(),
+  );
 
   // Create key mutation
   const createKeyMutation = useMutation({
     mutationFn: async (data: {
-      name: string
-      region_id: number
-      key_type: 'full' | 'llm' | 'vector'
-      owner_id?: number
-      team_id?: number
+      name: string;
+      region_id: number;
+      key_type: "full" | "llm" | "vector";
+      owner_id?: number;
+      team_id?: number;
     }) => {
-      const endpoint = data.key_type === 'full' ? 'private-ai-keys' :
-                      data.key_type === 'llm' ? 'private-ai-keys/token' :
-                      'private-ai-keys/vector-db';
+      const endpoint =
+        data.key_type === "full"
+          ? "private-ai-keys"
+          : data.key_type === "llm"
+            ? "private-ai-keys/token"
+            : "private-ai-keys/vector-db";
       const response = await post(endpoint, data);
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
+      queryClient.invalidateQueries({ queryKey: ["private-ai-keys"] });
       setIsAddingKey(false);
-      toast({ title: 'Success', description: 'AI key created successfully' });
+      toast({ title: "Success", description: "AI key created successfully" });
     },
     onError: (error: Error) => {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
     },
   });
 
@@ -70,36 +82,55 @@ export default function TeamAIKeysPage() {
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
-      toast({ title: 'Success', description: 'AI key deleted successfully' });
+      queryClient.invalidateQueries({ queryKey: ["private-ai-keys"] });
+      toast({ title: "Success", description: "AI key deleted successfully" });
     },
     onError: () => {
-      toast({ title: 'Error', description: 'Failed to delete AI key', variant: 'destructive' });
+      toast({
+        title: "Error",
+        description: "Failed to delete AI key",
+        variant: "destructive",
+      });
     },
   });
 
   const updateBudgetPeriodMutation = useMutation({
-    mutationFn: async ({ keyId, budgetDuration }: { keyId: number; budgetDuration: string }) => {
+    mutationFn: async ({
+      keyId,
+      budgetDuration,
+    }: {
+      keyId: number;
+      budgetDuration: string;
+    }) => {
       const response = await put(`private-ai-keys/${keyId}/budget-period`, {
-        budget_duration: budgetDuration
+        budget_duration: budgetDuration,
       });
       return response.json();
     },
     onSuccess: (data, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['private-ai-key-spend', variables.keyId] });
-      toast({ title: 'Success', description: 'Budget period updated successfully' });
+      queryClient.invalidateQueries({
+        queryKey: ["private-ai-key-spend", variables.keyId],
+      });
+      toast({
+        title: "Success",
+        description: "Budget period updated successfully",
+      });
     },
     onError: (error: Error) => {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
     },
   });
 
   const handleCreateKey = (data: {
-    name: string
-    region_id: number
-    key_type: 'full' | 'llm' | 'vector'
-    owner_id?: number
-    team_id?: number
+    name: string;
+    region_id: number;
+    key_type: "full" | "llm" | "vector";
+    owner_id?: number;
+    team_id?: number;
   }) => {
     if (user?.team_id) {
       data.team_id = user.team_id;

@@ -1,15 +1,19 @@
-'use client';
+"use client";
 
-import { useState, useMemo, useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Button } from '@/components/ui/button';
-import { useToast } from '@/hooks/use-toast';
-import { Loader2 } from 'lucide-react';
-import { get } from '@/utils/api';
-import { AuditLogFilters as IFilters, LogEntry, AuditLogMetadata } from '@/types/audit-log';
-import { useAuditLogMetadata } from '@/hooks/use-audit-log-metadata';
-import { AuditLogFilters } from './_components/audit-log-filters';
-import { AuditLogTable } from './_components/audit-log-table';
+import { Loader2 } from "lucide-react";
+import { useState, useMemo, useEffect } from "react";
+import { Button } from "@/components/ui/button";
+import { useAuditLogMetadata } from "@/hooks/use-audit-log-metadata";
+import { useToast } from "@/hooks/use-toast";
+import {
+  AuditLogFilters as IFilters,
+  LogEntry,
+  AuditLogMetadata,
+} from "@/types/audit-log";
+import { get } from "@/utils/api";
+import { useQuery } from "@tanstack/react-query";
+import { AuditLogFilters } from "./_components/audit-log-filters";
+import { AuditLogTable } from "./_components/audit-log-table";
 
 const ITEMS_PER_PAGE = 20;
 
@@ -20,13 +24,17 @@ export default function AuditLogsPage() {
     event_type: [],
     resource_type: [],
     status_code: [],
-    user_email: '',
+    user_email: "",
   });
 
-  const { data: metadata, isLoading: isLoadingMetadata, error: metadataError } = useQuery<AuditLogMetadata>({
-    queryKey: ['audit-logs-metadata'],
+  const {
+    data: metadata,
+    isLoading: isLoadingMetadata,
+    error: metadataError,
+  } = useQuery<AuditLogMetadata>({
+    queryKey: ["audit-logs-metadata"],
     queryFn: async () => {
-      const response = await get('audit/logs/metadata');
+      const response = await get("audit/logs/metadata");
       return response.json();
     },
   });
@@ -36,15 +44,22 @@ export default function AuditLogsPage() {
       skip: ((currentPage - 1) * ITEMS_PER_PAGE).toString(),
       limit: ITEMS_PER_PAGE.toString(),
     });
-    if (filters.event_type?.length) params.append('event_type', filters.event_type.join(','));
-    if (filters.resource_type?.length) params.append('resource_type', filters.resource_type.join(','));
-    if (filters.status_code?.length) params.append('status_code', filters.status_code.join(','));
-    if (filters.user_email) params.append('user_email', filters.user_email);
+    if (filters.event_type?.length)
+      params.append("event_type", filters.event_type.join(","));
+    if (filters.resource_type?.length)
+      params.append("resource_type", filters.resource_type.join(","));
+    if (filters.status_code?.length)
+      params.append("status_code", filters.status_code.join(","));
+    if (filters.user_email) params.append("user_email", filters.user_email);
     return params.toString();
   }, [currentPage, filters]);
 
-  const { data: logsData, isLoading: isLoadingLogs, error: logsError } = useQuery<{ items: LogEntry[]; total: number }>({
-    queryKey: ['audit-logs', queryParams],
+  const {
+    data: logsData,
+    isLoading: isLoadingLogs,
+    error: logsError,
+  } = useQuery<{ items: LogEntry[]; total: number }>({
+    queryKey: ["audit-logs", queryParams],
     queryFn: async () => {
       const response = await get(`audit/logs?${queryParams}`);
       return response.json();
@@ -53,20 +68,31 @@ export default function AuditLogsPage() {
 
   useEffect(() => {
     if (metadataError) {
-      toast({ title: 'Error', description: 'Failed to fetch audit logs metadata', variant: 'destructive' });
-      console.error('Error fetching audit logs metadata:', metadataError);
+      toast({
+        title: "Error",
+        description: "Failed to fetch audit logs metadata",
+        variant: "destructive",
+      });
+      console.error("Error fetching audit logs metadata:", metadataError);
     }
   }, [metadataError, toast]);
 
   useEffect(() => {
     if (logsError) {
-      toast({ title: 'Error', description: 'Failed to fetch audit logs', variant: 'destructive' });
-      console.error('Error fetching audit logs:', logsError);
+      toast({
+        title: "Error",
+        description: "Failed to fetch audit logs",
+        variant: "destructive",
+      });
+      console.error("Error fetching audit logs:", logsError);
     }
   }, [logsError, toast]);
 
-  const handleFilterChange = (key: keyof IFilters, value: string[] | string | undefined) => {
-    setFilters(prev => ({ ...prev, [key]: value }));
+  const handleFilterChange = (
+    key: keyof IFilters,
+    value: string[] | string | undefined,
+  ) => {
+    setFilters((prev) => ({ ...prev, [key]: value }));
     setCurrentPage(1);
   };
 
@@ -89,10 +115,10 @@ export default function AuditLogsPage() {
         <h1 className="text-3xl font-bold">Audit Logs</h1>
       </div>
 
-      <AuditLogFilters 
-        filters={filters} 
-        onFilterChange={handleFilterChange} 
-        metadata={metadataOptions} 
+      <AuditLogFilters
+        filters={filters}
+        onFilterChange={handleFilterChange}
+        metadata={metadataOptions}
       />
 
       <AuditLogTable logs={logsData?.items || []} />
@@ -104,14 +130,14 @@ export default function AuditLogsPage() {
         <div className="flex gap-2">
           <Button
             variant="outline"
-            onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
+            onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
             disabled={currentPage === 1}
           >
             Previous
           </Button>
           <Button
             variant="outline"
-            onClick={() => setCurrentPage(prev => prev + 1)}
+            onClick={() => setCurrentPage((prev) => prev + 1)}
             disabled={currentPage >= totalPages}
           >
             Next

@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { Loader2 } from "lucide-react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -10,8 +10,6 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useToast } from '@/hooks/use-toast';
-import { post } from '@/utils/api';
 import {
   Select,
   SelectContent,
@@ -19,39 +17,49 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Loader2 } from 'lucide-react';
+import { useToast } from "@/hooks/use-toast";
+import { post } from "@/utils/api";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 interface PricingTableDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
-export function PricingTableDialog({ open, onOpenChange }: PricingTableDialogProps) {
+export function PricingTableDialog({
+  open,
+  onOpenChange,
+}: PricingTableDialogProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [pricingTableId, setPricingTableId] = useState('');
-  const [pricingTableType, setPricingTableType] = useState<'standard' | 'always_free' | 'gpt'>('standard');
+  const [pricingTableId, setPricingTableId] = useState("");
+  const [pricingTableType, setPricingTableType] = useState<
+    "standard" | "always_free" | "gpt"
+  >("standard");
 
   const updatePricingTableMutation = useMutation({
-    mutationFn: async (data: { pricing_table_id: string; table_type: 'standard' | 'always_free' | 'gpt' }) => {
-      const response = await post('/pricing-tables', data);
+    mutationFn: async (data: {
+      pricing_table_id: string;
+      table_type: "standard" | "always_free" | "gpt";
+    }) => {
+      const response = await post("/pricing-tables", data);
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['pricing-tables'] });
+      queryClient.invalidateQueries({ queryKey: ["pricing-tables"] });
       onOpenChange(false);
-      setPricingTableId('');
-      setPricingTableType('standard');
+      setPricingTableId("");
+      setPricingTableType("standard");
       toast({
         title: "Success",
-        description: "Pricing table updated successfully"
+        description: "Pricing table updated successfully",
       });
     },
     onError: (error: Error) => {
       toast({
         variant: "destructive",
         title: "Error",
-        description: error.message
+        description: error.message,
       });
     },
   });
@@ -60,7 +68,7 @@ export function PricingTableDialog({ open, onOpenChange }: PricingTableDialogPro
     if (!pricingTableId.trim()) return;
     updatePricingTableMutation.mutate({
       pricing_table_id: pricingTableId,
-      table_type: pricingTableType
+      table_type: pricingTableType,
     });
   };
 
@@ -78,7 +86,9 @@ export function PricingTableDialog({ open, onOpenChange }: PricingTableDialogPro
             <Label htmlFor="pricing-table-type">Table Type</Label>
             <Select
               value={pricingTableType}
-              onValueChange={(value: 'standard' | 'always_free' | 'gpt') => setPricingTableType(value)}
+              onValueChange={(value: "standard" | "always_free" | "gpt") =>
+                setPricingTableType(value)
+              }
             >
               <SelectTrigger>
                 <SelectValue placeholder="Select table type" />
@@ -102,9 +112,13 @@ export function PricingTableDialog({ open, onOpenChange }: PricingTableDialogPro
           <div className="flex justify-end">
             <Button
               onClick={handleUpdate}
-              disabled={updatePricingTableMutation.isPending || !pricingTableId.trim()}
+              disabled={
+                updatePricingTableMutation.isPending || !pricingTableId.trim()
+              }
             >
-              {updatePricingTableMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {updatePricingTableMutation.isPending && (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              )}
               Add Pricing Table
             </Button>
           </div>

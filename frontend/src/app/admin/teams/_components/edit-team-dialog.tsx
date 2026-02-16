@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { Loader2 } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -8,12 +8,12 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog';
-import { Loader2 } from 'lucide-react';
-import { Switch } from '@/components/ui/switch';
-import { Label } from '@/components/ui/label';
-import { Team } from '@/types/team';
-import { useTeams } from '@/hooks/use-teams';
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { useTeams } from "@/hooks/use-teams";
+import { Team } from "@/types/team";
 
 interface EditTeamDialogProps {
   team: Team | null;
@@ -21,12 +21,16 @@ interface EditTeamDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-export function EditTeamDialog({ team, open, onOpenChange }: EditTeamDialogProps) {
+export function EditTeamDialog({
+  team,
+  open,
+  onOpenChange,
+}: EditTeamDialogProps) {
   const { updateTeam, isUpdating } = useTeams();
   const [form, setForm] = useState({
-    name: '',
-    phone: '',
-    billing_address: '',
+    name: "",
+    phone: "",
+    billing_address: "",
     force_user_keys: false,
   });
 
@@ -34,8 +38,8 @@ export function EditTeamDialog({ team, open, onOpenChange }: EditTeamDialogProps
     if (team) {
       setForm({
         name: team.name,
-        phone: team.phone || '',
-        billing_address: team.billing_address || '',
+        phone: team.phone || "",
+        billing_address: team.billing_address || "",
         force_user_keys: team.force_user_keys || false,
       });
     }
@@ -44,14 +48,17 @@ export function EditTeamDialog({ team, open, onOpenChange }: EditTeamDialogProps
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!team) return;
-    updateTeam({
-      id: team.id,
-      data: form,
-    }, {
-      onSuccess: () => {
-        onOpenChange(false);
-      }
-    });
+    updateTeam(
+      {
+        id: team.id,
+        data: form,
+      },
+      {
+        onSuccess: () => {
+          onOpenChange(false);
+        },
+      },
+    );
   };
 
   return (
@@ -59,9 +66,7 @@ export function EditTeamDialog({ team, open, onOpenChange }: EditTeamDialogProps
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Edit Team</DialogTitle>
-          <DialogDescription>
-            Update team information.
-          </DialogDescription>
+          <DialogDescription>Update team information.</DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit}>
           <div className="grid gap-4 py-4">
@@ -95,7 +100,9 @@ export function EditTeamDialog({ team, open, onOpenChange }: EditTeamDialogProps
               <Input
                 id="edit-address"
                 value={form.billing_address}
-                onChange={(e) => setForm({ ...form, billing_address: e.target.value })}
+                onChange={(e) =>
+                  setForm({ ...form, billing_address: e.target.value })
+                }
                 className="col-span-3"
               />
             </div>
@@ -107,20 +114,17 @@ export function EditTeamDialog({ team, open, onOpenChange }: EditTeamDialogProps
                 <Switch
                   id="edit-force-keys"
                   checked={form.force_user_keys}
-                  onCheckedChange={(checked) => setForm({ ...form, force_user_keys: checked })}
+                  onCheckedChange={(checked) =>
+                    setForm({ ...form, force_user_keys: checked })
+                  }
                 />
                 <Label htmlFor="edit-force-keys">Enabled</Label>
               </div>
             </div>
           </div>
           <DialogFooter>
-            <Button
-              type="submit"
-              disabled={isUpdating}
-            >
-              {isUpdating && (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              )}
+            <Button type="submit" disabled={isUpdating}>
+              {isUpdating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Save Changes
             </Button>
           </DialogFooter>

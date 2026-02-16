@@ -1,6 +1,6 @@
-import { useState } from 'react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { Loader2, Plus } from "lucide-react";
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -9,32 +9,38 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
-import { Loader2, Plus } from 'lucide-react';
-import { useTeams } from '@/hooks/use-teams';
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { useTeams } from "@/hooks/use-teams";
 
 interface CreateTeamDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
-export function CreateTeamDialog({ open, onOpenChange }: CreateTeamDialogProps) {
-  const [newTeamName, setNewTeamName] = useState('');
-  const [newTeamAdminEmail, setNewTeamAdminEmail] = useState('');
+export function CreateTeamDialog({
+  open,
+  onOpenChange,
+}: CreateTeamDialogProps) {
+  const [newTeamName, setNewTeamName] = useState("");
+  const [newTeamAdminEmail, setNewTeamAdminEmail] = useState("");
   const { createTeam, isCreating } = useTeams();
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    createTeam({
-      name: newTeamName,
-      admin_email: newTeamAdminEmail,
-    }, {
-      onSuccess: () => {
-        onOpenChange(false);
-        setNewTeamName('');
-        setNewTeamAdminEmail('');
-      }
-    });
+    createTeam(
+      {
+        name: newTeamName,
+        admin_email: newTeamAdminEmail,
+      },
+      {
+        onSuccess: () => {
+          onOpenChange(false);
+          setNewTeamName("");
+          setNewTeamAdminEmail("");
+        },
+      },
+    );
   };
 
   return (
@@ -73,17 +79,14 @@ export function CreateTeamDialog({ open, onOpenChange }: CreateTeamDialogProps) 
             />
           </div>
           <DialogFooter>
-            <Button
-              type="submit"
-              disabled={isCreating}
-            >
+            <Button type="submit" disabled={isCreating}>
               {isCreating ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Creating...
                 </>
               ) : (
-                'Create Team'
+                "Create Team"
               )}
             </Button>
           </DialogFooter>

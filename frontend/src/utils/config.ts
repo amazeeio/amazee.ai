@@ -21,21 +21,22 @@ export async function getConfig(): Promise<Config> {
   // Start a new request
   configPromise = (async () => {
     try {
-      const response = await fetch('/api/config');
+      const response = await fetch("/api/config");
       if (!response.ok) {
-        throw new Error('Failed to load configuration');
+        throw new Error("Failed to load configuration");
       }
 
       const config: Config = await response.json();
       configCache = config;
       return config;
     } catch (error) {
-      console.error('Error loading configuration:', error);
+      console.error("Error loading configuration:", error);
       // Fallback configuration
       const fallback: Config = {
-        NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8800',
-        PASSWORDLESS_SIGN_IN: process.env.PASSWORDLESS_SIGN_IN === 'true',
-        STRIPE_PUBLISHABLE_KEY: process.env.STRIPE_PUBLISHABLE_KEY || '',
+        NEXT_PUBLIC_API_URL:
+          process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800",
+        PASSWORDLESS_SIGN_IN: process.env.PASSWORDLESS_SIGN_IN === "true",
+        STRIPE_PUBLISHABLE_KEY: process.env.STRIPE_PUBLISHABLE_KEY || "",
       };
       configCache = fallback;
       return fallback;
@@ -58,9 +59,10 @@ export function getCachedConfig(): Config {
   if (!configCache) {
     // Initialize with fallback values
     configCache = {
-      NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8800',
-      PASSWORDLESS_SIGN_IN: process.env.PASSWORDLESS_SIGN_IN === 'true',
-      STRIPE_PUBLISHABLE_KEY: process.env.STRIPE_PUBLISHABLE_KEY || '',
+      NEXT_PUBLIC_API_URL:
+        process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800",
+      PASSWORDLESS_SIGN_IN: process.env.PASSWORDLESS_SIGN_IN === "true",
+      STRIPE_PUBLISHABLE_KEY: process.env.STRIPE_PUBLISHABLE_KEY || "",
     };
     // Trigger async load
     getConfig().catch(console.error);

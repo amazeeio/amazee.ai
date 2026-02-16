@@ -1,7 +1,6 @@
-import { useState, useEffect } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { Loader2 } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -9,19 +8,20 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog';
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select';
-import { Loader2 } from 'lucide-react';
-import { post } from '@/utils/api';
-import { useToast } from '@/hooks/use-toast';
-import { USER_ROLES } from '@/types/user';
-import { getCachedConfig } from '@/utils/config';
+} from "@/components/ui/select";
+import { useToast } from "@/hooks/use-toast";
+import { USER_ROLES } from "@/types/user";
+import { post } from "@/utils/api";
+import { getCachedConfig } from "@/utils/config";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 interface CreateUserInTeamDialogProps {
   teamId: string | null;
@@ -29,12 +29,16 @@ interface CreateUserInTeamDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-export function CreateUserInTeamDialog({ teamId, open, onOpenChange }: CreateUserInTeamDialogProps) {
+export function CreateUserInTeamDialog({
+  teamId,
+  open,
+  onOpenChange,
+}: CreateUserInTeamDialogProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [newUserEmail, setNewUserEmail] = useState('');
-  const [newUserPassword, setNewUserPassword] = useState('');
-  const [newUserRole, setNewUserRole] = useState('read_only');
+  const [newUserEmail, setNewUserEmail] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
+  const [newUserRole, setNewUserRole] = useState("read_only");
   const [isPasswordless, setIsPasswordless] = useState(false);
 
   useEffect(() => {
@@ -43,27 +47,32 @@ export function CreateUserInTeamDialog({ teamId, open, onOpenChange }: CreateUse
   }, []);
 
   const createUserMutation = useMutation({
-    mutationFn: async (userData: { email: string; password?: string; team_id?: number; role: string }) => {
-      const response = await post('/users', userData);
+    mutationFn: async (userData: {
+      email: string;
+      password?: string;
+      team_id?: number;
+      role: string;
+    }) => {
+      const response = await post("/users", userData);
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team', teamId] });
-      queryClient.invalidateQueries({ queryKey: ['teams'] });
+      queryClient.invalidateQueries({ queryKey: ["team", teamId] });
+      queryClient.invalidateQueries({ queryKey: ["teams"] });
       onOpenChange(false);
-      setNewUserEmail('');
-      setNewUserPassword('');
-      setNewUserRole('read_only');
+      setNewUserEmail("");
+      setNewUserPassword("");
+      setNewUserRole("read_only");
       toast({
-        title: 'Success',
-        description: 'User created successfully',
+        title: "Success",
+        description: "User created successfully",
       });
     },
     onError: (error: Error) => {
       toast({
-        title: 'Error',
+        title: "Error",
         description: error.message,
-        variant: 'destructive',
+        variant: "destructive",
       });
     },
   });
@@ -125,10 +134,7 @@ export function CreateUserInTeamDialog({ teamId, open, onOpenChange }: CreateUse
             )}
             <div className="space-y-2">
               <label className="text-sm font-medium">Role</label>
-              <Select
-                value={newUserRole}
-                onValueChange={setNewUserRole}
-              >
+              <Select value={newUserRole} onValueChange={setNewUserRole}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select a role" />
                 </SelectTrigger>
@@ -150,10 +156,7 @@ export function CreateUserInTeamDialog({ teamId, open, onOpenChange }: CreateUse
             >
               Cancel
             </Button>
-            <Button
-              type="submit"
-              disabled={createUserMutation.isPending}
-            >
+            <Button type="submit" disabled={createUserMutation.isPending}>
               {createUserMutation.isPending && (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               )}

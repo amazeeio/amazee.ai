@@ -1,7 +1,6 @@
-import { useState, useEffect } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { Loader2 } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -10,18 +9,19 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select';
-import { Loader2 } from 'lucide-react';
-import { post } from '@/utils/api';
-import { useToast } from '@/hooks/use-toast';
-import { USER_ROLES } from '@/types/user';
+} from "@/components/ui/select";
+import { useToast } from "@/hooks/use-toast";
+import { USER_ROLES } from "@/types/user";
+import { post } from "@/utils/api";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 interface Team {
   id: string;
@@ -34,21 +34,25 @@ interface CreateUserDialogProps {
   teams: Team[];
 }
 
-export function CreateUserDialog({ open, onOpenChange, teams }: CreateUserDialogProps) {
+export function CreateUserDialog({
+  open,
+  onOpenChange,
+  teams,
+}: CreateUserDialogProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [newUserEmail, setNewUserEmail] = useState('');
-  const [newUserPassword, setNewUserPassword] = useState('');
-  const [newUserRole, setNewUserRole] = useState('read_only');
-  const [newUserTeamId, setNewUserTeamId] = useState<string>('');
+  const [newUserEmail, setNewUserEmail] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
+  const [newUserRole, setNewUserRole] = useState("read_only");
+  const [newUserTeamId, setNewUserTeamId] = useState<string>("");
   const [isSystemUser, setIsSystemUser] = useState(false);
 
   // Update role when switching between system and team user types
   useEffect(() => {
     if (isSystemUser) {
-      setNewUserRole('admin'); // Default to admin for system users
+      setNewUserRole("admin"); // Default to admin for system users
     } else {
-      setNewUserRole('read_only'); // Default to read_only for team users
+      setNewUserRole("read_only"); // Default to read_only for team users
     }
   }, [isSystemUser]);
 
@@ -60,27 +64,27 @@ export function CreateUserDialog({ open, onOpenChange, teams }: CreateUserDialog
       team_id?: string;
       is_system_user?: boolean;
     }) => {
-      const response = await post('/users', userData);
+      const response = await post("/users", userData);
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['users'] });
+      queryClient.invalidateQueries({ queryKey: ["users"] });
       onOpenChange(false);
-      setNewUserEmail('');
-      setNewUserPassword('');
-      setNewUserRole('read_only');
-      setNewUserTeamId('');
+      setNewUserEmail("");
+      setNewUserPassword("");
+      setNewUserRole("read_only");
+      setNewUserTeamId("");
       setIsSystemUser(false);
       toast({
-        title: 'Success',
-        description: 'User created successfully',
+        title: "Success",
+        description: "User created successfully",
       });
     },
     onError: (error: Error) => {
       toast({
-        title: 'Error',
+        title: "Error",
         description: error.message,
-        variant: 'destructive',
+        variant: "destructive",
       });
     },
   });
@@ -123,7 +127,8 @@ export function CreateUserDialog({ open, onOpenChange, teams }: CreateUserDialog
         <DialogHeader>
           <DialogTitle>Add New User</DialogTitle>
           <DialogDescription>
-            Create a new user account. The user will be able to log in with these credentials.
+            Create a new user account. The user will be able to log in with
+            these credentials.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleCreateUser} className="space-y-4">
@@ -178,7 +183,7 @@ export function CreateUserDialog({ open, onOpenChange, teams }: CreateUserDialog
                 <label className="text-sm font-medium">Team</label>
                 <Select
                   value={newUserTeamId}
-                  onValueChange={value => setNewUserTeamId(String(value))}
+                  onValueChange={(value) => setNewUserTeamId(String(value))}
                   required
                 >
                   <SelectTrigger className="w-full">
@@ -195,19 +200,18 @@ export function CreateUserDialog({ open, onOpenChange, teams }: CreateUserDialog
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">Team Role</label>
-                <Select
-                  value={newUserRole}
-                  onValueChange={setNewUserRole}
-                >
+                <Select value={newUserRole} onValueChange={setNewUserRole}>
                   <SelectTrigger>
                     <SelectValue placeholder="Select a role" />
                   </SelectTrigger>
                   <SelectContent>
-                    {USER_ROLES.filter(role => role.value !== 'sales').map((role) => (
-                      <SelectItem key={role.value} value={role.value}>
-                        {role.label}
-                      </SelectItem>
-                    ))}
+                    {USER_ROLES.filter((role) => role.value !== "sales").map(
+                      (role) => (
+                        <SelectItem key={role.value} value={role.value}>
+                          {role.label}
+                        </SelectItem>
+                      ),
+                    )}
                   </SelectContent>
                 </Select>
               </div>
@@ -216,10 +220,7 @@ export function CreateUserDialog({ open, onOpenChange, teams }: CreateUserDialog
           {isSystemUser && (
             <div className="space-y-2">
               <label className="text-sm font-medium">System Role</label>
-              <Select
-                value={newUserRole}
-                onValueChange={setNewUserRole}
-              >
+              <Select value={newUserRole} onValueChange={setNewUserRole}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select a system role" />
                 </SelectTrigger>
@@ -231,17 +232,14 @@ export function CreateUserDialog({ open, onOpenChange, teams }: CreateUserDialog
             </div>
           )}
           <DialogFooter>
-            <Button
-              type="submit"
-              disabled={createUserMutation.isPending}
-            >
+            <Button type="submit" disabled={createUserMutation.isPending}>
               {createUserMutation.isPending ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Creating...
                 </>
               ) : (
-                'Create User'
+                "Create User"
               )}
             </Button>
           </DialogFooter>

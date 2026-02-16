@@ -1,6 +1,6 @@
-import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Button } from '@/components/ui/button';
+import { Loader2 } from "lucide-react";
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -8,18 +8,18 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog';
+} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select';
-import { Loader2 } from 'lucide-react';
-import { get } from '@/utils/api';
-import { Product } from '@/types/product';
-import { useTeams } from '@/hooks/use-teams';
+} from "@/components/ui/select";
+import { useTeams } from "@/hooks/use-teams";
+import { Product } from "@/types/product";
+import { get } from "@/utils/api";
+import { useQuery } from "@tanstack/react-query";
 
 interface SubscribeToProductDialogProps {
   teamId: string | null;
@@ -27,14 +27,20 @@ interface SubscribeToProductDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-export function SubscribeToProductDialog({ teamId, open, onOpenChange }: SubscribeToProductDialogProps) {
-  const [selectedProductId, setSelectedProductId] = useState('');
+export function SubscribeToProductDialog({
+  teamId,
+  open,
+  onOpenChange,
+}: SubscribeToProductDialogProps) {
+  const [selectedProductId, setSelectedProductId] = useState("");
   const { subscribeToProduct, isSubscribing } = useTeams();
 
-  const { data: allProducts = [], isLoading: isLoadingAllProducts } = useQuery<Product[]>({
-    queryKey: ['products'],
+  const { data: allProducts = [], isLoading: isLoadingAllProducts } = useQuery<
+    Product[]
+  >({
+    queryKey: ["products"],
     queryFn: async () => {
-      const response = await get('/products');
+      const response = await get("/products");
       return response.json();
     },
     enabled: open,
@@ -44,15 +50,18 @@ export function SubscribeToProductDialog({ teamId, open, onOpenChange }: Subscri
     e.preventDefault();
     if (!teamId || !selectedProductId) return;
 
-    subscribeToProduct({
-      teamId,
-      productId: selectedProductId,
-    }, {
-      onSuccess: () => {
-        onOpenChange(false);
-        setSelectedProductId('');
-      }
-    });
+    subscribeToProduct(
+      {
+        teamId,
+        productId: selectedProductId,
+      },
+      {
+        onSuccess: () => {
+          onOpenChange(false);
+          setSelectedProductId("");
+        },
+      },
+    );
   };
 
   return (

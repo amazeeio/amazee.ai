@@ -1,33 +1,33 @@
-import React from 'react'
-import { Search, X } from 'lucide-react'
-import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
+import { Search, X } from "lucide-react";
+import React from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select'
-import { cn } from '@/lib/utils'
+} from "@/components/ui/select";
+import { cn } from "@/lib/utils";
 
 export interface FilterField {
-  key: string
-  label: string
-  type: 'text' | 'select' | 'search'
-  placeholder?: string
-  options?: { value: string; label: string }[]
-  value: string
-  onChange: (value: string) => void
+  key: string;
+  label: string;
+  type: "text" | "select" | "search";
+  placeholder?: string;
+  options?: { value: string; label: string }[];
+  value: string;
+  onChange: (value: string) => void;
 }
 
 interface TableFiltersProps {
-  filters: FilterField[]
-  onClearFilters: () => void
-  hasActiveFilters: boolean
-  totalItems: number
-  filteredItems: number
-  className?: string
+  filters: FilterField[];
+  onClearFilters: () => void;
+  hasActiveFilters: boolean;
+  totalItems: number;
+  filteredItems: number;
+  className?: string;
 }
 
 export function TableFilters({
@@ -36,15 +36,17 @@ export function TableFilters({
   hasActiveFilters,
   totalItems,
   filteredItems,
-  className
+  className,
 }: TableFiltersProps) {
   return (
-    <div className={cn("space-y-4 p-4 bg-gray-50 rounded-md border", className)}>
+    <div
+      className={cn("space-y-4 p-4 bg-gray-50 rounded-md border", className)}
+    >
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
         {filters.map((filter) => (
           <div key={filter.key} className="space-y-2">
             <label className="text-sm font-medium">{filter.label}</label>
-            {filter.type === 'search' ? (
+            {filter.type === "search" ? (
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
@@ -54,7 +56,7 @@ export function TableFilters({
                   className="pl-10"
                 />
               </div>
-            ) : filter.type === 'select' ? (
+            ) : filter.type === "select" ? (
               <Select value={filter.value} onValueChange={filter.onChange}>
                 <SelectTrigger>
                   <SelectValue placeholder={filter.placeholder} />
@@ -94,5 +96,5 @@ export function TableFilters({
         )}
       </div>
     </div>
-  )
+  );
 }

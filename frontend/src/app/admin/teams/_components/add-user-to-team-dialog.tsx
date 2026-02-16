@@ -1,7 +1,7 @@
-import { useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { Loader2 } from "lucide-react";
+import { useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -9,7 +9,8 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog';
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
   Table,
   TableBody,
@@ -17,13 +18,12 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
-import { Loader2 } from 'lucide-react';
-import { get } from '@/utils/api';
-import { useToast } from '@/hooks/use-toast';
-import { User } from '@/types/user';
-import { useTeams } from '@/hooks/use-teams';
+} from "@/components/ui/table";
+import { useTeams } from "@/hooks/use-teams";
+import { useToast } from "@/hooks/use-toast";
+import { User } from "@/types/user";
+import { get } from "@/utils/api";
+import { useMutation } from "@tanstack/react-query";
 
 interface AddUserToTeamDialogProps {
   teamId: string | null;
@@ -31,9 +31,13 @@ interface AddUserToTeamDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-export function AddUserToTeamDialog({ teamId, open, onOpenChange }: AddUserToTeamDialogProps) {
+export function AddUserToTeamDialog({
+  teamId,
+  open,
+  onOpenChange,
+}: AddUserToTeamDialogProps) {
   const { toast } = useToast();
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<User[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const { addUserToTeam, isAddingUser } = useTeams();
@@ -41,7 +45,9 @@ export function AddUserToTeamDialog({ teamId, open, onOpenChange }: AddUserToTea
   const searchUsersMutation = useMutation({
     mutationFn: async (query: string) => {
       if (!query) return [];
-      const response = await get(`/users/search?email=${encodeURIComponent(query)}`);
+      const response = await get(
+        `/users/search?email=${encodeURIComponent(query)}`,
+      );
       return response.json();
     },
     onSuccess: (data) => {
@@ -50,9 +56,9 @@ export function AddUserToTeamDialog({ teamId, open, onOpenChange }: AddUserToTea
     },
     onError: (error: Error) => {
       toast({
-        title: 'Error',
+        title: "Error",
         description: error.message,
-        variant: 'destructive',
+        variant: "destructive",
       });
       setIsSearching(false);
     },
@@ -67,23 +73,29 @@ export function AddUserToTeamDialog({ teamId, open, onOpenChange }: AddUserToTea
 
   const handleAdd = (userId: string | number) => {
     if (!teamId) return;
-    addUserToTeam({ userId, teamId }, {
-      onSuccess: () => {
-        onOpenChange(false);
-        setSearchQuery('');
-        setSearchResults([]);
-      }
-    });
+    addUserToTeam(
+      { userId, teamId },
+      {
+        onSuccess: () => {
+          onOpenChange(false);
+          setSearchQuery("");
+          setSearchResults([]);
+        },
+      },
+    );
   };
 
   return (
-    <Dialog open={open} onOpenChange={(newOpen) => {
-      if (!newOpen) {
-        setSearchQuery('');
-        setSearchResults([]);
-      }
-      onOpenChange(newOpen);
-    }}>
+    <Dialog
+      open={open}
+      onOpenChange={(newOpen) => {
+        if (!newOpen) {
+          setSearchQuery("");
+          setSearchResults([]);
+        }
+        onOpenChange(newOpen);
+      }}
+    >
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>Add User to Team</DialogTitle>
@@ -127,7 +139,9 @@ export function AddUserToTeamDialog({ teamId, open, onOpenChange }: AddUserToTea
                     <TableRow key={user.id}>
                       <TableCell>{user.email}</TableCell>
                       <TableCell>
-                        <Badge variant={user.is_active ? "default" : "destructive"}>
+                        <Badge
+                          variant={user.is_active ? "default" : "destructive"}
+                        >
                           {user.is_active ? "Active" : "Inactive"}
                         </Badge>
                       </TableCell>
@@ -159,7 +173,9 @@ export function AddUserToTeamDialog({ teamId, open, onOpenChange }: AddUserToTea
 
         {searchQuery && !isSearching && searchResults.length === 0 && (
           <div className="text-center py-4">
-            <p className="text-muted-foreground">No users found matching your search.</p>
+            <p className="text-muted-foreground">
+              No users found matching your search.
+            </p>
           </div>
         )}
 

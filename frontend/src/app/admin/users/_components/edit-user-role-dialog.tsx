@@ -1,5 +1,4 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Button } from '@/components/ui/button';
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -7,17 +6,18 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog';
+} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select';
-import { post } from '@/utils/api';
-import { useToast } from '@/hooks/use-toast';
-import { USER_ROLES } from '@/types/user';
+} from "@/components/ui/select";
+import { useToast } from "@/hooks/use-toast";
+import { USER_ROLES } from "@/types/user";
+import { post } from "@/utils/api";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 interface EditUserRoleDialogProps {
   user: { id: string; currentRole: string } | null;
@@ -25,7 +25,11 @@ interface EditUserRoleDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-export function EditUserRoleDialog({ user, open, onOpenChange }: EditUserRoleDialogProps) {
+export function EditUserRoleDialog({
+  user,
+  open,
+  onOpenChange,
+}: EditUserRoleDialogProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -35,18 +39,18 @@ export function EditUserRoleDialog({ user, open, onOpenChange }: EditUserRoleDia
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['users'] });
+      queryClient.invalidateQueries({ queryKey: ["users"] });
       onOpenChange(false);
       toast({
-        title: 'Success',
-        description: 'User role updated successfully',
+        title: "Success",
+        description: "User role updated successfully",
       });
     },
     onError: (error: Error) => {
       toast({
-        title: 'Error',
+        title: "Error",
         description: error.message,
-        variant: 'destructive',
+        variant: "destructive",
       });
     },
   });
@@ -62,14 +66,15 @@ export function EditUserRoleDialog({ user, open, onOpenChange }: EditUserRoleDia
         <DialogHeader>
           <DialogTitle>Update User Role</DialogTitle>
           <DialogDescription>
-            Select a new role for this user. This will change their permissions within the system.
+            Select a new role for this user. This will change their permissions
+            within the system.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-4">
           <div className="space-y-2">
             <label className="text-sm font-medium">Role</label>
             <Select
-              value={user?.currentRole || 'read_only'}
+              value={user?.currentRole || "read_only"}
               onValueChange={handleConfirmRoleUpdate}
             >
               <SelectTrigger>

@@ -1,7 +1,6 @@
-import { useEffect, useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { Loader2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -9,11 +8,12 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog';
-import { Loader2 } from 'lucide-react';
-import { put } from '@/utils/api';
-import { useToast } from '@/hooks/use-toast';
-import { Region } from '@/types/region';
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { useToast } from "@/hooks/use-toast";
+import { Region } from "@/types/region";
+import { put } from "@/utils/api";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 interface EditRegionDialogProps {
   region: Region | null;
@@ -21,7 +21,11 @@ interface EditRegionDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-export function EditRegionDialog({ region, open, onOpenChange }: EditRegionDialogProps) {
+export function EditRegionDialog({
+  region,
+  open,
+  onOpenChange,
+}: EditRegionDialogProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [editingRegion, setEditingRegion] = useState<Region | null>(null);
@@ -72,18 +76,18 @@ export function EditRegionDialog({ region, open, onOpenChange }: EditRegionDialo
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['regions'] });
+      queryClient.invalidateQueries({ queryKey: ["regions"] });
       onOpenChange(false);
       toast({
-        title: 'Success',
-        description: 'Region updated successfully',
+        title: "Success",
+        description: "Region updated successfully",
       });
     },
     onError: (error: Error) => {
       toast({
-        title: 'Error',
+        title: "Error",
         description: error.message,
-        variant: 'destructive',
+        variant: "destructive",
       });
     },
   });
@@ -111,7 +115,9 @@ export function EditRegionDialog({ region, open, onOpenChange }: EditRegionDialo
               <label className="text-sm font-medium">Name</label>
               <Input
                 value={editingRegion.name}
-                onChange={(e) => setEditingRegion({ ...editingRegion, name: e.target.value })}
+                onChange={(e) =>
+                  setEditingRegion({ ...editingRegion, name: e.target.value })
+                }
                 placeholder="us-east-1"
                 required
               />
@@ -120,7 +126,9 @@ export function EditRegionDialog({ region, open, onOpenChange }: EditRegionDialo
               <label className="text-sm font-medium">Label</label>
               <Input
                 value={editingRegion.label}
-                onChange={(e) => setEditingRegion({ ...editingRegion, label: e.target.value })}
+                onChange={(e) =>
+                  setEditingRegion({ ...editingRegion, label: e.target.value })
+                }
                 placeholder="US East 1"
                 required
               />
@@ -129,7 +137,12 @@ export function EditRegionDialog({ region, open, onOpenChange }: EditRegionDialo
               <label className="text-sm font-medium">Description</label>
               <textarea
                 value={editingRegion.description}
-                onChange={(e) => setEditingRegion({ ...editingRegion, description: e.target.value })}
+                onChange={(e) =>
+                  setEditingRegion({
+                    ...editingRegion,
+                    description: e.target.value,
+                  })
+                }
                 placeholder="Optional description for this region"
                 className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                 rows={3}
@@ -139,7 +152,12 @@ export function EditRegionDialog({ region, open, onOpenChange }: EditRegionDialo
               <label className="text-sm font-medium">Postgres Host</label>
               <Input
                 value={editingRegion.postgres_host}
-                onChange={(e) => setEditingRegion({ ...editingRegion, postgres_host: e.target.value })}
+                onChange={(e) =>
+                  setEditingRegion({
+                    ...editingRegion,
+                    postgres_host: e.target.value,
+                  })
+                }
                 placeholder="db.example.com"
                 required
               />
@@ -149,7 +167,12 @@ export function EditRegionDialog({ region, open, onOpenChange }: EditRegionDialo
               <Input
                 type="number"
                 value={editingRegion.postgres_port}
-                onChange={(e) => setEditingRegion({ ...editingRegion, postgres_port: parseInt(e.target.value) })}
+                onChange={(e) =>
+                  setEditingRegion({
+                    ...editingRegion,
+                    postgres_port: parseInt(e.target.value),
+                  })
+                }
                 placeholder="5432"
                 required
               />
@@ -158,7 +181,12 @@ export function EditRegionDialog({ region, open, onOpenChange }: EditRegionDialo
               <label className="text-sm font-medium">Admin Username</label>
               <Input
                 value={editingRegion.postgres_admin_user}
-                onChange={(e) => setEditingRegion({ ...editingRegion, postgres_admin_user: e.target.value })}
+                onChange={(e) =>
+                  setEditingRegion({
+                    ...editingRegion,
+                    postgres_admin_user: e.target.value,
+                  })
+                }
                 placeholder="admin"
                 required
               />
@@ -167,8 +195,13 @@ export function EditRegionDialog({ region, open, onOpenChange }: EditRegionDialo
               <label className="text-sm font-medium">Admin Password</label>
               <Input
                 type="password"
-                value={editingRegion.postgres_admin_password || ''}
-                onChange={(e) => setEditingRegion({ ...editingRegion, postgres_admin_password: e.target.value })}
+                value={editingRegion.postgres_admin_password || ""}
+                onChange={(e) =>
+                  setEditingRegion({
+                    ...editingRegion,
+                    postgres_admin_password: e.target.value,
+                  })
+                }
                 placeholder="••••••••"
               />
             </div>
@@ -176,7 +209,12 @@ export function EditRegionDialog({ region, open, onOpenChange }: EditRegionDialo
               <label className="text-sm font-medium">LiteLLM API URL</label>
               <Input
                 value={editingRegion.litellm_api_url}
-                onChange={(e) => setEditingRegion({ ...editingRegion, litellm_api_url: e.target.value })}
+                onChange={(e) =>
+                  setEditingRegion({
+                    ...editingRegion,
+                    litellm_api_url: e.target.value,
+                  })
+                }
                 placeholder="https://api.litellm.ai"
                 required
               />
@@ -185,8 +223,13 @@ export function EditRegionDialog({ region, open, onOpenChange }: EditRegionDialo
               <label className="text-sm font-medium">LiteLLM API Key</label>
               <Input
                 type="password"
-                value={editingRegion.litellm_api_key || ''}
-                onChange={(e) => setEditingRegion({ ...editingRegion, litellm_api_key: e.target.value })}
+                value={editingRegion.litellm_api_key || ""}
+                onChange={(e) =>
+                  setEditingRegion({
+                    ...editingRegion,
+                    litellm_api_key: e.target.value,
+                  })
+                }
                 placeholder="••••••••"
               />
             </div>
@@ -197,7 +240,10 @@ export function EditRegionDialog({ region, open, onOpenChange }: EditRegionDialo
               id="edit_is_dedicated"
               checked={editingRegion.is_dedicated}
               onChange={(e) =>
-                setEditingRegion({ ...editingRegion, is_dedicated: e.target.checked })
+                setEditingRegion({
+                  ...editingRegion,
+                  is_dedicated: e.target.checked,
+                })
               }
               className="h-4 w-4 rounded border-gray-300"
             />
@@ -206,17 +252,14 @@ export function EditRegionDialog({ region, open, onOpenChange }: EditRegionDialo
             </label>
           </div>
           <DialogFooter>
-            <Button
-              type="submit"
-              disabled={updateRegionMutation.isPending}
-            >
+            <Button type="submit" disabled={updateRegionMutation.isPending}>
               {updateRegionMutation.isPending ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Updating...
                 </>
               ) : (
-                'Update Region'
+                "Update Region"
               )}
             </Button>
           </DialogFooter>

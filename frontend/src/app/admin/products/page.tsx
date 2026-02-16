@@ -1,7 +1,9 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { Loader2 } from "lucide-react";
+import { useState } from "react";
+import React from "react";
+import { LimitsView } from "@/components/ui/limits-view";
 import {
   Table,
   TableBody,
@@ -12,55 +14,57 @@ import {
   TablePagination,
   useTablePagination,
 } from "@/components/ui/table";
-import { useToast } from '@/hooks/use-toast';
-import { TableActionButtons } from '@/components/ui/table-action-buttons';
-import { LimitsView } from '@/components/ui/limits-view';
-import { get, del } from '@/utils/api';
+import { TableActionButtons } from "@/components/ui/table-action-buttons";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Loader2 } from 'lucide-react';
-import React from 'react';
-
-import { Product } from '@/types/product';
-import { PricingTables } from '@/types/pricing-table';
-import { CreateProductDialog } from './_components/create-product-dialog';
-import { EditProductDialog } from './_components/edit-product-dialog';
-import { PricingTableDialog } from './_components/pricing-table-dialog';
-import { PricingTablesList } from './_components/pricing-tables-list';
+import { useToast } from "@/hooks/use-toast";
+import { PricingTables } from "@/types/pricing-table";
+import { Product } from "@/types/product";
+import { get, del } from "@/utils/api";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { CreateProductDialog } from "./_components/create-product-dialog";
+import { EditProductDialog } from "./_components/edit-product-dialog";
+import { PricingTableDialog } from "./_components/pricing-table-dialog";
+import { PricingTablesList } from "./_components/pricing-tables-list";
 
 export default function ProductsPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
-  const [isPricingTableDialogOpen, setIsPricingTableDialogOpen] = useState(false);
+  const [isPricingTableDialogOpen, setIsPricingTableDialogOpen] =
+    useState(false);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
 
   // Queries
-  const { data: products = [], isLoading: isLoadingProducts } = useQuery<Product[]>({
-    queryKey: ['products'],
+  const { data: products = [], isLoading: isLoadingProducts } = useQuery<
+    Product[]
+  >({
+    queryKey: ["products"],
     queryFn: async () => {
-      const response = await get('/products');
+      const response = await get("/products");
       return response.json();
     },
   });
 
   // Pricing Table Query
-  const { data: pricingTables, isLoading: isLoadingPricingTables } = useQuery<PricingTables>({
-    queryKey: ['pricing-tables'],
-    queryFn: async () => {
-      const response = await get('/pricing-tables/list');
-      return response.json();
-    },
-  });
+  const { data: pricingTables, isLoading: isLoadingPricingTables } =
+    useQuery<PricingTables>({
+      queryKey: ["pricing-tables"],
+      queryFn: async () => {
+        const response = await get("/pricing-tables/list");
+        return response.json();
+      },
+    });
 
   // System Limits Query
-  const { data: systemLimits = [], isLoading: isLoadingSystemLimits } = useQuery({
-    queryKey: ['system-limits'],
-    queryFn: async () => {
-      const response = await get('/limits/system');
-      return response.json();
-    },
-  });
+  const { data: systemLimits = [], isLoading: isLoadingSystemLimits } =
+    useQuery({
+      queryKey: ["system-limits"],
+      queryFn: async () => {
+        const response = await get("/limits/system");
+        return response.json();
+      },
+    });
 
   // Mutations
   const deleteProductMutation = useMutation({
@@ -68,17 +72,17 @@ export default function ProductsPage() {
       await del(`/products/${id}`);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.invalidateQueries({ queryKey: ["products"] });
       toast({
         title: "Success",
-        description: "Product deleted successfully"
+        description: "Product deleted successfully",
       });
     },
     onError: (error: Error) => {
       toast({
         variant: "destructive",
         title: "Error",
-        description: error.message
+        description: error.message,
       });
     },
   });
@@ -110,9 +114,9 @@ export default function ProductsPage() {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold">Product Management</h1>
-        <CreateProductDialog 
-          open={isCreateDialogOpen} 
-          onOpenChange={setIsCreateDialogOpen} 
+        <CreateProductDialog
+          open={isCreateDialogOpen}
+          onOpenChange={setIsCreateDialogOpen}
         />
       </div>
 
@@ -146,24 +150,38 @@ export default function ProductsPage() {
             <TableBody>
               {paginatedData.map((product) => (
                 <TableRow key={product.id}>
-                  <TableCell className="font-mono text-sm">{product.id}</TableCell>
+                  <TableCell className="font-mono text-sm">
+                    {product.id}
+                  </TableCell>
                   <TableCell>{product.name}</TableCell>
                   <TableCell>{product.user_count}</TableCell>
                   <TableCell>{product.keys_per_user}</TableCell>
                   <TableCell>{product.total_key_count}</TableCell>
                   <TableCell>{product.service_key_count}</TableCell>
-                  <TableCell>${product.max_budget_per_key ? product.max_budget_per_key.toFixed(2) : '0.00'}</TableCell>
+                  <TableCell>
+                    $
+                    {product.max_budget_per_key
+                      ? product.max_budget_per_key.toFixed(2)
+                      : "0.00"}
+                  </TableCell>
                   <TableCell>{product.rpm_per_key}</TableCell>
                   <TableCell>{product.vector_db_count}</TableCell>
                   <TableCell>{product.vector_db_storage}</TableCell>
                   <TableCell>{product.renewal_period_days}</TableCell>
                   <TableCell>
-                    <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${product.active ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                      }`}>
-                      {product.active ? 'Active' : 'Inactive'}
+                    <span
+                      className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
+                        product.active
+                          ? "bg-green-100 text-green-800"
+                          : "bg-red-100 text-red-800"
+                      }`}
+                    >
+                      {product.active ? "Active" : "Inactive"}
                     </span>
                   </TableCell>
-                  <TableCell>{new Date(product.created_at).toLocaleDateString()}</TableCell>
+                  <TableCell>
+                    {new Date(product.created_at).toLocaleDateString()}
+                  </TableCell>
                   <TableCell>
                     <TableActionButtons
                       onEdit={() => {
@@ -194,9 +212,9 @@ export default function ProductsPage() {
         <TabsContent value="pricing-tables" className="space-y-4">
           <div className="flex justify-between items-center">
             <h2 className="text-xl font-semibold">Pricing Tables</h2>
-            <PricingTableDialog 
-              open={isPricingTableDialogOpen} 
-              onOpenChange={setIsPricingTableDialogOpen} 
+            <PricingTableDialog
+              open={isPricingTableDialogOpen}
+              onOpenChange={setIsPricingTableDialogOpen}
             />
           </div>
           <PricingTablesList pricingTables={pricingTables} />
@@ -207,7 +225,8 @@ export default function ProductsPage() {
             <div>
               <h2 className="text-xl font-semibold">System Default Limits</h2>
               <p className="text-sm text-muted-foreground">
-                These are the default limits applied to all teams and users when no product-specific or manual limits are set.
+                These are the default limits applied to all teams and users when
+                no product-specific or manual limits are set.
               </p>
             </div>
           </div>
@@ -217,17 +236,17 @@ export default function ProductsPage() {
             isLoading={isLoadingSystemLimits}
             ownerType="system"
             ownerId="0"
-            queryKey={['system-limits']}
+            queryKey={["system-limits"]}
             showResetAll={false}
             allowIndividualReset={false}
           />
         </TabsContent>
       </Tabs>
 
-      <EditProductDialog 
-        product={selectedProduct} 
-        open={isEditDialogOpen} 
-        onOpenChange={setIsEditDialogOpen} 
+      <EditProductDialog
+        product={selectedProduct}
+        open={isEditDialogOpen}
+        onOpenChange={setIsEditDialogOpen}
       />
     </div>
   );

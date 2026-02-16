@@ -10,8 +10,8 @@ export interface User {
 }
 
 export const USER_ROLES = [
-  { value: 'admin', label: 'Admin' },
-  { value: 'key_creator', label: 'Key Creator' },
-  { value: 'read_only', label: 'Read Only' },
-  { value: 'sales', label: 'Sales' },
+  { value: "admin", label: "Admin" },
+  { value: "key_creator", label: "Key Creator" },
+  { value: "read_only", label: "Read Only" },
+  { value: "sales", label: "Sales" },
 ];

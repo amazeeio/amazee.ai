@@ -1,5 +1,5 @@
-import { User } from './user';
-import { Product } from './product';
+import { Product } from "./product";
+import { User } from "./user";
 
 export interface TeamUser extends User {
   id: number;

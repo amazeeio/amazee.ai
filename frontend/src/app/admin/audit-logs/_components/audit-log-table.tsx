@@ -1,5 +1,6 @@
-import { format, parseISO } from 'date-fns';
-import { Card, CardContent } from '@/components/ui/card';
+import { format, parseISO } from "date-fns";
+import { Info } from "lucide-react";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -7,15 +8,14 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table';
-import { Info } from 'lucide-react';
+} from "@/components/ui/table";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
-} from '@/components/ui/tooltip';
-import { LogEntry } from '@/types/audit-log';
+} from "@/components/ui/tooltip";
+import { LogEntry } from "@/types/audit-log";
 
 interface AuditLogTableProps {
   logs: LogEntry[];
@@ -23,14 +23,16 @@ interface AuditLogTableProps {
 
 const getStatusBadge = (status: number) => {
   const getStatusColor = (status: number) => {
-    if (status < 300) return 'bg-green-100 text-green-800';
-    if (status < 400) return 'bg-blue-100 text-blue-800';
-    if (status < 500) return 'bg-orange-100 text-orange-800';
-    return 'bg-red-100 text-red-800';
+    if (status < 300) return "bg-green-100 text-green-800";
+    if (status < 400) return "bg-blue-100 text-blue-800";
+    if (status < 500) return "bg-orange-100 text-orange-800";
+    return "bg-red-100 text-red-800";
   };
 
   return (
-    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(status)}`}>
+    <span
+      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(status)}`}
+    >
       {status}
     </span>
   );
@@ -58,7 +60,7 @@ export function AuditLogTable({ logs }: AuditLogTableProps) {
             {logs.map((log) => (
               <TableRow key={log.id}>
                 <TableCell className="whitespace-nowrap">
-                  {format(parseISO(log.timestamp), 'yyyy-MM-dd HH:mm:ss')}
+                  {format(parseISO(log.timestamp), "yyyy-MM-dd HH:mm:ss")}
                 </TableCell>
                 <TableCell>
                   <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
@@ -70,23 +72,30 @@ export function AuditLogTable({ logs }: AuditLogTableProps) {
                     {log.resource_type}
                   </span>
                 </TableCell>
-                <TableCell className="whitespace-nowrap">{log.action}</TableCell>
-                <TableCell>{getStatusBadge(log.details.status_code as number)}</TableCell>
                 <TableCell className="whitespace-nowrap">
-                  {log.user_email || 'Anonymous'}
+                  {log.action}
                 </TableCell>
                 <TableCell>
-                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${log.request_source === 'frontend'
-                      ? 'bg-green-100 text-green-800'
-                      : log.request_source === 'api'
-                        ? 'bg-yellow-100 text-yellow-800'
-                        : 'bg-gray-100 text-gray-800'
-                    }`}>
-                    {log.request_source || 'Unknown'}
+                  {getStatusBadge(log.details.status_code as number)}
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  {log.user_email || "Anonymous"}
+                </TableCell>
+                <TableCell>
+                  <span
+                    className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                      log.request_source === "frontend"
+                        ? "bg-green-100 text-green-800"
+                        : log.request_source === "api"
+                          ? "bg-yellow-100 text-yellow-800"
+                          : "bg-gray-100 text-gray-800"
+                    }`}
+                  >
+                    {log.request_source || "Unknown"}
                   </span>
                 </TableCell>
                 <TableCell className="whitespace-nowrap">
-                  {log.ip_address || '-'}
+                  {log.ip_address || "-"}
                 </TableCell>
                 <TableCell>
                   <TooltipProvider>

@@ -1,10 +1,6 @@
-import { useState, useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Button } from '@/components/ui/button';
-import { Loader2, Search } from 'lucide-react';
-import { get } from '@/utils/api';
-import { useDebounce } from '@/hooks/use-debounce';
-import { useToast } from '@/hooks/use-toast';
+import { Loader2, Search } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Button } from "@/components/ui/button";
 import {
   Command,
   CommandEmpty,
@@ -12,13 +8,17 @@ import {
   CommandInput,
   CommandItem,
   CommandList,
-} from '@/components/ui/command';
+} from "@/components/ui/command";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
-} from '@/components/ui/popover';
-import { User } from '@/types/user';
+} from "@/components/ui/popover";
+import { useDebounce } from "@/hooks/use-debounce";
+import { useToast } from "@/hooks/use-toast";
+import { User } from "@/types/user";
+import { get } from "@/utils/api";
+import { useQuery } from "@tanstack/react-query";
 
 interface UserFilterProps {
   selectedUser: User | null;
@@ -28,11 +28,15 @@ interface UserFilterProps {
 export function UserFilter({ selectedUser, onUserSelect }: UserFilterProps) {
   const { toast } = useToast();
   const [isUserSearchOpen, setIsUserSearchOpen] = useState(false);
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchTerm, setSearchTerm] = useState("");
   const debouncedSearchTerm = useDebounce(searchTerm, 300);
 
-  const { data: users = [], isLoading: isSearching, error: searchError } = useQuery<User[]>({
-    queryKey: ['users', debouncedSearchTerm],
+  const {
+    data: users = [],
+    isLoading: isSearching,
+    error: searchError,
+  } = useQuery<User[]>({
+    queryKey: ["users", debouncedSearchTerm],
     queryFn: async () => {
       if (!debouncedSearchTerm) return [];
       const response = await get(`/users?search=${debouncedSearchTerm}`);
@@ -43,8 +47,12 @@ export function UserFilter({ selectedUser, onUserSelect }: UserFilterProps) {
 
   useEffect(() => {
     if (searchError) {
-      toast({ title: 'Error', description: 'Failed to search users', variant: 'destructive' });
-      console.error('Error searching users:', searchError);
+      toast({
+        title: "Error",
+        description: "Failed to search users",
+        variant: "destructive",
+      });
+      console.error("Error searching users:", searchError);
     }
   }, [searchError, toast]);
 
@@ -53,7 +61,7 @@ export function UserFilter({ selectedUser, onUserSelect }: UserFilterProps) {
       <Popover open={isUserSearchOpen} onOpenChange={setIsUserSearchOpen}>
         <PopoverTrigger asChild>
           <Button variant="outline" className="w-[250px] justify-between">
-            {selectedUser ? selectedUser.email : 'Filter by owner...'}
+            {selectedUser ? selectedUser.email : "Filter by owner..."}
             <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
           </Button>
         </PopoverTrigger>
@@ -84,7 +92,7 @@ export function UserFilter({ selectedUser, onUserSelect }: UserFilterProps) {
                       onSelect={() => {
                         onUserSelect(user);
                         setIsUserSearchOpen(false);
-                        setSearchTerm('');
+                        setSearchTerm("");
                       }}
                     >
                       {user.email}
@@ -101,7 +109,7 @@ export function UserFilter({ selectedUser, onUserSelect }: UserFilterProps) {
           variant="ghost"
           onClick={() => {
             onUserSelect(null);
-            setSearchTerm('');
+            setSearchTerm("");
           }}
         >
           Clear filter

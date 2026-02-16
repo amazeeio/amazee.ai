@@ -1,4 +1,6 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { Loader2 } from "lucide-react";
+import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
+import { LimitsView, LimitedResource } from "@/components/ui/limits-view";
 import {
   Table,
   TableBody,
@@ -6,31 +8,31 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table';
-import {
-  Collapsible,
-  CollapsibleContent,
-} from '@/components/ui/collapsible';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { LimitsView, LimitedResource } from '@/components/ui/limits-view';
-import { Loader2 } from 'lucide-react';
-import { get, post } from '@/utils/api';
-import { useToast } from '@/hooks/use-toast';
-import { PrivateAIKey } from '@/types/private-ai-key';
-import { SpendInfo } from '@/types/spend';
+} from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useToast } from "@/hooks/use-toast";
+import { PrivateAIKey } from "@/types/private-ai-key";
+import { SpendInfo } from "@/types/spend";
+import { get, post } from "@/utils/api";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 interface UserExpansionRowProps {
   userId: string;
   isExpanded: boolean;
 }
 
-export function UserExpansionRow({ userId, isExpanded }: UserExpansionRowProps) {
+export function UserExpansionRow({
+  userId,
+  isExpanded,
+}: UserExpansionRowProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
   // Get user AI keys when expanded
-  const { data: userAIKeys = [], isLoading: isLoadingUserAIKeys } = useQuery<PrivateAIKey[]>({
-    queryKey: ['user-ai-keys', userId],
+  const { data: userAIKeys = [], isLoading: isLoadingUserAIKeys } = useQuery<
+    PrivateAIKey[]
+  >({
+    queryKey: ["user-ai-keys", userId],
     queryFn: async () => {
       const response = await get(`/private-ai-keys?owner_id=${userId}`);
       return response.json();
@@ -40,7 +42,7 @@ export function UserExpansionRow({ userId, isExpanded }: UserExpansionRowProps) 
 
   // Get spend data for each key
   const { data: spendMap = {} } = useQuery<Record<string, SpendInfo>>({
-    queryKey: ['user-ai-keys-spend', userId, userAIKeys],
+    queryKey: ["user-ai-keys-spend", userId, userAIKeys],
     queryFn: async () => {
       if (userAIKeys.length === 0) return {};
 
@@ -62,8 +64,10 @@ export function UserExpansionRow({ userId, isExpanded }: UserExpansionRowProps) 
   });
 
   // Get user limits when expanded
-  const { data: userLimits = [], isLoading: isLoadingUserLimits } = useQuery<LimitedResource[]>({
-    queryKey: ['user-limits', userId],
+  const { data: userLimits = [], isLoading: isLoadingUserLimits } = useQuery<
+    LimitedResource[]
+  >({
+    queryKey: ["user-limits", userId],
     queryFn: async () => {
       const response = await get(`/limits/users/${userId}`);
       return response.json();
@@ -77,17 +81,17 @@ export function UserExpansionRow({ userId, isExpanded }: UserExpansionRowProps) 
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['user-limits', userId] });
+      queryClient.invalidateQueries({ queryKey: ["user-limits", userId] });
       toast({
-        title: 'Success',
-        description: 'All user limits reset successfully',
+        title: "Success",
+        description: "All user limits reset successfully",
       });
     },
     onError: (error: Error) => {
       toast({
-        title: 'Error',
+        title: "Error",
         description: error.message,
-        variant: 'destructive',
+        variant: "destructive",
       });
     },
   });
@@ -133,7 +137,9 @@ export function UserExpansionRow({ userId, isExpanded }: UserExpansionRowProps) 
                                     <TableCell>{key.region}</TableCell>
                                     <TableCell>{key.database_name}</TableCell>
                                     <TableCell>
-                                      {new Date(key.created_at).toLocaleDateString()}
+                                      {new Date(
+                                        key.created_at,
+                                      ).toLocaleDateString()}
                                     </TableCell>
                                     <TableCell>
                                       {spendInfo ? (
@@ -141,7 +147,9 @@ export function UserExpansionRow({ userId, isExpanded }: UserExpansionRowProps) 
                                           ${spendInfo.spend.toFixed(2)}
                                         </span>
                                       ) : (
-                                        <span className="text-muted-foreground">Loading...</span>
+                                        <span className="text-muted-foreground">
+                                          Loading...
+                                        </span>
                                       )}
                                     </TableCell>
                                     <TableCell>
@@ -150,7 +158,9 @@ export function UserExpansionRow({ userId, isExpanded }: UserExpansionRowProps) 
                                           ${spendInfo.max_budget.toFixed(2)}
                                         </span>
                                       ) : (
-                                        <span className="text-muted-foreground">No limit</span>
+                                        <span className="text-muted-foreground">
+                                          No limit
+                                        </span>
                                       )}
                                     </TableCell>
                                   </TableRow>
@@ -161,7 +171,9 @@ export function UserExpansionRow({ userId, isExpanded }: UserExpansionRowProps) 
                         </div>
                       ) : (
                         <div className="text-center py-8 border rounded-md">
-                          <p className="text-muted-foreground">No AI keys found for this user.</p>
+                          <p className="text-muted-foreground">
+                            No AI keys found for this user.
+                          </p>
                         </div>
                       )}
                     </div>
@@ -172,9 +184,11 @@ export function UserExpansionRow({ userId, isExpanded }: UserExpansionRowProps) 
                       isLoading={isLoadingUserLimits}
                       ownerType="user"
                       ownerId={userId}
-                      queryKey={['user-limits', userId]}
+                      queryKey={["user-limits", userId]}
                       showResetAll={true}
-                      onResetAll={() => resetAllUserLimitsMutation.mutate(userId)}
+                      onResetAll={() =>
+                        resetAllUserLimitsMutation.mutate(userId)
+                      }
                       isResettingAll={resetAllUserLimitsMutation.isPending}
                     />
                   </TabsContent>

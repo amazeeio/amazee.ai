@@ -1,9 +1,9 @@
-'use client';
+"use client";
 
-import { useState, Fragment } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Button } from '@/components/ui/button';
-
+import { Loader2, Users } from "lucide-react";
+import { useState, Fragment } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -13,17 +13,16 @@ import {
   TableRow,
   TablePagination,
   useTablePagination,
-} from '@/components/ui/table';
-import { TableActionButtons } from '@/components/ui/table-action-buttons';
-import { Badge } from '@/components/ui/badge';
-import { useToast } from '@/hooks/use-toast';
-import { Loader2, Users } from 'lucide-react';
-import { get, del } from '@/utils/api';
-import { Region } from '@/types/region';
-import { Team } from '@/types/team';
-import { CreateRegionDialog } from './_components/create-region-dialog';
-import { EditRegionDialog } from './_components/edit-region-dialog';
-import { ManageRegionTeamsDialog } from './_components/manage-region-teams-dialog';
+} from "@/components/ui/table";
+import { TableActionButtons } from "@/components/ui/table-action-buttons";
+import { useToast } from "@/hooks/use-toast";
+import { Region } from "@/types/region";
+import { Team } from "@/types/team";
+import { get, del } from "@/utils/api";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { CreateRegionDialog } from "./_components/create-region-dialog";
+import { EditRegionDialog } from "./_components/edit-region-dialog";
+import { ManageRegionTeamsDialog } from "./_components/manage-region-teams-dialog";
 
 export default function RegionsPage() {
   const { toast } = useToast();
@@ -32,21 +31,24 @@ export default function RegionsPage() {
   const [isEditingRegion, setIsEditingRegion] = useState(false);
   const [isManagingTeams, setIsManagingTeams] = useState(false);
   const [editingRegion, setEditingRegion] = useState<Region | null>(null);
-  const [selectedRegionForTeams, setSelectedRegionForTeams] = useState<Region | null>(null);
+  const [selectedRegionForTeams, setSelectedRegionForTeams] =
+    useState<Region | null>(null);
 
   // Queries
-  const { data: regions = [], isLoading: isLoadingRegions } = useQuery<Region[]>({
-    queryKey: ['regions'],
+  const { data: regions = [], isLoading: isLoadingRegions } = useQuery<
+    Region[]
+  >({
+    queryKey: ["regions"],
     queryFn: async () => {
-      const response = await get('regions/admin');
+      const response = await get("regions/admin");
       return response.json();
     },
   });
 
   const { data: teams = [] } = useQuery<Team[]>({
-    queryKey: ['teams'],
+    queryKey: ["teams"],
     queryFn: async () => {
-      const response = await get('teams');
+      const response = await get("teams");
       return response.json();
     },
   });
@@ -57,17 +59,17 @@ export default function RegionsPage() {
       await del(`regions/${regionId}`);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['regions'] });
+      queryClient.invalidateQueries({ queryKey: ["regions"] });
       toast({
-        title: 'Success',
-        description: 'Region deleted successfully',
+        title: "Success",
+        description: "Region deleted successfully",
       });
     },
     onError: (error: Error) => {
       toast({
-        title: 'Error',
+        title: "Error",
         description: error.message,
-        variant: 'destructive',
+        variant: "destructive",
       });
     },
   });
@@ -103,9 +105,9 @@ export default function RegionsPage() {
         <>
           <div className="flex items-center justify-between">
             <h1 className="text-3xl font-bold">Regions</h1>
-            <CreateRegionDialog 
-              open={isAddingRegion} 
-              onOpenChange={setIsAddingRegion} 
+            <CreateRegionDialog
+              open={isAddingRegion}
+              onOpenChange={setIsAddingRegion}
             />
           </div>
           <div className="rounded-md border">
@@ -129,15 +131,23 @@ export default function RegionsPage() {
                       <TableCell>{region.label}</TableCell>
                       <TableCell>{region.postgres_host}</TableCell>
                       <TableCell>
-                        <Badge variant={region.is_dedicated ? "default" : "secondary"}>
-                          {region.is_dedicated ? 'Dedicated' : 'Shared'}
+                        <Badge
+                          variant={
+                            region.is_dedicated ? "default" : "secondary"
+                          }
+                        >
+                          {region.is_dedicated ? "Dedicated" : "Shared"}
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                          region.is_active ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                        }`}>
-                          {region.is_active ? 'Active' : 'Inactive'}
+                        <span
+                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                            region.is_active
+                              ? "bg-green-100 text-green-800"
+                              : "bg-red-100 text-red-800"
+                          }`}
+                        >
+                          {region.is_active ? "Active" : "Inactive"}
                         </span>
                       </TableCell>
                       <TableCell>
@@ -158,7 +168,9 @@ export default function RegionsPage() {
                       <TableCell>
                         <TableActionButtons
                           onEdit={() => handleEditRegion(region)}
-                          onDelete={() => deleteRegionMutation.mutate(region.id)}
+                          onDelete={() =>
+                            deleteRegionMutation.mutate(region.id)
+                          }
                           deleteTitle="Delete Region"
                           deleteDescription="Are you sure you want to delete this region? This action cannot be undone."
                           isDeleting={deleteRegionMutation.isPending}
@@ -166,7 +178,10 @@ export default function RegionsPage() {
                       </TableCell>
                     </TableRow>
                     <TableRow>
-                      <TableCell colSpan={6} className="pt-0 text-xs text-muted-foreground">
+                      <TableCell
+                        colSpan={6}
+                        className="pt-0 text-xs text-muted-foreground"
+                      >
                         {region.description}
                       </TableCell>
                     </TableRow>
@@ -185,13 +200,13 @@ export default function RegionsPage() {
             onPageSizeChange={changePageSize}
           />
 
-          <EditRegionDialog 
-            region={editingRegion} 
-            open={isEditingRegion} 
-            onOpenChange={setIsEditingRegion} 
+          <EditRegionDialog
+            region={editingRegion}
+            open={isEditingRegion}
+            onOpenChange={setIsEditingRegion}
           />
 
-          <ManageRegionTeamsDialog 
+          <ManageRegionTeamsDialog
             region={selectedRegionForTeams}
             open={isManagingTeams}
             onOpenChange={setIsManagingTeams}

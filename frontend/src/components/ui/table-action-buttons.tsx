@@ -1,24 +1,24 @@
-"use client"
+"use client";
 
-import * as React from "react"
-import { Button } from "@/components/ui/button"
-import { DeleteConfirmationDialog } from "@/components/ui/delete-confirmation-dialog"
-import { Pencil } from "lucide-react"
+import { Pencil } from "lucide-react";
+import * as React from "react";
+import { Button } from "@/components/ui/button";
+import { DeleteConfirmationDialog } from "@/components/ui/delete-confirmation-dialog";
 
 interface TableActionButtonsProps {
-  onEdit?: () => void
-  onDelete?: () => void
-  deleteTitle?: string
-  deleteDescription?: string
-  deleteConfirmText?: string
-  isLoading?: boolean
-  isDeleting?: boolean
-  disabled?: boolean
-  showEdit?: boolean
-  showDelete?: boolean
-  editText?: string
-  deleteText?: string
-  className?: string
+  onEdit?: () => void;
+  onDelete?: () => void;
+  deleteTitle?: string;
+  deleteDescription?: string;
+  deleteConfirmText?: string;
+  isLoading?: boolean;
+  isDeleting?: boolean;
+  disabled?: boolean;
+  showEdit?: boolean;
+  showDelete?: boolean;
+  editText?: string;
+  deleteText?: string;
+  className?: string;
 }
 
 export function TableActionButtons({
@@ -61,5 +61,5 @@ export function TableActionButtons({
         />
       )}
     </div>
-  )
+  );
 }

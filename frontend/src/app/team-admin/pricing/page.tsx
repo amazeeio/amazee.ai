@@ -1,28 +1,28 @@
-'use client';
+"use client";
 
-import { useEffect, useState } from 'react';
-import { useAuth } from '@/hooks/use-auth';
-import { get, post } from '@/utils/api';
-import Script from 'next/script';
-import { useQuery } from '@tanstack/react-query';
+import Script from "next/script";
+import { useEffect, useState } from "react";
+import { useAuth } from "@/hooks/use-auth";
+import { get, post } from "@/utils/api";
+import { useQuery } from "@tanstack/react-query";
 
-declare module 'react' {
+declare module "react" {
   interface HTMLAttributes<T> extends AriaAttributes, DOMAttributes<T> {
-    'pricing-table-id'?: string;
-    'publishable-key'?: string;
-    'customer-session-client-secret'?: string;
+    "pricing-table-id"?: string;
+    "publishable-key"?: string;
+    "customer-session-client-secret"?: string;
   }
 }
 
-declare module 'react/jsx-runtime' {
+declare module "react/jsx-runtime" {
   interface Element {
-    'stripe-pricing-table': HTMLElement;
+    "stripe-pricing-table": HTMLElement;
   }
 }
 
 declare global {
   interface HTMLElementTagNameMap {
-    'stripe-pricing-table': HTMLElement;
+    "stripe-pricing-table": HTMLElement;
   }
 }
 
@@ -38,10 +38,14 @@ export default function PricingPage() {
   const [error, setError] = useState<string | null>(null);
 
   // Fetch pricing table data
-  const { data: pricingTable, error: pricingTableError, isLoading: isLoadingPricingTable } = useQuery<PricingTable>({
-    queryKey: ['pricing-table'],
+  const {
+    data: pricingTable,
+    error: pricingTableError,
+    isLoading: isLoadingPricingTable,
+  } = useQuery<PricingTable>({
+    queryKey: ["pricing-table"],
     queryFn: async () => {
-      const response = await get('/pricing-tables');
+      const response = await get("/pricing-tables");
       return response.json();
     },
   });
@@ -50,12 +54,14 @@ export default function PricingPage() {
     const fetchSessionToken = async () => {
       try {
         if (!user?.team_id) return;
-        const response = await get(`/billing/teams/${user.team_id}/pricing-table-session`);
+        const response = await get(
+          `/billing/teams/${user.team_id}/pricing-table-session`,
+        );
         const data = await response.json();
         setClientSecret(data.client_secret);
       } catch (err) {
-        setError('Failed to load pricing table. Please try again later.');
-        console.error('Error fetching pricing table session:', err);
+        setError("Failed to load pricing table. Please try again later.");
+        console.error("Error fetching pricing table session:", err);
       }
     };
 
@@ -69,7 +75,7 @@ export default function PricingPage() {
         window.location.href = response.url;
       }
     } catch (error) {
-      console.error('Error accessing portal:', error);
+      console.error("Error accessing portal:", error);
     }
   };
 
@@ -78,11 +84,19 @@ export default function PricingPage() {
   }
 
   if (error || pricingTableError) {
-    return <div className="text-red-500">{error || 'Failed to load pricing table. Please try again later.'}</div>;
+    return (
+      <div className="text-red-500">
+        {error || "Failed to load pricing table. Please try again later."}
+      </div>
+    );
   }
 
   if (!pricingTable?.stripe_publishable_key) {
-    return <div className="text-red-500">Stripe configuration is missing. Please contact support.</div>;
+    return (
+      <div className="text-red-500">
+        Stripe configuration is missing. Please contact support.
+      </div>
+    );
   }
 
   return (
@@ -96,7 +110,10 @@ export default function PricingPage() {
           Manage Subscription
         </button>
       </div>
-      <Script src="https://js.stripe.com/v3/pricing-table.js" strategy="afterInteractive" />
+      <Script
+        src="https://js.stripe.com/v3/pricing-table.js"
+        strategy="afterInteractive"
+      />
       {clientSecret && pricingTable && (
         // @ts-expect-error - Stripe pricing table is a custom element
         <stripe-pricing-table

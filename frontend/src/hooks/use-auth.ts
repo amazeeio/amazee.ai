@@ -1,6 +1,6 @@
-'use client';
+"use client";
 
-import { create } from 'zustand';
+import { create } from "zustand";
 
 export interface User {
   id: number;
@@ -24,7 +24,7 @@ export const useAuth = create<AuthState>((set) => ({
 // Helper function to check if a user is a team admin
 export const isTeamAdmin = (user: User | null): boolean => {
   if (!user) return false;
-  return !user.is_admin && user.team_id !== null && user.role === 'admin';
+  return !user.is_admin && user.team_id !== null && user.role === "admin";
 };
 
 export const getUserRole = (user: User | null): string => {
@@ -32,4 +32,4 @@ export const getUserRole = (user: User | null): string => {
   if (user.is_admin) return "system_admin";
   if (!user.role) return "user";
   return user.role;
-}
+};

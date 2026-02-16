@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { Loader2 } from "lucide-react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -10,17 +10,20 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useToast } from '@/hooks/use-toast';
-import { post } from '@/utils/api';
-import { Product } from '@/types/product';
-import { Loader2 } from 'lucide-react';
+import { useToast } from "@/hooks/use-toast";
+import { Product } from "@/types/product";
+import { post } from "@/utils/api";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 interface CreateProductDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
-export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogProps) {
+export function CreateProductDialog({
+  open,
+  onOpenChange,
+}: CreateProductDialogProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [formData, setFormData] = useState<Partial<Product>>({
@@ -38,11 +41,11 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
 
   const createProductMutation = useMutation({
     mutationFn: async (productData: Partial<Product>) => {
-      const response = await post('/products', productData);
+      const response = await post("/products", productData);
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.invalidateQueries({ queryKey: ["products"] });
       onOpenChange(false);
       setFormData({
         user_count: 1,
@@ -58,14 +61,14 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
       });
       toast({
         title: "Success",
-        description: "Product created successfully"
+        description: "Product created successfully",
       });
     },
     onError: (error: Error) => {
       toast({
         variant: "destructive",
         title: "Error",
-        description: error.message
+        description: error.message,
       });
     },
   });
@@ -75,7 +78,7 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
       toast({
         variant: "destructive",
         title: "Validation Error",
-        description: "Product ID and Name are required fields"
+        description: "Product ID and Name are required fields",
       });
       return;
     }
@@ -98,7 +101,7 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
             <Input
               id="id"
               placeholder="prod_XXX"
-              value={formData.id || ''}
+              value={formData.id || ""}
               onChange={(e) => setFormData({ ...formData, id: e.target.value })}
               required
             />
@@ -108,8 +111,10 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
             <Input
               id="name"
               placeholder="Enter product name"
-              value={formData.name || ''}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              value={formData.name || ""}
+              onChange={(e) =>
+                setFormData({ ...formData, name: e.target.value })
+              }
               required
             />
           </div>
@@ -119,7 +124,12 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
               id="user_count"
               type="number"
               value={formData.user_count || 1}
-              onChange={(e) => setFormData({ ...formData, user_count: parseInt(e.target.value) })}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  user_count: parseInt(e.target.value),
+                })
+              }
             />
           </div>
           <div>
@@ -128,7 +138,12 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
               id="keys_per_user"
               type="number"
               value={formData.keys_per_user || 1}
-              onChange={(e) => setFormData({ ...formData, keys_per_user: parseInt(e.target.value) })}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  keys_per_user: parseInt(e.target.value),
+                })
+              }
             />
           </div>
           <div>
@@ -137,7 +152,12 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
               id="total_key_count"
               type="number"
               value={formData.total_key_count || 1}
-              onChange={(e) => setFormData({ ...formData, total_key_count: parseInt(e.target.value) })}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  total_key_count: parseInt(e.target.value),
+                })
+              }
             />
           </div>
           <div>
@@ -146,7 +166,12 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
               id="service_key_count"
               type="number"
               value={formData.service_key_count || 5}
-              onChange={(e) => setFormData({ ...formData, service_key_count: parseInt(e.target.value) })}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  service_key_count: parseInt(e.target.value),
+                })
+              }
             />
           </div>
           <div>
@@ -160,7 +185,10 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
               value={formData.max_budget_per_key ?? 20.0}
               onChange={(e) => {
                 const value = parseFloat(e.target.value);
-                setFormData({ ...formData, max_budget_per_key: isNaN(value) ? 20.0 : value });
+                setFormData({
+                  ...formData,
+                  max_budget_per_key: isNaN(value) ? 20.0 : value,
+                });
               }}
             />
           </div>
@@ -170,7 +198,12 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
               id="rpm_per_key"
               type="number"
               value={formData.rpm_per_key || 500}
-              onChange={(e) => setFormData({ ...formData, rpm_per_key: parseInt(e.target.value) })}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  rpm_per_key: parseInt(e.target.value),
+                })
+              }
             />
           </div>
           <div>
@@ -179,7 +212,12 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
               id="vector_db_count"
               type="number"
               value={formData.vector_db_count || 1}
-              onChange={(e) => setFormData({ ...formData, vector_db_count: parseInt(e.target.value) })}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  vector_db_count: parseInt(e.target.value),
+                })
+              }
             />
           </div>
           <div>
@@ -188,7 +226,12 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
               id="vector_db_storage"
               type="number"
               value={formData.vector_db_storage || 50}
-              onChange={(e) => setFormData({ ...formData, vector_db_storage: parseInt(e.target.value) })}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  vector_db_storage: parseInt(e.target.value),
+                })
+              }
             />
           </div>
           <div>
@@ -198,7 +241,12 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
               type="number"
               required
               value={formData.renewal_period_days || 31}
-              onChange={(e) => setFormData({ ...formData, renewal_period_days: parseInt(e.target.value) })}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  renewal_period_days: parseInt(e.target.value),
+                })
+              }
             />
           </div>
           <div className="col-span-2">
@@ -207,7 +255,9 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
                 type="checkbox"
                 id="active"
                 checked={formData.active !== false}
-                onChange={(e) => setFormData({ ...formData, active: e.target.checked })}
+                onChange={(e) =>
+                  setFormData({ ...formData, active: e.target.checked })
+                }
                 className="h-4 w-4 rounded border-gray-300"
               />
               <Label htmlFor="active">Active</Label>
@@ -217,9 +267,15 @@ export function CreateProductDialog({ open, onOpenChange }: CreateProductDialogP
         <div className="mt-4 flex justify-end">
           <Button
             onClick={handleCreate}
-            disabled={createProductMutation.isPending || !formData.id?.trim() || !formData.name?.trim()}
+            disabled={
+              createProductMutation.isPending ||
+              !formData.id?.trim() ||
+              !formData.name?.trim()
+            }
           >
-            {createProductMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {createProductMutation.isPending && (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            )}
             Create
           </Button>
         </div>
