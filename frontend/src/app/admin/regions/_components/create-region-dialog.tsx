@@ -1,7 +1,6 @@
-import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { Loader2 } from "lucide-react";
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -10,63 +9,66 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
-import { Loader2 } from 'lucide-react';
-import { post } from '@/utils/api';
-import { useToast } from '@/hooks/use-toast';
-import { Region } from '@/types/region';
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { useToast } from "@/hooks/use-toast";
+import { post } from "@/utils/api";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 interface CreateRegionDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
-export function CreateRegionDialog({ open, onOpenChange }: CreateRegionDialogProps) {
+export function CreateRegionDialog({
+  open,
+  onOpenChange,
+}: CreateRegionDialogProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [newRegion, setNewRegion] = useState({
-    name: '',
-    label: '',
-    description: '',
-    postgres_host: '',
+    name: "",
+    label: "",
+    description: "",
+    postgres_host: "",
     postgres_port: 5432,
-    postgres_admin_user: '',
-    postgres_admin_password: '',
-    litellm_api_url: '',
-    litellm_api_key: '',
+    postgres_admin_user: "",
+    postgres_admin_password: "",
+    litellm_api_url: "",
+    litellm_api_key: "",
     is_dedicated: false,
   });
 
   const createRegionMutation = useMutation({
     mutationFn: async (regionData: typeof newRegion) => {
-      const response = await post('regions', regionData);
+      const response = await post("regions", regionData);
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['regions'] });
+      queryClient.invalidateQueries({ queryKey: ["regions"] });
       onOpenChange(false);
       setNewRegion({
-        name: '',
-        label: '',
-        description: '',
-        postgres_host: '',
+        name: "",
+        label: "",
+        description: "",
+        postgres_host: "",
         postgres_port: 5432,
-        postgres_admin_user: '',
-        postgres_admin_password: '',
-        litellm_api_url: '',
-        litellm_api_key: '',
+        postgres_admin_user: "",
+        postgres_admin_password: "",
+        litellm_api_url: "",
+        litellm_api_key: "",
         is_dedicated: false,
       });
       toast({
-        title: 'Success',
-        description: 'Region created successfully',
+        title: "Success",
+        description: "Region created successfully",
       });
     },
     onError: (error: Error) => {
       toast({
-        title: 'Error',
+        title: "Error",
         description: error.message,
-        variant: 'destructive',
+        variant: "destructive",
       });
     },
   });
@@ -94,7 +96,9 @@ export function CreateRegionDialog({ open, onOpenChange }: CreateRegionDialogPro
               <label className="text-sm font-medium">Name</label>
               <Input
                 value={newRegion.name}
-                onChange={(e) => setNewRegion({ ...newRegion, name: e.target.value })}
+                onChange={(e) =>
+                  setNewRegion({ ...newRegion, name: e.target.value })
+                }
                 placeholder="us-east-1"
                 required
               />
@@ -103,7 +107,9 @@ export function CreateRegionDialog({ open, onOpenChange }: CreateRegionDialogPro
               <label className="text-sm font-medium">Label</label>
               <Input
                 value={newRegion.label}
-                onChange={(e) => setNewRegion({ ...newRegion, label: e.target.value })}
+                onChange={(e) =>
+                  setNewRegion({ ...newRegion, label: e.target.value })
+                }
                 placeholder="US East 1"
                 required
               />
@@ -112,7 +118,9 @@ export function CreateRegionDialog({ open, onOpenChange }: CreateRegionDialogPro
               <label className="text-sm font-medium">Description</label>
               <textarea
                 value={newRegion.description}
-                onChange={(e) => setNewRegion({ ...newRegion, description: e.target.value })}
+                onChange={(e) =>
+                  setNewRegion({ ...newRegion, description: e.target.value })
+                }
                 placeholder="Optional description for this region"
                 className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                 rows={3}
@@ -122,7 +130,9 @@ export function CreateRegionDialog({ open, onOpenChange }: CreateRegionDialogPro
               <label className="text-sm font-medium">Postgres Host</label>
               <Input
                 value={newRegion.postgres_host}
-                onChange={(e) => setNewRegion({ ...newRegion, postgres_host: e.target.value })}
+                onChange={(e) =>
+                  setNewRegion({ ...newRegion, postgres_host: e.target.value })
+                }
                 placeholder="db.example.com"
                 required
               />
@@ -132,7 +142,12 @@ export function CreateRegionDialog({ open, onOpenChange }: CreateRegionDialogPro
               <Input
                 type="number"
                 value={newRegion.postgres_port}
-                onChange={(e) => setNewRegion({ ...newRegion, postgres_port: parseInt(e.target.value) })}
+                onChange={(e) =>
+                  setNewRegion({
+                    ...newRegion,
+                    postgres_port: parseInt(e.target.value),
+                  })
+                }
                 placeholder="5432"
                 required
               />
@@ -141,7 +156,12 @@ export function CreateRegionDialog({ open, onOpenChange }: CreateRegionDialogPro
               <label className="text-sm font-medium">Admin Username</label>
               <Input
                 value={newRegion.postgres_admin_user}
-                onChange={(e) => setNewRegion({ ...newRegion, postgres_admin_user: e.target.value })}
+                onChange={(e) =>
+                  setNewRegion({
+                    ...newRegion,
+                    postgres_admin_user: e.target.value,
+                  })
+                }
                 placeholder="admin"
                 required
               />
@@ -151,7 +171,12 @@ export function CreateRegionDialog({ open, onOpenChange }: CreateRegionDialogPro
               <Input
                 type="password"
                 value={newRegion.postgres_admin_password}
-                onChange={(e) => setNewRegion({ ...newRegion, postgres_admin_password: e.target.value })}
+                onChange={(e) =>
+                  setNewRegion({
+                    ...newRegion,
+                    postgres_admin_password: e.target.value,
+                  })
+                }
                 placeholder="••••••••"
                 required
               />
@@ -160,7 +185,12 @@ export function CreateRegionDialog({ open, onOpenChange }: CreateRegionDialogPro
               <label className="text-sm font-medium">LiteLLM API URL</label>
               <Input
                 value={newRegion.litellm_api_url}
-                onChange={(e) => setNewRegion({ ...newRegion, litellm_api_url: e.target.value })}
+                onChange={(e) =>
+                  setNewRegion({
+                    ...newRegion,
+                    litellm_api_url: e.target.value,
+                  })
+                }
                 placeholder="https://api.litellm.ai"
                 required
               />
@@ -170,7 +200,12 @@ export function CreateRegionDialog({ open, onOpenChange }: CreateRegionDialogPro
               <Input
                 type="password"
                 value={newRegion.litellm_api_key}
-                onChange={(e) => setNewRegion({ ...newRegion, litellm_api_key: e.target.value })}
+                onChange={(e) =>
+                  setNewRegion({
+                    ...newRegion,
+                    litellm_api_key: e.target.value,
+                  })
+                }
                 placeholder="••••••••"
                 required
               />
@@ -191,17 +226,14 @@ export function CreateRegionDialog({ open, onOpenChange }: CreateRegionDialogPro
             </label>
           </div>
           <DialogFooter>
-            <Button
-              type="submit"
-              disabled={createRegionMutation.isPending}
-            >
+            <Button type="submit" disabled={createRegionMutation.isPending}>
               {createRegionMutation.isPending ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Creating...
                 </>
               ) : (
-                'Create Region'
+                "Create Region"
               )}
             </Button>
           </DialogFooter>
