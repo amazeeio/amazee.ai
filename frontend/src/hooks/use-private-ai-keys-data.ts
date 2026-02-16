@@ -1,31 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { get } from '@/utils/api';
 import { PrivateAIKey } from '@/types/private-ai-key';
-
-interface TeamUser {
-  id: number;
-  email: string;
-  is_active: boolean;
-  role: string;
-  team_id: number | null;
-  created_at: string;
-}
-
-interface Region {
-  id: number;
-  name: string;
-  is_active: boolean;
-}
-
-interface SpendInfo {
-  spend: number;
-  expires: string;
-  created_at: string;
-  updated_at: string;
-  max_budget: number | null;
-  budget_duration: string | null;
-  budget_reset_at: string | null;
-}
+import { User } from '@/types/user';
+import { Region } from '@/types/region';
+import { SpendInfo } from '@/types/spend';
 
 export function usePrivateAIKeysData(
   keys: PrivateAIKey[],
@@ -50,14 +28,14 @@ export function usePrivateAIKeysData(
   });
 
   // Query to get all users for displaying emails
-  const { data: usersMap = {} } = useQuery<Record<number, { id: number; email: string }>>({
+  const { data: usersMap = {} } = useQuery<Record<string, User>>({
     queryKey: ['users-map'],
     queryFn: async () => {
       const response = await get('users');
-      const users: TeamUser[] = await response.json();
-      return users.reduce((acc: Record<number, { id: number; email: string }>, user: TeamUser) => ({
+      const users: User[] = await response.json();
+      return users.reduce((acc: Record<string, User>, user: User) => ({
         ...acc,
-        [user.id]: { id: user.id, email: user.email }
+        [user.id.toString()]: user
       }), {});
     },
   });
@@ -95,3 +73,4 @@ export function usePrivateAIKeysData(
     regions,
   };
 }
+

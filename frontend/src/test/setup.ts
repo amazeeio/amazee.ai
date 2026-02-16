@@ -1,5 +1,13 @@
 import { beforeAll, afterEach, afterAll } from 'vitest'
 import { server } from './mocks/server'
+import '@testing-library/jest-dom/vitest'
+
+// Polyfill for ResizeObserver used by cmdk
+global.ResizeObserver = class ResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
 
 // Establish API mocking before all tests
 beforeAll(() => server.listen())

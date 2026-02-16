@@ -13,6 +13,7 @@ import {
 import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
 import { Eye, EyeOff, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import { PrivateAIKey } from '@/types/private-ai-key';
+import { User } from '@/types/user';
 import { TableFilters, FilterField } from '@/components/ui/table-filters';
 import { PrivateAIKeySpendCell } from '@/components/private-ai-key-spend-cell';
 
@@ -30,7 +31,7 @@ interface PrivateAIKeysTableProps {
   isDeleting?: boolean;
   isUpdatingBudget?: boolean;
   teamDetails?: Record<number, { name: string }>;
-  teamMembers?: { id: number; email: string }[];
+  teamMembers?: User[];
 }
 
 export function PrivateAIKeysTable({
@@ -128,13 +129,13 @@ export function PrivateAIKeysTable({
           bValue = b.region || '';
         } else if (sortField === 'owner') {
           if (a.owner_id) {
-            const owner = teamMembers.find(member => member.id === a.owner_id);
+            const owner = teamMembers.find(member => member.id.toString() === a.owner_id?.toString());
             aValue = owner?.email || `User ${a.owner_id}`;
           } else if (a.team_id) {
             aValue = `(Team) ${teamDetails[a.team_id]?.name || 'Team (Shared)'}`;
           }
           if (b.owner_id) {
-            const owner = teamMembers.find(member => member.id === b.owner_id);
+            const owner = teamMembers.find(member => member.id.toString() === b.owner_id?.toString());
             bValue = owner?.email || `User ${b.owner_id}`;
           } else if (b.team_id) {
             bValue = `(Team) ${teamDetails[b.team_id]?.name || 'Team (Shared)'}`;
@@ -369,7 +370,7 @@ export function PrivateAIKeysTable({
                     <div className="flex flex-col gap-1">
                       {key.owner_id ? (
                         <span className="text-sm">
-                          {teamMembers.find(member => member.id === key.owner_id)?.email || `User ${key.owner_id}`}
+                          {teamMembers.find(member => member.id.toString() === key.owner_id?.toString())?.email || `User ${key.owner_id}`}
                         </span>
                       ) : key.team_id ? (
                         <span className="text-sm">(Team) {teamDetails[key.team_id]?.name || 'Team (Shared)'}</span>

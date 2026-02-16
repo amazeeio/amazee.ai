@@ -34,19 +34,8 @@ import {
 } from "@/components/ui/popover"
 import { Loader2, Plus, ChevronsUpDown, Check } from "lucide-react"
 import { cn } from "@/lib/utils"
-
-interface Region {
-  id: number
-  name: string
-  is_active: boolean
-}
-
-interface TeamUser {
-  id: number
-  email: string
-  is_active: boolean
-  role: string
-}
+import { Region } from "@/types/region"
+import { User } from "@/types/user"
 
 interface CreateAIKeyDialogProps {
   open: boolean
@@ -60,9 +49,9 @@ interface CreateAIKeyDialogProps {
   }) => void
   isLoading?: boolean
   regions: Region[]
-  teamMembers?: TeamUser[]
+  teamMembers?: User[]
   showUserAssignment?: boolean
-  currentUser?: {
+  currentUser?: User | {
     id: number
     email: string
     team_id?: number | null
@@ -124,7 +113,9 @@ export function CreateAIKeyDialog({
           data.team_id = currentUser.team_id
         }
       } else if (selectedUserId === currentUser?.id.toString() || selectedUserId === "self") {
-        data.owner_id = currentUser?.id
+        if (currentUser?.id) {
+          data.owner_id = Number(currentUser.id)
+        }
       } else {
         data.owner_id = parseInt(selectedUserId)
       }

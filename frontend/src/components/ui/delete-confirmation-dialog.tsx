@@ -27,6 +27,7 @@ interface DeleteConfirmationDialogProps {
   variant?: "default" | "destructive" | "outline"
   size?: "default" | "sm" | "lg" | "icon"
   children?: React.ReactNode
+  className?: string
 }
 
 export function DeleteConfirmationDialog({
@@ -41,12 +42,13 @@ export function DeleteConfirmationDialog({
   variant = "destructive",
   size = "sm",
   children,
+  className,
 }: DeleteConfirmationDialogProps) {
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
         {children || (
-          <Button variant={variant} size={size} disabled={disabled}>
+          <Button variant={variant} size={size} disabled={disabled} className={className}>
             {triggerText}
           </Button>
         )}

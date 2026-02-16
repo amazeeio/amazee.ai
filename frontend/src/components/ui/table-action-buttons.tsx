@@ -34,7 +34,7 @@ export function TableActionButtons({
   showDelete = true,
   editText = "Edit",
   deleteText = "Delete",
-  className = "space-x-2",
+  className = "space-x-2 flex flex-row gap-2",
 }: TableActionButtonsProps) {
   return (
     <div className={className}>
