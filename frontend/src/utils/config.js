@@ -6,17 +6,18 @@ export async function getConfig() {
   }
 
   try {
-    const response = await fetch('/api/config');
+    const response = await fetch("/api/config");
     if (!response.ok) {
-      throw new Error('Failed to load configuration');
+      throw new Error("Failed to load configuration");
     }
     configCache = await response.json();
     return configCache;
   } catch (error) {
-    console.error('Error loading configuration:', error);
+    console.error("Error loading configuration:", error);
     // Fallback configuration
     return {
-      NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8800',
+      NEXT_PUBLIC_API_URL:
+        process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800",
     };
   }
 }
@@ -29,7 +30,10 @@ export async function getApiUrl() {
 
 // Synchronous function to get cached config (use this when you can't use async/await)
 export function getCachedConfig() {
-  return configCache || {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8800',
-  };
+  return (
+    configCache || {
+      NEXT_PUBLIC_API_URL:
+        process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800",
+    }
+  );
 }

@@ -1,6 +1,7 @@
-"use client"
+"use client";
 
-import * as React from "react"
+import { Loader2 } from "lucide-react";
+import * as React from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -11,22 +12,22 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
-import { Button } from "@/components/ui/button"
-import { Loader2 } from "lucide-react"
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 
 interface DeleteConfirmationDialogProps {
-  title?: string
-  description?: string
-  triggerText?: string
-  confirmText?: string
-  cancelText?: string
-  onConfirm: () => void
-  isLoading?: boolean
-  disabled?: boolean
-  variant?: "default" | "destructive" | "outline"
-  size?: "default" | "sm" | "lg" | "icon"
-  children?: React.ReactNode
+  title?: string;
+  description?: string;
+  triggerText?: string;
+  confirmText?: string;
+  cancelText?: string;
+  onConfirm: () => void;
+  isLoading?: boolean;
+  disabled?: boolean;
+  variant?: "default" | "destructive" | "outline";
+  size?: "default" | "sm" | "lg" | "icon";
+  children?: React.ReactNode;
+  className?: string;
 }
 
 export function DeleteConfirmationDialog({
@@ -41,12 +42,18 @@ export function DeleteConfirmationDialog({
   variant = "destructive",
   size = "sm",
   children,
+  className,
 }: DeleteConfirmationDialogProps) {
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
         {children || (
-          <Button variant={variant} size={size} disabled={disabled}>
+          <Button
+            variant={variant}
+            size={size}
+            disabled={disabled}
+            className={className}
+          >
             {triggerText}
           </Button>
         )}
@@ -75,5 +82,5 @@ export function DeleteConfirmationDialog({
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
-  )
+  );
 }

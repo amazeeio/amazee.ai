@@ -1,9 +1,6 @@
-import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Button } from '@/components/ui/button';
-import { Loader2, RefreshCw, Pencil } from 'lucide-react';
-import { formatTimeUntil } from '@/lib/utils';
-import { get } from '@/utils/api';
+import { Loader2, RefreshCw, Pencil } from "lucide-react";
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -12,9 +9,12 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { formatTimeUntil } from "@/lib/utils";
+import { get } from "@/utils/api";
+import { useQuery } from "@tanstack/react-query";
 
 interface SpendInfo {
   spend: number;
@@ -46,8 +46,12 @@ export function PrivateAIKeySpendCell({
   const [openBudgetDialog, setOpenBudgetDialog] = useState(false);
 
   // Query for spend data - only enabled when isLoaded is true
-  const { data: spendData, isLoading, refetch } = useQuery<SpendInfo>({
-    queryKey: ['private-ai-key-spend', keyId],
+  const {
+    data: spendData,
+    isLoading,
+    refetch,
+  } = useQuery<SpendInfo>({
+    queryKey: ["private-ai-key-spend", keyId],
     queryFn: async () => {
       const response = await get(`private-ai-keys/${keyId}/spend`);
       return response.json();
@@ -64,7 +68,7 @@ export function PrivateAIKeySpendCell({
     try {
       await refetch();
     } catch (error) {
-      console.error('Failed to refresh spend data:', error);
+      console.error("Failed to refresh spend data:", error);
     } finally {
       setIsRefreshing(false);
     }
@@ -88,7 +92,7 @@ export function PrivateAIKeySpendCell({
             Loading...
           </>
         ) : (
-          'Load Spend'
+          "Load Spend"
         )}
       </Button>
     );
@@ -120,7 +124,7 @@ export function PrivateAIKeySpendCell({
         <span className="text-xs text-muted-foreground">
           {spendData.max_budget !== null
             ? `/ $${spendData.max_budget.toFixed(2)}`
-            : '(No budget)'}
+            : "(No budget)"}
         </span>
         <Button
           variant="ghost"
@@ -137,8 +141,9 @@ export function PrivateAIKeySpendCell({
         </Button>
       </div>
       <span className="text-xs text-muted-foreground">
-        {spendData.budget_duration || 'No budget period'}
-        {spendData.budget_reset_at && ` • Resets ${formatTimeUntil(spendData.budget_reset_at)}`}
+        {spendData.budget_duration || "No budget period"}
+        {spendData.budget_reset_at &&
+          ` • Resets ${formatTimeUntil(spendData.budget_reset_at)}`}
         {allowModification && onUpdateBudget && (
           <Dialog open={openBudgetDialog} onOpenChange={setOpenBudgetDialog}>
             <DialogTrigger asChild>
@@ -150,7 +155,9 @@ export function PrivateAIKeySpendCell({
               <DialogHeader>
                 <DialogTitle>Update Budget Period</DialogTitle>
                 <DialogDescription>
-                  Set the budget period for this key. Examples: &quot;30d&quot; (30 days), &quot;24h&quot; (24 hours), &quot;60m&quot; (60 minutes)
+                  Set the budget period for this key. Examples: &quot;30d&quot;
+                  (30 days), &quot;24h&quot; (24 hours), &quot;60m&quot; (60
+                  minutes)
                 </DialogDescription>
               </DialogHeader>
               <div className="grid gap-4 py-4">
@@ -158,7 +165,7 @@ export function PrivateAIKeySpendCell({
                   <Label htmlFor="budget-duration">Budget Period</Label>
                   <Input
                     id="budget-duration"
-                    defaultValue={spendData.budget_duration || ''}
+                    defaultValue={spendData.budget_duration || ""}
                     placeholder="e.g. 30d"
                   />
                 </div>
@@ -166,7 +173,9 @@ export function PrivateAIKeySpendCell({
               <DialogFooter>
                 <Button
                   onClick={() => {
-                    const input = document.getElementById('budget-duration') as HTMLInputElement;
+                    const input = document.getElementById(
+                      "budget-duration",
+                    ) as HTMLInputElement;
                     if (input) {
                       onUpdateBudget(keyId, input.value);
                     }
@@ -179,7 +188,7 @@ export function PrivateAIKeySpendCell({
                       Updating...
                     </>
                   ) : (
-                    'Update'
+                    "Update"
                   )}
                 </Button>
               </DialogFooter>

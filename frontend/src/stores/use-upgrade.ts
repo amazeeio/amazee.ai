@@ -1,8 +1,8 @@
-'use client';
+"use client";
 
-import { create } from 'zustand';
-import { getWithToken } from '@/utils/api';
-import { useConfig } from './use-config';
+import { create } from "zustand";
+import { getWithToken } from "@/utils/api";
+import { useConfig } from "./use-config";
 
 export interface User {
   id: number;
@@ -97,17 +97,17 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
       if (config && config.STRIPE_PUBLISHABLE_KEY) {
         set({ config, error: null });
       } else {
-        console.error('Config missing or invalid:', config);
+        console.error("Config missing or invalid:", config);
         set({
-          error: 'Failed to load configuration. Please try again later.',
-          config: null
+          error: "Failed to load configuration. Please try again later.",
+          config: null,
         });
       }
     } catch (error) {
-      console.error('Error loading config:', error);
+      console.error("Error loading config:", error);
       set({
-        error: 'Failed to load configuration. Please try again later.',
-        config: null
+        error: "Failed to load configuration. Please try again later.",
+        config: null,
       });
     }
   },
@@ -115,7 +115,8 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
   validateToken: async (token: string) => {
     if (!token) {
       set({
-        error: 'No access token provided in URL. Please include ?token=your_jwt_token',
+        error:
+          "No access token provided in URL. Please include ?token=your_jwt_token",
         isValidatingToken: false,
       });
       return;
@@ -125,21 +126,21 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
       set({ isValidatingToken: true, error: null });
 
       // Validate the JWT token using the validate-jwt endpoint
-      const response = await getWithToken('/auth/validate-jwt', token);
+      const response = await getWithToken("/auth/validate-jwt", token);
 
       if (!response.ok) {
-        throw new Error('Invalid or expired token');
+        throw new Error("Invalid or expired token");
       }
 
       // Get user data from /auth/me endpoint
-      const userResponse = await getWithToken('/auth/me', token);
+      const userResponse = await getWithToken("/auth/me", token);
       const userData = await userResponse.json();
 
       set({ user: userData, isValidatingToken: false });
     } catch (err) {
-      console.error('Error validating token:', err);
+      console.error("Error validating token:", err);
       set({
-        error: err instanceof Error ? err.message : 'Failed to validate token',
+        error: err instanceof Error ? err.message : "Failed to validate token",
         isValidatingToken: false,
       });
     }
@@ -151,13 +152,13 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
 
     try {
       set({ loading: true, error: null });
-      const response = await getWithToken('/pricing-tables', token);
+      const response = await getWithToken("/pricing-tables", token);
       const pricingTable = await response.json();
       set({ pricingTable, loading: false });
     } catch (err) {
-      console.error('Error fetching pricing table:', err);
+      console.error("Error fetching pricing table:", err);
       set({
-        error: 'Failed to load pricing table. Please try again later.',
+        error: "Failed to load pricing table. Please try again later.",
         loading: false,
       });
     }
@@ -170,27 +171,25 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
       set({ loading: true, error: null });
       const response = await getWithToken(
         `/billing/teams/${teamId}/pricing-table-session`,
-        token
+        token,
       );
       const data: PricingTableSession = await response.json();
       set({ clientSecret: data.client_secret, loading: false });
     } catch (err) {
-      console.error('Error fetching pricing table session:', err);
+      console.error("Error fetching pricing table session:", err);
       set({
-        error: 'Failed to load pricing table session. Please try again later.',
+        error: "Failed to load pricing table session. Please try again later.",
         loading: false,
       });
     }
   },
 
   initializeUpgrade: async (token: string) => {
-    const { loadConfig, validateToken, fetchPricingTable, fetchClientSecret } = get();
+    const { loadConfig, validateToken, fetchPricingTable, fetchClientSecret } =
+      get();
 
     // First load config and validate token in parallel
-    await Promise.all([
-      loadConfig(),
-      validateToken(token),
-    ]);
+    await Promise.all([loadConfig(), validateToken(token)]);
 
     const { user, error, config } = get();
     if (error || !user || !config) return;
@@ -202,15 +201,16 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
     ]);
   },
 
-  reset: () => set({
-    user: null,
-    pricingTable: null,
-    clientSecret: null,
-    error: null,
-    loading: false,
-    isValidatingToken: false,
-    config: null,
-  }),
+  reset: () =>
+    set({
+      user: null,
+      pricingTable: null,
+      clientSecret: null,
+      error: null,
+      loading: false,
+      isValidatingToken: false,
+      config: null,
+    }),
 
   // Computed properties
   getStripeFormProps: () => {
@@ -228,7 +228,15 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
   },
 
   isReady: () => {
-    const { user, pricingTable, clientSecret, config, error, loading, isValidatingToken } = get();
+    const {
+      user,
+      pricingTable,
+      clientSecret,
+      config,
+      error,
+      loading,
+      isValidatingToken,
+    } = get();
     return !!(
       user &&
       pricingTable &&

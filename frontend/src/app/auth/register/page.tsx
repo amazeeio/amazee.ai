@@ -1,6 +1,6 @@
-'use client';
+"use client";
 
-import { RegisterForm } from '@/components/auth/register-form';
+import { RegisterForm } from "@/components/auth/register-form";
 
 export default function RegisterPage() {
   return (
@@ -25,7 +25,8 @@ export default function RegisterPage() {
         <div className="relative z-20 mt-auto">
           <blockquote className="space-y-2">
             <p className="text-lg">
-              &ldquo;Join amazee.ai and start building amazing AI-powered applications today.&rdquo;
+              &ldquo;Join amazee.ai and start building amazing AI-powered
+              applications today.&rdquo;
             </p>
           </blockquote>
         </div>

@@ -1,13 +1,12 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { useForm } from 'react-hook-form';
-import * as z from 'zod';
-import Link from 'next/link';
-
-import { Button } from '@/components/ui/button';
+import * as z from "zod";
+import { useForm } from "react-hook-form";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import {
   Form,
   FormControl,
@@ -15,17 +14,17 @@ import {
   FormItem,
   FormLabel,
   FormMessage,
-} from '@/components/ui/form';
-import { Input } from '@/components/ui/input';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { useToast } from '@/hooks/use-toast';
-import { useAuth } from '@/hooks/use-auth';
-import { get } from '@/utils/api';
-import { getCachedConfig } from '@/utils/config';
+} from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
+import { useAuth } from "@/hooks/use-auth";
+import { useToast } from "@/hooks/use-toast";
+import { get } from "@/utils/api";
+import { getCachedConfig } from "@/utils/config";
+import { zodResolver } from "@hookform/resolvers/zod";
 
 const formSchema = z.object({
-  email: z.string().email('Invalid email address'),
-  password: z.string().min(1, 'Password is required'),
+  email: z.string().email("Invalid email address"),
+  password: z.string().min(1, "Password is required"),
 });
 
 export function LoginForm() {
@@ -38,8 +37,8 @@ export function LoginForm() {
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      email: '',
-      password: '',
+      email: "",
+      password: "",
     },
   });
 
@@ -48,51 +47,57 @@ export function LoginForm() {
       setIsLoading(true);
       // Convert to the format expected by OAuth2PasswordRequestForm
       const formData = new URLSearchParams();
-      formData.append('username', data.email);
-      formData.append('password', data.password);
+      formData.append("username", data.email);
+      formData.append("password", data.password);
 
       const { NEXT_PUBLIC_API_URL: apiUrl } = getCachedConfig();
       const response = await fetch(`${apiUrl}/auth/login`, {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
+          "Content-Type": "application/x-www-form-urlencoded",
         },
         body: formData.toString(),
-        credentials: 'include',
+        credentials: "include",
       });
 
       const result = await response.json();
 
       if (!response.ok) {
-        throw new Error(result.detail || 'Failed to login');
+        throw new Error(result.detail || "Failed to login");
       }
 
       if (result.access_token) {
         // Fetch user profile
         try {
-          const profileResponse = await get('/auth/me');
+          const profileResponse = await get("/auth/me");
           const profileData = await profileResponse.json();
           setUser(profileData);
 
           toast({
-            title: 'Success',
-            description: 'Successfully signed in',
+            title: "Success",
+            description: "Successfully signed in",
           });
 
           router.refresh();
           // Redirect based on user role
-          if (profileData.role === 'sales') {
-            router.push('/sales');
+          if (profileData.role === "sales") {
+            router.push("/sales");
           } else {
-            router.push('/private-ai-keys');
+            router.push("/private-ai-keys");
           }
         } catch (profileError) {
-          console.error('Failed to fetch user profile:', profileError);
-          setError('Successfully logged in but failed to fetch user profile. Please refresh the page.');
+          console.error("Failed to fetch user profile:", profileError);
+          setError(
+            "Successfully logged in but failed to fetch user profile. Please refresh the page.",
+          );
         }
       }
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'An error occurred during login');
+      setError(
+        error instanceof Error
+          ? error.message
+          : "An error occurred during login",
+      );
     } finally {
       setIsLoading(false);
     }
@@ -144,12 +149,8 @@ export function LoginForm() {
             )}
           />
 
-          <Button
-            type="submit"
-            className="w-full"
-            disabled={isLoading}
-          >
-            {isLoading ? 'Signing in...' : 'Sign in'}
+          <Button type="submit" className="w-full" disabled={isLoading}>
+            {isLoading ? "Signing in..." : "Sign in"}
           </Button>
         </form>
       </Form>
@@ -159,14 +160,12 @@ export function LoginForm() {
           <span className="w-full border-t" />
         </div>
         <div className="relative flex justify-center text-xs uppercase">
-          <span className="bg-background px-2 text-muted-foreground">
-            Or
-          </span>
+          <span className="bg-background px-2 text-muted-foreground">Or</span>
         </div>
       </div>
 
       <div className="text-center text-sm">
-        Don&apos;t have an account?{' '}
+        Don&apos;t have an account?{" "}
         <Link
           href="/auth/register"
           className="underline underline-offset-4 hover:text-primary"
