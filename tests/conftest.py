@@ -10,6 +10,9 @@ from app.core.security import get_password_hash
 from datetime import datetime, UTC, timedelta
 from unittest.mock import patch, MagicMock, Mock, AsyncMock
 
+# Set environment variables for tests
+os.environ["AMAZEEAI_JWT_SECRET"] = "test-secret-key-for-tests"
+
 # Get database URL from environment
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
