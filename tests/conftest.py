@@ -205,6 +205,8 @@ def team_key_creator_token(client, test_team_key_creator):
 def test_region(db):
     region = DBRegion(
         name="test-region",
+        label="Test Region",
+        description="A test region for automated testing",
         postgres_host="amazee-test-postgres",
         postgres_port=5432,
         postgres_admin_user="postgres",

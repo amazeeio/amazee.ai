@@ -46,6 +46,7 @@ interface Region {
   id: string;
   name: string;
   label: string;
+  description: string;
   postgres_host: string;
   postgres_port: number;
   postgres_admin_user: string;
@@ -67,6 +68,7 @@ export default function RegionsPage() {
   const [newRegion, setNewRegion] = useState({
     name: '',
     label: '',
+    description: '',
     postgres_host: '',
     postgres_port: 5432,
     postgres_admin_user: '',
@@ -123,6 +125,7 @@ export default function RegionsPage() {
       setNewRegion({
         name: '',
         label: '',
+        description: '',
         postgres_host: '',
         postgres_port: 5432,
         postgres_admin_user: '',
@@ -171,6 +174,7 @@ export default function RegionsPage() {
       type UpdateData = {
         name: string;
         label: string;
+        description: string;
         postgres_host: string;
         postgres_port: number;
         postgres_admin_user: string;
@@ -184,6 +188,7 @@ export default function RegionsPage() {
       const updateData: UpdateData = {
         name: regionData.name,
         label: regionData.label,
+        description: regionData.description,
         postgres_host: regionData.postgres_host,
         postgres_port: regionData.postgres_port,
         postgres_admin_user: regionData.postgres_admin_user,
@@ -385,6 +390,16 @@ export default function RegionsPage() {
                         required
                       />
                     </div>
+                    <div className="space-y-2 col-span-2">
+                      <label className="text-sm font-medium">Description</label>
+                      <textarea
+                        value={newRegion.description}
+                        onChange={(e) => setNewRegion({ ...newRegion, description: e.target.value })}
+                        placeholder="Optional description for this region"
+                        className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                        rows={3}
+                      />
+                    </div>
                     <div className="space-y-2">
                       <label className="text-sm font-medium">Postgres Host</label>
                       <Input
@@ -574,6 +589,16 @@ export default function RegionsPage() {
                         onChange={(e) => setEditingRegion({ ...editingRegion, label: e.target.value })}
                         placeholder="US East 1"
                         required
+                      />
+                    </div>
+                    <div className="space-y-2 col-span-2">
+                      <label className="text-sm font-medium">Description</label>
+                      <textarea
+                        value={editingRegion.description}
+                        onChange={(e) => setEditingRegion({ ...editingRegion, description: e.target.value })}
+                        placeholder="Optional description for this region"
+                        className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                        rows={3}
                       />
                     </div>
                     <div className="space-y-2">

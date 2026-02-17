@@ -17,6 +17,7 @@ def test_create_region(mock_validate_db, mock_validate_litellm, client, admin_to
     region_data = {
         "name": "new-region",
         "label": "New Region",
+        "description": "A new test region with description",
         "postgres_host": "new-host",
         "postgres_port": 5432,
         "postgres_admin_user": "new-admin",
@@ -35,6 +36,7 @@ def test_create_region(mock_validate_db, mock_validate_litellm, client, admin_to
     data = response.json()
     assert data["name"] == region_data["name"]
     assert data["label"] == region_data["label"]
+    assert data["description"] == region_data["description"]
     assert data["postgres_host"] == region_data["postgres_host"]
     assert data["litellm_api_url"] == region_data["litellm_api_url"]
     assert "id" in data
@@ -202,6 +204,7 @@ def test_get_region(client, admin_token, test_region):
     data = response.json()
     assert data["id"] == test_region.id
     assert data["label"] == test_region.label
+    assert data["description"] == test_region.description
     assert data["name"] == test_region.name
     assert data["postgres_host"] == test_region.postgres_host
 
@@ -242,6 +245,7 @@ def test_update_region(client, admin_token, test_region):
     update_data = {
         "name": "updated-region-name",
         "label": "Updated Region",
+        "description": "Updated description for test region",
         "postgres_host": "updated-host",
         "postgres_port": 5433,
         "postgres_admin_user": "updated-admin",
@@ -262,6 +266,7 @@ def test_update_region(client, admin_token, test_region):
     data = response.json()
     assert data["name"] == update_data["name"]
     assert data["label"] == update_data["label"]
+    assert data["description"] == update_data["description"]
     assert data["postgres_host"] == update_data["postgres_host"]
     assert data["postgres_port"] == update_data["postgres_port"]
 
