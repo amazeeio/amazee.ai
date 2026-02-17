@@ -1,17 +1,8 @@
-'use client';
+"use client";
 
-import { useState, useEffect } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+import { Loader2, UserPlus } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -20,25 +11,34 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
-import { useToast } from '@/hooks/use-toast';
-import { Loader2, UserPlus } from 'lucide-react';
-import { get, post } from '@/utils/api';
-import { useAuth } from '@/hooks/use-auth';
-import { TableActionButtons } from '@/components/ui/table-action-buttons';
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select';
-import { getCachedConfig } from '@/utils/config';
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { TableActionButtons } from "@/components/ui/table-action-buttons";
+import { useAuth } from "@/hooks/use-auth";
+import { useToast } from "@/hooks/use-toast";
+import { get, post } from "@/utils/api";
+import { getCachedConfig } from "@/utils/config";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 const USER_ROLES = [
-  { value: 'admin', label: 'Admin' },
-  { value: 'key_creator', label: 'Key Creator' },
-  { value: 'read_only', label: 'Read Only' },
+  { value: "admin", label: "Admin" },
+  { value: "key_creator", label: "Key Creator" },
+  { value: "read_only", label: "Read Only" },
 ];
 
 interface TeamUser {
@@ -55,10 +55,13 @@ export default function TeamUsersPage() {
   const { user } = useAuth();
   const [isAddingUser, setIsAddingUser] = useState(false);
   const [isUpdatingRole, setIsUpdatingRole] = useState(false);
-  const [selectedUser, setSelectedUser] = useState<{ id: string; currentRole: string } | null>(null);
-  const [newUserEmail, setNewUserEmail] = useState('');
-  const [newUserPassword, setNewUserPassword] = useState('');
-  const [newUserRole, setNewUserRole] = useState('read_only');
+  const [selectedUser, setSelectedUser] = useState<{
+    id: string;
+    currentRole: string;
+  } | null>(null);
+  const [newUserEmail, setNewUserEmail] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
+  const [newUserRole, setNewUserRole] = useState("read_only");
   const [isPasswordless, setIsPasswordless] = useState(false);
 
   useEffect(() => {
@@ -69,9 +72,9 @@ export default function TeamUsersPage() {
   const queryClient = useQueryClient();
 
   const { data: users = [], isLoading: isLoadingUsers } = useQuery<TeamUser[]>({
-    queryKey: ['team-users', user?.team_id],
+    queryKey: ["team-users", user?.team_id],
     queryFn: async () => {
-      const response = await get('users', { credentials: 'include' });
+      const response = await get("users", { credentials: "include" });
       const allUsers = await response.json();
       // Filter users to only show those in the current team
       return allUsers.filter((u: TeamUser) => u.team_id === user?.team_id);
@@ -80,74 +83,90 @@ export default function TeamUsersPage() {
   });
 
   const createUserMutation = useMutation({
-    mutationFn: async (data: { email: string; password?: string; role: string }) => {
-      const response = await post('users', {
-        ...data,
-        team_id: user?.team_id,
-      }, { credentials: 'include' });
+    mutationFn: async (data: {
+      email: string;
+      password?: string;
+      role: string;
+    }) => {
+      const response = await post(
+        "users",
+        {
+          ...data,
+          team_id: user?.team_id,
+        },
+        { credentials: "include" },
+      );
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team-users'] });
-      queryClient.refetchQueries({ queryKey: ['team-users'], exact: true });
+      queryClient.invalidateQueries({ queryKey: ["team-users"] });
+      queryClient.refetchQueries({ queryKey: ["team-users"], exact: true });
       setIsAddingUser(false);
-      setNewUserEmail('');
-      setNewUserPassword('');
-      setNewUserRole('read_only');
+      setNewUserEmail("");
+      setNewUserPassword("");
+      setNewUserRole("read_only");
       toast({
-        title: 'Success',
-        description: 'User added to team successfully',
+        title: "Success",
+        description: "User added to team successfully",
       });
     },
     onError: () => {
       toast({
-        title: 'Error',
-        description: 'Failed to add user to team',
-        variant: 'destructive',
+        title: "Error",
+        description: "Failed to add user to team",
+        variant: "destructive",
       });
     },
   });
 
   const updateUserRoleMutation = useMutation({
     mutationFn: async ({ userId, role }: { userId: string; role: string }) => {
-      const response = await post(`users/${userId}/role`, { role }, { credentials: 'include' });
+      const response = await post(
+        `users/${userId}/role`,
+        { role },
+        { credentials: "include" },
+      );
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team-users'] });
-      queryClient.refetchQueries({ queryKey: ['team-users'], exact: true });
+      queryClient.invalidateQueries({ queryKey: ["team-users"] });
+      queryClient.refetchQueries({ queryKey: ["team-users"], exact: true });
       toast({
-        title: 'Success',
-        description: 'User role updated successfully',
+        title: "Success",
+        description: "User role updated successfully",
       });
     },
     onError: () => {
       toast({
-        title: 'Error',
-        description: 'Failed to update user role',
-        variant: 'destructive',
+        title: "Error",
+        description: "Failed to update user role",
+        variant: "destructive",
       });
     },
   });
 
   const removeUserMutation = useMutation({
     mutationFn: async (userId: string) => {
-      const response = await post(`users/${userId}/remove-from-team`, {}, { credentials: 'include' });
+      const response = await post(
+        `users/${userId}/remove-from-team`,
+        {},
+        { credentials: "include" },
+      );
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team-users'] });
-      queryClient.refetchQueries({ queryKey: ['team-users'], exact: true });
+      queryClient.invalidateQueries({ queryKey: ["team-users"] });
+      queryClient.refetchQueries({ queryKey: ["team-users"], exact: true });
       toast({
-        title: 'Success',
-        description: 'User removed from team successfully',
+        title: "Success",
+        description: "User removed from team successfully",
       });
     },
     onError: () => {
       toast({
-        title: 'Error',
-        description: 'Failed to remove user from team',
-        variant: 'destructive',
+        title: "Error",
+        description: "Failed to remove user from team",
+        variant: "destructive",
       });
     },
   });
@@ -222,10 +241,7 @@ export default function TeamUsersPage() {
                 )}
                 <div className="grid gap-2">
                   <label htmlFor="role">Role</label>
-                  <Select
-                    value={newUserRole}
-                    onValueChange={setNewUserRole}
-                  >
+                  <Select value={newUserRole} onValueChange={setNewUserRole}>
                     <SelectTrigger>
                       <SelectValue placeholder="Select a role" />
                     </SelectTrigger>
@@ -267,14 +283,19 @@ export default function TeamUsersPage() {
               <TableRow key={user.id}>
                 <TableCell>{user.email}</TableCell>
                 <TableCell>
-                  <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                    user.is_active ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                  }`}>
-                    {user.is_active ? 'Active' : 'Inactive'}
+                  <span
+                    className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                      user.is_active
+                        ? "bg-green-100 text-green-800"
+                        : "bg-red-100 text-red-800"
+                    }`}
+                  >
+                    {user.is_active ? "Active" : "Inactive"}
                   </span>
                 </TableCell>
                 <TableCell>
-                  {USER_ROLES.find(r => r.value === user.role)?.label || user.role}
+                  {USER_ROLES.find((r) => r.value === user.role)?.label ||
+                    user.role}
                 </TableCell>
                 <TableCell>
                   <div className="flex gap-2">
@@ -308,14 +329,15 @@ export default function TeamUsersPage() {
           <DialogHeader>
             <DialogTitle>Update User Role</DialogTitle>
             <DialogDescription>
-              Select a new role for this user. This will change their permissions within the team.
+              Select a new role for this user. This will change their
+              permissions within the team.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
               <label className="text-sm font-medium">Role</label>
               <Select
-                value={selectedUser?.currentRole || 'read_only'}
+                value={selectedUser?.currentRole || "read_only"}
                 onValueChange={(value) => {
                   updateUserRoleMutation.mutate({
                     userId: selectedUser!.id,

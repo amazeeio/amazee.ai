@@ -1,13 +1,12 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { useForm } from 'react-hook-form';
-import * as z from 'zod';
-import Link from 'next/link';
-
-import { Button } from '@/components/ui/button';
+import * as z from "zod";
+import { useForm } from "react-hook-form";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import {
   Form,
   FormControl,
@@ -15,26 +14,29 @@ import {
   FormItem,
   FormLabel,
   FormMessage,
-} from '@/components/ui/form';
-import { Input } from '@/components/ui/input';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { useToast } from '@/hooks/use-toast';
-import { getCachedConfig } from '@/utils/config';
-import { useAuth } from '@/hooks/use-auth';
-import { get, post } from '@/utils/api';
+} from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
+import { useAuth } from "@/hooks/use-auth";
+import { useToast } from "@/hooks/use-toast";
+import { get, post } from "@/utils/api";
+import { getCachedConfig } from "@/utils/config";
+import { zodResolver } from "@hookform/resolvers/zod";
 
-const formSchema = z.object({
-  email: z.string().email('Invalid email address'),
-  password: z.string()
-    .min(8, 'Password must be at least 8 characters')
-    .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
-    .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
-    .regex(/[0-9]/, 'Password must contain at least one number'),
-  confirmPassword: z.string(),
-}).refine((data) => data.password === data.confirmPassword, {
-  message: "Passwords don't match",
-  path: ["confirmPassword"],
-});
+const formSchema = z
+  .object({
+    email: z.string().email("Invalid email address"),
+    password: z
+      .string()
+      .min(8, "Password must be at least 8 characters")
+      .regex(/[A-Z]/, "Password must contain at least one uppercase letter")
+      .regex(/[a-z]/, "Password must contain at least one lowercase letter")
+      .regex(/[0-9]/, "Password must contain at least one number"),
+    confirmPassword: z.string(),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: "Passwords don't match",
+    path: ["confirmPassword"],
+  });
 
 export function RegisterForm() {
   const router = useRouter();
@@ -46,9 +48,9 @@ export function RegisterForm() {
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      email: '',
-      password: '',
-      confirmPassword: '',
+      email: "",
+      password: "",
+      confirmPassword: "",
     },
   });
 
@@ -58,7 +60,7 @@ export function RegisterForm() {
 
     try {
       // Register the user
-      const registerResponse = await post('/auth/register', {
+      const registerResponse = await post("/auth/register", {
         email: values.email,
         password: values.password,
       });
@@ -67,40 +69,46 @@ export function RegisterForm() {
       // Automatically log in the user
       const { NEXT_PUBLIC_API_URL: apiUrl } = getCachedConfig();
       const loginResponse = await fetch(`${apiUrl}/auth/login`, {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
+          "Content-Type": "application/x-www-form-urlencoded",
         },
         body: new URLSearchParams({
           username: values.email,
           password: values.password,
         }).toString(),
-        credentials: 'include',
+        credentials: "include",
       });
 
       const loginResult = await loginResponse.json();
 
       if (!loginResponse.ok) {
-        throw new Error(loginResult.detail || 'Login failed after registration');
+        throw new Error(
+          loginResult.detail || "Login failed after registration",
+        );
       }
 
       if (loginResult.access_token) {
         // Fetch user profile
-        const profileResponse = await get('/auth/me');
+        const profileResponse = await get("/auth/me");
         const profileData = await profileResponse.json();
         setUser(profileData);
 
         toast({
-          title: 'Success',
-          description: 'Account created and logged in successfully',
+          title: "Success",
+          description: "Account created and logged in successfully",
         });
 
         router.refresh();
-        router.push('/private-ai-keys');
+        router.push("/private-ai-keys");
       }
     } catch (err: Error | unknown) {
-      console.error('Registration error:', err);
-      setError(err instanceof Error ? err.message : 'An error occurred during registration');
+      console.error("Registration error:", err);
+      setError(
+        err instanceof Error
+          ? err.message
+          : "An error occurred during registration",
+      );
     } finally {
       setIsLoading(false);
     }
@@ -170,12 +178,8 @@ export function RegisterForm() {
             )}
           />
 
-          <Button
-            type="submit"
-            className="w-full"
-            disabled={isLoading}
-          >
-            {isLoading ? 'Creating account...' : 'Create account'}
+          <Button type="submit" className="w-full" disabled={isLoading}>
+            {isLoading ? "Creating account..." : "Create account"}
           </Button>
         </form>
       </Form>
@@ -185,14 +189,12 @@ export function RegisterForm() {
           <span className="w-full border-t" />
         </div>
         <div className="relative flex justify-center text-xs uppercase">
-          <span className="bg-background px-2 text-muted-foreground">
-            Or
-          </span>
+          <span className="bg-background px-2 text-muted-foreground">Or</span>
         </div>
       </div>
 
       <div className="text-center text-sm">
-        Already have an account?{' '}
+        Already have an account?{" "}
         <Link
           href="/auth/login"
           className="underline underline-offset-4 hover:text-primary"

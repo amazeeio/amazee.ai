@@ -1,15 +1,15 @@
-import { getApiUrl } from './config';
+import { getApiUrl } from "./config";
 
 const defaultOptions: RequestInit = {
-  credentials: 'include',
+  credentials: "include",
   headers: {
-    'Content-Type': 'application/json',
+    "Content-Type": "application/json",
   },
 };
 
 export async function fetchApi(endpoint: string, options: RequestInit = {}) {
   const apiUrl = await getApiUrl();
-  const url = `${apiUrl}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
+  const url = `${apiUrl}${endpoint.startsWith("/") ? endpoint : `/${endpoint}`}`;
 
   // Merge headers properly
   const headers = {
@@ -26,8 +26,10 @@ export async function fetchApi(endpoint: string, options: RequestInit = {}) {
   const response = await fetch(url, fetchOptions);
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ message: response.statusText }));
-    throw new Error(error.detail || error.message || 'API call failed');
+    const error = await response
+      .json()
+      .catch(() => ({ message: response.statusText }));
+    throw new Error(error.detail || error.message || "API call failed");
   }
 
   return response;
@@ -35,17 +37,17 @@ export async function fetchApi(endpoint: string, options: RequestInit = {}) {
 
 // Helper methods for common HTTP methods
 export async function get(endpoint: string, options: RequestInit = {}) {
-  return fetchApi(endpoint, { ...options, method: 'GET' });
+  return fetchApi(endpoint, { ...options, method: "GET" });
 }
 
 export async function post<T extends Record<string, unknown>>(
   endpoint: string,
   data: T,
-  options: RequestInit = {}
+  options: RequestInit = {},
 ) {
   return fetchApi(endpoint, {
     ...options,
-    method: 'POST',
+    method: "POST",
     body: JSON.stringify(data),
   });
 }
@@ -53,28 +55,32 @@ export async function post<T extends Record<string, unknown>>(
 export async function put<T extends Record<string, unknown>>(
   endpoint: string,
   data: T,
-  options: RequestInit = {}
+  options: RequestInit = {},
 ) {
   return fetchApi(endpoint, {
     ...options,
-    method: 'PUT',
+    method: "PUT",
     body: JSON.stringify(data),
   });
 }
 
 export async function del(endpoint: string, options: RequestInit = {}) {
-  return fetchApi(endpoint, { ...options, method: 'DELETE' });
+  return fetchApi(endpoint, { ...options, method: "DELETE" });
 }
 
 // API functions that use Bearer token instead of cookies
-export async function fetchApiWithToken(endpoint: string, token: string, options: RequestInit = {}) {
+export async function fetchApiWithToken(
+  endpoint: string,
+  token: string,
+  options: RequestInit = {},
+) {
   const apiUrl = await getApiUrl();
-  const url = `${apiUrl}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
+  const url = `${apiUrl}${endpoint.startsWith("/") ? endpoint : `/${endpoint}`}`;
 
   // Merge headers with Bearer token
   const headers = {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${token}`,
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
     ...options.headers,
   };
 
@@ -88,13 +94,19 @@ export async function fetchApiWithToken(endpoint: string, token: string, options
   const response = await fetch(url, fetchOptions);
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ message: response.statusText }));
-    throw new Error(error.detail || error.message || 'API call failed');
+    const error = await response
+      .json()
+      .catch(() => ({ message: response.statusText }));
+    throw new Error(error.detail || error.message || "API call failed");
   }
 
   return response;
 }
 
-export async function getWithToken(endpoint: string, token: string, options: RequestInit = {}) {
-  return fetchApiWithToken(endpoint, token, { ...options, method: 'GET' });
+export async function getWithToken(
+  endpoint: string,
+  token: string,
+  options: RequestInit = {},
+) {
+  return fetchApiWithToken(endpoint, token, { ...options, method: "GET" });
 }

@@ -1,23 +1,15 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useToast } from '@/hooks/use-toast';
-import { get, post, del, put } from '@/utils/api';
-import { useAuth } from '@/hooks/use-auth';
-import { PrivateAIKeysTable } from '@/components/private-ai-keys-table';
-import { CreateAIKeyDialog } from '@/components/create-ai-key-dialog';
-import { PrivateAIKey } from '@/types/private-ai-key';
-import { usePrivateAIKeysData } from '@/hooks/use-private-ai-keys-data';
-
-interface TeamUser {
-  id: number;
-  email: string;
-  is_active: boolean;
-  role: string;
-  team_id: number | null;
-  created_at: string;
-}
+import { useState } from "react";
+import { CreateAIKeyDialog } from "@/components/create-ai-key-dialog";
+import { PrivateAIKeysTable } from "@/components/private-ai-keys-table";
+import { useAuth } from "@/hooks/use-auth";
+import { usePrivateAIKeysData } from "@/hooks/use-private-ai-keys-data";
+import { useToast } from "@/hooks/use-toast";
+import { PrivateAIKey } from "@/types/private-ai-key";
+import { User } from "@/types/user";
+import { get, post, del, put } from "@/utils/api";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 export default function TeamAIKeysPage() {
   const { toast } = useToast();
@@ -26,55 +18,59 @@ export default function TeamAIKeysPage() {
   const [isAddingKey, setIsAddingKey] = useState(false);
 
   // Fetch team members
-  const { data: teamMembersFull = [] } = useQuery<TeamUser[]>({
-    queryKey: ['team-members'],
+  const { data: teamMembersFull = [] } = useQuery<User[]>({
+    queryKey: ["team-members"],
     queryFn: async () => {
-      const response = await get('teams/members', { credentials: 'include' });
+      const response = await get("teams/members");
       return response.json();
     },
   });
 
   // Fetch private AI keys
-  const { data: keys = [], isLoading: isLoadingKeys } = useQuery<PrivateAIKey[]>({
-    queryKey: ['private-ai-keys'],
+  const { data: keys = [], isLoading: isLoadingKeys } = useQuery<
+    PrivateAIKey[]
+  >({
+    queryKey: ["private-ai-keys"],
     queryFn: async () => {
-      const response = await get('private-ai-keys', { credentials: 'include' });
+      const response = await get("private-ai-keys");
       return response.json();
     },
   });
 
   // Use shared hook for data fetching (only for team details and regions)
-  const { teamDetails, teamMembers, regions } = usePrivateAIKeysData(keys, new Set());
+  const { teamDetails, teamMembers, regions } = usePrivateAIKeysData(
+    keys,
+    new Set(),
+  );
 
   // Create key mutation
   const createKeyMutation = useMutation({
     mutationFn: async (data: {
-      name: string
-      region_id: number
-      key_type: 'full' | 'llm' | 'vector'
-      owner_id?: number
-      team_id?: number
+      name: string;
+      region_id: number;
+      key_type: "full" | "llm" | "vector";
+      owner_id?: number;
+      team_id?: number;
     }) => {
-      const endpoint = data.key_type === 'full' ? 'private-ai-keys' :
-                      data.key_type === 'llm' ? 'private-ai-keys/token' :
-                      'private-ai-keys/vector-db';
-      const response = await post(endpoint, data, { credentials: 'include' });
+      const endpoint =
+        data.key_type === "full"
+          ? "private-ai-keys"
+          : data.key_type === "llm"
+            ? "private-ai-keys/token"
+            : "private-ai-keys/vector-db";
+      const response = await post(endpoint, data);
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
-      queryClient.refetchQueries({ queryKey: ['private-ai-keys'], exact: true });
+      queryClient.invalidateQueries({ queryKey: ["private-ai-keys"] });
       setIsAddingKey(false);
-      toast({
-        title: 'Success',
-        description: 'AI key created successfully',
-      });
+      toast({ title: "Success", description: "AI key created successfully" });
     },
     onError: (error: Error) => {
       toast({
-        title: 'Error',
+        title: "Error",
         description: error.message,
-        variant: 'destructive',
+        variant: "destructive",
       });
     },
   });
@@ -82,59 +78,60 @@ export default function TeamAIKeysPage() {
   // Delete key mutation
   const deleteKeyMutation = useMutation({
     mutationFn: async (keyId: number) => {
-      const response = await del(`private-ai-keys/${keyId}`, { credentials: 'include' });
+      const response = await del(`private-ai-keys/${keyId}`);
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
-      queryClient.refetchQueries({ queryKey: ['private-ai-keys'], exact: true });
-      toast({
-        title: 'Success',
-        description: 'AI key deleted successfully',
-      });
+      queryClient.invalidateQueries({ queryKey: ["private-ai-keys"] });
+      toast({ title: "Success", description: "AI key deleted successfully" });
     },
     onError: () => {
       toast({
-        title: 'Error',
-        description: 'Failed to delete AI key',
-        variant: 'destructive',
+        title: "Error",
+        description: "Failed to delete AI key",
+        variant: "destructive",
       });
     },
   });
 
-  // Add mutation for updating budget period
   const updateBudgetPeriodMutation = useMutation({
-    mutationFn: async ({ keyId, budgetDuration }: { keyId: number; budgetDuration: string }) => {
+    mutationFn: async ({
+      keyId,
+      budgetDuration,
+    }: {
+      keyId: number;
+      budgetDuration: string;
+    }) => {
       const response = await put(`private-ai-keys/${keyId}/budget-period`, {
-        budget_duration: budgetDuration
-      }, { credentials: 'include' });
+        budget_duration: budgetDuration,
+      });
       return response.json();
     },
     onSuccess: (data, variables) => {
-      // Invalidate the specific key's spend query to refresh the data
-      queryClient.invalidateQueries({ queryKey: ['private-ai-key-spend', variables.keyId] });
+      queryClient.invalidateQueries({
+        queryKey: ["private-ai-key-spend", variables.keyId],
+      });
       toast({
-        title: 'Success',
-        description: 'Budget period updated successfully',
+        title: "Success",
+        description: "Budget period updated successfully",
       });
     },
     onError: (error: Error) => {
       toast({
-        title: 'Error',
+        title: "Error",
         description: error.message,
-        variant: 'destructive',
+        variant: "destructive",
       });
     },
   });
 
   const handleCreateKey = (data: {
-    name: string
-    region_id: number
-    key_type: 'full' | 'llm' | 'vector'
-    owner_id?: number
-    team_id?: number
+    name: string;
+    region_id: number;
+    key_type: "full" | "llm" | "vector";
+    owner_id?: number;
+    team_id?: number;
   }) => {
-    // Add team_id for team context
     if (user?.team_id) {
       data.team_id = user.team_id;
     }

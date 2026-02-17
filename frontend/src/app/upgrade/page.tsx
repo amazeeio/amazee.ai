@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { Loader2, AlertCircle } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import Script from "next/script";
-import { Card, CardContent } from "@/components/ui/card";
+import { useEffect, useRef } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Loader2, AlertCircle } from "lucide-react";
+import { Card, CardContent } from "@/components/ui/card";
 import { useUpgrade } from "@/stores/use-upgrade";
 
 declare module "react" {

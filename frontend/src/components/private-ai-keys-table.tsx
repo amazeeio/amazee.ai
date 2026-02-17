@@ -1,5 +1,8 @@
-import { useState } from 'react';
-import { Button } from '@/components/ui/button';
+import { Eye, EyeOff, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
+import { useState } from "react";
+import { PrivateAIKeySpendCell } from "@/components/private-ai-key-spend-cell";
+import { Button } from "@/components/ui/button";
+import { DeleteConfirmationDialog } from "@/components/ui/delete-confirmation-dialog";
 import {
   Table,
   TableBody,
@@ -9,16 +12,14 @@ import {
   TableRow,
   TablePagination,
   useTablePagination,
-} from '@/components/ui/table';
-import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
-import { Eye, EyeOff, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
-import { PrivateAIKey } from '@/types/private-ai-key';
-import { TableFilters, FilterField } from '@/components/ui/table-filters';
-import { PrivateAIKeySpendCell } from '@/components/private-ai-key-spend-cell';
+} from "@/components/ui/table";
+import { TableFilters, FilterField } from "@/components/ui/table-filters";
+import { PrivateAIKey } from "@/types/private-ai-key";
+import { User } from "@/types/user";
 
-type SortField = 'name' | 'region' | 'owner' | null;
-type SortDirection = 'asc' | 'desc';
-type KeyType = 'full' | 'llm' | 'vector' | 'all';
+type SortField = "name" | "region" | "owner" | null;
+type SortDirection = "asc" | "desc";
+type KeyType = "full" | "llm" | "vector" | "all";
 
 interface PrivateAIKeysTableProps {
   keys: PrivateAIKey[];
@@ -30,7 +31,7 @@ interface PrivateAIKeysTableProps {
   isDeleting?: boolean;
   isUpdatingBudget?: boolean;
   teamDetails?: Record<number, { name: string }>;
-  teamMembers?: { id: number; email: string }[];
+  teamMembers?: User[];
 }
 
 export function PrivateAIKeysTable({
@@ -45,35 +46,37 @@ export function PrivateAIKeysTable({
   teamDetails = {},
   teamMembers = [],
 }: PrivateAIKeysTableProps) {
-  const [showPassword, setShowPassword] = useState<Record<number | string, boolean>>({});
+  const [showPassword, setShowPassword] = useState<
+    Record<number | string, boolean>
+  >({});
   const [sortField, setSortField] = useState<SortField>(null);
-  const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
-  const [keyTypeFilter, setKeyTypeFilter] = useState<KeyType>('all');
-  const [nameFilter, setNameFilter] = useState('');
-  const [regionFilter, setRegionFilter] = useState('');
-  const [databaseNameFilter, setDatabaseNameFilter] = useState('');
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const [keyTypeFilter, setKeyTypeFilter] = useState<KeyType>("all");
+  const [nameFilter, setNameFilter] = useState("");
+  const [regionFilter, setRegionFilter] = useState("");
+  const [databaseNameFilter, setDatabaseNameFilter] = useState("");
 
   const togglePasswordVisibility = (keyId: number | string) => {
-    setShowPassword(prev => ({
+    setShowPassword((prev) => ({
       ...prev,
-      [keyId]: !prev[keyId]
+      [keyId]: !prev[keyId],
     }));
   };
 
   const handleSort = (field: SortField) => {
     if (sortField === field) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+      setSortDirection(sortDirection === "asc" ? "desc" : "asc");
     } else {
       setSortField(field);
-      setSortDirection('asc');
+      setSortDirection("asc");
     }
   };
 
   const clearFilters = () => {
-    setNameFilter('');
-    setRegionFilter('');
-    setDatabaseNameFilter('');
-    setKeyTypeFilter('all');
+    setNameFilter("");
+    setRegionFilter("");
+    setDatabaseNameFilter("");
+    setKeyTypeFilter("all");
   };
 
   const getSortedAndFilteredKeys = () => {
@@ -81,33 +84,35 @@ export function PrivateAIKeysTable({
 
     // Apply name filter
     if (nameFilter.trim()) {
-      filteredKeys = filteredKeys.filter(key =>
-        key.name?.toLowerCase().includes(nameFilter.toLowerCase())
+      filteredKeys = filteredKeys.filter((key) =>
+        key.name?.toLowerCase().includes(nameFilter.toLowerCase()),
       );
     }
 
     // Apply region filter
     if (regionFilter.trim()) {
-      filteredKeys = filteredKeys.filter(key =>
-        key.region?.toLowerCase().includes(regionFilter.toLowerCase())
+      filteredKeys = filteredKeys.filter((key) =>
+        key.region?.toLowerCase().includes(regionFilter.toLowerCase()),
       );
     }
 
     // Apply database name filter
     if (databaseNameFilter.trim()) {
-      filteredKeys = filteredKeys.filter(key =>
-        key.database_name?.toLowerCase().includes(databaseNameFilter.toLowerCase())
+      filteredKeys = filteredKeys.filter((key) =>
+        key.database_name
+          ?.toLowerCase()
+          .includes(databaseNameFilter.toLowerCase()),
       );
     }
 
     // Apply key type filter
-    if (keyTypeFilter !== 'all') {
-      filteredKeys = filteredKeys.filter(key => {
-        if (keyTypeFilter === 'full') {
+    if (keyTypeFilter !== "all") {
+      filteredKeys = filteredKeys.filter((key) => {
+        if (keyTypeFilter === "full") {
           return key.litellm_token && key.database_name;
-        } else if (keyTypeFilter === 'llm') {
+        } else if (keyTypeFilter === "llm") {
           return key.litellm_token && !key.database_name;
-        } else if (keyTypeFilter === 'vector') {
+        } else if (keyTypeFilter === "vector") {
           return !key.litellm_token && key.database_name;
         }
         return true;
@@ -117,31 +122,35 @@ export function PrivateAIKeysTable({
     // Apply sorting
     if (sortField) {
       filteredKeys.sort((a, b) => {
-        let aValue: string | number = '';
-        let bValue: string | number = '';
+        let aValue: string | number = "";
+        let bValue: string | number = "";
 
-        if (sortField === 'name') {
-          aValue = a.name || '';
-          bValue = b.name || '';
-        } else if (sortField === 'region') {
-          aValue = a.region || '';
-          bValue = b.region || '';
-        } else if (sortField === 'owner') {
+        if (sortField === "name") {
+          aValue = a.name || "";
+          bValue = b.name || "";
+        } else if (sortField === "region") {
+          aValue = a.region || "";
+          bValue = b.region || "";
+        } else if (sortField === "owner") {
           if (a.owner_id) {
-            const owner = teamMembers.find(member => member.id === a.owner_id);
+            const owner = teamMembers.find(
+              (member) => member.id.toString() === a.owner_id?.toString(),
+            );
             aValue = owner?.email || `User ${a.owner_id}`;
           } else if (a.team_id) {
-            aValue = `(Team) ${teamDetails[a.team_id]?.name || 'Team (Shared)'}`;
+            aValue = `(Team) ${teamDetails[a.team_id]?.name || "Team (Shared)"}`;
           }
           if (b.owner_id) {
-            const owner = teamMembers.find(member => member.id === b.owner_id);
+            const owner = teamMembers.find(
+              (member) => member.id.toString() === b.owner_id?.toString(),
+            );
             bValue = owner?.email || `User ${b.owner_id}`;
           } else if (b.team_id) {
-            bValue = `(Team) ${teamDetails[b.team_id]?.name || 'Team (Shared)'}`;
+            bValue = `(Team) ${teamDetails[b.team_id]?.name || "Team (Shared)"}`;
           }
         }
 
-        if (sortDirection === 'asc') {
+        if (sortDirection === "asc") {
           return aValue > bValue ? 1 : -1;
         } else {
           return aValue < bValue ? 1 : -1;
@@ -152,46 +161,51 @@ export function PrivateAIKeysTable({
     return filteredKeys;
   };
 
-  const hasActiveFilters = Boolean(nameFilter.trim() || regionFilter.trim() || databaseNameFilter.trim() || keyTypeFilter !== 'all');
+  const hasActiveFilters = Boolean(
+    nameFilter.trim() ||
+    regionFilter.trim() ||
+    databaseNameFilter.trim() ||
+    keyTypeFilter !== "all",
+  );
 
   // Filter fields configuration
   const filterFields: FilterField[] = [
     {
-      key: 'name',
-      label: 'Filter by Name',
-      type: 'search',
-      placeholder: 'Filter by name...',
+      key: "name",
+      label: "Filter by Name",
+      type: "search",
+      placeholder: "Filter by name...",
       value: nameFilter,
       onChange: setNameFilter,
     },
     {
-      key: 'region',
-      label: 'Filter by Region',
-      type: 'search',
-      placeholder: 'Filter by region...',
+      key: "region",
+      label: "Filter by Region",
+      type: "search",
+      placeholder: "Filter by region...",
       value: regionFilter,
       onChange: setRegionFilter,
     },
     {
-      key: 'databaseName',
-      label: 'Filter by Database Name',
-      type: 'search',
-      placeholder: 'Filter by database name...',
+      key: "databaseName",
+      label: "Filter by Database Name",
+      type: "search",
+      placeholder: "Filter by database name...",
       value: databaseNameFilter,
       onChange: setDatabaseNameFilter,
     },
     {
-      key: 'type',
-      label: 'Filter by Type',
-      type: 'select',
-      placeholder: 'Filter by type',
+      key: "type",
+      label: "Filter by Type",
+      type: "select",
+      placeholder: "Filter by type",
       value: keyTypeFilter,
       onChange: (value: string) => setKeyTypeFilter(value as KeyType),
       options: [
-        { value: 'all', label: 'All Keys' },
-        { value: 'full', label: 'Full Keys' },
-        { value: 'llm', label: 'LLM Only' },
-        { value: 'vector', label: 'Vector DB Only' },
+        { value: "all", label: "All Keys" },
+        { value: "full", label: "Full Keys" },
+        { value: "llm", label: "LLM Only" },
+        { value: "vector", label: "Vector DB Only" },
       ],
     },
   ];
@@ -234,12 +248,12 @@ export function PrivateAIKeysTable({
               <TableHead>
                 <Button
                   variant="ghost"
-                  onClick={() => handleSort('name')}
+                  onClick={() => handleSort("name")}
                   className="flex items-center gap-1"
                 >
                   Name
-                  {sortField === 'name' ? (
-                    sortDirection === 'asc' ? (
+                  {sortField === "name" ? (
+                    sortDirection === "asc" ? (
                       <ArrowUp className="h-4 w-4" />
                     ) : (
                       <ArrowDown className="h-4 w-4" />
@@ -254,12 +268,12 @@ export function PrivateAIKeysTable({
               <TableHead>
                 <Button
                   variant="ghost"
-                  onClick={() => handleSort('region')}
+                  onClick={() => handleSort("region")}
                   className="flex items-center gap-1"
                 >
                   Region
-                  {sortField === 'region' ? (
-                    sortDirection === 'asc' ? (
+                  {sortField === "region" ? (
+                    sortDirection === "asc" ? (
                       <ArrowUp className="h-4 w-4" />
                     ) : (
                       <ArrowDown className="h-4 w-4" />
@@ -273,12 +287,12 @@ export function PrivateAIKeysTable({
                 <TableHead>
                   <Button
                     variant="ghost"
-                    onClick={() => handleSort('owner')}
+                    onClick={() => handleSort("owner")}
                     className="flex items-center gap-1"
                   >
                     Owner
-                    {sortField === 'owner' ? (
-                      sortDirection === 'asc' ? (
+                    {sortField === "owner" ? (
+                      sortDirection === "asc" ? (
                         <ArrowUp className="h-4 w-4" />
                       ) : (
                         <ArrowDown className="h-4 w-4" />
@@ -313,12 +327,16 @@ export function PrivateAIKeysTable({
                         <div className="flex items-center gap-2">
                           <span>Password: </span>
                           <span className="font-mono">
-                            {showPassword[key.id || `key-${index}`] ? key.database_password : '••••••••'}
+                            {showPassword[key.id || `key-${index}`]
+                              ? key.database_password
+                              : "••••••••"}
                           </span>
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => togglePasswordVisibility(key.id || `key-${index}`)}
+                            onClick={() =>
+                              togglePasswordVisibility(key.id || `key-${index}`)
+                            }
                           >
                             {showPassword[key.id || `key-${index}`] ? (
                               <EyeOff className="h-4 w-4" />
@@ -329,7 +347,9 @@ export function PrivateAIKeysTable({
                         </div>
                       </>
                     ) : (
-                      <span className="text-muted-foreground">No Vector DB</span>
+                      <span className="text-muted-foreground">
+                        No Vector DB
+                      </span>
                     )}
                   </div>
                 </TableCell>
@@ -339,12 +359,16 @@ export function PrivateAIKeysTable({
                       <div className="flex items-center gap-2">
                         <span>Token: </span>
                         <span className="font-mono">
-                          {showPassword[`${key.id}-token`] ? key.litellm_token : '••••••••'}
+                          {showPassword[`${key.id}-token`]
+                            ? key.litellm_token
+                            : "••••••••"}
                         </span>
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => togglePasswordVisibility(`${key.id}-token`)}
+                          onClick={() =>
+                            togglePasswordVisibility(`${key.id}-token`)
+                          }
                         >
                           {showPassword[`${key.id}-token`] ? (
                             <EyeOff className="h-4 w-4" />
@@ -360,7 +384,9 @@ export function PrivateAIKeysTable({
                       )}
                     </div>
                   ) : (
-                    <span className="text-muted-foreground">No LLM credentials</span>
+                    <span className="text-muted-foreground">
+                      No LLM credentials
+                    </span>
                   )}
                 </TableCell>
                 <TableCell>{key.region}</TableCell>
@@ -369,10 +395,16 @@ export function PrivateAIKeysTable({
                     <div className="flex flex-col gap-1">
                       {key.owner_id ? (
                         <span className="text-sm">
-                          {teamMembers.find(member => member.id === key.owner_id)?.email || `User ${key.owner_id}`}
+                          {teamMembers.find(
+                            (member) =>
+                              member.id.toString() === key.owner_id?.toString(),
+                          )?.email || `User ${key.owner_id}`}
                         </span>
                       ) : key.team_id ? (
-                        <span className="text-sm">(Team) {teamDetails[key.team_id]?.name || 'Team (Shared)'}</span>
+                        <span className="text-sm">
+                          (Team){" "}
+                          {teamDetails[key.team_id]?.name || "Team (Shared)"}
+                        </span>
                       ) : null}
                     </div>
                   </TableCell>

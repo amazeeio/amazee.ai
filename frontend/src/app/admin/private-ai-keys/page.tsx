@@ -1,182 +1,127 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Button } from '@/components/ui/button';
-import { useToast } from '@/hooks/use-toast';
-import { Loader2, Search } from 'lucide-react';
-import { get, del, put, post } from '@/utils/api';
-import { useDebounce } from '@/hooks/use-debounce';
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from '@/components/ui/command';
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover';
-import { PrivateAIKeysTable } from '@/components/private-ai-keys-table';
-import { CreateAIKeyDialog } from '@/components/create-ai-key-dialog';
-import { PrivateAIKey } from '@/types/private-ai-key';
-import { usePrivateAIKeysData } from '@/hooks/use-private-ai-keys-data';
-
-interface User {
-  id: number;
-  email: string;
-  is_active: boolean;
-  role: string;
-  team_id: number | null;
-  created_at: string;
-}
+import { useState } from "react";
+import { CreateAIKeyDialog } from "@/components/create-ai-key-dialog";
+import { PrivateAIKeysTable } from "@/components/private-ai-keys-table";
+import { usePrivateAIKeysData } from "@/hooks/use-private-ai-keys-data";
+import { useToast } from "@/hooks/use-toast";
+import { PrivateAIKey } from "@/types/private-ai-key";
+import { User } from "@/types/user";
+import { get, del, put, post } from "@/utils/api";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { UserFilter } from "./_components/user-filter";
 
 export default function PrivateAIKeysPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
-  const [isUserSearchOpen, setIsUserSearchOpen] = useState(false);
-  const [searchTerm, setSearchTerm] = useState('');
 
-  const debouncedSearchTerm = useDebounce(searchTerm, 300);
+  // Fetch private AI keys based on selected user filter
+  const { data: privateAIKeys = [], isLoading: isLoadingPrivateAIKeys } =
+    useQuery<PrivateAIKey[]>({
+      queryKey: ["private-ai-keys", selectedUser?.id],
+      queryFn: async () => {
+        const url = selectedUser?.id
+          ? `/private-ai-keys?owner_id=${selectedUser.id}`
+          : "/private-ai-keys";
+        const response = await get(url);
+        return response.json();
+      },
+    });
 
-  const { data: privateAIKeys = [], isLoading: isLoadingPrivateAIKeys } = useQuery<PrivateAIKey[]>({
-    queryKey: ['private-ai-keys', selectedUser?.id],
-    queryFn: async () => {
-      const url = selectedUser?.id
-        ? `/private-ai-keys?owner_id=${selectedUser.id}`
-        : '/private-ai-keys';
-      const response = await get(url);
-      const data = await response.json();
-      return data;
-    }
-  });
+  // Fetch helper data (team details, members, regions) for the table and dialogs
+  const { teamDetails, teamMembers, regions } = usePrivateAIKeysData(
+    privateAIKeys,
+    new Set(),
+  );
 
-  // Use shared hook for data fetching (only for team details and regions)
-  const { teamDetails, teamMembers, regions } = usePrivateAIKeysData(privateAIKeys, new Set());
-
-  // Search users
-  const { data: users = [], isLoading: isSearching } = useQuery<User[]>({
-    queryKey: ['users', debouncedSearchTerm],
-    queryFn: async () => {
-      if (!debouncedSearchTerm) return [];
-      const response = await get(`/users?search=${debouncedSearchTerm}`);
-      return response.json();
-    },
-    enabled: debouncedSearchTerm.length > 0,
-  });
-
-  // Get all users for the dropdown
-  const { data: usersMap = {} } = useQuery<Record<number, User>>({
-    queryKey: ['users-map'],
-    queryFn: async () => {
-      const response = await get('/users');
-      const users: User[] = await response.json();
-      return users.reduce((acc, user) => ({
-        ...acc,
-        [user.id]: user
-      }), {});
-    },
-  });
-
-  const handleSearchChange = (value: string) => {
-    setSearchTerm(value);
-  };
-
-  // Create key mutation
+  // Mutations
   const createKeyMutation = useMutation({
     mutationFn: async (data: {
-      name: string
-      region_id: number
-      key_type: 'full' | 'llm' | 'vector'
-      owner_id?: number
-      team_id?: number
+      name: string;
+      region_id: number;
+      key_type: "full" | "llm" | "vector";
+      owner_id?: number;
+      team_id?: number;
     }) => {
-      const endpoint = data.key_type === 'full' ? '/private-ai-keys' :
-                      data.key_type === 'llm' ? '/private-ai-keys/token' :
-                      '/private-ai-keys/vector-db';
+      const endpoint =
+        data.key_type === "full"
+          ? "/private-ai-keys"
+          : data.key_type === "llm"
+            ? "/private-ai-keys/token"
+            : "/private-ai-keys/vector-db";
       const response = await post(endpoint, data);
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
-      queryClient.refetchQueries({ queryKey: ['private-ai-keys'], exact: true });
+      queryClient.invalidateQueries({ queryKey: ["private-ai-keys"] });
       setIsCreateDialogOpen(false);
       toast({
-        title: 'Success',
-        description: 'Private AI key created successfully',
+        title: "Success",
+        description: "Private AI key created successfully",
       });
     },
     onError: (error: Error) => {
       toast({
-        title: 'Error',
+        title: "Error",
         description: error.message,
-        variant: 'destructive',
+        variant: "destructive",
       });
     },
   });
 
-  // Delete key mutation
   const deletePrivateAIKeyMutation = useMutation({
     mutationFn: async (keyId: number) => {
       const response = await del(`/private-ai-keys/${keyId}`);
       return response.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['private-ai-keys'] });
-      queryClient.refetchQueries({ queryKey: ['private-ai-keys'], exact: true });
+      queryClient.invalidateQueries({ queryKey: ["private-ai-keys"] });
       toast({
-        title: 'Success',
-        description: 'Private AI key deleted successfully',
+        title: "Success",
+        description: "Private AI key deleted successfully",
       });
     },
     onError: (error: Error) => {
       toast({
-        title: 'Error',
+        title: "Error",
         description: error.message,
-        variant: 'destructive',
+        variant: "destructive",
       });
     },
   });
 
-  // Add mutation for updating budget period
   const updateBudgetPeriodMutation = useMutation({
-    mutationFn: async ({ keyId, budgetDuration }: { keyId: number; budgetDuration: string }) => {
+    mutationFn: async ({
+      keyId,
+      budgetDuration,
+    }: {
+      keyId: number;
+      budgetDuration: string;
+    }) => {
       const response = await put(`/private-ai-keys/${keyId}/budget-period`, {
-        budget_duration: budgetDuration
+        budget_duration: budgetDuration,
       });
       return response.json();
     },
     onSuccess: (data, variables) => {
-      // Invalidate the specific key's spend query to refresh the data
-      queryClient.invalidateQueries({ queryKey: ['private-ai-key-spend', variables.keyId] });
+      queryClient.invalidateQueries({
+        queryKey: ["private-ai-key-spend", variables.keyId],
+      });
       toast({
-        title: 'Success',
-        description: 'Budget period updated successfully',
+        title: "Success",
+        description: "Budget period updated successfully",
       });
     },
     onError: (error: Error) => {
       toast({
-        title: 'Error',
+        title: "Error",
         description: error.message,
-        variant: 'destructive',
+        variant: "destructive",
       });
     },
   });
-
-  const handleCreateKey = (data: {
-    name: string
-    region_id: number
-    key_type: 'full' | 'llm' | 'vector'
-    owner_id?: number
-    team_id?: number
-  }) => {
-    createKeyMutation.mutate(data);
-  };
 
   return (
     <div className="space-y-4">
@@ -185,10 +130,10 @@ export default function PrivateAIKeysPage() {
         <CreateAIKeyDialog
           open={isCreateDialogOpen}
           onOpenChange={setIsCreateDialogOpen}
-          onSubmit={handleCreateKey}
+          onSubmit={createKeyMutation.mutate}
           isLoading={createKeyMutation.isPending}
           regions={regions}
-          teamMembers={Object.values(usersMap)}
+          teamMembers={teamMembers}
           showUserAssignment={true}
           currentUser={undefined}
           triggerText="Create Key"
@@ -197,65 +142,7 @@ export default function PrivateAIKeysPage() {
         />
       </div>
 
-      <div className="flex items-center gap-2">
-        <Popover open={isUserSearchOpen} onOpenChange={setIsUserSearchOpen}>
-          <PopoverTrigger asChild>
-            <Button variant="outline" className="w-[250px] justify-between">
-              {selectedUser ? selectedUser.email : 'Filter by owner...'}
-              <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent className="w-[250px] p-0">
-            <Command>
-              <CommandInput
-                placeholder="Search users..."
-                value={searchTerm}
-                onValueChange={handleSearchChange}
-              />
-              <CommandList>
-                {!searchTerm ? (
-                  <div className="py-6 text-center text-sm text-muted-foreground">
-                    Start typing to search users...
-                  </div>
-                ) : isSearching ? (
-                  <div className="py-6 text-center text-sm">
-                    <Loader2 className="mx-auto h-4 w-4 animate-spin" />
-                    <p className="mt-2">Searching users...</p>
-                  </div>
-                ) : users.length === 0 ? (
-                  <CommandEmpty>No users found.</CommandEmpty>
-                ) : (
-                  <CommandGroup>
-                    {users.map((user) => (
-                      <CommandItem
-                        key={user.id}
-                        onSelect={() => {
-                          setSelectedUser(user);
-                          setIsUserSearchOpen(false);
-                          setSearchTerm('');
-                        }}
-                      >
-                        {user.email}
-                      </CommandItem>
-                    ))}
-                  </CommandGroup>
-                )}
-              </CommandList>
-            </Command>
-          </PopoverContent>
-        </Popover>
-        {selectedUser && (
-          <Button
-            variant="ghost"
-            onClick={() => {
-              setSelectedUser(null);
-              setSearchTerm('');
-            }}
-          >
-            Clear filter
-          </Button>
-        )}
-      </div>
+      <UserFilter selectedUser={selectedUser} onUserSelect={setSelectedUser} />
 
       <PrivateAIKeysTable
         keys={privateAIKeys}
