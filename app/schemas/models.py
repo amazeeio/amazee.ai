@@ -418,3 +418,11 @@ class SalesTeam(BaseModel):
 class SalesTeamsResponse(BaseModel):
     teams: List[SalesTeam]
     model_config = ConfigDict(from_attributes=True)
+
+class TeamRegionBudget(BaseModel):
+    team_id: int
+    region_id: int
+    region_name: str
+    total_spend: float
+    total_budget: float
+    model_config = ConfigDict(from_attributes=True)
