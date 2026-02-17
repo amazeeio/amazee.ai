@@ -17,6 +17,13 @@ services:
     labels:
       lagoon.type: postgres
 
+  redis:
+    image: uselagoon/redis-7
+    labels:
+      lagoon.type: redis
+    ports:
+      - "6379:6379"
+
   backend:
     build:
       context: .

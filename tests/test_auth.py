@@ -696,7 +696,6 @@ def test_login_cookie_expiration_regular_user(client, test_user):
     set_cookie_header = response.headers.get("set-cookie", "")
     assert "Max-Age=1800" in set_cookie_header or "max-age=1800" in set_cookie_header
 
-
 def test_login_cookie_expiration_system_admin(client, test_admin):
     """
     Given a system administrator
