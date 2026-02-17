@@ -6,6 +6,8 @@ import time
 import uuid
 from datetime import datetime
 import email_validator
+from fastapi_limiter.depends import RateLimiter
+from pyrate_limiter import Limiter, Rate, Duration
 
 from typing import Optional, List, Union
 
@@ -14,6 +16,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from urllib.parse import urlparse
 from jose import JWTError, jwt
+
+from app.api.teams import register_team
+from app.api.users import _create_user_in_db, get_user_by_email
+from app.api.private_ai_keys import create_private_ai_key
 
 from app.core.config import settings
 from app.core.dependencies import get_limit_service
@@ -60,11 +66,11 @@ from app.schemas.models import (
     PrivateAIKeyCreate,
 )
 
-from app.api.teams import register_team
-from app.api.users import _create_user_in_db, get_user_by_email
-from app.api.private_ai_keys import create_private_ai_key
-
 auth_logger = logging.getLogger(__name__)
+
+validate_email_limiter = Limiter(
+    Rate(settings.RATE_LIMIT_VALIDATE_EMAIL, Duration.MINUTE)
+)
 
 router = APIRouter(
     tags=["auth"]
@@ -447,12 +453,14 @@ def send_validation_code(email: str, db: Session) -> None:
 
     auth_logger.info(f"Successfully sent validation code to: {email}")
 
+
 @router.post("/validate-email")
 async def validate_email(
     request: Request,
     email_data: Optional[EmailValidation] = None,
     email: Optional[str] = Form(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _: None = Depends(RateLimiter(validate_email_limiter))
 ):
     """
     Validate an email address and generate a validation code.

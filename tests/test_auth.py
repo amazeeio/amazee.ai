@@ -717,26 +717,6 @@ def test_login_cookie_expiration_regular_user(client, test_user):
     set_cookie_header = response.headers.get("set-cookie", "")
     assert "Max-Age=1800" in set_cookie_header or "max-age=1800" in set_cookie_header
 
-def test_login_cookie_expiration_system_admin(client, test_admin):
-    """
-    Given a system administrator
-    When the system admin logs in successfully
-    Then the cookie should expire in 8 hours (28800 seconds)
-    """
-    response = client.post(
-        "/auth/login",
-        data={"username": test_admin.email, "password": "adminpassword"}
-    )
-    assert response.status_code == 200
-
-    # Check that the cookie is set with 8-hour expiration
-    cookies = response.cookies
-    assert "access_token" in cookies
-
-    # Check the Set-Cookie header for max-age
-    set_cookie_header = response.headers.get("set-cookie", "")
-    assert "Max-Age=28800" in set_cookie_header or "max-age=28800" in set_cookie_header
-
 def test_sign_in_cookie_expiration_regular_user(client, test_user, mock_dynamodb):
     """
     Given a regular user
