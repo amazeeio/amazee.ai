@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
 
     # JWT settings
-    SECRET_KEY: str = "your-secret-key-here"  # In production, use environment variable
+    SECRET_KEY: str = os.environ["AMAZEEAI_JWT_SECRET"]
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60  # Increase to 60 minutes
 
