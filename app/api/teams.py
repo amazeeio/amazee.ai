@@ -50,10 +50,11 @@ def _create_default_limits_for_team(team: DBTeam, db: Session) -> None:
 @router.post("/", response_model=Team, status_code=status.HTTP_201_CREATED)
 async def register_team(
     team: TeamCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user_from_auth)
 ):
     """
-    Register a new team. This endpoint is publicly accessible.
+    Register a new team. Requires authentication.
     """
     # Check if team email already exists (case insensitive)
     db_team = db.query(DBTeam).filter(func.lower(DBTeam.admin_email) == func.lower(team.admin_email)).first()
