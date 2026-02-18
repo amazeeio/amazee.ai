@@ -1,3 +1,7 @@
+import os
+# Set environment variables BEFORE any app imports
+os.environ["AMAZEEAI_JWT_SECRET"] = "test-secret-key-for-tests"
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -5,13 +9,9 @@ from sqlalchemy.orm import sessionmaker
 from app.main import app
 from app.db.database import get_db
 from app.db.models import Base, DBRegion, DBUser, DBTeam, DBProduct
-import os
 from app.core.security import get_password_hash
 from datetime import datetime, UTC, timedelta
 from unittest.mock import patch, MagicMock, Mock, AsyncMock
-
-# Set environment variables for tests
-os.environ["AMAZEEAI_JWT_SECRET"] = "test-secret-key-for-tests"
 
 # Get database URL from environment
 DATABASE_URL = os.getenv(
