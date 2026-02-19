@@ -616,7 +616,7 @@ async def get_private_ai_key(
         # Get LiteLLM key info
         litellm_data = await litellm_service.get_key_info(private_ai_key.litellm_token)
         info = litellm_data.get("info", {})
-        logger.debug("Retrieved LiteLLM key info for key id: %s", private_ai_key.id)
+        logger.debug("Retrieved LiteLLM key info successfully")
 
         # Combine database key info with LiteLLM info
         key_data = private_ai_key.to_dict()

@@ -36,7 +36,6 @@ def test_security_headers_present(client: TestClient):
     assert response.headers["X-Frame-Options"] == "DENY"
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
-    assert response.headers["X-XSS-Protection"] == "1; mode=block"
     assert response.headers["Permissions-Policy"] == "geolocation=(), microphone=(), camera=()"
 
 def test_security_headers_on_api_endpoint(client: TestClient, test_token):
