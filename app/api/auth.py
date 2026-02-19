@@ -71,8 +71,7 @@ router = APIRouter(tags=["auth"])
 def get_cookie_domain():
     """Extract domain from COOKIE_DOMAIN or LAGOON_ROUTES for cookie settings."""
     # First check for explicit cookie domain setting
-    cookie_domain = os.getenv("COOKIE_DOMAIN")
-    if cookie_domain:
+    if (cookie_domain := os.getenv("COOKIE_DOMAIN")):
         return cookie_domain
 
     # Fall back to extracting from LAGOON_ROUTES
@@ -141,7 +140,6 @@ def create_and_set_access_token(
     access_token = create_access_token(data={"sub": user_email.lower()})
 
     # Get cookie domain from LAGOON_ROUTES
-    cookie_domain = get_cookie_domain()
 
     # Set cookie expiration based on user role
     # System administrators get 8 hours (28800 seconds), regular users get 30 minutes (1800 seconds)
@@ -160,7 +158,7 @@ def create_and_set_access_token(
     }
 
     # Only set domain if we got one from LAGOON_ROUTES
-    if cookie_domain:
+    if (cookie_domain := get_cookie_domain()):
         cookie_settings["domain"] = cookie_domain
 
     # Set cookie with appropriate settings
