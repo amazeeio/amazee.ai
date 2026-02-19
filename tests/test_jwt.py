@@ -1,6 +1,6 @@
 import pytest
 from datetime import datetime, UTC, timedelta
-from jose import jwt
+import jwt
 from app.core.worker import generate_token, generate_pricing_url, get_team_admin_email
 from app.core.config import settings
 from app.db.models import DBUser, DBTeam

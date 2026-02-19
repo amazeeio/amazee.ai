@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from urllib.parse import urlparse
-from jose import JWTError, jwt
+import jwt
 
 from app.core.config import settings
 from app.core.dependencies import get_limit_service
@@ -650,7 +650,7 @@ async def validate_jwt(
         auth_logger.info(f"Successfully validated JWT for user: {user.email}")
         return create_and_set_access_token(response, user.email, user)
 
-    except JWTError as e:
+    except jwt.PyJWTError as e:
         if isinstance(e, jwt.ExpiredSignatureError):
             # Token is expired, try to get email from expired token
             try:
@@ -672,7 +672,7 @@ async def validate_jwt(
                     detail="Token expired. A new validation URL has been sent to your email."
                 )
 
-            except JWTError:
+            except jwt.PyJWTError:
                 raise credentials_exception
         else:
             raise credentials_exception
