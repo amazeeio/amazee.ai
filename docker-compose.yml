@@ -37,6 +37,7 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres/postgres_service
       SECRET_KEY: "dKq2BK3pqGQfNqC7SK8ZxNCdqJnGV4F9"  # More secure key for development
       ENABLE_METRICS: "true"  # Enable Prometheus metrics
+      REDIS_URL: "redis://redis:6379/0"
     ports:
       - "8800:8800"
     volumes:
