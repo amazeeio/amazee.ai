@@ -26,6 +26,7 @@ describe("useConfig store", () => {
       },
       loading: false,
       error: null,
+      isLoaded: false,
     });
   });
 

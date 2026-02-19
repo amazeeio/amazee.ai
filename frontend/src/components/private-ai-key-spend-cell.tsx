@@ -1,3 +1,5 @@
+"use client";
+
 import { Loader2, RefreshCw, Pencil } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
