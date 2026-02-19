@@ -6,7 +6,6 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
 from fastapi_limiter import FastAPILimiter
-from pyrate_limiter import Limiter, Rate, Duration
 from app.api import auth, private_ai_keys, users, regions, audit, teams, billing, products, pricing_tables, limits
 from app.core.config import settings
 from app.db.database import get_db
@@ -192,9 +191,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-
-default_rate = Rate(100, Duration.MINUTE)
-limiter = Limiter(default_rate)
 
 # Get allowed origins from environment
 default_origins = ["http://localhost:8080", "http://localhost:3000", "http://localhost:3001", "http://localhost:8800"]
