@@ -52,9 +52,12 @@ describe("useUpgrade store", () => {
     );
 
     // Reset both stores before each test
-    useConfig.getState().setConfig(null);
-    useConfig.getState().setLoading(false);
-    useConfig.getState().setError(null);
+    useConfig.setState({
+      config: null,
+      loading: false,
+      error: null,
+      isLoaded: false,
+    });
     useUpgrade.getState().reset();
   });
 

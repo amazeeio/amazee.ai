@@ -1,3 +1,5 @@
+"use client";
+
 import { Eye, EyeOff, ArrowUp, ArrowDown, ArrowUpDown } from "lucide-react";
 import { useState } from "react";
 import { PrivateAIKeySpendCell } from "@/components/private-ai-key-spend-cell";
