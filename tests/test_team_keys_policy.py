@@ -1,7 +1,7 @@
-from unittest.mock import patch
+import pytest
 
-@patch("httpx.AsyncClient")
-def test_create_key_force_user_keys_enabled(mock_client_class, client, team_admin_token, test_team, test_team_admin, test_region, db, mock_httpx_post_client):
+@pytest.mark.asyncio
+async def test_create_key_force_user_keys_enabled(mock_client_class, client, team_admin_token, test_team, test_team_admin, test_region, db, mock_httpx_post_client):
     """
     Test that when force_user_keys is enabled on a team,
     creating a key with team_id results in a user-owned key instead of a team-owned key.
@@ -68,8 +68,8 @@ def test_create_key_force_user_keys_enabled(mock_client_class, client, team_admi
 
     assert found_generate_call
 
-@patch("httpx.AsyncClient")
-def test_create_token_force_user_keys_enabled(mock_client_class, client, team_admin_token, test_team, test_team_admin, test_region, db, mock_httpx_post_client):
+@pytest.mark.asyncio
+async def test_create_token_force_user_keys_enabled(mock_client_class, client, team_admin_token, test_team, test_team_admin, test_region, db, mock_httpx_post_client):
     """
     Test creating just a token (LiteLLM only) with force_user_keys enabled.
     """
@@ -102,8 +102,8 @@ def test_create_token_force_user_keys_enabled(mock_client_class, client, team_ad
     assert data["owner_id"] == user_id
     assert data["team_id"] is None
 
-@patch("httpx.AsyncClient")
-def test_create_vector_db_force_user_keys_enabled(mock_client_class, client, team_admin_token, test_team, test_team_admin, test_region, db, mock_httpx_post_client):
+@pytest.mark.asyncio
+async def test_create_vector_db_force_user_keys_enabled(mock_client_class, client, team_admin_token, test_team, test_team_admin, test_region, db, mock_httpx_post_client):
     """
     Test creating just a vector DB with force_user_keys enabled.
     """

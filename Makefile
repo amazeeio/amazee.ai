@@ -1,4 +1,4 @@
-.PHONY: backend-test backend-test-build test-clean test-network test-postgres frontend-test frontend-test-build migration-create migration-upgrade migration-downgrade migration-stamp
+.PHONY: backend-test backend-test-build test-clean test-network test-postgres test-redis frontend-test frontend-test-build migration-create migration-upgrade migration-downgrade migration-stamp
 
 # Default target
 all: backend-test
@@ -23,9 +23,18 @@ test-postgres: test-clean test-network
 		pgvector/pgvector:pg16 && \
 	sleep 5
 
+# Start Redis container for testing
+test-redis: test-network
+	docker run -d \
+		--name amazee-test-redis \
+		--network amazeeai_default \
+		-p 6379:6379 \
+		redis:alpine && \
+	sleep 2
+
 # Run backend tests for a specific regex
 # Usage: make backend-test-regex regex="test_pattern"
-backend-test-regex: test-clean backend-test-build test-postgres
+backend-test-regex: test-clean backend-test-build test-postgres test-redis
 	@if [ -z "$(regex)" ]; then \
 		echo "Error: regex parameter is required. Usage: make backend-test-regex regex=\"test_pattern\""; \
 		exit 1; \
@@ -33,6 +42,7 @@ backend-test-regex: test-clean backend-test-build test-postgres
 	docker run --rm \
 		--network amazeeai_default \
 		-e DATABASE_URL="postgresql://postgres:postgres@amazee-test-postgres/postgres_service" \
+		-e REDIS_URL="redis://amazee-test-redis:6379" \
 		-e SECRET_KEY="test-secret-key" \
 		-e POSTGRES_HOST="amazee-test-postgres" \
 		-e POSTGRES_USER="postgres" \
@@ -47,10 +57,11 @@ backend-test-regex: test-clean backend-test-build test-postgres
 		amazee-backend-test pytest -vv -k "$(regex)"
 
 # Run backend tests in a new container
-backend-test: test-clean backend-test-build test-postgres
+backend-test: test-clean backend-test-build test-postgres test-redis
 	docker run --rm \
 		--network amazeeai_default \
 		-e DATABASE_URL="postgresql://postgres:postgres@amazee-test-postgres/postgres_service" \
+		-e REDIS_URL="redis://amazee-test-redis:6379" \
 		-e SECRET_KEY="test-secret-key" \
 		-e POSTGRES_HOST="amazee-test-postgres" \
 		-e POSTGRES_USER="postgres" \
@@ -65,10 +76,11 @@ backend-test: test-clean backend-test-build test-postgres
 		amazee-backend-test
 
 # Run backend tests with coverage report
-backend-test-cov: test-clean backend-test-build test-postgres
+backend-test-cov: test-clean backend-test-build test-postgres test-redis
 	docker run --rm \
 		--network amazeeai_default \
 		-e DATABASE_URL="postgresql://postgres:postgres@amazee-test-postgres/postgres_service" \
+		-e REDIS_URL="redis://amazee-test-redis:6379" \
 		-e SECRET_KEY="test-secret-key" \
 		-e POSTGRES_HOST="amazee-test-postgres" \
 		-e POSTGRES_USER="postgres" \
@@ -99,6 +111,8 @@ test-all: backend-test frontend-test
 test-clean:
 	docker stop amazee-test-postgres 2>/dev/null || true
 	docker rm amazee-test-postgres 2>/dev/null || true
+	docker stop amazee-test-redis 2>/dev/null || true
+	docker rm amazee-test-redis 2>/dev/null || true
 	docker network rm amazeeai_default 2>/dev/null || true
 	docker rmi amazee-backend-test 2>/dev/null || true
 	docker rmi amazeeai-frontend-test 2>/dev/null || true
