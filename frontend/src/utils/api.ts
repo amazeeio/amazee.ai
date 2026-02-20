@@ -1,5 +1,11 @@
 import { getApiUrl } from "./config";
 
+let onUnauthorized: (() => void) | null = null;
+
+export function setOnUnauthorized(callback: () => void) {
+  onUnauthorized = callback;
+}
+
 const defaultOptions: RequestInit = {
   credentials: "include",
   headers: {
@@ -24,6 +30,10 @@ export async function fetchApi(endpoint: string, options: RequestInit = {}) {
   };
 
   const response = await fetch(url, fetchOptions);
+
+  if (response.status === 401 && onUnauthorized) {
+    onUnauthorized();
+  }
 
   if (!response.ok) {
     const error = await response
@@ -92,6 +102,10 @@ export async function fetchApiWithToken(
   };
 
   const response = await fetch(url, fetchOptions);
+
+  if (response.status === 401 && onUnauthorized) {
+    onUnauthorized();
+  }
 
   if (!response.ok) {
     const error = await response
