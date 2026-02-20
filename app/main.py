@@ -12,6 +12,7 @@ from app.middleware.audit import AuditLogMiddleware
 from app.middleware.caching import CacheControlMiddleware
 from app.middleware.prometheus import PrometheusMiddleware
 from app.middleware.auth import AuthMiddleware
+from app.middleware.rate_limit import RateLimitMiddleware
 from app.core.worker import monitor_teams, hard_delete_expired_teams
 from app.core.locking import try_acquire_lock, release_lock
 from app.__version__ import __version__
@@ -188,6 +189,10 @@ allowed_origins = default_origins + [route.strip() for route in lagoon_routes if
 
 # Add HTTPS redirect middleware first
 app.add_middleware(HTTPSRedirectMiddleware)
+
+# Add rate limiting middleware for public endpoints
+if settings.RATE_LIMIT_ENABLED:
+    app.add_middleware(RateLimitMiddleware)
 
 # Add Auth middleware (must be before Prometheus and Audit middleware)
 app.add_middleware(AuthMiddleware)
