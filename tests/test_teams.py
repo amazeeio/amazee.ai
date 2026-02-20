@@ -11,7 +11,7 @@ from tests.conftest import soft_delete_team_for_test
 
 client = TestClient(app)
 
-def test_register_team(client):
+def test_register_team(client, admin_token):
     """Test registering a new team"""
     response = client.post(
         "/teams/",
@@ -20,7 +20,8 @@ def test_register_team(client):
             "admin_email": "team@example.com",
             "phone": "1234567890",
             "billing_address": "123 Test St, Test City, 12345"
-        }
+        },
+        headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert response.status_code == 201
     team_data = response.json()
@@ -33,7 +34,21 @@ def test_register_team(client):
     assert "created_at" in team_data
     assert "updated_at" in team_data
 
-def test_register_team_duplicate_admin_email(client, db):
+
+def test_register_team_unauthenticated(client):
+    """Test that unauthenticated requests are rejected"""
+    response = client.post(
+        "/teams/",
+        json={
+            "name": "Test Team",
+            "admin_email": "team@example.com",
+            "phone": "1234567890",
+            "billing_address": "123 Test St, Test City, 12345"
+        }
+    )
+    assert response.status_code == 401
+
+def test_register_team_duplicate_admin_email(client, db, admin_token):
     """Test registering a team with an email that already exists"""
     # First, create a team
     team = DBTeam(
@@ -56,12 +71,13 @@ def test_register_team_duplicate_admin_email(client, db):
             "admin_email": "existing@example.com",
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321"
-        }
+        },
+        headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert response.status_code == 400
     assert response.json()["detail"] == "Email already registered"
 
-def test_register_team_duplicate_admin_email_case_insensitive(client, db):
+def test_register_team_duplicate_admin_email_case_insensitive(client, db, admin_token):
     """
     Given a team with admin_email "existing@example.com" exists
     When registering a new team with admin_email "EXISTING@EXAMPLE.COM"
@@ -88,12 +104,13 @@ def test_register_team_duplicate_admin_email_case_insensitive(client, db):
             "admin_email": "EXISTING@EXAMPLE.COM",
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321"
-        }
+        },
+        headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert response.status_code == 400
     assert response.json()["detail"] == "Email already registered"
 
-def test_register_team_duplicate_admin_email_case_insensitive_reverse(client, db):
+def test_register_team_duplicate_admin_email_case_insensitive_reverse(client, db, admin_token):
     """
     Given a team with admin_email "EXISTING@EXAMPLE.COM" exists
     When registering a new team with admin_email "existing@example.com"
@@ -120,12 +137,13 @@ def test_register_team_duplicate_admin_email_case_insensitive_reverse(client, db
             "admin_email": "existing@example.com",
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321"
-        }
+        },
+        headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert response.status_code == 400
     assert response.json()["detail"] == "Email already registered"
 
-def test_register_team_duplicate_name(client, db):
+def test_register_team_duplicate_name(client, db, admin_token):
     """
     Given a team with name "Existing Team" exists
     When registering a new team with name "Existing Team"
@@ -152,12 +170,13 @@ def test_register_team_duplicate_name(client, db):
             "admin_email": "newteam@example.com",
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321"
-        }
+        },
+        headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert response.status_code == 400
     assert response.json()["detail"] == "Team name already exists"
 
-def test_register_team_duplicate_name_case_insensitive(client, db):
+def test_register_team_duplicate_name_case_insensitive(client, db, admin_token):
     """
     Given a team with name "Existing Team" exists
     When registering a new team with name "existing team"
@@ -184,7 +203,8 @@ def test_register_team_duplicate_name_case_insensitive(client, db):
             "admin_email": "newteam@example.com",
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321"
-        }
+        },
+        headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert response.status_code == 400
     assert response.json()["detail"] == "Team name already exists"
@@ -1429,7 +1449,7 @@ def test_merge_teams_with_both_teams_dedicated_regions_fails(client, admin_token
     assert target_team_region_exists is not None
 
 
-def test_register_team_creates_default_limits(client, db):
+def test_register_team_creates_default_limits(client, db, admin_token):
     """
     Given: A new team is being created
     When: The team registration endpoint is called
@@ -1452,7 +1472,8 @@ def test_register_team_creates_default_limits(client, db):
             "admin_email": "newteam@example.com",
             "phone": "1234567890",
             "billing_address": "123 New St, New City, 12345"
-        }
+        },
+        headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 201
@@ -1503,7 +1524,7 @@ def test_register_team_creates_default_limits(client, db):
     assert rpm_limit.max_value == 500.0  # DEFAULT_RPM_PER_KEY
 
 
-def test_register_team_does_not_create_limits_when_disabled(client, db):
+def test_register_team_does_not_create_limits_when_disabled(client, db, admin_token):
     """
     Given: ENABLE_LIMITS is set to false
     When: A new team is created
@@ -1523,7 +1544,8 @@ def test_register_team_does_not_create_limits_when_disabled(client, db):
             "admin_email": "newteamnolimits@example.com",
             "phone": "1234567890",
             "billing_address": "123 New St, New City, 12345"
-        }
+        },
+        headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 201

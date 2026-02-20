@@ -47,6 +47,7 @@ export function Combobox({
         <Button
           variant="outline"
           role="combobox"
+          aria-controls="combobox-content"
           aria-expanded={open}
           className={cn("w-full justify-between", className)}
           disabled={disabled}
@@ -58,6 +59,7 @@ export function Combobox({
         </Button>
       </PopoverTrigger>
       <PopoverContent
+        id="combobox-content"
         className="w-[var(--radix-popover-trigger-width)] p-0"
         align="start"
       >

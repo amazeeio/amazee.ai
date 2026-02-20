@@ -1,3 +1,5 @@
+"use client";
+
 // src/components/multi-select.tsx
 import { cva, type VariantProps } from "class-variance-authority";
 import {

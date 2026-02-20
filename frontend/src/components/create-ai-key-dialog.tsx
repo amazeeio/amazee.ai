@@ -260,6 +260,7 @@ export function CreateAIKeyDialog({
                     <Button
                       variant="outline"
                       role="combobox"
+                      aria-controls="user-search-popover"
                       aria-expanded={userSearchOpen}
                       className="w-full justify-between"
                     >
@@ -267,7 +268,7 @@ export function CreateAIKeyDialog({
                       <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                     </Button>
                   </PopoverTrigger>
-                  <PopoverContent className="w-full p-0" align="start">
+                  <PopoverContent id="user-search-popover" className="w-full p-0" align="start">
                     <Command>
                       <CommandInput
                         placeholder="Search users..."
