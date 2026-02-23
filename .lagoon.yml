@@ -27,7 +27,7 @@ tasks:
           curl -f -sS -X POST "https://api.fastly.com/service/$SERVICE_ID/purge/${LAGOON_ROUTE#*://}" \
             -H "Fastly-Soft-Purge: 1" \
             -H "Fastly-Key: $FASTLY_TOKEN" \
-            -H "Accept: application/json" || { echo "Fastly purge failed! Check FASTLY_TOKEN."; }
+            -H "Accept: application/json" || { echo "Fastly purge failed! Check FASTLY_TOKEN."; exit 1; }
         service: backend
         shell: bash
         when: LAGOON_ENVIRONMENT == "prod"
