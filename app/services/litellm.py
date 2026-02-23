@@ -136,7 +136,7 @@ class LiteLLMService:
                 )
                 response.raise_for_status()
                 response_data = response.json()
-                logger.info(f"LiteLLM key information: {response_data}")
+                logger.info("Successfully retrieved LiteLLM key information")
                 return response_data
         except httpx.HTTPStatusError as e:
             error_msg = str(e)
