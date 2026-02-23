@@ -24,9 +24,9 @@ tasks:
           SERVICE_ID="${LAGOON_FASTLY_SERVICE_ID%%:*}"
 
           # Purge all cache for the service using Fastly API
-          curl -X POST "https://api.fastly.com/service/$SERVICE_ID/purge_all" \
+          curl -f -sS -X POST "https://api.fastly.com/service/$SERVICE_ID/purge_all" \
             -H "Fastly-Key: $FASTLY_TOKEN" \
-            -H "Accept: application/json"
+            -H "Accept: application/json" || { echo "Fastly purge failed! Check FASTLY_TOKEN."; exit 1; }
         service: backend
         shell: bash
         when: LAGOON_ENVIRONMENT == "prod"
