@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
-import { get } from "@/utils/api";
+import { get, setOnUnauthorized } from "@/utils/api";
 import { getConfig } from "@/utils/config";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -19,6 +20,15 @@ export function Providers({ children }: { children: React.ReactNode }) {
       }),
   );
   const { setUser } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    setOnUnauthorized(() => {
+      setUser(null);
+      const currentPath = window.location.pathname;
+      router.push(`/auth/login?from=${encodeURIComponent(currentPath)}`);
+    });
+  }, [setUser, router]);
 
   useEffect(() => {
     // Load configuration when the app starts
