@@ -10,20 +10,29 @@ import { User } from "@/types/user";
 import { get, del, put, post } from "@/utils/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { UserFilter } from "./_components/user-filter";
+import { Input } from "@/components/ui/input";
 
 export default function PrivateAIKeysPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
+  const [dbSearch, setDbSearch] = useState("");
 
-  // Fetch private AI keys based on selected user filter
+  // Fetch private AI keys based on selected user filter and search
   const { data: privateAIKeys = [], isLoading: isLoadingPrivateAIKeys } =
     useQuery<PrivateAIKey[]>({
-      queryKey: ["private-ai-keys", selectedUser?.id],
+      queryKey: ["private-ai-keys", selectedUser?.id, dbSearch],
       queryFn: async () => {
-        const url = selectedUser?.id
-          ? `/private-ai-keys?owner_id=${selectedUser.id}`
+        const params = new URLSearchParams();
+        if (selectedUser?.id) {
+          params.set("owner_id", String(selectedUser.id));
+        }
+        if (dbSearch) {
+          params.set("search", dbSearch);
+        }
+        const url = params.toString()
+          ? `/private-ai-keys?${params.toString()}`
           : "/private-ai-keys";
         const response = await get(url);
         return response.json();
@@ -142,7 +151,18 @@ export default function PrivateAIKeysPage() {
         />
       </div>
 
-      <UserFilter selectedUser={selectedUser} onUserSelect={setSelectedUser} />
+      <div className="flex items-center gap-4">
+        <UserFilter
+          selectedUser={selectedUser}
+          onUserSelect={setSelectedUser}
+        />
+        <Input
+          placeholder="Search DB name or username..."
+          value={dbSearch}
+          onChange={(e) => setDbSearch(e.target.value)}
+          className="w-[250px]"
+        />
+      </div>
 
       <PrivateAIKeysTable
         keys={privateAIKeys}

@@ -1,4 +1,4 @@
-import { Loader2, Search } from "lucide-react";
+import { Loader2, Search, X } from "lucide-react";
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -56,19 +56,24 @@ export function UserFilter({ selectedUser, onUserSelect }: UserFilterProps) {
     }
   }, [searchError, toast]);
 
+  const handleClear = () => {
+    onUserSelect(null);
+    setSearchTerm("");
+  };
+
   return (
     <div className="flex items-center gap-2">
       <Popover open={isUserSearchOpen} onOpenChange={setIsUserSearchOpen}>
         <PopoverTrigger asChild>
-          <Button variant="outline" className="w-[250px] justify-between">
+          <Button variant="outline" className="w-[280px] justify-between">
             {selectedUser ? selectedUser.email : "Filter by owner..."}
             <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
           </Button>
         </PopoverTrigger>
-        <PopoverContent className="w-[250px] p-0">
+        <PopoverContent className="w-[280px] p-0">
           <Command>
             <CommandInput
-              placeholder="Search users..."
+              placeholder="Search by email..."
               value={searchTerm}
               onValueChange={setSearchTerm}
             />
@@ -105,14 +110,9 @@ export function UserFilter({ selectedUser, onUserSelect }: UserFilterProps) {
         </PopoverContent>
       </Popover>
       {selectedUser && (
-        <Button
-          variant="ghost"
-          onClick={() => {
-            onUserSelect(null);
-            setSearchTerm("");
-          }}
-        >
-          Clear filter
+        <Button variant="ghost" size="sm" onClick={handleClear}>
+          <X className="h-4 w-4 mr-1" />
+          Clear
         </Button>
       )}
     </div>

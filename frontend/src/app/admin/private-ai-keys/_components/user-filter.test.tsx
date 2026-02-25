@@ -74,10 +74,7 @@ describe("UserFilter", () => {
     const selectedUser: User = mockUsers[0];
 
     renderWithQuery(
-      <UserFilter
-        selectedUser={selectedUser}
-        onUserSelect={mockOnUserSelect}
-      />,
+      <UserFilter selectedUser={selectedUser} onUserSelect={mockOnUserSelect} />,
     );
 
     expect(screen.getByText("test@example.com")).toBeInTheDocument();
@@ -93,35 +90,29 @@ describe("UserFilter", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByPlaceholderText("Search users..."),
+        screen.getByPlaceholderText("Search by email..."),
       ).toBeInTheDocument();
     });
   });
 
-  it("shows clear filter button when user is selected", () => {
+  it("shows clear button when user is selected", () => {
     const selectedUser: User = mockUsers[0];
 
     renderWithQuery(
-      <UserFilter
-        selectedUser={selectedUser}
-        onUserSelect={mockOnUserSelect}
-      />,
+      <UserFilter selectedUser={selectedUser} onUserSelect={mockOnUserSelect} />,
     );
 
-    expect(screen.getByText("Clear filter")).toBeInTheDocument();
+    expect(screen.getByText("Clear")).toBeInTheDocument();
   });
 
-  it("calls onUserSelect with null when clear filter is clicked", () => {
+  it("calls onUserSelect with null when clear is clicked", () => {
     const selectedUser: User = mockUsers[0];
 
     renderWithQuery(
-      <UserFilter
-        selectedUser={selectedUser}
-        onUserSelect={mockOnUserSelect}
-      />,
+      <UserFilter selectedUser={selectedUser} onUserSelect={mockOnUserSelect} />,
     );
 
-    const clearButton = screen.getByText("Clear filter");
+    const clearButton = screen.getByText("Clear");
     fireEvent.click(clearButton);
 
     expect(mockOnUserSelect).toHaveBeenCalledWith(null);
