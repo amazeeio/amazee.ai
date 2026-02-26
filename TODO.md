@@ -15,7 +15,7 @@
 
 ### Tests
 
-- [ ] Add test cases for the new endpoint in `tests/`
+- [x] Add test cases for the new endpoint in `tests/`
   - Seed users `name+personal@gmail.com` (team A) and `name+company@gmail.com` (team B)
   - Assert that `GET /users/by-email?email=name@gmail.com` returns both users for a system admin
   - Assert that the endpoint returns 403 for non-system-admin callers (team admin, regular user)
