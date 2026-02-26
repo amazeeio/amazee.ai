@@ -4,7 +4,7 @@
 
 ### New Endpoint
 
-- [ ] Add `GET /users/by-email?email={email}` to `app/api/users.py`
+- [x] Add `GET /users/by-email?email={email}` to `app/api/users.py`
   - Protect with `Depends(get_role_min_system_admin)` dependency
   - Accept `email: str` as a query parameter
   - Match across all team variants of the email: strip the `+suffix` portion using `func.regexp_replace(func.lower(DBUser.email), r'\+[^@]*@', '@')` and compare against the normalised incoming email
