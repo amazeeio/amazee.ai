@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from typing import List, Optional
+import re
 
 from app.core.config import settings
 from app.core.limit_service import LimitService
@@ -64,6 +65,37 @@ async def search_users(
         (DBUser.team_id.is_(None)) | (DBTeam.deleted_at.is_(None))
     ).limit(10).all()
     return users
+
+@router.get("/by-email", response_model=List[User], dependencies=[Depends(get_role_min_system_admin)])
+async def get_users_by_email(
+    email: str,
+    db: Session = Depends(get_db),
+):
+    """
+    Look up users whose base email (with any +suffix stripped) matches the supplied email.
+    Accessible by system admins only.
+    Returns an empty list when no matches are found.
+    Inactive users and users belonging to soft-deleted teams are excluded.
+    """
+    normalized_email = re.sub(r"\+[^@]*@", "@", email.lower())
+
+    rows = (
+        db.query(DBUser, DBTeam.name.label("team_name"))
+        .outerjoin(DBTeam, DBUser.team_id == DBTeam.id)
+        .filter(
+            func.regexp_replace(func.lower(DBUser.email), r"\+[^@]*@", "@") == normalized_email,
+            DBUser.is_active.is_(True),
+            (DBUser.team_id.is_(None)) | (DBTeam.deleted_at.is_(None)),
+        )
+        .all()
+    )
+
+    result = []
+    for user, team_name in rows:
+        user.team_name = team_name
+        result.append(user)
+    return result
+
 
 @router.get("", response_model=List[User], dependencies=[Depends(get_role_min_team_admin)])
 @router.get("/", response_model=List[User], dependencies=[Depends(get_role_min_team_admin)])
