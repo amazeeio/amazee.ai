@@ -4,7 +4,6 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from typing import List, Optional
-import re
 
 from app.core.config import settings
 from app.core.limit_service import LimitService
@@ -77,7 +76,12 @@ async def get_users_by_email(
     Returns an empty list when no matches are found.
     Inactive users and users belonging to soft-deleted teams are excluded.
     """
-    normalized_email = re.sub(r"\+[^@]*@", "@", email.lower())
+    parts = email.lower().rsplit("@", 1)
+    if len(parts) == 2:
+        local_part = parts[0].split("+")[0]
+        normalized_email = f"{local_part}@{parts[1]}"
+    else:
+        normalized_email = email.lower()
 
     rows = (
         db.query(DBUser, DBTeam.name.label("team_name"))
