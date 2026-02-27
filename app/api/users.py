@@ -49,7 +49,7 @@ def _create_default_limits_for_user(user: DBUser, db: Session) -> None:
 
 @router.get("/search", response_model=List[User], dependencies=[Depends(get_role_min_system_admin)])
 async def search_users(
-    email: str,
+    email: str = Query(..., min_length=1, description="Partial email string to match against (case-insensitive substring match)", example="alice@example"),
     db: Session = Depends(get_db)
 ):
     """
