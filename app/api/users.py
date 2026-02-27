@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from sqlalchemy import func
@@ -68,7 +68,7 @@ async def search_users(
 
 @router.get("/by-email", response_model=List[User], dependencies=[Depends(get_role_min_system_admin)])
 async def get_users_by_email(
-    email: str,
+    email: str = Query(..., description="Exact base email to look up; any +suffix is stripped before matching", example="alice@example.com", pattern=r"^[^@]+@[^@]+\.[^@]+$"),
     db: Session = Depends(get_db),
 ):
     """
