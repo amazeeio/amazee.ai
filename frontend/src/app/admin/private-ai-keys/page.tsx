@@ -6,35 +6,20 @@ import { PrivateAIKeysTable } from "@/components/private-ai-keys-table";
 import { usePrivateAIKeysData } from "@/hooks/use-private-ai-keys-data";
 import { useToast } from "@/hooks/use-toast";
 import { PrivateAIKey } from "@/types/private-ai-key";
-import { User } from "@/types/user";
 import { get, del, put, post } from "@/utils/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { UserFilter } from "./_components/user-filter";
-import { Input } from "@/components/ui/input";
 
 export default function PrivateAIKeysPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
-  const [selectedUser, setSelectedUser] = useState<User | null>(null);
-  const [dbSearch, setDbSearch] = useState("");
 
-  // Fetch private AI keys based on selected user filter and search
+  // Fetch all private AI keys
   const { data: privateAIKeys = [], isLoading: isLoadingPrivateAIKeys } =
     useQuery<PrivateAIKey[]>({
-      queryKey: ["private-ai-keys", selectedUser?.id, dbSearch],
+      queryKey: ["private-ai-keys"],
       queryFn: async () => {
-        const params = new URLSearchParams();
-        if (selectedUser?.id) {
-          params.set("owner_id", String(selectedUser.id));
-        }
-        if (dbSearch) {
-          params.set("search", dbSearch);
-        }
-        const url = params.toString()
-          ? `/private-ai-keys?${params.toString()}`
-          : "/private-ai-keys";
-        const response = await get(url);
+        const response = await get("/private-ai-keys");
         return response.json();
       },
     });
@@ -148,19 +133,6 @@ export default function PrivateAIKeysPage() {
           triggerText="Create Key"
           title="Create New Private AI Key"
           description="Create a new private AI key for any user or team."
-        />
-      </div>
-
-      <div className="flex items-center gap-4">
-        <UserFilter
-          selectedUser={selectedUser}
-          onUserSelect={setSelectedUser}
-        />
-        <Input
-          placeholder="Search DB name or username..."
-          value={dbSearch}
-          onChange={(e) => setDbSearch(e.target.value)}
-          className="w-[250px]"
         />
       </div>
 
