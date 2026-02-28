@@ -57,6 +57,7 @@ export function PrivateAIKeysTable({
   const [nameFilter, setNameFilter] = useState("");
   const [regionFilter, setRegionFilter] = useState("");
   const [databaseNameFilter, setDatabaseNameFilter] = useState("");
+  const [ownerFilter, setOwnerFilter] = useState("");
 
   const togglePasswordVisibility = (keyId: number | string) => {
     setShowPassword((prev) => ({
@@ -78,6 +79,7 @@ export function PrivateAIKeysTable({
     setNameFilter("");
     setRegionFilter("");
     setDatabaseNameFilter("");
+    setOwnerFilter("");
     setKeyTypeFilter("all");
   };
 
@@ -98,13 +100,33 @@ export function PrivateAIKeysTable({
       );
     }
 
-    // Apply database name filter
+    // Apply database name or username filter
     if (databaseNameFilter.trim()) {
       filteredKeys = filteredKeys.filter((key) =>
         key.database_name
           ?.toLowerCase()
-          .includes(databaseNameFilter.toLowerCase()),
+          .includes(databaseNameFilter.toLowerCase()) ||
+        key.database_username
+          ?.toLowerCase()
+          .includes(databaseNameFilter.toLowerCase())
       );
+    }
+
+    // Apply owner filter
+    if (ownerFilter.trim()) {
+      filteredKeys = filteredKeys.filter((key) => {
+        if (key.owner_id) {
+          const owner = teamMembers.find(
+            (member) => member.id.toString() === key.owner_id?.toString(),
+          );
+          const ownerEmail = owner?.email || `User ${key.owner_id}`;
+          return ownerEmail.toLowerCase().includes(ownerFilter.toLowerCase());
+        } else if (key.team_id) {
+          const teamName = teamDetails[key.team_id]?.name || "Team (Shared)";
+          return teamName.toLowerCase().includes(ownerFilter.toLowerCase());
+        }
+        return false;
+      });
     }
 
     // Apply key type filter
@@ -167,6 +189,7 @@ export function PrivateAIKeysTable({
     nameFilter.trim() ||
     regionFilter.trim() ||
     databaseNameFilter.trim() ||
+    ownerFilter.trim() ||
     keyTypeFilter !== "all",
   );
 
@@ -190,11 +213,19 @@ export function PrivateAIKeysTable({
     },
     {
       key: "databaseName",
-      label: "Filter by Database Name",
+      label: "Filter by DB Name or Username",
       type: "search",
-      placeholder: "Filter by database name...",
+      placeholder: "Filter by DB name or username...",
       value: databaseNameFilter,
       onChange: setDatabaseNameFilter,
+    },
+    {
+      key: "owner",
+      label: "Filter by Owner",
+      type: "search",
+      placeholder: "Filter by domain or email...",
+      value: ownerFilter,
+      onChange: setOwnerFilter,
     },
     {
       key: "type",
