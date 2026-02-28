@@ -6,26 +6,20 @@ import { PrivateAIKeysTable } from "@/components/private-ai-keys-table";
 import { usePrivateAIKeysData } from "@/hooks/use-private-ai-keys-data";
 import { useToast } from "@/hooks/use-toast";
 import { PrivateAIKey } from "@/types/private-ai-key";
-import { User } from "@/types/user";
 import { get, del, put, post } from "@/utils/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { UserFilter } from "./_components/user-filter";
 
 export default function PrivateAIKeysPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
-  const [selectedUser, setSelectedUser] = useState<User | null>(null);
 
-  // Fetch private AI keys based on selected user filter
+  // Fetch all private AI keys
   const { data: privateAIKeys = [], isLoading: isLoadingPrivateAIKeys } =
     useQuery<PrivateAIKey[]>({
-      queryKey: ["private-ai-keys", selectedUser?.id],
+      queryKey: ["private-ai-keys"],
       queryFn: async () => {
-        const url = selectedUser?.id
-          ? `/private-ai-keys?owner_id=${selectedUser.id}`
-          : "/private-ai-keys";
-        const response = await get(url);
+        const response = await get("/private-ai-keys");
         return response.json();
       },
     });
@@ -141,8 +135,6 @@ export default function PrivateAIKeysPage() {
           description="Create a new private AI key for any user or team."
         />
       </div>
-
-      <UserFilter selectedUser={selectedUser} onUserSelect={setSelectedUser} />
 
       <PrivateAIKeysTable
         keys={privateAIKeys}

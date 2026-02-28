@@ -101,31 +101,43 @@ async def get_users_by_email(
 @router.get("/", response_model=List[User], dependencies=[Depends(get_role_min_team_admin)])
 async def list_users(
     current_user: DBUser = Depends(get_current_user_from_auth),
+    search: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """
     List users. Accessible by admin users or team admins for their team members.
     Users from soft-deleted teams and inactive users are excluded from the results.
+    Optionally filter by search term (partial email match).
     """
     if current_user.is_admin:
         # Use LEFT JOIN to get all users and their team information in a single query
         # Exclude users from soft-deleted teams and inactive users
-        users = db.query(DBUser, DBTeam.name.label('team_name')).outerjoin(
+        query = db.query(DBUser, DBTeam.name.label('team_name')).outerjoin(
             DBTeam, DBUser.team_id == DBTeam.id
         ).filter(
             DBUser.is_active.is_(True),
             (DBUser.team_id.is_(None)) | (DBTeam.deleted_at.is_(None))
-        ).all()
+        )
+        
+        if search:
+            query = query.filter(DBUser.email.ilike(f"%{search}%"))
+        
+        users = query.all()
     else:
         # Return only users in the team admin's team with team information
         # Exclude if team is soft-deleted or user is inactive
-        users = db.query(DBUser, DBTeam.name.label('team_name')).join(
+        query = db.query(DBUser, DBTeam.name.label('team_name')).join(
             DBTeam, DBUser.team_id == DBTeam.id
         ).filter(
             DBUser.team_id == current_user.team_id,
             DBUser.is_active.is_(True),
             DBTeam.deleted_at.is_(None)
-        ).all()
+        )
+        
+        if search:
+            query = query.filter(DBUser.email.ilike(f"%{search}%"))
+        
+        users = query.all()
 
     # Map the results to DBUser objects with team_name
     result = []
