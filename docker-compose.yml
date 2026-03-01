@@ -17,6 +17,18 @@ services:
     labels:
       lagoon.type: postgres
 
+  redis:
+    image: uselagoon/redis-7
+    labels:
+      lagoon.type: redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   backend:
     build:
       context: .
@@ -25,12 +37,15 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres/postgres_service
       AMAZEEAI_JWT_SECRET: ${AMAZEEAI_JWT_SECRET}
       ENABLE_METRICS: "true"  # Enable Prometheus metrics
+      REDIS_URL: "redis://redis:6379/0"
     ports:
       - "8800:8800"
     volumes:
       - ./app:/app/app
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     labels:
       lagoon.type: python

@@ -5,6 +5,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
+from fastapi_limiter import FastAPILimiter
 from app.api import auth, private_ai_keys, users, regions, audit, teams, billing, products, pricing_tables, limits
 from app.core.config import settings
 from app.db.database import get_db
@@ -21,6 +22,7 @@ from apscheduler.triggers.cron import CronTrigger
 import os
 import logging
 from datetime import UTC
+from redis.asyncio import Redis as AsyncRedis
 
 # Set timezone environment variable to prevent tzlocal warning
 if not os.environ.get('TZ'):
@@ -42,6 +44,11 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Initialize rate limiter
+    await FastAPILimiter.init(
+        redis=AsyncRedis.from_url(settings.REDIS_URL, decode_responses=True)
+    )
+
     # Create scheduler
     scheduler = AsyncIOScheduler()
 
@@ -134,6 +141,9 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # Shutdown the rate limiter
+    await FastAPILimiter.close()
+
     # Shutdown the scheduler
     scheduler.shutdown()
 
@@ -180,6 +190,7 @@ app = FastAPI(
     ],
     lifespan=lifespan
 )
+
 
 # Get allowed origins from environment
 default_origins = ["http://localhost:8080", "http://localhost:3000", "http://localhost:3001", "http://localhost:8800"]

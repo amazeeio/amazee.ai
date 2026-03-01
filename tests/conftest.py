@@ -13,6 +13,60 @@ from app.core.security import get_password_hash
 from datetime import datetime, UTC, timedelta
 from unittest.mock import patch, MagicMock, Mock, AsyncMock
 
+# Track rate limit counts per key for testing
+_rate_limit_counts = {}
+
+# Mock FastAPILimiter and RateLimiter to bypass Redis rate limiting in tests
+@pytest.fixture(autouse=True)
+def mock_rate_limiting(request):
+    """Fixture to mock rate limiting for all tests - tracks calls but doesn't block"""
+    # Check if this is a rate limit test - if so, don't mock the blocking behavior
+    # Match both 'rate_limit' and 'ratelimit' patterns
+    nodeid = request.node.nodeid.lower()
+    is_rate_limit_test = 'rate_limit' in nodeid or 'ratelimit' in nodeid
+
+    _rate_limit_counts.clear()
+
+    # Create a mock Redis that supports async operations and tracks calls
+    async def mock_evalsha(sha, numkeys, key, times, milliseconds):
+        # Track how many times each key has been called
+        if key not in _rate_limit_counts:
+            _rate_limit_counts[key] = 0
+        _rate_limit_counts[key] += 1
+
+        # For rate limit tests, actually enforce the limit after 5 requests
+        if is_rate_limit_test and _rate_limit_counts[key] > 5:
+            # Return a value that indicates rate limiting (simulating Redis response)
+            return 1000  # Return positive value indicating wait time in ms
+
+        # Return 0 to indicate not rate limited (allow request)
+        return 0
+
+    mock_redis = AsyncMock()
+    mock_redis.evalsha = mock_evalsha
+
+    # Patch FastAPILimiter in main module (for lifespan)
+    with patch('app.main.FastAPILimiter') as mock_main_fl:
+        mock_main_fl.redis = mock_redis
+        mock_main_fl.init = AsyncMock()
+        mock_main_fl.close = AsyncMock()
+        mock_main_fl.lua_sha = "mock_sha"
+        mock_main_fl.prefix = "test"
+        mock_main_fl.identifier = AsyncMock(return_value="test-key")
+        mock_main_fl.http_callback = AsyncMock()
+
+        # Patch FastAPILimiter in depends module (for RateLimiter class)
+        with patch('fastapi_limiter.depends.FastAPILimiter') as mock_depends_fl:
+            mock_depends_fl.redis = mock_redis
+            mock_depends_fl.init = AsyncMock()
+            mock_depends_fl.close = AsyncMock()
+            mock_depends_fl.lua_sha = "mock_sha"
+            mock_depends_fl.prefix = "test"
+            mock_depends_fl.identifier = AsyncMock(return_value="test-key")
+            mock_depends_fl.http_callback = AsyncMock()
+
+            yield _rate_limit_counts
+
 # Get database URL from environment
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
@@ -340,6 +394,13 @@ def mock_httpx_combined_client():
     mock_client.__aexit__.return_value = None
 
     return mock_client
+
+
+@pytest.fixture
+def mock_client_class():
+    """Mock httpx.AsyncClient class for patching"""
+    with patch('httpx.AsyncClient') as mock_class:
+        yield mock_class
 
 
 # Helper function for soft-deleting teams in tests
