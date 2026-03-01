@@ -57,7 +57,7 @@ jobs:
         cache-to: type=gha,mode=max
 
     - name: Attest container image
-      uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+      uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
       with:
         subject-digest: ${{steps.docker-build-push.outputs.digest}}
         subject-name: ghcr.io/${{github.repository}}-backend
@@ -109,7 +109,7 @@ jobs:
         cache-to: type=gha,mode=max
 
     - name: Attest container image
-      uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+      uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
       with:
         subject-digest: ${{steps.docker-build-push.outputs.digest}}
         subject-name: ghcr.io/${{github.repository}}-frontend
