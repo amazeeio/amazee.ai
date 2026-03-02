@@ -306,9 +306,17 @@ def custom_openapi():
     # Remove all auth-related parameters and clean up paths
     for path_name, path_item in openapi_schema.get("paths", {}).items():
         for operation in path_item.values():
-            # Remove all parameters
+            # Remove auth-related parameters injected by dependencies
             if "parameters" in operation:
-                del operation["parameters"]
+                operation["parameters"] = [
+                    p for p in operation["parameters"]
+                    if not (
+                        (p.get("in") == "cookie" and p.get("name") == "access_token") or
+                        (p.get("in") == "header" and p.get("name", "").lower() == "authorization")
+                    )
+                ]
+                if not operation["parameters"]:
+                    del operation["parameters"]
 
             # Remove security from non-protected endpoints
             if path_name in ["/auth/login", "/auth/register", "/health", "/auth/generate-trial-access"]:

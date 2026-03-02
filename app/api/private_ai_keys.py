@@ -443,6 +443,7 @@ async def create_llm_token(
 async def list_private_ai_keys(
     owner_id: Optional[int] = None,
     team_id: Optional[int] = None,
+    search: Optional[str] = None,
     current_user = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
@@ -465,6 +466,14 @@ async def list_private_ai_keys(
     query = query.filter(
         (DBPrivateAIKey.team_id.is_(None)) | (DBTeam.deleted_at.is_(None))
     )
+
+    # Search by database name or database username
+    if search:
+        search_pattern = f"%{search}%"
+        query = query.filter(
+            (DBPrivateAIKey.database_name.ilike(search_pattern)) |
+            (DBPrivateAIKey.database_username.ilike(search_pattern))
+        )
 
     if current_user.is_admin:
         if owner_id is not None:

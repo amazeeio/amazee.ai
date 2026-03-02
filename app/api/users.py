@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from sqlalchemy import func
@@ -48,7 +48,7 @@ def _create_default_limits_for_user(user: DBUser, db: Session) -> None:
 
 @router.get("/search", response_model=List[User], dependencies=[Depends(get_role_min_system_admin)])
 async def search_users(
-    email: str,
+    email: str = Query(..., min_length=1, description="Partial email string to match against (case-insensitive substring match)", example="alice@example"),
     db: Session = Depends(get_db)
 ):
     """
@@ -65,35 +65,83 @@ async def search_users(
     ).limit(10).all()
     return users
 
+@router.get("/by-email", response_model=List[User], dependencies=[Depends(get_role_min_system_admin)])
+async def get_users_by_email(
+    email: str = Query(..., description="Exact base email to look up; any +suffix is stripped before matching", example="alice@example.com", pattern=r"^[^@]+@[^@]+\.[^@]+$"),
+    db: Session = Depends(get_db),
+):
+    """
+    Look up users whose base email (with any +suffix stripped) matches the supplied email.
+    Accessible by system admins only.
+    Returns an empty list when no matches are found.
+    Inactive users and users belonging to soft-deleted teams are excluded.
+    """
+    parts = email.lower().rsplit("@", 1)
+    if len(parts) == 2:
+        local_part = parts[0].split("+")[0]
+        normalized_email = f"{local_part}@{parts[1]}"
+    else:
+        normalized_email = email.lower()
+
+    rows = (
+        db.query(DBUser, DBTeam.name.label("team_name"))
+        .outerjoin(DBTeam, DBUser.team_id == DBTeam.id)
+        .filter(
+            func.regexp_replace(func.lower(DBUser.email), r"\+[^@]*@", "@") == normalized_email,
+            DBUser.is_active.is_(True),
+            (DBUser.team_id.is_(None)) | (DBTeam.deleted_at.is_(None)),
+        )
+        .all()
+    )
+
+    result = []
+    for user, team_name in rows:
+        user.team_name = team_name
+        result.append(user)
+    return result
+
+
 @router.get("", response_model=List[User], dependencies=[Depends(get_role_min_team_admin)])
 @router.get("/", response_model=List[User], dependencies=[Depends(get_role_min_team_admin)])
 async def list_users(
     current_user: DBUser = Depends(get_current_user_from_auth),
+    search: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """
     List users. Accessible by admin users or team admins for their team members.
     Users from soft-deleted teams and inactive users are excluded from the results.
+    Optionally filter by search term (partial email match).
     """
     if current_user.is_admin:
         # Use LEFT JOIN to get all users and their team information in a single query
         # Exclude users from soft-deleted teams and inactive users
-        users = db.query(DBUser, DBTeam.name.label('team_name')).outerjoin(
+        query = db.query(DBUser, DBTeam.name.label('team_name')).outerjoin(
             DBTeam, DBUser.team_id == DBTeam.id
         ).filter(
             DBUser.is_active.is_(True),
             (DBUser.team_id.is_(None)) | (DBTeam.deleted_at.is_(None))
-        ).all()
+        )
+        
+        if search:
+            query = query.filter(DBUser.email.ilike(f"%{search}%"))
+        
+        users = query.all()
     else:
         # Return only users in the team admin's team with team information
         # Exclude if team is soft-deleted or user is inactive
-        users = db.query(DBUser, DBTeam.name.label('team_name')).join(
+        query = db.query(DBUser, DBTeam.name.label('team_name')).join(
             DBTeam, DBUser.team_id == DBTeam.id
         ).filter(
             DBUser.team_id == current_user.team_id,
             DBUser.is_active.is_(True),
             DBTeam.deleted_at.is_(None)
-        ).all()
+        )
+        
+        if search:
+            query = query.filter(DBUser.email.ilike(f"%{search}%"))
+        
+        users = query.all()
 
     # Map the results to DBUser objects with team_name
     result = []
