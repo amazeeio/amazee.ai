@@ -21,18 +21,18 @@
 
 ### Tests: Cover New Filter Behaviour
 
-- [ ] Add `test_list_private_ai_keys_by_region_with_user_filter` — admin supplies `user_id`; assert only keys owned by that user in the region are returned
+- [x] Add `test_list_private_ai_keys_by_region_with_user_filter` — admin supplies `user_id`; assert only keys owned by that user in the region are returned
   - Follow the pattern of `test_list_private_ai_keys_by_region_with_team_filter` (line 1928 in `tests/test_private_ai.py`)
   - Tests: Add to `tests/test_private_ai.py` alongside the existing team-filter tests
 
-- [ ] Add `test_list_private_ai_keys_by_region_user_filter_unknown_user` — admin supplies a `user_id` that does not exist; assert response is `[]`
+- [x] Add `test_list_private_ai_keys_by_region_user_filter_unknown_user` — admin supplies a `user_id` that does not exist; assert response is `[]`
   - Follow the pattern of `test_list_private_ai_keys_by_region_with_team_filter` (line 1928 in `tests/test_private_ai.py`)
   - Tests: Add to `tests/test_private_ai.py` alongside the existing team-filter tests
 
-- [ ] Add `test_list_private_ai_keys_by_region_user_and_team_filter` — admin supplies both `user_id` and `team_id`; assert intersection of both filters is applied
+- [x] Add `test_list_private_ai_keys_by_region_user_and_team_filter` — admin supplies both `user_id` and `team_id`; assert intersection of both filters is applied
   - Follow the pattern of `test_list_private_ai_keys_by_region_with_team_filter` (line 1928 in `tests/test_private_ai.py`)
   - Tests: Add to `tests/test_private_ai.py` alongside the existing team-filter tests
 
-- [ ] Add `test_list_private_ai_keys_by_region_user_filter_ignored_for_non_admin` — non-admin supplies `user_id`; assert the filter is silently ignored and the user sees their normal key set (mirror pattern of `test_list_private_ai_keys_by_region_team_filter_ignored_for_non_admin` at line 2021)
+- [x] Add `test_list_private_ai_keys_by_region_user_filter_ignored_for_non_admin` — non-admin supplies `user_id`; assert the filter is silently ignored and the user sees their normal key set (mirror pattern of `test_list_private_ai_keys_by_region_team_filter_ignored_for_non_admin` at line 2021)
   - Follow the pattern of `test_list_private_ai_keys_by_region_team_filter_ignored_for_non_admin` (line 2021 in `tests/test_private_ai.py`)
   - Tests: Add to `tests/test_private_ai.py` alongside the existing non-admin team-filter test
