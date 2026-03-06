@@ -12,9 +12,9 @@
 
 ### Tests: Cover the New Filter Behaviour
 
-- [ ] Add test `test_list_private_ai_keys_by_region_with_team_filter` in `tests/test_private_ai.py`
+- [x] Add test `test_list_private_ai_keys_by_region_with_team_filter` in `tests/test_private_ai.py`
   - Create two keys in the same region but belonging to different teams, call `GET /private-ai-keys/region/{region_id}?team_id={team_id}` as a system-admin user, and assert only the key belonging to the target team is returned
   - Tests: `test_list_private_ai_keys_by_region_with_team_filter`
-- [ ] Add test verifying `team_id` filter is silently ignored for non-admin users
+- [x] Add test verifying `team_id` filter is silently ignored for non-admin users
   - Call the same endpoint with a `team_id` that doesn't match the current user's team; assert the user still only sees their own/team-scoped keys and receives no error
   - Tests: `test_list_private_ai_keys_by_region_team_filter_ignored_for_non_admin`
