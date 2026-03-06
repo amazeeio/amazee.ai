@@ -2059,3 +2059,44 @@ def test_list_private_ai_keys_by_region_team_filter_ignored_for_non_admin(client
     returned_db_names = {key["database_name"] for key in data}
     assert "region-user-own-db" in returned_db_names
     assert "region-team-filter-db" not in returned_db_names
+
+
+def test_list_private_ai_keys_by_region_soft_deleted_team_returns_empty(client, admin_token, test_region, db):
+    """Test that filtering by a soft-deleted team returns empty results"""
+    # Create a team and soft-delete it
+    deleted_team = DBTeam(
+        name="Deleted Team For Region Filter",
+        admin_email="deletedregionteam@example.com",
+        phone="9998887777",
+        billing_address="000 Deleted St, City, 00000",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        deleted_at=datetime.now(UTC)
+    )
+    db.add(deleted_team)
+    db.commit()
+    db.refresh(deleted_team)
+
+    # Create a key owned by the soft-deleted team
+    key = DBPrivateAIKey(
+        database_name="region-deleted-team-db",
+        database_host="test-host",
+        database_username="deleted-user",
+        database_password="test-pass",
+        litellm_token="region-deleted-team-token",
+        team_id=deleted_team.id,
+        region_id=test_region.id
+    )
+    db.add(key)
+    db.commit()
+
+    # Admin queries by region with soft-deleted team_id filter
+    response = client.get(
+        f"/private-ai-keys/region/{test_region.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        params={"team_id": deleted_team.id}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 0
