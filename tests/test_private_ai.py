@@ -1923,3 +1923,139 @@ def test_create_private_ai_key_http_exception_preservation(mock_create_db, mock_
 
     # Verify cleanup was attempted
     assert mock_httpx_post_client.post.call_count == 2
+
+
+def test_list_private_ai_keys_by_region_with_team_filter(client, admin_token, test_region, test_team, db):
+    """Test that an admin can filter keys by team_id in the region endpoint"""
+    # Create a second team
+    other_team = DBTeam(
+        name="Other Team For Region Filter",
+        admin_email="otherregionteam@example.com",
+        phone="1112223333",
+        billing_address="789 Other St, City, 11111",
+        is_active=True,
+        created_at=datetime.now(UTC)
+    )
+    db.add(other_team)
+    db.commit()
+    db.refresh(other_team)
+
+    # Create a user in test_team
+    team_user = DBUser(
+        email="regionfilter_teamuser@example.com",
+        hashed_password=get_password_hash("password123"),
+        is_active=True,
+        is_admin=False,
+        team_id=test_team.id,
+        created_at=datetime.now(UTC)
+    )
+    db.add(team_user)
+    db.commit()
+    db.refresh(team_user)
+
+    # Create a key owned by a user in test_team
+    team_user_key = DBPrivateAIKey(
+        database_name="region-team-user-db",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="region-team-user-token",
+        owner_id=team_user.id,
+        region_id=test_region.id
+    )
+    db.add(team_user_key)
+
+    # Create a key owned by the team directly
+    team_owned_key = DBPrivateAIKey(
+        database_name="region-team-owned-db",
+        database_host="test-host",
+        database_username="test-user2",
+        database_password="test-pass",
+        litellm_token="region-team-owned-token",
+        team_id=test_team.id,
+        region_id=test_region.id
+    )
+    db.add(team_owned_key)
+
+    # Create a key owned by a user in other_team (should NOT appear in results)
+    other_team_user = DBUser(
+        email="regionfilter_otherteamuser@example.com",
+        hashed_password=get_password_hash("password123"),
+        is_active=True,
+        is_admin=False,
+        team_id=other_team.id,
+        created_at=datetime.now(UTC)
+    )
+    db.add(other_team_user)
+    db.commit()
+    db.refresh(other_team_user)
+
+    other_team_key = DBPrivateAIKey(
+        database_name="region-other-team-db",
+        database_host="test-host",
+        database_username="other-user",
+        database_password="test-pass",
+        litellm_token="region-other-team-token",
+        owner_id=other_team_user.id,
+        region_id=test_region.id
+    )
+    db.add(other_team_key)
+    db.commit()
+
+    # Admin queries by region with team_id filter
+    response = client.get(
+        f"/private-ai-keys/region/{test_region.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        params={"team_id": test_team.id}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+
+    returned_db_names = {key["database_name"] for key in data}
+    assert "region-team-user-db" in returned_db_names
+    assert "region-team-owned-db" in returned_db_names
+    assert "region-other-team-db" not in returned_db_names
+
+
+def test_list_private_ai_keys_by_region_team_filter_ignored_for_non_admin(client, test_token, test_region, test_team, test_user, db):
+    """Test that team_id filter is ignored for non-admin users in the region endpoint"""
+    # Create a key owned by test_user
+    user_key = DBPrivateAIKey(
+        database_name="region-user-own-db",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="region-user-own-token",
+        owner_id=test_user.id,
+        region_id=test_region.id
+    )
+    db.add(user_key)
+
+    # Create a team-owned key (test_user is not in test_team, so should not see this)
+    team_key = DBPrivateAIKey(
+        database_name="region-team-filter-db",
+        database_host="test-host",
+        database_username="team-user",
+        database_password="test-pass",
+        litellm_token="region-team-filter-token",
+        team_id=test_team.id,
+        region_id=test_region.id
+    )
+    db.add(team_key)
+    db.commit()
+
+    # Non-admin queries by region with team_id filter (should be ignored)
+    response = client.get(
+        f"/private-ai-keys/region/{test_region.id}",
+        headers={"Authorization": f"Bearer {test_token}"},
+        params={"team_id": test_team.id}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+
+    # test_user has no team, so only sees their own keys regardless of team_id param
+    returned_db_names = {key["database_name"] for key in data}
+    assert "region-user-own-db" in returned_db_names
+    assert "region-team-filter-db" not in returned_db_names

@@ -524,6 +524,7 @@ async def list_private_ai_keys(
 @router.get("/region/{region_id}", response_model=List[PrivateAIKey])
 async def list_private_ai_keys_by_region(
     region_id: int,
+    team_id: Optional[int] = None,
     current_user = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
@@ -543,7 +544,13 @@ async def list_private_ai_keys_by_region(
     query = query.filter(DBPrivateAIKey.region_id == region_id)
 
     if current_user.is_admin:
-        pass
+        if team_id is not None:
+            team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
+            team_user_ids = [user.id for user in team_users]
+            query = query.filter(
+                (DBPrivateAIKey.owner_id.in_(team_user_ids)) |
+                (DBPrivateAIKey.team_id == team_id)
+            )
     else:
         # Check if user is a team admin
         if current_user.team_id is not None:
