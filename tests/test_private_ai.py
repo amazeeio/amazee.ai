@@ -2100,3 +2100,239 @@ def test_list_private_ai_keys_by_region_soft_deleted_team_returns_empty(client, 
     assert response.status_code == 200
     data = response.json()
     assert len(data) == 0
+
+
+def test_list_private_ai_keys_by_region_with_user_filter(client, admin_token, test_region, db):
+    """Test that an admin can filter keys by user_id in the region endpoint"""
+    # Create two users
+    user_a = DBUser(
+        email="region_user_filter_a@example.com",
+        hashed_password=get_password_hash("password123"),
+        is_active=True,
+        is_admin=False,
+        created_at=datetime.now(UTC)
+    )
+    user_b = DBUser(
+        email="region_user_filter_b@example.com",
+        hashed_password=get_password_hash("password123"),
+        is_active=True,
+        is_admin=False,
+        created_at=datetime.now(UTC)
+    )
+    db.add(user_a)
+    db.add(user_b)
+    db.commit()
+    db.refresh(user_a)
+    db.refresh(user_b)
+
+    # Create a key owned by user_a
+    key_a = DBPrivateAIKey(
+        database_name="region-user-a-db",
+        database_host="test-host",
+        database_username="user-a",
+        database_password="test-pass",
+        litellm_token="region-user-a-token",
+        owner_id=user_a.id,
+        region_id=test_region.id
+    )
+    db.add(key_a)
+
+    # Create a key owned by user_b (should NOT appear in results)
+    key_b = DBPrivateAIKey(
+        database_name="region-user-b-db",
+        database_host="test-host",
+        database_username="user-b",
+        database_password="test-pass",
+        litellm_token="region-user-b-token",
+        owner_id=user_b.id,
+        region_id=test_region.id
+    )
+    db.add(key_b)
+    db.commit()
+
+    # Admin queries by region with user_id filter
+    response = client.get(
+        f"/private-ai-keys/region/{test_region.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        params={"user_id": user_a.id}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+
+    returned_db_names = {key["database_name"] for key in data}
+    assert "region-user-a-db" in returned_db_names
+    assert "region-user-b-db" not in returned_db_names
+
+
+def test_list_private_ai_keys_by_region_user_filter_unknown_user(client, admin_token, test_region, db):
+    """Test that filtering by a non-existent user_id returns an empty list"""
+    # Create a key owned by a real user
+    user = DBUser(
+        email="region_unknown_user_filter@example.com",
+        hashed_password=get_password_hash("password123"),
+        is_active=True,
+        is_admin=False,
+        created_at=datetime.now(UTC)
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    key = DBPrivateAIKey(
+        database_name="region-unknown-user-db",
+        database_host="test-host",
+        database_username="unknown-user",
+        database_password="test-pass",
+        litellm_token="region-unknown-user-token",
+        owner_id=user.id,
+        region_id=test_region.id
+    )
+    db.add(key)
+    db.commit()
+
+    # Admin queries with a non-existent user_id
+    response = client.get(
+        f"/private-ai-keys/region/{test_region.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        params={"user_id": 999999}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data == []
+
+
+def test_list_private_ai_keys_by_region_user_and_team_filter(client, admin_token, test_region, test_team, db):
+    """Test that an admin can combine user_id and team_id filters"""
+    # Create a user in test_team
+    team_user = DBUser(
+        email="region_user_team_filter@example.com",
+        hashed_password=get_password_hash("password123"),
+        is_active=True,
+        is_admin=False,
+        team_id=test_team.id,
+        created_at=datetime.now(UTC)
+    )
+    # Create a user NOT in test_team
+    other_user = DBUser(
+        email="region_user_team_filter_other@example.com",
+        hashed_password=get_password_hash("password123"),
+        is_active=True,
+        is_admin=False,
+        created_at=datetime.now(UTC)
+    )
+    db.add(team_user)
+    db.add(other_user)
+    db.commit()
+    db.refresh(team_user)
+    db.refresh(other_user)
+
+    # Key owned by team_user (in test_team) - should appear
+    key_in_team = DBPrivateAIKey(
+        database_name="region-user-in-team-db",
+        database_host="test-host",
+        database_username="user-in-team",
+        database_password="test-pass",
+        litellm_token="region-user-in-team-token",
+        owner_id=team_user.id,
+        region_id=test_region.id
+    )
+    db.add(key_in_team)
+
+    # Key owned by other_user (not in test_team) - should NOT appear
+    key_other = DBPrivateAIKey(
+        database_name="region-other-user-db",
+        database_host="test-host",
+        database_username="other-user",
+        database_password="test-pass",
+        litellm_token="region-other-user-token",
+        owner_id=other_user.id,
+        region_id=test_region.id
+    )
+    db.add(key_other)
+
+    # Team-owned key (no owner_id) - should NOT appear when user_id filter is active
+    key_team_owned = DBPrivateAIKey(
+        database_name="region-team-owned-db",
+        database_host="test-host",
+        database_username="team-owned",
+        database_password="test-pass",
+        litellm_token="region-team-owned-token",
+        team_id=test_team.id,
+        region_id=test_region.id
+    )
+    db.add(key_team_owned)
+    db.commit()
+
+    # Admin queries with both user_id and team_id (the combination should scope to
+    # keys owned by team_user within test_team)
+    response = client.get(
+        f"/private-ai-keys/region/{test_region.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        params={"user_id": team_user.id, "team_id": test_team.id}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+
+    returned_db_names = {key["database_name"] for key in data}
+    assert "region-user-in-team-db" in returned_db_names
+    assert "region-other-user-db" not in returned_db_names
+    # Team-owned keys are excluded when user_id filter narrows to a specific user
+    assert "region-team-owned-db" not in returned_db_names
+
+
+def test_list_private_ai_keys_by_region_user_filter_ignored_for_non_admin(client, test_token, test_region, test_user, db):
+    """Test that user_id filter is silently ignored for non-admin users"""
+    # Create another user
+    other_user = DBUser(
+        email="region_non_admin_user_filter@example.com",
+        hashed_password=get_password_hash("password123"),
+        is_active=True,
+        is_admin=False,
+        created_at=datetime.now(UTC)
+    )
+    db.add(other_user)
+    db.commit()
+    db.refresh(other_user)
+
+    # Create a key owned by test_user
+    user_key = DBPrivateAIKey(
+        database_name="region-non-admin-user-own-db",
+        database_host="test-host",
+        database_username="own-user",
+        database_password="test-pass",
+        litellm_token="region-non-admin-user-own-token",
+        owner_id=test_user.id,
+        region_id=test_region.id
+    )
+    db.add(user_key)
+
+    # Create a key owned by other_user (non-admin should NOT see this)
+    other_key = DBPrivateAIKey(
+        database_name="region-non-admin-other-db",
+        database_host="test-host",
+        database_username="other-user",
+        database_password="test-pass",
+        litellm_token="region-non-admin-other-token",
+        owner_id=other_user.id,
+        region_id=test_region.id
+    )
+    db.add(other_key)
+    db.commit()
+
+    # Non-admin queries with user_id=other_user.id (should be ignored)
+    response = client.get(
+        f"/private-ai-keys/region/{test_region.id}",
+        headers={"Authorization": f"Bearer {test_token}"},
+        params={"user_id": other_user.id}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+
+    # test_user has no team, so only sees their own keys; user_id param is ignored
+    returned_db_names = {key["database_name"] for key in data}
+    assert "region-non-admin-user-own-db" in returned_db_names
+    assert "region-non-admin-other-db" not in returned_db_names
