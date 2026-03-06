@@ -545,10 +545,15 @@ async def list_private_ai_keys_by_region(
 
     if current_user.is_admin:
         if team_id is not None:
-            team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
-            team_user_ids = [user.id for user in team_users]
+            # Check team exists and is not soft-deleted
+            team = db.query(DBTeam).filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None)).first()
+            if team is None:
+                return []
+
+            # Use subquery instead of loading users into memory
+            team_user_ids_subq = db.query(DBUser.id).filter(DBUser.team_id == team_id).subquery()
             query = query.filter(
-                (DBPrivateAIKey.owner_id.in_(team_user_ids)) |
+                (DBPrivateAIKey.owner_id.in_(db.query(team_user_ids_subq))) |
                 (DBPrivateAIKey.team_id == team_id)
             )
     else:
