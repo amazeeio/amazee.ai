@@ -4,7 +4,7 @@
 
 ### Backend: Add `team_id` Query Parameter to Region Keys Endpoint
 
-- [ ] Add optional `team_id` query parameter to `list_private_ai_keys_by_region` in `app/api/private_ai_keys.py`
+- [x] Add optional `team_id` query parameter to `list_private_ai_keys_by_region` in `app/api/private_ai_keys.py`
   - Add `team_id: Optional[int] = None` to the function signature alongside `region_id` and `current_user`
   - In the `if current_user.is_admin:` branch (currently a bare `pass`), apply the same team filter logic as `list_private_ai_keys`: query users with `DBUser.team_id == team_id`, then filter keys by `owner_id.in_(team_user_ids) | team_id == team_id`
   - Non-admin users already have their own scoping applied; leave that branch unchanged (team_id param is ignored for non-admins, consistent with the base list endpoint)
