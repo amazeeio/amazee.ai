@@ -525,6 +525,7 @@ async def list_private_ai_keys(
 async def list_private_ai_keys_by_region(
     region_id: int,
     team_id: Optional[int] = None,
+    user_id: Optional[int] = None,
     current_user = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db)
 ):
@@ -533,6 +534,15 @@ async def list_private_ai_keys_by_region(
     Applies the same access rules as the standard list endpoint.
 
     Keys from soft-deleted teams are excluded from the results.
+
+    Optional query parameters (admin only):
+    - **team_id**: Filter keys owned by users in this team or owned by this team directly.
+      Silently ignored for non-admin callers.
+    - **user_id**: Filter keys owned by this specific user.
+      Only respected when the caller is a system admin; non-admin callers have this
+      parameter silently ignored. May be combined with `team_id` to further scope
+      results to keys owned by that user within a particular team.
+      Returns an empty list when the specified user does not exist.
     """
     query = db.query(DBPrivateAIKey).outerjoin(DBTeam, DBPrivateAIKey.team_id == DBTeam.id)
 
@@ -556,6 +566,13 @@ async def list_private_ai_keys_by_region(
                 (DBPrivateAIKey.owner_id.in_(db.query(team_user_ids_subq))) |
                 (DBPrivateAIKey.team_id == team_id)
             )
+
+        if user_id is not None:
+            # Verify the user exists; return empty list if not found
+            user = db.query(DBUser).filter(DBUser.id == user_id).first()
+            if user is None:
+                return []
+            query = query.filter(DBPrivateAIKey.owner_id == user_id)
     else:
         # Check if user is a team admin
         if current_user.team_id is not None:
