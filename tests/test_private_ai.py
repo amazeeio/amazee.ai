@@ -2251,6 +2251,18 @@ def test_list_private_ai_keys_by_region_user_and_team_filter(client, admin_token
         region_id=test_region.id
     )
     db.add(key_other)
+
+    # Team-owned key (no owner_id) - should NOT appear when user_id filter is active
+    key_team_owned = DBPrivateAIKey(
+        database_name="region-team-owned-db",
+        database_host="test-host",
+        database_username="team-owned",
+        database_password="test-pass",
+        litellm_token="region-team-owned-token",
+        team_id=test_team.id,
+        region_id=test_region.id
+    )
+    db.add(key_team_owned)
     db.commit()
 
     # Admin queries with both user_id and team_id (the combination should scope to
@@ -2267,6 +2279,8 @@ def test_list_private_ai_keys_by_region_user_and_team_filter(client, admin_token
     returned_db_names = {key["database_name"] for key in data}
     assert "region-user-in-team-db" in returned_db_names
     assert "region-other-user-db" not in returned_db_names
+    # Team-owned keys are excluded when user_id filter narrows to a specific user
+    assert "region-team-owned-db" not in returned_db_names
 
 
 def test_list_private_ai_keys_by_region_user_filter_ignored_for_non_admin(client, test_token, test_region, test_user, db):

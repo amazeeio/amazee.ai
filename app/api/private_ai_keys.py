@@ -561,9 +561,9 @@ async def list_private_ai_keys_by_region(
                 return []
 
             # Use subquery instead of loading users into memory
-            team_user_ids_subq = db.query(DBUser.id).filter(DBUser.team_id == team_id).subquery()
+            team_user_ids_subq = db.query(DBUser.id).filter(DBUser.team_id == team_id)
             query = query.filter(
-                (DBPrivateAIKey.owner_id.in_(db.query(team_user_ids_subq))) |
+                (DBPrivateAIKey.owner_id.in_(team_user_ids_subq)) |
                 (DBPrivateAIKey.team_id == team_id)
             )
 
