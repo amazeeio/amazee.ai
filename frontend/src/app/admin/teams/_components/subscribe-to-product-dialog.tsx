@@ -86,7 +86,7 @@ export function SubscribeToProductDialog({
                 </SelectTrigger>
                 <SelectContent>
                   {isLoadingAllProducts ? (
-                    <SelectItem value="" disabled>
+                    <SelectItem value="loading" disabled>
                       Loading products...
                     </SelectItem>
                   ) : allProducts.length > 0 ? (
@@ -96,7 +96,7 @@ export function SubscribeToProductDialog({
                       </SelectItem>
                     ))
                   ) : (
-                    <SelectItem value="" disabled>
+                    <SelectItem value="no-products" disabled>
                       No products available
                     </SelectItem>
                   )}
