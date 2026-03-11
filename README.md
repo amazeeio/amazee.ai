@@ -150,6 +150,60 @@ Access the services at:
 - Backend API: http://localhost:8800
 
 
+## 🗄️ How to Restore from a Database Dump
+
+If you have a database dump, you can restore it into your local PostgreSQL service following these steps:
+
+1. **Extract the dump**:
+   ```bash
+   mkdir -p ./restore-data
+   tar -xf the-postgres-database-dump.tar -C ./restore-data
+   ```
+
+2. **Prepare the restore script**:
+   The dump should contain a `restore.sql` file, which then contains placeholders and likely a different database name. Update it for your local environment:
+   ```bash
+   # Replace the data path placeholder
+   sed -i '' 's/\$\$PATH\$\$/\/tmp\/restore/g' ./restore-data/restore.sql
+   # Replace the dumped database name (`dumped-database-example-name`) with your local one (e.g. `postgres_service`)
+   sed -i '' 's/dumped-database-example-name/postgres_service/g' ./restore-data/restore.sql
+   ```
+
+3. **Stop the backend**:
+   To prevent active connections during the restoration, stop the backend container:
+   ```bash
+   docker compose stop backend
+   ```
+
+4. **Get the name of the postgres container**
+   Copy the name e.g. `amazeeai-postgres-1` and replace `<postgres-container-name>` in the following commands.
+   ```bash
+   docker compose ps
+   ```
+
+5. **Transfer and restore**:
+   Copy the files to the database container, fix permissions, and run the restoration:
+   ```bash
+   # Create directory and copy files
+   docker exec <postgres-container-name> mkdir -p /tmp/restore
+   docker cp ./restore-data/. <postgres-container-name>:/tmp/restore/
+
+   # Fix permissions so the postgres user can read the .dat files
+   docker exec <postgres-container-name> chown -R postgres:postgres /tmp/restore
+
+   # Run the restoration script
+   docker exec <postgres-container-name> psql -U postgres -f /tmp/restore/restore.sql
+   ```
+
+6. **Restart and Clean up**:
+   ```bash
+   # Start the backend again
+   docker compose start backend
+
+   # Optional: remove temporary files from the container
+   docker exec <postgres-container-name> rm -rf /tmp/restore
+   ```
+
 ## 🛠️ Development Workflow
 
 We follow a structured branching and deployment process to ensure stability across environments.
