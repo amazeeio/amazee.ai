@@ -149,6 +149,30 @@ Access the services at:
 - Frontend: http://localhost:3000
 - Backend API: http://localhost:8800
 
+### Creating API Tokens
+
+You can insert a bearer directly into the `api_tokens` table if you prefer to skip the UI. Run the helper script, pass the owner user (email or ID), and give it a friendly name plus an optional fixed value:
+
+```
+python scripts/create_api_token.py --email admin@example.com --name local-curl-token \
+  --token LOCALBT
+```
+
+It loads the same `.env` as the backend, so make sure `AMAZEEAI_JWT_SECRET` and `DATABASE_URL` are defined locally. Save the token output and re-use it as `Authorization: Bearer <token>` for your curl or script-based calls.
+
+### Local bearer for frontend dev
+
+If you run the frontend with `npm run dev`, you can skip the login page by adding the same token to your environment. Keep both the backend-facing and frontend-facing variables in sync:
+
+```
+LOCAL_BEARER_TOKEN=LOCALBT
+NEXT_PUBLIC_LOCAL_BEARER=LOCALBT
+```
+
+`LOCAL_BEARER_TOKEN` stays in `.env` so any backend tooling or services that expect a shared local token can read it, while `NEXT_PUBLIC_LOCAL_BEARER` is what the browser-visible bundle uses when attaching the bearer to every request. This flag is only intended for local development—never commit a real token or use it in production.
+
+Whenever that variable is present, the frontend automatically attaches the bearer to every backend request, so the development app behaves as though you're already authenticated. This flag is only intended for local development—never commit a real token or use it in production.
+
 
 ## 🛠️ Development Workflow
 
