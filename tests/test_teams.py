@@ -9,6 +9,7 @@ from app.db.models import (
     DBTeamRegion,
     DBLimitedResource,
     DBAuditLog,
+    DBBudgetPurchase,
 )
 from app.main import app
 from app.core.security import get_password_hash
@@ -467,6 +468,71 @@ def test_update_team_switch_to_pool_resets_budget_and_reconciles_keys(
     assert audit_log is not None
     assert audit_log.details["previous_budget_mode"] == "periodic"
     assert audit_log.details["new_budget_mode"] == "pool"
+
+
+@patch("app.api.teams.propagate_team_budget_to_keys", new_callable=AsyncMock)
+def test_update_team_switch_to_pool_uses_purchase_ledger_total(
+    mock_propagate,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region
+):
+    """Switching to pool should restore budget from purchase ledger sum (in cents)."""
+    team = db.query(DBTeam).filter(DBTeam.id == test_team.id).first()
+    team.budget_mode = "periodic"
+    db.add(team)
+
+    db.add(DBTeamRegion(
+        team_id=team.id,
+        region_id=test_region.id,
+        last_budget_purchase_at=datetime.now(UTC) - timedelta(days=10),
+    ))
+    db.add(DBBudgetPurchase(
+        team_id=team.id,
+        region_id=test_region.id,
+        stripe_session_id="cs_switch_ledger_1",
+        stripe_payment_intent_id="pi_switch_ledger_1",
+        currency="usd",
+        amount_cents=2500,
+        previous_budget_cents=0,
+        new_budget_cents=2500,
+    ))
+    db.add(DBBudgetPurchase(
+        team_id=team.id,
+        region_id=test_region.id,
+        stripe_session_id="cs_switch_ledger_2",
+        stripe_payment_intent_id="pi_switch_ledger_2",
+        currency="usd",
+        amount_cents=500,
+        previous_budget_cents=2500,
+        new_budget_cents=3000,
+    ))
+    db.commit()
+
+    response = client.put(
+        f"/teams/{team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"budget_mode": "pool"}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["budget_mode"] == "pool"
+
+    budget_limit = db.query(DBLimitedResource).filter(
+        DBLimitedResource.owner_type == OwnerType.TEAM,
+        DBLimitedResource.owner_id == team.id,
+        DBLimitedResource.resource == ResourceType.BUDGET
+    ).first()
+    assert budget_limit is not None
+    assert int(round(float(budget_limit.max_value) * 100)) == 3000
+
+    kwargs = mock_propagate.await_args.kwargs
+    assert kwargs["budget_amount"] == 30.0
+    # 10 elapsed days from last purchase => ~355 days left
+    assert kwargs["duration_by_region"][test_region.id] in {"355d", "354d"}
+    assert kwargs["budget_duration"] is None
 
 def test_update_team_unauthorized(client, test_token, test_team):
     """Test updating a team as a user not associated with that team"""
