@@ -93,7 +93,8 @@ async def register_team(
         billing_address=team.billing_address,
         is_active=True,
         created_at=datetime.now(UTC),
-        force_user_keys=team.force_user_keys
+        force_user_keys=team.force_user_keys,
+        budget_mode="pool",
     )
 
     db.add(db_team)

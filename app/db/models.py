@@ -116,7 +116,7 @@ class DBTeam(Base):
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     stripe_customer_id = Column(String, nullable=True, unique=True, index=True)
-    budget_mode = Column(String, default="periodic", nullable=False)
+    budget_mode = Column(String, default="pool", nullable=False)
     last_payment = Column(DateTime(timezone=True), nullable=True)
     last_monitored = Column(DateTime(timezone=True), nullable=True)
     deleted_at = Column(DateTime(timezone=True), nullable=True)

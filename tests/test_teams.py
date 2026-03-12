@@ -41,6 +41,7 @@ def test_register_team(client, admin_token):
     assert team_data["phone"] == "1234567890"
     assert team_data["billing_address"] == "123 Test St, Test City, 12345"
     assert team_data["is_active"] is True
+    assert team_data["budget_mode"] == "pool"
     assert "id" in team_data
     assert "created_at" in team_data
     assert "updated_at" in team_data
