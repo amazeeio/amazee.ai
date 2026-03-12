@@ -437,6 +437,39 @@ async def get_team_region_budget(
     if not region:
         raise HTTPException(status_code=404, detail="Region not found")
 
+    if team.budget_mode == "pool":
+        team_region = db.query(DBTeamRegion).filter(
+            DBTeamRegion.team_id == team_id,
+            DBTeamRegion.region_id == region_id
+        ).first()
+        if not team_region:
+            raise HTTPException(status_code=404, detail="Team-region association not found")
+
+        aggregate_spend_cents = int(team_region.aggregate_spend_cents or 0)
+        total_budget_cents = int(team_region.total_budget_purchased_cents or 0)
+        available_budget_cents = max(total_budget_cents - aggregate_spend_cents, 0)
+
+        days_remaining = 0
+        expires_at = None
+        if team_region.last_budget_purchase_at:
+            purchase_time = team_region.last_budget_purchase_at
+            if purchase_time.tzinfo is None:
+                purchase_time = purchase_time.replace(tzinfo=UTC)
+            expires_at = purchase_time + timedelta(days=365)
+            days_remaining = max((expires_at - datetime.now(UTC)).days, 0)
+
+        return TeamRegionBudget(
+            team_id=team_id,
+            region_id=region_id,
+            region_name=region.name,
+            total_spend=round(aggregate_spend_cents / 100.0, 4),
+            total_budget=round(total_budget_cents / 100.0, 4),
+            days_remaining=days_remaining,
+            expires_at=expires_at,
+            aggregate_spend_cents=aggregate_spend_cents,
+            available_budget_cents=available_budget_cents,
+        )
+
     team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
     team_user_ids = [user.id for user in team_users]
 

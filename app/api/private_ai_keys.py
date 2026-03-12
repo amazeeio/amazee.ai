@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from fastapi import status
 import logging
+from datetime import datetime, UTC, timedelta
 
 from app.db.database import get_db
 from app.core.dependencies import get_limit_service
@@ -12,7 +13,7 @@ from app.schemas.models import (
     TokenDurationUpdate, PrivateAIKeyDetail
 )
 from app.db.postgres import PostgresManager
-from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
+from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam, DBTeamRegion
 from app.services.litellm import LiteLLMService
 from app.core.security import (
     get_current_user_from_auth,
@@ -372,15 +373,82 @@ async def create_llm_token(
             owner_id = current_user.id
             owner = current_user
 
-    if (owner is not None and owner.team_id) or team_id:
+    team_scope_id = (owner.team_id if owner is not None and owner.team_id else team_id)
+    is_pool_mode = team is not None and team.budget_mode == "pool"
+    if team_scope_id:
         if settings.ENABLE_LIMITS:
-            limit_service.check_key_limits(owner.team_id or team_id, owner_id)
+            limit_service.check_key_limits(team_scope_id, owner_id)
         # Limits are conditionally applied in LiteLLM service
-        days_left_in_period, max_max_spend, max_rpm_limit = limit_service.get_token_restrictions(owner.team_id or team_id)
+        days_left_in_period, max_max_spend, max_rpm_limit = limit_service.get_token_restrictions(
+            team_scope_id,
+            region_id=private_ai_key.region_id
+        )
     else: # Super system users...
         days_left_in_period = DEFAULT_KEY_DURATION
         max_max_spend = DEFAULT_MAX_SPEND
         max_rpm_limit = DEFAULT_RPM_PER_KEY
+
+    if is_pool_mode:
+        team_region = db.query(DBTeamRegion).filter(
+            DBTeamRegion.team_id == team.id,
+            DBTeamRegion.region_id == private_ai_key.region_id
+        ).first()
+        if not team_region or not team_region.last_budget_purchase_at:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail="Budget expired in this region"
+            )
+
+        purchase_time = team_region.last_budget_purchase_at
+        if purchase_time.tzinfo is None:
+            purchase_time = purchase_time.replace(tzinfo=UTC)
+        expires_at = purchase_time + timedelta(days=365)
+        days_left_in_period = max((expires_at - datetime.now(UTC)).days, 0)
+        if days_left_in_period <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail="Budget expired in this region"
+            )
+
+        # Refresh region spend snapshot on-demand if stale.
+        now = datetime.now(UTC)
+        if not team_region.last_spend_synced_at or (now - team_region.last_spend_synced_at).total_seconds() > 60:
+            team_users = db.query(DBUser).filter(DBUser.team_id == team.id).all()
+            team_user_ids = [u.id for u in team_users]
+            region_team_keys = db.query(DBPrivateAIKey).filter(
+                DBPrivateAIKey.region_id == private_ai_key.region_id,
+                (DBPrivateAIKey.team_id == team.id) | (DBPrivateAIKey.owner_id.in_(team_user_ids))
+            ).all()
+            litellm_service = LiteLLMService(
+                api_url=region.litellm_api_url,
+                api_key=region.litellm_api_key
+            )
+            total_spend = 0.0
+            for existing_key in region_team_keys:
+                if not existing_key.litellm_token:
+                    continue
+                try:
+                    key_info = await litellm_service.get_key_info(existing_key.litellm_token)
+                    info = key_info.get("info", {})
+                    key_spend = float(info.get("spend", 0.0) or 0.0)
+                except Exception:
+                    key_spend = float(existing_key.cached_spend or 0.0)
+                total_spend += key_spend
+            team_region.aggregate_spend_cents = int(round(total_spend * 100))
+            team_region.last_spend_synced_at = now
+            team_region.updated_at = now
+            db.add(team_region)
+            db.commit()
+            db.refresh(team_region)
+
+        total_purchased_cents = int(team_region.total_budget_purchased_cents or 0)
+        aggregate_spend_cents = int(team_region.aggregate_spend_cents or 0)
+        available_budget_cents = max(total_purchased_cents - aggregate_spend_cents, 0)
+        if available_budget_cents <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail="Budget exhausted in this region"
+            )
 
     if team is not None:
         owner_email = team.admin_email
@@ -407,7 +475,8 @@ async def create_llm_token(
             team_id=LiteLLMService.format_team_id(region.name, litellm_team),
             duration=f"{days_left_in_period}d",
             max_budget=max_max_spend,
-            rpm_limit=max_rpm_limit
+            rpm_limit=max_rpm_limit,
+            budget_duration=(None if is_pool_mode else f"{days_left_in_period}d")
         )
 
         # Create response object
