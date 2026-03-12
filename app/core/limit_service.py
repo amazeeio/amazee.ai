@@ -3,7 +3,7 @@ from sqlalchemy import and_, or_, select, func
 from fastapi import HTTPException, status
 from typing import Optional, List
 from datetime import datetime, UTC
-from app.db.models import DBLimitedResource, DBUser, DBTeam, DBTeamProduct, DBPrivateAIKey, DBProduct
+from app.db.models import DBLimitedResource, DBUser, DBTeam, DBTeamProduct, DBPrivateAIKey, DBProduct, DBTeamRegion
 from app.schemas.limits import (
     LimitedResource,
     LimitedResourceCreate,
@@ -400,7 +400,7 @@ class LimitService:
 
         return result
 
-    def _trigger_team_budget_propagation(self, team_id: int, budget_amount: float) -> None:
+    def _trigger_team_budget_propagation(self, team_id: int, budget_amount: float, region_id: Optional[int] = None) -> None:
         """
         Trigger propagation of team budget limit to keys.
 
@@ -417,9 +417,30 @@ class LimitService:
         from app.core.team_service import propagate_team_budget_to_keys
         from app.db.database import get_db
 
-        # Get budget_duration from team's token restrictions (all keys should have same duration)
-        days_left, _, _ = self.get_token_restrictions(team_id)
-        budget_duration = f"{days_left}d"
+        budget_duration = None
+        duration_by_region = None
+        team = self.db.query(DBTeam).filter(DBTeam.id == team_id).first()
+        if team and team.budget_mode == "pool":
+            duration_by_region = {}
+            team_regions_query = self.db.query(DBTeamRegion).filter(DBTeamRegion.team_id == team_id)
+            if region_id is not None:
+                team_regions_query = team_regions_query.filter(DBTeamRegion.region_id == region_id)
+            team_regions = team_regions_query.all()
+            now = datetime.now(UTC)
+            for team_region in team_regions:
+                if team_region.last_budget_purchase_at:
+                    purchase_time = team_region.last_budget_purchase_at
+                    if purchase_time.tzinfo is None:
+                        purchase_time = purchase_time.replace(tzinfo=UTC)
+                    days_elapsed = (now - purchase_time).days
+                    days_left = max(365 - days_elapsed, 0)
+                else:
+                    days_left = 0
+                duration_by_region[team_region.region_id] = f"{days_left}d"
+        else:
+            # Periodic mode: all keys use one renewal duration.
+            days_left, _, _ = self.get_token_restrictions(team_id, region_id=region_id)
+            budget_duration = f"{days_left}d"
 
         def run_async_propagation():
             """Helper to run async propagation in a new event loop with its own session.
@@ -435,7 +456,15 @@ class LimitService:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
-                    loop.run_until_complete(propagate_team_budget_to_keys(db, team_id, budget_amount, budget_duration))
+                    loop.run_until_complete(
+                        propagate_team_budget_to_keys(
+                            db,
+                            team_id,
+                            budget_amount,
+                            budget_duration=budget_duration,
+                            duration_by_region=duration_by_region
+                        )
+                    )
                 finally:
                     loop.close()
             except Exception as thread_error:
@@ -594,6 +623,13 @@ class LimitService:
         for limit in existing_limits:
             limit_map[limit.resource] = limit
 
+        pool_override_limits = {
+            ResourceType.USER: 1000,
+            ResourceType.SERVICE_KEY: 100,
+            ResourceType.VECTOR_DB: 100,
+            ResourceType.RPM: 10000,
+        }
+
         # Process each resource type
         for resource_type in all_resources:
             # Skip if manual limit already exists
@@ -603,13 +639,17 @@ class LimitService:
 
             limit_type, unit, current_value = self._get_limit_details(resource_type, existing_limit)
 
-            # Try to get product limit first, fall back to default
-            max_value = self.get_team_product_limit_for_resource(team.id, resource_type)
-            if max_value is not None:
-                limit_source = LimitSource.PRODUCT
-            else:
-                max_value = self.get_default_team_limit_for_resource(resource_type)
+            if team.budget_mode == "pool" and resource_type in pool_override_limits:
+                max_value = float(pool_override_limits[resource_type])
                 limit_source = LimitSource.DEFAULT
+            else:
+                # Try to get product limit first, fall back to default
+                max_value = self.get_team_product_limit_for_resource(team.id, resource_type)
+                if max_value is not None:
+                    limit_source = LimitSource.PRODUCT
+                else:
+                    max_value = self.get_default_team_limit_for_resource(resource_type)
+                    limit_source = LimitSource.DEFAULT
 
             # Set the limit (this will update existing or create new)
             self.set_limit(
@@ -652,13 +692,18 @@ class LimitService:
                 continue
 
             limit_type, unit, current_value = self._get_limit_details(resource_type, existing_limit)
-            # For users, only KEY limits are set - BUDGET and RPM are inherited from team
-            max_value = self.get_user_product_limit_for_resource(user.team_id, resource_type)
-            if max_value is not None:
-                limit_source = LimitSource.PRODUCT
-            else:
-                max_value = self.get_default_user_limit_for_resource(resource_type)
+            team = self.db.query(DBTeam).filter(DBTeam.id == user.team_id).first() if user.team_id else None
+            if team and team.budget_mode == "pool" and resource_type == ResourceType.USER_KEY:
+                max_value = 100.0
                 limit_source = LimitSource.DEFAULT
+            else:
+                # For users, only KEY limits are set - BUDGET and RPM are inherited from team
+                max_value = self.get_user_product_limit_for_resource(user.team_id, resource_type)
+                if max_value is not None:
+                    limit_source = LimitSource.PRODUCT
+                else:
+                    max_value = self.get_default_user_limit_for_resource(resource_type)
+                    limit_source = LimitSource.DEFAULT
 
             # Set the limit (this will update existing or create new)
             self.set_limit(
@@ -924,16 +969,16 @@ class LimitService:
                 detail=f"Team has reached the maximum vector DB limit of {result.max_vector_db_count} databases"
             )
 
-    def get_token_restrictions(self, team_id: int) -> tuple[int, float, int]:
+    def get_token_restrictions(self, team_id: int, region_id: Optional[int] = None) -> tuple[int, float, int]:
         """
         Get the token restrictions for a team.
         """
         # First try to get budget and RPM limits from the new service
         max_spend = None
         rpm_limit = None
+        team = None
 
         try:
-            # Try to get team limits from limit service
             team = self.db.query(DBTeam).filter(DBTeam.id == team_id).first()
             if team:
                 team_limits = self.get_team_limits(team)
@@ -950,7 +995,26 @@ class LimitService:
             limit_check_route_counter.labels(function='get_token_restrictions', route='fallback').inc()
             logger.info(f"Could not get limits from limit service for team {team_id}: {str(e)}")
 
-        # Get all token restrictions in a single query (for duration and fallback values)
+        # Pool mode uses per-region purchase timestamp for key duration.
+        if team and team.budget_mode == "pool":
+            days_left = 0
+            team_region_query = self.db.query(DBTeamRegion).filter(DBTeamRegion.team_id == team_id)
+            if region_id is not None:
+                team_region_query = team_region_query.filter(DBTeamRegion.region_id == region_id)
+            team_region = team_region_query.first()
+            if team_region and team_region.last_budget_purchase_at:
+                purchase_time = team_region.last_budget_purchase_at
+                now = datetime.now(UTC)
+                if purchase_time.tzinfo is None:
+                    purchase_time = purchase_time.replace(tzinfo=UTC)
+                days_elapsed = (now - purchase_time).days
+                days_left = max(365 - days_elapsed, 0)
+
+            final_max_spend = max_spend if max_spend is not None else DEFAULT_MAX_SPEND
+            final_rpm_limit = rpm_limit if rpm_limit is not None else DEFAULT_RPM_PER_KEY
+            return days_left, final_max_spend, int(final_rpm_limit)
+
+        # Get all token restrictions in a single query (for periodic duration and fallback values)
         result = self.db.query(
             func.coalesce(func.max(DBProduct.renewal_period_days), DEFAULT_KEY_DURATION).label('max_key_duration'),
             func.coalesce(func.max(DBProduct.max_budget_per_key), DEFAULT_MAX_SPEND).label('max_max_spend'),
@@ -978,7 +1042,7 @@ class LimitService:
         final_max_spend = max_spend if max_spend is not None else result.max_max_spend
         final_rpm_limit = rpm_limit if rpm_limit is not None else result.max_rpm_limit
 
-        return result.max_key_duration, final_max_spend, final_rpm_limit
+        return result.max_key_duration, final_max_spend, int(final_rpm_limit)
 
     def get_default_team_limit_for_resource(self, resource_type: ResourceType) -> float:
         """

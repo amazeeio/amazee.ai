@@ -2,13 +2,13 @@
 Team service for centralized team operations including soft-delete and restore.
 """
 import logging
-from datetime import datetime, UTC
-from typing import Dict, List
+from datetime import datetime, UTC, timedelta
+from typing import Dict, List, Optional
 from collections import defaultdict
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
-from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBRegion
+from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBRegion, DBTeamRegion
 from app.services.litellm import LiteLLMService
 from app.core.limit_service import DEFAULT_KEY_DURATION
 
@@ -146,9 +146,25 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> None:
                 for key in keys:
                     if key.litellm_token:
                         try:
+                            key_duration = f"{DEFAULT_KEY_DURATION}d"
+                            if team.budget_mode == "pool":
+                                team_region = db.query(DBTeamRegion).filter(
+                                    DBTeamRegion.team_id == team.id,
+                                    DBTeamRegion.region_id == region.id
+                                ).first()
+                                if team_region and team_region.last_budget_purchase_at:
+                                    purchase_time = team_region.last_budget_purchase_at
+                                    if purchase_time.tzinfo is None:
+                                        purchase_time = purchase_time.replace(tzinfo=UTC)
+                                    expires_at = purchase_time + timedelta(days=365)
+                                    days_remaining = max((expires_at - datetime.now(UTC)).days, 0)
+                                    key_duration = f"{days_remaining}d"
+                                else:
+                                    key_duration = "0d"
+
                             await litellm_service.update_key_duration(
                                 litellm_token=key.litellm_token,
-                                duration=f"{DEFAULT_KEY_DURATION}d"
+                                duration=key_duration
                             )
                             logger.info(f"Un-expired key {key.id} in LiteLLM for restored team {team.id}")
                         except Exception as key_error:
@@ -177,7 +193,13 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> None:
     logger.info(f"Successfully restored team {team.id} ({team.name})")
 
 
-async def propagate_team_budget_to_keys(db: Session, team_id: int, budget_amount: float, budget_duration: str) -> None:
+async def propagate_team_budget_to_keys(
+    db: Session,
+    team_id: int,
+    budget_amount: float,
+    budget_duration: Optional[str] = None,
+    duration_by_region: Optional[Dict[int, str]] = None
+) -> None:
     """
     Propagate a team budget limit change to all keys belonging to the team.
 
@@ -188,7 +210,8 @@ async def propagate_team_budget_to_keys(db: Session, team_id: int, budget_amount
         db: Database session
         team_id: ID of the team whose keys should be updated
         budget_amount: New budget amount to set for all keys
-        budget_duration: Budget duration string (e.g., "30d")
+        budget_duration: Budget duration string for periodic mode (e.g., "30d")
+        duration_by_region: Optional mapping for pool-mode key duration by region_id
 
     Note:
         Errors during key updates are logged but don't raise exceptions.
@@ -207,11 +230,15 @@ async def propagate_team_budget_to_keys(db: Session, team_id: int, budget_amount
             # Update each key's budget via LiteLLM
             for key in keys:
                 try:
-                    # Update budget using the provided budget_duration
+                    target_duration = budget_duration
+                    if duration_by_region is not None:
+                        target_duration = duration_by_region.get(region.id, "0d")
+
                     await litellm_service.update_budget(
                         litellm_token=key.litellm_token,
-                        budget_duration=budget_duration,
-                        budget_amount=budget_amount
+                        budget_duration=(None if duration_by_region is not None else target_duration),
+                        budget_amount=budget_amount,
+                        duration=(target_duration if target_duration is not None else f"{DEFAULT_KEY_DURATION}d")
                     )
                     logger.info(f"Updated key {key.id} budget to {budget_amount} in LiteLLM after team budget limit change")
                 except Exception as key_error:
@@ -221,4 +248,3 @@ async def propagate_team_budget_to_keys(db: Session, team_id: int, budget_amount
     except Exception as propagation_error:
         logger.error(f"Error propagating budget limit to keys for team {team_id}: {str(propagation_error)}")
         # Don't raise - allow limit update to succeed even if propagation fails
-
