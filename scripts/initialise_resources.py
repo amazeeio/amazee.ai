@@ -4,7 +4,7 @@ import os
 import sys
 
 # Add the parent directory to the Python path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import alembic.config
 import alembic.command
@@ -22,13 +22,18 @@ from app.api.billing import BILLING_WEBHOOK_KEY, BILLING_WEBHOOK_ROUTE
 from scripts.migrate_pricing_tables import migrate_pricing_tables
 from app.core.limit_service import setup_default_limits
 
+
 def init_database() -> Session:
     # Check if database is empty (no tables exist)
     inspector = inspect(engine)
     existing_tables = inspector.get_table_names()
     print(f"Existing tables: {existing_tables}")
 
-    alembic_cfg = alembic.config.Config(os.path.join(os.path.dirname(__file__), "..", "app", "migrations", "alembic.ini"))
+    alembic_cfg = alembic.config.Config(
+        os.path.join(
+            os.path.dirname(__file__), "..", "app", "migrations", "alembic.ini"
+        )
+    )
     alembic_cfg.set_main_option("script_location", "app/migrations")
 
     if "alembic_version" not in existing_tables:
@@ -66,7 +71,7 @@ def init_database() -> Session:
                 email="admin@example.com",
                 hashed_password=get_password_hash("admin"),
                 is_active=True,
-                is_admin=True
+                is_admin=True,
             )
             db.add(admin_user)
             db.commit()
@@ -82,6 +87,7 @@ def init_database() -> Session:
     finally:
         return db
 
+
 def init_webhooks(db: Session):
     # Only set up Stripe webhook in specific environments
     env_suffix = os.getenv("ENV_SUFFIX", "").lower()
@@ -89,19 +95,24 @@ def init_webhooks(db: Session):
         try:
             # Set up Stripe webhook
             print("Setting up Stripe Billing webhook...")
-            asyncio.run(setup_stripe_webhook(BILLING_WEBHOOK_KEY, BILLING_WEBHOOK_ROUTE, db))
+            asyncio.run(
+                setup_stripe_webhook(BILLING_WEBHOOK_KEY, BILLING_WEBHOOK_ROUTE, db)
+            )
             print("Stripe Billing webhook set up successfully")
         except Exception as e:
             print(f"Warning: Failed to set up Stripe Billing webhook: {str(e)}")
     else:
         print(f"Skipping Stripe webhook setup for environment: {env_suffix}")
 
+
 def init_ses_templates():
     if os.getenv("PASSWORDLESS_SIGN_IN", "").lower() == "true":
         # Initialize SES templates
         print("Initializing SES email templates...")
         ses_service = SESService()
-        templates_dir = os.path.join(os.path.dirname(__file__), "..", "app", "templates")
+        templates_dir = os.path.join(
+            os.path.dirname(__file__), "..", "app", "templates"
+        )
 
         # Get all .md files in the templates directory
         template_files = glob.glob(os.path.join(templates_dir, "*.md"))
@@ -115,6 +126,7 @@ def init_ses_templates():
     else:
         print("PASSWORDLESS_SIGN_IN is disabled - skipping SES initialization")
 
+
 def init_pricing_table_migration(db: Session):
     """Initialize pricing table data migration"""
     try:
@@ -123,9 +135,14 @@ def init_pricing_table_migration(db: Session):
         if success:
             print("Pricing table migration completed successfully")
         else:
-            print("Warning: Pricing table migration failed - continuing with initialization")
+            print(
+                "Warning: Pricing table migration failed - continuing with initialization"
+            )
     except Exception as e:
-        print(f"Warning: Error during pricing table migration: {str(e)} - continuing with initialization")
+        print(
+            f"Warning: Error during pricing table migration: {str(e)} - continuing with initialization"
+        )
+
 
 def init_default_limits(db: Session):
     """Initialize default system limits"""
@@ -134,11 +151,16 @@ def init_default_limits(db: Session):
         setup_default_limits(db)
         print("Default system limits initialized successfully")
     except Exception as e:
-        print(f"Warning: Error during default limits initialization: {str(e)} - continuing with initialization")
+        print(
+            f"Warning: Error during default limits initialization: {str(e)} - continuing with initialization"
+        )
+
 
 def main():
     try:
-        print(f"Initialising resources for environment: {os.getenv('ENV_SUFFIX', 'local')}")
+        print(
+            f"Initialising resources for environment: {os.getenv('ENV_SUFFIX', 'local')}"
+        )
         print(f"Main route: {settings.main_route}")
         db = init_database()
         init_webhooks(db)
@@ -149,6 +171,7 @@ def main():
     except Exception as e:
         print(f"Error during initialization: {str(e)}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

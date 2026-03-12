@@ -9,10 +9,7 @@ from app.schemas.limits import ResourceType, OwnerType, LimitType, UnitType, Lim
 def test_create_vector_db_within_limits(db, test_team, test_product):
     """Test creating a vector DB when within product limits"""
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -24,10 +21,7 @@ def test_create_vector_db_within_limits(db, test_team, test_product):
 def test_create_vector_db_exceeding_limit(db, test_team, test_product, test_region):
     """Test creating a vector DB when it would exceed the limit"""
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -41,7 +35,7 @@ def test_create_vector_db_exceeding_limit(db, test_team, test_product, test_regi
             database_password="test_pass",
             team_id=test_team.id,
             region_id=test_region.id,
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         )
         db.add(key)
     db.commit()
@@ -51,7 +45,10 @@ def test_create_vector_db_exceeding_limit(db, test_team, test_product, test_regi
         limit_service = LimitService(db)
         limit_service.check_vector_db_limits(test_team.id)
     assert exc_info.value.status_code == 402
-    assert f"Team has reached the maximum vector DB limit of {test_product.vector_db_count} databases" in str(exc_info.value.detail)
+    assert (
+        f"Team has reached the maximum vector DB limit of {test_product.vector_db_count} databases"
+        in str(exc_info.value.detail)
+    )
 
 
 def test_create_vector_db_with_default_limit(db, test_team, test_region):
@@ -72,15 +69,12 @@ def test_create_vector_db_with_default_limit(db, test_team, test_region):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(test_product)
 
     # Associate the product with the team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -94,7 +88,7 @@ def test_create_vector_db_with_default_limit(db, test_team, test_region):
             database_password="test_pass",
             team_id=test_team.id,
             region_id=test_region.id,
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         )
         db.add(key)
     db.commit()
@@ -104,7 +98,10 @@ def test_create_vector_db_with_default_limit(db, test_team, test_region):
         limit_service = LimitService(db)
         limit_service.check_vector_db_limits(test_team.id)
     assert exc_info.value.status_code == 402
-    assert f"Team has reached the maximum vector DB limit of {test_product.vector_db_count} databases" in str(exc_info.value.detail)
+    assert (
+        f"Team has reached the maximum vector DB limit of {test_product.vector_db_count} databases"
+        in str(exc_info.value.detail)
+    )
 
 
 def test_create_vector_db_with_multiple_products(db, test_team, test_region):
@@ -123,7 +120,7 @@ def test_create_vector_db_with_multiple_products(db, test_team, test_region):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     product2 = DBProduct(
         id="prod_test2",
@@ -138,21 +135,15 @@ def test_create_vector_db_with_multiple_products(db, test_team, test_region):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(product1)
     db.add(product2)
     db.commit()
 
     # Add both products to team
-    team_product1 = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=product1.id
-    )
-    team_product2 = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=product2.id
-    )
+    team_product1 = DBTeamProduct(team_id=test_team.id, product_id=product1.id)
+    team_product2 = DBTeamProduct(team_id=test_team.id, product_id=product2.id)
     db.add(team_product1)
     db.add(team_product2)
     db.commit()
@@ -169,7 +160,7 @@ def test_create_vector_db_with_multiple_products(db, test_team, test_region):
             database_password="test_pass",
             team_id=test_team.id,
             region_id=test_region.id,
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         )
         db.add(key)
         db.commit()
@@ -179,10 +170,14 @@ def test_create_vector_db_with_multiple_products(db, test_team, test_region):
         limit_service = LimitService(db)
         limit_service.check_vector_db_limits(test_team.id)
     assert exc_info.value.status_code == 402
-    assert "Team has reached their maximum vector DB limit" in str(exc_info.value.detail)
+    assert "Team has reached their maximum vector DB limit" in str(
+        exc_info.value.detail
+    )
 
 
-def test_create_vector_db_with_user_owned_key(db, test_team, test_region, test_team_user):
+def test_create_vector_db_with_user_owned_key(
+    db, test_team, test_region, test_team_user
+):
     """Test vector DB limit check when a user-owned key has a vector DB and team has no products"""
     from app.db.models import DBProduct, DBTeamProduct
 
@@ -200,15 +195,12 @@ def test_create_vector_db_with_user_owned_key(db, test_team, test_region, test_t
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(test_product)
 
     # Associate the product with the team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -223,7 +215,7 @@ def test_create_vector_db_with_user_owned_key(db, test_team, test_region, test_t
             owner_id=test_team_user.id,
             team_id=None,  # User-owned keys should not have team_id
             region_id=test_region.id,
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         )
         db.add(key)
     db.commit()
@@ -233,7 +225,10 @@ def test_create_vector_db_with_user_owned_key(db, test_team, test_region, test_t
         limit_service = LimitService(db)
         limit_service.check_vector_db_limits(test_team.id)
     assert exc_info.value.status_code == 402
-    assert f"Team has reached the maximum vector DB limit of {test_product.vector_db_count} databases" in str(exc_info.value.detail)
+    assert (
+        f"Team has reached the maximum vector DB limit of {test_product.vector_db_count} databases"
+        in str(exc_info.value.detail)
+    )
 
 
 def test_check_vector_db_limits_with_limit_service(db, test_team):
@@ -253,7 +248,7 @@ def test_check_vector_db_limits_with_limit_service(db, test_team):
         unit=UnitType.COUNT,
         max_value=3.0,
         current_value=1.0,
-        limited_by=LimitSource.DEFAULT
+        limited_by=LimitSource.DEFAULT,
     )
 
     # Test that check_vector_db_limits doesn't raise an exception
@@ -277,7 +272,7 @@ def test_check_vector_db_limits_with_limit_service_at_capacity(db, test_team):
         unit=UnitType.COUNT,
         max_value=2.0,
         current_value=2.0,  # At capacity
-        limited_by=LimitSource.DEFAULT
+        limited_by=LimitSource.DEFAULT,
     )
 
     # Test that check_vector_db_limits raises an exception
@@ -285,7 +280,9 @@ def test_check_vector_db_limits_with_limit_service_at_capacity(db, test_team):
         limit_service = LimitService(db)
         limit_service.check_vector_db_limits(test_team.id)
     assert exc_info.value.status_code == 402
-    assert "Team has reached their maximum vector DB limit" in str(exc_info.value.detail)
+    assert "Team has reached their maximum vector DB limit" in str(
+        exc_info.value.detail
+    )
 
 
 def test_check_vector_db_limits_fallback_creates_limit(db, test_team, test_product):
@@ -295,17 +292,16 @@ def test_check_vector_db_limits_fallback_creates_limit(db, test_team, test_produ
     THEN: The fallback code runs and creates a new limit in the service
     """
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
     # Verify no limit exists in the service initially
     limit_service = LimitService(db)
     try:
-        limit_service.increment_resource(OwnerType.TEAM, test_team.id, ResourceType.VECTOR_DB)
+        limit_service.increment_resource(
+            OwnerType.TEAM, test_team.id, ResourceType.VECTOR_DB
+        )
         assert False, "Should have raised LimitNotFoundError"
     except Exception:
         pass  # Expected
@@ -319,7 +315,9 @@ def test_check_vector_db_limits_fallback_creates_limit(db, test_team, test_produ
     team_limits = limit_service.get_team_limits(team)
 
     # Should have a VECTOR_DB limit now
-    vector_db_limits = [limit for limit in team_limits if limit.resource == ResourceType.VECTOR_DB]
+    vector_db_limits = [
+        limit for limit in team_limits if limit.resource == ResourceType.VECTOR_DB
+    ]
     assert len(vector_db_limits) == 1
     vector_db_limit = vector_db_limits[0]
     # The fallback correctly uses product values (vector DB query was already correct)

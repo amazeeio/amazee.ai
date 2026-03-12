@@ -1,4 +1,5 @@
 import os
+
 # Set environment variables BEFORE any app imports
 os.environ["AMAZEEAI_JWT_SECRET"] = "test-secret-key-for-tests"
 
@@ -16,12 +17,13 @@ from unittest.mock import patch, MagicMock, Mock, AsyncMock
 # Get database URL from environment
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://postgres:postgres@amazee-test-postgres/postgres_service"
+    "postgresql://postgres:postgres@amazee-test-postgres/postgres_service",
 )
 
 # Create test database engine
 engine = create_engine(DATABASE_URL)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
 
 @pytest.fixture
 def db():
@@ -38,6 +40,7 @@ def db():
         # Clean up after test
         Base.metadata.drop_all(bind=engine)
 
+
 @pytest.fixture
 def client(db):
     def override_get_db():
@@ -47,6 +50,7 @@ def client(db):
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
 
 @pytest.fixture
 def test_user(db):
@@ -59,12 +63,13 @@ def test_user(db):
         email="test@example.com",
         hashed_password=get_password_hash("testpassword"),
         is_active=True,
-        is_admin=False
+        is_admin=False,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
     return user
+
 
 @pytest.fixture
 def test_admin(db):
@@ -72,28 +77,29 @@ def test_admin(db):
         email="admin@example.com",
         hashed_password=get_password_hash("adminpassword"),
         is_active=True,
-        is_admin=True
+        is_admin=True,
     )
     db.add(admin)
     db.commit()
     db.refresh(admin)
     return admin
 
+
 @pytest.fixture
 def test_token(client, test_user):
     response = client.post(
-        "/auth/login",
-        data={"username": test_user.email, "password": "testpassword"}
+        "/auth/login", data={"username": test_user.email, "password": "testpassword"}
     )
     return response.json()["access_token"]
+
 
 @pytest.fixture
 def admin_token(client, test_admin):
     response = client.post(
-        "/auth/login",
-        data={"username": test_admin.email, "password": "adminpassword"}
+        "/auth/login", data={"username": test_admin.email, "password": "adminpassword"}
     )
     return response.json()["access_token"]
+
 
 @pytest.fixture
 def test_team(db):
@@ -104,12 +110,13 @@ def test_team(db):
         billing_address="123 Test St, Test City, 12345",
         is_active=True,
         budget_mode="periodic",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(team)
     db.commit()
     db.refresh(team)
     return team
+
 
 @pytest.fixture
 def test_product(db):
@@ -126,16 +133,18 @@ def test_product(db):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(product)
     db.commit()
     db.refresh(product)
     return product
 
+
 @pytest.fixture
 def test_team_id(test_team):
     return test_team.id
+
 
 @pytest.fixture
 def test_team_user(db, test_team):
@@ -146,12 +155,13 @@ def test_team_user(db, test_team):
         is_admin=False,
         role="key_creator",
         team_id=test_team.id,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(user)
     db.commit()
     db.refresh(user)
     return user
+
 
 @pytest.fixture
 def test_team_admin(db, test_team):
@@ -162,7 +172,7 @@ def test_team_admin(db, test_team):
         is_admin=False,
         role="admin",
         team_id=test_team.id,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(user)
     db.commit()
@@ -171,13 +181,15 @@ def test_team_admin(db, test_team):
     db.refresh(test_team)
     return user
 
+
 @pytest.fixture
 def team_admin_token(client, test_team_admin):
     response = client.post(
         "/auth/login",
-        data={"username": test_team_admin.email, "password": "password123"}
+        data={"username": test_team_admin.email, "password": "password123"},
     )
     return response.json()["access_token"]
+
 
 @pytest.fixture
 def test_team_key_creator(db, test_team):
@@ -188,7 +200,7 @@ def test_team_key_creator(db, test_team):
         is_admin=False,
         role="key_creator",
         team_id=test_team.id,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(user)
     db.commit()
@@ -197,13 +209,15 @@ def test_team_key_creator(db, test_team):
     db.refresh(test_team)
     return user
 
+
 @pytest.fixture
 def team_key_creator_token(client, test_team_key_creator):
     response = client.post(
         "/auth/login",
-        data={"username": test_team_key_creator.email, "password": "password123"}
+        data={"username": test_team_key_creator.email, "password": "password123"},
     )
     return response.json()["access_token"]
+
 
 @pytest.fixture
 def test_region(db):
@@ -217,12 +231,13 @@ def test_region(db):
         postgres_admin_password="postgres",
         litellm_api_url="https://test-litellm.com",
         litellm_api_key="test-litellm-key",
-        is_active=True
+        is_active=True,
     )
     db.add(region)
     db.commit()
     db.refresh(region)
     return region
+
 
 @pytest.fixture
 def test_team_read_only(db, test_team):
@@ -233,41 +248,44 @@ def test_team_read_only(db, test_team):
         is_admin=False,
         role="read_only",
         team_id=test_team.id,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(user)
     db.commit()
     db.refresh(user)
     return user
 
+
 @pytest.fixture
 def team_read_only_token(client, test_team_read_only):
     response = client.post(
         "/auth/login",
-        data={"username": test_team_read_only.email, "password": "password123"}
+        data={"username": test_team_read_only.email, "password": "password123"},
     )
     return response.json()["access_token"]
+
 
 @pytest.fixture
 def mock_sts_client():
     """Fixture to mock STS client responses."""
-    with patch('boto3.client') as mock_client:
+    with patch("boto3.client") as mock_client:
         # Mock get_caller_identity response
         mock_sts = MagicMock()
-        mock_sts.get_caller_identity.return_value = {'Account': '123456789012'}
+        mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
 
         # Mock assume_role response
         mock_sts.assume_role.return_value = {
-            'Credentials': {
-                'AccessKeyId': 'test-access-key',
-                'SecretAccessKey': 'test-secret-key',
-                'SessionToken': 'test-session-token',
-                'Expiration': datetime.now(UTC) + timedelta(hours=1)
+            "Credentials": {
+                "AccessKeyId": "test-access-key",
+                "SecretAccessKey": "test-secret-key",
+                "SessionToken": "test-session-token",
+                "Expiration": datetime.now(UTC) + timedelta(hours=1),
             }
         }
 
         mock_client.return_value = mock_sts
         yield mock_sts
+
 
 @pytest.fixture
 def mock_httpx_post_client():
@@ -284,6 +302,7 @@ def mock_httpx_post_client():
 
     return mock_client
 
+
 @pytest.fixture
 def mock_httpx_get_client():
     """Mock httpx.AsyncClient for GET operations (key info)"""
@@ -297,7 +316,7 @@ def mock_httpx_get_client():
             "updated_at": "2024-01-02T00:00:00Z",
             "max_budget": 100.0,
             "budget_duration": "monthly",
-            "budget_reset_at": "2024-02-01T00:00:00Z"
+            "budget_reset_at": "2024-02-01T00:00:00Z",
         }
     }
     mock_response.raise_for_status.return_value = None
@@ -308,6 +327,7 @@ def mock_httpx_get_client():
     mock_client.__aexit__.return_value = None
 
     return mock_client
+
 
 @pytest.fixture
 def mock_httpx_combined_client():
@@ -329,7 +349,7 @@ def mock_httpx_combined_client():
             "updated_at": "2024-01-02T00:00:00Z",
             "max_budget": 100.0,
             "budget_duration": "monthly",
-            "budget_reset_at": "2024-02-01T00:00:00Z"
+            "budget_reset_at": "2024-02-01T00:00:00Z",
         }
     }
     mock_get_response.raise_for_status.return_value = None
@@ -368,8 +388,7 @@ def soft_delete_team_for_test(db, team: DBTeam, deleted_at: datetime = None):
 
     # Deactivate all users in the team
     db.query(DBUser).filter(DBUser.team_id == team.id).update(
-        {"is_active": False},
-        synchronize_session=False
+        {"is_active": False}, synchronize_session=False
     )
 
     db.commit()

@@ -3,7 +3,15 @@ from sqlalchemy import and_, or_, select, func
 from fastapi import HTTPException, status
 from typing import Optional, List
 from datetime import datetime, UTC
-from app.db.models import DBLimitedResource, DBUser, DBTeam, DBTeamProduct, DBPrivateAIKey, DBProduct, DBTeamRegion
+from app.db.models import (
+    DBLimitedResource,
+    DBUser,
+    DBTeam,
+    DBTeamProduct,
+    DBPrivateAIKey,
+    DBProduct,
+    DBTeamRegion,
+)
 from app.schemas.limits import (
     LimitedResource,
     LimitedResourceCreate,
@@ -11,8 +19,8 @@ from app.schemas.limits import (
     UnitType,
     LimitSource,
     LimitType,
-    ResourceType
-    )
+    ResourceType,
+)
 import logging
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -21,21 +29,25 @@ from prometheus_client import Counter
 # Shared executor for budget propagation to avoid creating too many threads
 _budget_propagation_executor = None
 
+
 def _get_budget_propagation_executor():
     """Get or create the shared executor for budget propagation."""
     global _budget_propagation_executor
     if _budget_propagation_executor is None:
         # Limit to 5 workers to prevent fork-bomb scenarios
-        _budget_propagation_executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="budget_propagation")
+        _budget_propagation_executor = ThreadPoolExecutor(
+            max_workers=5, thread_name_prefix="budget_propagation"
+        )
     return _budget_propagation_executor
+
 
 logger = logging.getLogger(__name__)
 
 # Metrics to track which route is being followed
 limit_check_route_counter = Counter(
-    'resource_limits_check_route_total',
-    'Total number of limit checks by route',
-    ['function', 'route']
+    "resource_limits_check_route_total",
+    "Total number of limit checks by route",
+    ["function", "route"],
 )
 
 # Default limits across all customers and products
@@ -43,17 +55,30 @@ DEFAULT_USER_COUNT = 1
 DEFAULT_KEYS_PER_USER = 1
 DEFAULT_TOTAL_KEYS = 6
 DEFAULT_SERVICE_KEYS = 5
-DEFAULT_VECTOR_DB_COUNT = 5 # Setting to match service keys for drupal module trial
+DEFAULT_VECTOR_DB_COUNT = 5  # Setting to match service keys for drupal module trial
 DEFAULT_KEY_DURATION = 30
 DEFAULT_MAX_SPEND = 27.0
 DEFAULT_RPM_PER_KEY = 500
 
 # Reference collections
-control_plane_limits = [ResourceType.USER_KEY, ResourceType.SERVICE_KEY, ResourceType.USER, ResourceType.VECTOR_DB, ResourceType.GPT_INSTANCE]
-data_plane_limits = [ResourceType.BUDGET, ResourceType.RPM, ResourceType.STORAGE, ResourceType.DOCUMENT]
+control_plane_limits = [
+    ResourceType.USER_KEY,
+    ResourceType.SERVICE_KEY,
+    ResourceType.USER,
+    ResourceType.VECTOR_DB,
+    ResourceType.GPT_INSTANCE,
+]
+data_plane_limits = [
+    ResourceType.BUDGET,
+    ResourceType.RPM,
+    ResourceType.STORAGE,
+    ResourceType.DOCUMENT,
+]
+
 
 class LimitNotFoundError(Exception):
     """Raised when a requested limit is not found."""
+
     pass
 
 
@@ -83,17 +108,23 @@ class LimitService:
             List of LimitedResource objects containing all limits for the team
         """
         # Get system default limits
-        system_limits = self.db.query(DBLimitedResource).filter(
-            DBLimitedResource.owner_type == OwnerType.SYSTEM
-        ).all()
+        system_limits = (
+            self.db.query(DBLimitedResource)
+            .filter(DBLimitedResource.owner_type == OwnerType.SYSTEM)
+            .all()
+        )
 
         # Get team limits
-        team_limits = self.db.query(DBLimitedResource).filter(
-            and_(
-                DBLimitedResource.owner_type == OwnerType.TEAM,
-                DBLimitedResource.owner_id == team.id
+        team_limits = (
+            self.db.query(DBLimitedResource)
+            .filter(
+                and_(
+                    DBLimitedResource.owner_type == OwnerType.TEAM,
+                    DBLimitedResource.owner_id == team.id,
+                )
             )
-        ).all()
+            .all()
+        )
 
         # Build effective limits: TEAM -> SYSTEM inheritance (no user limits in team view)
         effective_limits = {}
@@ -123,7 +154,7 @@ class LimitService:
                     unit=limit.unit,
                     max_value=limit.max_value,
                     current_value=limit.current_value,
-                    limited_by=LimitSource.DEFAULT  # Inherit the source from system limit
+                    limited_by=LimitSource.DEFAULT,  # Inherit the source from system limit
                 )
                 schema = LimitedResource.model_validate(team_limit)
             else:
@@ -145,12 +176,16 @@ class LimitService:
             List of LimitedResource objects containing effective limits for the user
         """
         # Get user-specific limits
-        user_limits = self.db.query(DBLimitedResource).filter(
-            and_(
-                DBLimitedResource.owner_type == OwnerType.USER,
-                DBLimitedResource.owner_id == user.id
+        user_limits = (
+            self.db.query(DBLimitedResource)
+            .filter(
+                and_(
+                    DBLimitedResource.owner_type == OwnerType.USER,
+                    DBLimitedResource.owner_id == user.id,
+                )
             )
-        ).all()
+            .all()
+        )
 
         # Get team limits
         team = self.db.query(DBTeam).filter(DBTeam.id == user.team_id).first()
@@ -171,8 +206,7 @@ class LimitService:
             effective_limits[limit.resource] = limit
 
         limit_schemas = [
-            LimitedResource.model_validate(limit)
-            for limit in effective_limits.values()
+            LimitedResource.model_validate(limit) for limit in effective_limits.values()
         ]
 
         return limit_schemas
@@ -184,9 +218,11 @@ class LimitService:
         Returns:
             List of LimitedResource objects containing all system limits
         """
-        system_limits = self.db.query(DBLimitedResource).filter(
-            DBLimitedResource.owner_type == OwnerType.SYSTEM
-        ).all()
+        system_limits = (
+            self.db.query(DBLimitedResource)
+            .filter(DBLimitedResource.owner_type == OwnerType.SYSTEM)
+            .all()
+        )
 
         limit_schemas = [
             LimitedResource.model_validate(limit) for limit in system_limits
@@ -201,13 +237,23 @@ class LimitService:
         Raises:
             ValueError: When trying to set a COUNT CONTROL_PLANE limit which was not previously 0
         """
-        if limit.limit_type == LimitType.CONTROL_PLANE and limit.unit == UnitType.COUNT and limit.current_value > 0.0:
-            raise ValueError("Control Plane counters must be incremented or decremented, and can only be set once.")
-        db_limit = self.db.execute(select(DBLimitedResource).filter(DBLimitedResource.id == limit.id)).scalar_one()
+        if (
+            limit.limit_type == LimitType.CONTROL_PLANE
+            and limit.unit == UnitType.COUNT
+            and limit.current_value > 0.0
+        ):
+            raise ValueError(
+                "Control Plane counters must be incremented or decremented, and can only be set once."
+            )
+        db_limit = self.db.execute(
+            select(DBLimitedResource).filter(DBLimitedResource.id == limit.id)
+        ).scalar_one()
         db_limit.current_value = new_value
         self.db.commit()
 
-    def increment_resource(self, owner_type: OwnerType, owner_id: int, resource_type: ResourceType) -> bool:
+    def increment_resource(
+        self, owner_type: OwnerType, owner_id: int, resource_type: ResourceType
+    ) -> bool:
         """
         Increment the current value of a resource if within limits.
 
@@ -238,7 +284,9 @@ class LimitService:
 
         return True
 
-    def decrement_resource(self, owner_type: OwnerType, owner_id: int, resource_type: ResourceType) -> bool:
+    def decrement_resource(
+        self, owner_type: OwnerType, owner_id: int, resource_type: ResourceType
+    ) -> bool:
         """
         Decrement the current value of a resource.
 
@@ -266,17 +314,25 @@ class LimitService:
 
         return True
 
-    def _verify_control_plane_count(self, owner_type: OwnerType, owner_id: int, resource: ResourceType) -> DBLimitedResource:
-        limit = self.db.query(DBLimitedResource).filter(
-            and_(
-                DBLimitedResource.owner_type == owner_type,
-                DBLimitedResource.owner_id == owner_id,
-                DBLimitedResource.resource == resource
+    def _verify_control_plane_count(
+        self, owner_type: OwnerType, owner_id: int, resource: ResourceType
+    ) -> DBLimitedResource:
+        limit = (
+            self.db.query(DBLimitedResource)
+            .filter(
+                and_(
+                    DBLimitedResource.owner_type == owner_type,
+                    DBLimitedResource.owner_id == owner_id,
+                    DBLimitedResource.resource == resource,
+                )
             )
-        ).first()
+            .first()
+        )
 
         if not limit:
-            raise LimitNotFoundError(f"No limit found for {owner_type} {owner_id} resource {resource}")
+            raise LimitNotFoundError(
+                f"No limit found for {owner_type} {owner_id} resource {resource}"
+            )
 
         # Data Plane limits cannot be incremented/decremented
         if limit.limit_type == LimitType.DATA_PLANE:
@@ -298,9 +354,11 @@ class LimitService:
         max_value: float,
         current_value: Optional[float] = None,
         limited_by: LimitSource = LimitSource.DEFAULT,
-        set_by: Optional[str] = None
+        set_by: Optional[str] = None,
     ) -> DBLimitedResource:
-        logger.info(f"Overwriting {resource_type.value} limit for {owner_type.value} {owner_id}")
+        logger.info(
+            f"Overwriting {resource_type.value} limit for {owner_type.value} {owner_id}"
+        )
         limit = LimitedResourceCreate(
             limit_type=limit_type,
             resource=resource_type,
@@ -310,7 +368,7 @@ class LimitService:
             owner_type=owner_type,
             owner_id=owner_id,
             limited_by=limited_by,
-            set_by=set_by
+            set_by=set_by,
         )
         result = self._set_limit(limited_resource=limit)
         return result
@@ -334,28 +392,45 @@ class LimitService:
             ValueError: If validation fails or hierarchy rules are violated
         """
         # Validate inputs
-        if limited_resource.limit_type == LimitType.CONTROL_PLANE and limited_resource.current_value is None:
+        if (
+            limited_resource.limit_type == LimitType.CONTROL_PLANE
+            and limited_resource.current_value is None
+        ):
             raise ValueError("Control plane limits must have current_value")
 
-        if limited_resource.limited_by == LimitSource.MANUAL and not limited_resource.set_by:
+        if (
+            limited_resource.limited_by == LimitSource.MANUAL
+            and not limited_resource.set_by
+        ):
             raise ValueError("Manual limits must specify set_by")
 
         # Business rule: SYSTEM limits can only have DEFAULT or MANUAL source
-        if limited_resource.owner_type == OwnerType.SYSTEM and limited_resource.limited_by not in [LimitSource.DEFAULT, LimitSource.MANUAL]:
+        if (
+            limited_resource.owner_type == OwnerType.SYSTEM
+            and limited_resource.limited_by
+            not in [LimitSource.DEFAULT, LimitSource.MANUAL]
+        ):
             raise ValueError("SYSTEM limits can only have DEFAULT or MANUAL source")
 
         # Check if limit already exists
-        existing_limit = self.db.query(DBLimitedResource).filter(
-            and_(
-                DBLimitedResource.owner_type == limited_resource.owner_type,
-                DBLimitedResource.owner_id == limited_resource.owner_id,
-                DBLimitedResource.resource == limited_resource.resource
+        existing_limit = (
+            self.db.query(DBLimitedResource)
+            .filter(
+                and_(
+                    DBLimitedResource.owner_type == limited_resource.owner_type,
+                    DBLimitedResource.owner_id == limited_resource.owner_id,
+                    DBLimitedResource.resource == limited_resource.resource,
+                )
             )
-        ).first()
+            .first()
+        )
 
         if existing_limit:
             # Apply hierarchy rules
-            if existing_limit.limited_by == LimitSource.MANUAL and limited_resource.limited_by != LimitSource.MANUAL:
+            if (
+                existing_limit.limited_by == LimitSource.MANUAL
+                and limited_resource.limited_by != LimitSource.MANUAL
+            ):
                 raise ValueError("Cannot override manual limit with non-manual limit")
 
             # Update existing limit
@@ -364,7 +439,11 @@ class LimitService:
             existing_limit.max_value = limited_resource.max_value
             existing_limit.current_value = limited_resource.current_value
             existing_limit.limited_by = limited_resource.limited_by
-            existing_limit.set_by = limited_resource.set_by if limited_resource.limited_by == LimitSource.MANUAL else None
+            existing_limit.set_by = (
+                limited_resource.set_by
+                if limited_resource.limited_by == LimitSource.MANUAL
+                else None
+            )
             existing_limit.updated_at = datetime.now(UTC)
 
             self.db.add(existing_limit)
@@ -382,8 +461,10 @@ class LimitService:
                 owner_type=limited_resource.owner_type,
                 owner_id=limited_resource.owner_id,
                 limited_by=limited_resource.limited_by,
-                set_by=limited_resource.set_by if limited_resource.limited_by == LimitSource.MANUAL else None,
-                created_at=datetime.now(UTC)
+                set_by=limited_resource.set_by
+                if limited_resource.limited_by == LimitSource.MANUAL
+                else None,
+                created_at=datetime.now(UTC),
             )
 
             self.db.add(new_limit)
@@ -392,15 +473,24 @@ class LimitService:
 
         # If this is a system limit change, update all default limits for the same resource
         if limited_resource.owner_type == OwnerType.SYSTEM:
-            self._update_default_limits_for_resource(limited_resource.resource, limited_resource.max_value)
+            self._update_default_limits_for_resource(
+                limited_resource.resource, limited_resource.max_value
+            )
 
         # If this is a team budget limit update, propagate to all team keys
-        if limited_resource.owner_type == OwnerType.TEAM and limited_resource.resource == ResourceType.BUDGET:
-            self._trigger_team_budget_propagation(limited_resource.owner_id, limited_resource.max_value)
+        if (
+            limited_resource.owner_type == OwnerType.TEAM
+            and limited_resource.resource == ResourceType.BUDGET
+        ):
+            self._trigger_team_budget_propagation(
+                limited_resource.owner_id, limited_resource.max_value
+            )
 
         return result
 
-    def _trigger_team_budget_propagation(self, team_id: int, budget_amount: float, region_id: Optional[int] = None) -> None:
+    def _trigger_team_budget_propagation(
+        self, team_id: int, budget_amount: float, region_id: Optional[int] = None
+    ) -> None:
         """
         Trigger propagation of team budget limit to keys.
 
@@ -422,9 +512,13 @@ class LimitService:
         team = self.db.query(DBTeam).filter(DBTeam.id == team_id).first()
         if team and team.budget_mode == "pool":
             duration_by_region = {}
-            team_regions_query = self.db.query(DBTeamRegion).filter(DBTeamRegion.team_id == team_id)
+            team_regions_query = self.db.query(DBTeamRegion).filter(
+                DBTeamRegion.team_id == team_id
+            )
             if region_id is not None:
-                team_regions_query = team_regions_query.filter(DBTeamRegion.region_id == region_id)
+                team_regions_query = team_regions_query.filter(
+                    DBTeamRegion.region_id == region_id
+                )
             team_regions = team_regions_query.all()
             now = datetime.now(UTC)
             for team_region in team_regions:
@@ -462,13 +556,15 @@ class LimitService:
                             team_id,
                             budget_amount,
                             budget_duration=budget_duration,
-                            duration_by_region=duration_by_region
+                            duration_by_region=duration_by_region,
                         )
                     )
                 finally:
                     loop.close()
             except Exception as thread_error:
-                logger.error(f"Error in async propagation thread for team {team_id}: {str(thread_error)}")
+                logger.error(
+                    f"Error in async propagation thread for team {team_id}: {str(thread_error)}"
+                )
             finally:
                 db.close()
 
@@ -476,12 +572,18 @@ class LimitService:
             # Use shared executor to limit concurrent threads and prevent fork-bomb
             executor = _get_budget_propagation_executor()
             executor.submit(run_async_propagation)
-            logger.info(f"Triggered async propagation of budget limit for team {team_id}")
+            logger.info(
+                f"Triggered async propagation of budget limit for team {team_id}"
+            )
         except Exception as propagation_error:
-            logger.error(f"Error triggering budget limit propagation for team {team_id}: {str(propagation_error)}")
+            logger.error(
+                f"Error triggering budget limit propagation for team {team_id}: {str(propagation_error)}"
+            )
             # Don't raise - allow limit update to succeed even if propagation fails
 
-    def _update_default_limits_for_resource(self, resource_type: ResourceType, new_max_value: float) -> None:
+    def _update_default_limits_for_resource(
+        self, resource_type: ResourceType, new_max_value: float
+    ) -> None:
         """
         Update all team and user limits that have limited_by=DEFAULT for the given resource type
         to reflect the new system default value.
@@ -491,13 +593,17 @@ class LimitService:
             new_max_value: The new maximum value from the system limit
         """
         # Find all team and user limits with limited_by=DEFAULT for this resource
-        default_limits = self.db.query(DBLimitedResource).filter(
-            and_(
-                DBLimitedResource.resource == resource_type,
-                DBLimitedResource.limited_by == LimitSource.DEFAULT,
-                DBLimitedResource.owner_type.in_([OwnerType.TEAM, OwnerType.USER])
+        default_limits = (
+            self.db.query(DBLimitedResource)
+            .filter(
+                and_(
+                    DBLimitedResource.resource == resource_type,
+                    DBLimitedResource.limited_by == LimitSource.DEFAULT,
+                    DBLimitedResource.owner_type.in_([OwnerType.TEAM, OwnerType.USER]),
+                )
             )
-        ).all()
+            .all()
+        )
 
         # Update each default limit to reflect the new system default
         for limit in default_limits:
@@ -507,7 +613,9 @@ class LimitService:
 
         if default_limits:
             self.db.commit()
-            logger.info(f"Updated {len(default_limits)} default limits for resource {resource_type.value} to new system default {new_max_value}")
+            logger.info(
+                f"Updated {len(default_limits)} default limits for resource {resource_type.value} to new system default {new_max_value}"
+            )
 
     def reset_team_limits(self, team: DBTeam) -> List[LimitedResource]:
         """
@@ -539,36 +647,57 @@ class LimitService:
             Updated DBLimitedResource database model
         """
         # Should be verified before calling the function, but just-in-case
-        db_limit = self.db.query(DBLimitedResource).filter(DBLimitedResource.id == limit.id).first()
+        db_limit = (
+            self.db.query(DBLimitedResource)
+            .filter(DBLimitedResource.id == limit.id)
+            .first()
+        )
         if not db_limit:
             raise ValueError(f"Database model not found for limit {limit.id}")
 
         if limit.owner_type == OwnerType.SYSTEM:
             raise ValueError("Cannot reset SYSTEM limits")
         elif limit.owner_type == OwnerType.TEAM:
-            logger.info(f"Setting resource {limit.resource} to product max for team {limit.owner_id}")
+            logger.info(
+                f"Setting resource {limit.resource} to product max for team {limit.owner_id}"
+            )
             team_id = limit.owner_id
         elif limit.owner_type == OwnerType.USER:
-            logger.info(f"Trying to reset {limit.resource} limits for user {limit.owner_id}")
+            logger.info(
+                f"Trying to reset {limit.resource} limits for user {limit.owner_id}"
+            )
             user = self.db.query(DBUser).filter(DBUser.id == limit.owner_id).first()
             if not user.team_id:
-                logger.warning(f"User {limit.owner_id} is a system user; cannot reset limit")
+                logger.warning(
+                    f"User {limit.owner_id} is a system user; cannot reset limit"
+                )
                 # Find and return the existing database model
-                return self.db.query(DBLimitedResource).filter(DBLimitedResource.id == limit.id).first()
+                return (
+                    self.db.query(DBLimitedResource)
+                    .filter(DBLimitedResource.id == limit.id)
+                    .first()
+                )
             team_id = user.team_id
         else:
             raise ValueError(f"Unknown owner type, cannot reset limit {limit}")
 
         # Calculate new values
-        if limit.owner_type == OwnerType.USER and limit.resource == ResourceType.USER_KEY:
-            max_value = self.get_user_product_limit_for_resource(team_id, limit.resource)
+        if (
+            limit.owner_type == OwnerType.USER
+            and limit.resource == ResourceType.USER_KEY
+        ):
+            max_value = self.get_user_product_limit_for_resource(
+                team_id, limit.resource
+            )
             if max_value is None:
                 max_value = self.get_default_user_limit_for_resource(limit.resource)
                 new_limited_by = LimitSource.DEFAULT
             else:
                 new_limited_by = LimitSource.PRODUCT
         else:
-            max_value = self.get_team_product_limit_for_resource(team_id, limit.resource)
+            max_value = self.get_team_product_limit_for_resource(
+                team_id, limit.resource
+            )
             if max_value is None:
                 max_value = self.get_default_team_limit_for_resource(limit.resource)
                 new_limited_by = LimitSource.DEFAULT
@@ -582,17 +711,25 @@ class LimitService:
         self.db.commit()
         return db_limit
 
-    def reset_limit(self, owner_type: OwnerType, owner_id: int, resource_type: ResourceType) -> DBLimitedResource:
-        limit = self.db.query(DBLimitedResource).filter(
-            and_(
-                DBLimitedResource.owner_type == owner_type,
-                DBLimitedResource.owner_id == owner_id,
-                DBLimitedResource.resource == resource_type
+    def reset_limit(
+        self, owner_type: OwnerType, owner_id: int, resource_type: ResourceType
+    ) -> DBLimitedResource:
+        limit = (
+            self.db.query(DBLimitedResource)
+            .filter(
+                and_(
+                    DBLimitedResource.owner_type == owner_type,
+                    DBLimitedResource.owner_id == owner_id,
+                    DBLimitedResource.resource == resource_type,
+                )
             )
-        ).first()
+            .first()
+        )
 
         if not limit:
-            raise LimitNotFoundError(f"No limit found for {owner_type} {owner_id} resource {resource_type}")
+            raise LimitNotFoundError(
+                f"No limit found for {owner_type} {owner_id} resource {resource_type}"
+            )
 
         return self._reset_limit(limit)
 
@@ -616,7 +753,7 @@ class LimitService:
             ResourceType.SERVICE_KEY,
             ResourceType.VECTOR_DB,
             ResourceType.BUDGET,
-            ResourceType.RPM
+            ResourceType.RPM,
         ]
 
         limit_map = {}
@@ -637,14 +774,18 @@ class LimitService:
             if existing_limit and existing_limit.limited_by == LimitSource.MANUAL:
                 continue
 
-            limit_type, unit, current_value = self._get_limit_details(resource_type, existing_limit)
+            limit_type, unit, current_value = self._get_limit_details(
+                resource_type, existing_limit
+            )
 
             if team.budget_mode == "pool" and resource_type in pool_override_limits:
                 max_value = float(pool_override_limits[resource_type])
                 limit_source = LimitSource.DEFAULT
             else:
                 # Try to get product limit first, fall back to default
-                max_value = self.get_team_product_limit_for_resource(team.id, resource_type)
+                max_value = self.get_team_product_limit_for_resource(
+                    team.id, resource_type
+                )
                 if max_value is not None:
                     limit_source = LimitSource.PRODUCT
                 else:
@@ -660,7 +801,7 @@ class LimitService:
                 unit=unit,
                 max_value=max_value,
                 current_value=current_value,
-                limited_by=limit_source
+                limited_by=limit_source,
             )
 
     def set_user_limits(self, user: DBUser):
@@ -676,9 +817,7 @@ class LimitService:
 
         # Define all resource types that need user limits
         # Users only get USER_KEY limits - BUDGET and RPM are inherited from team
-        user_resources = [
-            ResourceType.USER_KEY
-        ]
+        user_resources = [ResourceType.USER_KEY]
 
         limit_map = {}
         for limit in existing_limits:
@@ -691,14 +830,26 @@ class LimitService:
             if existing_limit and existing_limit.limited_by == LimitSource.MANUAL:
                 continue
 
-            limit_type, unit, current_value = self._get_limit_details(resource_type, existing_limit)
-            team = self.db.query(DBTeam).filter(DBTeam.id == user.team_id).first() if user.team_id else None
-            if team and team.budget_mode == "pool" and resource_type == ResourceType.USER_KEY:
+            limit_type, unit, current_value = self._get_limit_details(
+                resource_type, existing_limit
+            )
+            team = (
+                self.db.query(DBTeam).filter(DBTeam.id == user.team_id).first()
+                if user.team_id
+                else None
+            )
+            if (
+                team
+                and team.budget_mode == "pool"
+                and resource_type == ResourceType.USER_KEY
+            ):
                 max_value = 100.0
                 limit_source = LimitSource.DEFAULT
             else:
                 # For users, only KEY limits are set - BUDGET and RPM are inherited from team
-                max_value = self.get_user_product_limit_for_resource(user.team_id, resource_type)
+                max_value = self.get_user_product_limit_for_resource(
+                    user.team_id, resource_type
+                )
                 if max_value is not None:
                     limit_source = LimitSource.PRODUCT
                 else:
@@ -714,10 +865,12 @@ class LimitService:
                 unit=unit,
                 max_value=max_value,
                 current_value=current_value,
-                limited_by=limit_source
+                limited_by=limit_source,
             )
 
-    def _get_limit_details(self, resource_type: ResourceType, existing_limit = LimitedResource) -> tuple[LimitType, UnitType, float]:
+    def _get_limit_details(
+        self, resource_type: ResourceType, existing_limit=LimitedResource
+    ) -> tuple[LimitType, UnitType, float]:
         # Determine limit type and unit based on resource
         if resource_type in control_plane_limits:
             limit_type = LimitType.CONTROL_PLANE
@@ -767,47 +920,62 @@ class LimitService:
         try:
             limit = self.increment_resource(OwnerType.TEAM, team_id, ResourceType.USER)
             if not limit:
-                limit_check_route_counter.labels(function='check_team_user_limit', route='limit_service_at_capacity').inc()
+                limit_check_route_counter.labels(
+                    function="check_team_user_limit", route="limit_service_at_capacity"
+                ).inc()
                 raise HTTPException(
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                    detail="Team has reached their maximum user limit."
+                    detail="Team has reached their maximum user limit.",
                 )
-            limit_check_route_counter.labels(function='check_team_user_limit', route='limit_service_success').inc()
+            limit_check_route_counter.labels(
+                function="check_team_user_limit", route="limit_service_success"
+            ).inc()
             return
         except LimitNotFoundError as e:
-            limit_check_route_counter.labels(function='check_team_user_limit', route='fallback').inc()
+            limit_check_route_counter.labels(
+                function="check_team_user_limit", route="fallback"
+            ).inc()
             logger.info(f"Team {team_id} has not been migrated to new limit system")
             logger.info(f"Exception thrown: {str(e)}")
 
         # Fall back to counting all users
         # Get current user count and max allowed users in a single query
-        result = self.db.query(
-            func.count(func.distinct(DBUser.id)).label('current_user_count'),
-            func.coalesce(func.max(DBProduct.user_count), DEFAULT_USER_COUNT).label('max_users')
-        ).select_from(DBTeam).filter(
-            DBTeam.id == team_id
-        ).outerjoin(
-            DBTeamProduct,
-            DBTeamProduct.team_id == DBTeam.id
-        ).outerjoin(
-            DBProduct,
-            DBProduct.id == DBTeamProduct.product_id
-        ).outerjoin(
-            DBUser,
-            DBUser.team_id == DBTeam.id
-        ).first()
+        result = (
+            self.db.query(
+                func.count(func.distinct(DBUser.id)).label("current_user_count"),
+                func.coalesce(func.max(DBProduct.user_count), DEFAULT_USER_COUNT).label(
+                    "max_users"
+                ),
+            )
+            .select_from(DBTeam)
+            .filter(DBTeam.id == team_id)
+            .outerjoin(DBTeamProduct, DBTeamProduct.team_id == DBTeam.id)
+            .outerjoin(DBProduct, DBProduct.id == DBTeamProduct.product_id)
+            .outerjoin(DBUser, DBUser.team_id == DBTeam.id)
+            .first()
+        )
 
         if not result:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
+            )
 
         # At this point we know the limit needs to be created, and the values with which it should be created
-        self.set_limit(OwnerType.TEAM, team_id, ResourceType.USER, LimitType.CONTROL_PLANE, UnitType.COUNT, result.max_users, result.current_user_count)
+        self.set_limit(
+            OwnerType.TEAM,
+            team_id,
+            ResourceType.USER,
+            LimitType.CONTROL_PLANE,
+            UnitType.COUNT,
+            result.max_users,
+            result.current_user_count,
+        )
         # Ensure the user in progress is recorded
         increment = self.increment_resource(OwnerType.TEAM, team_id, ResourceType.USER)
         if (result.current_user_count >= result.max_users) and not increment:
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=f"Team has reached the maximum user limit of {result.max_users} users"
+                detail=f"Team has reached the maximum user limit of {result.max_users} users",
             )
 
     def check_key_limits(self, team_id: int, owner_id: Optional[int] = None) -> None:
@@ -825,87 +993,136 @@ class LimitService:
             if owner_id is not None:
                 # For user keys, validate the user's key count
                 self._validate_and_correct_user_key_count(owner_id)
-                user_limit = self.increment_resource(OwnerType.USER, owner_id, ResourceType.USER_KEY)
+                user_limit = self.increment_resource(
+                    OwnerType.USER, owner_id, ResourceType.USER_KEY
+                )
                 if not user_limit:
-                    limit_check_route_counter.labels(function='check_key_limits', route='limit_service_at_capacity').inc()
+                    limit_check_route_counter.labels(
+                        function="check_key_limits", route="limit_service_at_capacity"
+                    ).inc()
                     raise HTTPException(
                         status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                        detail="Entity has reached their maximum number of AI keys"
+                        detail="Entity has reached their maximum number of AI keys",
                     )
             else:
                 # For service keys, validate the team's service key count
                 self._validate_and_correct_service_key_count(team_id)
-                team_limit = self.increment_resource(OwnerType.TEAM, team_id, ResourceType.SERVICE_KEY)
+                team_limit = self.increment_resource(
+                    OwnerType.TEAM, team_id, ResourceType.SERVICE_KEY
+                )
                 if not team_limit:
-                    limit_check_route_counter.labels(function='check_key_limits', route='limit_service_at_capacity').inc()
+                    limit_check_route_counter.labels(
+                        function="check_key_limits", route="limit_service_at_capacity"
+                    ).inc()
                     raise HTTPException(
                         status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                        detail="Entity has reached their maximum number of AI keys"
+                        detail="Entity has reached their maximum number of AI keys",
                     )
-            limit_check_route_counter.labels(function='check_key_limits', route='limit_service_success').inc()
+            limit_check_route_counter.labels(
+                function="check_key_limits", route="limit_service_success"
+            ).inc()
             return
         except LimitNotFoundError as e:
-            limit_check_route_counter.labels(function='check_key_limits', route='fallback').inc()
+            limit_check_route_counter.labels(
+                function="check_key_limits", route="fallback"
+            ).inc()
             logger.info(f"Team {team_id} has not been migrated to new limit system")
             logger.info(f"Exception thrown: {str(e)}")
 
         # Get all limits and current counts in a single query
-        result = self.db.query(
-            func.coalesce(func.max(DBProduct.keys_per_user), DEFAULT_KEYS_PER_USER).label('max_keys_per_user'),
-            func.coalesce(func.max(DBProduct.service_key_count), DEFAULT_SERVICE_KEYS).label('max_service_keys'),
-            func.count(func.distinct(DBPrivateAIKey.id)).filter(
-                DBPrivateAIKey.litellm_token.isnot(None)
-            ).label('current_team_keys'),
-            func.count(func.distinct(DBPrivateAIKey.id)).filter(
-                DBPrivateAIKey.owner_id == owner_id,
-                DBPrivateAIKey.litellm_token.isnot(None)
-            ).label('current_user_keys') if owner_id else None,
-            func.count(func.distinct(DBPrivateAIKey.id)).filter(
-                DBPrivateAIKey.owner_id.is_(None),
-                DBPrivateAIKey.litellm_token.isnot(None)
-            ).label('current_service_keys')
-        ).select_from(DBTeam).filter( # Have to use Teams table as the base because not every team has a product
-            DBTeam.id == team_id
-        ).outerjoin(
-            DBTeamProduct,
-            DBTeamProduct.team_id == DBTeam.id
-        ).outerjoin(
-            DBProduct,
-            DBProduct.id == DBTeamProduct.product_id
-        ).outerjoin(
-            DBPrivateAIKey,
-            or_(
-                DBPrivateAIKey.team_id == DBTeam.id,
-                DBPrivateAIKey.owner_id.in_(
-                    self.db.query(DBUser.id).filter(DBUser.team_id == DBTeam.id)
+        result = (
+            self.db.query(
+                func.coalesce(
+                    func.max(DBProduct.keys_per_user), DEFAULT_KEYS_PER_USER
+                ).label("max_keys_per_user"),
+                func.coalesce(
+                    func.max(DBProduct.service_key_count), DEFAULT_SERVICE_KEYS
+                ).label("max_service_keys"),
+                func.count(func.distinct(DBPrivateAIKey.id))
+                .filter(DBPrivateAIKey.litellm_token.isnot(None))
+                .label("current_team_keys"),
+                func.count(func.distinct(DBPrivateAIKey.id))
+                .filter(
+                    DBPrivateAIKey.owner_id == owner_id,
+                    DBPrivateAIKey.litellm_token.isnot(None),
                 )
+                .label("current_user_keys")
+                if owner_id
+                else None,
+                func.count(func.distinct(DBPrivateAIKey.id))
+                .filter(
+                    DBPrivateAIKey.owner_id.is_(None),
+                    DBPrivateAIKey.litellm_token.isnot(None),
+                )
+                .label("current_service_keys"),
             )
-        ).first()
+            .select_from(DBTeam)
+            .filter(  # Have to use Teams table as the base because not every team has a product
+                DBTeam.id == team_id
+            )
+            .outerjoin(DBTeamProduct, DBTeamProduct.team_id == DBTeam.id)
+            .outerjoin(DBProduct, DBProduct.id == DBTeamProduct.product_id)
+            .outerjoin(
+                DBPrivateAIKey,
+                or_(
+                    DBPrivateAIKey.team_id == DBTeam.id,
+                    DBPrivateAIKey.owner_id.in_(
+                        self.db.query(DBUser.id).filter(DBUser.team_id == DBTeam.id)
+                    ),
+                ),
+            )
+            .first()
+        )
 
         if not result:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
+            )
 
         # At this point we know the limit needs to be created, and the values with which it should be created
         if owner_id is not None:
             # Create user-level limit
-            self.set_limit(OwnerType.USER, owner_id, ResourceType.USER_KEY, LimitType.CONTROL_PLANE, UnitType.COUNT, result.max_keys_per_user, result.current_user_keys)
+            self.set_limit(
+                OwnerType.USER,
+                owner_id,
+                ResourceType.USER_KEY,
+                LimitType.CONTROL_PLANE,
+                UnitType.COUNT,
+                result.max_keys_per_user,
+                result.current_user_keys,
+            )
             # Ensure the key in progress is recorded
-            increment = self.increment_resource(OwnerType.USER, owner_id, ResourceType.USER_KEY)
+            increment = self.increment_resource(
+                OwnerType.USER, owner_id, ResourceType.USER_KEY
+            )
             if (result.current_user_keys >= result.max_keys_per_user) and not increment:
                 raise HTTPException(
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                    detail=f"User has reached the maximum LLM key limit of {result.max_keys_per_user} keys"
+                    detail=f"User has reached the maximum LLM key limit of {result.max_keys_per_user} keys",
                 )
         else:
             # Create team-level limit
-            self.set_limit(OwnerType.TEAM, team_id, ResourceType.SERVICE_KEY, LimitType.CONTROL_PLANE, UnitType.COUNT, result.max_service_keys, result.current_service_keys)
+            self.set_limit(
+                OwnerType.TEAM,
+                team_id,
+                ResourceType.SERVICE_KEY,
+                LimitType.CONTROL_PLANE,
+                UnitType.COUNT,
+                result.max_service_keys,
+                result.current_service_keys,
+            )
             # Ensure the key in progress is recorded
-            increment = self.increment_resource(OwnerType.TEAM, team_id, ResourceType.SERVICE_KEY)
+            increment = self.increment_resource(
+                OwnerType.TEAM, team_id, ResourceType.SERVICE_KEY
+            )
             # Check service key limits (only for team-owned keys)
-            if owner_id is None and result.current_service_keys >= result.max_service_keys:
+            if (
+                owner_id is None
+                and result.current_service_keys >= result.max_service_keys
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                    detail=f"Team has reached the maximum service LLM key limit of {result.max_service_keys} keys"
+                    detail=f"Team has reached the maximum service LLM key limit of {result.max_service_keys} keys",
                 )
 
     def check_vector_db_limits(self, team_id: int) -> None:
@@ -918,58 +1135,84 @@ class LimitService:
         """
         # First try the new service, and short circuit if it works
         try:
-            limit = self.increment_resource(OwnerType.TEAM, team_id, ResourceType.VECTOR_DB)
+            limit = self.increment_resource(
+                OwnerType.TEAM, team_id, ResourceType.VECTOR_DB
+            )
             if not limit:
-                limit_check_route_counter.labels(function='check_vector_db_limits', route='limit_service_at_capacity').inc()
+                limit_check_route_counter.labels(
+                    function="check_vector_db_limits", route="limit_service_at_capacity"
+                ).inc()
                 raise HTTPException(
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                    detail="Team has reached their maximum vector DB limit."
+                    detail="Team has reached their maximum vector DB limit.",
                 )
-            limit_check_route_counter.labels(function='check_vector_db_limits', route='limit_service_success').inc()
+            limit_check_route_counter.labels(
+                function="check_vector_db_limits", route="limit_service_success"
+            ).inc()
             return
         except LimitNotFoundError as e:
-            limit_check_route_counter.labels(function='check_vector_db_limits', route='fallback').inc()
+            limit_check_route_counter.labels(
+                function="check_vector_db_limits", route="fallback"
+            ).inc()
             logger.info(f"Team {team_id} has not been migrated to new limit system")
             logger.info(f"Exception thrown: {str(e)}")
 
         # Get vector DB limits and current count in a single query
-        result = self.db.query(
-            func.coalesce(func.max(DBProduct.vector_db_count), DEFAULT_VECTOR_DB_COUNT).label('max_vector_db_count'),
-            func.count(func.distinct(DBPrivateAIKey.id)).filter(
-                DBPrivateAIKey.database_name.isnot(None)
-            ).label('current_vector_db_count')
-        ).select_from(DBTeam).filter(
-            DBTeam.id == team_id
-        ).outerjoin(
-            DBTeamProduct,
-            DBTeamProduct.team_id == DBTeam.id
-        ).outerjoin(
-            DBProduct,
-            DBProduct.id == DBTeamProduct.product_id
-        ).outerjoin(
-            DBPrivateAIKey,
-            or_(
-                DBPrivateAIKey.team_id == DBTeam.id,
-                DBPrivateAIKey.owner_id.in_(
-                    self.db.query(DBUser.id).filter(DBUser.team_id == DBTeam.id)
-                )
+        result = (
+            self.db.query(
+                func.coalesce(
+                    func.max(DBProduct.vector_db_count), DEFAULT_VECTOR_DB_COUNT
+                ).label("max_vector_db_count"),
+                func.count(func.distinct(DBPrivateAIKey.id))
+                .filter(DBPrivateAIKey.database_name.isnot(None))
+                .label("current_vector_db_count"),
             )
-        ).first()
+            .select_from(DBTeam)
+            .filter(DBTeam.id == team_id)
+            .outerjoin(DBTeamProduct, DBTeamProduct.team_id == DBTeam.id)
+            .outerjoin(DBProduct, DBProduct.id == DBTeamProduct.product_id)
+            .outerjoin(
+                DBPrivateAIKey,
+                or_(
+                    DBPrivateAIKey.team_id == DBTeam.id,
+                    DBPrivateAIKey.owner_id.in_(
+                        self.db.query(DBUser.id).filter(DBUser.team_id == DBTeam.id)
+                    ),
+                ),
+            )
+            .first()
+        )
 
         if not result:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
-
-        # At this point we know the limit needs to be created, and the values with which it should be created
-        self.set_limit(OwnerType.TEAM, team_id, ResourceType.VECTOR_DB, LimitType.CONTROL_PLANE, UnitType.COUNT, result.max_vector_db_count, result.current_vector_db_count)
-        # Ensure the vector DB in progress is recorded
-        increment = self.increment_resource(OwnerType.TEAM, team_id, ResourceType.VECTOR_DB)
-        if (result.current_vector_db_count >= result.max_vector_db_count) and not increment:
             raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=f"Team has reached the maximum vector DB limit of {result.max_vector_db_count} databases"
+                status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
             )
 
-    def get_token_restrictions(self, team_id: int, region_id: Optional[int] = None) -> tuple[int, float, int]:
+        # At this point we know the limit needs to be created, and the values with which it should be created
+        self.set_limit(
+            OwnerType.TEAM,
+            team_id,
+            ResourceType.VECTOR_DB,
+            LimitType.CONTROL_PLANE,
+            UnitType.COUNT,
+            result.max_vector_db_count,
+            result.current_vector_db_count,
+        )
+        # Ensure the vector DB in progress is recorded
+        increment = self.increment_resource(
+            OwnerType.TEAM, team_id, ResourceType.VECTOR_DB
+        )
+        if (
+            result.current_vector_db_count >= result.max_vector_db_count
+        ) and not increment:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=f"Team has reached the maximum vector DB limit of {result.max_vector_db_count} databases",
+            )
+
+    def get_token_restrictions(
+        self, team_id: int, region_id: Optional[int] = None
+    ) -> tuple[int, float, int]:
         """
         Get the token restrictions for a team.
         """
@@ -988,19 +1231,31 @@ class LimitService:
                     elif limit.resource == ResourceType.RPM:
                         rpm_limit = limit.max_value
             if max_spend is not None or rpm_limit is not None:
-                limit_check_route_counter.labels(function='get_token_restrictions', route='limit_service_success').inc()
+                limit_check_route_counter.labels(
+                    function="get_token_restrictions", route="limit_service_success"
+                ).inc()
             else:
-                limit_check_route_counter.labels(function='get_token_restrictions', route='fallback').inc()
+                limit_check_route_counter.labels(
+                    function="get_token_restrictions", route="fallback"
+                ).inc()
         except Exception as e:
-            limit_check_route_counter.labels(function='get_token_restrictions', route='fallback').inc()
-            logger.info(f"Could not get limits from limit service for team {team_id}: {str(e)}")
+            limit_check_route_counter.labels(
+                function="get_token_restrictions", route="fallback"
+            ).inc()
+            logger.info(
+                f"Could not get limits from limit service for team {team_id}: {str(e)}"
+            )
 
         # Pool mode uses per-region purchase timestamp for key duration.
         if team and team.budget_mode == "pool":
             days_left = 0
-            team_region_query = self.db.query(DBTeamRegion).filter(DBTeamRegion.team_id == team_id)
+            team_region_query = self.db.query(DBTeamRegion).filter(
+                DBTeamRegion.team_id == team_id
+            )
             if region_id is not None:
-                team_region_query = team_region_query.filter(DBTeamRegion.region_id == region_id)
+                team_region_query = team_region_query.filter(
+                    DBTeamRegion.region_id == region_id
+                )
             team_region = team_region_query.first()
             if team_region and team_region.last_budget_purchase_at:
                 purchase_time = team_region.last_budget_purchase_at
@@ -1011,32 +1266,39 @@ class LimitService:
                 days_left = max(365 - days_elapsed, 0)
 
             final_max_spend = max_spend if max_spend is not None else DEFAULT_MAX_SPEND
-            final_rpm_limit = rpm_limit if rpm_limit is not None else DEFAULT_RPM_PER_KEY
+            final_rpm_limit = (
+                rpm_limit if rpm_limit is not None else DEFAULT_RPM_PER_KEY
+            )
             return days_left, final_max_spend, int(final_rpm_limit)
 
         # Get all token restrictions in a single query (for periodic duration and fallback values)
-        result = self.db.query(
-            func.coalesce(func.max(DBProduct.renewal_period_days), DEFAULT_KEY_DURATION).label('max_key_duration'),
-            func.coalesce(func.max(DBProduct.max_budget_per_key), DEFAULT_MAX_SPEND).label('max_max_spend'),
-            func.coalesce(func.max(DBProduct.rpm_per_key), DEFAULT_RPM_PER_KEY).label('max_rpm_limit'),
-            DBTeam.created_at,
-            DBTeam.last_payment
-        ).select_from(DBTeam).filter(
-            DBTeam.id == team_id
-        ).outerjoin(
-            DBTeamProduct,
-            DBTeamProduct.team_id == DBTeam.id
-        ).outerjoin(
-            DBProduct,
-            DBProduct.id == DBTeamProduct.product_id
-        ).group_by(
-            DBTeam.created_at,
-            DBTeam.last_payment
-        ).first()
+        result = (
+            self.db.query(
+                func.coalesce(
+                    func.max(DBProduct.renewal_period_days), DEFAULT_KEY_DURATION
+                ).label("max_key_duration"),
+                func.coalesce(
+                    func.max(DBProduct.max_budget_per_key), DEFAULT_MAX_SPEND
+                ).label("max_max_spend"),
+                func.coalesce(
+                    func.max(DBProduct.rpm_per_key), DEFAULT_RPM_PER_KEY
+                ).label("max_rpm_limit"),
+                DBTeam.created_at,
+                DBTeam.last_payment,
+            )
+            .select_from(DBTeam)
+            .filter(DBTeam.id == team_id)
+            .outerjoin(DBTeamProduct, DBTeamProduct.team_id == DBTeam.id)
+            .outerjoin(DBProduct, DBProduct.id == DBTeamProduct.product_id)
+            .group_by(DBTeam.created_at, DBTeam.last_payment)
+            .first()
+        )
 
         if not result:
             logger.error(f"Team not found for team_id: {team_id}")
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
+            )
 
         # Use limit service values if available, otherwise fall back to product/default values
         final_max_spend = max_spend if max_spend is not None else result.max_max_spend
@@ -1050,13 +1312,17 @@ class LimitService:
         Falls back to hardcoded constants if no SYSTEM limit exists.
         """
         # Try to get from database first
-        system_limit = self.db.query(DBLimitedResource).filter(
-            and_(
-                DBLimitedResource.owner_type == OwnerType.SYSTEM,
-                DBLimitedResource.owner_id == 0,
-                DBLimitedResource.resource == resource_type
+        system_limit = (
+            self.db.query(DBLimitedResource)
+            .filter(
+                and_(
+                    DBLimitedResource.owner_type == OwnerType.SYSTEM,
+                    DBLimitedResource.owner_id == 0,
+                    DBLimitedResource.resource == resource_type,
+                )
             )
-        ).first()
+            .first()
+        )
 
         if system_limit:
             return system_limit.max_value
@@ -1083,13 +1349,17 @@ class LimitService:
         Falls back to hardcoded constants if no SYSTEM limit exists.
         """
         # Try to get from database first
-        system_limit = self.db.query(DBLimitedResource).filter(
-            and_(
-                DBLimitedResource.owner_type == OwnerType.SYSTEM,
-                DBLimitedResource.owner_id == 0,
-                DBLimitedResource.resource == resource_type
+        system_limit = (
+            self.db.query(DBLimitedResource)
+            .filter(
+                and_(
+                    DBLimitedResource.owner_type == OwnerType.SYSTEM,
+                    DBLimitedResource.owner_id == 0,
+                    DBLimitedResource.resource == resource_type,
+                )
             )
-        ).first()
+            .first()
+        )
 
         if system_limit:
             return system_limit.max_value
@@ -1098,9 +1368,13 @@ class LimitService:
         if resource_type == ResourceType.USER_KEY:
             return DEFAULT_KEYS_PER_USER
         else:
-            raise ValueError(f"Unsupported resource type \"{resource_type.value}\" for user")
+            raise ValueError(
+                f'Unsupported resource type "{resource_type.value}" for user'
+            )
 
-    def get_team_product_limit_for_resource(self, team_id: int, resource_type: ResourceType) -> Optional[float]:
+    def get_team_product_limit_for_resource(
+        self, team_id: int, resource_type: ResourceType
+    ) -> Optional[float]:
         if resource_type == ResourceType.SERVICE_KEY:
             # For team keys, use service_key_count
             query = self.db.query(func.max(DBProduct.service_key_count))
@@ -1119,28 +1393,32 @@ class LimitService:
             # Allow for default values which might not be included on a product.
             return None
 
-        result = query.join(
-            DBTeamProduct, DBTeamProduct.product_id == DBProduct.id
-        ).filter(
-            DBTeamProduct.team_id == team_id
-        ).scalar()
+        result = (
+            query.join(DBTeamProduct, DBTeamProduct.product_id == DBProduct.id)
+            .filter(DBTeamProduct.team_id == team_id)
+            .scalar()
+        )
 
         return result
 
-    def get_user_product_limit_for_resource(self, team_id: int, resource_type: ResourceType) -> Optional[float]:
+    def get_user_product_limit_for_resource(
+        self, team_id: int, resource_type: ResourceType
+    ) -> Optional[float]:
         if resource_type == ResourceType.USER_KEY:
             # For user keys, use keys_per_user
             query = self.db.query(func.max(DBProduct.keys_per_user))
         else:
             # For all other resources (VECTOR_DB, BUDGET, RPM), users inherit from team
             # or have overrides, so we return None to indicate they should use team limits
-            raise ValueError(f"Unsupported resource type \"{resource_type.value}\" for user")
+            raise ValueError(
+                f'Unsupported resource type "{resource_type.value}" for user'
+            )
 
-        result = query.join(
-            DBTeamProduct, DBTeamProduct.product_id == DBProduct.id
-        ).filter(
-            DBTeamProduct.team_id == team_id
-        ).scalar()
+        result = (
+            query.join(DBTeamProduct, DBTeamProduct.product_id == DBProduct.id)
+            .filter(DBTeamProduct.team_id == team_id)
+            .scalar()
+        )
 
         return result
 
@@ -1152,27 +1430,37 @@ class LimitService:
             team_id: ID of the team to validate
         """
         # Get the current limit
-        limit = self.db.query(DBLimitedResource).filter(
-            and_(
-                DBLimitedResource.owner_type == OwnerType.TEAM,
-                DBLimitedResource.owner_id == team_id,
-                DBLimitedResource.resource == ResourceType.SERVICE_KEY
+        limit = (
+            self.db.query(DBLimitedResource)
+            .filter(
+                and_(
+                    DBLimitedResource.owner_type == OwnerType.TEAM,
+                    DBLimitedResource.owner_id == team_id,
+                    DBLimitedResource.resource == ResourceType.SERVICE_KEY,
+                )
             )
-        ).first()
+            .first()
+        )
 
         if not limit:
             return  # No limit exists, will be created by the fallback logic
 
         # Count actual service keys in the database
-        actual_count = self.db.execute(select(func.count()).select_from(DBPrivateAIKey).where(
-            DBPrivateAIKey.team_id == team_id,
-            DBPrivateAIKey.owner_id.is_(None),  # Service keys have no owner
-            DBPrivateAIKey.litellm_token.isnot(None)
-        )).scalar()
+        actual_count = self.db.execute(
+            select(func.count())
+            .select_from(DBPrivateAIKey)
+            .where(
+                DBPrivateAIKey.team_id == team_id,
+                DBPrivateAIKey.owner_id.is_(None),  # Service keys have no owner
+                DBPrivateAIKey.litellm_token.isnot(None),
+            )
+        ).scalar()
 
         # If the stored count is different from the actual count, correct it
         if limit.current_value != actual_count:
-            logger.info(f"Correcting service key count for team {team_id}: {limit.current_value} -> {actual_count}")
+            logger.info(
+                f"Correcting service key count for team {team_id}: {limit.current_value} -> {actual_count}"
+            )
             limit.current_value = actual_count
             limit.updated_at = datetime.now(UTC)
             self.db.commit()
@@ -1185,26 +1473,36 @@ class LimitService:
             user_id: ID of the user to validate
         """
         # Get the current limit
-        limit = self.db.query(DBLimitedResource).filter(
-            and_(
-                DBLimitedResource.owner_type == OwnerType.USER,
-                DBLimitedResource.owner_id == user_id,
-                DBLimitedResource.resource == ResourceType.USER_KEY
+        limit = (
+            self.db.query(DBLimitedResource)
+            .filter(
+                and_(
+                    DBLimitedResource.owner_type == OwnerType.USER,
+                    DBLimitedResource.owner_id == user_id,
+                    DBLimitedResource.resource == ResourceType.USER_KEY,
+                )
             )
-        ).first()
+            .first()
+        )
 
         if not limit:
             return  # No limit exists, will be created by the fallback logic
 
         # Count actual user keys in the database
-        actual_count = self.db.execute(select(func.count()).select_from(DBPrivateAIKey).where(
-            DBPrivateAIKey.owner_id == user_id,
-            DBPrivateAIKey.litellm_token.isnot(None)
-        )).scalar()
+        actual_count = self.db.execute(
+            select(func.count())
+            .select_from(DBPrivateAIKey)
+            .where(
+                DBPrivateAIKey.owner_id == user_id,
+                DBPrivateAIKey.litellm_token.isnot(None),
+            )
+        ).scalar()
 
         # If the stored count is different from the actual count, correct it
         if limit.current_value != actual_count:
-            logger.info(f"Correcting user key count for user {user_id}: {limit.current_value} -> {actual_count}")
+            logger.info(
+                f"Correcting user key count for user {user_id}: {limit.current_value} -> {actual_count}"
+            )
             limit.current_value = actual_count
             limit.updated_at = datetime.now(UTC)
             self.db.commit()
@@ -1222,7 +1520,7 @@ def setup_default_limits(db: Session) -> None:
     import os
 
     # Only run if ENABLE_LIMITS is true
-    if os.getenv('ENABLE_LIMITS', 'false').lower() not in ('true', '1', 'yes'):
+    if os.getenv("ENABLE_LIMITS", "false").lower() not in ("true", "1", "yes"):
         logger.info("ENABLE_LIMITS is not set to true, skipping default limits setup")
         return
 
@@ -1234,80 +1532,90 @@ def setup_default_limits(db: Session) -> None:
     default_limits = [
         # Control Plane limits
         {
-            'resource': ResourceType.USER,
-            'limit_type': LimitType.CONTROL_PLANE,
-            'unit': UnitType.COUNT,
-            'max_value': DEFAULT_USER_COUNT,
-            'current_value': 0.0
+            "resource": ResourceType.USER,
+            "limit_type": LimitType.CONTROL_PLANE,
+            "unit": UnitType.COUNT,
+            "max_value": DEFAULT_USER_COUNT,
+            "current_value": 0.0,
         },
         {
-            'resource': ResourceType.USER_KEY,
-            'limit_type': LimitType.CONTROL_PLANE,
-            'unit': UnitType.COUNT,
-            'max_value': DEFAULT_KEYS_PER_USER,
-            'current_value': 0.0
+            "resource": ResourceType.USER_KEY,
+            "limit_type": LimitType.CONTROL_PLANE,
+            "unit": UnitType.COUNT,
+            "max_value": DEFAULT_KEYS_PER_USER,
+            "current_value": 0.0,
         },
         {
-            'resource': ResourceType.SERVICE_KEY,
-            'limit_type': LimitType.CONTROL_PLANE,
-            'unit': UnitType.COUNT,
-            'max_value': DEFAULT_SERVICE_KEYS,
-            'current_value': 0.0
+            "resource": ResourceType.SERVICE_KEY,
+            "limit_type": LimitType.CONTROL_PLANE,
+            "unit": UnitType.COUNT,
+            "max_value": DEFAULT_SERVICE_KEYS,
+            "current_value": 0.0,
         },
         {
-            'resource': ResourceType.VECTOR_DB,
-            'limit_type': LimitType.CONTROL_PLANE,
-            'unit': UnitType.COUNT,
-            'max_value': DEFAULT_VECTOR_DB_COUNT,
-            'current_value': 0.0
+            "resource": ResourceType.VECTOR_DB,
+            "limit_type": LimitType.CONTROL_PLANE,
+            "unit": UnitType.COUNT,
+            "max_value": DEFAULT_VECTOR_DB_COUNT,
+            "current_value": 0.0,
         },
         # Data Plane limits
         {
-            'resource': ResourceType.BUDGET,
-            'limit_type': LimitType.DATA_PLANE,
-            'unit': UnitType.DOLLAR,
-            'max_value': DEFAULT_MAX_SPEND,
-            'current_value': None
+            "resource": ResourceType.BUDGET,
+            "limit_type": LimitType.DATA_PLANE,
+            "unit": UnitType.DOLLAR,
+            "max_value": DEFAULT_MAX_SPEND,
+            "current_value": None,
         },
         {
-            'resource': ResourceType.RPM,
-            'limit_type': LimitType.DATA_PLANE,
-            'unit': UnitType.COUNT,
-            'max_value': DEFAULT_RPM_PER_KEY,
-            'current_value': None
-        }
+            "resource": ResourceType.RPM,
+            "limit_type": LimitType.DATA_PLANE,
+            "unit": UnitType.COUNT,
+            "max_value": DEFAULT_RPM_PER_KEY,
+            "current_value": None,
+        },
     ]
 
     # Create each default limit if it doesn't exist
     for limit_config in default_limits:
         try:
             # Check if limit already exists
-            existing_limit = db.query(DBLimitedResource).filter(
-                and_(
-                    DBLimitedResource.owner_type == OwnerType.SYSTEM,
-                    DBLimitedResource.owner_id == 0,
-                    DBLimitedResource.resource == limit_config['resource']
+            existing_limit = (
+                db.query(DBLimitedResource)
+                .filter(
+                    and_(
+                        DBLimitedResource.owner_type == OwnerType.SYSTEM,
+                        DBLimitedResource.owner_id == 0,
+                        DBLimitedResource.resource == limit_config["resource"],
+                    )
                 )
-            ).first()
+                .first()
+            )
 
             if not existing_limit:
                 # Create the limit
                 limit_service.set_limit(
                     owner_type=OwnerType.SYSTEM,
                     owner_id=0,
-                    resource_type=limit_config['resource'],
-                    limit_type=limit_config['limit_type'],
-                    unit=limit_config['unit'],
-                    max_value=limit_config['max_value'],
-                    current_value=limit_config['current_value'],
-                    limited_by=LimitSource.DEFAULT
+                    resource_type=limit_config["resource"],
+                    limit_type=limit_config["limit_type"],
+                    unit=limit_config["unit"],
+                    max_value=limit_config["max_value"],
+                    current_value=limit_config["current_value"],
+                    limited_by=LimitSource.DEFAULT,
                 )
-                logger.info(f"Created default limit for {limit_config['resource'].value}")
+                logger.info(
+                    f"Created default limit for {limit_config['resource'].value}"
+                )
             else:
-                logger.debug(f"Default limit for {limit_config['resource'].value} already exists")
+                logger.debug(
+                    f"Default limit for {limit_config['resource'].value} already exists"
+                )
 
         except Exception as e:
-            logger.error(f"Failed to create default limit for {limit_config['resource'].value}: {str(e)}")
+            logger.error(
+                f"Failed to create default limit for {limit_config['resource'].value}: {str(e)}"
+            )
             raise
 
     logger.info("Default system limits setup completed")

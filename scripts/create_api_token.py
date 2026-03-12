@@ -20,7 +20,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--name", required=True, help="Friendly name for the token.")
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--user-id", type=int, help="ID of the user who owns this token.")
+    group.add_argument(
+        "--user-id", type=int, help="ID of the user who owns this token."
+    )
     group.add_argument("--email", help="Email of the user who owns this token.")
     parser.add_argument(
         "--token",
@@ -34,9 +36,7 @@ def find_user(db, user_id: int | None, email: str | None) -> DBUser | None:
         return db.query(DBUser).filter(DBUser.id == user_id).first()
     if email is not None:
         return (
-            db.query(DBUser)
-            .filter(func.lower(DBUser.email) == email.lower())
-            .first()
+            db.query(DBUser).filter(func.lower(DBUser.email) == email.lower()).first()
         )
     return None
 
@@ -62,7 +62,9 @@ def main() -> None:
     try:
         user = find_user(db, args.user_id, args.email)
         if not user:
-            sys.exit("User not found. Provide an existing user via --user-id or --email.")
+            sys.exit(
+                "User not found. Provide an existing user via --user-id or --email."
+            )
 
         owner_email = user.email
         token = create_token(db, args.name, user, token_value)

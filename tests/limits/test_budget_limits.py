@@ -37,10 +37,7 @@ def test_get_token_restrictions_with_product(db, test_team, test_product):
     THEN: Product limits are returned
     """
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -73,7 +70,7 @@ def test_get_token_restrictions_with_multiple_products(db, test_team):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     product2 = DBProduct(
         id="prod_test2",
@@ -88,21 +85,15 @@ def test_get_token_restrictions_with_multiple_products(db, test_team):
         vector_db_storage=100,
         renewal_period_days=60,  # Longer duration
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(product1)
     db.add(product2)
     db.commit()
 
     # Add both products to team
-    team_product1 = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=product1.id
-    )
-    team_product2 = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=product2.id
-    )
+    team_product1 = DBTeamProduct(team_id=test_team.id, product_id=product1.id)
+    team_product2 = DBTeamProduct(team_id=test_team.id, product_id=product2.id)
     db.add(team_product1)
     db.add(team_product2)
     db.commit()
@@ -123,10 +114,7 @@ def test_get_token_restrictions_with_payment_history(db, test_team, test_product
     THEN: Product renewal period is returned, not calculated days left
     """
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -176,7 +164,7 @@ def test_get_token_restrictions_with_limit_service(db, test_team):
         limit_type=LimitType.DATA_PLANE,
         unit=UnitType.DOLLAR,
         max_value=100.0,
-        limited_by=LimitSource.DEFAULT
+        limited_by=LimitSource.DEFAULT,
     )
     limit_service.set_limit(
         owner_type=OwnerType.TEAM,
@@ -185,7 +173,7 @@ def test_get_token_restrictions_with_limit_service(db, test_team):
         limit_type=LimitType.DATA_PLANE,
         unit=UnitType.COUNT,
         max_value=1500.0,
-        limited_by=LimitSource.DEFAULT
+        limited_by=LimitSource.DEFAULT,
     )
 
     # Test that get_token_restrictions returns the limit service values
@@ -196,7 +184,9 @@ def test_get_token_restrictions_with_limit_service(db, test_team):
     assert rpm_limit == 1500.0  # From limit service
 
 
-def test_get_token_restrictions_with_limit_service_and_products(db, test_team, test_product):
+def test_get_token_restrictions_with_limit_service_and_products(
+    db, test_team, test_product
+):
     """
     GIVEN: A team with both limit service limits and product limits
     WHEN: Getting token restrictions
@@ -204,10 +194,7 @@ def test_get_token_restrictions_with_limit_service_and_products(db, test_team, t
     """
 
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -220,7 +207,7 @@ def test_get_token_restrictions_with_limit_service_and_products(db, test_team, t
         limit_type=LimitType.DATA_PLANE,
         unit=UnitType.DOLLAR,
         max_value=200.0,  # Different from product's 50.0
-        limited_by=LimitSource.DEFAULT
+        limited_by=LimitSource.DEFAULT,
     )
     limit_service.set_limit(
         owner_type=OwnerType.TEAM,
@@ -229,13 +216,15 @@ def test_get_token_restrictions_with_limit_service_and_products(db, test_team, t
         limit_type=LimitType.DATA_PLANE,
         unit=UnitType.COUNT,
         max_value=2500.0,  # Different from product's 1000
-        limited_by=LimitSource.DEFAULT
+        limited_by=LimitSource.DEFAULT,
     )
 
     # Test that get_token_restrictions returns the limit service values
     limit_service = LimitService(db)
     days_left, max_spend, rpm_limit = limit_service.get_token_restrictions(test_team.id)
-    assert days_left == test_product.renewal_period_days  # Still uses product for duration
+    assert (
+        days_left == test_product.renewal_period_days
+    )  # Still uses product for duration
     assert max_spend == 200.0  # From limit service, not product
     assert rpm_limit == 2500.0  # From limit service, not product
 
@@ -247,7 +236,9 @@ def test_get_product_max_by_type_no_products(db, test_team):
     THEN: None is returned
     """
     limit_service = LimitService(db)
-    max_vectors = limit_service.get_team_product_limit_for_resource(test_team.id, ResourceType.VECTOR_DB)
+    max_vectors = limit_service.get_team_product_limit_for_resource(
+        test_team.id, ResourceType.VECTOR_DB
+    )
     assert max_vectors is None
 
 
@@ -271,7 +262,7 @@ def test_get_product_max_by_type_multiple_products(db, test_team):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     product2 = DBProduct(
         id="prod_test2",
@@ -286,38 +277,42 @@ def test_get_product_max_by_type_multiple_products(db, test_team):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(product1)
     db.add(product2)
     db.commit()
 
     # Add both products to team
-    team_product1 = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=product1.id
-    )
-    team_product2 = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=product2.id
-    )
+    team_product1 = DBTeamProduct(team_id=test_team.id, product_id=product1.id)
+    team_product2 = DBTeamProduct(team_id=test_team.id, product_id=product2.id)
     db.add(team_product1)
     db.add(team_product2)
     db.commit()
 
     limit_service = LimitService(db)
-    max_vectors = limit_service.get_team_product_limit_for_resource(test_team.id, ResourceType.VECTOR_DB)
-    max_users = limit_service.get_team_product_limit_for_resource(test_team.id, ResourceType.USER)
-    max_keys = limit_service.get_team_product_limit_for_resource(test_team.id, ResourceType.SERVICE_KEY)
-    max_budget = limit_service.get_team_product_limit_for_resource(test_team.id, ResourceType.BUDGET)
+    max_vectors = limit_service.get_team_product_limit_for_resource(
+        test_team.id, ResourceType.VECTOR_DB
+    )
+    max_users = limit_service.get_team_product_limit_for_resource(
+        test_team.id, ResourceType.USER
+    )
+    max_keys = limit_service.get_team_product_limit_for_resource(
+        test_team.id, ResourceType.SERVICE_KEY
+    )
+    max_budget = limit_service.get_team_product_limit_for_resource(
+        test_team.id, ResourceType.BUDGET
+    )
     assert max_vectors == 3
     assert max_users == 4
     assert max_keys == 2  # Now returns max service_key_count, not total_key_count
     assert max_budget == 150.0
 
 
-@patch('app.core.team_service.LiteLLMService')
-def test_budget_propagation_session_isolation(mock_litellm_class, db, test_team, test_region):
+@patch("app.core.team_service.LiteLLMService")
+def test_budget_propagation_session_isolation(
+    mock_litellm_class, db, test_team, test_region
+):
     """
     GIVEN: A team with keys and a LimitService instance
     WHEN: _trigger_team_budget_propagation is called and the original session is closed
@@ -331,7 +326,7 @@ def test_budget_propagation_session_isolation(mock_litellm_class, db, test_team,
         email="sessiontest@example.com",
         hashed_password=get_password_hash("password123"),
         is_active=True,
-        team_id=test_team.id
+        team_id=test_team.id,
     )
     db.add(team_user)
     db.commit()
@@ -344,7 +339,7 @@ def test_budget_propagation_session_isolation(mock_litellm_class, db, test_team,
         litellm_api_url=test_region.litellm_api_url,
         team_id=test_team.id,
         owner_id=team_user.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(key1)
     db.commit()
@@ -361,6 +356,7 @@ def test_budget_propagation_session_isolation(mock_litellm_class, db, test_team,
         mock_instance = AsyncMock()
         mock_instance.update_budget = mock_update_budget
         return mock_instance
+
     mock_litellm_class.side_effect = create_mock_instance
 
     # Create a LimitService and call the method that triggers background propagation
@@ -385,15 +381,19 @@ def test_budget_propagation_session_isolation(mock_litellm_class, db, test_team,
 
     # Verify the call was made successfully
     with call_lock:
-        assert len(captured_calls) == 1, f"Expected 1 call but got {len(captured_calls)}"
+        assert len(captured_calls) == 1, (
+            f"Expected 1 call but got {len(captured_calls)}"
+        )
 
         # Verify correct parameters
         args, kwargs = captured_calls[0]
         assert kwargs.get("budget_amount") == 100.0
 
 
-@patch('app.core.team_service.LiteLLMService')
-def test_budget_propagation_works_after_session_close(mock_litellm_class, db, test_team, test_region):
+@patch("app.core.team_service.LiteLLMService")
+def test_budget_propagation_works_after_session_close(
+    mock_litellm_class, db, test_team, test_region
+):
     """
     GIVEN: A team with keys and budget limits
     WHEN: The limit is updated via set_limit and the original session is immediately closed
@@ -408,7 +408,7 @@ def test_budget_propagation_works_after_session_close(mock_litellm_class, db, te
         email="sessiontest@example.com",
         hashed_password=get_password_hash("password123"),
         is_active=True,
-        team_id=test_team.id
+        team_id=test_team.id,
     )
     db.add(team_user)
     db.commit()
@@ -421,7 +421,7 @@ def test_budget_propagation_works_after_session_close(mock_litellm_class, db, te
         litellm_api_url=test_region.litellm_api_url,
         team_id=test_team.id,
         owner_id=team_user.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(key1)
     db.commit()
@@ -439,16 +439,20 @@ def test_budget_propagation_works_after_session_close(mock_litellm_class, db, te
         mock_instance = AsyncMock()
         mock_instance.update_budget = mock_update_budget
         return mock_instance
+
     mock_litellm_class.side_effect = create_mock_instance
 
     # Patch logger.error to capture propagation errors
-    original_error = logging.getLogger('app.core.team_service').error
+    original_error = logging.getLogger("app.core.team_service").error
+
     def capture_error(msg, *args, **kwargs):
         with call_lock:
             propagation_errors.append(msg)
         original_error(msg, *args, **kwargs)
 
-    with patch.object(logging.getLogger('app.core.team_service'), 'error', capture_error):
+    with patch.object(
+        logging.getLogger("app.core.team_service"), "error", capture_error
+    ):
         # Create limit service and set a budget limit - this triggers _trigger_team_budget_propagation
         limit_service = LimitService(db)
         limit_service.set_limit(
@@ -458,7 +462,7 @@ def test_budget_propagation_works_after_session_close(mock_litellm_class, db, te
             limit_type=LimitType.DATA_PLANE,
             unit=UnitType.DOLLAR,
             max_value=150.0,
-            limited_by=LimitSource.DEFAULT
+            limited_by=LimitSource.DEFAULT,
         )
 
         # Immediately close the session - this simulates what happens when the request ends
@@ -477,19 +481,27 @@ def test_budget_propagation_works_after_session_close(mock_litellm_class, db, te
 
     # Verify no errors occurred during propagation
     with call_lock:
-        error_msgs = [e for e in propagation_errors if 'Error propagating budget' in e or 'is not bound to a Session' in e]
+        error_msgs = [
+            e
+            for e in propagation_errors
+            if "Error propagating budget" in e or "is not bound to a Session" in e
+        ]
         assert len(error_msgs) == 0, f"Propagation errors occurred: {error_msgs}"
 
         # Verify the propagation succeeded
-        assert len(captured_calls) == 1, f"Expected 1 call but got {len(captured_calls)}. Background propagation failed."
+        assert len(captured_calls) == 1, (
+            f"Expected 1 call but got {len(captured_calls)}. Background propagation failed."
+        )
 
         # Verify correct parameters
         args, kwargs = captured_calls[0]
         assert kwargs.get("budget_amount") == 150.0
 
 
-@patch('app.core.team_service.LiteLLMService')
-def test_overwrite_team_budget_limit_propagates_to_keys(mock_litellm_class, client, admin_token, test_team, test_region, db):
+@patch("app.core.team_service.LiteLLMService")
+def test_overwrite_team_budget_limit_propagates_to_keys(
+    mock_litellm_class, client, admin_token, test_team, test_region, db
+):
     """
     GIVEN: A team with multiple private AI keys
     WHEN: The team's budget limit is updated via the overwrite_limit API
@@ -500,7 +512,7 @@ def test_overwrite_team_budget_limit_propagates_to_keys(mock_litellm_class, clie
         email="teamuser@example.com",
         hashed_password=get_password_hash("password123"),
         is_active=True,
-        team_id=test_team.id
+        team_id=test_team.id,
     )
     db.add(team_user)
     db.commit()
@@ -513,7 +525,7 @@ def test_overwrite_team_budget_limit_propagates_to_keys(mock_litellm_class, clie
         litellm_api_url=test_region.litellm_api_url,
         team_id=test_team.id,
         owner_id=team_user.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     key2 = DBPrivateAIKey(
         name="Key 2",
@@ -521,7 +533,7 @@ def test_overwrite_team_budget_limit_propagates_to_keys(mock_litellm_class, clie
         litellm_api_url=test_region.litellm_api_url,
         team_id=test_team.id,
         owner_id=None,  # Service key
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(key1)
     db.add(key2)
@@ -534,6 +546,7 @@ def test_overwrite_team_budget_limit_propagates_to_keys(mock_litellm_class, clie
 
     # Set up the mock instance - track calls across threads using a thread-safe list
     import threading
+
     captured_calls = []
     call_lock = threading.Lock()
 
@@ -545,6 +558,7 @@ def test_overwrite_team_budget_limit_propagates_to_keys(mock_litellm_class, clie
         mock_instance = AsyncMock()
         mock_instance.update_budget = mock_update_budget
         return mock_instance
+
     mock_litellm_class.side_effect = create_mock_instance
 
     # Update the team's budget limit via API
@@ -557,8 +571,8 @@ def test_overwrite_team_budget_limit_propagates_to_keys(mock_litellm_class, clie
             "resource": "max_budget",
             "limit_type": "data_plane",
             "unit": "dollar",
-            "max_value": 150.0
-        }
+            "max_value": 150.0,
+        },
     )
 
     assert response.status_code == 200
@@ -576,21 +590,33 @@ def test_overwrite_team_budget_limit_propagates_to_keys(mock_litellm_class, clie
 
     # Verify that update_budget was called for both keys with the new budget
     with call_lock:
-        assert len(captured_calls) == 2, f"Expected 2 calls but got {len(captured_calls)}. Calls: {captured_calls}"
+        assert len(captured_calls) == 2, (
+            f"Expected 2 calls but got {len(captured_calls)}. Calls: {captured_calls}"
+        )
 
     # Verify the calls were made with correct parameters
     called_tokens = set()
     with call_lock:
         for args, kwargs in captured_calls:
             # update_budget may be called with positional or keyword arguments
-            litellm_token = args[0] if args and len(args) > 0 else kwargs.get("litellm_token")
-            budget_duration_arg = args[1] if args and len(args) > 1 else kwargs.get("budget_duration")
+            litellm_token = (
+                args[0] if args and len(args) > 0 else kwargs.get("litellm_token")
+            )
+            budget_duration_arg = (
+                args[1] if args and len(args) > 1 else kwargs.get("budget_duration")
+            )
             budget_amount = kwargs.get("budget_amount")
 
-            assert litellm_token is not None, f"Expected litellm_token but got args={args}, kwargs={kwargs}"
+            assert litellm_token is not None, (
+                f"Expected litellm_token but got args={args}, kwargs={kwargs}"
+            )
             called_tokens.add(litellm_token)
-            assert budget_duration_arg == budget_duration, f"Expected budget_duration {budget_duration} but got {budget_duration_arg}"
-            assert budget_amount == 150.0, f"Expected budget_amount 150.0 but got {budget_amount}"
+            assert budget_duration_arg == budget_duration, (
+                f"Expected budget_duration {budget_duration} but got {budget_duration_arg}"
+            )
+            assert budget_amount == 150.0, (
+                f"Expected budget_amount 150.0 but got {budget_amount}"
+            )
 
     # Verify both keys were updated
     assert "token1" in called_tokens, f"Expected token1 in {called_tokens}"

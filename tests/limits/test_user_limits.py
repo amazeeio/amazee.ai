@@ -9,10 +9,7 @@ from app.schemas.limits import ResourceType, OwnerType, LimitType, UnitType, Lim
 def test_add_user_within_product_limit(db, test_team, test_product):
     """Test adding a user when within product user limit"""
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -24,10 +21,7 @@ def test_add_user_within_product_limit(db, test_team, test_product):
 def test_add_user_exceeding_product_limit(db, test_team, test_product):
     """Test adding a user when it would exceed product user limit"""
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -40,7 +34,7 @@ def test_add_user_exceeding_product_limit(db, test_team, test_product):
             is_admin=False,
             role="user",
             team_id=test_team.id,
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         )
         db.add(user)
     db.commit()
@@ -50,7 +44,10 @@ def test_add_user_exceeding_product_limit(db, test_team, test_product):
         limit_service = LimitService(db)
         limit_service.check_team_user_limit(test_team.id)
     assert exc_info.value.status_code == 402
-    assert f"Team has reached the maximum user limit of {test_product.user_count} users" in str(exc_info.value.detail)
+    assert (
+        f"Team has reached the maximum user limit of {test_product.user_count} users"
+        in str(exc_info.value.detail)
+    )
 
 
 def test_add_user_with_default_limit(db, test_team):
@@ -71,15 +68,12 @@ def test_add_user_with_default_limit(db, test_team):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(test_product)
 
     # Associate the product with the team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -92,7 +86,7 @@ def test_add_user_with_default_limit(db, test_team):
             is_admin=False,
             role="user",
             team_id=test_team.id,
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         )
         db.add(user)
     db.commit()
@@ -102,7 +96,10 @@ def test_add_user_with_default_limit(db, test_team):
         limit_service = LimitService(db)
         limit_service.check_team_user_limit(test_team.id)
     assert exc_info.value.status_code == 402
-    assert f"Team has reached the maximum user limit of {test_product.user_count} users" in str(exc_info.value.detail)
+    assert (
+        f"Team has reached the maximum user limit of {test_product.user_count} users"
+        in str(exc_info.value.detail)
+    )
 
 
 def test_add_user_with_one_product(db, test_team):
@@ -121,7 +118,7 @@ def test_add_user_with_one_product(db, test_team):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     product2 = DBProduct(
         id="prod_test2",
@@ -136,17 +133,14 @@ def test_add_user_with_one_product(db, test_team):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(product1)
     db.add(product2)
     db.commit()
 
     # Add product to team
-    team_product1 = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=product1.id
-    )
+    team_product1 = DBTeamProduct(team_id=test_team.id, product_id=product1.id)
     db.add(team_product1)
     db.commit()
 
@@ -159,7 +153,7 @@ def test_add_user_with_one_product(db, test_team):
             is_admin=False,
             role="user",
             team_id=test_team.id,
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         )
         db.add(user)
     db.commit()
@@ -169,7 +163,10 @@ def test_add_user_with_one_product(db, test_team):
         limit_service = LimitService(db)
         limit_service.check_team_user_limit(test_team.id)
     assert exc_info.value.status_code == 402
-    assert f"Team has reached the maximum user limit of {product1.user_count} users" in str(exc_info.value.detail)
+    assert (
+        f"Team has reached the maximum user limit of {product1.user_count} users"
+        in str(exc_info.value.detail)
+    )
 
 
 def test_add_user_with_multiple_products(db, test_team):
@@ -188,7 +185,7 @@ def test_add_user_with_multiple_products(db, test_team):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     product2 = DBProduct(
         id="prod_test2",
@@ -203,21 +200,15 @@ def test_add_user_with_multiple_products(db, test_team):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(product1)
     db.add(product2)
     db.commit()
 
     # Add both products to team
-    team_product1 = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=product1.id
-    )
-    team_product2 = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=product2.id
-    )
+    team_product1 = DBTeamProduct(team_id=test_team.id, product_id=product1.id)
+    team_product2 = DBTeamProduct(team_id=test_team.id, product_id=product2.id)
     db.add(team_product1)
     db.add(team_product2)
     db.commit()
@@ -233,7 +224,7 @@ def test_add_user_with_multiple_products(db, test_team):
             is_admin=False,
             role="user",
             team_id=test_team.id,
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         )
         db.add(user)
         db.commit()
@@ -262,7 +253,7 @@ def test_check_team_user_limit_with_limit_service(db, test_team):
         unit=UnitType.COUNT,
         max_value=5.0,
         current_value=2.0,
-        limited_by=LimitSource.DEFAULT
+        limited_by=LimitSource.DEFAULT,
     )
 
     # Test that check_team_user_limit doesn't raise an exception
@@ -285,7 +276,7 @@ def test_check_team_user_limit_with_limit_service_at_capacity(db, test_team):
         unit=UnitType.COUNT,
         max_value=3.0,
         current_value=3.0,  # At capacity
-        limited_by=LimitSource.DEFAULT
+        limited_by=LimitSource.DEFAULT,
     )
 
     # Test that check_team_user_limit raises an exception
@@ -303,17 +294,16 @@ def test_check_team_user_limit_fallback_creates_limit(db, test_team, test_produc
     THEN: The fallback code runs and creates a new limit in the service
     """
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
     # Verify no limit exists in the service initially
     limit_service = LimitService(db)
     try:
-        limit_service.increment_resource(OwnerType.TEAM, test_team.id, ResourceType.USER)
+        limit_service.increment_resource(
+            OwnerType.TEAM, test_team.id, ResourceType.USER
+        )
         assert False, "Should have raised LimitNotFoundError"
     except Exception:
         pass  # Expected
@@ -327,7 +317,9 @@ def test_check_team_user_limit_fallback_creates_limit(db, test_team, test_produc
     team_limits = limit_service.get_team_limits(team)
 
     # Should have a USER limit now
-    user_limits = [limit for limit in team_limits if limit.resource == ResourceType.USER]
+    user_limits = [
+        limit for limit in team_limits if limit.resource == ResourceType.USER
+    ]
     assert len(user_limits) == 1
     user_limit = user_limits[0]
     # The fallback now correctly uses product values after fixing the query
@@ -351,7 +343,7 @@ def test_user_inherits_team_limits(db, test_team, test_team_user):
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(team_limit)
     db.commit()
@@ -381,7 +373,7 @@ def test_user_override_supersedes_team_limit(db, test_team, test_team_user):
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
 
     # Create user override
@@ -395,7 +387,7 @@ def test_user_override_supersedes_team_limit(db, test_team, test_team_user):
         owner_id=test_team_user.id,
         limited_by=LimitSource.MANUAL,
         set_by="admin@example.com",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
 
     db.add(team_limit)
@@ -412,7 +404,9 @@ def test_user_override_supersedes_team_limit(db, test_team, test_team_user):
     assert user_limits[0].limited_by == LimitSource.MANUAL
 
 
-def test_user_limits_not_included_in_team_limits(db, test_team, test_team_user, test_product):
+def test_user_limits_not_included_in_team_limits(
+    db, test_team, test_team_user, test_product
+):
     """
     GIVEN: A team with a user with an override
     WHEN: We call get_team_limits
@@ -428,7 +422,7 @@ def test_user_limits_not_included_in_team_limits(db, test_team, test_team_user, 
         owner_id=test_team_user.id,
         limited_by=LimitSource.MANUAL,
         set_by="admin@example.com",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
 
     db.add(user_limit)

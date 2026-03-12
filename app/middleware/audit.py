@@ -9,6 +9,7 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+
 class AuditLogMiddleware(BaseHTTPMiddleware):
     def __init__(self, app):
         super().__init__(app)
@@ -29,15 +30,17 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
 
             # Get user_id from request state (set by AuthMiddleware)
             user_id = None
-            if hasattr(request.state, 'user') and request.state.user:
+            if hasattr(request.state, "user") and request.state.user:
                 if isinstance(request.state.user, dict):
-                    user_id = request.state.user.get('id')
+                    user_id = request.state.user.get("id")
                 else:
                     user_id = request.state.user.id
 
             # Extract path parameters
             path_params = request.path_params
-            resource_id = next(iter(path_params.values()), None) if path_params else None
+            resource_id = (
+                next(iter(path_params.values()), None) if path_params else None
+            )
 
             # Determine request source
             request_source = None
@@ -64,11 +67,11 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                 details={
                     "path": request.url.path,
                     "query_params": dict(request.query_params),
-                    "status_code": response.status_code
+                    "status_code": response.status_code,
                 },
                 ip_address=request.client.host if request.client else None,
                 user_agent=request.headers.get("user-agent"),
-                request_source=request_source
+                request_source=request_source,
             )
 
             db.add(audit_log)
@@ -79,14 +82,13 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                 event_type=request.method,
                 resource_type=resource_type,
                 request_source=request_source or "unknown",
-                status_code=response.status_code
+                status_code=response.status_code,
             ).inc()
 
             # Record audit event duration
             duration = time.time() - start_time
             audit_event_duration_seconds.labels(
-                event_type=request.method,
-                resource_type=resource_type
+                event_type=request.method, resource_type=resource_type
             ).observe(duration)
 
         except Exception as e:
@@ -94,7 +96,7 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
             # Don't re-raise the exception - we don't want to break the request if audit logging fails
             pass
         finally:
-            if 'db' in locals():
+            if "db" in locals():
                 db.close()
 
         return response
