@@ -835,23 +835,4 @@ async def create_team_budget_purchase(
             str(propagation_exc),
         )
 
-    aggregate_spend_cents = int(association.aggregate_spend_cents or 0)
-    available_budget_cents = max(
-        int(association.total_budget_purchased_cents or 0) - aggregate_spend_cents, 0
-    )
-    days_remaining = _pool_days_remaining(association.last_budget_purchase_at)
-    expires_at = _pool_expires_at(association.last_budget_purchase_at)
-    if not expires_at:
-        expires_at = purchase_time + timedelta(days=365)
-        days_remaining = 365
-
-    return BudgetPurchaseResponse(
-        stripe_payment_intent_id=stripe_payment_intent_id,
-        previous_budget_cents=previous_budget_cents,
-        amount_added_cents=amount_cents,
-        new_budget_cents=new_budget_cents,
-        aggregate_spend_cents=aggregate_spend_cents,
-        available_budget_cents=available_budget_cents,
-        expires_at=expires_at,
-        days_remaining=days_remaining,
-    )
+    return _build_purchase_response(purchase)
