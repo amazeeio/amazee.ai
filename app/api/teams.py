@@ -235,6 +235,61 @@ async def update_team(
             )
         db.commit()
 
+        # Rebuild per-region pool counters from purchase ledger so availability checks
+        # remain consistent after switching modes.
+        ledger_rollups = db.query(
+            DBBudgetPurchase.region_id,
+            func.coalesce(func.sum(DBBudgetPurchase.amount_cents), 0).label("sum_amount_cents"),
+            func.max(DBBudgetPurchase.purchased_at).label("latest_purchase_at"),
+        ).filter(
+            DBBudgetPurchase.team_id == db_team.id
+        ).group_by(
+            DBBudgetPurchase.region_id
+        ).all()
+
+        rollup_by_region = {
+            int(region_id): {
+                "total_cents": int(sum_amount_cents or 0),
+                "latest_purchase_at": latest_purchase_at,
+            }
+            for region_id, sum_amount_cents, latest_purchase_at in ledger_rollups
+        }
+
+        existing_regions = db.query(DBTeamRegion).filter(DBTeamRegion.team_id == db_team.id).all()
+        existing_by_region = {int(row.region_id): row for row in existing_regions}
+        now = datetime.now(UTC)
+
+        # Update existing associations first.
+        for region_id, association in existing_by_region.items():
+            rollup = rollup_by_region.get(region_id)
+            if rollup:
+                latest_purchase_at = rollup["latest_purchase_at"]
+                if latest_purchase_at and latest_purchase_at.tzinfo is None:
+                    latest_purchase_at = latest_purchase_at.replace(tzinfo=UTC)
+                association.total_budget_purchased_cents = rollup["total_cents"]
+                association.last_budget_purchase_at = latest_purchase_at
+            else:
+                association.total_budget_purchased_cents = 0
+                association.last_budget_purchase_at = None
+            association.updated_at = now
+            db.add(association)
+
+        # Add missing associations that exist in ledger but not in team_regions.
+        for region_id, rollup in rollup_by_region.items():
+            if region_id in existing_by_region:
+                continue
+            latest_purchase_at = rollup["latest_purchase_at"]
+            if latest_purchase_at and latest_purchase_at.tzinfo is None:
+                latest_purchase_at = latest_purchase_at.replace(tzinfo=UTC)
+            db.add(DBTeamRegion(
+                team_id=db_team.id,
+                region_id=region_id,
+                total_budget_purchased_cents=rollup["total_cents"],
+                last_budget_purchase_at=latest_purchase_at,
+                updated_at=now,
+            ))
+        db.commit()
+
         limit_service.set_team_limits(db_team)
         team_users = db.query(DBUser).filter(DBUser.team_id == db_team.id).all()
         for user in team_users:

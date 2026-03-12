@@ -534,6 +534,108 @@ def test_update_team_switch_to_pool_uses_purchase_ledger_total(
     assert kwargs["duration_by_region"][test_region.id] in {"355d", "354d"}
     assert kwargs["budget_duration"] is None
 
+
+@patch("app.api.teams.propagate_team_budget_to_keys", new_callable=AsyncMock)
+def test_update_team_switch_to_pool_restores_region_counters_from_ledger(
+    mock_propagate,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region
+):
+    """Mode switch should restore per-region purchased counters and clear regions without ledger."""
+    team = db.query(DBTeam).filter(DBTeam.id == test_team.id).first()
+    team.budget_mode = "periodic"
+    db.add(team)
+
+    extra_region = DBRegion(
+        name="pool-switch-extra-region",
+        label="Pool Switch Extra Region",
+        description="extra region for pool switch test",
+        postgres_host="amazee-test-postgres",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="https://test-litellm-extra.com",
+        litellm_api_key="test-litellm-key-extra",
+        is_active=True
+    )
+    db.add(extra_region)
+    db.commit()
+    db.refresh(extra_region)
+
+    # Existing region rows before switch.
+    db.add(DBTeamRegion(
+        team_id=team.id,
+        region_id=test_region.id,
+        total_budget_purchased_cents=0,
+        last_budget_purchase_at=None,
+    ))
+    db.add(DBTeamRegion(
+        team_id=team.id,
+        region_id=extra_region.id,
+        total_budget_purchased_cents=777,
+        last_budget_purchase_at=datetime.now(UTC) - timedelta(days=30),
+    ))
+
+    old_purchase = datetime.now(UTC) - timedelta(days=15)
+    latest_purchase = datetime.now(UTC) - timedelta(days=3)
+    db.add(DBBudgetPurchase(
+        team_id=team.id,
+        region_id=test_region.id,
+        stripe_session_id="cs_switch_region_restore_1",
+        stripe_payment_intent_id="pi_switch_region_restore_1",
+        currency="usd",
+        amount_cents=1100,
+        previous_budget_cents=0,
+        new_budget_cents=1100,
+        purchased_at=old_purchase,
+    ))
+    db.add(DBBudgetPurchase(
+        team_id=team.id,
+        region_id=test_region.id,
+        stripe_session_id="cs_switch_region_restore_2",
+        stripe_payment_intent_id="pi_switch_region_restore_2",
+        currency="usd",
+        amount_cents=900,
+        previous_budget_cents=1100,
+        new_budget_cents=2000,
+        purchased_at=latest_purchase,
+    ))
+    db.commit()
+
+    response = client.put(
+        f"/teams/{team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"budget_mode": "pool"}
+    )
+    assert response.status_code == 200
+
+    restored_primary = db.query(DBTeamRegion).filter(
+        DBTeamRegion.team_id == team.id,
+        DBTeamRegion.region_id == test_region.id
+    ).first()
+    assert restored_primary is not None
+    assert restored_primary.total_budget_purchased_cents == 2000
+    assert restored_primary.last_budget_purchase_at is not None
+    # Should match ledger's latest purchase day (timezone may vary by DB backend).
+    assert restored_primary.last_budget_purchase_at.date() == latest_purchase.date()
+
+    restored_extra = db.query(DBTeamRegion).filter(
+        DBTeamRegion.team_id == team.id,
+        DBTeamRegion.region_id == extra_region.id
+    ).first()
+    assert restored_extra is not None
+    assert restored_extra.total_budget_purchased_cents == 0
+    assert restored_extra.last_budget_purchase_at is None
+
+    kwargs = mock_propagate.await_args.kwargs
+    assert kwargs["budget_amount"] == 20.0
+    # ~3 days elapsed from latest purchase.
+    assert kwargs["duration_by_region"][test_region.id] in {"362d", "361d"}
+    assert kwargs["duration_by_region"][extra_region.id] == "0d"
+
 def test_update_team_unauthorized(client, test_token, test_team):
     """Test updating a team as a user not associated with that team"""
     # Try to update the team as a user not associated with it
