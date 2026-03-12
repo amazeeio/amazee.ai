@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime, JSON, Float, Enum
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime, JSON, Float, Enum, BigInteger
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime, UTC
 from sqlalchemy.sql import func
@@ -41,6 +41,10 @@ class DBTeamRegion(Base):
 
     team_id = Column(Integer, ForeignKey('teams.id'), primary_key=True, nullable=False)
     region_id = Column(Integer, ForeignKey('regions.id', ondelete='CASCADE'), primary_key=True, nullable=False)
+    last_budget_purchase_at = Column(DateTime(timezone=True), nullable=True)
+    aggregate_spend_cents = Column(BigInteger, default=0, nullable=False)
+    total_budget_purchased_cents = Column(BigInteger, default=0, nullable=False)
+    last_spend_synced_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 
@@ -111,6 +115,7 @@ class DBTeam(Base):
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     stripe_customer_id = Column(String, nullable=True, unique=True, index=True)
+    budget_mode = Column(String, default="periodic", nullable=False)
     last_payment = Column(DateTime(timezone=True), nullable=True)
     last_monitored = Column(DateTime(timezone=True), nullable=True)
     deleted_at = Column(DateTime(timezone=True), nullable=True)
@@ -121,6 +126,20 @@ class DBTeam(Base):
     active_products = relationship("DBTeamProduct", back_populates="team")
     dedicated_regions = relationship("DBTeamRegion", back_populates="team")
     metrics = relationship("DBTeamMetrics", back_populates="team", uselist=False, cascade="all, delete")
+
+class DBBudgetPurchase(Base):
+    __tablename__ = "budget_purchases"
+
+    id = Column(Integer, primary_key=True, index=True)
+    team_id = Column(Integer, ForeignKey('teams.id'), nullable=False, index=True)
+    region_id = Column(Integer, ForeignKey('regions.id'), nullable=False, index=True)
+    stripe_session_id = Column(String, nullable=False, unique=True)
+    stripe_payment_intent_id = Column(String, nullable=True, index=True)
+    currency = Column(String(3), nullable=False, default="usd")
+    amount_cents = Column(BigInteger, nullable=False)
+    previous_budget_cents = Column(BigInteger, nullable=False)
+    new_budget_cents = Column(BigInteger, nullable=False)
+    purchased_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
 
 class DBTeamMetrics(Base):
     """
