@@ -764,6 +764,22 @@ async def handle_budget_purchase_webhook(
 
     aggregate_spend_cents = int(association.aggregate_spend_cents or 0)
     available_budget_cents = max(int(association.total_budget_purchased_cents or 0) - aggregate_spend_cents, 0)
+
+    # Propagate updated team budget to keys for the purchased region.
+    # This keeps existing keys in sync immediately after successful payment.
+    try:
+        limit_service = LimitService(db)
+        limit_service._trigger_team_budget_propagation(
+            team_id=team_id,
+            budget_amount=(new_budget_cents / 100.0),
+            region_id=region_id
+        )
+    except Exception as propagation_exc:
+        logger.error(
+            "Failed to trigger budget propagation after pool purchase for team=%s region=%s: %s",
+            team_id, region_id, str(propagation_exc)
+        )
+
     logger.info(
         "Applied pool budget purchase: team=%s region=%s amount_cents=%s new_budget_cents=%s",
         team_id, region_id, amount_cents, new_budget_cents

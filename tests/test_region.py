@@ -1279,9 +1279,18 @@ def test_create_budget_checkout_session_requires_team_region_association(
     mock_create_checkout.assert_not_awaited()
 
 
+@patch("app.api.regions.LimitService._trigger_team_budget_propagation")
 @patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
 @patch("app.api.regions.decode_stripe_event")
-def test_budget_webhook_idempotency(mock_decode_event, mock_retrieve_session, client, db, test_team, test_region):
+def test_budget_webhook_idempotency(
+    mock_decode_event,
+    mock_retrieve_session,
+    mock_trigger_budget_propagation,
+    client,
+    db,
+    test_team,
+    test_region
+):
     """Webhook processes purchase once and returns idempotent response on retry."""
     test_team.budget_mode = "pool"
     db.add(test_team)
@@ -1330,6 +1339,7 @@ def test_budget_webhook_idempotency(mock_decode_event, mock_retrieve_session, cl
 
     purchases = db.query(DBBudgetPurchase).filter(DBBudgetPurchase.stripe_session_id == "cs_pool_123").all()
     assert len(purchases) == 1
+    assert mock_trigger_budget_propagation.call_count == 1
 
 
 @patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
