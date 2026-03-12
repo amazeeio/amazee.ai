@@ -239,6 +239,9 @@ async def apply_product_for_team(db: Session, customer_id: str, product_id: str,
         if not product:
             logger.error(f"Product not found for ID: {product_id}")
             return
+        if team.budget_mode == "pool":
+            logger.warning(f"Skipping product application for pool-mode team {team.id}")
+            return
 
         # Update the last payment date
         team.last_payment = start_date
@@ -349,7 +352,8 @@ async def reconcile_team_keys(
     keys_by_region: Dict[DBRegion, List[DBPrivateAIKey]],
     expire_keys: bool,
     renewal_period_days: Optional[int] = None,
-    max_budget_amount: Optional[float] = None
+    max_budget_amount: Optional[float] = None,
+    pool_expiry_by_region: Optional[Dict[int, int]] = None
 ) -> float:
     """
     Monitor spend for all keys in a team across different regions and optionally update keys after renewal period.
@@ -377,6 +381,10 @@ async def reconcile_team_keys(
                 api_url=region.litellm_api_url,
                 api_key=region.litellm_api_key
             )
+            region_total = 0.0
+            pool_days_remaining = None
+            if pool_expiry_by_region is not None:
+                pool_days_remaining = pool_expiry_by_region.get(region.id, 0)
 
             # Check spend for each key in this region
             for key in keys:
@@ -402,6 +410,15 @@ async def reconcile_team_keys(
                     if expire_keys:
                         logger.info(f"Key {key.id} expiring, setting duration to 0 days")
                         await litellm_service.update_key_duration(key.litellm_token, "0d")
+                    elif pool_expiry_by_region is not None:
+                        # Pool mode: key expiry is controlled by purchase-window duration.
+                        # Do not update budget_duration/max_budget from periodic product flow.
+                        if pool_days_remaining is not None and pool_days_remaining <= 0:
+                            await litellm_service.update_key_duration(key.litellm_token, "0d")
+                        else:
+                            expiry_date = info.get("expires")
+                            if not expiry_date and pool_days_remaining is not None:
+                                await litellm_service.update_key_duration(key.litellm_token, f"{pool_days_remaining}d")
                     else:
                         update_data = {"litellm_token": key.litellm_token}
                         needs_update = False
@@ -452,6 +469,7 @@ async def reconcile_team_keys(
 
                     # Add to team total
                     team_total += current_spend
+                    region_total += current_spend
 
                     # Calculate and post percentage used
                     if budget > 0:
@@ -479,6 +497,45 @@ async def reconcile_team_keys(
                 except Exception as e:
                     logger.error(f"Error monitoring key {key.id} spend: {str(e)}")
                     continue
+
+            if pool_expiry_by_region is not None:
+                team_region = db.query(DBTeamRegion).filter(
+                    DBTeamRegion.team_id == team.id,
+                    DBTeamRegion.region_id == region.id
+                ).first()
+                if not team_region:
+                    team_region = DBTeamRegion(team_id=team.id, region_id=region.id)
+                    db.add(team_region)
+
+                aggregate_spend_cents = int(round(region_total * 100))
+                team_region.aggregate_spend_cents = aggregate_spend_cents
+                team_region.last_spend_synced_at = datetime.now(UTC)
+                team_region.updated_at = datetime.now(UTC)
+                db.add(team_region)
+
+                total_purchased_cents = int(team_region.total_budget_purchased_cents or 0)
+                available_cents = max(total_purchased_cents - aggregate_spend_cents, 0)
+
+                if total_purchased_cents > 0:
+                    used_pct = (aggregate_spend_cents / total_purchased_cents) * 100
+                    if used_pct >= 90:
+                        logger.warning(
+                            f"Pool budget usage critical for team {team.id} region {region.id}: "
+                            f"{used_pct:.1f}% ({aggregate_spend_cents}/{total_purchased_cents} cents)"
+                        )
+                    elif used_pct >= 80:
+                        logger.warning(
+                            f"Pool budget usage high for team {team.id} region {region.id}: "
+                            f"{used_pct:.1f}% ({aggregate_spend_cents}/{total_purchased_cents} cents)"
+                        )
+
+                # Enforce hard stop when either purchase window has expired or budget is exhausted.
+                if (pool_days_remaining is not None and pool_days_remaining <= 0) or available_cents == 0:
+                    for key in keys:
+                        try:
+                            await litellm_service.update_key_duration(key.litellm_token, "0d")
+                        except Exception as key_expire_error:
+                            logger.error(f"Failed to expire key {key.id} for pool-mode team {team.id}: {str(key_expire_error)}")
 
         except Exception as e:
             logger.error(f"Error initializing LiteLLM service for region {region.name}: {str(e)}")
@@ -846,13 +903,16 @@ async def monitor_teams(db: Session):
                 has_products = db.query(DBTeamProduct).filter(
                     DBTeamProduct.team_id == team.id
                 ).first() is not None
+                is_pool_mode = team.budget_mode == "pool"
 
                 # Check team retention policy first (soft-delete handles key expiration internally)
                 await _check_team_retention_policy(db, team, current_time, ses_service)
 
                 # Now handle trial expiry notifications and key expiry (after retention checks)
-                team_freshness = _monitor_team_freshness(team)
-                days_remaining = TRIAL_OVER_DAYS - team_freshness
+                days_remaining = None
+                if not is_pool_mode:
+                    team_freshness = _monitor_team_freshness(team)
+                    days_remaining = TRIAL_OVER_DAYS - team_freshness
 
                 # Check if team was monitored within 24 hours
                 should_send_notifications = settings.ENABLE_LIMITS
@@ -860,21 +920,35 @@ async def monitor_teams(db: Session):
                     hours_since_monitored = (current_time - team.last_monitored.replace(tzinfo=UTC)).total_seconds() / 3600
                     should_send_notifications = hours_since_monitored >= 24
 
-                _send_expiry_notification(db, team, has_products, should_send_notifications, days_remaining, ses_service)
+                if not is_pool_mode:
+                    _send_expiry_notification(db, team, has_products, should_send_notifications, days_remaining, ses_service)
 
                 # Get all keys for the team grouped by region
                 keys_by_region = get_team_keys_by_region(db, team.id)
                 expire_keys = False
 
                 # Expire if team trial has expired (if team has a product, expiry will be handled by Stripe)
-                if not has_products and days_remaining <= 0 and should_send_notifications:
+                if (not is_pool_mode) and (not has_products) and (days_remaining is not None) and days_remaining <= 0 and should_send_notifications:
                     logger.info(f"Team {team.id} has {days_remaining} days remaining, expiring keys")
                     expire_keys = True
 
                 # Determine if we should check for renewal period updates
                 renewal_period_days = None
                 max_budget_amount = None
-                if has_products and team.last_payment:
+                pool_expiry_by_region = None
+                if team.budget_mode == "pool":
+                    pool_expiry_by_region = {}
+                    team_regions = db.query(DBTeamRegion).filter(DBTeamRegion.team_id == team.id).all()
+                    for team_region in team_regions:
+                        if team_region.last_budget_purchase_at:
+                            purchase_time = team_region.last_budget_purchase_at
+                            if purchase_time.tzinfo is None:
+                                purchase_time = purchase_time.replace(tzinfo=UTC)
+                            days_elapsed = (current_time - purchase_time).days
+                            pool_expiry_by_region[team_region.region_id] = max(365 - days_elapsed, 0)
+                        else:
+                            pool_expiry_by_region[team_region.region_id] = 0
+                elif has_products and team.last_payment:
                     # Get budget from active limits (source of truth)
                     team_limits = limit_service.get_team_limits(team)
                     budget_limit = next((limit for limit in team_limits if limit.resource == ResourceType.BUDGET), None)
@@ -893,7 +967,15 @@ async def monitor_teams(db: Session):
                         renewal_period_days = max_renewal_product.renewal_period_days
 
                 # Monitor keys and get total spend (includes renewal period updates if applicable)
-                team_total = await reconcile_team_keys(db, team, keys_by_region, expire_keys, renewal_period_days, max_budget_amount)
+                team_total = await reconcile_team_keys(
+                    db,
+                    team,
+                    keys_by_region,
+                    expire_keys,
+                    renewal_period_days,
+                    max_budget_amount,
+                    pool_expiry_by_region
+                )
 
                 # Set the total spend metric for the team (always emit metrics)
                 team_total_spend.labels(
@@ -1136,4 +1218,3 @@ def generate_pricing_url(admin_email: str, validity_hours: int = 24) -> str:
 
     # Add the token as a query parameter
     return f"{url}?token={token}"
-
