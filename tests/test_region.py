@@ -1,6 +1,7 @@
 from fastapi import HTTPException
-from app.db.models import DBTeam, DBRegion
-from unittest.mock import patch
+from app.db.models import DBTeam, DBRegion, DBTeamRegion, DBSystemSecret, DBBudgetPurchase
+from unittest.mock import patch, AsyncMock, Mock
+from datetime import datetime, UTC, timedelta
 
 @patch("app.api.regions.validate_litellm_endpoint")
 @patch("app.api.regions.validate_database_connection")
@@ -1191,3 +1192,111 @@ def test_list_teams_for_dedicated_region_with_no_associations(client, admin_toke
     assert response.status_code == 200
     teams = response.json()
     assert len(teams) == 0
+
+
+@patch("app.api.regions.create_budget_checkout_session", new_callable=AsyncMock)
+def test_create_budget_checkout_session_pool_mode_success(mock_create_checkout, client, team_admin_token, db, test_team, test_region):
+    """Team admin can create pool checkout session for associated region."""
+    test_team.budget_mode = "pool"
+    test_team.stripe_customer_id = "cus_pool_123"
+    db.add(test_team)
+    db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
+    db.commit()
+
+    mock_checkout_session = Mock()
+    mock_checkout_session.id = "cs_test_123"
+    mock_checkout_session.url = "https://checkout.stripe.test/session/cs_test_123"
+    mock_create_checkout.return_value = mock_checkout_session
+
+    response = client.post(
+        f"/regions/{test_region.id}/teams/{test_team.id}/budget-checkout-session",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"amount_cents": 5000, "currency": "usd"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["session_id"] == "cs_test_123"
+    assert data["checkout_url"] == "https://checkout.stripe.test/session/cs_test_123"
+    mock_create_checkout.assert_awaited_once()
+
+
+@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
+@patch("app.api.regions.decode_stripe_event")
+def test_budget_webhook_idempotency(mock_decode_event, mock_retrieve_session, client, db, test_team, test_region):
+    """Webhook processes purchase once and returns idempotent response on retry."""
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+    db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
+    db.add(DBSystemSecret(key="stripe_webhook_secret", value="whsec_test", description="test secret"))
+    db.commit()
+
+    event = Mock()
+    event.type = "checkout.session.completed"
+    event.data = Mock()
+    event.data.object = {"id": "cs_pool_123"}
+    mock_decode_event.return_value = event
+    mock_retrieve_session.return_value = {
+        "id": "cs_pool_123",
+        "payment_status": "paid",
+        "amount_total": 5000,
+        "currency": "usd",
+        "payment_intent": "pi_pool_123",
+        "metadata": {
+            "team_id": str(test_team.id),
+            "region_id": str(test_region.id),
+            "amount_cents": "5000",
+            "currency": "usd",
+        },
+    }
+
+    response_1 = client.post(
+        "/regions/webhooks/budget-purchase",
+        headers={"stripe-signature": "sig_test"},
+        content=b"{}",
+    )
+    assert response_1.status_code == 200
+    data_1 = response_1.json()
+    assert data_1["amount_added_cents"] == 5000
+    assert data_1["new_budget_cents"] == 5000
+
+    response_2 = client.post(
+        "/regions/webhooks/budget-purchase",
+        headers={"stripe-signature": "sig_test"},
+        content=b"{}",
+    )
+    assert response_2.status_code == 200
+    data_2 = response_2.json()
+    assert data_2["amount_added_cents"] == 5000
+    assert data_2["new_budget_cents"] == 5000
+
+    purchases = db.query(DBBudgetPurchase).filter(DBBudgetPurchase.stripe_session_id == "cs_pool_123").all()
+    assert len(purchases) == 1
+
+
+def test_get_team_region_budget_pool_mode_fields(client, team_admin_token, db, test_team, test_region):
+    """Pool-mode budget endpoint includes days_remaining/expires_at/cents fields."""
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+    db.add(
+        DBTeamRegion(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            last_budget_purchase_at=datetime.now(UTC) - timedelta(days=10),
+            aggregate_spend_cents=1234,
+            total_budget_purchased_cents=9000,
+        )
+    )
+    db.commit()
+
+    response = client.get(
+        f"/regions/{test_region.id}/teams/{test_team.id}/budget",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["aggregate_spend_cents"] == 1234
+    assert data["available_budget_cents"] == 7766
+    assert data["days_remaining"] >= 354
+    assert data["expires_at"] is not None

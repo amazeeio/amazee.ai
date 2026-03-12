@@ -1,6 +1,6 @@
 from unittest.mock import patch, Mock, AsyncMock
-from app.db.models import DBPrivateAIKey, DBTeam, DBUser, DBProduct, DBTeamProduct
-from datetime import datetime, UTC
+from app.db.models import DBPrivateAIKey, DBTeam, DBUser, DBProduct, DBTeamProduct, DBTeamRegion
+from datetime import datetime, UTC, timedelta
 from app.core.security import get_password_hash
 from httpx import HTTPStatusError
 from fastapi import status, HTTPException
@@ -1011,6 +1011,107 @@ def test_create_llm_token_with_expiration(mock_client_class, client, admin_token
     assert call_args["json"]["budget_duration"] == "30d"  # Verify 1 month
     assert call_args["json"]["max_budget"] == DEFAULT_MAX_SPEND
     assert call_args["json"]["rpm_limit"] == DEFAULT_RPM_PER_KEY
+
+
+@patch("httpx.AsyncClient")
+def test_create_llm_token_pool_mode_expired_returns_402(mock_client_class, client, team_admin_token, test_region, db, test_team, mock_httpx_post_client):
+    """Pool-mode token creation should fail when purchase window is expired."""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+    db.add(
+        DBTeamRegion(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            last_budget_purchase_at=datetime.now(UTC) - timedelta(days=366),
+            total_budget_purchased_cents=10000,
+            aggregate_spend_cents=100,
+            last_spend_synced_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Pool Expired",
+            "team_id": test_team.id,
+        }
+    )
+
+    assert response.status_code == 402
+    assert "Budget expired in this region" in response.json()["detail"]
+
+
+@patch("httpx.AsyncClient")
+def test_create_llm_token_pool_mode_exhausted_returns_402(mock_client_class, client, team_admin_token, test_region, db, test_team, mock_httpx_post_client):
+    """Pool-mode token creation should fail when available budget is exhausted."""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+    db.add(
+        DBTeamRegion(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            last_budget_purchase_at=datetime.now(UTC) - timedelta(days=10),
+            total_budget_purchased_cents=10000,
+            aggregate_spend_cents=10000,
+            last_spend_synced_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Pool Exhausted",
+            "team_id": test_team.id,
+        }
+    )
+
+    assert response.status_code == 402
+    assert "Budget exhausted in this region" in response.json()["detail"]
+
+
+@patch("httpx.AsyncClient")
+def test_create_llm_token_pool_mode_omits_budget_duration(mock_client_class, client, team_admin_token, test_region, db, test_team, mock_httpx_post_client):
+    """Pool-mode token creation should pass duration but omit budget_duration to LiteLLM."""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+    db.add(
+        DBTeamRegion(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            last_budget_purchase_at=datetime.now(UTC) - timedelta(days=10),
+            total_budget_purchased_cents=20000,
+            aggregate_spend_cents=500,
+            last_spend_synced_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Pool Valid",
+            "team_id": test_team.id,
+        }
+    )
+
+    assert response.status_code == 200
+    call_args = mock_httpx_post_client.post.call_args[1]
+    assert "duration" in call_args["json"]
+    assert "budget_duration" not in call_args["json"]
 
 def test_create_vector_db_as_system_admin(client, admin_token, test_region):
     """Test that a system admin can create a vector database for themselves"""
