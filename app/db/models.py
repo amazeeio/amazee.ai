@@ -45,6 +45,7 @@ class DBTeamRegion(Base):
     aggregate_spend_cents = Column(BigInteger, default=0, nullable=False)
     total_budget_purchased_cents = Column(BigInteger, default=0, nullable=False)
     last_spend_synced_at = Column(DateTime(timezone=True), nullable=True)
+    expiry_notification_sent_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 

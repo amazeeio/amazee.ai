@@ -801,12 +801,66 @@ def _send_expiry_notification(db: Session, team: DBTeam, has_products: bool, sho
                     logger.warning(f"No email found for team {team.name} (ID: {team.id})")
             except Exception as e:
                 logger.error(f"Failed to send expired email to team {team.name}: {str(e)}")
-        elif days_remaining <= 0:
-            # Post expired metric
-            team_expired_metric.labels(
-                team_id=str(team.id),
-                team_name=team.name
-            ).inc()
+    elif days_remaining <= 0:
+        # Post expired metric
+        team_expired_metric.labels(
+            team_id=str(team.id),
+            team_name=team.name
+        ).inc()
+
+def _send_pool_expiry_notification(
+    db: Session,
+    team: DBTeam,
+    team_region: DBTeamRegion,
+    ses_service: Optional[SESService]
+) -> None:
+    """
+    Send one pool-budget expiry notification email per purchase cycle.
+    """
+    if not ses_service:
+        logger.warning(f"SES service not available, skipping pool expiry email for team {team.id}")
+        return
+
+    if not team_region.last_budget_purchase_at:
+        return
+
+    purchase_time = team_region.last_budget_purchase_at
+    if purchase_time.tzinfo is None:
+        purchase_time = purchase_time.replace(tzinfo=UTC)
+
+    sent_at = team_region.expiry_notification_sent_at
+    if sent_at:
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=UTC)
+        # Already notified in this purchase cycle.
+        if sent_at >= purchase_time:
+            return
+
+    try:
+        admin_email = get_team_admin_email(db, team)
+    except ValueError:
+        logger.warning(f"No admin user found for team {team.id}, skipping pool expiry email")
+        return
+
+    try:
+        template_data = {
+            "name": team.name,
+            "dashboard_url": generate_pricing_url(admin_email)
+        }
+        success = ses_service.send_email(
+            to_addresses=[admin_email],
+            template_name="pool-budget-expired",
+            template_data=template_data
+        )
+        if success:
+            team_region.expiry_notification_sent_at = datetime.now(UTC)
+            db.add(team_region)
+            db.commit()
+            logger.info(f"Sent pool expiry email for team {team.id}, region {team_region.region_id}")
+        else:
+            logger.error(f"Failed to send pool expiry email for team {team.id}, region {team_region.region_id}")
+    except Exception as exc:
+        logger.error(f"Error sending pool expiry email for team {team.id}, region {team_region.region_id}: {str(exc)}")
 
 async def reconcile_team_product_associations(db: Session, team: DBTeam):
     """
@@ -948,6 +1002,9 @@ async def monitor_teams(db: Session):
                             pool_expiry_by_region[team_region.region_id] = max(365 - days_elapsed, 0)
                         else:
                             pool_expiry_by_region[team_region.region_id] = 0
+
+                        if should_send_notifications and pool_expiry_by_region[team_region.region_id] <= 0:
+                            _send_pool_expiry_notification(db, team, team_region, ses_service)
                 elif has_products and team.last_payment:
                     # Get budget from active limits (source of truth)
                     team_limits = limit_service.get_team_limits(team)

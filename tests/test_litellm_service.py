@@ -73,6 +73,30 @@ def test_create_key_success(mock_client_class, test_region, mock_httpx_post_clie
 
 
 @patch("httpx.AsyncClient")
+def test_create_key_omits_budget_duration_when_none(mock_client_class, test_region, mock_httpx_post_client):
+    """Pool-mode key creation should not send budget_duration."""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url,
+        api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(service.create_key(
+        email="test@example.com",
+        name="Pool Key",
+        user_id=123,
+        team_id="team-456",
+        duration="90d",
+        budget_duration=None
+    ))
+
+    sent_payload = mock_httpx_post_client.post.call_args.kwargs["json"]
+    assert sent_payload["duration"] == "90d"
+    assert "budget_duration" not in sent_payload
+
+
+@patch("httpx.AsyncClient")
 def test_create_key_failure(mock_client_class, test_region, mock_httpx_failure_client):
     """Test key creation failure"""
     mock_client_class.return_value = mock_httpx_failure_client(500, "Internal Server Error")
@@ -217,6 +241,23 @@ def test_update_budget_success(mock_client_class, test_region, mock_httpx_post_c
             "max_budget": 100.0
         }
     )
+
+
+@patch("httpx.AsyncClient")
+def test_update_budget_omits_budget_duration_when_none(mock_client_class, test_region, mock_httpx_post_client):
+    """Pool-mode budget updates should not send budget_duration."""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url,
+        api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(service.update_budget("test-token", budget_duration=None, budget_amount=100.0, duration="120d"))
+    sent_payload = mock_httpx_post_client.post.call_args.kwargs["json"]
+    assert sent_payload["duration"] == "120d"
+    assert sent_payload["max_budget"] == 100.0
+    assert "budget_duration" not in sent_payload
 
 
 @patch("httpx.AsyncClient")

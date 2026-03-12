@@ -737,6 +737,7 @@ async def handle_budget_purchase_webhook(
 
         association.last_budget_purchase_at = datetime.now(UTC)
         association.total_budget_purchased_cents = int((association.total_budget_purchased_cents or 0) + amount_cents)
+        association.expiry_notification_sent_at = None
         association.updated_at = datetime.now(UTC)
         db.add(association)
 

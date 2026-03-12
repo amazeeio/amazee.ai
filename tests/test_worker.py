@@ -1,5 +1,5 @@
 import pytest
-from app.db.models import DBProduct, DBTeamProduct, DBPrivateAIKey, DBTeam, DBTeamMetrics, DBLimitedResource
+from app.db.models import DBProduct, DBTeamProduct, DBPrivateAIKey, DBTeam, DBTeamMetrics, DBLimitedResource, DBTeamRegion
 from datetime import datetime, UTC, timedelta
 from app.core.worker import (
     apply_product_for_team,
@@ -11,11 +11,79 @@ from app.core.worker import (
     key_spend_percentage,
     team_total_spend,
     active_team_labels,
-    reconcile_team_keys
+    reconcile_team_keys,
+    _send_pool_expiry_notification
 )
 from app.core.team_service import get_team_keys_by_region
 from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType, LimitedResource
 from unittest.mock import AsyncMock, patch, Mock
+
+
+def test_send_pool_expiry_notification_sends_once_per_cycle(db, test_team, test_team_admin, test_region):
+    """
+    Given a pool-mode team-region whose purchase window has expired
+    When pool expiry notification is triggered twice in the same cycle
+    Then only one email is sent and the sent timestamp is persisted
+    """
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+    db.commit()
+
+    team_region = DBTeamRegion(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        last_budget_purchase_at=datetime.now(UTC) - timedelta(days=366),
+    )
+    db.add(team_region)
+    db.commit()
+    db.refresh(team_region)
+
+    mock_ses = Mock()
+    mock_ses.send_email.return_value = True
+
+    _send_pool_expiry_notification(db, test_team, team_region, mock_ses)
+    db.refresh(team_region)
+    assert team_region.expiry_notification_sent_at is not None
+    assert mock_ses.send_email.call_count == 1
+
+    # Same cycle (no new purchase): should be suppressed.
+    _send_pool_expiry_notification(db, test_team, team_region, mock_ses)
+    assert mock_ses.send_email.call_count == 1
+
+
+def test_send_pool_expiry_notification_resends_after_new_purchase_cycle(db, test_team, test_team_admin, test_region):
+    """
+    Given an already-notified team-region
+    When a new purchase cycle starts
+    Then a new expiry notification can be sent for the new cycle
+    """
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+    db.commit()
+
+    old_purchase = datetime.now(UTC) - timedelta(days=500)
+    previous_sent = datetime.now(UTC) - timedelta(days=100)
+    team_region = DBTeamRegion(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        last_budget_purchase_at=old_purchase,
+        expiry_notification_sent_at=previous_sent,
+    )
+    db.add(team_region)
+    db.commit()
+    db.refresh(team_region)
+
+    # Simulate a new cycle: new purchase happened after previous sent timestamp.
+    team_region.last_budget_purchase_at = datetime.now(UTC) - timedelta(days=366)
+    db.add(team_region)
+    db.commit()
+    db.refresh(team_region)
+
+    mock_ses = Mock()
+    mock_ses.send_email.return_value = True
+
+    _send_pool_expiry_notification(db, test_team, team_region, mock_ses)
+    assert mock_ses.send_email.call_count == 1
 
 @pytest.mark.parametrize("event_type,object_type,get_product_func", [
     ("customer.subscription.deleted", "subscription", "get_product_id_from_subscription"),
@@ -2919,4 +2987,3 @@ async def test_monitor_teams_continues_processing_after_error(
     assert mock_reconcile_products.call_count == 4  # test_team + 3 new teams
     # reconcile_team_keys should have been called for all teams except the failing one
     assert mock_reconcile.call_count == 3  # 4 teams - 1 failing = 3 successful
-
