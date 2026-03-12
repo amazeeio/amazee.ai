@@ -374,3 +374,63 @@ async def get_pricing_table_secret(customer_id: str) -> str:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error creating customer session"
         )
+
+async def create_budget_checkout_session(
+    customer_id: str,
+    team_id: int,
+    region_id: int,
+    amount_cents: int,
+    currency: str,
+    success_url: str,
+    cancel_url: str
+):
+    """
+    Create a one-time Stripe Checkout session for pool-budget purchase.
+    """
+    try:
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            customer=customer_id,
+            payment_method_types=["card"],
+            line_items=[
+                {
+                    "price_data": {
+                        "currency": currency,
+                        "unit_amount": amount_cents,
+                        "product_data": {
+                            "name": "Pool budget top-up",
+                            "description": f"Team {team_id}, region {region_id}",
+                        },
+                    },
+                    "quantity": 1,
+                }
+            ],
+            metadata={
+                "team_id": str(team_id),
+                "region_id": str(region_id),
+                "amount_cents": str(amount_cents),
+                "currency": currency.lower(),
+            },
+            success_url=success_url,
+            cancel_url=cancel_url,
+        )
+        return session
+    except Exception as e:
+        logger.error(f"Error creating budget checkout session: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error creating budget checkout session"
+        )
+
+async def retrieve_checkout_session(session_id: str):
+    """
+    Retrieve a checkout session from Stripe.
+    """
+    try:
+        return stripe.checkout.Session.retrieve(session_id)
+    except Exception as e:
+        logger.error(f"Error retrieving checkout session {session_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Error retrieving checkout session"
+        )

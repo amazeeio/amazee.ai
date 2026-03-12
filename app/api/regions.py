@@ -1,24 +1,58 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from sqlalchemy.orm import Session
 from typing import List
 import requests
 import asyncpg
 import logging
+from datetime import datetime, UTC
+import os
 
 from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
-from app.schemas.models import Region, RegionCreate, RegionResponse, User, RegionUpdate, TeamSummary, TeamRegionBudget
-from app.db.models import DBRegion, DBPrivateAIKey, DBTeamRegion, DBTeam, DBUser
+from app.schemas.models import (
+    Region,
+    RegionCreate,
+    RegionResponse,
+    User,
+    RegionUpdate,
+    TeamSummary,
+    TeamRegionBudget,
+    BudgetCheckoutCreateRequest,
+    BudgetPurchaseResponse,
+)
+from app.db.models import (
+    DBRegion,
+    DBPrivateAIKey,
+    DBTeamRegion,
+    DBTeam,
+    DBUser,
+    DBSystemSecret,
+    DBBudgetPurchase,
+    DBLimitedResource,
+)
 from app.core.security import get_role_min_system_admin, get_role_min_specific_team_admin
 from app.core.limit_service import LimitService, DEFAULT_MAX_SPEND
-from app.schemas.limits import ResourceType
+from app.schemas.limits import ResourceType, OwnerType, LimitType, UnitType, LimitSource
 from app.services.litellm import LiteLLMService
+from app.services.stripe import (
+    create_budget_checkout_session,
+    create_stripe_customer,
+    decode_stripe_event,
+    retrieve_checkout_session,
+)
 
 logger = logging.getLogger(__name__)
+BUDGET_WEBHOOK_KEY = "stripe_webhook_secret"
 
 router = APIRouter(
     tags=["regions"]
 )
+
+def _get_budget_webhook_secret(db: Session) -> str:
+    if os.getenv("WEBHOOK_SIG"):
+        return os.getenv("WEBHOOK_SIG")
+    secret = db.query(DBSystemSecret).filter(DBSystemSecret.key == BUDGET_WEBHOOK_KEY).first()
+    return secret.value if secret else ""
 
 async def validate_litellm_endpoint(api_url: str, api_key: str) -> bool:
     """
@@ -474,4 +508,239 @@ async def get_team_region_budget(
         region_name=region.name,
         total_spend=round(total_spend, 4),
         total_budget=round(total_budget, 4)
+    )
+
+@router.post(
+    "/{region_id}/teams/{team_id}/budget-checkout-session",
+    dependencies=[Depends(get_role_min_specific_team_admin)]
+)
+async def create_team_budget_checkout_session(
+    region_id: int,
+    team_id: int,
+    request_data: BudgetCheckoutCreateRequest,
+    db: Session = Depends(get_db)
+):
+    team = db.query(DBTeam).filter(
+        DBTeam.id == team_id,
+        DBTeam.deleted_at.is_(None)
+    ).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    if team.budget_mode != "pool":
+        raise HTTPException(status_code=400, detail="Pool budget checkout requires team budget_mode='pool'")
+
+    region = db.query(DBRegion).filter(
+        DBRegion.id == region_id,
+        DBRegion.is_active.is_(True)
+    ).first()
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+
+    association = db.query(DBTeamRegion).filter(
+        DBTeamRegion.team_id == team_id,
+        DBTeamRegion.region_id == region_id
+    ).first()
+    if not association:
+        raise HTTPException(status_code=404, detail="Team-region association not found")
+
+    if not team.stripe_customer_id:
+        team.stripe_customer_id = await create_stripe_customer(team)
+        db.add(team)
+        db.commit()
+        db.refresh(team)
+
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
+    success_url = f"{frontend_url}/teams/{team_id}/dashboard?budgetPurchase=success&session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{frontend_url}/teams/{team_id}/dashboard?budgetPurchase=cancel"
+
+    checkout_session = await create_budget_checkout_session(
+        customer_id=team.stripe_customer_id,
+        team_id=team_id,
+        region_id=region_id,
+        amount_cents=request_data.amount_cents,
+        currency=request_data.currency.lower(),
+        success_url=success_url,
+        cancel_url=cancel_url,
+    )
+
+    return {
+        "session_id": checkout_session.id,
+        "checkout_url": checkout_session.url,
+    }
+
+@router.post("/webhooks/budget-purchase")
+async def handle_budget_purchase_webhook(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    webhook_secret = _get_budget_webhook_secret(db)
+    if not webhook_secret:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    payload = await request.body()
+    signature = request.headers.get("stripe-signature")
+    event = decode_stripe_event(payload, signature, webhook_secret)
+
+    if event.type != "checkout.session.completed":
+        return Response(status_code=status.HTTP_200_OK, content="Ignored")
+
+    event_session_id = event.data.object.get("id")
+    if not event_session_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing checkout session id")
+
+    stripe_session = await retrieve_checkout_session(event_session_id)
+    if stripe_session.get("payment_status") != "paid":
+        return Response(status_code=status.HTTP_200_OK, content="Not paid")
+
+    metadata = stripe_session.get("metadata") or {}
+    required_metadata = ("team_id", "region_id", "amount_cents", "currency")
+    if any(not metadata.get(key) for key in required_metadata):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing required checkout metadata")
+
+    try:
+        team_id = int(metadata["team_id"])
+        region_id = int(metadata["region_id"])
+        amount_cents = int(metadata["amount_cents"])
+        currency = metadata["currency"].lower()
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid checkout metadata")
+
+    if amount_cents <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid amount")
+
+    stripe_amount_total = int(stripe_session.get("amount_total") or 0)
+    stripe_currency = (stripe_session.get("currency") or "").lower()
+    if stripe_amount_total != amount_cents or stripe_currency != currency:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Stripe amount/currency mismatch")
+
+    existing_purchase = db.query(DBBudgetPurchase).filter(
+        DBBudgetPurchase.stripe_session_id == event_session_id
+    ).first()
+    if existing_purchase:
+        team_region = db.query(DBTeamRegion).filter(
+            DBTeamRegion.team_id == existing_purchase.team_id,
+            DBTeamRegion.region_id == existing_purchase.region_id
+        ).first()
+        aggregate_spend_cents = int((team_region.aggregate_spend_cents if team_region else 0) or 0)
+        total_purchased_cents = int((team_region.total_budget_purchased_cents if team_region else existing_purchase.new_budget_cents) or 0)
+        return BudgetPurchaseResponse(
+            previous_budget_cents=existing_purchase.previous_budget_cents,
+            amount_added_cents=existing_purchase.amount_cents,
+            new_budget_cents=existing_purchase.new_budget_cents,
+            aggregate_spend_cents=aggregate_spend_cents,
+            available_budget_cents=max(total_purchased_cents - aggregate_spend_cents, 0),
+            expires_at=(team_region.last_budget_purchase_at if team_region and team_region.last_budget_purchase_at else existing_purchase.purchased_at),
+            days_remaining=365,
+        )
+
+    try:
+        team = db.query(DBTeam).filter(
+            DBTeam.id == team_id,
+            DBTeam.deleted_at.is_(None)
+        ).with_for_update().first()
+        if not team:
+            raise HTTPException(status_code=404, detail="Team not found")
+        if team.budget_mode != "pool":
+            raise HTTPException(status_code=400, detail="Team is not in pool budget mode")
+
+        region = db.query(DBRegion).filter(
+            DBRegion.id == region_id,
+            DBRegion.is_active.is_(True)
+        ).first()
+        if not region:
+            raise HTTPException(status_code=404, detail="Region not found")
+
+        association = db.query(DBTeamRegion).filter(
+            DBTeamRegion.team_id == team_id,
+            DBTeamRegion.region_id == region_id
+        ).with_for_update().first()
+        if not association:
+            association = DBTeamRegion(team_id=team_id, region_id=region_id)
+            db.add(association)
+            db.flush()
+
+        existing_purchase = db.query(DBBudgetPurchase).filter(
+            DBBudgetPurchase.stripe_session_id == event_session_id
+        ).first()
+        if existing_purchase:
+            aggregate_spend_cents = int(association.aggregate_spend_cents or 0)
+            total_purchased_cents = int(association.total_budget_purchased_cents or 0)
+            return BudgetPurchaseResponse(
+                previous_budget_cents=existing_purchase.previous_budget_cents,
+                amount_added_cents=existing_purchase.amount_cents,
+                new_budget_cents=existing_purchase.new_budget_cents,
+                aggregate_spend_cents=aggregate_spend_cents,
+                available_budget_cents=max(total_purchased_cents - aggregate_spend_cents, 0),
+                expires_at=association.last_budget_purchase_at or existing_purchase.purchased_at,
+                days_remaining=365,
+            )
+
+        budget_limit = db.query(DBLimitedResource).filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == team_id,
+            DBLimitedResource.resource == ResourceType.BUDGET
+        ).with_for_update().first()
+
+        previous_budget_cents = int(round((budget_limit.max_value if budget_limit else 0.0) * 100))
+        new_budget_cents = previous_budget_cents + amount_cents
+
+        if budget_limit:
+            budget_limit.max_value = new_budget_cents / 100.0
+            budget_limit.updated_at = datetime.now(UTC)
+        else:
+            budget_limit = DBLimitedResource(
+                limit_type=LimitType.DATA_PLANE,
+                resource=ResourceType.BUDGET,
+                unit=UnitType.DOLLAR,
+                max_value=new_budget_cents / 100.0,
+                current_value=None,
+                owner_type=OwnerType.TEAM,
+                owner_id=team_id,
+                limited_by=LimitSource.MANUAL,
+                set_by="stripe_pool_budget_webhook",
+            )
+            db.add(budget_limit)
+
+        association.last_budget_purchase_at = datetime.now(UTC)
+        association.total_budget_purchased_cents = int((association.total_budget_purchased_cents or 0) + amount_cents)
+        association.updated_at = datetime.now(UTC)
+        db.add(association)
+
+        purchase = DBBudgetPurchase(
+            team_id=team_id,
+            region_id=region_id,
+            stripe_session_id=event_session_id,
+            stripe_payment_intent_id=stripe_session.get("payment_intent"),
+            currency=currency,
+            amount_cents=amount_cents,
+            previous_budget_cents=previous_budget_cents,
+            new_budget_cents=new_budget_cents,
+        )
+        db.add(purchase)
+        db.commit()
+        db.refresh(association)
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        logger.error("Failed to process pool budget webhook for session %s: %s", event_session_id, str(exc))
+        raise HTTPException(status_code=500, detail="Failed to process budget purchase")
+
+    aggregate_spend_cents = int(association.aggregate_spend_cents or 0)
+    available_budget_cents = max(int(association.total_budget_purchased_cents or 0) - aggregate_spend_cents, 0)
+    logger.info(
+        "Applied pool budget purchase: team=%s region=%s amount_cents=%s new_budget_cents=%s",
+        team_id, region_id, amount_cents, new_budget_cents
+    )
+
+    return BudgetPurchaseResponse(
+        previous_budget_cents=previous_budget_cents,
+        amount_added_cents=amount_cents,
+        new_budget_cents=new_budget_cents,
+        aggregate_spend_cents=aggregate_spend_cents,
+        available_budget_cents=available_budget_cents,
+        expires_at=association.last_budget_purchase_at,
+        days_remaining=365,
     )
