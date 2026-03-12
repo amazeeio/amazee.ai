@@ -492,11 +492,8 @@ async def get_team_region_budget(
         days_remaining = 0
         expires_at = None
         if team_region.last_budget_purchase_at:
-            purchase_time = team_region.last_budget_purchase_at
-            if purchase_time.tzinfo is None:
-                purchase_time = purchase_time.replace(tzinfo=UTC)
-            expires_at = purchase_time + timedelta(days=365)
-            days_remaining = max((expires_at - datetime.now(UTC)).days, 0)
+            days_remaining = _pool_days_remaining(team_region.last_budget_purchase_at)
+            expires_at = _pool_expires_at(team_region.last_budget_purchase_at)
 
         return TeamRegionBudget(
             team_id=team_id,

@@ -1316,6 +1316,49 @@ def test_create_llm_token_pool_mode_omits_budget_duration(
 
 
 @patch("httpx.AsyncClient")
+def test_create_llm_token_pool_mode_new_purchase_sets_365d(
+    mock_client_class,
+    client,
+    team_admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
+    """Pool-mode token creation should use 365d immediately after purchase."""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+    db.add(
+        DBTeamRegion(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            last_budget_purchase_at=datetime.now(UTC),
+            total_budget_purchased_cents=20000,
+            aggregate_spend_cents=500,
+            last_spend_synced_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Pool Fresh Purchase",
+            "team_id": test_team.id,
+        },
+    )
+
+    assert response.status_code == 200
+    call_args = mock_httpx_post_client.post.call_args[1]
+    assert call_args["json"]["duration"] == "365d"
+    assert "budget_duration" not in call_args["json"]
+
+
+@patch("httpx.AsyncClient")
 def test_create_llm_token_pool_mode_applies_to_user_owned_keys_without_team_id(
     mock_client_class,
     client,

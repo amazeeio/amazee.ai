@@ -3,7 +3,7 @@ Team service for centralized team operations including soft-delete and restore.
 """
 
 import logging
-from datetime import datetime, UTC, timedelta
+from datetime import datetime, UTC
 from typing import Dict, List, Optional
 from collections import defaultdict
 from sqlalchemy.orm import Session
@@ -181,10 +181,10 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> None:
                                         purchase_time = purchase_time.replace(
                                             tzinfo=UTC
                                         )
-                                    expires_at = purchase_time + timedelta(days=365)
-                                    days_remaining = max(
-                                        (expires_at - datetime.now(UTC)).days, 0
-                                    )
+                                    days_elapsed = (
+                                        datetime.now(UTC) - purchase_time
+                                    ).days
+                                    days_remaining = max(365 - days_elapsed, 0)
                                     key_duration = f"{days_remaining}d"
                                 else:
                                     key_duration = "0d"

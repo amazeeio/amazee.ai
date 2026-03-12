@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from fastapi import status
 import logging
-from datetime import datetime, UTC, timedelta
+from datetime import datetime, UTC
 
 from app.db.database import get_db
 from app.core.dependencies import get_limit_service
@@ -439,8 +439,8 @@ async def create_llm_token(
         purchase_time = team_region.last_budget_purchase_at
         if purchase_time.tzinfo is None:
             purchase_time = purchase_time.replace(tzinfo=UTC)
-        expires_at = purchase_time + timedelta(days=365)
-        days_left_in_period = max((expires_at - datetime.now(UTC)).days, 0)
+        days_elapsed = (datetime.now(UTC) - purchase_time).days
+        days_left_in_period = max(365 - days_elapsed, 0)
         if days_left_in_period <= 0:
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
