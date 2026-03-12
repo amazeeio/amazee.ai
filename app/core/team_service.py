@@ -257,6 +257,14 @@ async def propagate_team_budget_to_keys(
 
         # Update keys for each region
         for region, keys in keys_by_region.items():
+            # In targeted pool updates, only propagate to explicitly provided regions.
+            # Regions omitted from duration_by_region must keep their current key durations.
+            if duration_by_region is not None and region.id not in duration_by_region:
+                logger.info(
+                    f"Skipping budget propagation for team {team_id} in region {region.id} (not targeted)"
+                )
+                continue
+
             litellm_service = LiteLLMService(
                 api_url=region.litellm_api_url, api_key=region.litellm_api_key
             )
@@ -266,7 +274,7 @@ async def propagate_team_budget_to_keys(
                 try:
                     target_duration = budget_duration
                     if duration_by_region is not None:
-                        target_duration = duration_by_region.get(region.id, "0d")
+                        target_duration = duration_by_region[region.id]
 
                     await litellm_service.update_budget(
                         litellm_token=key.litellm_token,

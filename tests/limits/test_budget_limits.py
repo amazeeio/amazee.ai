@@ -1,11 +1,20 @@
 import logging
 import threading
 import time
+import asyncio
 import pytest
 from datetime import datetime, UTC, timedelta
 from unittest.mock import patch, AsyncMock
-from app.db.models import DBUser, DBProduct, DBTeamProduct, DBPrivateAIKey
+from app.db.models import (
+    DBUser,
+    DBProduct,
+    DBTeamProduct,
+    DBPrivateAIKey,
+    DBTeamRegion,
+    DBRegion,
+)
 from app.core.limit_service import LimitService
+from app.core.team_service import propagate_team_budget_to_keys
 from app.schemas.limits import ResourceType, OwnerType, LimitType, UnitType, LimitSource
 from app.core.security import get_password_hash
 from app.core.limit_service import (
@@ -496,6 +505,97 @@ def test_budget_propagation_works_after_session_close(
         # Verify correct parameters
         args, kwargs = captured_calls[0]
         assert kwargs.get("budget_amount") == 150.0
+
+
+@patch("app.core.team_service.LiteLLMService")
+def test_pool_budget_targeted_propagation_does_not_expire_other_regions(
+    mock_litellm_class, db, test_team, test_region
+):
+    """
+    GIVEN: A pool-budget team with keys in two regions
+    WHEN: Budget propagation is targeted to one region via duration_by_region
+    THEN: Keys in non-targeted regions are not updated to 0d (or updated at all)
+    """
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+
+    other_region = DBRegion(
+        name="other-test-region",
+        label="Other Test Region",
+        description="Another test region for targeted propagation",
+        postgres_host="amazee-test-postgres",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="https://other-test-litellm.com",
+        litellm_api_key="other-test-litellm-key",
+        is_active=True,
+    )
+    db.add(other_region)
+    db.commit()
+    db.refresh(other_region)
+
+    db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
+    db.add(DBTeamRegion(team_id=test_team.id, region_id=other_region.id))
+
+    team_user = DBUser(
+        email="targeted-prop@example.com",
+        hashed_password=get_password_hash("password123"),
+        is_active=True,
+        team_id=test_team.id,
+    )
+    db.add(team_user)
+    db.commit()
+    db.refresh(team_user)
+
+    key_targeted = DBPrivateAIKey(
+        name="Targeted Region Key",
+        litellm_token="targeted_region_token",
+        litellm_api_url=test_region.litellm_api_url,
+        team_id=test_team.id,
+        owner_id=team_user.id,
+        region_id=test_region.id,
+    )
+    key_untargeted = DBPrivateAIKey(
+        name="Untargeted Region Key",
+        litellm_token="untargeted_region_token",
+        litellm_api_url=other_region.litellm_api_url,
+        team_id=test_team.id,
+        owner_id=team_user.id,
+        region_id=other_region.id,
+    )
+    db.add(key_targeted)
+    db.add(key_untargeted)
+    db.commit()
+
+    captured_calls = []
+    instantiated_urls = []
+
+    async def mock_update_budget(*args, **kwargs):
+        captured_calls.append(kwargs)
+
+    def create_mock_instance(*args, **kwargs):
+        instantiated_urls.append(kwargs.get("api_url"))
+        mock_instance = AsyncMock()
+        mock_instance.update_budget = mock_update_budget
+        return mock_instance
+
+    mock_litellm_class.side_effect = create_mock_instance
+
+    asyncio.run(
+        propagate_team_budget_to_keys(
+            db=db,
+            team_id=test_team.id,
+            budget_amount=123.0,
+            budget_duration=None,
+            duration_by_region={test_region.id: "300d"},
+        )
+    )
+
+    assert instantiated_urls == [test_region.litellm_api_url]
+    assert len(captured_calls) == 1
+    assert captured_calls[0]["litellm_token"] == "targeted_region_token"
+    assert captured_calls[0]["duration"] == "300d"
 
 
 @patch("app.core.team_service.LiteLLMService")
