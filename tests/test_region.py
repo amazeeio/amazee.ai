@@ -3,11 +3,8 @@ from app.db.models import (
     DBTeam,
     DBRegion,
     DBTeamRegion,
-    DBSystemSecret,
-    DBBudgetPurchase,
-    DBLimitedResource,
+    DBPoolTopupProduct,
 )
-from app.schemas.limits import OwnerType, ResourceType
 from unittest.mock import patch, AsyncMock, Mock
 from datetime import datetime, UTC, timedelta
 
@@ -1272,8 +1269,18 @@ def test_create_budget_checkout_session_pool_mode_success(
     """Team admin can create pool checkout session for associated region."""
     test_team.budget_mode = "pool"
     test_team.stripe_customer_id = "cus_pool_123"
+    topup = DBPoolTopupProduct(
+        name="Pool +$50",
+        stripe_price_id="price_pool_50",
+        stripe_product_id="prod_pool",
+        amount_cents=5000,
+        currency="usd",
+        region_id=test_region.id,
+        is_active=True,
+    )
     db.add(test_team)
     db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
+    db.add(topup)
     db.commit()
 
     mock_checkout_session = Mock()
@@ -1284,7 +1291,7 @@ def test_create_budget_checkout_session_pool_mode_success(
     response = client.post(
         f"/regions/{test_region.id}/teams/{test_team.id}/budget-checkout-session",
         headers={"Authorization": f"Bearer {team_admin_token}"},
-        json={"amount_cents": 5000, "currency": "usd"},
+        json={"topup_id": topup.id, "quantity": 1},
     )
 
     assert response.status_code == 200
@@ -1302,7 +1309,7 @@ def test_create_budget_checkout_session_requires_team_admin(
     response = client.post(
         f"/regions/{test_region.id}/teams/{test_team.id}/budget-checkout-session",
         headers={"Authorization": f"Bearer {test_token}"},
-        json={"amount_cents": 5000, "currency": "usd"},
+        json={"topup_id": 9999, "quantity": 1},
     )
 
     assert response.status_code == 403
@@ -1315,14 +1322,23 @@ def test_create_budget_checkout_session_rejects_non_pool_mode(
     mock_create_checkout, client, team_admin_token, db, test_team, test_region
 ):
     """Checkout session endpoint only supports pool-mode teams."""
+    topup = DBPoolTopupProduct(
+        name="Pool +$50",
+        stripe_price_id="price_pool_50",
+        amount_cents=5000,
+        currency="usd",
+        region_id=test_region.id,
+        is_active=True,
+    )
     test_team.budget_mode = "periodic"
+    db.add(topup)
     db.add(test_team)
     db.commit()
 
     response = client.post(
         f"/regions/{test_region.id}/teams/{test_team.id}/budget-checkout-session",
         headers={"Authorization": f"Bearer {team_admin_token}"},
-        json={"amount_cents": 5000, "currency": "usd"},
+        json={"topup_id": topup.id, "quantity": 1},
     )
 
     assert response.status_code == 400
@@ -1340,529 +1356,28 @@ def test_create_budget_checkout_session_requires_team_region_association(
     """Pool checkout requires an existing team-region association."""
     test_team.budget_mode = "pool"
     test_team.stripe_customer_id = "cus_pool_no_assoc"
+    topup = DBPoolTopupProduct(
+        name="Pool +$50",
+        stripe_price_id="price_pool_50",
+        amount_cents=5000,
+        currency="usd",
+        region_id=test_region.id,
+        is_active=True,
+    )
+    db.add(topup)
     db.add(test_team)
     db.commit()
 
     response = client.post(
         f"/regions/{test_region.id}/teams/{test_team.id}/budget-checkout-session",
         headers={"Authorization": f"Bearer {team_admin_token}"},
-        json={"amount_cents": 5000, "currency": "usd"},
+        json={"topup_id": topup.id, "quantity": 1},
     )
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Team-region association not found"
     mock_create_checkout.assert_not_awaited()
 
-
-@patch("app.api.regions.LimitService._trigger_team_budget_propagation")
-@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
-@patch("app.api.regions.decode_stripe_event")
-def test_budget_webhook_idempotency(
-    mock_decode_event,
-    mock_retrieve_session,
-    mock_trigger_budget_propagation,
-    client,
-    db,
-    test_team,
-    test_region,
-):
-    """Webhook processes purchase once and returns idempotent response on retry."""
-    test_team.budget_mode = "pool"
-    db.add(test_team)
-    db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
-    db.add(
-        DBSystemSecret(
-            key="stripe_webhook_secret", value="whsec_test", description="test secret"
-        )
-    )
-    db.commit()
-
-    event = Mock()
-    event.type = "checkout.session.completed"
-    event.data = Mock()
-    event.data.object = {"id": "cs_pool_123"}
-    mock_decode_event.return_value = event
-    mock_retrieve_session.return_value = {
-        "id": "cs_pool_123",
-        "payment_status": "paid",
-        "amount_total": 5000,
-        "currency": "usd",
-        "payment_intent": "pi_pool_123",
-        "metadata": {
-            "team_id": str(test_team.id),
-            "region_id": str(test_region.id),
-            "amount_cents": "5000",
-            "currency": "usd",
-        },
-    }
-
-    response_1 = client.post(
-        "/regions/webhooks/budget-purchase",
-        headers={"stripe-signature": "sig_test"},
-        content=b"{}",
-    )
-    assert response_1.status_code == 200
-    data_1 = response_1.json()
-    assert data_1["amount_added_cents"] == 5000
-    assert data_1["new_budget_cents"] == 5000
-
-    response_2 = client.post(
-        "/regions/webhooks/budget-purchase",
-        headers={"stripe-signature": "sig_test"},
-        content=b"{}",
-    )
-    assert response_2.status_code == 200
-    data_2 = response_2.json()
-    assert data_2["amount_added_cents"] == 5000
-    assert data_2["new_budget_cents"] == 5000
-
-    purchases = (
-        db.query(DBBudgetPurchase)
-        .filter(DBBudgetPurchase.stripe_session_id == "cs_pool_123")
-        .all()
-    )
-    assert len(purchases) == 1
-    assert mock_trigger_budget_propagation.call_count == 1
-
-
-@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
-@patch("app.api.regions.decode_stripe_event")
-def test_budget_webhook_ignores_non_checkout_events(
-    mock_decode_event, mock_retrieve_session, client, db
-):
-    """Non checkout.session.completed events are ignored."""
-    db.add(
-        DBSystemSecret(
-            key="stripe_webhook_secret", value="whsec_test", description="test secret"
-        )
-    )
-    db.commit()
-
-    event = Mock()
-    event.type = "invoice.paid"
-    event.data = Mock()
-    event.data.object = {"id": "evt_ignored"}
-    mock_decode_event.return_value = event
-
-    response = client.post(
-        "/regions/webhooks/budget-purchase",
-        headers={"stripe-signature": "sig_test"},
-        content=b"{}",
-    )
-
-    assert response.status_code == 200
-    assert response.text == "Ignored"
-    mock_retrieve_session.assert_not_awaited()
-
-
-@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
-@patch("app.api.regions.decode_stripe_event")
-def test_budget_webhook_alias_route_works(
-    mock_decode_event, mock_retrieve_session, client, db
-):
-    """`/stripe/webhooks/budget-purchase` should route to the same budget webhook handler."""
-    db.add(
-        DBSystemSecret(
-            key="stripe_webhook_secret", value="whsec_test", description="test secret"
-        )
-    )
-    db.commit()
-
-    event = Mock()
-    event.type = "invoice.paid"  # non-target event should be ignored
-    event.data = Mock()
-    event.data.object = {"id": "evt_alias_ignored"}
-    mock_decode_event.return_value = event
-
-    response = client.post(
-        "/stripe/webhooks/budget-purchase",
-        headers={"stripe-signature": "sig_test"},
-        content=b"{}",
-    )
-
-    assert response.status_code == 200
-    assert response.text == "Ignored"
-    mock_retrieve_session.assert_not_awaited()
-
-
-@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
-@patch("app.api.regions.decode_stripe_event")
-def test_budget_webhook_ignores_unpaid_session(
-    mock_decode_event, mock_retrieve_session, client, db
-):
-    """Completed checkout events are ignored if payment status is not paid."""
-    db.add(
-        DBSystemSecret(
-            key="stripe_webhook_secret", value="whsec_test", description="test secret"
-        )
-    )
-    db.commit()
-
-    event = Mock()
-    event.type = "checkout.session.completed"
-    event.data = Mock()
-    event.data.object = {"id": "cs_unpaid"}
-    mock_decode_event.return_value = event
-    mock_retrieve_session.return_value = {
-        "id": "cs_unpaid",
-        "payment_status": "unpaid",
-        "amount_total": 5000,
-        "currency": "usd",
-        "metadata": {
-            "team_id": "1",
-            "region_id": "1",
-            "amount_cents": "5000",
-            "currency": "usd",
-        },
-    }
-
-    response = client.post(
-        "/regions/webhooks/budget-purchase",
-        headers={"stripe-signature": "sig_test"},
-        content=b"{}",
-    )
-
-    assert response.status_code == 200
-    assert response.text == "Not paid"
-
-
-@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
-@patch("app.api.regions.decode_stripe_event")
-def test_budget_webhook_rejects_non_pool_team(
-    mock_decode_event, mock_retrieve_session, client, db, test_team, test_region
-):
-    """Webhook rejects budget purchases for teams not configured in pool mode."""
-    test_team.budget_mode = "periodic"
-    db.add(test_team)
-    db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
-    db.add(
-        DBSystemSecret(
-            key="stripe_webhook_secret", value="whsec_test", description="test secret"
-        )
-    )
-    db.commit()
-
-    event = Mock()
-    event.type = "checkout.session.completed"
-    event.data = Mock()
-    event.data.object = {"id": "cs_non_pool"}
-    mock_decode_event.return_value = event
-    mock_retrieve_session.return_value = {
-        "id": "cs_non_pool",
-        "payment_status": "paid",
-        "amount_total": 5000,
-        "currency": "usd",
-        "payment_intent": "pi_non_pool",
-        "metadata": {
-            "team_id": str(test_team.id),
-            "region_id": str(test_region.id),
-            "amount_cents": "5000",
-            "currency": "usd",
-        },
-    }
-
-    response = client.post(
-        "/regions/webhooks/budget-purchase",
-        headers={"stripe-signature": "sig_test"},
-        content=b"{}",
-    )
-
-    assert response.status_code == 400
-    assert response.json()["detail"] == "Team is not in pool budget mode"
-
-
-@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
-@patch("app.api.regions.decode_stripe_event")
-def test_budget_webhook_rejects_missing_metadata(
-    mock_decode_event, mock_retrieve_session, client, db, test_team, test_region
-):
-    """Webhook rejects completed sessions with missing required metadata."""
-    test_team.budget_mode = "pool"
-    db.add(test_team)
-    db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
-    db.add(
-        DBSystemSecret(
-            key="stripe_webhook_secret", value="whsec_test", description="test secret"
-        )
-    )
-    db.commit()
-
-    event = Mock()
-    event.type = "checkout.session.completed"
-    event.data = Mock()
-    event.data.object = {"id": "cs_pool_missing_meta"}
-    mock_decode_event.return_value = event
-    mock_retrieve_session.return_value = {
-        "id": "cs_pool_missing_meta",
-        "payment_status": "paid",
-        "amount_total": 5000,
-        "currency": "usd",
-        "payment_intent": "pi_pool_missing_meta",
-        "metadata": {
-            "team_id": str(test_team.id),
-            "region_id": str(test_region.id),
-            "amount_cents": "5000",
-            # Missing currency
-        },
-    }
-
-    response = client.post(
-        "/regions/webhooks/budget-purchase",
-        headers={"stripe-signature": "sig_test"},
-        content=b"{}",
-    )
-
-    assert response.status_code == 400
-    assert response.json()["detail"] == "Missing required checkout metadata"
-
-
-@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
-@patch("app.api.regions.decode_stripe_event")
-def test_budget_webhook_rejects_amount_currency_mismatch(
-    mock_decode_event, mock_retrieve_session, client, db, test_team, test_region
-):
-    """Webhook rejects sessions when Stripe amount/currency differ from metadata."""
-    test_team.budget_mode = "pool"
-    db.add(test_team)
-    db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
-    db.add(
-        DBSystemSecret(
-            key="stripe_webhook_secret", value="whsec_test", description="test secret"
-        )
-    )
-    db.commit()
-
-    event = Mock()
-    event.type = "checkout.session.completed"
-    event.data = Mock()
-    event.data.object = {"id": "cs_pool_mismatch"}
-    mock_decode_event.return_value = event
-    mock_retrieve_session.return_value = {
-        "id": "cs_pool_mismatch",
-        "payment_status": "paid",
-        "amount_total": 5100,  # mismatch vs metadata amount_cents
-        "currency": "usd",
-        "payment_intent": "pi_pool_mismatch",
-        "metadata": {
-            "team_id": str(test_team.id),
-            "region_id": str(test_region.id),
-            "amount_cents": "5000",
-            "currency": "usd",
-        },
-    }
-
-    response = client.post(
-        "/regions/webhooks/budget-purchase",
-        headers={"stripe-signature": "sig_test"},
-        content=b"{}",
-    )
-
-    assert response.status_code == 400
-    assert response.json()["detail"] == "Stripe amount/currency mismatch"
-
-
-@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
-@patch("app.api.regions.decode_stripe_event")
-def test_budget_webhook_signature_verification_failure(
-    mock_decode_event, mock_retrieve_session, client, db
-):
-    """Webhook returns not found when Stripe signature verification fails."""
-    db.add(
-        DBSystemSecret(
-            key="stripe_webhook_secret", value="whsec_test", description="test secret"
-        )
-    )
-    db.commit()
-
-    mock_decode_event.side_effect = HTTPException(status_code=404, detail="Not found")
-
-    response = client.post(
-        "/regions/webhooks/budget-purchase",
-        headers={"stripe-signature": "sig_invalid"},
-        content=b"{}",
-    )
-
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Not found"
-    mock_retrieve_session.assert_not_awaited()
-
-
-@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
-@patch("app.api.regions.decode_stripe_event")
-def test_budget_webhook_additive_purchases_preserve_exact_cents(
-    mock_decode_event, mock_retrieve_session, client, db, test_team, test_region
-):
-    """Two different successful sessions add budget exactly in cents for the same team-region."""
-    test_team.budget_mode = "pool"
-    db.add(test_team)
-    db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
-    db.add(
-        DBSystemSecret(
-            key="stripe_webhook_secret", value="whsec_test", description="test secret"
-        )
-    )
-    db.commit()
-
-    event_1 = Mock()
-    event_1.type = "checkout.session.completed"
-    event_1.data = Mock()
-    event_1.data.object = {"id": "cs_pool_add_1"}
-
-    event_2 = Mock()
-    event_2.type = "checkout.session.completed"
-    event_2.data = Mock()
-    event_2.data.object = {"id": "cs_pool_add_2"}
-
-    mock_decode_event.side_effect = [event_1, event_2]
-    mock_retrieve_session.side_effect = [
-        {
-            "id": "cs_pool_add_1",
-            "payment_status": "paid",
-            "amount_total": 1,
-            "currency": "usd",
-            "payment_intent": "pi_pool_add_1",
-            "metadata": {
-                "team_id": str(test_team.id),
-                "region_id": str(test_region.id),
-                "amount_cents": "1",
-                "currency": "usd",
-            },
-        },
-        {
-            "id": "cs_pool_add_2",
-            "payment_status": "paid",
-            "amount_total": 2,
-            "currency": "usd",
-            "payment_intent": "pi_pool_add_2",
-            "metadata": {
-                "team_id": str(test_team.id),
-                "region_id": str(test_region.id),
-                "amount_cents": "2",
-                "currency": "usd",
-            },
-        },
-    ]
-
-    response_1 = client.post(
-        "/regions/webhooks/budget-purchase",
-        headers={"stripe-signature": "sig_test"},
-        content=b"{}",
-    )
-    assert response_1.status_code == 200
-    assert response_1.json()["new_budget_cents"] == 1
-
-    response_2 = client.post(
-        "/regions/webhooks/budget-purchase",
-        headers={"stripe-signature": "sig_test"},
-        content=b"{}",
-    )
-    assert response_2.status_code == 200
-    assert response_2.json()["new_budget_cents"] == 3
-
-    purchases = (
-        db.query(DBBudgetPurchase)
-        .filter(
-            DBBudgetPurchase.team_id == test_team.id,
-            DBBudgetPurchase.region_id == test_region.id,
-        )
-        .all()
-    )
-    assert len(purchases) == 2
-
-    team_region = (
-        db.query(DBTeamRegion)
-        .filter(
-            DBTeamRegion.team_id == test_team.id,
-            DBTeamRegion.region_id == test_region.id,
-        )
-        .first()
-    )
-    assert team_region is not None
-    assert team_region.total_budget_purchased_cents == 3
-
-    budget_limit = (
-        db.query(DBLimitedResource)
-        .filter(
-            DBLimitedResource.owner_type == OwnerType.TEAM,
-            DBLimitedResource.owner_id == test_team.id,
-            DBLimitedResource.resource == ResourceType.BUDGET,
-        )
-        .first()
-    )
-    assert budget_limit is not None
-    assert int(round(float(budget_limit.max_value) * 100)) == 3
-
-
-@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
-@patch("app.api.regions.decode_stripe_event")
-def test_budget_webhook_idempotent_response_reports_elapsed_days_remaining(
-    mock_decode_event, mock_retrieve_session, client, db, test_team, test_region
-):
-    """Idempotent webhook response should compute days_remaining from last purchase timestamp."""
-    purchase_time = datetime.now(UTC) - timedelta(days=10)
-
-    test_team.budget_mode = "pool"
-    db.add(test_team)
-    db.add(
-        DBSystemSecret(
-            key="stripe_webhook_secret", value="whsec_test", description="test secret"
-        )
-    )
-    db.add(
-        DBTeamRegion(
-            team_id=test_team.id,
-            region_id=test_region.id,
-            last_budget_purchase_at=purchase_time,
-            aggregate_spend_cents=0,
-            total_budget_purchased_cents=5000,
-        )
-    )
-    db.add(
-        DBBudgetPurchase(
-            team_id=test_team.id,
-            region_id=test_region.id,
-            stripe_session_id="cs_pool_existing_elapsed",
-            stripe_payment_intent_id="pi_pool_existing_elapsed",
-            currency="usd",
-            amount_cents=5000,
-            previous_budget_cents=0,
-            new_budget_cents=5000,
-            purchased_at=purchase_time,
-        )
-    )
-    db.commit()
-
-    event = Mock()
-    event.type = "checkout.session.completed"
-    event.data = Mock()
-    event.data.object = {"id": "cs_pool_existing_elapsed"}
-    mock_decode_event.return_value = event
-    mock_retrieve_session.return_value = {
-        "id": "cs_pool_existing_elapsed",
-        "payment_status": "paid",
-        "amount_total": 5000,
-        "currency": "usd",
-        "payment_intent": "pi_pool_existing_elapsed",
-        "metadata": {
-            "team_id": str(test_team.id),
-            "region_id": str(test_region.id),
-            "amount_cents": "5000",
-            "currency": "usd",
-        },
-    }
-
-    response = client.post(
-        "/regions/webhooks/budget-purchase",
-        headers={"stripe-signature": "sig_test"},
-        content=b"{}",
-    )
-
-    assert response.status_code == 200
-    data = response.json()
-    assert data["days_remaining"] in {355, 354}
-    assert data["expires_at"] is not None
-    expected_expiry_date = (purchase_time + timedelta(days=365)).date().isoformat()
-    assert data["expires_at"].startswith(expected_expiry_date)
 
 
 def test_get_team_region_budget_pool_mode_fields(

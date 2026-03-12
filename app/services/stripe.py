@@ -19,6 +19,9 @@ SUBSCRIPTION_SUCCESS_EVENTS = [
     "customer.subscription.resumed",
     "customer.subscription.created",
 ]  # New subscription
+CHECKOUT_SUCCESS_EVENTS = [
+    "checkout.session.completed",
+]  # One-time checkout success (used by pool top-ups)
 SESSION_FAILURE_EVENTS = [
     "checkout.session.async_payment_failed",
     "checkout.session.expired",
@@ -29,7 +32,7 @@ SUBSCRIPTION_FAILURE_EVENTS = [
 ]  # Subscription failure
 INVOICE_FAILURE_EVENTS = ["invoice.payment_failed"]  # Invoice failure
 
-SUCCESS_EVENTS = INVOICE_SUCCESS_EVENTS + SUBSCRIPTION_SUCCESS_EVENTS
+SUCCESS_EVENTS = INVOICE_SUCCESS_EVENTS + SUBSCRIPTION_SUCCESS_EVENTS + CHECKOUT_SUCCESS_EVENTS
 FAILURE_EVENTS = (
     SESSION_FAILURE_EVENTS + SUBSCRIPTION_FAILURE_EVENTS + INVOICE_FAILURE_EVENTS
 )
@@ -384,10 +387,11 @@ async def get_pricing_table_secret(customer_id: str) -> str:
 
 async def create_budget_checkout_session(
     customer_id: str,
+    stripe_price_id: str,
     team_id: int,
     region_id: int,
-    amount_cents: int,
-    currency: str,
+    topup_id: int,
+    quantity: int,
     success_url: str,
     cancel_url: str,
 ):
@@ -401,22 +405,15 @@ async def create_budget_checkout_session(
             payment_method_types=["card"],
             line_items=[
                 {
-                    "price_data": {
-                        "currency": currency,
-                        "unit_amount": amount_cents,
-                        "product_data": {
-                            "name": "Pool budget top-up",
-                            "description": f"Team {team_id}, region {region_id}",
-                        },
-                    },
-                    "quantity": 1,
+                    "price": stripe_price_id,
+                    "quantity": quantity,
                 }
             ],
             metadata={
                 "team_id": str(team_id),
                 "region_id": str(region_id),
-                "amount_cents": str(amount_cents),
-                "currency": currency.lower(),
+                "pool_topup_id": str(topup_id),
+                "quantity": str(quantity),
             },
             success_url=success_url,
             cancel_url=cancel_url,
@@ -441,4 +438,21 @@ async def retrieve_checkout_session(session_id: str):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Error retrieving checkout session",
+        )
+
+
+async def retrieve_checkout_session_line_items(session_id: str):
+    """
+    Retrieve line items for a checkout session from Stripe.
+    """
+    try:
+        line_items = stripe.checkout.Session.list_line_items(session_id)
+        return line_items.data
+    except Exception as e:
+        logger.error(
+            f"Error retrieving checkout session line items for {session_id}: {str(e)}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Error retrieving checkout line items",
         )

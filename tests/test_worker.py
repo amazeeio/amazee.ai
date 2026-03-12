@@ -7,6 +7,8 @@ from app.db.models import (
     DBTeamMetrics,
     DBLimitedResource,
     DBTeamRegion,
+    DBBudgetPurchase,
+    DBPoolTopupProduct,
 )
 from datetime import datetime, UTC, timedelta
 from app.core.worker import (
@@ -202,6 +204,129 @@ async def test_handle_unknown_event_type(db):
     await handle_stripe_event_background(mock_event)
 
     # No assertion needed as we're just verifying no error occurs
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LimitService._trigger_team_budget_propagation")
+@patch("app.core.worker.retrieve_checkout_session_line_items", new_callable=AsyncMock)
+@patch("app.core.worker.retrieve_checkout_session", new_callable=AsyncMock)
+async def test_handle_checkout_completed_pool_topup_success(
+    mock_retrieve_session,
+    mock_retrieve_line_items,
+    mock_trigger_budget_propagation,
+    db,
+    test_team,
+    test_region,
+):
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+    db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
+    topup = DBPoolTopupProduct(
+        name="Pool +$50",
+        stripe_price_id="price_pool_50",
+        stripe_product_id="prod_pool",
+        amount_cents=5000,
+        currency="usd",
+        region_id=test_region.id,
+        is_active=True,
+    )
+    db.add(topup)
+    db.commit()
+    db.refresh(topup)
+
+    budget_limit_before = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == test_team.id,
+            DBLimitedResource.resource == ResourceType.BUDGET,
+        )
+        .first()
+    )
+    previous_budget_cents = int(
+        round((budget_limit_before.max_value if budget_limit_before else 0.0) * 100)
+    )
+
+    mock_event = Mock()
+    mock_event.type = "checkout.session.completed"
+    mock_event.data.object = Mock(id="cs_pool_success")
+
+    mock_retrieve_session.return_value = {
+        "id": "cs_pool_success",
+        "payment_status": "paid",
+        "amount_total": 10000,
+        "currency": "usd",
+        "payment_intent": "pi_pool_success",
+        "metadata": {
+            "team_id": str(test_team.id),
+            "region_id": str(test_region.id),
+            "pool_topup_id": str(topup.id),
+            "quantity": "2",
+        },
+    }
+    mock_retrieve_line_items.return_value = [
+        {"price": {"id": "price_pool_50"}, "quantity": 2}
+    ]
+
+    await handle_stripe_event_background(mock_event)
+
+    purchase = (
+        db.query(DBBudgetPurchase)
+        .filter(DBBudgetPurchase.stripe_session_id == "cs_pool_success")
+        .first()
+    )
+    assert purchase is not None
+    assert purchase.amount_cents == 10000
+    assert purchase.previous_budget_cents == previous_budget_cents
+    assert purchase.new_budget_cents == previous_budget_cents + 10000
+
+    team_region = (
+        db.query(DBTeamRegion)
+        .filter(
+            DBTeamRegion.team_id == test_team.id, DBTeamRegion.region_id == test_region.id
+        )
+        .first()
+    )
+    assert team_region is not None
+    assert team_region.total_budget_purchased_cents == 10000
+    assert team_region.last_budget_purchase_at is not None
+
+    mock_trigger_budget_propagation.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LimitService._trigger_team_budget_propagation")
+@patch("app.core.worker.retrieve_checkout_session_line_items", new_callable=AsyncMock)
+@patch("app.core.worker.retrieve_checkout_session", new_callable=AsyncMock)
+async def test_handle_checkout_completed_pool_topup_ignores_missing_metadata(
+    mock_retrieve_session,
+    mock_retrieve_line_items,
+    mock_trigger_budget_propagation,
+    db,
+):
+    mock_event = Mock()
+    mock_event.type = "checkout.session.completed"
+    mock_event.data.object = Mock(id="cs_pool_missing_meta")
+
+    mock_retrieve_session.return_value = {
+        "id": "cs_pool_missing_meta",
+        "payment_status": "paid",
+        "amount_total": 5000,
+        "currency": "usd",
+        "payment_intent": "pi_pool_missing_meta",
+        "metadata": {"team_id": "1"},
+    }
+
+    await handle_stripe_event_background(mock_event)
+
+    purchases = (
+        db.query(DBBudgetPurchase)
+        .filter(DBBudgetPurchase.stripe_session_id == "cs_pool_missing_meta")
+        .all()
+    )
+    assert len(purchases) == 0
+    mock_retrieve_line_items.assert_not_awaited()
+    mock_trigger_budget_propagation.assert_not_called()
 
 
 @pytest.mark.asyncio

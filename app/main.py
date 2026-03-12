@@ -15,6 +15,7 @@ from app.api import (
     billing,
     products,
     pricing_tables,
+    pool_topups,
     limits,
 )
 from app.core.config import settings
@@ -279,17 +280,8 @@ app.include_router(products.router, prefix="/products", tags=["products"])
 app.include_router(
     pricing_tables.router, prefix="/pricing-tables", tags=["pricing-tables"]
 )
+app.include_router(pool_topups.router, prefix="/pool-topups", tags=["pool-topups"])
 app.include_router(limits.router, prefix="/limits", tags=["limits"])
-
-# Stripe webhook alias for pool-budget purchases.
-# Keeps backward compatibility with existing `/regions/webhooks/budget-purchase`
-# while exposing the plan-defined `/stripe/webhooks/budget-purchase`.
-app.add_api_route(
-    "/stripe/webhooks/budget-purchase",
-    regions.handle_budget_purchase_webhook,
-    methods=["POST"],
-    tags=["regions"],
-)
 
 
 @app.get("/", include_in_schema=False)
