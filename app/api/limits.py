@@ -5,6 +5,7 @@ from app.db.database import get_db
 from app.core.dependencies import get_limit_service
 from app.schemas.limits import (
     LimitedResource,
+    TeamLimitsResponse,
     OverwriteLimitRequest,
     ResetLimitRequest,
     LimitSource,
@@ -33,7 +34,7 @@ def _is_pool_team_budget_request(
 
 @router.get(
     "/teams/{team_id}",
-    response_model=List[LimitedResource],
+    response_model=TeamLimitsResponse,
     dependencies=[Depends(get_role_min_system_admin)],
 )
 async def get_team_limits(
@@ -51,7 +52,11 @@ async def get_team_limits(
             status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
         )
     try:
-        return limit_service.get_team_limits(team)
+        return TeamLimitsResponse(
+            team_id=team.id,
+            budget_mode=team.budget_mode,
+            limits=limit_service.get_team_limits(team),
+        )
     except Exception as e:
         logger.error(f"Error getting team limits for team {team_id}: {str(e)}")
         raise HTTPException(

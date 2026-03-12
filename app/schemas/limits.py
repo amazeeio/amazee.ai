@@ -1,6 +1,6 @@
 from enum import Enum
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Literal
 from datetime import datetime
 
 
@@ -76,3 +76,9 @@ class ResetLimitRequest(BaseModel):
     owner_id: int
     resource: ResourceType
     model_config = {"from_attributes": True}
+
+
+class TeamLimitsResponse(BaseModel):
+    team_id: int
+    budget_mode: Literal["periodic", "pool"]
+    limits: List[LimitedResource]

@@ -273,7 +273,10 @@ def test_get_team_limits_api_returns_all_limits(
     )
 
     assert response.status_code == 200
-    data = response.json()
+    payload = response.json()
+    assert payload["team_id"] == test_team.id
+    assert payload["budget_mode"] == test_team.budget_mode
+    data = payload["limits"]
     assert isinstance(data, list)
     assert len(data) == 2
 

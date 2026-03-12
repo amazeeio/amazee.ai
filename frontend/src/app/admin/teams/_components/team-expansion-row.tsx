@@ -30,6 +30,12 @@ import { User } from "@/types/user";
 import { get } from "@/utils/api";
 import { useQuery } from "@tanstack/react-query";
 
+interface TeamLimitsResponse {
+  team_id: number;
+  budget_mode: "periodic" | "pool";
+  limits: LimitedResource[];
+}
+
 interface TeamExpansionRowProps {
   teamId: string;
   isExpanded: boolean;
@@ -103,7 +109,10 @@ export function TeamExpansionRow({
     queryKey: ["team-limits", teamId],
     queryFn: async () => {
       const response = await get(`/limits/teams/${teamId}`);
-      return response.json();
+      const data = await response.json();
+      return Array.isArray(data)
+        ? data
+        : ((data as TeamLimitsResponse).limits ?? []);
     },
     enabled: isExpanded,
   });
