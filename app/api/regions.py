@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from typing import List
 import requests
 import asyncpg
@@ -635,6 +636,43 @@ async def create_team_budget_purchase(
     if not association:
         raise HTTPException(status_code=404, detail="Team-region association not found")
 
+    def _build_purchase_response(existing: DBBudgetPurchase) -> BudgetPurchaseResponse:
+        refreshed_association = (
+            db.query(DBTeamRegion)
+            .filter(
+                DBTeamRegion.team_id == team_id, DBTeamRegion.region_id == region_id
+            )
+            .first()
+        )
+        if not refreshed_association:
+            raise HTTPException(
+                status_code=404, detail="Team-region association not found"
+            )
+        aggregate_spend_cents = int(refreshed_association.aggregate_spend_cents or 0)
+        available_budget_cents = max(
+            int(refreshed_association.total_budget_purchased_cents or 0)
+            - aggregate_spend_cents,
+            0,
+        )
+        days_remaining = _pool_days_remaining(
+            refreshed_association.last_budget_purchase_at
+        )
+        expires_at = _pool_expires_at(refreshed_association.last_budget_purchase_at)
+        if not expires_at:
+            expires_at = (existing.purchased_at or purchase_time) + timedelta(days=365)
+            days_remaining = 365
+
+        return BudgetPurchaseResponse(
+            stripe_payment_intent_id=stripe_payment_intent_id,
+            previous_budget_cents=existing.previous_budget_cents,
+            amount_added_cents=existing.amount_cents,
+            new_budget_cents=existing.new_budget_cents,
+            aggregate_spend_cents=aggregate_spend_cents,
+            available_budget_cents=available_budget_cents,
+            expires_at=expires_at,
+            days_remaining=days_remaining,
+        )
+
     stripe_payment_intent_id = request_data.stripe_payment_intent_id.strip()
     if not stripe_payment_intent_id:
         raise HTTPException(
@@ -675,27 +713,7 @@ async def create_team_budget_purchase(
                 ),
             )
 
-        aggregate_spend_cents = int(association.aggregate_spend_cents or 0)
-        available_budget_cents = max(
-            int(association.total_budget_purchased_cents or 0) - aggregate_spend_cents,
-            0,
-        )
-        days_remaining = _pool_days_remaining(association.last_budget_purchase_at)
-        expires_at = _pool_expires_at(association.last_budget_purchase_at)
-        if not expires_at:
-            expires_at = purchase_time + timedelta(days=365)
-            days_remaining = 365
-
-        return BudgetPurchaseResponse(
-            stripe_payment_intent_id=stripe_payment_intent_id,
-            previous_budget_cents=existing_purchase.previous_budget_cents,
-            amount_added_cents=existing_purchase.amount_cents,
-            new_budget_cents=existing_purchase.new_budget_cents,
-            aggregate_spend_cents=aggregate_spend_cents,
-            available_budget_cents=available_budget_cents,
-            expires_at=expires_at,
-            days_remaining=days_remaining,
-        )
+        return _build_purchase_response(existing_purchase)
 
     budget_limit = (
         db.query(DBLimitedResource)
@@ -752,7 +770,44 @@ async def create_team_budget_purchase(
         purchased_at=purchase_time,
     )
     db.add(purchase)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        # Another concurrent request may have inserted the same purchase first.
+        existing_purchase = (
+            db.query(DBBudgetPurchase)
+            .filter(DBBudgetPurchase.stripe_session_id == stripe_payment_intent_id)
+            .first()
+        )
+        if not existing_purchase:
+            raise
+
+        if (
+            existing_purchase.team_id != team_id
+            or existing_purchase.region_id != region_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Purchase with this stripe_payment_intent_id already exists for "
+                    "a different team or region"
+                ),
+            )
+
+        if (
+            existing_purchase.amount_cents != request_data.amount_cents
+            or existing_purchase.currency.lower() != currency
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Purchase with this stripe_payment_intent_id already exists with "
+                    "different amount or currency"
+                ),
+            )
+
+        return _build_purchase_response(existing_purchase)
 
     try:
         limit_service = LimitService(db)
