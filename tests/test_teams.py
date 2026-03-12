@@ -1,9 +1,19 @@
 from fastapi.testclient import TestClient
-from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBProduct, DBTeamProduct, DBRegion, DBTeamRegion
+from app.db.models import (
+    DBTeam,
+    DBUser,
+    DBPrivateAIKey,
+    DBProduct,
+    DBTeamProduct,
+    DBRegion,
+    DBTeamRegion,
+    DBLimitedResource,
+    DBAuditLog,
+)
 from app.main import app
 from app.core.security import get_password_hash
 from app.core.limit_service import LimitService, setup_default_limits
-from app.schemas.limits import OwnerType, LimitSource, ResourceType
+from app.schemas.limits import OwnerType, LimitSource, ResourceType, LimitType, UnitType
 from app.core.config import settings
 from datetime import datetime, UTC, timedelta
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -374,6 +384,89 @@ def test_update_team_as_team_admin(client, db):
     assert team_data["admin_email"] == "testteam@example.com"  # admin_email shouldn't change
     assert team_data["phone"] == "0987654321"
     assert team_data["billing_address"] == "456 Updated St, Updated City, 54321"
+
+def test_update_team_budget_mode_requires_system_admin(client, team_admin_token, test_team):
+    """Only system admins can change team budget mode."""
+    response = client.put(
+        f"/teams/{test_team.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"budget_mode": "pool"}
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Only system administrators can change budget mode"
+
+@patch("app.api.teams.propagate_team_budget_to_keys", new_callable=AsyncMock)
+def test_update_team_switch_to_pool_resets_budget_and_reconciles_keys(
+    mock_propagate,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region
+):
+    """Switching to pool resets baseline budget and reconciles keys immediately."""
+    team = db.query(DBTeam).filter(DBTeam.id == test_team.id).first()
+    team.budget_mode = "periodic"
+    db.add(team)
+
+    db.add(DBLimitedResource(
+        owner_type=OwnerType.TEAM,
+        owner_id=team.id,
+        resource=ResourceType.BUDGET,
+        limit_type=LimitType.DATA_PLANE,
+        unit=UnitType.DOLLAR,
+        max_value=27.0,
+        current_value=None,
+        limited_by=LimitSource.PRODUCT,
+        set_by=None,
+    ))
+    db.add(DBTeamRegion(team_id=team.id, region_id=test_region.id))
+    db.add(DBPrivateAIKey(
+        name="pool-switch-key",
+        database_username="db-user",
+        owner_id=None,
+        team_id=team.id,
+        region_id=test_region.id,
+        litellm_token="litellm-pool-switch-token",
+    ))
+    db.commit()
+
+    response = client.put(
+        f"/teams/{team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"budget_mode": "pool"}
+    )
+    assert response.status_code == 200
+    assert response.json()["budget_mode"] == "pool"
+
+    db.refresh(team)
+    assert team.budget_mode == "pool"
+
+    budget_limit = db.query(DBLimitedResource).filter(
+        DBLimitedResource.owner_type == OwnerType.TEAM,
+        DBLimitedResource.owner_id == team.id,
+        DBLimitedResource.resource == ResourceType.BUDGET
+    ).first()
+    assert budget_limit is not None
+    assert budget_limit.max_value == 0.0
+    assert budget_limit.limited_by == LimitSource.MANUAL
+    assert budget_limit.set_by == "budget_mode_switch_to_pool"
+
+    assert mock_propagate.await_count == 1
+    kwargs = mock_propagate.await_args.kwargs
+    assert kwargs["team_id"] == team.id
+    assert kwargs["budget_amount"] == 0.0
+    assert kwargs["duration_by_region"][test_region.id] == "0d"
+    assert kwargs["budget_duration"] is None
+
+    audit_log = db.query(DBAuditLog).filter(
+        DBAuditLog.event_type == "TEAM_BUDGET_MODE_SWITCH",
+        DBAuditLog.resource_type == "teams",
+        DBAuditLog.resource_id == str(team.id),
+    ).first()
+    assert audit_log is not None
+    assert audit_log.details["previous_budget_mode"] == "periodic"
+    assert audit_log.details["new_budget_mode"] == "pool"
 
 def test_update_team_unauthorized(client, test_token, test_team):
     """Test updating a team as a user not associated with that team"""

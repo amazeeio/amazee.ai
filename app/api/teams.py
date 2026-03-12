@@ -6,18 +6,31 @@ from datetime import datetime, UTC
 import logging
 
 from app.db.database import get_db
-from app.db.models import DBTeam, DBTeamProduct, DBUser, DBPrivateAIKey, DBRegion, DBTeamRegion, DBProduct, DBTeamMetrics
+from app.db.models import (
+    DBTeam,
+    DBTeamProduct,
+    DBUser,
+    DBPrivateAIKey,
+    DBRegion,
+    DBTeamRegion,
+    DBProduct,
+    DBTeamMetrics,
+    DBLimitedResource,
+    DBBudgetPurchase,
+    DBAuditLog,
+)
 from app.core.security import get_role_min_system_admin, get_role_min_specific_team_admin, get_current_user_from_auth, check_sales_or_higher
 from app.schemas.models import (
     Team, TeamCreate, TeamUpdate,
     TeamWithUsers, TeamMergeRequest, TeamMergeResponse
 )
 from app.core.limit_service import DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY, LimitService
+from app.schemas.limits import OwnerType, ResourceType, LimitSource, LimitType, UnitType
 from app.core.config import settings
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
 from app.core.worker import generate_pricing_url, get_team_admin_email
-from app.core.team_service import get_team_keys_by_region, restore_soft_deleted_team, soft_delete_team
+from app.core.team_service import get_team_keys_by_region, restore_soft_deleted_team, soft_delete_team, propagate_team_budget_to_keys
 from app.api.private_ai_keys import delete_private_ai_key
 from app.schemas.models import SalesTeamsResponse, SalesProduct, SalesTeam
 
@@ -168,6 +181,15 @@ async def update_team(
             detail="Only system administrators can toggle always-free status"
         )
 
+    # Budget mode transitions are operationally sensitive and restricted to system admins.
+    if team_update.budget_mode is not None and not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only system administrators can change budget mode"
+        )
+
+    previous_budget_mode = db_team.budget_mode
+
     # Update team fields
     for key, value in team_update.model_dump(exclude_unset=True).items():
         setattr(db_team, key, value)
@@ -175,6 +197,86 @@ async def update_team(
     db_team.updated_at = datetime.now(UTC)
     db.commit()
     db.refresh(db_team)
+
+    # Switching periodic -> pool requires immediate key reconciliation:
+    # remove periodic budget windows and apply pool purchase-window durations.
+    if previous_budget_mode != "pool" and db_team.budget_mode == "pool":
+        limit_service = LimitService(db)
+
+        purchase_total_cents = db.query(DBBudgetPurchase.amount_cents).filter(
+            DBBudgetPurchase.team_id == db_team.id
+        ).all()
+        purchased_budget_usd = (
+            sum(int(row[0] or 0) for row in purchase_total_cents) / 100.0
+            if purchase_total_cents else 0.0
+        )
+
+        budget_limit = db.query(DBLimitedResource).filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == db_team.id,
+            DBLimitedResource.resource == ResourceType.BUDGET
+        ).first()
+
+        if budget_limit:
+            budget_limit.max_value = purchased_budget_usd
+            budget_limit.limited_by = LimitSource.MANUAL
+            budget_limit.set_by = "budget_mode_switch_to_pool"
+            budget_limit.updated_at = datetime.now(UTC)
+        else:
+            limit_service.set_limit(
+                owner_type=OwnerType.TEAM,
+                owner_id=db_team.id,
+                resource_type=ResourceType.BUDGET,
+                limit_type=LimitType.DATA_PLANE,
+                unit=UnitType.DOLLAR,
+                max_value=purchased_budget_usd,
+                limited_by=LimitSource.MANUAL,
+                set_by="budget_mode_switch_to_pool"
+            )
+        db.commit()
+
+        limit_service.set_team_limits(db_team)
+        team_users = db.query(DBUser).filter(DBUser.team_id == db_team.id).all()
+        for user in team_users:
+            limit_service.set_user_limits(user)
+
+        team_regions = db.query(DBTeamRegion).filter(DBTeamRegion.team_id == db_team.id).all()
+        now = datetime.now(UTC)
+        duration_by_region = {}
+        for team_region in team_regions:
+            days_left = 0
+            if team_region.last_budget_purchase_at:
+                purchase_time = team_region.last_budget_purchase_at
+                if purchase_time.tzinfo is None:
+                    purchase_time = purchase_time.replace(tzinfo=UTC)
+                days_left = max(365 - (now - purchase_time).days, 0)
+            duration_by_region[team_region.region_id] = f"{days_left}d"
+
+        await propagate_team_budget_to_keys(
+            db=db,
+            team_id=db_team.id,
+            budget_amount=purchased_budget_usd,
+            budget_duration=None,
+            duration_by_region=duration_by_region
+        )
+
+    if previous_budget_mode != db_team.budget_mode:
+        db.add(DBAuditLog(
+            timestamp=datetime.now(UTC),
+            user_id=current_user.id,
+            event_type="TEAM_BUDGET_MODE_SWITCH",
+            resource_type="teams",
+            resource_id=str(db_team.id),
+            action="SWITCH_BUDGET_MODE",
+            details={
+                "team_id": db_team.id,
+                "previous_budget_mode": previous_budget_mode,
+                "new_budget_mode": db_team.budget_mode,
+                "actor_user_id": current_user.id,
+                "switched_at": datetime.now(UTC).isoformat(),
+            },
+        ))
+        db.commit()
 
     # Only send email when turning always-free on
     if team_update.is_always_free:
