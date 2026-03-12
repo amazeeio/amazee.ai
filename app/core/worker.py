@@ -457,7 +457,11 @@ async def handle_stripe_event_background(event):
             logger.info(f"Unknown event type: {event_type}")
             return
         event_object = event.data.object
-        metadata = (event_object.get("metadata") or {}) if isinstance(event_object, dict) else (event_object.metadata or {})
+        metadata = (
+            (event_object.get("metadata") or {})
+            if isinstance(event_object, dict)
+            else (event_object.metadata or {})
+        )
         purchase_type = metadata.get("purchase_type")
         is_pool_checkout = purchase_type == PURCHASE_TYPE_POOL_TOPUP or bool(
             metadata.get("pool_topup_id")
