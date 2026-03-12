@@ -331,6 +331,45 @@ async def test_handle_checkout_completed_pool_topup_ignores_missing_metadata(
 
 
 @pytest.mark.asyncio
+@patch("app.core.worker._apply_pool_topup_purchase", new_callable=AsyncMock)
+async def test_handle_checkout_completed_non_pool_purchase_type_is_ignored(
+    mock_apply_pool_topup, db
+):
+    mock_event = Mock()
+    mock_event.type = "checkout.session.completed"
+    mock_event.data.object = Mock(
+        id="cs_subscription_like",
+        metadata={"purchase_type": "subscription"},
+    )
+
+    await handle_stripe_event_background(mock_event)
+
+    mock_apply_pool_topup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.remove_product_from_team", new_callable=AsyncMock)
+@patch("app.core.worker.get_product_id_from_session", new_callable=AsyncMock)
+async def test_handle_checkout_failure_pool_topup_is_ignored(
+    mock_get_product_from_session,
+    mock_remove_product,
+    db,
+):
+    mock_event = Mock()
+    mock_event.type = "checkout.session.expired"
+    mock_event.data.object = Mock(
+        id="cs_pool_failure",
+        customer="cus_pool_test",
+        metadata={"purchase_type": "pool_topup", "pool_topup_id": "1"},
+    )
+
+    await handle_stripe_event_background(mock_event)
+
+    mock_get_product_from_session.assert_not_awaited()
+    mock_remove_product.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_apply_product_success(db, test_team, test_product):
     """
     Test successful application of a product to a team.

@@ -43,6 +43,7 @@ from app.services.stripe import (
     SUBSCRIPTION_FAILURE_EVENTS,
     INVOICE_FAILURE_EVENTS,
     INVOICE_SUCCESS_EVENTS,
+    PURCHASE_TYPE_POOL_TOPUP,
 )
 from prometheus_client import Gauge, Counter, Summary
 from typing import Dict, List, Optional
@@ -456,8 +457,24 @@ async def handle_stripe_event_background(event):
             logger.info(f"Unknown event type: {event_type}")
             return
         event_object = event.data.object
+        metadata = (event_object.get("metadata") or {}) if isinstance(event_object, dict) else (event_object.metadata or {})
+        purchase_type = metadata.get("purchase_type")
+        is_pool_checkout = purchase_type == PURCHASE_TYPE_POOL_TOPUP or bool(
+            metadata.get("pool_topup_id")
+        )
+
         if event_type == "checkout.session.completed":
-            await _apply_pool_topup_purchase(db, event_object.id)
+            # Unified checkout entry point:
+            # - pool top-up sessions are processed into budget purchases
+            # - other checkout sessions are ignored here and handled by subscription events
+            if is_pool_checkout:
+                await _apply_pool_topup_purchase(db, event_object.id)
+            else:
+                logger.info(
+                    "Ignoring checkout.session.completed without pool top-up intent (session=%s purchase_type=%s)",
+                    event_object.id,
+                    purchase_type,
+                )
             return
 
         customer_id = event_object.customer
@@ -478,6 +495,12 @@ async def handle_stripe_event_background(event):
             await apply_product_for_team(db, customer_id, product_id, start_date)
         # Failure Events
         elif event_type in SESSION_FAILURE_EVENTS:
+            if is_pool_checkout:
+                logger.info(
+                    "Ignoring checkout failure event for pool top-up session %s",
+                    event_object.id,
+                )
+                return
             product_id = await get_product_id_from_session(event_object.id)
             await remove_product_from_team(db, customer_id, product_id)
         elif event_type in SUBSCRIPTION_FAILURE_EVENTS:

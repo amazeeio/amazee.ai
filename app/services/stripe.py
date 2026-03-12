@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 # Initialize Stripe
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
+PURCHASE_TYPE_POOL_TOPUP = "pool_topup"
+PURCHASE_TYPE_SUBSCRIPTION = "subscription"
+
 # Full list of possible events: https://docs.stripe.com/api/events/types
 INVOICE_SUCCESS_EVENTS = ["invoice.paid"]  # Renewal
 SUBSCRIPTION_SUCCESS_EVENTS = [
@@ -412,6 +415,7 @@ async def create_budget_checkout_session(
                 }
             ],
             metadata={
+                "purchase_type": PURCHASE_TYPE_POOL_TOPUP,
                 "team_id": str(team_id),
                 "region_id": str(region_id),
                 "pool_topup_id": str(topup_id),
