@@ -272,6 +272,7 @@ app.include_router(
 )
 app.include_router(users.router, prefix="/users", tags=["users"])
 app.include_router(regions.router, prefix="/regions", tags=["regions"])
+app.include_router(regions.budget_router, prefix="/budgets", tags=["budgets"])
 app.include_router(audit.router, prefix="/audit", tags=["audit"])
 app.include_router(teams.router, prefix="/teams", tags=["teams"])
 app.include_router(billing.router, prefix="/billing", tags=["billing"])

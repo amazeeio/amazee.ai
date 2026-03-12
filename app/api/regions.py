@@ -46,6 +46,7 @@ from app.services.litellm import LiteLLMService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["regions"])
+budget_router = APIRouter(tags=["budgets"])
 
 
 def _pool_days_remaining(last_purchase_at: datetime | None) -> int:
@@ -454,6 +455,11 @@ async def list_teams_for_region(region_id: int, db: Session = Depends(get_db)):
     response_model=TeamRegionBudget,
     dependencies=[Depends(get_role_min_specific_team_admin)],
 )
+@budget_router.get(
+    "/regions/{region_id}/teams/{team_id}",
+    response_model=TeamRegionBudget,
+    dependencies=[Depends(get_role_min_specific_team_admin)],
+)
 async def get_team_region_budget(
     region_id: int, team_id: int, db: Session = Depends(get_db)
 ):
@@ -596,6 +602,11 @@ async def get_team_region_budget(
 
 @router.post(
     "/{region_id}/teams/{team_id}/budget-purchases",
+    response_model=BudgetPurchaseResponse,
+    dependencies=[Depends(get_role_min_specific_team_admin)],
+)
+@budget_router.post(
+    "/regions/{region_id}/teams/{team_id}/purchases",
     response_model=BudgetPurchaseResponse,
     dependencies=[Depends(get_role_min_specific_team_admin)],
 )

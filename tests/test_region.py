@@ -1434,3 +1434,51 @@ def test_get_team_region_budget_pool_mode_fields(
     assert data["available_budget_cents"] == 7766
     assert data["days_remaining"] >= 354
     assert data["expires_at"] is not None
+
+
+def test_budget_alias_get_team_region_budget_pool_mode_fields(
+    client, team_admin_token, db, test_team, test_region
+):
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+    db.add(
+        DBTeamRegion(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            last_budget_purchase_at=datetime.now(UTC) - timedelta(days=10),
+            aggregate_spend_cents=1234,
+            total_budget_purchased_cents=9000,
+        )
+    )
+    db.commit()
+
+    response = client.get(
+        f"/budgets/regions/{test_region.id}/teams/{test_team.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["aggregate_spend_cents"] == 1234
+    assert data["available_budget_cents"] == 7766
+
+
+def test_budget_alias_create_budget_purchase_pool_mode_success(
+    client, team_admin_token, db, test_team, test_region
+):
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+    db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
+    db.commit()
+
+    response = client.post(
+        f"/budgets/regions/{test_region.id}/teams/{test_team.id}/purchases",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={
+            "stripe_payment_intent_id": "pi_alias_1",
+            "amount_cents": 5000,
+            "currency": "usd",
+        },
+    )
+    assert response.status_code == 200, response.json()
+    data = response.json()
+    assert data["stripe_payment_intent_id"] == "pi_alias_1"
