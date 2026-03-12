@@ -502,6 +502,8 @@ def test_update_team_switch_to_pool_uses_purchase_ledger_total(
     team = db.query(DBTeam).filter(DBTeam.id == test_team.id).first()
     team.budget_mode = "periodic"
     db.add(team)
+    older_purchase = datetime.now(UTC) - timedelta(days=15)
+    latest_purchase = datetime.now(UTC) - timedelta(days=10)
 
     db.add(DBTeamRegion(
         team_id=team.id,
@@ -517,6 +519,7 @@ def test_update_team_switch_to_pool_uses_purchase_ledger_total(
         amount_cents=2500,
         previous_budget_cents=0,
         new_budget_cents=2500,
+        purchased_at=older_purchase,
     ))
     db.add(DBBudgetPurchase(
         team_id=team.id,
@@ -527,6 +530,7 @@ def test_update_team_switch_to_pool_uses_purchase_ledger_total(
         amount_cents=500,
         previous_budget_cents=2500,
         new_budget_cents=3000,
+        purchased_at=latest_purchase,
     ))
     db.commit()
 
@@ -1751,7 +1755,8 @@ def test_register_team_creates_default_limits(client, db, admin_token):
             "name": "New Team",
             "admin_email": "newteam@example.com",
             "phone": "1234567890",
-            "billing_address": "123 New St, New City, 12345"
+            "billing_address": "123 New St, New City, 12345",
+            "budget_mode": "periodic",
         },
         headers={"Authorization": f"Bearer {admin_token}"}
     )

@@ -103,6 +103,7 @@ def test_team(db):
         phone="1234567890",
         billing_address="123 Test St, Test City, 12345",
         is_active=True,
+        budget_mode="periodic",
         created_at=datetime.now(UTC)
     )
     db.add(team)

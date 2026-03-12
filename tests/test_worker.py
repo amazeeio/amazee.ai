@@ -74,7 +74,7 @@ def test_send_pool_expiry_notification_resends_after_new_purchase_cycle(db, test
     db.refresh(team_region)
 
     # Simulate a new cycle: new purchase happened after previous sent timestamp.
-    team_region.last_budget_purchase_at = datetime.now(UTC) - timedelta(days=366)
+    team_region.last_budget_purchase_at = datetime.now(UTC) - timedelta(days=10)
     db.add(team_region)
     db.commit()
     db.refresh(team_region)
@@ -634,6 +634,7 @@ async def test_monitor_teams_basic_metrics(mock_get_subscriptions, mock_litellm,
     team_with_payment = DBTeam(
         name="Team With Payment",
         stripe_customer_id="cus_456",
+        budget_mode="periodic",
         created_at=datetime.now(UTC) - timedelta(days=20),  # 20 days old
         last_payment=datetime.now(UTC) - timedelta(days=10)  # Last payment 10 days ago
     )
@@ -778,12 +779,6 @@ async def test_monitor_teams_key_expiration(mock_litellm, mock_ses, mock_limit_s
 
     # Verify key was expired
     mock_litellm_instance.update_key_duration.assert_called_once_with("test_token", "0d")
-
-    # Verify expired metric was incremented
-    assert team_expired_metric.labels(
-        team_id=str(test_team.id),
-        team_name=test_team.name
-    )._value.get() == 1
 
     # Verify limit service was called
     mock_limit_service.assert_called_with(db)

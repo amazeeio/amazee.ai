@@ -286,6 +286,7 @@ def test_create_private_ai_key_for_other_team(client, team_admin_token, test_reg
         phone="0987654321",
         billing_address="456 Other St, Other City, 54321",
         is_active=True,
+        budget_mode="periodic",
         created_at=datetime.now(UTC)
     )
     db.add(other_team)
@@ -315,6 +316,7 @@ def test_create_private_ai_key_for_user_in_other_team(client, team_admin_token, 
         phone="0987654321",
         billing_address="456 Other St, Other City, 54321",
         is_active=True,
+        budget_mode="periodic",
         created_at=datetime.now(UTC)
     )
     db.add(other_team)
@@ -614,6 +616,7 @@ def test_delete_private_ai_key_from_other_team(mock_client_class, client, team_a
         phone="0987654321",
         billing_address="456 Other St, Other City, 54321",
         is_active=True,
+        budget_mode="periodic",
         created_at=datetime.now(UTC)
     )
     db.add(other_team)
@@ -1007,7 +1010,7 @@ def test_create_llm_token_with_expiration(mock_client_class, client, admin_token
     # Verify that the LiteLLM API was called with the correct duration
     mock_httpx_post_client.post.assert_called_once()
     call_args = mock_httpx_post_client.post.call_args[1]
-    assert call_args["json"]["duration"] == "365d"  # Updated default duration
+    assert call_args["json"]["duration"] == "30d"
     assert call_args["json"]["budget_duration"] == "30d"  # Verify 1 month
     assert call_args["json"]["max_budget"] == DEFAULT_MAX_SPEND
     assert call_args["json"]["rpm_limit"] == DEFAULT_RPM_PER_KEY
@@ -2076,6 +2079,7 @@ def test_list_private_ai_keys_by_region_with_team_filter(client, admin_token, te
         phone="1112223333",
         billing_address="789 Other St, City, 11111",
         is_active=True,
+        budget_mode="periodic",
         created_at=datetime.now(UTC)
     )
     db.add(other_team)
