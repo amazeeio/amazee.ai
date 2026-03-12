@@ -677,7 +677,8 @@ async def create_team_budget_purchase(
 
         aggregate_spend_cents = int(association.aggregate_spend_cents or 0)
         available_budget_cents = max(
-            int(association.total_budget_purchased_cents or 0) - aggregate_spend_cents, 0
+            int(association.total_budget_purchased_cents or 0) - aggregate_spend_cents,
+            0,
         )
         days_remaining = _pool_days_remaining(association.last_budget_purchase_at)
         expires_at = _pool_expires_at(association.last_budget_purchase_at)
@@ -706,7 +707,9 @@ async def create_team_budget_purchase(
         .with_for_update()
         .first()
     )
-    previous_budget_cents = int(round((budget_limit.max_value if budget_limit else 0.0) * 100))
+    previous_budget_cents = int(
+        round((budget_limit.max_value if budget_limit else 0.0) * 100)
+    )
     amount_cents = int(request_data.amount_cents)
     new_budget_cents = previous_budget_cents + amount_cents
 

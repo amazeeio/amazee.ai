@@ -21,8 +21,6 @@ from app.schemas.limits import (
     ResourceType,
     UnitType,
     OwnerType,
-    LimitType,
-    LimitSource,
     LimitedResource,
 )
 import logging
