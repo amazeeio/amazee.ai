@@ -927,6 +927,43 @@ async def reconcile_team_keys(
         limit_schema = LimitedResource.model_validate(service_key_limit)
         limit_service.set_current_value(limit_schema, service_key_total)
 
+    # Keep team pool budget limit aligned with non-expired purchased counters.
+    if pool_expiry_by_region is not None:
+        total_pool_budget_cents = 0
+        now = datetime.now(UTC)
+        team_regions = (
+            db.query(DBTeamRegion).filter(DBTeamRegion.team_id == team.id).all()
+        )
+        for team_region in team_regions:
+            if not team_region.last_budget_purchase_at:
+                continue
+            purchase_time = team_region.last_budget_purchase_at
+            if purchase_time.tzinfo is None:
+                purchase_time = purchase_time.replace(tzinfo=UTC)
+            days_elapsed = (now - purchase_time).days
+            if days_elapsed < 365:
+                total_pool_budget_cents += int(
+                    team_region.total_budget_purchased_cents or 0
+                )
+
+        total_pool_budget_usd = float(int(total_pool_budget_cents or 0) / 100.0)
+        budget_limit = (
+            db.query(DBLimitedResource)
+            .filter(
+                and_(
+                    DBLimitedResource.owner_type == OwnerType.TEAM,
+                    DBLimitedResource.owner_id == team.id,
+                    DBLimitedResource.resource == ResourceType.BUDGET,
+                )
+            )
+            .first()
+        )
+        if budget_limit is not None and budget_limit.max_value != total_pool_budget_usd:
+            budget_limit.max_value = total_pool_budget_usd
+            budget_limit.updated_at = datetime.now(UTC)
+            db.add(budget_limit)
+            db.flush()
+
     return team_total
 
 

@@ -2707,6 +2707,78 @@ async def test_reconcile_team_keys_updates_service_key_budget_limit(
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_pool_expiry_resets_remaining_budget(
+    mock_litellm, db, test_team, test_region
+):
+    """
+    Given: A pool-mode team whose last purchase is older than 365 days
+    When: reconcile_team_keys runs
+    Then: Team budget limit becomes 0 while region purchased counters are preserved
+    """
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+
+    team_region = DBTeamRegion(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        last_budget_purchase_at=datetime.now(UTC) - timedelta(days=366),
+        total_budget_purchased_cents=1000,
+        aggregate_spend_cents=0,
+    )
+    budget_limit = DBLimitedResource(
+        limit_type=LimitType.DATA_PLANE,
+        resource=ResourceType.BUDGET,
+        unit=UnitType.DOLLAR,
+        max_value=10.0,
+        current_value=0.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.MANUAL,
+        set_by="stripe_pool_budget_checkout",
+        created_at=datetime.now(UTC),
+    )
+    service_key = DBPrivateAIKey(
+        name="Pool Expired Key",
+        litellm_token="pool-expired-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+        created_at=datetime.now(UTC),
+    )
+    db.add(team_region)
+    db.add(budget_limit)
+    db.add(service_key)
+    db.commit()
+
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {
+                "spend": 0.0,
+                "max_budget": 10.0,
+                "key_alias": "pool-expired-key",
+            }
+        }
+    )
+    mock_instance.update_key_duration = AsyncMock()
+
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+    await reconcile_team_keys(
+        db,
+        test_team,
+        keys_by_region,
+        expire_keys=False,
+        pool_expiry_by_region={test_region.id: 0},
+    )
+
+    db.refresh(team_region)
+    db.refresh(budget_limit)
+    assert team_region.total_budget_purchased_cents == 1000
+    assert budget_limit.max_value == 0.0
+    mock_instance.update_key_duration.assert_awaited_with("pool-expired-token", "0d")
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LiteLLMService")
 async def test_reconcile_team_keys_handles_multiple_users_with_varying_spend(
     mock_litellm, db, test_team, test_region, test_team_user
 ):
