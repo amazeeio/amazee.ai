@@ -635,14 +635,14 @@ async def create_team_budget_purchase(
     if not association:
         raise HTTPException(status_code=404, detail="Team-region association not found")
 
-    external_purchase_id = request_data.external_purchase_id.strip()
-    if not external_purchase_id:
+    stripe_payment_intent_id = request_data.stripe_payment_intent_id.strip()
+    if not stripe_payment_intent_id:
         raise HTTPException(
-            status_code=400, detail="external_purchase_id must not be blank"
+            status_code=400, detail="stripe_payment_intent_id must not be blank"
         )
     existing_purchase = (
         db.query(DBBudgetPurchase)
-        .filter(DBBudgetPurchase.stripe_session_id == external_purchase_id)
+        .filter(DBBudgetPurchase.stripe_session_id == stripe_payment_intent_id)
         .first()
     )
     currency = request_data.currency.lower()
@@ -658,7 +658,7 @@ async def create_team_budget_purchase(
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "Purchase with this external_purchase_id already exists for "
+                    "Purchase with this stripe_payment_intent_id already exists for "
                     "a different team or region"
                 ),
             )
@@ -670,7 +670,7 @@ async def create_team_budget_purchase(
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "Purchase with this external_purchase_id already exists with "
+                    "Purchase with this stripe_payment_intent_id already exists with "
                     "different amount or currency"
                 ),
             )
@@ -687,7 +687,7 @@ async def create_team_budget_purchase(
             days_remaining = 365
 
         return BudgetPurchaseResponse(
-            external_purchase_id=external_purchase_id,
+            stripe_payment_intent_id=stripe_payment_intent_id,
             previous_budget_cents=existing_purchase.previous_budget_cents,
             amount_added_cents=existing_purchase.amount_cents,
             new_budget_cents=existing_purchase.new_budget_cents,
@@ -743,8 +743,8 @@ async def create_team_budget_purchase(
     purchase = DBBudgetPurchase(
         team_id=team_id,
         region_id=region_id,
-        stripe_session_id=external_purchase_id,
-        stripe_payment_intent_id=request_data.stripe_payment_intent_id,
+        stripe_session_id=stripe_payment_intent_id,
+        stripe_payment_intent_id=stripe_payment_intent_id,
         currency=currency,
         amount_cents=amount_cents,
         previous_budget_cents=previous_budget_cents,
@@ -780,7 +780,7 @@ async def create_team_budget_purchase(
         days_remaining = 365
 
     return BudgetPurchaseResponse(
-        external_purchase_id=external_purchase_id,
+        stripe_payment_intent_id=stripe_payment_intent_id,
         previous_budget_cents=previous_budget_cents,
         amount_added_cents=amount_cents,
         new_budget_cents=new_budget_cents,

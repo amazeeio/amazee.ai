@@ -505,15 +505,14 @@ class TeamRegionBudget(BaseModel):
 
 
 class BudgetPurchaseCreateRequest(BaseModel):
-    external_purchase_id: str = Field(min_length=1, max_length=255)
+    stripe_payment_intent_id: str = Field(min_length=1, max_length=255)
     amount_cents: int = Field(ge=1)
     currency: str = Field(default="usd", pattern="^[a-z]{3}$")
     purchased_at: Optional[datetime] = None
-    stripe_payment_intent_id: Optional[str] = None
 
 
 class BudgetPurchaseResponse(BaseModel):
-    external_purchase_id: str
+    stripe_payment_intent_id: str
     previous_budget_cents: int
     amount_added_cents: int
     new_budget_cents: int

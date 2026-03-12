@@ -1277,16 +1277,15 @@ def test_create_budget_purchase_pool_mode_success(
         f"/regions/{test_region.id}/teams/{test_team.id}/budget-purchases",
         headers={"Authorization": f"Bearer {team_admin_token}"},
         json={
-            "external_purchase_id": "ext_purchase_1",
+            "stripe_payment_intent_id": "pi_external_1",
             "amount_cents": 5000,
             "currency": "usd",
-            "stripe_payment_intent_id": "pi_external_1",
         },
     )
 
     assert response.status_code == 200, response.json()
     data = response.json()
-    assert data["external_purchase_id"] == "ext_purchase_1"
+    assert data["stripe_payment_intent_id"] == "pi_external_1"
     assert data["amount_added_cents"] == 5000
     assert data["new_budget_cents"] == 5000
     assert data["available_budget_cents"] == 5000
@@ -1295,7 +1294,7 @@ def test_create_budget_purchase_pool_mode_success(
 
     purchase = (
         db.query(DBBudgetPurchase)
-        .filter(DBBudgetPurchase.stripe_session_id == "ext_purchase_1")
+        .filter(DBBudgetPurchase.stripe_session_id == "pi_external_1")
         .first()
     )
     assert purchase is not None
@@ -1334,7 +1333,7 @@ def test_create_budget_purchase_requires_team_admin(
         f"/regions/{test_region.id}/teams/{test_team.id}/budget-purchases",
         headers={"Authorization": f"Bearer {test_token}"},
         json={
-            "external_purchase_id": "ext_purchase_unauthorized",
+            "stripe_payment_intent_id": "pi_external_unauthorized",
             "amount_cents": 5000,
             "currency": "usd",
         },
@@ -1356,7 +1355,7 @@ def test_create_budget_purchase_rejects_non_pool_mode(
         f"/regions/{test_region.id}/teams/{test_team.id}/budget-purchases",
         headers={"Authorization": f"Bearer {team_admin_token}"},
         json={
-            "external_purchase_id": "ext_purchase_non_pool",
+            "stripe_payment_intent_id": "pi_external_non_pool",
             "amount_cents": 5000,
             "currency": "usd",
         },
@@ -1379,7 +1378,7 @@ def test_create_budget_purchase_is_idempotent(
     db.commit()
 
     payload = {
-        "external_purchase_id": "ext_purchase_idempotent",
+        "stripe_payment_intent_id": "pi_external_idempotent",
         "amount_cents": 2500,
         "currency": "usd",
     }
@@ -1401,7 +1400,7 @@ def test_create_budget_purchase_is_idempotent(
 
     purchases = (
         db.query(DBBudgetPurchase)
-        .filter(DBBudgetPurchase.stripe_session_id == "ext_purchase_idempotent")
+        .filter(DBBudgetPurchase.stripe_session_id == "pi_external_idempotent")
         .all()
     )
     assert len(purchases) == 1
