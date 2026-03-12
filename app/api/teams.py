@@ -94,7 +94,7 @@ async def register_team(
         is_active=True,
         created_at=datetime.now(UTC),
         force_user_keys=team.force_user_keys,
-        budget_mode="pool",
+        budget_mode=team.budget_mode or "pool",
     )
 
     db.add(db_team)
@@ -612,7 +612,8 @@ async def list_teams_for_sales(
                 products=products,
                 regions=regions,
                 total_spend=round(total_spend, 4),
-                trial_status=trial_status
+                trial_status=trial_status,
+                budget_mode=team.budget_mode or "pool",
             )
 
             sales_teams.append(sales_team)

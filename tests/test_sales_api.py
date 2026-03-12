@@ -129,6 +129,7 @@ def test_list_teams_for_sales_success(mock_get_info, client, admin_token, test_t
         "total_spend": 25.50,
         "trial_status": "Active Product",
         "last_payment": None,
+        "budget_mode": test_team.budget_mode,
     }
 
     # Mock LiteLLM service

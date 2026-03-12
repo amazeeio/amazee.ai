@@ -267,6 +267,7 @@ class TeamBase(BaseModel):
 
 class TeamCreate(TeamBase):
     force_user_keys: bool = False
+    budget_mode: Literal["periodic", "pool"] = "pool"
 
 class TeamUpdate(BaseModel):
     name: Optional[str] = None
@@ -283,7 +284,7 @@ class Team(TeamBase):
     is_active: bool
     is_always_free: bool
     force_user_keys: Optional[bool] = False
-    budget_mode: Optional[Literal["periodic", "pool"]] = "periodic"
+    budget_mode: Optional[Literal["periodic", "pool"]] = "pool"
     created_at: datetime
     updated_at: Optional[datetime] = None
     last_payment: Optional[datetime] = None
@@ -298,6 +299,7 @@ class TeamWithUsers(Team):
 class TeamSummary(BaseModel):
     id: int
     name: str
+    budget_mode: Literal["periodic", "pool"] = "pool"
     model_config = ConfigDict(from_attributes=True)
 
 class TeamOperation(BaseModel):
@@ -415,6 +417,7 @@ class SalesTeam(BaseModel):
     regions: List[str]
     total_spend: float
     trial_status: str
+    budget_mode: Literal["periodic", "pool"] = "pool"
     model_config = ConfigDict(from_attributes=True)
 
 class SalesTeamsResponse(BaseModel):

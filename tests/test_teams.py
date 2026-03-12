@@ -60,6 +60,24 @@ def test_register_team_unauthenticated(client):
     )
     assert response.status_code == 401
 
+
+def test_register_team_allows_periodic_budget_mode(client, admin_token):
+    """Team creation accepts explicit budget_mode and defaults remain pool otherwise."""
+    response = client.post(
+        "/teams/",
+        json={
+            "name": "Periodic Team",
+            "admin_email": "periodic-team@example.com",
+            "phone": "1234567890",
+            "billing_address": "123 Test St, Test City, 12345",
+            "budget_mode": "periodic",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 201
+    team_data = response.json()
+    assert team_data["budget_mode"] == "periodic"
+
 def test_register_team_duplicate_admin_email(client, db, admin_token):
     """Test registering a team with an email that already exists"""
     # First, create a team

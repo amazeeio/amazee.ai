@@ -1102,6 +1102,7 @@ def test_list_teams_for_dedicated_region(client, admin_token, db, test_team):
     assert len(teams) == 1
     assert teams[0]["id"] == test_team.id
     assert teams[0]["name"] == test_team.name
+    assert teams[0]["budget_mode"] == test_team.budget_mode
 
 def test_list_teams_for_dedicated_region_non_admin_fails(client, test_token, db):
     """
