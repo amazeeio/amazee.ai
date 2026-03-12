@@ -15,7 +15,6 @@ from app.api import (
     billing,
     products,
     pricing_tables,
-    pool_topups,
     limits,
 )
 from app.core.config import settings
@@ -280,7 +279,6 @@ app.include_router(products.router, prefix="/products", tags=["products"])
 app.include_router(
     pricing_tables.router, prefix="/pricing-tables", tags=["pricing-tables"]
 )
-app.include_router(pool_topups.router, prefix="/pool-topups", tags=["pool-topups"])
 app.include_router(limits.router, prefix="/limits", tags=["limits"])
 
 

@@ -124,7 +124,7 @@ async def overwrite_limit(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 "Pool team budget cannot be overwritten via /limits. "
-                "Use pool top-up checkout/purchase flow."
+                "Use pool budget purchase endpoint."
             ),
         )
 
@@ -203,7 +203,7 @@ async def reset_limit(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 "Pool team budget cannot be reset via /limits. "
-                "Use pool top-up checkout/purchase flow."
+                "Use pool budget purchase endpoint."
             ),
         )
 

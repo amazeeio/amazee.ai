@@ -504,16 +504,16 @@ class TeamRegionBudget(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class BudgetCheckoutCreateRequest(BaseModel):
-    topup_id: int
-    quantity: int = Field(default=1, ge=1, le=100)
-
-
-class BudgetPurchaseConfirmRequest(BaseModel):
-    stripe_session_id: str
+class BudgetPurchaseCreateRequest(BaseModel):
+    external_purchase_id: str = Field(min_length=1, max_length=255)
+    amount_cents: int = Field(ge=1)
+    currency: str = Field(default="usd", pattern="^[a-z]{3}$")
+    purchased_at: Optional[datetime] = None
+    stripe_payment_intent_id: Optional[str] = None
 
 
 class BudgetPurchaseResponse(BaseModel):
+    external_purchase_id: str
     previous_budget_cents: int
     amount_added_cents: int
     new_budget_cents: int
@@ -521,35 +521,3 @@ class BudgetPurchaseResponse(BaseModel):
     available_budget_cents: int
     expires_at: datetime
     days_remaining: int
-
-
-class PoolTopupProductBase(BaseModel):
-    name: str
-    stripe_price_id: str
-    stripe_product_id: Optional[str] = None
-    amount_cents: int = Field(ge=1)
-    currency: str = Field(default="usd", pattern="^[a-z]{3}$")
-    region_id: Optional[int] = None
-    is_active: bool = True
-
-
-class PoolTopupProductCreate(PoolTopupProductBase):
-    pass
-
-
-class PoolTopupProductUpdate(BaseModel):
-    name: Optional[str] = None
-    stripe_price_id: Optional[str] = None
-    stripe_product_id: Optional[str] = None
-    amount_cents: Optional[int] = Field(default=None, ge=1)
-    currency: Optional[str] = Field(default=None, pattern="^[a-z]{3}$")
-    region_id: Optional[int] = None
-    is_active: Optional[bool] = None
-    model_config = ConfigDict(from_attributes=True)
-
-
-class PoolTopupProduct(PoolTopupProductBase):
-    id: int
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-    model_config = ConfigDict(from_attributes=True)

@@ -5,7 +5,6 @@ import requests
 import asyncpg
 import logging
 from datetime import datetime, UTC, timedelta
-import os
 
 from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
@@ -17,7 +16,8 @@ from app.schemas.models import (
     RegionUpdate,
     TeamSummary,
     TeamRegionBudget,
-    BudgetCheckoutCreateRequest,
+    BudgetPurchaseCreateRequest,
+    BudgetPurchaseResponse,
 )
 from app.db.models import (
     DBRegion,
@@ -25,19 +25,22 @@ from app.db.models import (
     DBTeamRegion,
     DBTeam,
     DBUser,
-    DBPoolTopupProduct,
+    DBBudgetPurchase,
+    DBLimitedResource,
 )
 from app.core.security import (
     get_role_min_system_admin,
     get_role_min_specific_team_admin,
 )
 from app.core.limit_service import LimitService, DEFAULT_MAX_SPEND
-from app.schemas.limits import ResourceType
-from app.services.litellm import LiteLLMService
-from app.services.stripe import (
-    create_budget_checkout_session,
-    create_stripe_customer,
+from app.schemas.limits import (
+    ResourceType,
+    OwnerType,
+    LimitType,
+    UnitType,
+    LimitSource,
 )
+from app.services.litellm import LiteLLMService
 
 logger = logging.getLogger(__name__)
 
@@ -591,13 +594,14 @@ async def get_team_region_budget(
 
 
 @router.post(
-    "/{region_id}/teams/{team_id}/budget-checkout-session",
+    "/{region_id}/teams/{team_id}/budget-purchases",
+    response_model=BudgetPurchaseResponse,
     dependencies=[Depends(get_role_min_specific_team_admin)],
 )
-async def create_team_budget_checkout_session(
+async def create_team_budget_purchase(
     region_id: int,
     team_id: int,
-    request_data: BudgetCheckoutCreateRequest,
+    request_data: BudgetPurchaseCreateRequest,
     db: Session = Depends(get_db),
 ):
     team = (
@@ -611,7 +615,7 @@ async def create_team_budget_checkout_session(
     if team.budget_mode != "pool":
         raise HTTPException(
             status_code=400,
-            detail="Pool budget checkout requires team budget_mode='pool'",
+            detail="Pool budget purchases require team budget_mode='pool'",
         )
 
     region = (
@@ -625,49 +629,160 @@ async def create_team_budget_checkout_session(
     association = (
         db.query(DBTeamRegion)
         .filter(DBTeamRegion.team_id == team_id, DBTeamRegion.region_id == region_id)
+        .with_for_update()
         .first()
     )
     if not association:
         raise HTTPException(status_code=404, detail="Team-region association not found")
 
-    topup = (
-        db.query(DBPoolTopupProduct)
-        .filter(
-            DBPoolTopupProduct.id == request_data.topup_id,
-            DBPoolTopupProduct.is_active.is_(True),
+    external_purchase_id = request_data.external_purchase_id.strip()
+    if not external_purchase_id:
+        raise HTTPException(
+            status_code=400, detail="external_purchase_id must not be blank"
         )
+    existing_purchase = (
+        db.query(DBBudgetPurchase)
+        .filter(DBBudgetPurchase.stripe_session_id == external_purchase_id)
         .first()
     )
-    if not topup:
-        raise HTTPException(status_code=404, detail="Pool top-up product not found")
+    currency = request_data.currency.lower()
+    purchase_time = request_data.purchased_at or datetime.now(UTC)
+    if purchase_time.tzinfo is None:
+        purchase_time = purchase_time.replace(tzinfo=UTC)
 
-    if topup.region_id is not None and topup.region_id != region_id:
-        raise HTTPException(
-            status_code=400, detail="Pool top-up product is not valid for this region"
+    if existing_purchase:
+        if (
+            existing_purchase.team_id != team_id
+            or existing_purchase.region_id != region_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Purchase with this external_purchase_id already exists for "
+                    "a different team or region"
+                ),
+            )
+
+        if (
+            existing_purchase.amount_cents != request_data.amount_cents
+            or existing_purchase.currency.lower() != currency
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Purchase with this external_purchase_id already exists with "
+                    "different amount or currency"
+                ),
+            )
+
+        aggregate_spend_cents = int(association.aggregate_spend_cents or 0)
+        available_budget_cents = max(
+            int(association.total_budget_purchased_cents or 0) - aggregate_spend_cents, 0
+        )
+        days_remaining = _pool_days_remaining(association.last_budget_purchase_at)
+        expires_at = _pool_expires_at(association.last_budget_purchase_at)
+        if not expires_at:
+            expires_at = purchase_time + timedelta(days=365)
+            days_remaining = 365
+
+        return BudgetPurchaseResponse(
+            external_purchase_id=external_purchase_id,
+            previous_budget_cents=existing_purchase.previous_budget_cents,
+            amount_added_cents=existing_purchase.amount_cents,
+            new_budget_cents=existing_purchase.new_budget_cents,
+            aggregate_spend_cents=aggregate_spend_cents,
+            available_budget_cents=available_budget_cents,
+            expires_at=expires_at,
+            days_remaining=days_remaining,
         )
 
-    if not team.stripe_customer_id:
-        team.stripe_customer_id = await create_stripe_customer(team)
-        db.add(team)
-        db.commit()
-        db.refresh(team)
+    budget_limit = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == team_id,
+            DBLimitedResource.resource == ResourceType.BUDGET,
+        )
+        .with_for_update()
+        .first()
+    )
+    previous_budget_cents = int(round((budget_limit.max_value if budget_limit else 0.0) * 100))
+    amount_cents = int(request_data.amount_cents)
+    new_budget_cents = previous_budget_cents + amount_cents
 
-    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000").rstrip("/")
-    success_url = f"{frontend_url}/teams/{team_id}/dashboard?budgetPurchase=success&session_id={{CHECKOUT_SESSION_ID}}"
-    cancel_url = f"{frontend_url}/teams/{team_id}/dashboard?budgetPurchase=cancel"
+    if budget_limit:
+        budget_limit.max_value = new_budget_cents / 100.0
+        budget_limit.limited_by = LimitSource.MANUAL
+        budget_limit.set_by = "external_pool_budget_purchase"
+        budget_limit.updated_at = datetime.now(UTC)
+    else:
+        budget_limit = DBLimitedResource(
+            limit_type=LimitType.DATA_PLANE,
+            resource=ResourceType.BUDGET,
+            unit=UnitType.DOLLAR,
+            max_value=new_budget_cents / 100.0,
+            current_value=None,
+            owner_type=OwnerType.TEAM,
+            owner_id=team_id,
+            limited_by=LimitSource.MANUAL,
+            set_by="external_pool_budget_purchase",
+        )
+        db.add(budget_limit)
 
-    checkout_session = await create_budget_checkout_session(
-        customer_id=team.stripe_customer_id,
-        stripe_price_id=topup.stripe_price_id,
+    association.total_budget_purchased_cents = int(
+        (association.total_budget_purchased_cents or 0) + amount_cents
+    )
+    association.last_budget_purchase_at = purchase_time
+    association.expiry_notification_sent_at = None
+    association.updated_at = datetime.now(UTC)
+    db.add(association)
+
+    purchase = DBBudgetPurchase(
         team_id=team_id,
         region_id=region_id,
-        topup_id=topup.id,
-        quantity=request_data.quantity,
-        success_url=success_url,
-        cancel_url=cancel_url,
+        stripe_session_id=external_purchase_id,
+        stripe_payment_intent_id=request_data.stripe_payment_intent_id,
+        currency=currency,
+        amount_cents=amount_cents,
+        previous_budget_cents=previous_budget_cents,
+        new_budget_cents=new_budget_cents,
+        purchased_at=purchase_time,
     )
+    db.add(purchase)
+    db.commit()
 
-    return {
-        "session_id": checkout_session.id,
-        "checkout_url": checkout_session.url,
-    }
+    try:
+        limit_service = LimitService(db)
+        limit_service._trigger_team_budget_propagation(
+            team_id=team_id,
+            budget_amount=(new_budget_cents / 100.0),
+            region_id=region_id,
+        )
+    except Exception as propagation_exc:
+        logger.error(
+            "Failed to propagate externally purchased pool budget for team=%s region=%s: %s",
+            team_id,
+            region_id,
+            str(propagation_exc),
+        )
+
+    aggregate_spend_cents = int(association.aggregate_spend_cents or 0)
+    available_budget_cents = max(
+        int(association.total_budget_purchased_cents or 0) - aggregate_spend_cents, 0
+    )
+    days_remaining = _pool_days_remaining(association.last_budget_purchase_at)
+    expires_at = _pool_expires_at(association.last_budget_purchase_at)
+    if not expires_at:
+        expires_at = purchase_time + timedelta(days=365)
+        days_remaining = 365
+
+    return BudgetPurchaseResponse(
+        external_purchase_id=external_purchase_id,
+        previous_budget_cents=previous_budget_cents,
+        amount_added_cents=amount_cents,
+        new_budget_cents=new_budget_cents,
+        aggregate_spend_cents=aggregate_spend_cents,
+        available_budget_cents=available_budget_cents,
+        expires_at=expires_at,
+        days_remaining=days_remaining,
+    )

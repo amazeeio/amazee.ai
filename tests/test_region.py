@@ -3,10 +3,12 @@ from app.db.models import (
     DBTeam,
     DBRegion,
     DBTeamRegion,
-    DBPoolTopupProduct,
+    DBBudgetPurchase,
+    DBLimitedResource,
 )
 from unittest.mock import patch, AsyncMock, Mock
 from datetime import datetime, UTC, timedelta
+from app.schemas.limits import ResourceType
 
 
 @patch("app.api.regions.validate_litellm_endpoint")
@@ -1262,121 +1264,147 @@ def test_list_teams_for_dedicated_region_with_no_associations(client, admin_toke
     assert len(teams) == 0
 
 
-@patch("app.api.regions.create_budget_checkout_session", new_callable=AsyncMock)
-def test_create_budget_checkout_session_pool_mode_success(
-    mock_create_checkout, client, team_admin_token, db, test_team, test_region
+def test_create_budget_purchase_pool_mode_success(
+    client, team_admin_token, db, test_team, test_region
 ):
-    """Team admin can create pool checkout session for associated region."""
+    """Team admin can apply a completed external pool budget purchase."""
     test_team.budget_mode = "pool"
-    test_team.stripe_customer_id = "cus_pool_123"
-    topup = DBPoolTopupProduct(
-        name="Pool +$50",
-        stripe_price_id="price_pool_50",
-        stripe_product_id="prod_pool",
-        amount_cents=5000,
-        currency="usd",
-        region_id=test_region.id,
-        is_active=True,
-    )
     db.add(test_team)
     db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
-    db.add(topup)
     db.commit()
 
-    mock_checkout_session = Mock()
-    mock_checkout_session.id = "cs_test_123"
-    mock_checkout_session.url = "https://checkout.stripe.test/session/cs_test_123"
-    mock_create_checkout.return_value = mock_checkout_session
-
     response = client.post(
-        f"/regions/{test_region.id}/teams/{test_team.id}/budget-checkout-session",
+        f"/regions/{test_region.id}/teams/{test_team.id}/budget-purchases",
         headers={"Authorization": f"Bearer {team_admin_token}"},
-        json={"topup_id": topup.id, "quantity": 1},
+        json={
+            "external_purchase_id": "ext_purchase_1",
+            "amount_cents": 5000,
+            "currency": "usd",
+            "stripe_payment_intent_id": "pi_external_1",
+        },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.json()
     data = response.json()
-    assert data["session_id"] == "cs_test_123"
-    assert data["checkout_url"] == "https://checkout.stripe.test/session/cs_test_123"
-    mock_create_checkout.assert_awaited_once()
+    assert data["external_purchase_id"] == "ext_purchase_1"
+    assert data["amount_added_cents"] == 5000
+    assert data["new_budget_cents"] == 5000
+    assert data["available_budget_cents"] == 5000
+    assert data["days_remaining"] >= 364
+    assert data["expires_at"] is not None
+
+    purchase = (
+        db.query(DBBudgetPurchase)
+        .filter(DBBudgetPurchase.stripe_session_id == "ext_purchase_1")
+        .first()
+    )
+    assert purchase is not None
+    assert purchase.amount_cents == 5000
+    assert purchase.stripe_payment_intent_id == "pi_external_1"
+
+    team_region = (
+        db.query(DBTeamRegion)
+        .filter(
+            DBTeamRegion.team_id == test_team.id,
+            DBTeamRegion.region_id == test_region.id,
+        )
+        .first()
+    )
+    assert team_region is not None
+    assert team_region.total_budget_purchased_cents == 5000
+    assert team_region.last_budget_purchase_at is not None
+
+    budget_limit = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_id == test_team.id,
+            DBLimitedResource.resource == ResourceType.BUDGET,
+        )
+        .first()
+    )
+    assert budget_limit is not None
+    assert budget_limit.max_value == 50.0
 
 
-@patch("app.api.regions.create_budget_checkout_session", new_callable=AsyncMock)
-def test_create_budget_checkout_session_requires_team_admin(
-    mock_create_checkout, client, test_token, test_team, test_region
+def test_create_budget_purchase_requires_team_admin(
+    client, test_token, test_team, test_region
 ):
-    """Non team-admin users cannot create budget checkout sessions."""
+    """Non team-admin users cannot apply pool budget purchases."""
     response = client.post(
-        f"/regions/{test_region.id}/teams/{test_team.id}/budget-checkout-session",
+        f"/regions/{test_region.id}/teams/{test_team.id}/budget-purchases",
         headers={"Authorization": f"Bearer {test_token}"},
-        json={"topup_id": 9999, "quantity": 1},
+        json={
+            "external_purchase_id": "ext_purchase_unauthorized",
+            "amount_cents": 5000,
+            "currency": "usd",
+        },
     )
 
     assert response.status_code == 403
     assert "Not authorized to perform this action" in response.json()["detail"]
-    mock_create_checkout.assert_not_awaited()
 
 
-@patch("app.api.regions.create_budget_checkout_session", new_callable=AsyncMock)
-def test_create_budget_checkout_session_rejects_non_pool_mode(
-    mock_create_checkout, client, team_admin_token, db, test_team, test_region
+def test_create_budget_purchase_rejects_non_pool_mode(
+    client, team_admin_token, db, test_team, test_region
 ):
-    """Checkout session endpoint only supports pool-mode teams."""
-    topup = DBPoolTopupProduct(
-        name="Pool +$50",
-        stripe_price_id="price_pool_50",
-        amount_cents=5000,
-        currency="usd",
-        region_id=test_region.id,
-        is_active=True,
-    )
+    """Budget purchase endpoint only supports pool-mode teams."""
     test_team.budget_mode = "periodic"
-    db.add(topup)
     db.add(test_team)
     db.commit()
 
     response = client.post(
-        f"/regions/{test_region.id}/teams/{test_team.id}/budget-checkout-session",
+        f"/regions/{test_region.id}/teams/{test_team.id}/budget-purchases",
         headers={"Authorization": f"Bearer {team_admin_token}"},
-        json={"topup_id": topup.id, "quantity": 1},
+        json={
+            "external_purchase_id": "ext_purchase_non_pool",
+            "amount_cents": 5000,
+            "currency": "usd",
+        },
     )
 
     assert response.status_code == 400
     assert (
         response.json()["detail"]
-        == "Pool budget checkout requires team budget_mode='pool'"
+        == "Pool budget purchases require team budget_mode='pool'"
     )
-    mock_create_checkout.assert_not_awaited()
 
 
-@patch("app.api.regions.create_budget_checkout_session", new_callable=AsyncMock)
-def test_create_budget_checkout_session_requires_team_region_association(
-    mock_create_checkout, client, team_admin_token, db, test_team, test_region
+def test_create_budget_purchase_is_idempotent(
+    client, team_admin_token, db, test_team, test_region
 ):
-    """Pool checkout requires an existing team-region association."""
+    """Duplicate external purchase IDs return the same purchase response."""
     test_team.budget_mode = "pool"
-    test_team.stripe_customer_id = "cus_pool_no_assoc"
-    topup = DBPoolTopupProduct(
-        name="Pool +$50",
-        stripe_price_id="price_pool_50",
-        amount_cents=5000,
-        currency="usd",
-        region_id=test_region.id,
-        is_active=True,
-    )
-    db.add(topup)
     db.add(test_team)
+    db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
     db.commit()
 
-    response = client.post(
-        f"/regions/{test_region.id}/teams/{test_team.id}/budget-checkout-session",
-        headers={"Authorization": f"Bearer {team_admin_token}"},
-        json={"topup_id": topup.id, "quantity": 1},
-    )
+    payload = {
+        "external_purchase_id": "ext_purchase_idempotent",
+        "amount_cents": 2500,
+        "currency": "usd",
+    }
 
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Team-region association not found"
-    mock_create_checkout.assert_not_awaited()
+    response_first = client.post(
+        f"/regions/{test_region.id}/teams/{test_team.id}/budget-purchases",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json=payload,
+    )
+    assert response_first.status_code == 200
+
+    response_second = client.post(
+        f"/regions/{test_region.id}/teams/{test_team.id}/budget-purchases",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json=payload,
+    )
+    assert response_second.status_code == 200
+    assert response_first.json() == response_second.json()
+
+    purchases = (
+        db.query(DBBudgetPurchase)
+        .filter(DBBudgetPurchase.stripe_session_id == "ext_purchase_idempotent")
+        .all()
+    )
+    assert len(purchases) == 1
 
 
 def test_get_team_region_budget_pool_mode_fields(

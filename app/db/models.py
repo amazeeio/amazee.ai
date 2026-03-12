@@ -175,21 +175,6 @@ class DBBudgetPurchase(Base):
     purchased_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
 
 
-class DBPoolTopupProduct(Base):
-    __tablename__ = "pool_topup_products"
-
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)
-    stripe_price_id = Column(String, nullable=False, unique=True, index=True)
-    stripe_product_id = Column(String, nullable=True, index=True)
-    amount_cents = Column(BigInteger, nullable=False)
-    currency = Column(String(3), nullable=False, default="usd")
-    region_id = Column(Integer, ForeignKey("regions.id"), nullable=True, index=True)
-    is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
-
-
 class DBTeamMetrics(Base):
     """
     Cached team metrics table populated by the monitor_teams worker.

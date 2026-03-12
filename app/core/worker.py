@@ -11,8 +11,6 @@ from app.db.models import (
     DBTeamMetrics,
     DBLimitedResource,
     DBTeamRegion,
-    DBBudgetPurchase,
-    DBPoolTopupProduct,
 )
 from app.db.database import get_db
 from app.services.litellm import LiteLLMService
@@ -35,15 +33,12 @@ from app.services.stripe import (
     get_product_id_from_session,
     get_product_id_from_subscription,
     get_subscribed_products_for_customer,
-    retrieve_checkout_session,
-    retrieve_checkout_session_line_items,
     KNOWN_EVENTS,
     SUBSCRIPTION_SUCCESS_EVENTS,
     SESSION_FAILURE_EVENTS,
     SUBSCRIPTION_FAILURE_EVENTS,
     INVOICE_FAILURE_EVENTS,
     INVOICE_SUCCESS_EVENTS,
-    PURCHASE_TYPE_POOL_TOPUP,
 )
 from prometheus_client import Gauge, Counter, Summary
 from typing import Dict, List, Optional
@@ -208,241 +203,6 @@ def set_team_and_user_limits(db: Session, team: DBTeam):
                     continue
 
 
-async def _apply_pool_topup_purchase(db: Session, checkout_session_id: str) -> None:
-    """
-    Apply a successful pool top-up checkout session to team-region budget state.
-    """
-    stripe_session = await retrieve_checkout_session(checkout_session_id)
-    if stripe_session.get("payment_status") != "paid":
-        logger.info(
-            "Ignoring unpaid pool top-up checkout session %s", checkout_session_id
-        )
-        return
-
-    metadata = stripe_session.get("metadata") or {}
-    required_metadata = ("team_id", "region_id", "pool_topup_id")
-    if any(not metadata.get(key) for key in required_metadata):
-        logger.info(
-            "Ignoring checkout.session.completed without pool top-up metadata for session %s",
-            checkout_session_id,
-        )
-        return
-
-    try:
-        team_id = int(metadata["team_id"])
-        region_id = int(metadata["region_id"])
-        topup_id = int(metadata["pool_topup_id"])
-        quantity = int(metadata.get("quantity") or 1)
-    except (TypeError, ValueError):
-        logger.error(
-            "Invalid pool top-up metadata for session %s: %s",
-            checkout_session_id,
-            metadata,
-        )
-        return
-
-    if quantity <= 0:
-        logger.error(
-            "Invalid pool top-up quantity for session %s: %s",
-            checkout_session_id,
-            quantity,
-        )
-        return
-
-    topup = (
-        db.query(DBPoolTopupProduct)
-        .filter(
-            DBPoolTopupProduct.id == topup_id, DBPoolTopupProduct.is_active.is_(True)
-        )
-        .first()
-    )
-    if not topup:
-        logger.error(
-            "Pool top-up product not found/active for session %s (topup_id=%s)",
-            checkout_session_id,
-            topup_id,
-        )
-        return
-
-    if topup.region_id is not None and topup.region_id != region_id:
-        logger.error(
-            "Pool top-up region mismatch for session %s (topup_region=%s, region=%s)",
-            checkout_session_id,
-            topup.region_id,
-            region_id,
-        )
-        return
-
-    line_items = await retrieve_checkout_session_line_items(checkout_session_id)
-    if len(line_items) != 1:
-        logger.error(
-            "Invalid line item count for pool top-up session %s: %s",
-            checkout_session_id,
-            len(line_items),
-        )
-        return
-
-    line_item = line_items[0]
-    line_price_id = (line_item.get("price") or {}).get("id")
-    line_quantity = int(line_item.get("quantity") or 0)
-    if line_price_id != topup.stripe_price_id or line_quantity != quantity:
-        logger.error(
-            "Pool top-up line item mismatch for session %s (price=%s quantity=%s)",
-            checkout_session_id,
-            line_price_id,
-            line_quantity,
-        )
-        return
-
-    amount_cents = int(topup.amount_cents) * quantity
-    stripe_amount_total = int(stripe_session.get("amount_total") or 0)
-    stripe_currency = (stripe_session.get("currency") or "").lower()
-    if stripe_amount_total != amount_cents or stripe_currency != topup.currency.lower():
-        logger.error(
-            "Pool top-up Stripe amount/currency mismatch for session %s",
-            checkout_session_id,
-        )
-        return
-
-    existing_purchase = (
-        db.query(DBBudgetPurchase)
-        .filter(DBBudgetPurchase.stripe_session_id == checkout_session_id)
-        .first()
-    )
-    if existing_purchase:
-        logger.info(
-            "Pool top-up already processed for session %s, skipping",
-            checkout_session_id,
-        )
-        return
-
-    try:
-        team = (
-            db.query(DBTeam)
-            .filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None))
-            .with_for_update()
-            .first()
-        )
-        if not team:
-            logger.error(
-                "Pool top-up team not found for session %s", checkout_session_id
-            )
-            db.rollback()
-            return
-        if team.budget_mode != "pool":
-            logger.error(
-                "Ignoring pool top-up for non-pool team %s (session=%s)",
-                team_id,
-                checkout_session_id,
-            )
-            db.rollback()
-            return
-
-        region = (
-            db.query(DBRegion)
-            .filter(DBRegion.id == region_id, DBRegion.is_active.is_(True))
-            .first()
-        )
-        if not region:
-            logger.error(
-                "Pool top-up region not found for session %s (region=%s)",
-                checkout_session_id,
-                region_id,
-            )
-            db.rollback()
-            return
-
-        association = (
-            db.query(DBTeamRegion)
-            .filter(
-                DBTeamRegion.team_id == team_id, DBTeamRegion.region_id == region_id
-            )
-            .with_for_update()
-            .first()
-        )
-        if not association:
-            association = DBTeamRegion(team_id=team_id, region_id=region_id)
-            db.add(association)
-            db.flush()
-
-        budget_limit = (
-            db.query(DBLimitedResource)
-            .filter(
-                DBLimitedResource.owner_type == OwnerType.TEAM,
-                DBLimitedResource.owner_id == team_id,
-                DBLimitedResource.resource == ResourceType.BUDGET,
-            )
-            .with_for_update()
-            .first()
-        )
-
-        previous_budget_cents = int(
-            round((budget_limit.max_value if budget_limit else 0.0) * 100)
-        )
-        new_budget_cents = previous_budget_cents + amount_cents
-
-        if budget_limit:
-            budget_limit.max_value = new_budget_cents / 100.0
-            budget_limit.updated_at = datetime.now(UTC)
-        else:
-            budget_limit = DBLimitedResource(
-                limit_type=LimitType.DATA_PLANE,
-                resource=ResourceType.BUDGET,
-                unit=UnitType.DOLLAR,
-                max_value=new_budget_cents / 100.0,
-                current_value=None,
-                owner_type=OwnerType.TEAM,
-                owner_id=team_id,
-                limited_by=LimitSource.MANUAL,
-                set_by="stripe_pool_budget_checkout",
-            )
-            db.add(budget_limit)
-
-        association.last_budget_purchase_at = datetime.now(UTC)
-        association.total_budget_purchased_cents = int(
-            (association.total_budget_purchased_cents or 0) + amount_cents
-        )
-        association.expiry_notification_sent_at = None
-        association.updated_at = datetime.now(UTC)
-        db.add(association)
-
-        purchase = DBBudgetPurchase(
-            team_id=team_id,
-            region_id=region_id,
-            stripe_session_id=checkout_session_id,
-            stripe_payment_intent_id=stripe_session.get("payment_intent"),
-            currency=topup.currency.lower(),
-            amount_cents=amount_cents,
-            previous_budget_cents=previous_budget_cents,
-            new_budget_cents=new_budget_cents,
-        )
-        db.add(purchase)
-        db.commit()
-    except Exception as exc:
-        db.rollback()
-        logger.error(
-            "Failed to apply pool top-up checkout session %s: %s",
-            checkout_session_id,
-            str(exc),
-        )
-        return
-
-    try:
-        limit_service = LimitService(db)
-        limit_service._trigger_team_budget_propagation(
-            team_id=team_id,
-            budget_amount=(new_budget_cents / 100.0),
-            region_id=region_id,
-        )
-    except Exception as propagation_exc:
-        logger.error(
-            "Failed to propagate pool top-up budget for team=%s region=%s: %s",
-            team_id,
-            region_id,
-            str(propagation_exc),
-        )
-
-
 async def handle_stripe_event_background(event):
     """
     Background task to handle Stripe webhook events.
@@ -457,29 +217,6 @@ async def handle_stripe_event_background(event):
             logger.info(f"Unknown event type: {event_type}")
             return
         event_object = event.data.object
-        metadata = (
-            (event_object.get("metadata") or {})
-            if isinstance(event_object, dict)
-            else (event_object.metadata or {})
-        )
-        purchase_type = metadata.get("purchase_type")
-        is_pool_checkout = purchase_type == PURCHASE_TYPE_POOL_TOPUP or bool(
-            metadata.get("pool_topup_id")
-        )
-
-        if event_type == "checkout.session.completed":
-            # Unified checkout entry point:
-            # - pool top-up sessions are processed into budget purchases
-            # - other checkout sessions are ignored here and handled by subscription events
-            if is_pool_checkout:
-                await _apply_pool_topup_purchase(db, event_object.id)
-            else:
-                logger.info(
-                    "Ignoring checkout.session.completed without pool top-up intent (session=%s purchase_type=%s)",
-                    event_object.id,
-                    purchase_type,
-                )
-            return
 
         customer_id = event_object.customer
         if not customer_id:
@@ -499,12 +236,6 @@ async def handle_stripe_event_background(event):
             await apply_product_for_team(db, customer_id, product_id, start_date)
         # Failure Events
         elif event_type in SESSION_FAILURE_EVENTS:
-            if is_pool_checkout:
-                logger.info(
-                    "Ignoring checkout failure event for pool top-up session %s",
-                    event_object.id,
-                )
-                return
             product_id = await get_product_id_from_session(event_object.id)
             await remove_product_from_team(db, customer_id, product_id)
         elif event_type in SUBSCRIPTION_FAILURE_EVENTS:

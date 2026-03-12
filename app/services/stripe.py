@@ -13,18 +13,12 @@ logger = logging.getLogger(__name__)
 # Initialize Stripe
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
-PURCHASE_TYPE_POOL_TOPUP = "pool_topup"
-PURCHASE_TYPE_SUBSCRIPTION = "subscription"
-
 # Full list of possible events: https://docs.stripe.com/api/events/types
 INVOICE_SUCCESS_EVENTS = ["invoice.paid"]  # Renewal
 SUBSCRIPTION_SUCCESS_EVENTS = [
     "customer.subscription.resumed",
     "customer.subscription.created",
 ]  # New subscription
-CHECKOUT_SUCCESS_EVENTS = [
-    "checkout.session.completed",
-]  # One-time checkout success (used by pool top-ups)
 SESSION_FAILURE_EVENTS = [
     "checkout.session.async_payment_failed",
     "checkout.session.expired",
@@ -35,9 +29,7 @@ SUBSCRIPTION_FAILURE_EVENTS = [
 ]  # Subscription failure
 INVOICE_FAILURE_EVENTS = ["invoice.payment_failed"]  # Invoice failure
 
-SUCCESS_EVENTS = (
-    INVOICE_SUCCESS_EVENTS + SUBSCRIPTION_SUCCESS_EVENTS + CHECKOUT_SUCCESS_EVENTS
-)
+SUCCESS_EVENTS = INVOICE_SUCCESS_EVENTS + SUBSCRIPTION_SUCCESS_EVENTS
 FAILURE_EVENTS = (
     SESSION_FAILURE_EVENTS + SUBSCRIPTION_FAILURE_EVENTS + INVOICE_FAILURE_EVENTS
 )
@@ -387,78 +379,4 @@ async def get_pricing_table_secret(customer_id: str) -> str:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error creating customer session",
-        )
-
-
-async def create_budget_checkout_session(
-    customer_id: str,
-    stripe_price_id: str,
-    team_id: int,
-    region_id: int,
-    topup_id: int,
-    quantity: int,
-    success_url: str,
-    cancel_url: str,
-):
-    """
-    Create a one-time Stripe Checkout session for pool-budget purchase.
-    """
-    try:
-        session = stripe.checkout.Session.create(
-            mode="payment",
-            customer=customer_id,
-            payment_method_types=["card"],
-            line_items=[
-                {
-                    "price": stripe_price_id,
-                    "quantity": quantity,
-                }
-            ],
-            metadata={
-                "purchase_type": PURCHASE_TYPE_POOL_TOPUP,
-                "team_id": str(team_id),
-                "region_id": str(region_id),
-                "pool_topup_id": str(topup_id),
-                "quantity": str(quantity),
-            },
-            success_url=success_url,
-            cancel_url=cancel_url,
-        )
-        return session
-    except Exception as e:
-        logger.error(f"Error creating budget checkout session: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error creating budget checkout session",
-        )
-
-
-async def retrieve_checkout_session(session_id: str):
-    """
-    Retrieve a checkout session from Stripe.
-    """
-    try:
-        return stripe.checkout.Session.retrieve(session_id)
-    except Exception as e:
-        logger.error(f"Error retrieving checkout session {session_id}: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Error retrieving checkout session",
-        )
-
-
-async def retrieve_checkout_session_line_items(session_id: str):
-    """
-    Retrieve line items for a checkout session from Stripe.
-    """
-    try:
-        line_items = stripe.checkout.Session.list_line_items(session_id)
-        return line_items.data
-    except Exception as e:
-        logger.error(
-            f"Error retrieving checkout session line items for {session_id}: {str(e)}"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Error retrieving checkout line items",
         )
