@@ -4,6 +4,28 @@
 
 This document finalizes the implementation plan for adding "pool" budget mode to amazee.ai. The plan has been cross-checked against the existing codebase.
 
+## Requirements (from PM)
+
+Team admins can purchase one-time budget increases per region via Stripe Checkout. Purchases are additive — buying $50 on top of an existing $100 budget results in $150. No subscriptions, no pricing tables, no recurring billing.
+
+Budget is a finite pool — once spent, it's gone until the team buys more. Purchased budgets are valid for 1 year from the date of the last purchase. Each new purchase resets the 1-year clock. After expiry, remaining budget is forfeit and keys stop working.
+
+All spending across all keys and users counts toward the single team-per-region budget. Non-budget limits (user count, key count, RPM, etc.) are set to very high values for teams managed through this app.
+
+### Requirements Checklist
+
+| Requirement | Status | Implementation Strategy |
+|-------------|--------|------------------------|
+| One-time budget increases per region | ⚠️ In Phase 4.1 | Create PUT `/regions/{region_id}/teams/{team_id}/budget-purchase` endpoint that accepts amount and stripe_session_id, then calls DBLimitedResource to get current max_budget and adds to it |
+| Purchases are ADDITIVE ($50 + $100 = $150) | ✅ Planned | In budget-purchase endpoint: `new_budget = current_max_budget + amount`, store in DBLimitedResource, update `total_budget_purchased` on DBTeamRegion |
+| No subscriptions/recurring billing | ✅ Planned | Stripe is configured as one-time payments only; DBBudgetPurchase model stores individual purchases with stripe_session_id for idempotency, no subscription_id field |
+| Finite pool (no budget reset) | ✅ Planned | LiteLLM `budget_duration` is NOT set for pool mode (set to None), only `duration` for key expiry; worker tracks aggregate_spend and expires keys when exhausted |
+| Valid 1 year from last purchase | ✅ Planned | Store `last_budget_purchase_at` on DBTeamRegion; compute `days_remaining = 365 - (now - last_budget_purchase_at).days`; keys get `duration=days_remaining` |
+| New purchase resets 1-year clock | ✅ Planned | On budget-purchase: set `last_budget_purchase_at = now()` which recalculates days_remaining=365 for all future key operations |
+| After expiry, keys stop working | ✅ Planned | In worker reconcile: if days_remaining <= 0, set LiteLLM duration="0d" or delete keys; key creation rejects with 402 if expired |
+| Team-per-region budget (aggregate spend) | ✅ Planned | Worker reconcile sums all key spend via LiteLLM usage API, stores in DBTeamRegion.aggregate_spend; compare against max_budget |
+| High non-budget limits | ✅ Planned | In Phase 6.1 `set_team_limits`: if budget_mode=="pool", set USER=1000, USER_KEY=100, SERVICE_KEY=100, VECTOR_DB=100, RPM=10000 |
+
 ## Cross-Check Summary
 
 ### Verified Code Locations
