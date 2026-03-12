@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, AfterValidator
+from pydantic import BaseModel, ConfigDict, EmailStr, AfterValidator, Field
 from typing import Optional, List, ClassVar, Literal, Dict, Annotated
 from datetime import datetime
 from sqlalchemy.orm import relationship
@@ -276,12 +276,14 @@ class TeamUpdate(BaseModel):
     is_active: Optional[bool] = None
     is_always_free: Optional[bool] = None
     force_user_keys: Optional[bool] = False
+    budget_mode: Optional[Literal["periodic", "pool"]] = None
 
 class Team(TeamBase):
     id: int
     is_active: bool
     is_always_free: bool
     force_user_keys: Optional[bool] = False
+    budget_mode: Optional[Literal["periodic", "pool"]] = "periodic"
     created_at: datetime
     updated_at: Optional[datetime] = None
     last_payment: Optional[datetime] = None
@@ -425,4 +427,24 @@ class TeamRegionBudget(BaseModel):
     region_name: str
     total_spend: float
     total_budget: float
+    days_remaining: Optional[int] = None
+    expires_at: Optional[datetime] = None
+    aggregate_spend_cents: Optional[int] = None
+    available_budget_cents: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
+
+class BudgetCheckoutCreateRequest(BaseModel):
+    amount_cents: int = Field(ge=500, le=100_000_000)
+    currency: str = Field(default="usd", pattern="^[a-z]{3}$")
+
+class BudgetPurchaseConfirmRequest(BaseModel):
+    stripe_session_id: str
+
+class BudgetPurchaseResponse(BaseModel):
+    previous_budget_cents: int
+    amount_added_cents: int
+    new_budget_cents: int
+    aggregate_spend_cents: int
+    available_budget_cents: int
+    expires_at: datetime
+    days_remaining: int
