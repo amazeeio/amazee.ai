@@ -1334,6 +1334,104 @@ def test_budget_webhook_idempotency(mock_decode_event, mock_retrieve_session, cl
 
 @patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
 @patch("app.api.regions.decode_stripe_event")
+def test_budget_webhook_ignores_non_checkout_events(mock_decode_event, mock_retrieve_session, client, db):
+    """Non checkout.session.completed events are ignored."""
+    db.add(DBSystemSecret(key="stripe_webhook_secret", value="whsec_test", description="test secret"))
+    db.commit()
+
+    event = Mock()
+    event.type = "invoice.paid"
+    event.data = Mock()
+    event.data.object = {"id": "evt_ignored"}
+    mock_decode_event.return_value = event
+
+    response = client.post(
+        "/regions/webhooks/budget-purchase",
+        headers={"stripe-signature": "sig_test"},
+        content=b"{}",
+    )
+
+    assert response.status_code == 200
+    assert response.text == "Ignored"
+    mock_retrieve_session.assert_not_awaited()
+
+
+@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
+@patch("app.api.regions.decode_stripe_event")
+def test_budget_webhook_ignores_unpaid_session(mock_decode_event, mock_retrieve_session, client, db):
+    """Completed checkout events are ignored if payment status is not paid."""
+    db.add(DBSystemSecret(key="stripe_webhook_secret", value="whsec_test", description="test secret"))
+    db.commit()
+
+    event = Mock()
+    event.type = "checkout.session.completed"
+    event.data = Mock()
+    event.data.object = {"id": "cs_unpaid"}
+    mock_decode_event.return_value = event
+    mock_retrieve_session.return_value = {
+        "id": "cs_unpaid",
+        "payment_status": "unpaid",
+        "amount_total": 5000,
+        "currency": "usd",
+        "metadata": {
+            "team_id": "1",
+            "region_id": "1",
+            "amount_cents": "5000",
+            "currency": "usd",
+        },
+    }
+
+    response = client.post(
+        "/regions/webhooks/budget-purchase",
+        headers={"stripe-signature": "sig_test"},
+        content=b"{}",
+    )
+
+    assert response.status_code == 200
+    assert response.text == "Not paid"
+
+
+@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
+@patch("app.api.regions.decode_stripe_event")
+def test_budget_webhook_rejects_non_pool_team(mock_decode_event, mock_retrieve_session, client, db, test_team, test_region):
+    """Webhook rejects budget purchases for teams not configured in pool mode."""
+    test_team.budget_mode = "periodic"
+    db.add(test_team)
+    db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
+    db.add(DBSystemSecret(key="stripe_webhook_secret", value="whsec_test", description="test secret"))
+    db.commit()
+
+    event = Mock()
+    event.type = "checkout.session.completed"
+    event.data = Mock()
+    event.data.object = {"id": "cs_non_pool"}
+    mock_decode_event.return_value = event
+    mock_retrieve_session.return_value = {
+        "id": "cs_non_pool",
+        "payment_status": "paid",
+        "amount_total": 5000,
+        "currency": "usd",
+        "payment_intent": "pi_non_pool",
+        "metadata": {
+            "team_id": str(test_team.id),
+            "region_id": str(test_region.id),
+            "amount_cents": "5000",
+            "currency": "usd",
+        },
+    }
+
+    response = client.post(
+        "/regions/webhooks/budget-purchase",
+        headers={"stripe-signature": "sig_test"},
+        content=b"{}",
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Team is not in pool budget mode"
+
+
+@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
+@patch("app.api.regions.decode_stripe_event")
 def test_budget_webhook_rejects_missing_metadata(mock_decode_event, mock_retrieve_session, client, db, test_team, test_region):
     """Webhook rejects completed sessions with missing required metadata."""
     test_team.budget_mode = "pool"
