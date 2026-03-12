@@ -534,8 +534,7 @@ def test_update_team_switch_to_pool_uses_purchase_ledger_total(
         DBBudgetPurchase(
             team_id=team.id,
             region_id=test_region.id,
-            stripe_session_id="cs_switch_ledger_1",
-            stripe_payment_intent_id="pi_switch_ledger_1",
+            stripe_transaction_id="cs_switch_ledger_1",
             currency="usd",
             amount_cents=2500,
             previous_budget_cents=0,
@@ -547,8 +546,7 @@ def test_update_team_switch_to_pool_uses_purchase_ledger_total(
         DBBudgetPurchase(
             team_id=team.id,
             region_id=test_region.id,
-            stripe_session_id="cs_switch_ledger_2",
-            stripe_payment_intent_id="pi_switch_ledger_2",
+            stripe_transaction_id="cs_switch_ledger_2",
             currency="usd",
             amount_cents=500,
             previous_budget_cents=2500,
@@ -635,8 +633,7 @@ def test_update_team_switch_to_pool_restores_region_counters_from_ledger(
         DBBudgetPurchase(
             team_id=team.id,
             region_id=test_region.id,
-            stripe_session_id="cs_switch_region_restore_1",
-            stripe_payment_intent_id="pi_switch_region_restore_1",
+            stripe_transaction_id="cs_switch_region_restore_1",
             currency="usd",
             amount_cents=1100,
             previous_budget_cents=0,
@@ -648,8 +645,7 @@ def test_update_team_switch_to_pool_restores_region_counters_from_ledger(
         DBBudgetPurchase(
             team_id=team.id,
             region_id=test_region.id,
-            stripe_session_id="cs_switch_region_restore_2",
-            stripe_payment_intent_id="pi_switch_region_restore_2",
+            stripe_transaction_id="cs_switch_region_restore_2",
             currency="usd",
             amount_cents=900,
             previous_budget_cents=1100,

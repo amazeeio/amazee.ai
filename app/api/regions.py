@@ -674,7 +674,7 @@ async def create_team_budget_purchase(
             days_remaining = 365
 
         return BudgetPurchaseResponse(
-            stripe_payment_intent_id=stripe_payment_intent_id,
+            stripe_transaction_id=stripe_transaction_id,
             previous_budget_cents=existing.previous_budget_cents,
             amount_added_cents=existing.amount_cents,
             new_budget_cents=existing.new_budget_cents,
@@ -684,14 +684,14 @@ async def create_team_budget_purchase(
             days_remaining=days_remaining,
         )
 
-    stripe_payment_intent_id = request_data.stripe_payment_intent_id.strip()
-    if not stripe_payment_intent_id:
+    stripe_transaction_id = request_data.stripe_transaction_id.strip()
+    if not stripe_transaction_id:
         raise HTTPException(
-            status_code=400, detail="stripe_payment_intent_id must not be blank"
+            status_code=400, detail="stripe_transaction_id must not be blank"
         )
     existing_purchase = (
         db.query(DBBudgetPurchase)
-        .filter(DBBudgetPurchase.stripe_session_id == stripe_payment_intent_id)
+        .filter(DBBudgetPurchase.stripe_transaction_id == stripe_transaction_id)
         .first()
     )
     currency = request_data.currency.lower()
@@ -707,7 +707,7 @@ async def create_team_budget_purchase(
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "Purchase with this stripe_payment_intent_id already exists for "
+                    "Purchase with this stripe_transaction_id already exists for "
                     "a different team or region"
                 ),
             )
@@ -719,7 +719,19 @@ async def create_team_budget_purchase(
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "Purchase with this stripe_payment_intent_id already exists with "
+                    "Purchase with this stripe_transaction_id already exists with "
+                    "different amount or currency"
+                ),
+            )
+
+        if (
+            existing_purchase.amount_cents != request_data.amount_cents
+            or existing_purchase.currency.lower() != currency
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Purchase with this stripe_transaction_id already exists with "
                     "different amount or currency"
                 ),
             )
@@ -772,8 +784,7 @@ async def create_team_budget_purchase(
     purchase = DBBudgetPurchase(
         team_id=team_id,
         region_id=region_id,
-        stripe_session_id=stripe_payment_intent_id,
-        stripe_payment_intent_id=stripe_payment_intent_id,
+        stripe_transaction_id=stripe_transaction_id,
         currency=currency,
         amount_cents=amount_cents,
         previous_budget_cents=previous_budget_cents,
@@ -788,7 +799,7 @@ async def create_team_budget_purchase(
         # Another concurrent request may have inserted the same purchase first.
         existing_purchase = (
             db.query(DBBudgetPurchase)
-            .filter(DBBudgetPurchase.stripe_session_id == stripe_payment_intent_id)
+            .filter(DBBudgetPurchase.stripe_transaction_id == stripe_transaction_id)
             .first()
         )
         if not existing_purchase:
