@@ -374,7 +374,10 @@ async def create_llm_token(
             owner = current_user
 
     team_scope_id = (owner.team_id if owner is not None and owner.team_id else team_id)
-    is_pool_mode = team is not None and team.budget_mode == "pool"
+    effective_team = team
+    if effective_team is None and team_scope_id is not None:
+        effective_team = db.query(DBTeam).filter(DBTeam.id == team_scope_id).first()
+    is_pool_mode = effective_team is not None and effective_team.budget_mode == "pool"
     if team_scope_id:
         if settings.ENABLE_LIMITS:
             limit_service.check_key_limits(team_scope_id, owner_id)
@@ -390,7 +393,7 @@ async def create_llm_token(
 
     if is_pool_mode:
         team_region = db.query(DBTeamRegion).filter(
-            DBTeamRegion.team_id == team.id,
+            DBTeamRegion.team_id == effective_team.id,
             DBTeamRegion.region_id == private_ai_key.region_id
         ).first()
         if not team_region or not team_region.last_budget_purchase_at:
@@ -413,11 +416,11 @@ async def create_llm_token(
         # Refresh region spend snapshot on-demand if stale.
         now = datetime.now(UTC)
         if not team_region.last_spend_synced_at or (now - team_region.last_spend_synced_at).total_seconds() > 60:
-            team_users = db.query(DBUser).filter(DBUser.team_id == team.id).all()
+            team_users = db.query(DBUser).filter(DBUser.team_id == effective_team.id).all()
             team_user_ids = [u.id for u in team_users]
             region_team_keys = db.query(DBPrivateAIKey).filter(
                 DBPrivateAIKey.region_id == private_ai_key.region_id,
-                (DBPrivateAIKey.team_id == team.id) | (DBPrivateAIKey.owner_id.in_(team_user_ids))
+                (DBPrivateAIKey.team_id == effective_team.id) | (DBPrivateAIKey.owner_id.in_(team_user_ids))
             ).all()
             litellm_service = LiteLLMService(
                 api_url=region.litellm_api_url,

@@ -1113,6 +1113,47 @@ def test_create_llm_token_pool_mode_omits_budget_duration(mock_client_class, cli
     assert "duration" in call_args["json"]
     assert "budget_duration" not in call_args["json"]
 
+
+@patch("httpx.AsyncClient")
+def test_create_llm_token_pool_mode_applies_to_user_owned_keys_without_team_id(
+    mock_client_class,
+    client,
+    team_key_creator_token,
+    test_region,
+    db,
+    test_team,
+    test_team_key_creator,
+    mock_httpx_post_client
+):
+    """Pool-mode checks must apply even when creating user-owned key (no explicit team_id)."""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+    db.add(
+        DBTeamRegion(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            last_budget_purchase_at=datetime.now(UTC) - timedelta(days=366),
+            total_budget_purchased_cents=10000,
+            aggregate_spend_cents=500,
+            last_spend_synced_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {team_key_creator_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Pool User Key",
+        }
+    )
+
+    assert response.status_code == 402
+    assert "Budget expired in this region" in response.json()["detail"]
+
 def test_create_vector_db_as_system_admin(client, admin_token, test_region):
     """Test that a system admin can create a vector database for themselves"""
     region_name = test_region.name
