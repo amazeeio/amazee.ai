@@ -357,13 +357,13 @@ def test_budget_propagation_session_isolation(
     captured_calls = []
     call_lock = threading.Lock()
 
-    async def mock_update_budget(*args, **kwargs):
+    async def mock_update_team_budget(*args, **kwargs):
         with call_lock:
             captured_calls.append((args, kwargs))
 
     def create_mock_instance(*args, **kwargs):
         mock_instance = AsyncMock()
-        mock_instance.update_budget = mock_update_budget
+        mock_instance.update_team_budget = mock_update_team_budget
         return mock_instance
 
     mock_litellm_class.side_effect = create_mock_instance
@@ -396,7 +396,7 @@ def test_budget_propagation_session_isolation(
 
         # Verify correct parameters
         args, kwargs = captured_calls[0]
-        assert kwargs.get("budget_amount") == 100.0
+        assert kwargs.get("max_budget") == 100.0
 
 
 @patch("app.core.team_service.LiteLLMService")
@@ -440,13 +440,13 @@ def test_budget_propagation_works_after_session_close(
     propagation_errors = []
     call_lock = threading.Lock()
 
-    async def mock_update_budget(*args, **kwargs):
+    async def mock_update_team_budget(*args, **kwargs):
         with call_lock:
             captured_calls.append((args, kwargs))
 
     def create_mock_instance(*args, **kwargs):
         mock_instance = AsyncMock()
-        mock_instance.update_budget = mock_update_budget
+        mock_instance.update_team_budget = mock_update_team_budget
         return mock_instance
 
     mock_litellm_class.side_effect = create_mock_instance
@@ -504,7 +504,7 @@ def test_budget_propagation_works_after_session_close(
 
         # Verify correct parameters
         args, kwargs = captured_calls[0]
-        assert kwargs.get("budget_amount") == 150.0
+        assert kwargs.get("max_budget") == 150.0
 
 
 @patch("app.core.team_service.LiteLLMService")
@@ -571,16 +571,19 @@ def test_pool_budget_targeted_propagation_does_not_expire_other_regions(
     captured_calls = []
     instantiated_urls = []
 
-    async def mock_update_budget(*args, **kwargs):
+    async def mock_update_team_budget(*args, **kwargs):
         captured_calls.append(kwargs)
 
     def create_mock_instance(*args, **kwargs):
         instantiated_urls.append(kwargs.get("api_url"))
         mock_instance = AsyncMock()
-        mock_instance.update_budget = mock_update_budget
+        mock_instance.update_team_budget = mock_update_team_budget
         return mock_instance
 
     mock_litellm_class.side_effect = create_mock_instance
+    mock_litellm_class.format_team_id = (
+        lambda region_name, team_id: f"{region_name}_{team_id}"
+    )
 
     asyncio.run(
         propagate_team_budget_to_keys(
@@ -594,8 +597,8 @@ def test_pool_budget_targeted_propagation_does_not_expire_other_regions(
 
     assert instantiated_urls == [test_region.litellm_api_url]
     assert len(captured_calls) == 1
-    assert captured_calls[0]["litellm_token"] == "targeted_region_token"
-    assert captured_calls[0]["duration"] == "300d"
+    assert captured_calls[0]["team_id"] == "test-region_1"
+    assert captured_calls[0]["budget_duration"] == "300d"
 
 
 @patch("app.core.team_service.LiteLLMService")
@@ -650,13 +653,13 @@ def test_overwrite_team_budget_limit_propagates_to_keys(
     captured_calls = []
     call_lock = threading.Lock()
 
-    async def mock_update_budget(*args, **kwargs):
+    async def mock_update_team_budget(*args, **kwargs):
         with call_lock:
             captured_calls.append((args, kwargs))
 
     def create_mock_instance(*args, **kwargs):
         mock_instance = AsyncMock()
-        mock_instance.update_budget = mock_update_budget
+        mock_instance.update_team_budget = mock_update_team_budget
         return mock_instance
 
     mock_litellm_class.side_effect = create_mock_instance
@@ -685,39 +688,26 @@ def test_overwrite_team_budget_limit_propagates_to_keys(
         time.sleep(0.1)
         waited += 1
         with call_lock:
-            if len(captured_calls) >= 2:
+            if len(captured_calls) >= 1:
                 break
 
-    # Verify that update_budget was called for both keys with the new budget
+    # Verify that update_team_budget was called once (team-level, not per-key)
     with call_lock:
-        assert len(captured_calls) == 2, (
-            f"Expected 2 calls but got {len(captured_calls)}. Calls: {captured_calls}"
+        assert len(captured_calls) == 1, (
+            f"Expected 1 call but got {len(captured_calls)}. Calls: {captured_calls}"
         )
 
-    # Verify the calls were made with correct parameters
-    called_tokens = set()
+    # Verify the call was made with correct parameters
     with call_lock:
-        for args, kwargs in captured_calls:
-            # update_budget may be called with positional or keyword arguments
-            litellm_token = (
-                args[0] if args and len(args) > 0 else kwargs.get("litellm_token")
-            )
-            budget_duration_arg = (
-                args[1] if args and len(args) > 1 else kwargs.get("budget_duration")
-            )
-            budget_amount = kwargs.get("budget_amount")
+        args, kwargs = captured_calls[0]
+        team_id = kwargs.get("team_id")
+        budget_duration_arg = kwargs.get("budget_duration")
+        max_budget = kwargs.get("max_budget")
 
-            assert litellm_token is not None, (
-                f"Expected litellm_token but got args={args}, kwargs={kwargs}"
-            )
-            called_tokens.add(litellm_token)
-            assert budget_duration_arg == budget_duration, (
-                f"Expected budget_duration {budget_duration} but got {budget_duration_arg}"
-            )
-            assert budget_amount == 150.0, (
-                f"Expected budget_amount 150.0 but got {budget_amount}"
-            )
-
-    # Verify both keys were updated
-    assert "token1" in called_tokens, f"Expected token1 in {called_tokens}"
-    assert "token2" in called_tokens, f"Expected token2 in {called_tokens}"
+        assert team_id is not None, (
+            f"Expected team_id but got args={args}, kwargs={kwargs}"
+        )
+        assert budget_duration_arg == budget_duration, (
+            f"Expected budget_duration {budget_duration} but got {budget_duration_arg}"
+        )
+        assert max_budget == 150.0, f"Expected max_budget 150.0 but got {max_budget}"

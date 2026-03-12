@@ -282,3 +282,37 @@ class LiteLLMService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to update LiteLLM key team association: {error_msg}",
             )
+
+    async def update_team_budget(
+        self,
+        team_id: str,
+        max_budget: float,
+        budget_duration: Optional[str] = None,
+    ):
+        """Update the budget for a LiteLLM team - all keys share this budget pool"""
+        try:
+            request_data = {"team_id": team_id}
+            if budget_duration is not None:
+                request_data["budget_duration"] = budget_duration
+            if max_budget is not None:
+                request_data["max_budget"] = max_budget
+
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/team/update",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json=request_data,
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            error_msg = str(e)
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update LiteLLM team budget: {error_msg}",
+            )
