@@ -1711,6 +1711,9 @@ def test_budget_webhook_idempotent_response_reports_elapsed_days_remaining(
     assert response.status_code == 200
     data = response.json()
     assert data["days_remaining"] in {355, 354}
+    assert data["expires_at"] is not None
+    expected_expiry_date = (purchase_time + timedelta(days=365)).date().isoformat()
+    assert data["expires_at"].startswith(expected_expiry_date)
 
 
 def test_get_team_region_budget_pool_mode_fields(client, team_admin_token, db, test_team, test_region):

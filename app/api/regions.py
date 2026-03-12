@@ -4,7 +4,7 @@ from typing import List
 import requests
 import asyncpg
 import logging
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timedelta
 import os
 
 from app.db.database import get_db
@@ -64,6 +64,17 @@ def _pool_days_remaining(last_purchase_at: datetime | None) -> int:
     if purchase_time.tzinfo is None:
         purchase_time = purchase_time.replace(tzinfo=UTC)
     return max(365 - (datetime.now(UTC) - purchase_time).days, 0)
+
+def _pool_expires_at(last_purchase_at: datetime | None) -> datetime | None:
+    """
+    Compute pool-budget expiry timestamp from the last purchase timestamp.
+    """
+    if not last_purchase_at:
+        return None
+    purchase_time = last_purchase_at
+    if purchase_time.tzinfo is None:
+        purchase_time = purchase_time.replace(tzinfo=UTC)
+    return purchase_time + timedelta(days=365)
 
 async def validate_litellm_endpoint(api_url: str, api_key: str) -> bool:
     """
@@ -679,7 +690,7 @@ async def handle_budget_purchase_webhook(
             new_budget_cents=existing_purchase.new_budget_cents,
             aggregate_spend_cents=aggregate_spend_cents,
             available_budget_cents=max(total_purchased_cents - aggregate_spend_cents, 0),
-            expires_at=expires_at,
+            expires_at=_pool_expires_at(expires_at),
             days_remaining=_pool_days_remaining(expires_at),
         )
 
@@ -722,7 +733,7 @@ async def handle_budget_purchase_webhook(
                 new_budget_cents=existing_purchase.new_budget_cents,
                 aggregate_spend_cents=aggregate_spend_cents,
                 available_budget_cents=max(total_purchased_cents - aggregate_spend_cents, 0),
-                expires_at=expires_at,
+                expires_at=_pool_expires_at(expires_at),
                 days_remaining=_pool_days_remaining(expires_at),
             )
 
@@ -808,6 +819,6 @@ async def handle_budget_purchase_webhook(
         new_budget_cents=new_budget_cents,
         aggregate_spend_cents=aggregate_spend_cents,
         available_budget_cents=available_budget_cents,
-        expires_at=association.last_budget_purchase_at,
-        days_remaining=365,
+        expires_at=_pool_expires_at(association.last_budget_purchase_at),
+        days_remaining=_pool_days_remaining(association.last_budget_purchase_at),
     )
