@@ -27,9 +27,13 @@ def upgrade() -> None:
         sa.Column("stripe_price_id", sa.String(), nullable=False),
         sa.Column("stripe_product_id", sa.String(), nullable=True),
         sa.Column("amount_cents", sa.BigInteger(), nullable=False),
-        sa.Column("currency", sa.String(length=3), nullable=False, server_default="usd"),
+        sa.Column(
+            "currency", sa.String(length=3), nullable=False, server_default="usd"
+        ),
         sa.Column("region_id", sa.Integer(), nullable=True),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
+        sa.Column(
+            "is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")
+        ),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -73,6 +77,8 @@ def downgrade() -> None:
         op.f("ix_pool_topup_products_stripe_price_id"),
         table_name="pool_topup_products",
     )
-    op.drop_index(op.f("ix_pool_topup_products_region_id"), table_name="pool_topup_products")
+    op.drop_index(
+        op.f("ix_pool_topup_products_region_id"), table_name="pool_topup_products"
+    )
     op.drop_index(op.f("ix_pool_topup_products_id"), table_name="pool_topup_products")
     op.drop_table("pool_topup_products")

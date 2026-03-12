@@ -250,7 +250,9 @@ async def _apply_pool_topup_purchase(db: Session, checkout_session_id: str) -> N
 
     topup = (
         db.query(DBPoolTopupProduct)
-        .filter(DBPoolTopupProduct.id == topup_id, DBPoolTopupProduct.is_active.is_(True))
+        .filter(
+            DBPoolTopupProduct.id == topup_id, DBPoolTopupProduct.is_active.is_(True)
+        )
         .first()
     )
     if not topup:
@@ -321,7 +323,9 @@ async def _apply_pool_topup_purchase(db: Session, checkout_session_id: str) -> N
             .first()
         )
         if not team:
-            logger.error("Pool top-up team not found for session %s", checkout_session_id)
+            logger.error(
+                "Pool top-up team not found for session %s", checkout_session_id
+            )
             db.rollback()
             return
         if team.budget_mode != "pool":
@@ -349,7 +353,9 @@ async def _apply_pool_topup_purchase(db: Session, checkout_session_id: str) -> N
 
         association = (
             db.query(DBTeamRegion)
-            .filter(DBTeamRegion.team_id == team_id, DBTeamRegion.region_id == region_id)
+            .filter(
+                DBTeamRegion.team_id == team_id, DBTeamRegion.region_id == region_id
+            )
             .with_for_update()
             .first()
         )

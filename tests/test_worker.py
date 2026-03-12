@@ -283,7 +283,8 @@ async def test_handle_checkout_completed_pool_topup_success(
     team_region = (
         db.query(DBTeamRegion)
         .filter(
-            DBTeamRegion.team_id == test_team.id, DBTeamRegion.region_id == test_region.id
+            DBTeamRegion.team_id == test_team.id,
+            DBTeamRegion.region_id == test_region.id,
         )
         .first()
     )

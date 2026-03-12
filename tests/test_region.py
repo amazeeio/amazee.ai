@@ -1379,7 +1379,6 @@ def test_create_budget_checkout_session_requires_team_region_association(
     mock_create_checkout.assert_not_awaited()
 
 
-
 def test_get_team_region_budget_pool_mode_fields(
     client, team_admin_token, db, test_team, test_region
 ):

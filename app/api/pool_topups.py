@@ -112,9 +112,13 @@ async def list_pool_topup_products(
 async def update_pool_topup_product(
     topup_id: int, payload: PoolTopupProductUpdate, db: Session = Depends(get_db)
 ):
-    topup = db.query(DBPoolTopupProduct).filter(DBPoolTopupProduct.id == topup_id).first()
+    topup = (
+        db.query(DBPoolTopupProduct).filter(DBPoolTopupProduct.id == topup_id).first()
+    )
     if not topup:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Top-up not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Top-up not found"
+        )
 
     update_data = payload.model_dump(exclude_unset=True)
     if "currency" in update_data and update_data["currency"]:
@@ -123,7 +127,9 @@ async def update_pool_topup_product(
     if "region_id" in update_data and update_data["region_id"] is not None:
         region = (
             db.query(DBRegion)
-            .filter(DBRegion.id == update_data["region_id"], DBRegion.is_active.is_(True))
+            .filter(
+                DBRegion.id == update_data["region_id"], DBRegion.is_active.is_(True)
+            )
             .first()
         )
         if not region:
@@ -159,9 +165,13 @@ async def update_pool_topup_product(
 
 @router.delete("/{topup_id}", dependencies=[Depends(get_role_min_system_admin)])
 async def delete_pool_topup_product(topup_id: int, db: Session = Depends(get_db)):
-    topup = db.query(DBPoolTopupProduct).filter(DBPoolTopupProduct.id == topup_id).first()
+    topup = (
+        db.query(DBPoolTopupProduct).filter(DBPoolTopupProduct.id == topup_id).first()
+    )
     if not topup:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Top-up not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Top-up not found"
+        )
 
     topup.is_active = False
     topup.updated_at = datetime.now(UTC)
