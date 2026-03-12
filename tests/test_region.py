@@ -1274,6 +1274,104 @@ def test_budget_webhook_idempotency(mock_decode_event, mock_retrieve_session, cl
     assert len(purchases) == 1
 
 
+@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
+@patch("app.api.regions.decode_stripe_event")
+def test_budget_webhook_rejects_missing_metadata(mock_decode_event, mock_retrieve_session, client, db, test_team, test_region):
+    """Webhook rejects completed sessions with missing required metadata."""
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+    db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
+    db.add(DBSystemSecret(key="stripe_webhook_secret", value="whsec_test", description="test secret"))
+    db.commit()
+
+    event = Mock()
+    event.type = "checkout.session.completed"
+    event.data = Mock()
+    event.data.object = {"id": "cs_pool_missing_meta"}
+    mock_decode_event.return_value = event
+    mock_retrieve_session.return_value = {
+        "id": "cs_pool_missing_meta",
+        "payment_status": "paid",
+        "amount_total": 5000,
+        "currency": "usd",
+        "payment_intent": "pi_pool_missing_meta",
+        "metadata": {
+            "team_id": str(test_team.id),
+            "region_id": str(test_region.id),
+            "amount_cents": "5000",
+            # Missing currency
+        },
+    }
+
+    response = client.post(
+        "/regions/webhooks/budget-purchase",
+        headers={"stripe-signature": "sig_test"},
+        content=b"{}",
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Missing required checkout metadata"
+
+
+@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
+@patch("app.api.regions.decode_stripe_event")
+def test_budget_webhook_rejects_amount_currency_mismatch(mock_decode_event, mock_retrieve_session, client, db, test_team, test_region):
+    """Webhook rejects sessions when Stripe amount/currency differ from metadata."""
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+    db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
+    db.add(DBSystemSecret(key="stripe_webhook_secret", value="whsec_test", description="test secret"))
+    db.commit()
+
+    event = Mock()
+    event.type = "checkout.session.completed"
+    event.data = Mock()
+    event.data.object = {"id": "cs_pool_mismatch"}
+    mock_decode_event.return_value = event
+    mock_retrieve_session.return_value = {
+        "id": "cs_pool_mismatch",
+        "payment_status": "paid",
+        "amount_total": 5100,  # mismatch vs metadata amount_cents
+        "currency": "usd",
+        "payment_intent": "pi_pool_mismatch",
+        "metadata": {
+            "team_id": str(test_team.id),
+            "region_id": str(test_region.id),
+            "amount_cents": "5000",
+            "currency": "usd",
+        },
+    }
+
+    response = client.post(
+        "/regions/webhooks/budget-purchase",
+        headers={"stripe-signature": "sig_test"},
+        content=b"{}",
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Stripe amount/currency mismatch"
+
+
+@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
+@patch("app.api.regions.decode_stripe_event")
+def test_budget_webhook_signature_verification_failure(mock_decode_event, mock_retrieve_session, client, db):
+    """Webhook returns not found when Stripe signature verification fails."""
+    db.add(DBSystemSecret(key="stripe_webhook_secret", value="whsec_test", description="test secret"))
+    db.commit()
+
+    mock_decode_event.side_effect = HTTPException(status_code=404, detail="Not found")
+
+    response = client.post(
+        "/regions/webhooks/budget-purchase",
+        headers={"stripe-signature": "sig_invalid"},
+        content=b"{}",
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Not found"
+    mock_retrieve_session.assert_not_awaited()
+
+
 def test_get_team_region_budget_pool_mode_fields(client, team_admin_token, db, test_team, test_region):
     """Pool-mode budget endpoint includes days_remaining/expires_at/cents fields."""
     test_team.budget_mode = "pool"
