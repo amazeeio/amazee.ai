@@ -1,5 +1,6 @@
 from fastapi import HTTPException
-from app.db.models import DBTeam, DBRegion, DBTeamRegion, DBSystemSecret, DBBudgetPurchase
+from app.db.models import DBTeam, DBRegion, DBTeamRegion, DBSystemSecret, DBBudgetPurchase, DBLimitedResource
+from app.schemas.limits import OwnerType, ResourceType
 from unittest.mock import patch, AsyncMock, Mock
 from datetime import datetime, UTC, timedelta
 
@@ -1370,6 +1371,96 @@ def test_budget_webhook_signature_verification_failure(mock_decode_event, mock_r
     assert response.status_code == 404
     assert response.json()["detail"] == "Not found"
     mock_retrieve_session.assert_not_awaited()
+
+
+@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
+@patch("app.api.regions.decode_stripe_event")
+def test_budget_webhook_additive_purchases_preserve_exact_cents(
+    mock_decode_event, mock_retrieve_session, client, db, test_team, test_region
+):
+    """Two different successful sessions add budget exactly in cents for the same team-region."""
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+    db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
+    db.add(DBSystemSecret(key="stripe_webhook_secret", value="whsec_test", description="test secret"))
+    db.commit()
+
+    event_1 = Mock()
+    event_1.type = "checkout.session.completed"
+    event_1.data = Mock()
+    event_1.data.object = {"id": "cs_pool_add_1"}
+
+    event_2 = Mock()
+    event_2.type = "checkout.session.completed"
+    event_2.data = Mock()
+    event_2.data.object = {"id": "cs_pool_add_2"}
+
+    mock_decode_event.side_effect = [event_1, event_2]
+    mock_retrieve_session.side_effect = [
+        {
+            "id": "cs_pool_add_1",
+            "payment_status": "paid",
+            "amount_total": 1,
+            "currency": "usd",
+            "payment_intent": "pi_pool_add_1",
+            "metadata": {
+                "team_id": str(test_team.id),
+                "region_id": str(test_region.id),
+                "amount_cents": "1",
+                "currency": "usd",
+            },
+        },
+        {
+            "id": "cs_pool_add_2",
+            "payment_status": "paid",
+            "amount_total": 2,
+            "currency": "usd",
+            "payment_intent": "pi_pool_add_2",
+            "metadata": {
+                "team_id": str(test_team.id),
+                "region_id": str(test_region.id),
+                "amount_cents": "2",
+                "currency": "usd",
+            },
+        },
+    ]
+
+    response_1 = client.post(
+        "/regions/webhooks/budget-purchase",
+        headers={"stripe-signature": "sig_test"},
+        content=b"{}",
+    )
+    assert response_1.status_code == 200
+    assert response_1.json()["new_budget_cents"] == 1
+
+    response_2 = client.post(
+        "/regions/webhooks/budget-purchase",
+        headers={"stripe-signature": "sig_test"},
+        content=b"{}",
+    )
+    assert response_2.status_code == 200
+    assert response_2.json()["new_budget_cents"] == 3
+
+    purchases = db.query(DBBudgetPurchase).filter(
+        DBBudgetPurchase.team_id == test_team.id,
+        DBBudgetPurchase.region_id == test_region.id
+    ).all()
+    assert len(purchases) == 2
+
+    team_region = db.query(DBTeamRegion).filter(
+        DBTeamRegion.team_id == test_team.id,
+        DBTeamRegion.region_id == test_region.id
+    ).first()
+    assert team_region is not None
+    assert team_region.total_budget_purchased_cents == 3
+
+    budget_limit = db.query(DBLimitedResource).filter(
+        DBLimitedResource.owner_type == OwnerType.TEAM,
+        DBLimitedResource.owner_id == test_team.id,
+        DBLimitedResource.resource == ResourceType.BUDGET
+    ).first()
+    assert budget_limit is not None
+    assert int(round(float(budget_limit.max_value) * 100)) == 3
 
 
 def test_get_team_region_budget_pool_mode_fields(client, team_admin_token, db, test_team, test_region):
