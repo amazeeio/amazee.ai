@@ -1368,6 +1368,30 @@ def test_budget_webhook_ignores_non_checkout_events(mock_decode_event, mock_retr
 
 @patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
 @patch("app.api.regions.decode_stripe_event")
+def test_budget_webhook_alias_route_works(mock_decode_event, mock_retrieve_session, client, db):
+    """`/stripe/webhooks/budget-purchase` should route to the same budget webhook handler."""
+    db.add(DBSystemSecret(key="stripe_webhook_secret", value="whsec_test", description="test secret"))
+    db.commit()
+
+    event = Mock()
+    event.type = "invoice.paid"  # non-target event should be ignored
+    event.data = Mock()
+    event.data.object = {"id": "evt_alias_ignored"}
+    mock_decode_event.return_value = event
+
+    response = client.post(
+        "/stripe/webhooks/budget-purchase",
+        headers={"stripe-signature": "sig_test"},
+        content=b"{}",
+    )
+
+    assert response.status_code == 200
+    assert response.text == "Ignored"
+    mock_retrieve_session.assert_not_awaited()
+
+
+@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
+@patch("app.api.regions.decode_stripe_event")
 def test_budget_webhook_ignores_unpaid_session(mock_decode_event, mock_retrieve_session, client, db):
     """Completed checkout events are ignored if payment status is not paid."""
     db.add(DBSystemSecret(key="stripe_webhook_secret", value="whsec_test", description="test secret"))
