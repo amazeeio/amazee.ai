@@ -367,6 +367,9 @@ def test_budget_propagation_session_isolation(
         return mock_instance
 
     mock_litellm_class.side_effect = create_mock_instance
+    mock_litellm_class.format_team_id = (
+        lambda region_name, team_id: f"{region_name}_{team_id}"
+    )
 
     # Create a LimitService and call the method that triggers background propagation
     limit_service = LimitService(db)
@@ -450,6 +453,9 @@ def test_budget_propagation_works_after_session_close(
         return mock_instance
 
     mock_litellm_class.side_effect = create_mock_instance
+    mock_litellm_class.format_team_id = (
+        lambda region_name, team_id: f"{region_name}_{team_id}"
+    )
 
     # Patch logger.error to capture propagation errors
     original_error = logging.getLogger("app.core.team_service").error
@@ -663,6 +669,9 @@ def test_overwrite_team_budget_limit_propagates_to_keys(
         return mock_instance
 
     mock_litellm_class.side_effect = create_mock_instance
+    mock_litellm_class.format_team_id = (
+        lambda region_name, team_id: f"{region_name}_{team_id}"
+    )
 
     # Update the team's budget limit via API
     response = client.put(
@@ -677,6 +686,40 @@ def test_overwrite_team_budget_limit_propagates_to_keys(
             "max_value": 150.0,
         },
     )
+
+    assert response.status_code == 200
+
+    # Wait for the background thread to execute (propagation happens in ThreadPoolExecutor)
+    # Wait up to 5 seconds for completion, checking every 100ms
+    max_wait = 50
+    waited = 0
+    while waited < max_wait:
+        time.sleep(0.1)
+        waited += 1
+        with call_lock:
+            if len(captured_calls) >= 1:
+                break
+
+    # Verify that update_team_budget was called once (team-level budget for both pool & periodic)
+    with call_lock:
+        assert len(captured_calls) == 1, (
+            f"Expected 1 call but got {len(captured_calls)}. Calls: {captured_calls}"
+        )
+
+    # Verify the call was made with correct parameters
+    with call_lock:
+        args, kwargs = captured_calls[0]
+        team_id = kwargs.get("team_id")
+        budget_duration_arg = kwargs.get("budget_duration")
+        max_budget = kwargs.get("max_budget")
+
+        assert team_id is not None, (
+            f"Expected team_id but got args={args}, kwargs={kwargs}"
+        )
+        assert budget_duration_arg == budget_duration, (
+            f"Expected budget_duration {budget_duration} but got {budget_duration_arg}"
+        )
+        assert max_budget == 150.0, f"Expected max_budget 150.0 but got {max_budget}"
 
     assert response.status_code == 200
 

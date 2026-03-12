@@ -238,14 +238,13 @@ async def propagate_team_budget_to_keys(
     """
     Propagate a team budget limit change to all keys belonging to the team.
 
-    This function updates the team budget in LiteLLM - all keys share this
-    budget pool instead of each key getting the full budget amount.
+    Uses team-level budget in LiteLLM - all keys share this budget pool.
 
     Args:
         db: Database session
         team_id: ID of the team whose keys should be updated
         budget_amount: New budget amount for the team pool
-        budget_duration: Budget duration string for periodic mode (e.g., "30d")
+        budget_duration: Budget duration string (e.g., "30d" for periodic mode)
         duration_by_region: Optional mapping for pool-mode key duration by region_id
 
     Note:
@@ -255,11 +254,12 @@ async def propagate_team_budget_to_keys(
     try:
         keys_by_region = get_team_keys_by_region(db, team_id)
 
-        # Update team budget for each region
+        # Determine if this is pool mode (uses duration_by_region)
+        is_pool_mode = duration_by_region is not None
+
         for region, keys in keys_by_region.items():
             # In targeted pool updates, only propagate to explicitly provided regions.
-            # Regions omitted from duration_by_region must keep their current key durations.
-            if duration_by_region is not None and region.id not in duration_by_region:
+            if is_pool_mode and region.id not in duration_by_region:
                 logger.info(
                     f"Skipping budget propagation for team {team_id} in region {region.id} (not targeted)"
                 )
@@ -274,9 +274,9 @@ async def propagate_team_budget_to_keys(
             )
 
             try:
-                # Determine the budget duration for this region
+                # Determine duration for this region
                 target_duration = budget_duration
-                if duration_by_region is not None:
+                if is_pool_mode:
                     target_duration = duration_by_region[region.id]
 
                 # Update team-level budget in LiteLLM - all keys share this pool
@@ -298,4 +298,3 @@ async def propagate_team_budget_to_keys(
         logger.error(
             f"Error propagating budget limit to keys for team {team_id}: {str(propagation_error)}"
         )
-        # Don't raise - allow limit update to succeed even if propagation fails
