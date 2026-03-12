@@ -1222,6 +1222,63 @@ def test_create_budget_checkout_session_pool_mode_success(mock_create_checkout, 
     mock_create_checkout.assert_awaited_once()
 
 
+@patch("app.api.regions.create_budget_checkout_session", new_callable=AsyncMock)
+def test_create_budget_checkout_session_requires_team_admin(
+    mock_create_checkout, client, test_token, test_team, test_region
+):
+    """Non team-admin users cannot create budget checkout sessions."""
+    response = client.post(
+        f"/regions/{test_region.id}/teams/{test_team.id}/budget-checkout-session",
+        headers={"Authorization": f"Bearer {test_token}"},
+        json={"amount_cents": 5000, "currency": "usd"},
+    )
+
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
+    mock_create_checkout.assert_not_awaited()
+
+
+@patch("app.api.regions.create_budget_checkout_session", new_callable=AsyncMock)
+def test_create_budget_checkout_session_rejects_non_pool_mode(
+    mock_create_checkout, client, team_admin_token, db, test_team, test_region
+):
+    """Checkout session endpoint only supports pool-mode teams."""
+    test_team.budget_mode = "periodic"
+    db.add(test_team)
+    db.commit()
+
+    response = client.post(
+        f"/regions/{test_region.id}/teams/{test_team.id}/budget-checkout-session",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"amount_cents": 5000, "currency": "usd"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Pool budget checkout requires team budget_mode='pool'"
+    mock_create_checkout.assert_not_awaited()
+
+
+@patch("app.api.regions.create_budget_checkout_session", new_callable=AsyncMock)
+def test_create_budget_checkout_session_requires_team_region_association(
+    mock_create_checkout, client, team_admin_token, db, test_team, test_region
+):
+    """Pool checkout requires an existing team-region association."""
+    test_team.budget_mode = "pool"
+    test_team.stripe_customer_id = "cus_pool_no_assoc"
+    db.add(test_team)
+    db.commit()
+
+    response = client.post(
+        f"/regions/{test_region.id}/teams/{test_team.id}/budget-checkout-session",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"amount_cents": 5000, "currency": "usd"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Team-region association not found"
+    mock_create_checkout.assert_not_awaited()
+
+
 @patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
 @patch("app.api.regions.decode_stripe_event")
 def test_budget_webhook_idempotency(mock_decode_event, mock_retrieve_session, client, db, test_team, test_region):
