@@ -7,7 +7,6 @@ from app.core.worker import (
     handle_stripe_event_background,
     monitor_teams,
     team_freshness_days,
-    team_expired_metric,
     key_spend_percentage,
     team_total_spend,
     active_team_labels,
