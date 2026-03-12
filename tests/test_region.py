@@ -1652,6 +1652,67 @@ def test_budget_webhook_additive_purchases_preserve_exact_cents(
     assert int(round(float(budget_limit.max_value) * 100)) == 3
 
 
+@patch("app.api.regions.retrieve_checkout_session", new_callable=AsyncMock)
+@patch("app.api.regions.decode_stripe_event")
+def test_budget_webhook_idempotent_response_reports_elapsed_days_remaining(
+    mock_decode_event, mock_retrieve_session, client, db, test_team, test_region
+):
+    """Idempotent webhook response should compute days_remaining from last purchase timestamp."""
+    purchase_time = datetime.now(UTC) - timedelta(days=10)
+
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+    db.add(DBSystemSecret(key="stripe_webhook_secret", value="whsec_test", description="test secret"))
+    db.add(DBTeamRegion(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        last_budget_purchase_at=purchase_time,
+        aggregate_spend_cents=0,
+        total_budget_purchased_cents=5000,
+    ))
+    db.add(DBBudgetPurchase(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        stripe_session_id="cs_pool_existing_elapsed",
+        stripe_payment_intent_id="pi_pool_existing_elapsed",
+        currency="usd",
+        amount_cents=5000,
+        previous_budget_cents=0,
+        new_budget_cents=5000,
+        purchased_at=purchase_time,
+    ))
+    db.commit()
+
+    event = Mock()
+    event.type = "checkout.session.completed"
+    event.data = Mock()
+    event.data.object = {"id": "cs_pool_existing_elapsed"}
+    mock_decode_event.return_value = event
+    mock_retrieve_session.return_value = {
+        "id": "cs_pool_existing_elapsed",
+        "payment_status": "paid",
+        "amount_total": 5000,
+        "currency": "usd",
+        "payment_intent": "pi_pool_existing_elapsed",
+        "metadata": {
+            "team_id": str(test_team.id),
+            "region_id": str(test_region.id),
+            "amount_cents": "5000",
+            "currency": "usd",
+        },
+    }
+
+    response = client.post(
+        "/regions/webhooks/budget-purchase",
+        headers={"stripe-signature": "sig_test"},
+        content=b"{}",
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["days_remaining"] in {355, 354}
+
+
 def test_get_team_region_budget_pool_mode_fields(client, team_admin_token, db, test_team, test_region):
     """Pool-mode budget endpoint includes days_remaining/expires_at/cents fields."""
     test_team.budget_mode = "pool"

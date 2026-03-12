@@ -54,6 +54,17 @@ def _get_budget_webhook_secret(db: Session) -> str:
     secret = db.query(DBSystemSecret).filter(DBSystemSecret.key == BUDGET_WEBHOOK_KEY).first()
     return secret.value if secret else ""
 
+def _pool_days_remaining(last_purchase_at: datetime | None) -> int:
+    """
+    Compute pool-budget days remaining from the last purchase timestamp.
+    """
+    if not last_purchase_at:
+        return 0
+    purchase_time = last_purchase_at
+    if purchase_time.tzinfo is None:
+        purchase_time = purchase_time.replace(tzinfo=UTC)
+    return max(365 - (datetime.now(UTC) - purchase_time).days, 0)
+
 async def validate_litellm_endpoint(api_url: str, api_key: str) -> bool:
     """
     Validate LiteLLM endpoint by making a test request to the health endpoint.
@@ -657,14 +668,19 @@ async def handle_budget_purchase_webhook(
         ).first()
         aggregate_spend_cents = int((team_region.aggregate_spend_cents if team_region else 0) or 0)
         total_purchased_cents = int((team_region.total_budget_purchased_cents if team_region else existing_purchase.new_budget_cents) or 0)
+        expires_at = (
+            team_region.last_budget_purchase_at
+            if team_region and team_region.last_budget_purchase_at
+            else existing_purchase.purchased_at
+        )
         return BudgetPurchaseResponse(
             previous_budget_cents=existing_purchase.previous_budget_cents,
             amount_added_cents=existing_purchase.amount_cents,
             new_budget_cents=existing_purchase.new_budget_cents,
             aggregate_spend_cents=aggregate_spend_cents,
             available_budget_cents=max(total_purchased_cents - aggregate_spend_cents, 0),
-            expires_at=(team_region.last_budget_purchase_at if team_region and team_region.last_budget_purchase_at else existing_purchase.purchased_at),
-            days_remaining=365,
+            expires_at=expires_at,
+            days_remaining=_pool_days_remaining(expires_at),
         )
 
     try:
@@ -699,14 +715,15 @@ async def handle_budget_purchase_webhook(
         if existing_purchase:
             aggregate_spend_cents = int(association.aggregate_spend_cents or 0)
             total_purchased_cents = int(association.total_budget_purchased_cents or 0)
+            expires_at = association.last_budget_purchase_at or existing_purchase.purchased_at
             return BudgetPurchaseResponse(
                 previous_budget_cents=existing_purchase.previous_budget_cents,
                 amount_added_cents=existing_purchase.amount_cents,
                 new_budget_cents=existing_purchase.new_budget_cents,
                 aggregate_spend_cents=aggregate_spend_cents,
                 available_budget_cents=max(total_purchased_cents - aggregate_spend_cents, 0),
-                expires_at=association.last_budget_purchase_at or existing_purchase.purchased_at,
-                days_remaining=365,
+                expires_at=expires_at,
+                days_remaining=_pool_days_remaining(expires_at),
             )
 
         budget_limit = db.query(DBLimitedResource).filter(
