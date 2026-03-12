@@ -84,6 +84,113 @@ def test_admin_can_reset_single_limit(client: TestClient, admin_token, test_team
     assert data["owner_type"] == "team"
 
 
+def test_pool_team_budget_cannot_be_overwritten_via_limits(
+    client: TestClient, admin_token, test_team, db
+):
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+    db.commit()
+
+    response = client.put(
+        "/limits/overwrite",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "owner_type": "team",
+            "owner_id": test_team.id,
+            "resource": "max_budget",
+            "limit_type": "data_plane",
+            "unit": "dollar",
+            "max_value": 123.0,
+            "current_value": None,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Pool team budget cannot be overwritten" in response.json()["detail"]
+
+
+def test_pool_team_budget_cannot_be_reset_via_limits(
+    client: TestClient, admin_token, test_team, db
+):
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+    db.add(
+        DBLimitedResource(
+            limit_type=LimitType.DATA_PLANE,
+            resource=ResourceType.BUDGET,
+            unit=UnitType.DOLLAR,
+            max_value=42.0,
+            current_value=None,
+            owner_type=OwnerType.TEAM,
+            owner_id=test_team.id,
+            limited_by=LimitSource.MANUAL,
+            set_by="admin@example.com",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    response = client.post(
+        "/limits/reset",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "owner_type": "team",
+            "owner_id": test_team.id,
+            "resource": "max_budget",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Pool team budget cannot be reset" in response.json()["detail"]
+
+
+def test_reset_all_team_limits_keeps_pool_budget_unchanged(
+    client: TestClient, admin_token, test_team, db
+):
+    test_team.budget_mode = "pool"
+    db.add(test_team)
+
+    # Budget should remain untouched by "reset all" in pool mode.
+    budget_limit = DBLimitedResource(
+        limit_type=LimitType.DATA_PLANE,
+        resource=ResourceType.BUDGET,
+        unit=UnitType.DOLLAR,
+        max_value=55.0,
+        current_value=None,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.MANUAL,
+        set_by="pool_topup",
+        created_at=datetime.now(UTC),
+    )
+    user_limit = DBLimitedResource(
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.USER,
+        unit=UnitType.COUNT,
+        max_value=9.0,
+        current_value=1.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.MANUAL,
+        set_by="admin@example.com",
+        created_at=datetime.now(UTC),
+    )
+    db.add(budget_limit)
+    db.add(user_limit)
+    db.commit()
+
+    response = client.post(
+        f"/limits/teams/{test_team.id}/reset",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+
+    db.refresh(budget_limit)
+    assert budget_limit.max_value == 55.0
+    assert budget_limit.limited_by == LimitSource.MANUAL
+    assert budget_limit.set_by == "pool_topup"
+
+
 def test_non_admin_cannot_access_limit_apis(client: TestClient, test_token, test_team):
     """
     Given: Non-admin user credentials

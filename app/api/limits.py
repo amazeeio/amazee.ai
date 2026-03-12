@@ -8,6 +8,8 @@ from app.schemas.limits import (
     OverwriteLimitRequest,
     ResetLimitRequest,
     LimitSource,
+    OwnerType,
+    ResourceType,
 )
 from app.core.limit_service import LimitService, LimitNotFoundError
 from app.core.security import get_role_min_system_admin, get_current_user_from_auth
@@ -17,6 +19,16 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["limits"])
+
+
+def _is_pool_team_budget_request(
+    db: Session, owner_type: OwnerType, owner_id: int, resource: ResourceType
+) -> bool:
+    if owner_type != OwnerType.TEAM or resource != ResourceType.BUDGET:
+        return False
+
+    team = db.query(DBTeam).filter(DBTeam.id == owner_id).first()
+    return bool(team and team.budget_mode == "pool")
 
 
 @router.get(
@@ -100,6 +112,17 @@ async def overwrite_limit(
 
     Only accessible by system administrators.
     """
+    if _is_pool_team_budget_request(
+        db, request.owner_type, request.owner_id, request.resource
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Pool team budget cannot be overwritten via /limits. "
+                "Use pool top-up checkout/purchase flow."
+            ),
+        )
+
     try:
         result = limit_service.set_limit(
             owner_type=request.owner_type,
@@ -168,6 +191,17 @@ async def reset_limit(
 
     Only accessible by system administrators.
     """
+    if _is_pool_team_budget_request(
+        db, request.owner_type, request.owner_id, request.resource
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Pool team budget cannot be reset via /limits. "
+                "Use pool top-up checkout/purchase flow."
+            ),
+        )
+
     try:
         result = limit_service.reset_limit(
             request.owner_type, request.owner_id, request.resource

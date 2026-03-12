@@ -630,6 +630,10 @@ class LimitService:
         """
         team_limits = self.get_team_limits(team)
         for limit in team_limits:
+            # Pool budgets are derived from purchase ledger/top-ups and must not be
+            # reset through generic limit fallback rules.
+            if team.budget_mode == "pool" and limit.resource == ResourceType.BUDGET:
+                continue
             self._reset_limit(limit)
 
         # Do a fresh pull from the db after the updates
