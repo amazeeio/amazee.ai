@@ -1599,7 +1599,7 @@ def test_register_team_creates_default_limits(client, db, admin_token):
             "admin_email": "newteam@example.com",
             "phone": "1234567890",
             "billing_address": "123 New St, New City, 12345",
-            "budget_type": "pool",
+            "budget_type": "periodic",
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
