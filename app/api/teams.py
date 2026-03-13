@@ -115,6 +115,7 @@ async def register_team(
         is_active=True,
         created_at=datetime.now(UTC),
         force_user_keys=team.force_user_keys,
+        budget_type=team.budget_type.value,
     )
 
     db.add(db_team)
@@ -514,6 +515,7 @@ async def list_teams_for_sales(db: Session = Depends(get_db)):
                 created_at=team.created_at,
                 last_payment=team.last_payment,
                 is_always_free=team.is_always_free,
+                budget_type=team.budget_type,
                 products=products,
                 regions=regions,
                 total_spend=round(total_spend, 4),

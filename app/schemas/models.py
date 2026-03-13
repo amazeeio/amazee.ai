@@ -2,6 +2,13 @@ from pydantic import BaseModel, ConfigDict, EmailStr, AfterValidator
 from typing import Optional, List, ClassVar, Literal, Dict, Annotated
 from datetime import datetime
 from sqlalchemy.orm import relationship
+from enum import Enum
+
+
+class BudgetType(str, Enum):
+    PERIODIC = "periodic"
+    POOL = "pool"
+
 
 
 def lowercase_email(v: str) -> str:
@@ -307,6 +314,8 @@ class TeamBase(BaseModel):
 
 class TeamCreate(TeamBase):
     force_user_keys: bool = False
+    budget_type: BudgetType = BudgetType.POOL
+
 
 
 class TeamUpdate(BaseModel):
@@ -317,6 +326,8 @@ class TeamUpdate(BaseModel):
     is_active: Optional[bool] = None
     is_always_free: Optional[bool] = None
     force_user_keys: Optional[bool] = False
+    budget_type: Optional[BudgetType] = None
+
 
 
 class Team(TeamBase):
@@ -324,6 +335,7 @@ class Team(TeamBase):
     is_active: bool
     is_always_free: bool
     force_user_keys: Optional[bool] = False
+    budget_type: BudgetType
     created_at: datetime
     updated_at: Optional[datetime] = None
     last_payment: Optional[datetime] = None
@@ -474,6 +486,7 @@ class SalesTeam(BaseModel):
     created_at: datetime
     last_payment: Optional[datetime] = None
     is_always_free: bool
+    budget_type: BudgetType
     products: List[SalesProduct]
     regions: List[str]
     total_spend: float

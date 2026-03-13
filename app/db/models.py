@@ -136,6 +136,11 @@ class DBTeam(Base):
     is_active = Column(Boolean, default=True)
     is_always_free = Column(Boolean, default=False)
     force_user_keys = Column(Boolean, default=False, nullable=False)
+    budget_type = Column(
+        Enum("periodic", "pool", name="budget_type_enum", create_constraint=True),
+        default="periodic",
+        nullable=False,
+    )
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     stripe_customer_id = Column(String, nullable=True, unique=True, index=True)
