@@ -81,8 +81,6 @@ async def purchase_pool_budget(
             created_at=datetime.now(UTC),
         )
         db.add(purchase_record)
-        db.commit()
-        db.refresh(purchase_record)
     except IntegrityError:
         db.rollback()
         raise HTTPException(
@@ -91,7 +89,6 @@ async def purchase_pool_budget(
         )
 
     team.last_pool_purchase = purchase.purchased_at
-    db.commit()
 
     amount_dollars = purchase.amount_cents / 100.0
 
@@ -129,11 +126,15 @@ async def purchase_pool_budget(
             budget_duration=f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
         )
     except Exception as e:
+        db.rollback()
         logger.error(f"Failed to update LiteLLM team budget: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update team budget in LiteLLM: {str(e)}",
         )
+
+    db.commit()
+    db.refresh(purchase_record)
 
     logger.info(
         f"Pool purchase recorded for team {team_id}: "
