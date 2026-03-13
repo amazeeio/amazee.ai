@@ -174,6 +174,7 @@ def test_create_team_with_force_user_keys(client, admin_token):
             "name": "Force User Keys Team",
             "admin_email": "force@example.com",
             "force_user_keys": True,
+            "budget_type": "pool",
         },
     )
     assert response.status_code == 201

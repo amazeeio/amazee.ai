@@ -82,6 +82,7 @@ def test_register_team_duplicate_admin_email(client, db, admin_token):
             "admin_email": "existing@example.com",
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321",
+            "budget_type": "pool",
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -153,6 +154,7 @@ def test_register_team_duplicate_admin_email_case_insensitive_reverse(
             "admin_email": "existing@example.com",
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321",
+            "budget_type": "pool",
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -187,6 +189,7 @@ def test_register_team_duplicate_name(client, db, admin_token):
             "admin_email": "newteam@example.com",
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321",
+            "budget_type": "pool",
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -218,9 +221,10 @@ def test_register_team_duplicate_name_case_insensitive(client, db, admin_token):
         "/teams/",
         json={
             "name": "existing team",
-            "admin_email": "newteam@example.com",
+            "admin_email": "newteam2@example.com",
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321",
+            "budget_type": "pool",
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -1595,6 +1599,7 @@ def test_register_team_creates_default_limits(client, db, admin_token):
             "admin_email": "newteam@example.com",
             "phone": "1234567890",
             "billing_address": "123 New St, New City, 12345",
+            "budget_type": "pool",
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -1674,9 +1679,10 @@ def test_register_team_does_not_create_limits_when_disabled(client, db, admin_to
         "/teams/",
         json={
             "name": "New Team Without Limits",
-            "admin_email": "newteamnolimits@example.com",
+            "admin_email": "newteamlimits@example.com",
             "phone": "1234567890",
             "billing_address": "123 New St, New City, 12345",
+            "budget_type": "pool",
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
