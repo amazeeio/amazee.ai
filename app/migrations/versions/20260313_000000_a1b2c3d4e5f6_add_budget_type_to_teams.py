@@ -1,6 +1,6 @@
 """add_budget_type_to_teams
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: 95ac6f88662f
 Revises: 1a2b3c4d5e6f
 Create Date: 2026-03-13 00:00:00.000000+00:00
 
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = "a1b2c3d4e5f6"  # noqa: F841
+revision: str = "95ac6f88662f"  # noqa: F841
 down_revision: Union[str, None] = "1a2b3c4d5e6f"  # noqa: F841
 
 

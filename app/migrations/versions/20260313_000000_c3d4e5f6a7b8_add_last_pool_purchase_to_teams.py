@@ -1,7 +1,7 @@
 """add_last_pool_purchase_to_teams
 
-Revision ID: c3d4e5f6a7b8
-Revises: b2c3d4e5f6a7
+Revision ID: 06fc68e254b7
+Revises: e5d0ea6833ff
 Create Date: 2026-03-13 00:00:00.000000+00:00
 
 """
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = "c3d4e5f6a7b8"  # noqa: F841
-down_revision: Union[str, None] = "b2c3d4e5f6a7"  # noqa: F841
+revision: str = "06fc68e254b7"  # noqa: F841
+down_revision: Union[str, None] = "e5d0ea6833ff"  # noqa: F841
 
 
 def upgrade() -> None:
