@@ -36,9 +36,7 @@ from app.core.limit_service import (
 from app.core.worker import generate_pricing_url
 
 from app.db.database import get_db
-from app.db.models import (
-    DBUser, DBAPIToken, DBRegion, DBTeam
-)
+from app.db.models import DBUser, DBAPIToken, DBRegion, DBTeam
 
 from app.services.litellm import LiteLLMService
 from app.services.dynamodb import DynamoDBService
@@ -66,9 +64,8 @@ from app.api.private_ai_keys import create_private_ai_key
 
 auth_logger = logging.getLogger(__name__)
 
-router = APIRouter(
-    tags=["auth"]
-)
+router = APIRouter(tags=["auth"])
+
 
 def get_cookie_domain():
     """Extract domain from COOKIE_DOMAIN or LAGOON_ROUTES for cookie settings."""
@@ -83,12 +80,13 @@ def get_cookie_domain():
         return None
 
     # Take first URL from comma-separated list
-    first_url = lagoon_routes.split(',')[0]
+    first_url = lagoon_routes.split(",")[0]
     # Parse the URL and get the hostname
     hostname = urlparse(first_url).netloc
     # Remove the first part (e.g., 'backend' or 'frontend')
-    domain = '.'.join(hostname.split('.')[1:])
+    domain = ".".join(hostname.split(".")[1:])
     return domain
+
 
 async def get_login_data(
     request: Request,
@@ -106,6 +104,7 @@ async def get_login_data(
             return None
     return None
 
+
 async def get_sign_in_data(
     request: Request,
     username: Optional[str] = Form(None),
@@ -122,7 +121,10 @@ async def get_sign_in_data(
             return None
     return None
 
-def create_and_set_access_token(response: Response, user_email: str, user: Optional[DBUser] = None) -> Token:
+
+def create_and_set_access_token(
+    response: Response, user_email: str, user: Optional[DBUser] = None
+) -> Token:
     """
     Create an access token for the user and set it as a cookie.
 
@@ -135,9 +137,7 @@ def create_and_set_access_token(response: Response, user_email: str, user: Optio
         Token: The created access token
     """
     # Create access token
-    access_token = create_access_token(
-        data={"sub": user_email.lower()}
-    )
+    access_token = create_access_token(data={"sub": user_email.lower()})
 
     # Get cookie domain from LAGOON_ROUTES
     cookie_domain = get_cookie_domain()
@@ -153,9 +153,9 @@ def create_and_set_access_token(response: Response, user_email: str, user: Optio
         "httponly": True,
         "max_age": cookie_expiration,
         "expires": cookie_expiration,
-        "samesite": 'none',
+        "samesite": "none",
         "secure": True,
-        "path": '/',
+        "path": "/",
     }
 
     # Only set domain if we got one from LAGOON_ROUTES
@@ -167,12 +167,13 @@ def create_and_set_access_token(response: Response, user_email: str, user: Optio
 
     return Token(access_token=access_token, token_type="bearer")
 
+
 @router.post("/login", response_model=Token)
 async def login(
     request: Request,
     response: Response,
     login_data: Optional[LoginData] = Depends(get_login_data),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Login to get access to the API.
@@ -193,7 +194,7 @@ async def login(
     if not login_data:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid login data. Please provide username and password in either form data or JSON format."
+            detail="Invalid login data. Please provide username and password in either form data or JSON format.",
         )
 
     auth_logger.info(f"Login attempt for user: {login_data.username}")
@@ -202,11 +203,12 @@ async def login(
         auth_logger.warning(f"Failed login attempt for user: {login_data.username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password"
+            detail="Incorrect email or password",
         )
 
     auth_logger.info(f"Successful login for user: {login_data.username}")
     return create_and_set_access_token(response, user.email, user)
+
 
 @router.post("/logout")
 async def logout(response: Response):
@@ -218,7 +220,7 @@ async def logout(response: Response):
         "key": "access_token",
         "path": "/",
         "secure": True,
-        "samesite": 'none',
+        "samesite": "none",
     }
 
     # Only set domain if we got one from LAGOON_ROUTES
@@ -229,15 +231,17 @@ async def logout(response: Response):
     response.delete_cookie(**delete_settings)
     return {"message": "Successfully logged out"}
 
+
 @router.get("/me", response_model=User)
 async def read_users_me(current_user: DBUser = Depends(get_current_user_from_auth)):
     return current_user
+
 
 @router.put("/me/update", response_model=User)
 async def update_user_me(
     user_update: UserUpdate,
     current_user: DBUser = Depends(get_current_user_from_auth),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Update the current user's profile.
@@ -247,10 +251,11 @@ async def update_user_me(
     """
     # Always verify current password if provided
     if user_update.current_password is not None:
-        if not verify_password(user_update.current_password, current_user.hashed_password):
+        if not verify_password(
+            user_update.current_password, current_user.hashed_password
+        ):
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Incorrect password"
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Incorrect password"
             )
 
     # Handle password update
@@ -258,7 +263,7 @@ async def update_user_me(
         if user_update.current_password is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Current password is required to update password"
+                detail="Current password is required to update password",
             )
         current_user.hashed_password = get_password_hash(user_update.new_password)
 
@@ -267,14 +272,14 @@ async def update_user_me(
         if user_update.current_password is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Current password is required to update email"
+                detail="Current password is required to update email",
             )
         # Check if email is already taken
         existing_user = get_user_by_email(db, user_update.email)
         if existing_user and existing_user.id != current_user.id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
+                detail="Email already registered",
             )
         current_user.email = user_update.email
 
@@ -282,12 +287,9 @@ async def update_user_me(
     db.refresh(current_user)
     return current_user
 
+
 @router.post("/register", response_model=User)
-async def register(
-    request: Request,
-    user: UserCreate,
-    db: Session = Depends(get_db)
-):
+async def register(request: Request, user: UserCreate, db: Session = Depends(get_db)):
     """
     Register a new user account.
 
@@ -302,20 +304,20 @@ async def register(
     if db_user:
         auth_logger.warning(f"Registration failed - email already exists: {user.email}")
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered"
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
         )
 
     db_user = _create_user_in_db(user, db)
     auth_logger.info(f"Successfully registered new user: {user.email}")
     return db_user
 
+
 @router.post("/sign-in", response_model=Token)
 async def sign_in(
     request: Request,
     response: Response,
     sign_in_data: Optional[SignInData] = Depends(get_sign_in_data),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Sign in using a verification code instead of a password.
@@ -340,7 +342,7 @@ async def sign_in(
         auth_logger.warning("Sign-in attempt with invalid data format")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid sign in data. Please provide username and verification code in either form data or JSON format."
+            detail="Invalid sign in data. Please provide username and verification code in either form data or JSON format.",
         )
 
     auth_logger.info(f"Sign-in attempt for user: {sign_in_data.username}")
@@ -348,11 +350,16 @@ async def sign_in(
     dynamodb_service = DynamoDBService()
     stored_code = dynamodb_service.read_validation_code(sign_in_data.username)
 
-    if not stored_code or stored_code.get('code').upper() != sign_in_data.verification_code.upper():
-        auth_logger.warning(f"Invalid verification code for user: {sign_in_data.username}")
+    if (
+        not stored_code
+        or stored_code.get("code").upper() != sign_in_data.verification_code.upper()
+    ):
+        auth_logger.warning(
+            f"Invalid verification code for user: {sign_in_data.username}"
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or verification code"
+            detail="Incorrect email or verification code",
         )
 
     # Get user from database after verifying the code
@@ -366,7 +373,7 @@ async def sign_in(
             name=f"Team {sign_in_data.username}",
             admin_email=sign_in_data.username,
             phone="",  # Required by schema but not used for auto-created teams
-            billing_address=""  # Required by schema but not used for auto-created teams
+            billing_address="",  # Required by schema but not used for auto-created teams
         )
         team = await register_team(team_data, db)
 
@@ -374,14 +381,17 @@ async def sign_in(
             email=sign_in_data.username,
             password=None,
             team_id=team.id,
-            role=UserRole.ADMIN
+            role=UserRole.ADMIN,
         )
         user = _create_user_in_db(user_data, db)
 
-        auth_logger.info(f"Successfully created new user and team for: {sign_in_data.username}")
+        auth_logger.info(
+            f"Successfully created new user and team for: {sign_in_data.username}"
+        )
 
     auth_logger.info(f"Successful sign-in for user: {sign_in_data.username}")
     return create_and_set_access_token(response, user.email, user)
+
 
 def generate_validation_token(email: str) -> str:
     """
@@ -397,13 +407,16 @@ def generate_validation_token(email: str) -> str:
     email = email.lower()
 
     # Generate an 8-character alphanumeric code in uppercase
-    code = ''.join(secrets.choice('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') for _ in range(8))
+    code = "".join(
+        secrets.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(8)
+    )
 
     # Store the code in DynamoDB
     dynamodb_service = DynamoDBService()
     dynamodb_service.write_validation_code(email, code)
 
     return code
+
 
 def send_validation_code(email: str, db: Session) -> None:
     """
@@ -424,35 +437,34 @@ def send_validation_code(email: str, db: Session) -> None:
 
     # Determine if user exists to choose appropriate template
     user = get_user_by_email(db, email)
-    email_template = 'returning-user-code' if user else 'new-user-code'
+    email_template = "returning-user-code" if user else "new-user-code"
 
-    auth_logger.info(f"Sending validation code to {'existing' if user else 'new'} user: {email}")
+    auth_logger.info(
+        f"Sending validation code to {'existing' if user else 'new'} user: {email}"
+    )
 
     # Send the validation code via email
     ses_service = SESService()
     email_sent = ses_service.send_email(
-        to_addresses=[email],
-        template_name=email_template,
-        template_data={
-            'code': code
-        }
+        to_addresses=[email], template_name=email_template, template_data={"code": code}
     )
 
     if not email_sent:
         auth_logger.error(f"Failed to send validation code email to {email}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send validation code email"
+            detail="Failed to send validation code email",
         )
 
     auth_logger.info(f"Successfully sent validation code to: {email}")
+
 
 @router.post("/validate-email")
 async def validate_email(
     request: Request,
     email_data: Optional[EmailValidation] = None,
     email: Optional[str] = Form(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Validate an email address and generate a validation code.
@@ -481,8 +493,7 @@ async def validate_email(
     if not email:
         auth_logger.warning("Email validation attempt with no email provided")
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email is required"
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Email is required"
         )
 
     # Ensure email is lowercased for consistency
@@ -494,24 +505,23 @@ async def validate_email(
     except email_validator.EmailNotValidError as e:
         auth_logger.warning(f"Invalid email format for {email}: {e}")
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid email format: {e}"
+            status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid email format: {e}"
         )
 
     send_validation_code(email, db)
-    return {
-        "message": "Validation code has been generated and sent"
-    }
+    return {"message": "Validation code has been generated and sent"}
+
 
 # API Token routes (as apposed to AI Token routes)
 def generate_api_token() -> str:
     return secrets.token_urlsafe(32)
 
+
 @router.post("/token", response_model=APIToken)
 async def create_token(
     token_create: APITokenCreate,
-    current_user = Depends(get_current_user_from_auth),
-    db: Session = Depends(get_db)
+    current_user=Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db),
 ):
     """
     Create an API token.
@@ -525,15 +535,14 @@ async def create_token(
         if not current_user.is_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to perform this action"
+                detail="Not authorized to perform this action",
             )
 
         # Verify the target user exists
         target_user = db.query(DBUser).filter(DBUser.id == token_create.user_id).first()
         if not target_user:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
+                status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
             )
 
         user_id = token_create.user_id
@@ -542,20 +551,19 @@ async def create_token(
         user_id = current_user.id
 
     db_token = DBAPIToken(
-        name=token_create.name,
-        token=generate_api_token(),
-        user_id=user_id
+        name=token_create.name, token=generate_api_token(), user_id=user_id
     )
     db.add(db_token)
     db.commit()
     db.refresh(db_token)
     return db_token
 
+
 @router.get("/token", response_model=List[APITokenResponse])
 async def list_tokens(
     user_id: Optional[int] = None,
-    current_user = Depends(get_current_user_from_auth),
-    db: Session = Depends(get_db)
+    current_user=Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db),
 ):
     """
     List API tokens.
@@ -569,15 +577,14 @@ async def list_tokens(
         if not current_user.is_admin:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to perform this action"
+                detail="Not authorized to perform this action",
             )
 
         # Verify the target user exists
         target_user = db.query(DBUser).filter(DBUser.id == user_id).first()
         if not target_user:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
+                status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
             )
 
         # Return tokens for the specified user
@@ -586,29 +593,32 @@ async def list_tokens(
         # List tokens for the current user
         return current_user.api_tokens
 
+
 @router.delete("/token/{token_id}")
 async def delete_token(
     token_id: int,
-    current_user = Depends(get_current_user_from_auth),
-    db: Session = Depends(get_db)
+    current_user=Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db),
 ):
     """Delete an API token"""
-    token = db.query(DBAPIToken).filter(
-        DBAPIToken.id == token_id,
-        DBAPIToken.user_id == current_user.id
-    ).first()
+    token = (
+        db.query(DBAPIToken)
+        .filter(DBAPIToken.id == token_id, DBAPIToken.user_id == current_user.id)
+        .first()
+    )
     if not token:
         raise HTTPException(status_code=404, detail="Token not found")
     db.delete(token)
     db.commit()
     return {"message": "Token deleted successfully"}
 
+
 @router.get("/validate-jwt", response_model=Token)
 async def validate_jwt(
     request: Request,
     response: Response,
     token: Optional[str] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Validate a JWT token and either refresh it or send a new validation URL.
@@ -637,9 +647,7 @@ async def validate_jwt(
     try:
         # Try to validate the token
         payload = jwt.decode(
-            token,
-            settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM]
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
         )
         email: str = payload.get("sub")
         user = get_user_by_email(db, email)
@@ -659,7 +667,7 @@ async def validate_jwt(
                     token,
                     settings.SECRET_KEY,
                     algorithms=[settings.ALGORITHM],
-                    options={"verify_exp": False}
+                    options={"verify_exp": False},
                 )
                 email = payload.get("sub")
 
@@ -669,13 +677,14 @@ async def validate_jwt(
                 send_validation_url(email)
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Token expired. A new validation URL has been sent to your email."
+                    detail="Token expired. A new validation URL has been sent to your email.",
                 )
 
             except JWTError:
                 raise credentials_exception
         else:
             raise credentials_exception
+
 
 def send_validation_url(email: str) -> None:
     """
@@ -699,20 +708,19 @@ def send_validation_url(email: str) -> None:
     ses_service = SESService()
     email_sent = ses_service.send_email(
         to_addresses=[email],
-        template_name='returning-user-url',
-        template_data={
-            'validation_url': validation_url
-        }
+        template_name="returning-user-url",
+        template_data={"validation_url": validation_url},
     )
 
     if not email_sent:
         auth_logger.error(f"Failed to send validation URL email to {email}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send validation URL email"
+            detail="Failed to send validation URL email",
         )
 
     auth_logger.info(f"Successfully sent validation URL to: {email}")
+
 
 @router.post("/generate-trial-access", response_model=TrialAccessResponse)
 async def generate_trial_access(
@@ -729,22 +737,29 @@ async def generate_trial_access(
     along with user and team information.
     """
     # Get default region by name and ensure it is active
-    region = db.query(DBRegion).filter(DBRegion.name == settings.AI_TRIAL_REGION, DBRegion.is_active).first()
+    region = (
+        db.query(DBRegion)
+        .filter(DBRegion.name == settings.AI_TRIAL_REGION, DBRegion.is_active)
+        .first()
+    )
 
     # Try region ID if region name is not found
     if not region:
-        region = db.query(DBRegion).filter(DBRegion.id == settings.AI_TRIAL_REGION, DBRegion.is_active).first()
+        region = (
+            db.query(DBRegion)
+            .filter(DBRegion.id == settings.AI_TRIAL_REGION, DBRegion.is_active)
+            .first()
+        )
 
     # If no region is found, raise an error
     if not region:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No region available for trial access: {settings.AI_TRIAL_REGION}"
+            detail=f"No region available for trial access: {settings.AI_TRIAL_REGION}",
         )
 
     litellm_service = LiteLLMService(
-        api_url=region.litellm_api_url,
-        api_key=region.litellm_api_key
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
 
     user = None
@@ -756,18 +771,28 @@ async def generate_trial_access(
 
     try:
         # Find the AI trial team
-        team = db.query(DBTeam).filter(func.lower(DBTeam.admin_email) == settings.AI_TRIAL_TEAM_EMAIL.lower(), DBTeam.is_active).first()
+        team = (
+            db.query(DBTeam)
+            .filter(
+                func.lower(DBTeam.admin_email) == settings.AI_TRIAL_TEAM_EMAIL.lower(),
+                DBTeam.is_active,
+            )
+            .first()
+        )
 
         # Find the admin user of the team
         if team:
-            admin_user = db.query(DBUser).filter(
-                DBUser.team_id == team.id,
-                DBUser.role == UserRole.ADMIN
-            ).first()
+            admin_user = (
+                db.query(DBUser)
+                .filter(DBUser.team_id == team.id, DBUser.role == UserRole.ADMIN)
+                .first()
+            )
 
         # If the trial team is not found, create it
         if not team:
-            auth_logger.info(f"Creating new trial team for: {settings.AI_TRIAL_TEAM_EMAIL}")
+            auth_logger.info(
+                f"Creating new trial team for: {settings.AI_TRIAL_TEAM_EMAIL}"
+            )
             team_data = TeamCreate(
                 name=f"AI Trial Team {settings.AI_TRIAL_TEAM_EMAIL}",
                 admin_email=settings.AI_TRIAL_TEAM_EMAIL,
@@ -775,7 +800,7 @@ async def generate_trial_access(
                 billing_address="",
                 set_by_context=set_by_context,
                 region_id=region.id,
-                is_active=True
+                is_active=True,
             )
             team = await register_team(team_data, db)
             # Ensure team has limit set
@@ -788,7 +813,7 @@ async def generate_trial_access(
                 max_value=trial_max_budget,
                 current_value=None,
                 limited_by=LimitSource.MANUAL,
-                set_by=set_by_context
+                set_by=set_by_context,
             )
             LimitedResource.model_validate(team_limit)
             # Ensure team has an admin user
@@ -826,12 +851,14 @@ async def generate_trial_access(
             max_value=trial_max_budget,
             current_value=None,
             limited_by=LimitSource.MANUAL,
-            set_by=set_by_context
+            set_by=set_by_context,
         )
         LimitedResource.model_validate(user_limit)
 
         # Create private AI key name with a timestamp
-        key_name = f"Trial Key for {user.email} {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        key_name = (
+            f"Trial Key for {user.email} {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
 
         # Create private AI key using the same logic as /private-ai-keys endpoint
         private_ai_key_create = PrivateAIKeyCreate(
@@ -848,7 +875,7 @@ async def generate_trial_access(
             current_user=admin_user,
             user_role=UserRole.ADMIN,
             db=db,
-            limit_service=limit_service
+            limit_service=limit_service,
         )
 
         # Get the Auth Bearer Token
@@ -860,7 +887,7 @@ async def generate_trial_access(
             user=user,
             token=token,
             team_id=team.id,
-            team_name=team.name
+            team_name=team.name,
         )
 
     except Exception as e:
@@ -875,5 +902,5 @@ async def generate_trial_access(
 
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create anonymous trial account."
+            detail="Failed to create anonymous trial account.",
         )

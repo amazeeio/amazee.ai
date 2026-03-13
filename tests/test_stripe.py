@@ -13,13 +13,12 @@ When: Creating subscriptions for free products
 Then: Validate business rules and handle various scenarios
 """
 
-@patch('app.services.stripe.stripe.Price.list')
-@patch('app.services.stripe.stripe.Price.retrieve')
-@patch('app.services.stripe.stripe.Subscription.create')
+
+@patch("app.services.stripe.stripe.Price.list")
+@patch("app.services.stripe.stripe.Price.retrieve")
+@patch("app.services.stripe.stripe.Subscription.create")
 def test_create_stripe_subscription_success_no_price_id(
-    mock_subscription_create,
-    mock_price_retrieve,
-    mock_price_list
+    mock_subscription_create, mock_price_retrieve, mock_price_list
 ):
     """
     Given: A customer and product with a single free price
@@ -32,9 +31,7 @@ def test_create_stripe_subscription_success_no_price_id(
 
     # Mock price list response
     mock_response = MagicMock()
-    mock_response.data = [
-        MagicMock(id="price_123456789")
-    ]
+    mock_response.data = [MagicMock(id="price_123456789")]
     mock_price_list.return_value = mock_response
 
     # Mock price retrieve response
@@ -59,14 +56,14 @@ def test_create_stripe_subscription_success_no_price_id(
         customer=customer_id,
         items=[{"price": "price_123456789"}],
         payment_behavior="allow_incomplete",
-        expand=["latest_invoice"]
+        expand=["latest_invoice"],
     )
 
-@patch('app.services.stripe.stripe.Price.retrieve')
-@patch('app.services.stripe.stripe.Subscription.create')
+
+@patch("app.services.stripe.stripe.Price.retrieve")
+@patch("app.services.stripe.stripe.Subscription.create")
 def test_create_stripe_subscription_success_with_price_id(
-    mock_subscription_create,
-    mock_price_retrieve
+    mock_subscription_create, mock_price_retrieve
 ):
     """
     Given: A customer, product, and specific price_id for a free product
@@ -90,7 +87,9 @@ def test_create_stripe_subscription_success_with_price_id(
     mock_subscription_create.return_value = mock_subscription
 
     # Act
-    result = asyncio.run(create_zero_rated_stripe_subscription(customer_id, product_id, price_id))
+    result = asyncio.run(
+        create_zero_rated_stripe_subscription(customer_id, product_id, price_id)
+    )
 
     # Assert
     assert result == "sub_987654321"
@@ -99,10 +98,11 @@ def test_create_stripe_subscription_success_with_price_id(
         customer=customer_id,
         items=[{"price": price_id}],
         payment_behavior="allow_incomplete",
-        expand=["latest_invoice"]
+        expand=["latest_invoice"],
     )
 
-@patch('app.services.stripe.stripe.Price.list')
+
+@patch("app.services.stripe.stripe.Price.list")
 def test_create_stripe_subscription_no_active_prices(mock_price_list):
     """
     Given: A product with no active prices
@@ -125,7 +125,8 @@ def test_create_stripe_subscription_no_active_prices(mock_price_list):
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == f"No active prices found for product {product_id}"
 
-@patch('app.services.stripe.stripe.Price.list')
+
+@patch("app.services.stripe.stripe.Price.list")
 def test_create_stripe_subscription_multiple_prices(mock_price_list):
     """
     Given: A product with multiple active prices
@@ -138,10 +139,7 @@ def test_create_stripe_subscription_multiple_prices(mock_price_list):
 
     # Mock multiple prices response
     mock_response = MagicMock()
-    mock_response.data = [
-        MagicMock(id="price_1"),
-        MagicMock(id="price_2")
-    ]
+    mock_response.data = [MagicMock(id="price_1"), MagicMock(id="price_2")]
     mock_price_list.return_value = mock_response
 
     # Act & Assert
@@ -149,11 +147,17 @@ def test_create_stripe_subscription_multiple_prices(mock_price_list):
         asyncio.run(create_zero_rated_stripe_subscription(customer_id, product_id))
 
     assert exc_info.value.status_code == 400
-    assert exc_info.value.detail == f"Multiple prices found for product {product_id}. Free products should have only one price."
+    assert (
+        exc_info.value.detail
+        == f"Multiple prices found for product {product_id}. Free products should have only one price."
+    )
 
-@patch('app.services.stripe.stripe.Price.list')
-@patch('app.services.stripe.stripe.Price.retrieve')
-def test_create_stripe_subscription_non_free_product(mock_price_retrieve, mock_price_list):
+
+@patch("app.services.stripe.stripe.Price.list")
+@patch("app.services.stripe.stripe.Price.retrieve")
+def test_create_stripe_subscription_non_free_product(
+    mock_price_retrieve, mock_price_list
+):
     """
     Given: A product with a non-zero price
     When: Creating a subscription
@@ -165,9 +169,7 @@ def test_create_stripe_subscription_non_free_product(mock_price_retrieve, mock_p
 
     # Mock price list response
     mock_response = MagicMock()
-    mock_response.data = [
-        MagicMock(id="price_123456789")
-    ]
+    mock_response.data = [MagicMock(id="price_123456789")]
     mock_price_list.return_value = mock_response
 
     # Mock price retrieve response with non-zero amount
@@ -181,9 +183,13 @@ def test_create_stripe_subscription_non_free_product(mock_price_retrieve, mock_p
         asyncio.run(create_zero_rated_stripe_subscription(customer_id, product_id))
 
     assert exc_info.value.status_code == 400
-    assert exc_info.value.detail == f"Product {product_id} is not free. Price amount: 1000 usd"
+    assert (
+        exc_info.value.detail
+        == f"Product {product_id} is not free. Price amount: 1000 usd"
+    )
 
-@patch('app.services.stripe.stripe.Price.retrieve')
+
+@patch("app.services.stripe.stripe.Price.retrieve")
 def test_create_stripe_subscription_with_price_id_non_free(mock_price_retrieve):
     """
     Given: A specific price_id with non-zero amount
@@ -203,18 +209,22 @@ def test_create_stripe_subscription_with_price_id_non_free(mock_price_retrieve):
 
     # Act & Assert
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(create_zero_rated_stripe_subscription(customer_id, product_id, price_id))
+        asyncio.run(
+            create_zero_rated_stripe_subscription(customer_id, product_id, price_id)
+        )
 
     assert exc_info.value.status_code == 400
-    assert exc_info.value.detail == f"Product {product_id} is not free. Price amount: 2000 usd"
+    assert (
+        exc_info.value.detail
+        == f"Product {product_id} is not free. Price amount: 2000 usd"
+    )
 
-@patch('app.services.stripe.stripe.Price.list')
-@patch('app.services.stripe.stripe.Price.retrieve')
-@patch('app.services.stripe.stripe.Subscription.create')
+
+@patch("app.services.stripe.stripe.Price.list")
+@patch("app.services.stripe.stripe.Price.retrieve")
+@patch("app.services.stripe.stripe.Subscription.create")
 def test_create_stripe_subscription_stripe_error(
-    mock_subscription_create,
-    mock_price_retrieve,
-    mock_price_list
+    mock_subscription_create, mock_price_retrieve, mock_price_list
 ):
     """
     Given: Valid free product but Stripe API error during subscription creation
@@ -227,9 +237,7 @@ def test_create_stripe_subscription_stripe_error(
 
     # Mock price list response
     mock_response = MagicMock()
-    mock_response.data = [
-        MagicMock(id="price_123456789")
-    ]
+    mock_response.data = [MagicMock(id="price_123456789")]
     mock_price_list.return_value = mock_response
 
     # Mock price retrieve response
@@ -239,7 +247,9 @@ def test_create_stripe_subscription_stripe_error(
     mock_price_retrieve.return_value = mock_price
 
     # Mock Stripe error
-    mock_subscription_create.side_effect = stripe.error.StripeError("Customer not found")
+    mock_subscription_create.side_effect = stripe.error.StripeError(
+        "Customer not found"
+    )
 
     # Act & Assert
     with pytest.raises(HTTPException) as exc_info:
@@ -248,13 +258,12 @@ def test_create_stripe_subscription_stripe_error(
     assert exc_info.value.status_code == 400
     assert "Error creating subscription: Customer not found" in exc_info.value.detail
 
-@patch('app.services.stripe.stripe.Price.list')
-@patch('app.services.stripe.stripe.Price.retrieve')
-@patch('app.services.stripe.stripe.Subscription.create')
+
+@patch("app.services.stripe.stripe.Price.list")
+@patch("app.services.stripe.stripe.Price.retrieve")
+@patch("app.services.stripe.stripe.Subscription.create")
 def test_create_stripe_subscription_general_exception(
-    mock_subscription_create,
-    mock_price_retrieve,
-    mock_price_list
+    mock_subscription_create, mock_price_retrieve, mock_price_list
 ):
     """
     Given: Valid free product but unexpected error during subscription creation
@@ -267,9 +276,7 @@ def test_create_stripe_subscription_general_exception(
 
     # Mock price list response
     mock_response = MagicMock()
-    mock_response.data = [
-        MagicMock(id="price_123456789")
-    ]
+    mock_response.data = [MagicMock(id="price_123456789")]
     mock_price_list.return_value = mock_response
 
     # Mock price retrieve response
@@ -288,7 +295,8 @@ def test_create_stripe_subscription_general_exception(
     assert exc_info.value.status_code == 500
     assert exc_info.value.detail == "Error creating subscription"
 
-@patch('app.services.stripe.stripe.Price.retrieve')
+
+@patch("app.services.stripe.stripe.Price.retrieve")
 def test_create_stripe_subscription_price_retrieve_error(mock_price_retrieve):
     """
     Given: A price_id that cannot be retrieved
@@ -305,7 +313,9 @@ def test_create_stripe_subscription_price_retrieve_error(mock_price_retrieve):
 
     # Act & Assert
     with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(create_zero_rated_stripe_subscription(customer_id, product_id, price_id))
+        asyncio.run(
+            create_zero_rated_stripe_subscription(customer_id, product_id, price_id)
+        )
 
     assert exc_info.value.status_code == 400
     assert "Error creating subscription: Price not found" in exc_info.value.detail

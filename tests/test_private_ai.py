@@ -9,8 +9,16 @@ from app.core.limit_service import (
     DEFAULT_RPM_PER_KEY,
 )
 
+
 @patch("httpx.AsyncClient")
-def test_create_private_ai_key(mock_client_class, client, test_token, test_region, test_user, mock_httpx_post_client):
+def test_create_private_ai_key(
+    mock_client_class,
+    client,
+    test_token,
+    test_region,
+    test_user,
+    mock_httpx_post_client,
+):
     """Test creating a private AI key in a specific region"""
     # Use the httpx POST client fixture
     mock_client_class.return_value = mock_httpx_post_client
@@ -18,10 +26,7 @@ def test_create_private_ai_key(mock_client_class, client, test_token, test_regio
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {test_token}"},
-        json={
-            "region_id": test_region.id,
-            "name": "Test AI Key"
-        }
+        json={"region_id": test_region.id, "name": "Test AI Key"},
     )
 
     assert response.status_code == 200
@@ -32,19 +37,18 @@ def test_create_private_ai_key(mock_client_class, client, test_token, test_regio
     assert data["owner_id"] == test_user.id
     assert data["id"] != -1
 
+
 def test_create_private_ai_key_invalid_region(client, test_token):
     """Test creating a private AI key with an invalid region ID"""
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {test_token}"},
-        json={
-            "region_id": 99999,
-            "name": "Test Invalid Region Key"
-        }
+        json={"region_id": 99999, "name": "Test Invalid Region Key"},
     )
 
     assert response.status_code == 404
     assert "Region not found or inactive" in response.json()["detail"]
+
 
 def test_list_private_ai_keys(client, test_token, test_region, db, test_user):
     """Test listing private AI keys with region information"""
@@ -56,14 +60,13 @@ def test_list_private_ai_keys(client, test_token, test_region, db, test_user):
         database_password="test-pass",
         litellm_token="test-token",
         owner_id=test_user.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(test_key)
     db.commit()
 
     response = client.get(
-        "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {test_token}"}
+        "/private-ai-keys/", headers={"Authorization": f"Bearer {test_token}"}
     )
 
     assert response.status_code == 200
@@ -75,8 +78,17 @@ def test_list_private_ai_keys(client, test_token, test_region, db, test_user):
     assert data[0]["region_label"] == test_region.label
     assert data[0]["owner_id"] == test_user.id
 
+
 @patch("httpx.AsyncClient")
-def test_delete_private_ai_key(mock_client_class, client, test_token, test_region, db, test_user, mock_httpx_post_client):
+def test_delete_private_ai_key(
+    mock_client_class,
+    client,
+    test_token,
+    test_region,
+    db,
+    test_user,
+    mock_httpx_post_client,
+):
     """Test deleting a private AI key"""
     # Refresh the test_region to ensure it's attached to the session
     db.refresh(test_region)
@@ -95,7 +107,7 @@ def test_delete_private_ai_key(mock_client_class, client, test_token, test_regio
         litellm_token="test-token-delete",
         litellm_api_url="https://test-litellm.com",
         owner_id=test_user.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(test_key)
     db.commit()
@@ -108,8 +120,7 @@ def test_delete_private_ai_key(mock_client_class, client, test_token, test_regio
 
     # Delete the private AI key
     response = client.delete(
-        f"/private-ai-keys/{key_id}",
-        headers={"Authorization": f"Bearer {test_token}"}
+        f"/private-ai-keys/{key_id}", headers={"Authorization": f"Bearer {test_token}"}
     )
 
     # Verify the response
@@ -120,15 +131,24 @@ def test_delete_private_ai_key(mock_client_class, client, test_token, test_regio
     mock_httpx_post_client.post.assert_called_once_with(
         f"{region_api_url}/key/delete",
         headers={"Authorization": f"Bearer {region_api_key}"},
-        json={"keys": [test_key.litellm_token]}
+        json={"keys": [test_key.litellm_token]},
     )
 
     # Verify the key was removed from the database
     deleted_key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
     assert deleted_key is None
 
+
 @patch("httpx.AsyncClient")
-def test_list_private_ai_keys_as_team_admin(mock_client_class, client, team_admin_token, test_team_user, test_region, db, mock_httpx_post_client):
+def test_list_private_ai_keys_as_team_admin(
+    mock_client_class,
+    client,
+    team_admin_token,
+    test_team_user,
+    test_region,
+    db,
+    mock_httpx_post_client,
+):
     """Test that a team admin can list all AI keys associated with users in their team"""
     # Use the httpx POST client fixture
     mock_client_class.return_value = mock_httpx_post_client
@@ -136,28 +156,24 @@ def test_list_private_ai_keys_as_team_admin(mock_client_class, client, team_admi
     # First, get a token for the team user
     response = client.post(
         "/auth/login",
-        data={"username": test_team_user.email, "password": "password123"}
+        data={"username": test_team_user.email, "password": "password123"},
     )
     team_user_token = response.json()["access_token"]
 
     # Create a private AI key as the team user
-    key_data = {
-        "name": "team-user-key",
-        "region_id": test_region.id
-    }
+    key_data = {"name": "team-user-key", "region_id": test_region.id}
 
     # Create key as team user
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {team_user_token}"},
-        json=key_data
+        json=key_data,
     )
     assert response.status_code == 200
 
     # List all keys as team admin
     response = client.get(
-        "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {team_admin_token}"}
+        "/private-ai-keys/", headers={"Authorization": f"Bearer {team_admin_token}"}
     )
     assert response.status_code == 200
     data = response.json()
@@ -167,8 +183,16 @@ def test_list_private_ai_keys_as_team_admin(mock_client_class, client, team_admi
     assert any(key["name"] == "team-user-key" for key in data)
     assert any(key["owner_id"] == test_team_user.id for key in data)
 
+
 @patch("httpx.AsyncClient")
-def test_create_team_private_ai_key(mock_client_class, client, test_team, team_admin_token, test_region, mock_httpx_post_client):
+def test_create_team_private_ai_key(
+    mock_client_class,
+    client,
+    test_team,
+    team_admin_token,
+    test_region,
+    mock_httpx_post_client,
+):
     """Test creating a private AI key owned by a team"""
     mock_client_class.return_value = mock_httpx_post_client
 
@@ -178,8 +202,8 @@ def test_create_team_private_ai_key(mock_client_class, client, test_team, team_a
         json={
             "region_id": test_region.id,
             "name": "Team AI Key",
-            "team_id": test_team.id
-        }
+            "team_id": test_team.id,
+        },
     )
 
     assert response.status_code == 200
@@ -190,18 +214,18 @@ def test_create_team_private_ai_key(mock_client_class, client, test_team, team_a
     assert data["team_id"] == test_team.id
     assert data["owner_id"] is None
 
+
 @patch("httpx.AsyncClient")
-def test_create_private_ai_key_without_owner_or_team(mock_client_class, client, admin_token, test_region, mock_httpx_post_client):
+def test_create_private_ai_key_without_owner_or_team(
+    mock_client_class, client, admin_token, test_region, mock_httpx_post_client
+):
     """Test that an admin user can create a private AI key without owner_id or team_id, defaulting to themselves as owner"""
     mock_client_class.return_value = mock_httpx_post_client
 
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "region_id": test_region.id,
-            "name": "Test AI Key"
-        }
+        json={"region_id": test_region.id, "name": "Test AI Key"},
     )
 
     assert response.status_code == 200
@@ -215,8 +239,16 @@ def test_create_private_ai_key_without_owner_or_team(mock_client_class, client, 
     # Verify that the LiteLLM API was called
     mock_httpx_post_client.post.assert_called_once()
 
+
 @patch("httpx.AsyncClient")
-def test_create_team_private_ai_key_as_key_creator(mock_client_class, client, team_key_creator_token, test_team_id, test_region, mock_httpx_post_client):
+def test_create_team_private_ai_key_as_key_creator(
+    mock_client_class,
+    client,
+    team_key_creator_token,
+    test_team_id,
+    test_region,
+    mock_httpx_post_client,
+):
     """Test that a team member with key_creator role can create a team key"""
     mock_client_class.return_value = mock_httpx_post_client
 
@@ -227,8 +259,8 @@ def test_create_team_private_ai_key_as_key_creator(mock_client_class, client, te
         json={
             "region_id": test_region.id,
             "name": "Team AI Key",
-            "team_id": test_team_id
-        }
+            "team_id": test_team_id,
+        },
     )
 
     assert response.status_code == 200
@@ -239,8 +271,17 @@ def test_create_team_private_ai_key_as_key_creator(mock_client_class, client, te
     assert data["team_id"] == test_team_id
     assert data["owner_id"] is None
 
+
 @patch("httpx.AsyncClient")
-def test_create_private_ai_key_with_both_owner_and_team(mock_client_class, client, admin_token, test_team, test_team_user, test_region, mock_httpx_post_client):
+def test_create_private_ai_key_with_both_owner_and_team(
+    mock_client_class,
+    client,
+    admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    mock_httpx_post_client,
+):
     """Test that an admin cannot create a key with both owner_id and team_id set"""
     mock_client_class.return_value = mock_httpx_post_client
 
@@ -252,14 +293,18 @@ def test_create_private_ai_key_with_both_owner_and_team(mock_client_class, clien
             "region_id": test_region.id,
             "name": "Invalid Key",
             "owner_id": test_team_user.id,
-            "team_id": test_team.id
-        }
+            "team_id": test_team.id,
+        },
     )
 
     assert response.status_code == 400
-    assert "Either owner_id or team_id must be specified, not both" in response.json()["detail"]
+    assert (
+        "Either owner_id or team_id must be specified, not both"
+        in response.json()["detail"]
+    )
     # Verify that the LiteLLM API was not called
     mock_httpx_post_client.post.assert_not_called()
+
 
 def test_create_private_ai_key_as_read_only(client, team_read_only_token, test_region):
     """Test that a team member with read_only role cannot create a private AI key"""
@@ -268,16 +313,16 @@ def test_create_private_ai_key_as_read_only(client, team_read_only_token, test_r
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {team_read_only_token}"},
-        json={
-            "region_id": test_region.id,
-            "name": "Test AI Key"
-        }
+        json={"region_id": test_region.id, "name": "Test AI Key"},
     )
 
     assert response.status_code == 403
     assert "Not authorized to perform this action" in response.json()["detail"]
 
-def test_create_private_ai_key_for_other_team(client, team_admin_token, test_region, db):
+
+def test_create_private_ai_key_for_other_team(
+    client, team_admin_token, test_region, db
+):
     """Test that a team admin cannot create a private AI key for another team"""
     # Create a second team
     other_team = DBTeam(
@@ -286,7 +331,7 @@ def test_create_private_ai_key_for_other_team(client, team_admin_token, test_reg
         phone="0987654321",
         billing_address="456 Other St, Other City, 54321",
         is_active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(other_team)
     db.commit()
@@ -299,14 +344,17 @@ def test_create_private_ai_key_for_other_team(client, team_admin_token, test_reg
         json={
             "region_id": test_region.id,
             "name": "Other Team Key",
-            "team_id": other_team.id
-        }
+            "team_id": other_team.id,
+        },
     )
 
     assert response.status_code == 403
     assert "Not authorized to perform this action" in response.json()["detail"]
 
-def test_create_private_ai_key_for_user_in_other_team(client, team_admin_token, test_region, db):
+
+def test_create_private_ai_key_for_user_in_other_team(
+    client, team_admin_token, test_region, db
+):
     """Test that a team admin cannot create a private AI key for a user in another team"""
     # Create a second team
     other_team = DBTeam(
@@ -315,7 +363,7 @@ def test_create_private_ai_key_for_user_in_other_team(client, team_admin_token, 
         phone="0987654321",
         billing_address="456 Other St, Other City, 54321",
         is_active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(other_team)
     db.commit()
@@ -329,7 +377,7 @@ def test_create_private_ai_key_for_user_in_other_team(client, team_admin_token, 
         is_admin=False,
         role="user",
         team_id=other_team.id,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(other_team_user)
     db.commit()
@@ -342,12 +390,13 @@ def test_create_private_ai_key_for_user_in_other_team(client, team_admin_token, 
         json={
             "region_id": test_region.id,
             "name": "Other Team User Key",
-            "owner_id": other_team_user.id
-        }
+            "owner_id": other_team_user.id,
+        },
     )
 
     assert response.status_code == 404
     assert "Owner user not found" in response.json()["detail"]
+
 
 def test_create_private_ai_key_for_nonexistent_team(client, admin_token, test_region):
     """Test that a system admin cannot create a private AI key for a non-existent team"""
@@ -359,15 +408,25 @@ def test_create_private_ai_key_for_nonexistent_team(client, admin_token, test_re
         json={
             "region_id": test_region.id,
             "name": "Non-existent Team Key",
-            "team_id": 99999  # Use a non-existent team ID
-        }
+            "team_id": 99999,  # Use a non-existent team ID
+        },
     )
 
     assert response.status_code == 404
     assert "Team not found" in response.json()["detail"]
 
+
 @patch("httpx.AsyncClient")
-def test_list_private_ai_keys_as_team_admin_includes_team_and_user_keys(mock_client_class, client, team_admin_token, test_team_user, test_team, test_region, db, mock_httpx_post_client):
+def test_list_private_ai_keys_as_team_admin_includes_team_and_user_keys(
+    mock_client_class,
+    client,
+    team_admin_token,
+    test_team_user,
+    test_team,
+    test_region,
+    db,
+    mock_httpx_post_client,
+):
     """Test that a team admin can list both team keys and keys owned by users in their team"""
     # Use the httpx POST client fixture
     mock_client_class.return_value = mock_httpx_post_client
@@ -375,21 +434,18 @@ def test_list_private_ai_keys_as_team_admin_includes_team_and_user_keys(mock_cli
     # First, get a token for the team user
     response = client.post(
         "/auth/login",
-        data={"username": test_team_user.email, "password": "password123"}
+        data={"username": test_team_user.email, "password": "password123"},
     )
     team_user_token = response.json()["access_token"]
 
     # Create a private AI key as the team user
-    user_key_data = {
-        "name": "team-user-key",
-        "region_id": test_region.id
-    }
+    user_key_data = {"name": "team-user-key", "region_id": test_region.id}
 
     # Create key as team user
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {team_user_token}"},
-        json=user_key_data
+        json=user_key_data,
     )
     assert response.status_code == 200
 
@@ -397,31 +453,46 @@ def test_list_private_ai_keys_as_team_admin_includes_team_and_user_keys(mock_cli
     team_key_data = {
         "name": "team-owned-key",
         "region_id": test_region.id,
-        "team_id": test_team.id
+        "team_id": test_team.id,
     }
 
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {team_admin_token}"},
-        json=team_key_data
+        json=team_key_data,
     )
     assert response.status_code == 200
 
     # List all keys as team admin
     response = client.get(
-        "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {team_admin_token}"}
+        "/private-ai-keys/", headers={"Authorization": f"Bearer {team_admin_token}"}
     )
     assert response.status_code == 200
     data = response.json()
 
     # Verify that both the team user's key and team key are in the response
     assert len(data) == 2
-    assert any(key["name"] == "team-user-key" and key["owner_id"] == test_team_user.id for key in data)
-    assert any(key["name"] == "team-owned-key" and key["team_id"] == test_team.id for key in data)
+    assert any(
+        key["name"] == "team-user-key" and key["owner_id"] == test_team_user.id
+        for key in data
+    )
+    assert any(
+        key["name"] == "team-owned-key" and key["team_id"] == test_team.id
+        for key in data
+    )
+
 
 @patch("httpx.AsyncClient")
-def test_list_private_ai_keys_as_read_only_user(mock_client_class, client, team_admin_token, team_read_only_token, test_region, test_team_read_only, db, mock_httpx_post_client):
+def test_list_private_ai_keys_as_read_only_user(
+    mock_client_class,
+    client,
+    team_admin_token,
+    team_read_only_token,
+    test_region,
+    test_team_read_only,
+    db,
+    mock_httpx_post_client,
+):
     """Test that a user with read_only access can see their own AI keys"""
     # Use the httpx POST client fixture
     mock_client_class.return_value = mock_httpx_post_client
@@ -430,21 +501,20 @@ def test_list_private_ai_keys_as_read_only_user(mock_client_class, client, team_
     key_data = {
         "name": "read-only-user-key",
         "region_id": test_region.id,
-        "owner_id": test_team_read_only.id  # Create key for the read_only user
+        "owner_id": test_team_read_only.id,  # Create key for the read_only user
     }
 
     # Create key as team admin
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {team_admin_token}"},
-        json=key_data
+        json=key_data,
     )
     assert response.status_code == 200
 
     # List keys as read_only user
     response = client.get(
-        "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {team_read_only_token}"}
+        "/private-ai-keys/", headers={"Authorization": f"Bearer {team_read_only_token}"}
     )
     assert response.status_code == 200
     data = response.json()
@@ -454,8 +524,17 @@ def test_list_private_ai_keys_as_read_only_user(mock_client_class, client, team_
     assert data[0]["name"] == "read-only-user-key"
     assert data[0]["owner_id"] == test_team_read_only.id
 
+
 @patch("httpx.AsyncClient")
-def test_view_spend_as_read_only_user(mock_client_class, client, team_read_only_token, test_region, db, test_team_read_only, mock_httpx_get_client):
+def test_view_spend_as_read_only_user(
+    mock_client_class,
+    client,
+    team_read_only_token,
+    test_region,
+    db,
+    test_team_read_only,
+    mock_httpx_get_client,
+):
     """Test that a read-only user can view spend information for their own key"""
     # Use the httpx GET client fixture
     mock_client_class.return_value = mock_httpx_get_client
@@ -470,7 +549,7 @@ def test_view_spend_as_read_only_user(mock_client_class, client, team_read_only_
         litellm_token="test-token-spend",
         litellm_api_url="https://test-litellm.com",
         owner_id=test_team_read_only.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(test_key)
     db.commit()
@@ -479,7 +558,7 @@ def test_view_spend_as_read_only_user(mock_client_class, client, team_read_only_
     # View spend information as read-only user
     response = client.get(
         f"/private-ai-keys/{test_key.id}/spend",
-        headers={"Authorization": f"Bearer {team_read_only_token}"}
+        headers={"Authorization": f"Bearer {team_read_only_token}"},
     )
 
     # Verify the response
@@ -497,7 +576,10 @@ def test_view_spend_as_read_only_user(mock_client_class, client, team_read_only_
     db.delete(test_key)
     db.commit()
 
-def test_delete_private_ai_key_as_read_only_user(client, team_read_only_token, test_region, db):
+
+def test_delete_private_ai_key_as_read_only_user(
+    client, team_read_only_token, test_region, db
+):
     """Test that a user with read_only role cannot delete a key"""
 
     # Create a test key
@@ -510,7 +592,7 @@ def test_delete_private_ai_key_as_read_only_user(client, team_read_only_token, t
         litellm_token="test-token-read-only",
         litellm_api_url="https://test-litellm.com",
         owner_id=1,  # Any owner ID since we're testing read_only access
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(test_key)
     db.commit()
@@ -518,7 +600,7 @@ def test_delete_private_ai_key_as_read_only_user(client, team_read_only_token, t
     # Try to delete the key as a read_only user
     delete_response = client.delete(
         f"/private-ai-keys/{test_key.id}",
-        headers={"Authorization": f"Bearer {team_read_only_token}"}
+        headers={"Authorization": f"Bearer {team_read_only_token}"},
     )
 
     # Verify the delete response
@@ -529,8 +611,16 @@ def test_delete_private_ai_key_as_read_only_user(client, team_read_only_token, t
     db.delete(test_key)
     db.commit()
 
+
 @patch("httpx.AsyncClient")
-def test_delete_team_private_ai_key(mock_client_class, client, team_admin_token, test_team, test_region, mock_httpx_post_client):
+def test_delete_team_private_ai_key(
+    mock_client_class,
+    client,
+    team_admin_token,
+    test_team,
+    test_region,
+    mock_httpx_post_client,
+):
     """Test that a team admin can delete a team-owned private AI key"""
     # Use the httpx POST client fixture
     mock_client_class.return_value = mock_httpx_post_client
@@ -542,8 +632,8 @@ def test_delete_team_private_ai_key(mock_client_class, client, team_admin_token,
         json={
             "region_id": test_region.id,
             "name": "Team Key to Delete",
-            "team_id": test_team.id
-        }
+            "team_id": test_team.id,
+        },
     )
     assert create_response.status_code == 200
     created_key = create_response.json()
@@ -553,7 +643,7 @@ def test_delete_team_private_ai_key(mock_client_class, client, team_admin_token,
     # Now delete the team-owned key
     delete_response = client.delete(
         f"/private-ai-keys/{created_key['id']}",
-        headers={"Authorization": f"Bearer {team_admin_token}"}
+        headers={"Authorization": f"Bearer {team_admin_token}"},
     )
 
     # Verify the delete response
@@ -564,11 +654,19 @@ def test_delete_team_private_ai_key(mock_client_class, client, team_admin_token,
     mock_httpx_post_client.post.assert_called_with(
         f"{test_region.litellm_api_url}/key/delete",
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
-        json={"keys": [created_key["litellm_token"]]}
+        json={"keys": [created_key["litellm_token"]]},
     )
 
+
 @patch("httpx.AsyncClient")
-def test_delete_private_ai_key_as_system_admin(mock_client_class, client, admin_token, test_team_user, test_region, mock_httpx_post_client):
+def test_delete_private_ai_key_as_system_admin(
+    mock_client_class,
+    client,
+    admin_token,
+    test_team_user,
+    test_region,
+    mock_httpx_post_client,
+):
     """Test that a system admin can delete any private AI key"""
     mock_client_class.return_value = mock_httpx_post_client
 
@@ -580,8 +678,8 @@ def test_delete_private_ai_key_as_system_admin(mock_client_class, client, admin_
         json={
             "region_id": test_region.id,
             "name": "Key to Delete",
-            "owner_id": test_team_user_id
-        }
+            "owner_id": test_team_user_id,
+        },
     )
     assert create_response.status_code == 200
     created_key = create_response.json()
@@ -590,7 +688,7 @@ def test_delete_private_ai_key_as_system_admin(mock_client_class, client, admin_
     # Now delete the key as system admin
     delete_response = client.delete(
         f"/private-ai-keys/{created_key['id']}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     # Verify the delete response
@@ -601,11 +699,20 @@ def test_delete_private_ai_key_as_system_admin(mock_client_class, client, admin_
     mock_httpx_post_client.post.assert_called_with(
         f"{test_region.litellm_api_url}/key/delete",
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
-        json={"keys": [created_key["litellm_token"]]}
+        json={"keys": [created_key["litellm_token"]]},
     )
 
+
 @patch("httpx.AsyncClient")
-def test_delete_private_ai_key_from_other_team(mock_client_class, client, team_admin_token, admin_token, test_region, db, mock_httpx_post_client):
+def test_delete_private_ai_key_from_other_team(
+    mock_client_class,
+    client,
+    team_admin_token,
+    admin_token,
+    test_region,
+    db,
+    mock_httpx_post_client,
+):
     """Test that a team admin cannot delete a key from another team"""
     # Create a second team
     other_team = DBTeam(
@@ -614,7 +721,7 @@ def test_delete_private_ai_key_from_other_team(mock_client_class, client, team_a
         phone="0987654321",
         billing_address="456 Other St, Other City, 54321",
         is_active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(other_team)
     db.commit()
@@ -631,8 +738,8 @@ def test_delete_private_ai_key_from_other_team(mock_client_class, client, team_a
         json={
             "region_id": test_region.id,
             "name": "Other Team Key",
-            "team_id": other_team_id
-        }
+            "team_id": other_team_id,
+        },
     )
     assert create_response.status_code == 200
     created_key = create_response.json()
@@ -642,15 +749,24 @@ def test_delete_private_ai_key_from_other_team(mock_client_class, client, team_a
     # Try to delete the key as team admin
     delete_response = client.delete(
         f"/private-ai-keys/{created_key['id']}",
-        headers={"Authorization": f"Bearer {team_admin_token}"}
+        headers={"Authorization": f"Bearer {team_admin_token}"},
     )
 
     # Verify the delete response
     assert delete_response.status_code == 404
     assert "Private AI Key not found" in delete_response.json()["detail"]
 
+
 @patch("httpx.AsyncClient")
-def test_delete_team_member_key_as_team_admin(mock_client_class, client, team_admin_token, admin_token, test_team_user, test_region, mock_httpx_post_client):
+def test_delete_team_member_key_as_team_admin(
+    mock_client_class,
+    client,
+    team_admin_token,
+    admin_token,
+    test_team_user,
+    test_region,
+    mock_httpx_post_client,
+):
     """Test that a team admin can delete a key belonging to a user in their team"""
     # Use the httpx POST client fixture
     mock_client_class.return_value = mock_httpx_post_client
@@ -663,8 +779,8 @@ def test_delete_team_member_key_as_team_admin(mock_client_class, client, team_ad
         json={
             "region_id": test_region.id,
             "name": "Team Member Key",
-            "owner_id": test_team_user_id
-        }
+            "owner_id": test_team_user_id,
+        },
     )
     assert create_response.status_code == 200
     created_key = create_response.json()
@@ -673,7 +789,7 @@ def test_delete_team_member_key_as_team_admin(mock_client_class, client, team_ad
     # Delete the key as team admin
     delete_response = client.delete(
         f"/private-ai-keys/{created_key['id']}",
-        headers={"Authorization": f"Bearer {team_admin_token}"}
+        headers={"Authorization": f"Bearer {team_admin_token}"},
     )
 
     # Verify the delete response
@@ -684,10 +800,13 @@ def test_delete_team_member_key_as_team_admin(mock_client_class, client, team_ad
     mock_httpx_post_client.post.assert_called_with(
         f"{test_region.litellm_api_url}/key/delete",
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
-        json={"keys": [created_key["litellm_token"]]}
+        json={"keys": [created_key["litellm_token"]]},
     )
 
-def test_delete_private_ai_key_as_default_user_not_owner(client, test_token, test_region, db, test_admin):
+
+def test_delete_private_ai_key_as_default_user_not_owner(
+    client, test_token, test_region, db, test_admin
+):
     """Test that a default user cannot delete a key they don't own"""
 
     # Create a test key owned by the admin user
@@ -700,7 +819,7 @@ def test_delete_private_ai_key_as_default_user_not_owner(client, test_token, tes
         litellm_token="test-token-not-owned",
         litellm_api_url="https://test-litellm.com",
         owner_id=test_admin.id,  # Use the admin's ID as the owner
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(test_key)
     db.commit()
@@ -709,7 +828,7 @@ def test_delete_private_ai_key_as_default_user_not_owner(client, test_token, tes
     # Try to delete the key as a default user
     delete_response = client.delete(
         f"/private-ai-keys/{test_key.id}",
-        headers={"Authorization": f"Bearer {test_token}"}
+        headers={"Authorization": f"Bearer {test_token}"},
     )
 
     # Verify the delete response
@@ -720,8 +839,17 @@ def test_delete_private_ai_key_as_default_user_not_owner(client, test_token, tes
     db.delete(test_key)
     db.commit()
 
+
 @patch("httpx.AsyncClient")
-def test_view_spend_with_extra_fields(mock_client_class, client, team_read_only_token, test_region, db, test_team_read_only, mock_httpx_get_client):
+def test_view_spend_with_extra_fields(
+    mock_client_class,
+    client,
+    team_read_only_token,
+    test_region,
+    db,
+    test_team_read_only,
+    mock_httpx_get_client,
+):
     """Test that the spend endpoint correctly handles extra fields in the LiteLLM response"""
     # Use the httpx GET client fixture
     mock_client_class.return_value = mock_httpx_get_client
@@ -736,7 +864,7 @@ def test_view_spend_with_extra_fields(mock_client_class, client, team_read_only_
         litellm_token="test-token-extra-fields",
         litellm_api_url="https://test-litellm.com",
         owner_id=test_team_read_only.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(test_key)
     db.commit()
@@ -744,7 +872,7 @@ def test_view_spend_with_extra_fields(mock_client_class, client, team_read_only_
     # View spend information as read-only user
     response = client.get(
         f"/private-ai-keys/{test_key.id}/spend",
-        headers={"Authorization": f"Bearer {team_read_only_token}"}
+        headers={"Authorization": f"Bearer {team_read_only_token}"},
     )
 
     # Verify the response
@@ -753,8 +881,13 @@ def test_view_spend_with_extra_fields(mock_client_class, client, team_read_only_
 
     # Verify only the expected fields are present
     expected_fields = {
-        "spend", "expires", "created_at", "updated_at",
-        "max_budget", "budget_duration", "budget_reset_at"
+        "spend",
+        "expires",
+        "created_at",
+        "updated_at",
+        "max_budget",
+        "budget_duration",
+        "budget_reset_at",
     }
     assert set(data.keys()) == expected_fields
 
@@ -771,8 +904,16 @@ def test_view_spend_with_extra_fields(mock_client_class, client, team_read_only_
     db.delete(test_key)
     db.commit()
 
+
 @patch("httpx.AsyncClient")
-def test_view_spend_with_missing_fields(mock_client_class, client, team_read_only_token, test_region, db, test_team_read_only):
+def test_view_spend_with_missing_fields(
+    mock_client_class,
+    client,
+    team_read_only_token,
+    test_region,
+    db,
+    test_team_read_only,
+):
     """Test that the spend endpoint handles missing spend and budget fields correctly"""
     # Create custom mock with missing fields
     mock_response = Mock()
@@ -805,7 +946,7 @@ def test_view_spend_with_missing_fields(mock_client_class, client, team_read_onl
         litellm_token="test-token-missing-fields",
         litellm_api_url="https://test-litellm.com",
         owner_id=test_team_read_only.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(test_key)
     db.commit()
@@ -814,7 +955,7 @@ def test_view_spend_with_missing_fields(mock_client_class, client, team_read_onl
     # View spend information as read-only user
     response = client.get(
         f"/private-ai-keys/{test_key.id}/spend",
-        headers={"Authorization": f"Bearer {team_read_only_token}"}
+        headers={"Authorization": f"Bearer {team_read_only_token}"},
     )
 
     # Verify the response
@@ -823,8 +964,13 @@ def test_view_spend_with_missing_fields(mock_client_class, client, team_read_onl
 
     # Verify all required fields are present
     expected_fields = {
-        "spend", "expires", "created_at", "updated_at",
-        "max_budget", "budget_duration", "budget_reset_at"
+        "spend",
+        "expires",
+        "created_at",
+        "updated_at",
+        "max_budget",
+        "budget_duration",
+        "budget_reset_at",
     }
     assert set(data.keys()) == expected_fields
 
@@ -834,15 +980,28 @@ def test_view_spend_with_missing_fields(mock_client_class, client, team_read_onl
     assert data["created_at"] == "2024-01-01T00:00:00Z"
     assert data["updated_at"] == "2024-01-02T00:00:00Z"
     assert data["max_budget"] is None  # No default value for missing max_budget
-    assert data["budget_duration"] is None  # No default value for missing budget_duration
-    assert data["budget_reset_at"] is None  # No default value for missing budget_reset_at
+    assert (
+        data["budget_duration"] is None
+    )  # No default value for missing budget_duration
+    assert (
+        data["budget_reset_at"] is None
+    )  # No default value for missing budget_reset_at
 
     # Clean up the test key
     db.delete(test_key)
     db.commit()
 
+
 @patch("httpx.AsyncClient")
-def test_update_budget_period_as_key_creator(mock_client_class, client, team_key_creator_token, test_region, db, test_team_key_creator, mock_httpx_post_client):
+def test_update_budget_period_as_key_creator(
+    mock_client_class,
+    client,
+    team_key_creator_token,
+    test_region,
+    db,
+    test_team_key_creator,
+    mock_httpx_post_client,
+):
     """Test that a key_creator cannot update the budget period for a key they own"""
     # Use the httpx POST client fixture (though it shouldn't be called)
     mock_client_class.return_value = mock_httpx_post_client
@@ -857,7 +1016,7 @@ def test_update_budget_period_as_key_creator(mock_client_class, client, team_key
         litellm_token="test-token-key-creator",
         litellm_api_url="https://test-litellm.com",
         owner_id=test_team_key_creator.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(test_key)
     db.commit()
@@ -867,7 +1026,7 @@ def test_update_budget_period_as_key_creator(mock_client_class, client, team_key
     response = client.put(
         f"/private-ai-keys/{test_key.id}/budget-period",
         headers={"Authorization": f"Bearer {team_key_creator_token}"},
-        json={"budget_duration": "monthly"}
+        json={"budget_duration": "monthly"},
     )
 
     # Verify the response
@@ -881,8 +1040,17 @@ def test_update_budget_period_as_key_creator(mock_client_class, client, team_key
     db.delete(test_key)
     db.commit()
 
+
 @patch("httpx.AsyncClient")
-def test_update_budget_duration_as_team_admin(mock_client_class, client, team_admin_token, test_region, db, test_team, mock_httpx_combined_client):
+def test_update_budget_duration_as_team_admin(
+    mock_client_class,
+    client,
+    team_admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_combined_client,
+):
     """Test that a team admin can update the budget duration for a team-owned key"""
     # Use the combined httpx client fixture for both POST (update) and GET (info) operations
     mock_client_class.return_value = mock_httpx_combined_client
@@ -897,7 +1065,7 @@ def test_update_budget_duration_as_team_admin(mock_client_class, client, team_ad
         litellm_token="test-token-team",
         litellm_api_url="https://test-litellm.com",
         team_id=test_team.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(test_key)
     db.commit()
@@ -907,7 +1075,7 @@ def test_update_budget_duration_as_team_admin(mock_client_class, client, team_ad
     response = client.put(
         f"/private-ai-keys/{test_key.id}/budget-period",
         headers={"Authorization": f"Bearer {team_admin_token}"},
-        json={"budget_duration": "monthly"}
+        json={"budget_duration": "monthly"},
     )
 
     # Verify the response
@@ -922,23 +1090,26 @@ def test_update_budget_duration_as_team_admin(mock_client_class, client, team_ad
         json={
             "key": test_key.litellm_token,
             "budget_duration": "monthly",
-            "duration": "365d"
-        }
+            "duration": "365d",
+        },
     )
 
     # Verify that the key info was checked
     mock_httpx_combined_client.get.assert_called_with(
         f"{test_region.litellm_api_url}/key/info",
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
-        params={"key": test_key.litellm_token}
+        params={"key": test_key.litellm_token},
     )
 
     # Clean up the test key
     db.delete(test_key)
     db.commit()
 
+
 @patch("httpx.AsyncClient")
-def test_create_llm_token_as_system_admin(mock_client_class, client, admin_token, test_region, mock_httpx_post_client):
+def test_create_llm_token_as_system_admin(
+    mock_client_class, client, admin_token, test_region, mock_httpx_post_client
+):
     """Test that a system admin can create an LLM token for themselves"""
     # Use the httpx POST client fixture
     mock_client_class.return_value = mock_httpx_post_client
@@ -950,10 +1121,7 @@ def test_create_llm_token_as_system_admin(mock_client_class, client, admin_token
     response = client.post(
         "/private-ai-keys/token",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "region_id": test_region.id,
-            "name": "Test LLM Token"
-        }
+        json={"region_id": test_region.id, "name": "Test LLM Token"},
     )
 
     # Verify the create response
@@ -966,22 +1134,24 @@ def test_create_llm_token_as_system_admin(mock_client_class, client, admin_token
 
     # Verify the token is visible in list_keys
     list_response = client.get(
-        "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/private-ai-keys/", headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert list_response.status_code == 200
     list_data = list_response.json()
     assert isinstance(list_data, list)
     assert any(
-        key["litellm_token"] == "test-private-key-123" and
-        key["litellm_api_url"] == llm_url and
-        key["name"] == "Test LLM Token"
+        key["litellm_token"] == "test-private-key-123"
+        and key["litellm_api_url"] == llm_url
+        and key["name"] == "Test LLM Token"
         for key in list_data
     )
 
+
 @patch("httpx.AsyncClient")
-@patch('app.core.config.settings.ENABLE_LIMITS', True)
-def test_create_llm_token_with_expiration(mock_client_class, client, admin_token, test_region, mock_httpx_post_client):
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_create_llm_token_with_expiration(
+    mock_client_class, client, admin_token, test_region, mock_httpx_post_client
+):
     """Test that when ENABLE_LIMITS is true, new LiteLLM tokens are created with a 30-day expiration duration"""
     # Use the httpx POST client fixture
     mock_client_class.return_value = mock_httpx_post_client
@@ -990,10 +1160,7 @@ def test_create_llm_token_with_expiration(mock_client_class, client, admin_token
     response = client.post(
         "/private-ai-keys/token",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "region_id": test_region.id,
-            "name": "Test LLM Token with Expiration"
-        }
+        json={"region_id": test_region.id, "name": "Test LLM Token with Expiration"},
     )
 
     # Verify the create response
@@ -1012,6 +1179,7 @@ def test_create_llm_token_with_expiration(mock_client_class, client, admin_token
     assert call_args["json"]["max_budget"] == DEFAULT_MAX_SPEND
     assert call_args["json"]["rpm_limit"] == DEFAULT_RPM_PER_KEY
 
+
 def test_create_vector_db_as_system_admin(client, admin_token, test_region):
     """Test that a system admin can create a vector database for themselves"""
     region_name = test_region.name
@@ -1019,10 +1187,7 @@ def test_create_vector_db_as_system_admin(client, admin_token, test_region):
     response = client.post(
         "/private-ai-keys/vector-db",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "region_id": test_region.id,
-            "name": "Test Vector DB"
-        }
+        json={"region_id": test_region.id, "name": "Test Vector DB"},
     )
 
     # Verify the create response
@@ -1037,21 +1202,23 @@ def test_create_vector_db_as_system_admin(client, admin_token, test_region):
 
     # Verify the vector DB is visible in list_keys
     list_response = client.get(
-        "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/private-ai-keys/", headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert list_response.status_code == 200
     list_data = list_response.json()
     assert isinstance(list_data, list)
     assert any(
-        key["database_name"] == data["database_name"] and
-        key["database_host"] == data["database_host"] and
-        key["name"] == "Test Vector DB"
+        key["database_name"] == data["database_name"]
+        and key["database_host"] == data["database_host"]
+        and key["name"] == "Test Vector DB"
         for key in list_data
     )
 
+
 @patch("httpx.AsyncClient")
-def test_delete_llm_token_as_system_admin(mock_client_class, client, admin_token, test_region, db, mock_httpx_post_client):
+def test_delete_llm_token_as_system_admin(
+    mock_client_class, client, admin_token, test_region, db, mock_httpx_post_client
+):
     """Test that a system admin can delete an LLM token they own"""
     # Use the httpx POST client fixture
     mock_client_class.return_value = mock_httpx_post_client
@@ -1060,10 +1227,7 @@ def test_delete_llm_token_as_system_admin(mock_client_class, client, admin_token
     create_response = client.post(
         "/private-ai-keys/token",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "region_id": test_region.id,
-            "name": "Test LLM Token to Delete"
-        }
+        json={"region_id": test_region.id, "name": "Test LLM Token to Delete"},
     )
     assert create_response.status_code == 200
     created_token = create_response.json()
@@ -1071,7 +1235,7 @@ def test_delete_llm_token_as_system_admin(mock_client_class, client, admin_token
     # Now delete the token
     delete_response = client.delete(
         f"/private-ai-keys/{created_token['id']}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     # Verify the delete response
@@ -1079,36 +1243,42 @@ def test_delete_llm_token_as_system_admin(mock_client_class, client, admin_token
     assert delete_response.json()["message"] == "Private AI Key deleted successfully"
 
     # Verify the token was removed from the database
-    deleted_key = db.query(DBPrivateAIKey).filter(
-        DBPrivateAIKey.id == created_token["id"]
-    ).first()
+    deleted_key = (
+        db.query(DBPrivateAIKey)
+        .filter(DBPrivateAIKey.id == created_token["id"])
+        .first()
+    )
     assert deleted_key is None
 
     # Verify the LiteLLM API was called to delete the token
     mock_httpx_post_client.post.assert_called_with(
         f"{test_region.litellm_api_url}/key/delete",
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
-        json={"keys": [created_token["litellm_token"]]}
+        json={"keys": [created_token["litellm_token"]]},
     )
 
+
 @patch("httpx.AsyncClient")
-def test_delete_vector_db_as_system_admin(mock_client_class, client, admin_token, test_region, db, mock_httpx_post_client):
+def test_delete_vector_db_as_system_admin(
+    mock_client_class, client, admin_token, test_region, db, mock_httpx_post_client
+):
     """Test that a system admin can delete their own vector database"""
     # Use the httpx POST client fixture
     mock_client_class.return_value = mock_httpx_post_client
     # Mock the LiteLLM API response
     mock_httpx_post_client.post.return_value.status_code = 404
-    mock_httpx_post_client.post.return_value.json.return_value = {"error": "Key not found"}
-    mock_httpx_post_client.post.return_value.raise_for_status.side_effect = HTTPStatusError("Key not found", request=None, response=None)
+    mock_httpx_post_client.post.return_value.json.return_value = {
+        "error": "Key not found"
+    }
+    mock_httpx_post_client.post.return_value.raise_for_status.side_effect = (
+        HTTPStatusError("Key not found", request=None, response=None)
+    )
 
     # First create a vector database
     create_response = client.post(
         "/private-ai-keys/vector-db",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "region_id": test_region.id,
-            "name": "Test Vector DB to Delete"
-        }
+        json={"region_id": test_region.id, "name": "Test Vector DB to Delete"},
     )
     assert create_response.status_code == 200
     created_db = create_response.json()
@@ -1117,7 +1287,7 @@ def test_delete_vector_db_as_system_admin(mock_client_class, client, admin_token
     # Now delete the vector database
     delete_response = client.delete(
         f"/private-ai-keys/{created_db['id']}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     # Verify the delete response
@@ -1125,13 +1295,24 @@ def test_delete_vector_db_as_system_admin(mock_client_class, client, admin_token
     assert delete_response.json()["message"] == "Private AI Key deleted successfully"
 
     # Verify the vector DB was removed from the database
-    deleted_key = db.query(DBPrivateAIKey).filter(
-        DBPrivateAIKey.id == created_db["id"]
-    ).first()
+    deleted_key = (
+        db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == created_db["id"]).first()
+    )
     assert deleted_key is None
 
+
 @patch("httpx.AsyncClient")
-def test_list_private_ai_keys_as_read_only_user_includes_team_keys(mock_client_class, client, team_admin_token, team_read_only_token, test_region, test_team_read_only, test_team, db, mock_httpx_post_client):
+def test_list_private_ai_keys_as_read_only_user_includes_team_keys(
+    mock_client_class,
+    client,
+    team_admin_token,
+    team_read_only_token,
+    test_region,
+    test_team_read_only,
+    test_team,
+    db,
+    mock_httpx_post_client,
+):
     """Test that a read-only user can see both their own keys and team-owned keys"""
     # Use the httpx POST client fixture
     mock_client_class.return_value = mock_httpx_post_client
@@ -1140,46 +1321,64 @@ def test_list_private_ai_keys_as_read_only_user_includes_team_keys(mock_client_c
     user_key_data = {
         "name": "read-only-user-key",
         "region_id": test_region.id,
-        "owner_id": test_team_read_only.id  # Create key for the read_only user
+        "owner_id": test_team_read_only.id,  # Create key for the read_only user
     }
 
     # Create a team-owned key
     team_key_data = {
         "name": "team-owned-key",
         "region_id": test_region.id,
-        "team_id": test_team.id  # Create key owned by the team
+        "team_id": test_team.id,  # Create key owned by the team
     }
 
     # Create both keys as team admin
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {team_admin_token}"},
-        json=user_key_data
+        json=user_key_data,
     )
     assert response.status_code == 200
 
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {team_admin_token}"},
-        json=team_key_data
+        json=team_key_data,
     )
     assert response.status_code == 200
 
     # List keys as read_only user
     response = client.get(
-        "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {team_read_only_token}"}
+        "/private-ai-keys/", headers={"Authorization": f"Bearer {team_read_only_token}"}
     )
     assert response.status_code == 200
     data = response.json()
 
     # Verify that both the user's own key and team-owned key are returned
     assert len(data) == 2
-    assert any(key["name"] == "read-only-user-key" and key["owner_id"] == test_team_read_only.id for key in data)
-    assert any(key["name"] == "team-owned-key" and key["team_id"] == test_team.id for key in data)
+    assert any(
+        key["name"] == "read-only-user-key"
+        and key["owner_id"] == test_team_read_only.id
+        for key in data
+    )
+    assert any(
+        key["name"] == "team-owned-key" and key["team_id"] == test_team.id
+        for key in data
+    )
+
 
 @patch("httpx.AsyncClient")
-def test_list_private_ai_keys_as_non_team_user(mock_client_class, client, admin_token, test_token, test_region, test_user, test_team, test_team_user, db, mock_httpx_post_client):
+def test_list_private_ai_keys_as_non_team_user(
+    mock_client_class,
+    client,
+    admin_token,
+    test_token,
+    test_region,
+    test_user,
+    test_team,
+    test_team_user,
+    db,
+    mock_httpx_post_client,
+):
     """Test that a user who is not an admin or team member can only see their own keys"""
     # Use the httpx POST client fixture
     mock_client_class.return_value = mock_httpx_post_client
@@ -1188,27 +1387,27 @@ def test_list_private_ai_keys_as_non_team_user(mock_client_class, client, admin_
     user_key_data = {
         "name": "user-owned-key",
         "region_id": test_region.id,
-        "owner_id": test_user.id
+        "owner_id": test_user.id,
     }
 
     # Create a team-owned key
     team_key_data = {
         "name": "team-owned-key",
         "region_id": test_region.id,
-        "team_id": test_team.id
+        "team_id": test_team.id,
     }
 
     other_user_key_data = {
         "name": "other-user-key",
         "region_id": test_region.id,
-        "owner_id": test_team_user.id
+        "owner_id": test_team_user.id,
     }
 
     # Create user's key
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json=user_key_data
+        json=user_key_data,
     )
     assert response.status_code == 200
 
@@ -1216,7 +1415,7 @@ def test_list_private_ai_keys_as_non_team_user(mock_client_class, client, admin_
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json=team_key_data
+        json=team_key_data,
     )
     assert response.status_code == 200
 
@@ -1224,14 +1423,13 @@ def test_list_private_ai_keys_as_non_team_user(mock_client_class, client, admin_
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json=other_user_key_data
+        json=other_user_key_data,
     )
     assert response.status_code == 200
 
     # List keys as non-team user
     response = client.get(
-        "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {test_token}"}
+        "/private-ai-keys/", headers={"Authorization": f"Bearer {test_token}"}
     )
     assert response.status_code == 200
     data = response.json()
@@ -1243,8 +1441,17 @@ def test_list_private_ai_keys_as_non_team_user(mock_client_class, client, admin_
     assert data[0]["owner_id"] == test_user.id
     assert data[0].get("team_id") is None
 
+
 @patch("httpx.AsyncClient")
-def test_get_private_ai_key_success(mock_client_class, client, admin_token, test_region, db, test_team, mock_httpx_get_client):
+def test_get_private_ai_key_success(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_get_client,
+):
     """Test successfully retrieving a private AI key"""
     region_id = test_region.id
     region_name = test_region.name
@@ -1261,7 +1468,7 @@ def test_get_private_ai_key_success(mock_client_class, client, admin_token, test
         litellm_token="test-token-get",
         litellm_api_url="https://test-litellm.com",
         team_id=team_id,
-        region_id=region_id
+        region_id=region_id,
     )
     db.add(test_key)
     db.commit()
@@ -1273,7 +1480,7 @@ def test_get_private_ai_key_success(mock_client_class, client, admin_token, test
     # Get the key as admin
     response = client.get(
         f"/private-ai-keys/{test_key.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     # Verify the response
@@ -1294,30 +1501,41 @@ def test_get_private_ai_key_success(mock_client_class, client, admin_token, test
     mock_httpx_get_client.get.assert_called_with(
         f"{test_region.litellm_api_url}/key/info",
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
-        params={"key": test_key.litellm_token}
+        params={"key": test_key.litellm_token},
     )
 
     # Clean up
     db.delete(test_key)
     db.commit()
 
+
 @patch("httpx.AsyncClient")
-def test_get_private_ai_key_not_found(mock_client_class, client, admin_token, mock_httpx_get_client):
+def test_get_private_ai_key_not_found(
+    mock_client_class, client, admin_token, mock_httpx_get_client
+):
     """Test getting a non-existent private AI key"""
     # Use the httpx GET client fixture
     mock_client_class.return_value = mock_httpx_get_client
     # Try to get a non-existent key
     response = client.get(
-        "/private-ai-keys/99999",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/private-ai-keys/99999", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     # Verify the response
     assert response.status_code == 404
     assert "Private AI Key not found" in response.json()["detail"]
 
+
 @patch("httpx.AsyncClient")
-def test_get_private_ai_key_unauthorized(mock_client_class, client, test_token, test_region, db, test_team, mock_httpx_get_client):
+def test_get_private_ai_key_unauthorized(
+    mock_client_class,
+    client,
+    test_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_get_client,
+):
     """Test getting a private AI key without proper authorization"""
     # Use the httpx GET client fixture
     mock_client_class.return_value = mock_httpx_get_client
@@ -1331,7 +1549,7 @@ def test_get_private_ai_key_unauthorized(mock_client_class, client, test_token, 
         litellm_token="test-token-unauthorized",
         litellm_api_url="https://test-litellm.com",
         team_id=test_team.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(test_key)
     db.commit()
@@ -1340,7 +1558,7 @@ def test_get_private_ai_key_unauthorized(mock_client_class, client, test_token, 
     # Try to get the key as a regular user
     response = client.get(
         f"/private-ai-keys/{test_key.id}",
-        headers={"Authorization": f"Bearer {test_token}"}
+        headers={"Authorization": f"Bearer {test_token}"},
     )
 
     # Verify the response
@@ -1351,9 +1569,18 @@ def test_get_private_ai_key_unauthorized(mock_client_class, client, test_token, 
     db.delete(test_key)
     db.commit()
 
+
 @patch("httpx.AsyncClient")
-@patch('app.core.config.settings.ENABLE_LIMITS', True)
-def test_create_too_many_service_keys(mock_client_class, client, admin_token, test_region, db, test_team, mock_httpx_post_client):
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_create_too_many_service_keys(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
     """Test that when ENABLE_LIMITS is true, creating too many service keys fails"""
     # Create a product with a specific service key limit for testing
     key_count = 2
@@ -1370,16 +1597,13 @@ def test_create_too_many_service_keys(mock_client_class, client, admin_token, te
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(test_product)
     product_id = test_product.id
 
     # Associate the product with the team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=product_id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=product_id)
     db.add(team_product)
     db.commit()
 
@@ -1394,9 +1618,9 @@ def test_create_too_many_service_keys(mock_client_class, client, admin_token, te
             headers={"Authorization": f"Bearer {admin_token}"},
             json={
                 "region_id": test_region.id,
-                "name": f"Service Key {i+1}",
-                "team_id": team_id
-            }
+                "name": f"Service Key {i + 1}",
+                "team_id": team_id,
+            },
         )
         assert response.status_code == 200
 
@@ -1407,15 +1631,27 @@ def test_create_too_many_service_keys(mock_client_class, client, admin_token, te
         json={
             "region_id": test_region.id,
             "name": "Extra Service Key",
-            "team_id": team_id
-        }
+            "team_id": team_id,
+        },
     )
     assert response.status_code == 402
-    assert "Entity has reached their maximum number of AI keys" in response.json()["detail"]
+    assert (
+        "Entity has reached their maximum number of AI keys"
+        in response.json()["detail"]
+    )
+
 
 @patch("httpx.AsyncClient")
-@patch('app.core.config.settings.ENABLE_LIMITS', True)
-def test_create_too_many_user_keys(mock_client_class, client, admin_token, test_region, db, test_team_user, mock_httpx_post_client):
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_create_too_many_user_keys(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team_user,
+    mock_httpx_post_client,
+):
     """Test that when ENABLE_LIMITS is true, creating too many user keys fails"""
     # Get the team from the team user
     team_id = test_team_user.team_id
@@ -1435,15 +1671,12 @@ def test_create_too_many_user_keys(mock_client_class, client, admin_token, test_
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(test_product)
 
     # Associate the product with the team
-    team_product = DBTeamProduct(
-        team_id=team_id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=team_id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -1458,9 +1691,9 @@ def test_create_too_many_user_keys(mock_client_class, client, admin_token, test_
             headers={"Authorization": f"Bearer {admin_token}"},
             json={
                 "region_id": test_region.id,
-                "name": f"User Key {i+1}",
-                "owner_id": user_id
-            }
+                "name": f"User Key {i + 1}",
+                "owner_id": user_id,
+            },
         )
         assert response.status_code == 200
 
@@ -1471,13 +1704,17 @@ def test_create_too_many_user_keys(mock_client_class, client, admin_token, test_
         json={
             "region_id": test_region.id,
             "name": "Extra User Key",
-            "owner_id": user_id
-        }
+            "owner_id": user_id,
+        },
     )
     assert response.status_code == 402
-    assert "Entity has reached their maximum number of AI keys" in response.json()["detail"]
+    assert (
+        "Entity has reached their maximum number of AI keys"
+        in response.json()["detail"]
+    )
 
-@patch('app.core.config.settings.ENABLE_LIMITS', True)
+
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
 def test_create_too_many_vector_dbs(client, admin_token, test_region, db, test_team):
     """Test that when ENABLE_LIMITS is true, creating too many vector DBs fails"""
     # Create a product with a specific vector DB limit for testing
@@ -1495,15 +1732,12 @@ def test_create_too_many_vector_dbs(client, admin_token, test_region, db, test_t
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(test_product)
 
     # Associate the product with the team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
     db.refresh(test_product)
@@ -1516,9 +1750,9 @@ def test_create_too_many_vector_dbs(client, admin_token, test_region, db, test_t
             headers={"Authorization": f"Bearer {admin_token}"},
             json={
                 "region_id": test_region.id,
-                "name": f"Vector DB {i+1}",
-                "team_id": team_id
-            }
+                "name": f"Vector DB {i + 1}",
+                "team_id": team_id,
+            },
         )
         assert response.status_code == 200
 
@@ -1529,15 +1763,24 @@ def test_create_too_many_vector_dbs(client, admin_token, test_region, db, test_t
         json={
             "region_id": test_region.id,
             "name": "Extra Vector DB",
-            "team_id": team_id
-        }
+            "team_id": team_id,
+        },
     )
     assert response.status_code == 402
     assert "Team has reached their maximum vector DB limit" in response.json()["detail"]
 
+
 @patch("httpx.AsyncClient")
-@patch('app.core.config.settings.ENABLE_LIMITS', True)
-def test_create_too_many_service_keys_check(mock_client_class, client, admin_token, test_region, db, test_team, mock_httpx_post_client):
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_create_too_many_service_keys_check(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
     """Test that when ENABLE_LIMITS is true, creating too many service keys fails"""
     # Create a product with a specific service key limit for testing
     service_key_count = 2
@@ -1553,15 +1796,12 @@ def test_create_too_many_service_keys_check(mock_client_class, client, admin_tok
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(test_product)
 
     # Associate the product with the team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -1579,8 +1819,8 @@ def test_create_too_many_service_keys_check(mock_client_class, client, admin_tok
             json={
                 "region_id": region_id,
                 "name": f"Service Key {i + 1}",
-                "team_id": team_id
-            }
+                "team_id": team_id,
+            },
         )
         assert response.status_code == 200
 
@@ -1588,17 +1828,19 @@ def test_create_too_many_service_keys_check(mock_client_class, client, admin_tok
     response = client.post(
         "/private-ai-keys/token",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "region_id": region_id,
-            "name": "Extra Service Key",
-            "team_id": team_id
-        }
+        json={"region_id": region_id, "name": "Extra Service Key", "team_id": team_id},
     )
     assert response.status_code == 402
-    assert "Entity has reached their maximum number of AI keys" in response.json()["detail"]
+    assert (
+        "Entity has reached their maximum number of AI keys"
+        in response.json()["detail"]
+    )
+
 
 @patch("httpx.AsyncClient")
-def test_delete_private_ai_key_with_only_vector_db(mock_client_class, client, admin_token, test_region, db, mock_httpx_post_client):
+def test_delete_private_ai_key_with_only_vector_db(
+    mock_client_class, client, admin_token, test_region, db, mock_httpx_post_client
+):
     """Test deleting a private AI key that only has a vector database (no LLM token)"""
     litellm_api_url = test_region.litellm_api_url
     litellm_api_key = test_region.litellm_api_key
@@ -1612,7 +1854,7 @@ def test_delete_private_ai_key_with_only_vector_db(mock_client_class, client, ad
         litellm_token=None,  # No LLM token
         litellm_api_url=None,  # No LLM API URL
         owner_id=None,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(test_key)
     db.commit()
@@ -1627,7 +1869,7 @@ def test_delete_private_ai_key_with_only_vector_db(mock_client_class, client, ad
     # Delete the key
     delete_response = client.delete(
         f"/private-ai-keys/{test_key.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     # Verify the delete response
@@ -1635,20 +1877,23 @@ def test_delete_private_ai_key_with_only_vector_db(mock_client_class, client, ad
     assert delete_response.json()["message"] == "Private AI Key deleted successfully"
 
     # Verify the key was removed from the database
-    deleted_key = db.query(DBPrivateAIKey).filter(
-        DBPrivateAIKey.id == test_key.id
-    ).first()
+    deleted_key = (
+        db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == test_key.id).first()
+    )
     assert deleted_key is None
 
     # Verify that LiteLLM API was called with None token
     mock_httpx_post_client.post.assert_called_with(
         f"{litellm_api_url}/key/delete",
         headers={"Authorization": f"Bearer {litellm_api_key}"},
-        json={"keys": [None]}
+        json={"keys": [None]},
     )
 
+
 @patch("httpx.AsyncClient")
-def test_delete_private_ai_key_with_only_llm_token(mock_client_class, client, admin_token, test_region, db, mock_httpx_post_client):
+def test_delete_private_ai_key_with_only_llm_token(
+    mock_client_class, client, admin_token, test_region, db, mock_httpx_post_client
+):
     """Test deleting a private AI key that only has an LLM token (no vector DB)"""
     # Create a test key with only LLM token
     api_key = test_region.litellm_api_key
@@ -1662,7 +1907,7 @@ def test_delete_private_ai_key_with_only_llm_token(mock_client_class, client, ad
         litellm_token="test-token-llm-only",
         litellm_api_url="https://test-litellm.com",
         owner_id=None,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(test_key)
     db.commit()
@@ -1677,7 +1922,7 @@ def test_delete_private_ai_key_with_only_llm_token(mock_client_class, client, ad
     # Delete the key
     delete_response = client.delete(
         f"/private-ai-keys/{test_key.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     # Verify the delete response
@@ -1685,20 +1930,23 @@ def test_delete_private_ai_key_with_only_llm_token(mock_client_class, client, ad
     assert delete_response.json()["message"] == "Private AI Key deleted successfully"
 
     # Verify the key was removed from the database
-    deleted_key = db.query(DBPrivateAIKey).filter(
-        DBPrivateAIKey.id == test_key.id
-    ).first()
+    deleted_key = (
+        db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == test_key.id).first()
+    )
     assert deleted_key is None
 
     # Verify the LiteLLM token was deleted
     mock_httpx_post_client.post.assert_called_with(
         f"{litellm_api_url}/key/delete",
         headers={"Authorization": f"Bearer {api_key}"},
-        json={"keys": [test_key.litellm_token]}
+        json={"keys": [test_key.litellm_token]},
     )
 
+
 @patch("httpx.AsyncClient")
-def test_delete_private_ai_key_litellm_service_unavailable(mock_client_class, client, admin_token, test_region, db, mock_httpx_post_client):
+def test_delete_private_ai_key_litellm_service_unavailable(
+    mock_client_class, client, admin_token, test_region, db, mock_httpx_post_client
+):
     """Test deleting a private AI key when LiteLLM service returns 503"""
     # Create a test key
     test_key = DBPrivateAIKey(
@@ -1710,7 +1958,7 @@ def test_delete_private_ai_key_litellm_service_unavailable(mock_client_class, cl
         litellm_token="test-token-service-unavailable",
         litellm_api_url="https://test-litellm.com",
         owner_id=None,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(test_key)
     db.commit()
@@ -1720,12 +1968,14 @@ def test_delete_private_ai_key_litellm_service_unavailable(mock_client_class, cl
     mock_client_class.return_value = mock_httpx_post_client
     # Mock the LiteLLM API response to return 503
     mock_httpx_post_client.post.return_value.status_code = 503
-    mock_httpx_post_client.post.return_value.raise_for_status.side_effect = HTTPStatusError("Service Unavailable", request=None, response=None)
+    mock_httpx_post_client.post.return_value.raise_for_status.side_effect = (
+        HTTPStatusError("Service Unavailable", request=None, response=None)
+    )
 
     # Try to delete the key
     delete_response = client.delete(
         f"/private-ai-keys/{test_key.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     # Verify the delete response
@@ -1733,9 +1983,9 @@ def test_delete_private_ai_key_litellm_service_unavailable(mock_client_class, cl
     assert "Failed to delete LiteLLM key" in delete_response.json()["detail"]
 
     # Verify the key was not removed from the database
-    existing_key = db.query(DBPrivateAIKey).filter(
-        DBPrivateAIKey.id == test_key.id
-    ).first()
+    existing_key = (
+        db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == test_key.id).first()
+    )
     assert existing_key is not None
     assert existing_key.id == test_key.id
 
@@ -1743,13 +1993,21 @@ def test_delete_private_ai_key_litellm_service_unavailable(mock_client_class, cl
     mock_httpx_post_client.post.assert_called_with(
         f"{test_region.litellm_api_url}/key/delete",
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
-        json={"keys": [test_key.litellm_token]}
+        json={"keys": [test_key.litellm_token]},
     )
     db.commit()
 
+
 @patch("httpx.AsyncClient")
 @patch("app.db.postgres.PostgresManager.create_database")
-def test_create_private_ai_key_cleanup_on_vector_db_failure(mock_create_db, mock_client_class, client, test_token, test_region, mock_httpx_post_client):
+def test_create_private_ai_key_cleanup_on_vector_db_failure(
+    mock_create_db,
+    mock_client_class,
+    client,
+    test_token,
+    test_region,
+    mock_httpx_post_client,
+):
     """
     Given a user creates a private AI key
     When the vector database creation fails after LiteLLM token is created
@@ -1764,10 +2022,7 @@ def test_create_private_ai_key_cleanup_on_vector_db_failure(mock_create_db, mock
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {test_token}"},
-        json={
-            "region_id": test_region.id,
-            "name": "Test AI Key"
-        }
+        json={"region_id": test_region.id, "name": "Test AI Key"},
     )
 
     # Verify the response indicates failure
@@ -1781,21 +2036,33 @@ def test_create_private_ai_key_cleanup_on_vector_db_failure(mock_create_db, mock
     # Verify the cleanup call
     cleanup_call = mock_httpx_post_client.post.call_args_list[1]
     assert cleanup_call[0][0] == f"{test_region.litellm_api_url}/key/delete"
-    assert cleanup_call[1]["headers"]["Authorization"] == f"Bearer {test_region.litellm_api_key}"
+    assert (
+        cleanup_call[1]["headers"]["Authorization"]
+        == f"Bearer {test_region.litellm_api_key}"
+    )
     assert cleanup_call[1]["json"]["keys"] == ["test-private-key-123"]
 
     # Verify no key was stored in the database
     stored_keys = client.get(
-        "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {test_token}"}
+        "/private-ai-keys/", headers={"Authorization": f"Bearer {test_token}"}
     ).json()
     assert len([k for k in stored_keys if k["name"] == "Test AI Key"]) == 0
+
 
 @patch("httpx.AsyncClient")
 @patch("app.db.postgres.PostgresManager.create_database")
 @patch("app.db.postgres.PostgresManager.delete_database")
 @patch("sqlalchemy.orm.Session.commit")
-def test_create_private_ai_key_cleanup_on_db_storage_failure(mock_commit, mock_delete_db, mock_create_db, mock_client_class, client, test_token, test_region, mock_httpx_post_client):
+def test_create_private_ai_key_cleanup_on_db_storage_failure(
+    mock_commit,
+    mock_delete_db,
+    mock_create_db,
+    mock_client_class,
+    client,
+    test_token,
+    test_region,
+    mock_httpx_post_client,
+):
     """
     Given a user creates a private AI key
     When the database storage fails after both LiteLLM token and vector DB are created
@@ -1809,7 +2076,7 @@ def test_create_private_ai_key_cleanup_on_db_storage_failure(mock_commit, mock_d
         "database_name": "test_db_123",
         "database_host": "test-host",
         "database_username": "test_user",
-        "database_password": "test_pass"
+        "database_password": "test_pass",
     }
 
     # Mock successful vector database deletion
@@ -1821,10 +2088,7 @@ def test_create_private_ai_key_cleanup_on_db_storage_failure(mock_commit, mock_d
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {test_token}"},
-        json={
-            "region_id": test_region.id,
-            "name": "Test AI Key"
-        }
+        json={"region_id": test_region.id, "name": "Test AI Key"},
     )
 
     # Verify the response indicates failure
@@ -1842,14 +2106,21 @@ def test_create_private_ai_key_cleanup_on_db_storage_failure(mock_commit, mock_d
 
     # Verify no key was stored in the database
     stored_keys = client.get(
-        "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {test_token}"}
+        "/private-ai-keys/", headers={"Authorization": f"Bearer {test_token}"}
     ).json()
     assert len([k for k in stored_keys if k["name"] == "Test AI Key"]) == 0
 
+
 @patch("httpx.AsyncClient")
 @patch("app.db.postgres.PostgresManager.create_database")
-def test_create_private_ai_key_cleanup_failure_handling(mock_create_db, mock_client_class, client, test_token, test_region, mock_httpx_post_client):
+def test_create_private_ai_key_cleanup_failure_handling(
+    mock_create_db,
+    mock_client_class,
+    client,
+    test_token,
+    test_region,
+    mock_httpx_post_client,
+):
     """
     Given a user creates a private AI key
     When the cleanup process itself fails
@@ -1869,17 +2140,16 @@ def test_create_private_ai_key_cleanup_failure_handling(mock_create_db, mock_cli
 
     postfail = Mock()
     postfail.status_code = 500
-    postfail.raise_for_status.side_effect = HTTPStatusError("Cleanup failed", request=None, response=None)
+    postfail.raise_for_status.side_effect = HTTPStatusError(
+        "Cleanup failed", request=None, response=None
+    )
 
     mock_httpx_post_client.post.side_effect = [postsuccess, postfail]
 
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {test_token}"},
-        json={
-            "region_id": test_region.id,
-            "name": "Test AI Key"
-        }
+        json={"region_id": test_region.id, "name": "Test AI Key"},
     )
 
     # Verify the response indicates the original failure, not cleanup failure
@@ -1890,9 +2160,17 @@ def test_create_private_ai_key_cleanup_failure_handling(mock_create_db, mock_cli
     # Verify cleanup was attempted
     assert mock_httpx_post_client.post.call_count == 2
 
+
 @patch("httpx.AsyncClient")
 @patch("app.db.postgres.PostgresManager.create_database")
-def test_create_private_ai_key_http_exception_preservation(mock_create_db, mock_client_class, client, test_token, test_region, mock_httpx_post_client):
+def test_create_private_ai_key_http_exception_preservation(
+    mock_create_db,
+    mock_client_class,
+    client,
+    test_token,
+    test_region,
+    mock_httpx_post_client,
+):
     """
     Given a user creates a private AI key
     When an HTTPException is raised during creation
@@ -1903,17 +2181,13 @@ def test_create_private_ai_key_http_exception_preservation(mock_create_db, mock_
 
     # Mock vector database creation failure with HTTPException
     mock_create_db.side_effect = HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail="Invalid database configuration"
+        status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid database configuration"
     )
 
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {test_token}"},
-        json={
-            "region_id": test_region.id,
-            "name": "Test AI Key"
-        }
+        json={"region_id": test_region.id, "name": "Test AI Key"},
     )
 
     # Verify the original HTTPException is preserved
@@ -1925,7 +2199,9 @@ def test_create_private_ai_key_http_exception_preservation(mock_create_db, mock_
     assert mock_httpx_post_client.post.call_count == 2
 
 
-def test_list_private_ai_keys_by_region_with_team_filter(client, admin_token, test_region, test_team, db):
+def test_list_private_ai_keys_by_region_with_team_filter(
+    client, admin_token, test_region, test_team, db
+):
     """Test that an admin can filter keys by team_id in the region endpoint"""
     # Create a second team
     other_team = DBTeam(
@@ -1934,7 +2210,7 @@ def test_list_private_ai_keys_by_region_with_team_filter(client, admin_token, te
         phone="1112223333",
         billing_address="789 Other St, City, 11111",
         is_active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(other_team)
     db.commit()
@@ -1947,7 +2223,7 @@ def test_list_private_ai_keys_by_region_with_team_filter(client, admin_token, te
         is_active=True,
         is_admin=False,
         team_id=test_team.id,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(team_user)
     db.commit()
@@ -1961,7 +2237,7 @@ def test_list_private_ai_keys_by_region_with_team_filter(client, admin_token, te
         database_password="test-pass",
         litellm_token="region-team-user-token",
         owner_id=team_user.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(team_user_key)
 
@@ -1973,7 +2249,7 @@ def test_list_private_ai_keys_by_region_with_team_filter(client, admin_token, te
         database_password="test-pass",
         litellm_token="region-team-owned-token",
         team_id=test_team.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(team_owned_key)
 
@@ -1984,7 +2260,7 @@ def test_list_private_ai_keys_by_region_with_team_filter(client, admin_token, te
         is_active=True,
         is_admin=False,
         team_id=other_team.id,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(other_team_user)
     db.commit()
@@ -1997,7 +2273,7 @@ def test_list_private_ai_keys_by_region_with_team_filter(client, admin_token, te
         database_password="test-pass",
         litellm_token="region-other-team-token",
         owner_id=other_team_user.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(other_team_key)
     db.commit()
@@ -2006,7 +2282,7 @@ def test_list_private_ai_keys_by_region_with_team_filter(client, admin_token, te
     response = client.get(
         f"/private-ai-keys/region/{test_region.id}",
         headers={"Authorization": f"Bearer {admin_token}"},
-        params={"team_id": test_team.id}
+        params={"team_id": test_team.id},
     )
 
     assert response.status_code == 200
@@ -2018,7 +2294,9 @@ def test_list_private_ai_keys_by_region_with_team_filter(client, admin_token, te
     assert "region-other-team-db" not in returned_db_names
 
 
-def test_list_private_ai_keys_by_region_team_filter_ignored_for_non_admin(client, test_token, test_region, test_team, test_user, db):
+def test_list_private_ai_keys_by_region_team_filter_ignored_for_non_admin(
+    client, test_token, test_region, test_team, test_user, db
+):
     """Test that team_id filter is ignored for non-admin users in the region endpoint"""
     # Create a key owned by test_user
     user_key = DBPrivateAIKey(
@@ -2028,7 +2306,7 @@ def test_list_private_ai_keys_by_region_team_filter_ignored_for_non_admin(client
         database_password="test-pass",
         litellm_token="region-user-own-token",
         owner_id=test_user.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(user_key)
 
@@ -2040,7 +2318,7 @@ def test_list_private_ai_keys_by_region_team_filter_ignored_for_non_admin(client
         database_password="test-pass",
         litellm_token="region-team-filter-token",
         team_id=test_team.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(team_key)
     db.commit()
@@ -2049,7 +2327,7 @@ def test_list_private_ai_keys_by_region_team_filter_ignored_for_non_admin(client
     response = client.get(
         f"/private-ai-keys/region/{test_region.id}",
         headers={"Authorization": f"Bearer {test_token}"},
-        params={"team_id": test_team.id}
+        params={"team_id": test_team.id},
     )
 
     assert response.status_code == 200
@@ -2061,7 +2339,9 @@ def test_list_private_ai_keys_by_region_team_filter_ignored_for_non_admin(client
     assert "region-team-filter-db" not in returned_db_names
 
 
-def test_list_private_ai_keys_by_region_soft_deleted_team_returns_empty(client, admin_token, test_region, db):
+def test_list_private_ai_keys_by_region_soft_deleted_team_returns_empty(
+    client, admin_token, test_region, db
+):
     """Test that filtering by a soft-deleted team returns empty results"""
     # Create a team and soft-delete it
     deleted_team = DBTeam(
@@ -2071,7 +2351,7 @@ def test_list_private_ai_keys_by_region_soft_deleted_team_returns_empty(client, 
         billing_address="000 Deleted St, City, 00000",
         is_active=True,
         created_at=datetime.now(UTC),
-        deleted_at=datetime.now(UTC)
+        deleted_at=datetime.now(UTC),
     )
     db.add(deleted_team)
     db.commit()
@@ -2085,7 +2365,7 @@ def test_list_private_ai_keys_by_region_soft_deleted_team_returns_empty(client, 
         database_password="test-pass",
         litellm_token="region-deleted-team-token",
         team_id=deleted_team.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(key)
     db.commit()
@@ -2094,7 +2374,7 @@ def test_list_private_ai_keys_by_region_soft_deleted_team_returns_empty(client, 
     response = client.get(
         f"/private-ai-keys/region/{test_region.id}",
         headers={"Authorization": f"Bearer {admin_token}"},
-        params={"team_id": deleted_team.id}
+        params={"team_id": deleted_team.id},
     )
 
     assert response.status_code == 200
@@ -2102,7 +2382,9 @@ def test_list_private_ai_keys_by_region_soft_deleted_team_returns_empty(client, 
     assert len(data) == 0
 
 
-def test_list_private_ai_keys_by_region_with_user_filter(client, admin_token, test_region, db):
+def test_list_private_ai_keys_by_region_with_user_filter(
+    client, admin_token, test_region, db
+):
     """Test that an admin can filter keys by user_id in the region endpoint"""
     # Create two users
     user_a = DBUser(
@@ -2110,14 +2392,14 @@ def test_list_private_ai_keys_by_region_with_user_filter(client, admin_token, te
         hashed_password=get_password_hash("password123"),
         is_active=True,
         is_admin=False,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     user_b = DBUser(
         email="region_user_filter_b@example.com",
         hashed_password=get_password_hash("password123"),
         is_active=True,
         is_admin=False,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(user_a)
     db.add(user_b)
@@ -2133,7 +2415,7 @@ def test_list_private_ai_keys_by_region_with_user_filter(client, admin_token, te
         database_password="test-pass",
         litellm_token="region-user-a-token",
         owner_id=user_a.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(key_a)
 
@@ -2145,7 +2427,7 @@ def test_list_private_ai_keys_by_region_with_user_filter(client, admin_token, te
         database_password="test-pass",
         litellm_token="region-user-b-token",
         owner_id=user_b.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(key_b)
     db.commit()
@@ -2154,7 +2436,7 @@ def test_list_private_ai_keys_by_region_with_user_filter(client, admin_token, te
     response = client.get(
         f"/private-ai-keys/region/{test_region.id}",
         headers={"Authorization": f"Bearer {admin_token}"},
-        params={"user_id": user_a.id}
+        params={"user_id": user_a.id},
     )
 
     assert response.status_code == 200
@@ -2165,7 +2447,9 @@ def test_list_private_ai_keys_by_region_with_user_filter(client, admin_token, te
     assert "region-user-b-db" not in returned_db_names
 
 
-def test_list_private_ai_keys_by_region_user_filter_unknown_user(client, admin_token, test_region, db):
+def test_list_private_ai_keys_by_region_user_filter_unknown_user(
+    client, admin_token, test_region, db
+):
     """Test that filtering by a non-existent user_id returns an empty list"""
     # Create a key owned by a real user
     user = DBUser(
@@ -2173,7 +2457,7 @@ def test_list_private_ai_keys_by_region_user_filter_unknown_user(client, admin_t
         hashed_password=get_password_hash("password123"),
         is_active=True,
         is_admin=False,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(user)
     db.commit()
@@ -2186,7 +2470,7 @@ def test_list_private_ai_keys_by_region_user_filter_unknown_user(client, admin_t
         database_password="test-pass",
         litellm_token="region-unknown-user-token",
         owner_id=user.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(key)
     db.commit()
@@ -2195,7 +2479,7 @@ def test_list_private_ai_keys_by_region_user_filter_unknown_user(client, admin_t
     response = client.get(
         f"/private-ai-keys/region/{test_region.id}",
         headers={"Authorization": f"Bearer {admin_token}"},
-        params={"user_id": 999999}
+        params={"user_id": 999999},
     )
 
     assert response.status_code == 200
@@ -2203,7 +2487,9 @@ def test_list_private_ai_keys_by_region_user_filter_unknown_user(client, admin_t
     assert data == []
 
 
-def test_list_private_ai_keys_by_region_user_and_team_filter(client, admin_token, test_region, test_team, db):
+def test_list_private_ai_keys_by_region_user_and_team_filter(
+    client, admin_token, test_region, test_team, db
+):
     """Test that an admin can combine user_id and team_id filters"""
     # Create a user in test_team
     team_user = DBUser(
@@ -2212,7 +2498,7 @@ def test_list_private_ai_keys_by_region_user_and_team_filter(client, admin_token
         is_active=True,
         is_admin=False,
         team_id=test_team.id,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     # Create a user NOT in test_team
     other_user = DBUser(
@@ -2220,7 +2506,7 @@ def test_list_private_ai_keys_by_region_user_and_team_filter(client, admin_token
         hashed_password=get_password_hash("password123"),
         is_active=True,
         is_admin=False,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(team_user)
     db.add(other_user)
@@ -2236,7 +2522,7 @@ def test_list_private_ai_keys_by_region_user_and_team_filter(client, admin_token
         database_password="test-pass",
         litellm_token="region-user-in-team-token",
         owner_id=team_user.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(key_in_team)
 
@@ -2248,7 +2534,7 @@ def test_list_private_ai_keys_by_region_user_and_team_filter(client, admin_token
         database_password="test-pass",
         litellm_token="region-other-user-token",
         owner_id=other_user.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(key_other)
 
@@ -2260,7 +2546,7 @@ def test_list_private_ai_keys_by_region_user_and_team_filter(client, admin_token
         database_password="test-pass",
         litellm_token="region-team-owned-token",
         team_id=test_team.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(key_team_owned)
     db.commit()
@@ -2270,7 +2556,7 @@ def test_list_private_ai_keys_by_region_user_and_team_filter(client, admin_token
     response = client.get(
         f"/private-ai-keys/region/{test_region.id}",
         headers={"Authorization": f"Bearer {admin_token}"},
-        params={"user_id": team_user.id, "team_id": test_team.id}
+        params={"user_id": team_user.id, "team_id": test_team.id},
     )
 
     assert response.status_code == 200
@@ -2283,7 +2569,9 @@ def test_list_private_ai_keys_by_region_user_and_team_filter(client, admin_token
     assert "region-team-owned-db" not in returned_db_names
 
 
-def test_list_private_ai_keys_by_region_user_filter_ignored_for_non_admin(client, test_token, test_region, test_user, db):
+def test_list_private_ai_keys_by_region_user_filter_ignored_for_non_admin(
+    client, test_token, test_region, test_user, db
+):
     """Test that user_id filter is silently ignored for non-admin users"""
     # Create another user
     other_user = DBUser(
@@ -2291,7 +2579,7 @@ def test_list_private_ai_keys_by_region_user_filter_ignored_for_non_admin(client
         hashed_password=get_password_hash("password123"),
         is_active=True,
         is_admin=False,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(other_user)
     db.commit()
@@ -2305,7 +2593,7 @@ def test_list_private_ai_keys_by_region_user_filter_ignored_for_non_admin(client
         database_password="test-pass",
         litellm_token="region-non-admin-user-own-token",
         owner_id=test_user.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(user_key)
 
@@ -2317,7 +2605,7 @@ def test_list_private_ai_keys_by_region_user_filter_ignored_for_non_admin(client
         database_password="test-pass",
         litellm_token="region-non-admin-other-token",
         owner_id=other_user.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(other_key)
     db.commit()
@@ -2326,7 +2614,7 @@ def test_list_private_ai_keys_by_region_user_filter_ignored_for_non_admin(client
     response = client.get(
         f"/private-ai-keys/region/{test_region.id}",
         headers={"Authorization": f"Bearer {test_token}"},
-        params={"user_id": other_user.id}
+        params={"user_id": other_user.id},
     )
 
     assert response.status_code == 200

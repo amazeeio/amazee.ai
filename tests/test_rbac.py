@@ -1,8 +1,15 @@
 import pytest
 from fastapi import HTTPException
-from app.core.rbac import require_system_admin, require_team_admin, require_key_creator_or_higher, require_read_only_or_higher, require_sales_or_higher
+from app.core.rbac import (
+    require_system_admin,
+    require_team_admin,
+    require_key_creator_or_higher,
+    require_read_only_or_higher,
+    require_sales_or_higher,
+)
 from app.core.roles import UserRole
 from app.db.models import DBUser
+
 
 class TestRBACDependency:
     """Test RBAC dependency functionality"""
@@ -13,7 +20,9 @@ class TestRBACDependency:
         When checking access to system admin endpoint
         Then access should be granted and return system_admin role
         """
-        user = DBUser(id=1, email="admin@test.com", is_admin=True, team_id=None, role=None)
+        user = DBUser(
+            id=1, email="admin@test.com", is_admin=True, team_id=None, role=None
+        )
         dependency = require_system_admin()
 
         result = dependency.check_access(user)
@@ -25,7 +34,9 @@ class TestRBACDependency:
         When checking access to team admin endpoint
         Then access should be granted and return admin role
         """
-        user = DBUser(id=1, email="teamadmin@test.com", is_admin=False, team_id=1, role="admin")
+        user = DBUser(
+            id=1, email="teamadmin@test.com", is_admin=False, team_id=1, role="admin"
+        )
         dependency = require_team_admin()
 
         result = dependency.check_access(user)
@@ -37,7 +48,13 @@ class TestRBACDependency:
         When checking access to key creator endpoint
         Then access should be granted and return key_creator role
         """
-        user = DBUser(id=1, email="keycreator@test.com", is_admin=False, team_id=1, role="key_creator")
+        user = DBUser(
+            id=1,
+            email="keycreator@test.com",
+            is_admin=False,
+            team_id=1,
+            role="key_creator",
+        )
         dependency = require_key_creator_or_higher()
 
         result = dependency.check_access(user)
@@ -49,7 +66,9 @@ class TestRBACDependency:
         When checking access to read only endpoint
         Then access should be granted and return read_only role
         """
-        user = DBUser(id=1, email="readonly@test.com", is_admin=False, team_id=1, role="read_only")
+        user = DBUser(
+            id=1, email="readonly@test.com", is_admin=False, team_id=1, role="read_only"
+        )
         dependency = require_read_only_or_higher()
 
         result = dependency.check_access(user)
@@ -76,7 +95,9 @@ class TestRBACDependency:
         When checking access to team endpoint
         Then access should be denied due to invalid user type
         """
-        user = DBUser(id=1, email="user@test.com", is_admin=False, team_id=None, role="admin")
+        user = DBUser(
+            id=1, email="user@test.com", is_admin=False, team_id=None, role="admin"
+        )
         dependency = require_team_admin()
 
         with pytest.raises(HTTPException) as exc_info:
@@ -91,7 +112,9 @@ class TestRBACDependency:
         When checking access to team admin endpoint
         Then access should be denied due to insufficient permissions
         """
-        user = DBUser(id=1, email="readonly@test.com", is_admin=False, team_id=1, role="read_only")
+        user = DBUser(
+            id=1, email="readonly@test.com", is_admin=False, team_id=1, role="read_only"
+        )
         dependency = require_team_admin()
 
         with pytest.raises(HTTPException) as exc_info:
@@ -106,7 +129,9 @@ class TestRBACDependency:
         When checking access to team endpoint
         Then access should be granted because system admins can do anything
         """
-        user = DBUser(id=1, email="admin@test.com", is_admin=True, team_id=None, role=None)
+        user = DBUser(
+            id=1, email="admin@test.com", is_admin=True, team_id=None, role=None
+        )
         dependency = require_team_admin()
 
         result = dependency.check_access(user)
@@ -118,7 +143,9 @@ class TestRBACDependency:
         When checking access to sales endpoint
         Then access should be granted and return sales role
         """
-        user = DBUser(id=1, email="sales@test.com", is_admin=False, team_id=None, role="sales")
+        user = DBUser(
+            id=1, email="sales@test.com", is_admin=False, team_id=None, role="sales"
+        )
         dependency = require_sales_or_higher()
 
         result = dependency.check_access(user)
@@ -130,7 +157,9 @@ class TestRBACDependency:
         When checking access to sales endpoint
         Then access should be granted and return system_admin role
         """
-        user = DBUser(id=1, email="admin@test.com", is_admin=True, team_id=None, role=None)
+        user = DBUser(
+            id=1, email="admin@test.com", is_admin=True, team_id=None, role=None
+        )
         dependency = require_sales_or_higher()
 
         result = dependency.check_access(user)
@@ -142,7 +171,9 @@ class TestRBACDependency:
         When checking access to sales endpoint
         Then access should be denied due to insufficient permissions
         """
-        user = DBUser(id=1, email="user@test.com", is_admin=False, team_id=None, role="user")
+        user = DBUser(
+            id=1, email="user@test.com", is_admin=False, team_id=None, role="user"
+        )
         dependency = require_sales_or_higher()
 
         with pytest.raises(HTTPException) as exc_info:
@@ -157,7 +188,9 @@ class TestRBACDependency:
         When checking access to sales endpoint
         Then access should be denied due to invalid user type
         """
-        user = DBUser(id=1, email="teamuser@test.com", is_admin=False, team_id=1, role="admin")
+        user = DBUser(
+            id=1, email="teamuser@test.com", is_admin=False, team_id=1, role="admin"
+        )
         dependency = require_sales_or_higher()
 
         with pytest.raises(HTTPException) as exc_info:
@@ -165,6 +198,7 @@ class TestRBACDependency:
 
         assert exc_info.value.status_code == 403
         assert "Not authorized to perform this action" in str(exc_info.value.detail)
+
 
 class TestUserRole:
     """Test UserRole class functionality"""
