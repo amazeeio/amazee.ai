@@ -1,15 +1,9 @@
-from fastapi.testclient import TestClient
+import time
+
 from app.db.models import DBPoolPurchase
-from app.main import app
 from datetime import datetime, UTC
 import pytest
 from unittest.mock import patch, AsyncMock
-
-
-client = TestClient(app)
-
-
-import time
 
 
 @pytest.mark.skip(reason="Fixture isolation issue - passes when run with fresh DB")
