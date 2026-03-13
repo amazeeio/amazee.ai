@@ -13,8 +13,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = "c3d4e5f6a7b8"
-down_revision: Union[str, None] = "b2c3d4e5f6a7"
+revision: str = "c3d4e5f6a7b8"  # noqa: F841
+down_revision: Union[str, None] = "b2c3d4e5f6a7"  # noqa: F841
 
 
 def upgrade() -> None:

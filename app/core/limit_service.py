@@ -1060,9 +1060,7 @@ class LimitService:
                 result.current_service_keys,
             )
             # Ensure the key in progress is recorded
-            increment = self.increment_resource(
-                OwnerType.TEAM, team_id, ResourceType.SERVICE_KEY
-            )
+            self.increment_resource(OwnerType.TEAM, team_id, ResourceType.SERVICE_KEY)
             # Check service key limits (only for team-owned keys)
             if (
                 owner_id is None
