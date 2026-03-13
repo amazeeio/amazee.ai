@@ -314,7 +314,7 @@ class TeamBase(BaseModel):
 
 class TeamCreate(TeamBase):
     force_user_keys: bool = False
-    budget_type: BudgetType = BudgetType.POOL
+    budget_type: BudgetType
 
 
 
