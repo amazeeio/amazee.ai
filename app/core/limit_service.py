@@ -746,7 +746,11 @@ class LimitService:
             if max_value is not None:
                 limit_source = LimitSource.PRODUCT
             else:
-                max_value = self.get_default_team_limit_for_resource(resource_type)
+                # POOL teams start with $0 budget, PERIODIC teams get default
+                if resource_type == ResourceType.BUDGET and team.budget_type == "pool":
+                    max_value = 0.0
+                else:
+                    max_value = self.get_default_team_limit_for_resource(resource_type)
                 limit_source = LimitSource.DEFAULT
 
             # Set the limit (this will update existing or create new)

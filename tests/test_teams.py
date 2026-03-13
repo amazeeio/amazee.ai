@@ -29,6 +29,7 @@ def test_register_team(client, admin_token):
             "admin_email": "team@example.com",
             "phone": "1234567890",
             "billing_address": "123 Test St, Test City, 12345",
+            "budget_type": "pool",
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -112,9 +113,10 @@ def test_register_team_duplicate_admin_email_case_insensitive(client, db, admin_
         "/teams/",
         json={
             "name": "New Team",
-            "admin_email": "EXISTING@EXAMPLE.COM",
+            "admin_email": "existing@example.com",
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321",
+            "budget_type": "pool",
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
