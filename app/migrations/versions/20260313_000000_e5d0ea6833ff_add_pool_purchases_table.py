@@ -13,8 +13,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic to track migration history
-revision: str = "e5d0ea6833ff"  # noqa: F841
-down_revision: Union[str, None] = "95ac6f88662f"  # noqa: F841
+revision: str = "e5d0ea6833ff"
+down_revision: Union[str, None] = "95ac6f88662f"
 
 
 def upgrade() -> None:
