@@ -8,7 +8,11 @@ import logging
 from app.db.database import get_db
 from app.db.models import DBTeam, DBRegion, DBPoolPurchase
 from app.core.security import get_role_min_system_admin
-from app.schemas.models import PoolPurchaseRequest, PoolPurchaseResponse
+from app.schemas.models import (
+    PoolPurchaseRequest,
+    PoolPurchaseResponse,
+    PoolPurchaseHistoryResponse,
+)
 from app.services.litellm import LiteLLMService
 
 
@@ -143,6 +147,41 @@ async def purchase_pool_budget(
         created_at=purchase_record.created_at,
         new_total_budget_cents=int(new_total_budget * 100),
         keys_updated=0,
+    )
+
+
+@router.get(
+    "/region/{region_id}/teams/{team_id}/purchase-history",
+    response_model=PoolPurchaseHistoryResponse,
+    dependencies=[Depends(get_role_min_system_admin)],
+)
+async def get_purchase_history(
+    region_id: int, team_id: int, db: Session = Depends(get_db)
+):
+    """Get purchase history for a team in a region."""
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if not team:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
+        )
+
+    region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+    if not region:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
+        )
+
+    purchases = (
+        db.query(DBPoolPurchase)
+        .filter(
+            DBPoolPurchase.team_id == team_id, DBPoolPurchase.region_id == region_id
+        )
+        .order_by(DBPoolPurchase.purchased_at.desc())
+        .all()
+    )
+
+    return PoolPurchaseHistoryResponse(
+        team_id=team_id, region_id=region_id, purchases=purchases
     )
 
 
