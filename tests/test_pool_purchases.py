@@ -1,9 +1,11 @@
 import time
 
 from app.db.models import DBPoolPurchase
-from datetime import datetime, UTC
+from app.db.models import DBTeamRegion
+from datetime import datetime, UTC, timedelta
 import pytest
 from unittest.mock import patch, AsyncMock
+from app.api.budgets import sync_pool_team_budgets
 
 
 @pytest.mark.skip(reason="Fixture isolation issue - passes when run with fresh DB")
@@ -271,3 +273,32 @@ def test_pool_purchase_requires_admin(client, db, test_team, test_region):
     )
 
     assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_sync_pool_team_budgets_expires_stale_pool_team(db, test_team, test_region):
+    """Pool teams with 365+ days since last purchase should be set to $0 budget."""
+    test_team.budget_type = "pool"
+    test_team.last_pool_purchase = datetime.now(UTC) - timedelta(days=366)
+    db.add(
+        DBTeamRegion(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    expected_lite_team_id = f"{test_region.name}_{test_team.id}"
+
+    with patch(
+        "app.api.budgets.LiteLLMService.update_team_budget", new_callable=AsyncMock
+    ) as mock_update_budget:
+        result = await sync_pool_team_budgets(db)
+
+    assert result["teams_updated"] == 1
+    assert result["errors"] == []
+    mock_update_budget.assert_awaited_once_with(
+        team_id=expected_lite_team_id,
+        max_budget=0.0,
+    )
