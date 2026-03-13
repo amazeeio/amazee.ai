@@ -3,9 +3,24 @@ from datetime import datetime, UTC, timedelta
 from unittest.mock import Mock, patch, AsyncMock
 from sqlalchemy.orm import Session
 
-from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBTeamProduct, DBProduct, DBRegion
-from app.core.worker import _calculate_last_team_activity, _send_retention_warning, _check_team_retention_policy
-from app.core.team_service import soft_delete_team, restore_soft_deleted_team, get_team_keys_by_region
+from app.db.models import (
+    DBTeam,
+    DBUser,
+    DBPrivateAIKey,
+    DBTeamProduct,
+    DBProduct,
+    DBRegion,
+)
+from app.core.worker import (
+    _calculate_last_team_activity,
+    _send_retention_warning,
+    _check_team_retention_policy,
+)
+from app.core.team_service import (
+    soft_delete_team,
+    restore_soft_deleted_team,
+    get_team_keys_by_region,
+)
 from conftest import soft_delete_team_for_test
 
 
@@ -16,18 +31,14 @@ def test_calculate_last_team_activity_with_product_association(db: Session, test
     Then: Should return current time indicating the team is active
     """
     # Create a product and associate it with the team
-    product = DBProduct(
-        id="test-product",
-        name="Test Product",
-        active=True
-    )
+    product = DBProduct(id="test-product", name="Test Product", active=True)
     db.add(product)
     db.commit()
 
     team_product = DBTeamProduct(
         team_id=test_team.id,
         product_id=product.id,
-        created_at=datetime.now(UTC) - timedelta(days=30)
+        created_at=datetime.now(UTC) - timedelta(days=30),
     )
     db.add(team_product)
     db.commit()
@@ -41,7 +52,9 @@ def test_calculate_last_team_activity_with_product_association(db: Session, test
     assert (datetime.now(UTC) - last_activity).total_seconds() < 5
 
 
-def test_calculate_last_team_activity_with_key_usage(db: Session, test_team, test_region):
+def test_calculate_last_team_activity_with_key_usage(
+    db: Session, test_team, test_region
+):
     """
     Given: A team with a key that has recent usage (updated_at timestamp)
     When: Calculating the last team activity
@@ -54,7 +67,7 @@ def test_calculate_last_team_activity_with_key_usage(db: Session, test_team, tes
         litellm_token="test-token",
         team_id=test_team.id,
         region_id=test_region.id,
-        updated_at=recent_update_time
+        updated_at=recent_update_time,
     )
     db.add(key)
     db.commit()
@@ -75,9 +88,7 @@ def test_calculate_last_team_activity_with_user_creation(db: Session, test_team)
     # Create a user with recent creation
     recent_creation_time = datetime.now(UTC) - timedelta(days=20)
     user = DBUser(
-        email="test@example.com",
-        team_id=test_team.id,
-        created_at=recent_creation_time
+        email="test@example.com", team_id=test_team.id, created_at=recent_creation_time
     )
     db.add(user)
     db.commit()
@@ -89,7 +100,9 @@ def test_calculate_last_team_activity_with_user_creation(db: Session, test_team)
     assert last_activity == recent_creation_time
 
 
-def test_calculate_last_team_activity_with_key_creation(db: Session, test_team, test_region):
+def test_calculate_last_team_activity_with_key_creation(
+    db: Session, test_team, test_region
+):
     """
     Given: A team with a recently created key
     When: Calculating the last team activity
@@ -102,7 +115,7 @@ def test_calculate_last_team_activity_with_key_creation(db: Session, test_team, 
         litellm_token="test-token",
         team_id=test_team.id,
         region_id=test_region.id,
-        created_at=recent_creation_time
+        created_at=recent_creation_time,
     )
     db.add(key)
     db.commit()
@@ -114,7 +127,9 @@ def test_calculate_last_team_activity_with_key_creation(db: Session, test_team, 
     assert last_activity == recent_creation_time
 
 
-def test_calculate_last_team_activity_returns_most_recent(db: Session, test_team, test_region):
+def test_calculate_last_team_activity_returns_most_recent(
+    db: Session, test_team, test_region
+):
     """
     Given: A team with multiple activities at different times
     When: Calculating the last team activity
@@ -126,9 +141,7 @@ def test_calculate_last_team_activity_returns_most_recent(db: Session, test_team
 
     # Old user
     old_user = DBUser(
-        email="old@example.com",
-        team_id=test_team.id,
-        created_at=old_time
+        email="old@example.com", team_id=test_team.id, created_at=old_time
     )
     db.add(old_user)
 
@@ -138,7 +151,7 @@ def test_calculate_last_team_activity_returns_most_recent(db: Session, test_team
         litellm_token="recent-token",
         team_id=test_team.id,
         region_id=test_region.id,
-        updated_at=recent_time
+        updated_at=recent_time,
     )
     db.add(recent_key)
     db.commit()
@@ -219,9 +232,11 @@ def test_send_retention_warning_no_ses_service(db: Session, test_team):
     assert test_team.retention_warning_sent_at is None
 
 
-@patch('app.core.worker._send_retention_warning')
+@patch("app.core.worker._send_retention_warning")
 @pytest.mark.asyncio
-async def test_check_team_retention_policy_warning_sent(mock_send_warning, db: Session, test_team):
+async def test_check_team_retention_policy_warning_sent(
+    mock_send_warning, db: Session, test_team
+):
     """
     Given: A team that has been inactive for 80 days
     When: Checking the team retention policy
@@ -229,11 +244,7 @@ async def test_check_team_retention_policy_warning_sent(mock_send_warning, db: S
     """
     # Create a user 80 days ago (should trigger warning)
     old_time = datetime.now(UTC) - timedelta(days=80)
-    user = DBUser(
-        email="test@example.com",
-        team_id=test_team.id,
-        created_at=old_time
-    )
+    user = DBUser(email="test@example.com", team_id=test_team.id, created_at=old_time)
     db.add(user)
     db.commit()
 
@@ -246,10 +257,12 @@ async def test_check_team_retention_policy_warning_sent(mock_send_warning, db: S
     mock_send_warning.assert_called_once_with(db, test_team, None)
 
 
-@patch('app.core.worker.soft_delete_team', new_callable=AsyncMock)
-@patch('app.core.worker._send_retention_warning')
+@patch("app.core.worker.soft_delete_team", new_callable=AsyncMock)
+@patch("app.core.worker._send_retention_warning")
 @pytest.mark.asyncio
-async def test_check_team_retention_policy_team_deleted(mock_send_warning, mock_soft_delete, db: Session, test_team):
+async def test_check_team_retention_policy_team_deleted(
+    mock_send_warning, mock_soft_delete, db: Session, test_team
+):
     """
     Given: A team that has been inactive for 100 days and warning was sent 20 days ago
     When: Checking the team retention policy
@@ -257,11 +270,7 @@ async def test_check_team_retention_policy_team_deleted(mock_send_warning, mock_
     """
     # Create a user 100 days ago
     old_time = datetime.now(UTC) - timedelta(days=100)
-    user = DBUser(
-        email="test@example.com",
-        team_id=test_team.id,
-        created_at=old_time
-    )
+    user = DBUser(email="test@example.com", team_id=test_team.id, created_at=old_time)
     db.add(user)
 
     # Set warning sent 20 days ago (should trigger deletion)
@@ -300,9 +309,11 @@ async def test_check_team_retention_policy_already_deleted(db: Session, test_tea
     assert test_team.deleted_at is not None
 
 
-@patch('app.core.worker._send_retention_warning')
+@patch("app.core.worker._send_retention_warning")
 @pytest.mark.asyncio
-async def test_check_team_retention_policy_no_action_needed(mock_send_warning, db: Session, test_team):
+async def test_check_team_retention_policy_no_action_needed(
+    mock_send_warning, db: Session, test_team
+):
     """
     Given: A team that has been active recently (10 days ago)
     When: Checking the team retention policy
@@ -311,9 +322,7 @@ async def test_check_team_retention_policy_no_action_needed(mock_send_warning, d
     # Create a user 10 days ago (should not trigger any action)
     recent_time = datetime.now(UTC) - timedelta(days=10)
     user = DBUser(
-        email="test@example.com",
-        team_id=test_team.id,
-        created_at=recent_time
+        email="test@example.com", team_id=test_team.id, created_at=recent_time
     )
     db.add(user)
     db.commit()
@@ -329,9 +338,11 @@ async def test_check_team_retention_policy_no_action_needed(mock_send_warning, d
     assert test_team.deleted_at is None
 
 
-@patch('app.core.worker._send_retention_warning')
+@patch("app.core.worker._send_retention_warning")
 @pytest.mark.asyncio
-async def test_check_team_retention_policy_warning_already_sent(mock_send_warning, db: Session, test_team):
+async def test_check_team_retention_policy_warning_already_sent(
+    mock_send_warning, db: Session, test_team
+):
     """
     Given: A team that has been inactive for 80 days but warning was already sent
     When: Checking the team retention policy
@@ -342,11 +353,7 @@ async def test_check_team_retention_policy_warning_already_sent(mock_send_warnin
 
     # Create a user 80 days ago (would normally trigger warning)
     old_time = datetime.now(UTC) - timedelta(days=80)
-    user = DBUser(
-        email="test@example.com",
-        team_id=test_team.id,
-        created_at=old_time
-    )
+    user = DBUser(email="test@example.com", team_id=test_team.id, created_at=old_time)
     db.add(user)
     db.commit()
 
@@ -384,7 +391,10 @@ def test_list_teams_includes_deleted_when_requested(client, admin_token, test_te
     # Soft delete the team
     soft_delete_team_for_test(db, test_team)
 
-    response = client.get("/teams?include_deleted=true", headers={"Authorization": f"Bearer {admin_token}"})
+    response = client.get(
+        "/teams?include_deleted=true",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
 
     assert response.status_code == 200
     teams = response.json()
@@ -402,7 +412,9 @@ def test_get_team_excludes_deleted_by_default(client, admin_token, test_team, db
     # Soft delete the team
     soft_delete_team_for_test(db, test_team)
 
-    response = client.get(f"/teams/{test_team.id}", headers={"Authorization": f"Bearer {admin_token}"})
+    response = client.get(
+        f"/teams/{test_team.id}", headers={"Authorization": f"Bearer {admin_token}"}
+    )
 
     assert response.status_code == 404  # Should not find deleted team
 
@@ -416,7 +428,10 @@ def test_get_team_includes_deleted_for_admin(client, admin_token, test_team, db)
     # Soft delete the team
     soft_delete_team_for_test(db, test_team)
 
-    response = client.get(f"/teams/{test_team.id}?include_deleted=true", headers={"Authorization": f"Bearer {admin_token}"})
+    response = client.get(
+        f"/teams/{test_team.id}?include_deleted=true",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
 
     assert response.status_code == 200
     team = response.json()
@@ -424,19 +439,28 @@ def test_get_team_includes_deleted_for_admin(client, admin_token, test_team, db)
     assert team["deleted_at"] is not None
 
 
-def test_get_team_denies_deleted_access_for_non_admin(client, team_admin_token, test_team, db):
+def test_get_team_denies_deleted_access_for_non_admin(
+    client, team_admin_token, test_team, db
+):
     """
     Given: A soft-deleted team in the database and a non-admin user
     When: Getting the team with include_deleted=true parameter
     Then: Should return 404 Not Found (team appears to not exist)
     """
     # Soft delete the team
-    db.query(DBTeam).filter(DBTeam.id == test_team.id).update({"deleted_at": datetime.now(UTC)})
+    db.query(DBTeam).filter(DBTeam.id == test_team.id).update(
+        {"deleted_at": datetime.now(UTC)}
+    )
     db.commit()
 
-    response = client.get(f"/teams/{test_team.id}?include_deleted=true", headers={"Authorization": f"Bearer {team_admin_token}"})
+    response = client.get(
+        f"/teams/{test_team.id}?include_deleted=true",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
 
-    assert response.status_code == 404  # Should be not found for non-admin (team appears to not exist)
+    assert (
+        response.status_code == 404
+    )  # Should be not found for non-admin (team appears to not exist)
 
 
 def test_teams_with_products_never_deleted(db: Session, test_team):
@@ -446,18 +470,14 @@ def test_teams_with_products_never_deleted(db: Session, test_team):
     Then: Team should never be considered for deletion regardless of other activity
     """
     # Create a product and associate it with the team
-    product = DBProduct(
-        id="test-product",
-        name="Test Product",
-        active=True
-    )
+    product = DBProduct(id="test-product", name="Test Product", active=True)
     db.add(product)
     db.commit()
 
     team_product = DBTeamProduct(
         team_id=test_team.id,
         product_id=product.id,
-        created_at=datetime.now(UTC) - timedelta(days=100)  # Very old
+        created_at=datetime.now(UTC) - timedelta(days=100),  # Very old
     )
     db.add(team_product)
     db.commit()
@@ -484,7 +504,7 @@ def test_teams_with_recent_key_usage_not_deleted(db: Session, test_team, test_re
         litellm_token="test-token",
         team_id=test_team.id,
         region_id=test_region.id,
-        updated_at=recent_time
+        updated_at=recent_time,
     )
     db.add(key)
     db.commit()
@@ -505,9 +525,7 @@ def test_teams_with_recent_resource_creation_not_deleted(db: Session, test_team)
     # Create a user recently
     recent_time = datetime.now(UTC) - timedelta(days=5)
     user = DBUser(
-        email="test@example.com",
-        team_id=test_team.id,
-        created_at=recent_time
+        email="test@example.com", team_id=test_team.id, created_at=recent_time
     )
     db.add(user)
     db.commit()
@@ -532,11 +550,7 @@ async def test_warning_only_sent_once(db: Session, test_team):
 
     # Create old activity that would normally trigger warning
     old_time = datetime.now(UTC) - timedelta(days=80)
-    user = DBUser(
-        email="test@example.com",
-        team_id=test_team.id,
-        created_at=old_time
-    )
+    user = DBUser(email="test@example.com", team_id=test_team.id, created_at=old_time)
     db.add(user)
     db.commit()
 
@@ -550,7 +564,7 @@ async def test_warning_only_sent_once(db: Session, test_team):
     assert test_team.retention_warning_sent_at == warning_time
 
 
-@patch('app.core.worker.soft_delete_team', new_callable=AsyncMock)
+@patch("app.core.worker.soft_delete_team", new_callable=AsyncMock)
 @pytest.mark.asyncio
 async def test_soft_delete_timestamp_set(mock_soft_delete, db: Session, test_team):
     """
@@ -560,11 +574,7 @@ async def test_soft_delete_timestamp_set(mock_soft_delete, db: Session, test_tea
     """
     # Create old activity
     old_time = datetime.now(UTC) - timedelta(days=100)
-    user = DBUser(
-        email="test@example.com",
-        team_id=test_team.id,
-        created_at=old_time
-    )
+    user = DBUser(email="test@example.com", team_id=test_team.id, created_at=old_time)
     db.add(user)
 
     # Set warning sent 14 days ago (should trigger deletion)
@@ -593,9 +603,7 @@ def test_team_activity_calculation_edge_cases(db: Session, test_team, test_regio
 
     # Very old user
     old_user = DBUser(
-        email="old@example.com",
-        team_id=test_team.id,
-        created_at=very_old_time
+        email="old@example.com", team_id=test_team.id, created_at=very_old_time
     )
     db.add(old_user)
 
@@ -605,7 +613,7 @@ def test_team_activity_calculation_edge_cases(db: Session, test_team, test_regio
         litellm_token="old-token",
         team_id=test_team.id,
         region_id=test_region.id,
-        created_at=old_time
+        created_at=old_time,
     )
     db.add(old_key)
 
@@ -615,7 +623,7 @@ def test_team_activity_calculation_edge_cases(db: Session, test_team, test_regio
         litellm_token="recent-token",
         team_id=test_team.id,
         region_id=test_region.id,
-        updated_at=recent_time
+        updated_at=recent_time,
     )
     db.add(recent_key)
     db.commit()
@@ -627,7 +635,7 @@ def test_team_activity_calculation_edge_cases(db: Session, test_team, test_regio
     assert last_activity == recent_key.created_at
 
 
-@patch('app.core.worker._send_retention_warning')
+@patch("app.core.worker._send_retention_warning")
 @pytest.mark.asyncio
 async def test_team_retention_policy_timing(mock_send_warning, db: Session, test_team):
     """
@@ -638,9 +646,7 @@ async def test_team_retention_policy_timing(mock_send_warning, db: Session, test
     # Create activity exactly 77 days ago (should trigger warning since >76 days)
     warning_time = datetime.now(UTC) - timedelta(days=77)
     user = DBUser(
-        email="test@example.com",
-        team_id=test_team.id,
-        created_at=warning_time
+        email="test@example.com", team_id=test_team.id, created_at=warning_time
     )
     db.add(user)
     db.commit()
@@ -654,9 +660,11 @@ async def test_team_retention_policy_timing(mock_send_warning, db: Session, test
     mock_send_warning.assert_called_once()
 
 
-@patch('app.core.worker.soft_delete_team', new_callable=AsyncMock)
+@patch("app.core.worker.soft_delete_team", new_callable=AsyncMock)
 @pytest.mark.asyncio
-async def test_team_retention_policy_deletion_timing(mock_soft_delete, db: Session, test_team):
+async def test_team_retention_policy_deletion_timing(
+    mock_soft_delete, db: Session, test_team
+):
     """
     Given: A team with activity at exactly 91 days ago and warning sent 14 days ago
     When: Checking retention policy
@@ -665,9 +673,7 @@ async def test_team_retention_policy_deletion_timing(mock_soft_delete, db: Sessi
     # Create activity exactly 91 days ago
     deletion_time = datetime.now(UTC) - timedelta(days=91)
     user = DBUser(
-        email="test@example.com",
-        team_id=test_team.id,
-        created_at=deletion_time
+        email="test@example.com", team_id=test_team.id, created_at=deletion_time
     )
     db.add(user)
 
@@ -696,7 +702,9 @@ def test_restore_team_success(client, admin_token, test_team, db):
     db.commit()
 
     team_id = test_team.id
-    response = client.post(f"/teams/{team_id}/restore", headers={"Authorization": f"Bearer {admin_token}"})
+    response = client.post(
+        f"/teams/{team_id}/restore", headers={"Authorization": f"Bearer {admin_token}"}
+    )
 
     assert response.status_code == 200
     assert response.json()["message"] == "Team restored successfully"
@@ -713,7 +721,10 @@ def test_restore_team_not_deleted(client, admin_token, test_team):
     When: Attempting to restore the team
     Then: Should return 400 Bad Request
     """
-    response = client.post(f"/teams/{test_team.id}/restore", headers={"Authorization": f"Bearer {admin_token}"})
+    response = client.post(
+        f"/teams/{test_team.id}/restore",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
 
     assert response.status_code == 400
     assert "not deleted" in response.json()["detail"].lower()
@@ -725,7 +736,9 @@ def test_restore_team_not_found(client, admin_token):
     When: Attempting to restore the team
     Then: Should return 404 Not Found
     """
-    response = client.post("/teams/99999/restore", headers={"Authorization": f"Bearer {admin_token}"})
+    response = client.post(
+        "/teams/99999/restore", headers={"Authorization": f"Bearer {admin_token}"}
+    )
 
     assert response.status_code == 404
     assert "not found" in response.json()["detail"].lower()
@@ -740,12 +753,17 @@ def test_restore_team_requires_admin(client, team_admin_token, test_team, db):
     # Soft delete the team
     soft_delete_team_for_test(db, test_team)
 
-    response = client.post(f"/teams/{test_team.id}/restore", headers={"Authorization": f"Bearer {team_admin_token}"})
+    response = client.post(
+        f"/teams/{test_team.id}/restore",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
 
     assert response.status_code == 403
 
 
-def test_list_keys_excludes_soft_deleted_teams(client, admin_token, test_team, test_region, db):
+def test_list_keys_excludes_soft_deleted_teams(
+    client, admin_token, test_team, test_region, db
+):
     """
     Given: A key belonging to a soft-deleted team
     When: Listing private AI keys
@@ -756,7 +774,7 @@ def test_list_keys_excludes_soft_deleted_teams(client, admin_token, test_team, t
         name="test-key",
         litellm_token="test-token",
         team_id=test_team.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(key)
     db.commit()
@@ -764,7 +782,9 @@ def test_list_keys_excludes_soft_deleted_teams(client, admin_token, test_team, t
     # Soft delete the team
     soft_delete_team_for_test(db, test_team)
 
-    response = client.get("/private-ai-keys", headers={"Authorization": f"Bearer {admin_token}"})
+    response = client.get(
+        "/private-ai-keys", headers={"Authorization": f"Bearer {admin_token}"}
+    )
 
     assert response.status_code == 200
     keys = response.json()
@@ -778,10 +798,7 @@ def test_list_users_excludes_soft_deleted_teams(client, admin_token, test_team, 
     Then: Should not include users from soft-deleted teams
     """
     # Create a user
-    user = DBUser(
-        email="test@example.com",
-        team_id=test_team.id
-    )
+    user = DBUser(email="test@example.com", team_id=test_team.id)
     db.add(user)
     db.commit()
 
@@ -798,9 +815,11 @@ def test_list_users_excludes_soft_deleted_teams(client, admin_token, test_team, 
 
 
 # Integration tests for soft_delete_team and restore_soft_deleted_team functions
-@patch('app.core.team_service.LiteLLMService')
+@patch("app.core.team_service.LiteLLMService")
 @pytest.mark.asyncio
-async def test_soft_delete_team_integration(mock_litellm_class, db: Session, test_team, test_region):
+async def test_soft_delete_team_integration(
+    mock_litellm_class, db: Session, test_team, test_region
+):
     """
     Given: A team with users and keys
     When: Calling soft_delete_team()
@@ -816,13 +835,10 @@ async def test_soft_delete_team_integration(mock_litellm_class, db: Session, tes
         name="key1",
         litellm_token="token1",
         team_id=test_team.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     key2 = DBPrivateAIKey(
-        name="key2",
-        litellm_token="token2",
-        owner_id=user1.id,
-        region_id=test_region.id
+        name="key2", litellm_token="token2", owner_id=user1.id, region_id=test_region.id
     )
     db.add_all([key1, key2])
     db.commit()
@@ -847,13 +863,19 @@ async def test_soft_delete_team_integration(mock_litellm_class, db: Session, tes
 
     # Verify LiteLLM service was called to expire keys
     assert mock_service.update_key_duration.call_count == 2
-    mock_service.update_key_duration.assert_any_call(litellm_token="token1", duration="0d")
-    mock_service.update_key_duration.assert_any_call(litellm_token="token2", duration="0d")
+    mock_service.update_key_duration.assert_any_call(
+        litellm_token="token1", duration="0d"
+    )
+    mock_service.update_key_duration.assert_any_call(
+        litellm_token="token2", duration="0d"
+    )
 
 
-@patch('app.core.team_service.LiteLLMService')
+@patch("app.core.team_service.LiteLLMService")
 @pytest.mark.asyncio
-async def test_restore_soft_deleted_team_integration(mock_litellm_class, db: Session, test_team, test_region):
+async def test_restore_soft_deleted_team_integration(
+    mock_litellm_class, db: Session, test_team, test_region
+):
     """
     Given: A soft-deleted team with deactivated users
     When: Calling restore_soft_deleted_team()
@@ -869,13 +891,10 @@ async def test_restore_soft_deleted_team_integration(mock_litellm_class, db: Ses
         name="key1",
         litellm_token="token1",
         team_id=test_team.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     key2 = DBPrivateAIKey(
-        name="key2",
-        litellm_token="token2",
-        owner_id=user1.id,
-        region_id=test_region.id
+        name="key2", litellm_token="token2", owner_id=user1.id, region_id=test_region.id
     )
     db.add_all([key1, key2])
     db.commit()
@@ -905,13 +924,19 @@ async def test_restore_soft_deleted_team_integration(mock_litellm_class, db: Ses
 
     # Verify LiteLLM service was called to un-expire keys
     assert mock_service.update_key_duration.call_count == 2
-    mock_service.update_key_duration.assert_any_call(litellm_token="token1", duration="30d")
-    mock_service.update_key_duration.assert_any_call(litellm_token="token2", duration="30d")
+    mock_service.update_key_duration.assert_any_call(
+        litellm_token="token1", duration="30d"
+    )
+    mock_service.update_key_duration.assert_any_call(
+        litellm_token="token2", duration="30d"
+    )
 
 
-@patch('app.core.team_service.LiteLLMService')
+@patch("app.core.team_service.LiteLLMService")
 @pytest.mark.asyncio
-async def test_soft_delete_team_continues_on_litellm_error(mock_litellm_class, db: Session, test_team, test_region):
+async def test_soft_delete_team_continues_on_litellm_error(
+    mock_litellm_class, db: Session, test_team, test_region
+):
     """
     Given: A team with keys and LiteLLM service fails
     When: Calling soft_delete_team()
@@ -926,7 +951,7 @@ async def test_soft_delete_team_continues_on_litellm_error(mock_litellm_class, d
         name="key",
         litellm_token="token",
         team_id=test_team.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(key)
     db.commit()
@@ -965,9 +990,11 @@ async def test_restore_soft_deleted_team_raises_on_not_deleted(db: Session, test
         await restore_soft_deleted_team(db, test_team)
 
 
-@patch('app.core.team_service.LiteLLMService')
+@patch("app.core.team_service.LiteLLMService")
 @pytest.mark.asyncio
-async def test_soft_delete_team_handles_keys_without_litellm_token(mock_litellm_class, db: Session, test_team, test_region):
+async def test_soft_delete_team_handles_keys_without_litellm_token(
+    mock_litellm_class, db: Session, test_team, test_region
+):
     """
     Given: A team with keys that have no LiteLLM token
     When: Calling soft_delete_team()
@@ -978,7 +1005,7 @@ async def test_soft_delete_team_handles_keys_without_litellm_token(mock_litellm_
         name="key",
         litellm_token=None,  # No token
         team_id=test_team.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(key)
     db.commit()
@@ -1009,7 +1036,7 @@ def test_get_team_keys_by_region(db: Session, test_team, test_region):
         id=999,
         name="test-region-2",
         litellm_api_url="https://litellm2.example.com",
-        litellm_api_key="key2"
+        litellm_api_key="key2",
     )
     db.add(region2)
     db.commit()
@@ -1024,21 +1051,21 @@ def test_get_team_keys_by_region(db: Session, test_team, test_region):
         name="team-key-r1",
         litellm_token="token1",
         team_id=test_team.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     # User key in region 1
     key2 = DBPrivateAIKey(
         name="user-key-r1",
         litellm_token="token2",
         owner_id=user.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     # Team key in region 2
     key3 = DBPrivateAIKey(
         name="team-key-r2",
         litellm_token="token3",
         team_id=test_team.id,
-        region_id=region2.id
+        region_id=region2.id,
     )
     db.add_all([key1, key2, key3])
     db.commit()
@@ -1064,7 +1091,9 @@ def test_get_team_keys_by_region(db: Session, test_team, test_region):
     assert region2_keys[0].name == "team-key-r2"
 
 
-def test_get_team_keys_by_region_skips_keys_without_token(db: Session, test_team, test_region):
+def test_get_team_keys_by_region_skips_keys_without_token(
+    db: Session, test_team, test_region
+):
     """
     Given: A team with keys that have no LiteLLM token
     When: Calling get_team_keys_by_region()
@@ -1075,14 +1104,14 @@ def test_get_team_keys_by_region_skips_keys_without_token(db: Session, test_team
         name="with-token",
         litellm_token="token1",
         team_id=test_team.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     # Key without token
     key2 = DBPrivateAIKey(
         name="without-token",
         litellm_token=None,
         team_id=test_team.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add_all([key1, key2])
     db.commit()

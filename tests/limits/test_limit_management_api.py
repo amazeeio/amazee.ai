@@ -20,9 +20,9 @@ def test_admin_can_overwrite_any_limit(client, admin_token, test_team):
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 10.0,
-            "current_value": 3.0
+            "current_value": 3.0,
             # limited_by and set_by are automatically set by the API
-        }
+        },
     )
 
     assert response.status_code == 200
@@ -42,7 +42,7 @@ def test_admin_can_reset_team_limits(client, admin_token, test_team):
     """
     response = client.post(
         f"/limits/teams/{test_team.id}/reset",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     assert response.status_code == 200
@@ -67,7 +67,7 @@ def test_admin_can_reset_single_limit(client: TestClient, admin_token, test_team
         owner_id=test_team.id,
         limited_by=LimitSource.MANUAL,
         set_by="admin@example.com",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(limit)
     db.commit()
@@ -75,11 +75,7 @@ def test_admin_can_reset_single_limit(client: TestClient, admin_token, test_team
     response = client.post(
         "/limits/reset",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "owner_type": "team",
-            "owner_id": test_team.id,
-            "resource": "user"
-        }
+        json={"owner_type": "team", "owner_id": test_team.id, "resource": "user"},
     )
 
     assert response.status_code == 200
@@ -105,8 +101,8 @@ def test_non_admin_cannot_access_limit_apis(client: TestClient, test_token, test
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 10.0,
-            "current_value": 3.0
-        }
+            "current_value": 3.0,
+        },
     )
 
     assert response.status_code == 403
@@ -114,7 +110,7 @@ def test_non_admin_cannot_access_limit_apis(client: TestClient, test_token, test
     # Test reset team limits
     response = client.post(
         f"/limits/teams/{test_team.id}/reset",
-        headers={"Authorization": f"Bearer {test_token}"}
+        headers={"Authorization": f"Bearer {test_token}"},
     )
 
     assert response.status_code == 403
@@ -123,17 +119,15 @@ def test_non_admin_cannot_access_limit_apis(client: TestClient, test_token, test
     response = client.post(
         "/limits/reset",
         headers={"Authorization": f"Bearer {test_token}"},
-        json={
-            "owner_type": "team",
-            "owner_id": test_team.id,
-            "resource": "user"
-        }
+        json={"owner_type": "team", "owner_id": test_team.id, "resource": "user"},
     )
 
     assert response.status_code == 403
 
 
-def test_get_team_limits_api_returns_all_limits(client: TestClient, admin_token, test_team, db):
+def test_get_team_limits_api_returns_all_limits(
+    client: TestClient, admin_token, test_team, db
+):
     """
     Given: Team with various limits
     When: Calling GET /teams/{team_id}/limits
@@ -149,7 +143,7 @@ def test_get_team_limits_api_returns_all_limits(client: TestClient, admin_token,
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     key_limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
@@ -160,7 +154,7 @@ def test_get_team_limits_api_returns_all_limits(client: TestClient, admin_token,
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.DEFAULT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(user_limit)
     db.add(key_limit)
@@ -168,7 +162,7 @@ def test_get_team_limits_api_returns_all_limits(client: TestClient, admin_token,
 
     response = client.get(
         f"/limits/teams/{test_team.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     assert response.status_code == 200
@@ -182,7 +176,9 @@ def test_get_team_limits_api_returns_all_limits(client: TestClient, admin_token,
     assert "service_key" in resources
 
 
-def test_api_creates_manual_limits_for_teams_and_users(client: TestClient, admin_token, test_team):
+def test_api_creates_manual_limits_for_teams_and_users(
+    client: TestClient, admin_token, test_team
+):
     """
     Given: Admin using the API to set team/user limits
     When: Calling overwrite_limit endpoint for team/user
@@ -198,8 +194,8 @@ def test_api_creates_manual_limits_for_teams_and_users(client: TestClient, admin
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 8.0,
-            "current_value": 3.0
-        }
+            "current_value": 3.0,
+        },
     )
     assert response.status_code == 200
 
@@ -208,7 +204,9 @@ def test_api_creates_manual_limits_for_teams_and_users(client: TestClient, admin
     assert data["set_by"] == "admin@example.com"
 
 
-def test_api_automatically_handles_manual_limits(client: TestClient, admin_token, test_team):
+def test_api_automatically_handles_manual_limits(
+    client: TestClient, admin_token, test_team
+):
     """
     Given: Admin using the API
     When: Creating any limit via the API
@@ -224,8 +222,8 @@ def test_api_automatically_handles_manual_limits(client: TestClient, admin_token
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 15.0,
-            "current_value": 5.0
-        }
+            "current_value": 5.0,
+        },
     )
 
     assert response.status_code == 200
@@ -234,7 +232,9 @@ def test_api_automatically_handles_manual_limits(client: TestClient, admin_token
     assert data["set_by"] == "admin@example.com"  # Automatically set from current user
 
 
-def test_get_user_limits_api(client: TestClient, admin_token, test_team, test_team_user, db):
+def test_get_user_limits_api(
+    client: TestClient, admin_token, test_team, test_team_user, db
+):
     """
     Given: User with team limits and individual overrides
     When: Calling GET /users/{user_id}/limits
@@ -250,7 +250,7 @@ def test_get_user_limits_api(client: TestClient, admin_token, test_team, test_te
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
 
     # Create user override
@@ -264,21 +264,18 @@ def test_get_user_limits_api(client: TestClient, admin_token, test_team, test_te
         owner_id=test_team_user.id,
         limited_by=LimitSource.MANUAL,
         set_by="admin@example.com",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
 
     db.add(team_limit)
     db.add(user_limit)
     db.commit()
 
-
-
     # Capture IDs before session closes
     user_id = test_team_user.id
 
     response = client.get(
-        f"/limits/users/{user_id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        f"/limits/users/{user_id}", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200
@@ -309,8 +306,8 @@ def test_system_limits_are_created_as_manual_limits(client: TestClient, admin_to
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 5.0,
-            "current_value": 0.0
-        }
+            "current_value": 0.0,
+        },
     )
     assert response.status_code == 200
 
@@ -320,10 +317,14 @@ def test_system_limits_are_created_as_manual_limits(client: TestClient, admin_to
     assert data["resource"] == "user"
     assert data["max_value"] == 5.0
     assert data["limited_by"] == "manual"  # System limits set via API should be MANUAL
-    assert data["set_by"] == "admin@example.com"  # Should track who set the system limit
+    assert (
+        data["set_by"] == "admin@example.com"
+    )  # Should track who set the system limit
 
 
-def test_team_limits_are_created_as_manual_limits(client: TestClient, admin_token, test_team):
+def test_team_limits_are_created_as_manual_limits(
+    client: TestClient, admin_token, test_team
+):
     """
     Given: Admin using the API to set team limits
     When: Calling overwrite_limit endpoint with owner_type=team
@@ -342,8 +343,8 @@ def test_team_limits_are_created_as_manual_limits(client: TestClient, admin_toke
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 8.0,
-            "current_value": 3.0
-        }
+            "current_value": 3.0,
+        },
     )
     assert response.status_code == 200
 
@@ -356,7 +357,9 @@ def test_team_limits_are_created_as_manual_limits(client: TestClient, admin_toke
     assert data["set_by"] == "admin@example.com"
 
 
-def test_user_limits_are_created_as_manual_limits(client: TestClient, admin_token, test_team_user):
+def test_user_limits_are_created_as_manual_limits(
+    client: TestClient, admin_token, test_team_user
+):
     """
     Given: Admin using the API to set user limits
     When: Calling overwrite_limit endpoint with owner_type=user
@@ -375,8 +378,8 @@ def test_user_limits_are_created_as_manual_limits(client: TestClient, admin_toke
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 10.0,
-            "current_value": 2.0
-        }
+            "current_value": 2.0,
+        },
     )
     assert response.status_code == 200
 
@@ -398,7 +401,13 @@ def test_get_system_limits_api(client: TestClient, admin_token, db):
     # Create some system limits manually
     from datetime import datetime, UTC
     from app.db.models import DBLimitedResource
-    from app.schemas.limits import LimitType, ResourceType, UnitType, OwnerType, LimitSource
+    from app.schemas.limits import (
+        LimitType,
+        ResourceType,
+        UnitType,
+        OwnerType,
+        LimitSource,
+    )
 
     system_limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
@@ -409,14 +418,13 @@ def test_get_system_limits_api(client: TestClient, admin_token, db):
         owner_type=OwnerType.SYSTEM,
         owner_id=0,
         limited_by=LimitSource.DEFAULT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(system_limit)
     db.commit()
 
     response = client.get(
-        "/limits/system",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/limits/system", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200
@@ -438,8 +446,7 @@ def test_non_admin_cannot_access_system_limits_api(client: TestClient, test_toke
     Then: Should return 403 Forbidden
     """
     response = client.get(
-        "/limits/system",
-        headers={"Authorization": f"Bearer {test_token}"}
+        "/limits/system", headers={"Authorization": f"Bearer {test_token}"}
     )
 
     assert response.status_code == 403
@@ -462,8 +469,8 @@ def test_validation_errors_for_invalid_data(client: TestClient, admin_token, tes
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 10.0,
-            "current_value": 3.0
-        }
+            "current_value": 3.0,
+        },
     )
     assert response.status_code == 422  # Validation error
 
@@ -478,7 +485,7 @@ def test_validation_errors_for_invalid_data(client: TestClient, admin_token, tes
             "limit_type": "control_plane",
             "unit": "count",
             "max_value": 10.0,
-            "current_value": 3.0
-        }
+            "current_value": 3.0,
+        },
     )
     assert response.status_code == 422  # Validation error

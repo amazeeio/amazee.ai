@@ -12,18 +12,27 @@ from fastapi import Response
 @pytest.fixture
 def mock_auth_deps():
     """Fixture that bundles all auth dependency mocks."""
-    with patch("app.api.auth.create_private_ai_key", new_callable=AsyncMock) as mock_create_key, \
-         patch("app.api.auth.register_team", new_callable=AsyncMock) as mock_register_team, \
-         patch("app.api.auth._create_user_in_db") as mock_create_user, \
-         patch("httpx.AsyncClient") as mock_httpx_client_cls, \
-         patch("app.api.auth.LiteLLMService") as mock_litellm_service_cls, \
-         patch("app.api.auth.create_and_set_access_token") as mock_create_token, \
-         patch("app.core.limit_service.LimitService.get_token_restrictions") as mock_get_token_restrictions, \
-         patch("app.core.config.settings.AI_TRIAL_REGION", "test-region"), \
-         patch("app.core.config.settings.ENABLE_LIMITS", True):
-
+    with (
+        patch(
+            "app.api.auth.create_private_ai_key", new_callable=AsyncMock
+        ) as mock_create_key,
+        patch(
+            "app.api.auth.register_team", new_callable=AsyncMock
+        ) as mock_register_team,
+        patch("app.api.auth._create_user_in_db") as mock_create_user,
+        patch("httpx.AsyncClient") as mock_httpx_client_cls,
+        patch("app.api.auth.LiteLLMService") as mock_litellm_service_cls,
+        patch("app.api.auth.create_and_set_access_token") as mock_create_token,
+        patch(
+            "app.core.limit_service.LimitService.get_token_restrictions"
+        ) as mock_get_token_restrictions,
+        patch("app.core.config.settings.AI_TRIAL_REGION", "test-region"),
+        patch("app.core.config.settings.ENABLE_LIMITS", True),
+    ):
         # Setup common mock behaviors
-        mock_create_token.return_value = Token(access_token="mock-jwt-token", token_type="bearer")
+        mock_create_token.return_value = Token(
+            access_token="mock-jwt-token", token_type="bearer"
+        )
         mock_get_token_restrictions.return_value = (30, 10.0, 100)
 
         yield {
@@ -33,7 +42,7 @@ def mock_auth_deps():
             "httpx": mock_httpx_client_cls,
             "litellm_cls": mock_litellm_service_cls,
             "create_token": mock_create_token,
-            "get_token_restrictions": mock_get_token_restrictions
+            "get_token_restrictions": mock_get_token_restrictions,
         }
 
 
@@ -55,7 +64,9 @@ async def test_generate_trial_access(mock_auth_deps, db: Session):
         if model == DBRegion:
             mock_query.filter.return_value.first.return_value = mock_region
         elif model == DBTeam:
-            mock_query.filter.return_value.first.return_value = None # Force create team
+            mock_query.filter.return_value.first.return_value = (
+                None  # Force create team
+            )
         elif model == DBUser:
             mock_query.filter.return_value.first.return_value = None
         else:
@@ -80,7 +91,7 @@ async def test_generate_trial_access(mock_auth_deps, db: Session):
         "limited_by": "manual",
         "set_by": "test",
         "created_at": "2024-01-01T00:00:00",
-        "updated_at": "2024-01-01T00:00:00"
+        "updated_at": "2024-01-01T00:00:00",
     }
     mock_limit_service.set_limit.return_value = valid_limit
 
@@ -147,11 +158,11 @@ async def test_generate_trial_access_cleanup_on_key_creation_failure(
         if model == DBRegion:
             q.filter.return_value.first.return_value = mock_region
         elif model == DBTeam:
-            q.filter.return_value.first.return_value = None # Force create team
+            q.filter.return_value.first.return_value = None  # Force create team
         elif model == DBUser:
-             q.filter.return_value.first.return_value = None
+            q.filter.return_value.first.return_value = None
         else:
-             q.filter.return_value.first.return_value = None
+            q.filter.return_value.first.return_value = None
         return q
 
     mock_db.query.side_effect = get_mock_query
@@ -183,7 +194,7 @@ async def test_generate_trial_access_cleanup_on_key_creation_failure(
         "limited_by": "manual",
         "set_by": "test",
         "created_at": "2024-01-01T00:00:00",
-        "updated_at": "2024-01-01T00:00:00"
+        "updated_at": "2024-01-01T00:00:00",
     }
     mock_limit_service.set_limit.return_value = valid_limit
 

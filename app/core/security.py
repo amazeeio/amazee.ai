@@ -27,13 +27,16 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # Custom bearer scheme
 bearer_scheme = HTTPBearer(auto_error=False)
 
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
     return pwd_context.verify(plain_password, hashed_password)
 
+
 def get_password_hash(password: str) -> str:
     """Generate password hash."""
     return pwd_context.hash(password)
+
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """Create JWT access token."""
@@ -43,12 +46,15 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     else:
         expire = datetime.now(UTC) + timedelta(minutes=60)  # Default to 60 minutes
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    encoded_jwt = jwt.encode(
+        to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM
+    )
     return encoded_jwt
+
 
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Get current user from JWT token."""
     if not credentials:
@@ -62,9 +68,7 @@ async def get_current_user(
     )
     try:
         payload = jwt.decode(
-            token,
-            settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM]
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
         )
     except JWTError:
         raise credentials_exception
@@ -75,18 +79,21 @@ async def get_current_user(
         raise credentials_exception
     return user
 
+
 async def get_current_user_from_auth(
     access_token: Optional[str] = Cookie(None, alias="access_token"),
     authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db),
-    request: Request = None
+    request: Request = None,
 ) -> DBUser:
     """Get current user from either JWT token (in cookie or Authorization header) or API token."""
     # First check if user is already in request state (set by AuthMiddleware)
-    if request and hasattr(request.state, 'user') and request.state.user is not None:
+    if request and hasattr(request.state, "user") and request.state.user is not None:
         # If we have a dict from middleware, load the full user object
         if isinstance(request.state.user, dict):
-            user = db.query(DBUser).filter(DBUser.id == request.state.user["id"]).first()
+            user = (
+                db.query(DBUser).filter(DBUser.id == request.state.user["id"]).first()
+            )
             if user:
                 return user
         else:
@@ -123,7 +130,9 @@ async def get_current_user_from_auth(
 
     # If API token validation fails, try JWT validation
     try:
-        credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token_to_try)
+        credentials = HTTPAuthorizationCredentials(
+            scheme="Bearer", credentials=token_to_try
+        )
         user = await get_current_user(credentials=credentials, db=db)
         if user:
             return user
@@ -134,17 +143,26 @@ async def get_current_user_from_auth(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-async def get_role_min_system_admin(current_user: DBUser = Depends(get_current_user_from_auth)):
+
+async def get_role_min_system_admin(
+    current_user: DBUser = Depends(get_current_user_from_auth),
+):
     """Check if the current user is a system admin."""
     dependency = require_system_admin()
     return dependency.check_access(current_user)
 
-async def get_role_min_team_admin(current_user: DBUser = Depends(get_current_user_from_auth)):
+
+async def get_role_min_team_admin(
+    current_user: DBUser = Depends(get_current_user_from_auth),
+):
     """Require team admin role or higher."""
     dependency = require_team_admin()
     return dependency.check_access(current_user)
 
-async def get_role_min_specific_team_admin(current_user: DBUser = Depends(get_current_user_from_auth), team_id: int = None):
+
+async def get_role_min_specific_team_admin(
+    current_user: DBUser = Depends(get_current_user_from_auth), team_id: int = None
+):
     """Check if user is admin of specific team."""
     dependency = require_team_admin()
     role = dependency.check_access(current_user)
@@ -153,21 +171,30 @@ async def get_role_min_specific_team_admin(current_user: DBUser = Depends(get_cu
     if not current_user.is_admin and not current_user.team_id == team_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not authorized to perform this action"
+            detail="Not authorized to perform this action",
         )
     return role
 
-async def get_role_min_key_creator(current_user: DBUser = Depends(get_current_user_from_auth)):
+
+async def get_role_min_key_creator(
+    current_user: DBUser = Depends(get_current_user_from_auth),
+):
     """Require key creator role or higher."""
     dependency = require_key_creator_or_higher()
     return dependency.check_access(current_user)
 
-async def get_private_ai_access(current_user: DBUser = Depends(get_current_user_from_auth)):
+
+async def get_private_ai_access(
+    current_user: DBUser = Depends(get_current_user_from_auth),
+):
     """Require access to private AI operations - allows system users or team key creators."""
     dependency = require_private_ai_access()
     return dependency.check_access(current_user)
 
-async def check_sales_or_higher(current_user: DBUser = Depends(get_current_user_from_auth)):
+
+async def check_sales_or_higher(
+    current_user: DBUser = Depends(get_current_user_from_auth),
+):
     """Check if the current user is a sales user or system admin."""
     dependency = require_sales_or_higher()
     return dependency.check_access(current_user)

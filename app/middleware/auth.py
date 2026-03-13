@@ -8,6 +8,7 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         # Skip auth for certain paths
@@ -20,18 +21,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
             if auth_header and auth_header.startswith("Bearer "):
                 bearer_token = auth_header.split(" ")[1]
 
-                if settings.PROMETHEUS_API_KEY and bearer_token == settings.PROMETHEUS_API_KEY:
+                if (
+                    settings.PROMETHEUS_API_KEY
+                    and bearer_token == settings.PROMETHEUS_API_KEY
+                ):
                     return await call_next(request)
                 else:
                     logger.info("Metrics Bearer token validation failed")
             else:
-                logger.info("No valid Metrics Bearer token found in authorization header")
+                logger.info(
+                    "No valid Metrics Bearer token found in authorization header"
+                )
 
             # If no valid Bearer token, return 404
-            return JSONResponse(
-                status_code=404,
-                content={"detail": "Not Found"}
-            )
+            return JSONResponse(status_code=404, content={"detail": "Not Found"})
 
         # Initialize user as None
         request.state.user = None
@@ -55,7 +58,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     user = await get_current_user_from_auth(
                         access_token=access_token if access_token else None,
                         authorization=auth_header if auth_header else None,
-                        db=db
+                        db=db,
                     )
                     # Store essential user data instead of the full SQLAlchemy object
                     request.state.user = {
@@ -63,7 +66,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         "email": user.email,
                         "is_admin": user.is_admin,
                         "role": user.role,
-                        "team_id": user.team_id
+                        "team_id": user.team_id,
                     }
                 except Exception as e:
                     logger.debug(f"Could not get user for request: {str(e)}")

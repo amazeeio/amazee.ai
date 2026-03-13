@@ -9,10 +9,7 @@ def test_legacy_resource_limits_integration(db, test_team, test_product):
     """Test legacy resource limits integration with new limit service"""
     # This test ensures backward compatibility with the legacy resource limits system
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -32,10 +29,7 @@ def test_legacy_resource_limits_integration(db, test_team, test_product):
 def test_legacy_fallback_behavior(db, test_team, test_product):
     """Test that legacy fallback behavior still works correctly"""
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -55,10 +49,7 @@ def test_legacy_fallback_behavior(db, test_team, test_product):
 def test_legacy_error_messages(db, test_team, test_product):
     """Test that legacy error messages are preserved"""
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -71,7 +62,7 @@ def test_legacy_error_messages(db, test_team, test_product):
             is_admin=False,
             role="user",
             team_id=test_team.id,
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         )
         db.add(user)
     db.commit()
@@ -81,4 +72,7 @@ def test_legacy_error_messages(db, test_team, test_product):
         limit_service = LimitService(db)
         limit_service.check_team_user_limit(test_team.id)
     assert exc_info.value.status_code == 402
-    assert f"Team has reached the maximum user limit of {test_product.user_count} users" in str(exc_info.value.detail)
+    assert (
+        f"Team has reached the maximum user limit of {test_product.user_count} users"
+        in str(exc_info.value.detail)
+    )

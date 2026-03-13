@@ -1,10 +1,11 @@
-
 from typing import List
 from enum import Enum
+
 
 class UserType(Enum):
     SYSTEM = "system"
     TEAM = "team"
+
 
 class UserRole:
     # System roles
@@ -19,7 +20,7 @@ class UserRole:
 
     # Legacy support - these MUST match existing string values exactly
     ADMIN = TEAM_ADMIN  # "admin"
-    DEFAULT = USER      # "user"
+    DEFAULT = USER  # "user"
 
     # Role combinations for better readability
     ADMIN_ROLES = [TEAM_ADMIN, SYSTEM_ADMIN]

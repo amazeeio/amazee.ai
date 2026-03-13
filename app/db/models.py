@@ -1,4 +1,14 @@
-from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, DateTime, JSON, Float, Enum
+from sqlalchemy import (
+    Boolean,
+    Column,
+    ForeignKey,
+    Integer,
+    String,
+    DateTime,
+    JSON,
+    Float,
+    Enum,
+)
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime, UTC
 from sqlalchemy.sql import func
@@ -6,6 +16,7 @@ from sqlalchemy import UniqueConstraint
 from app.schemas.limits import LimitType, ResourceType, UnitType, OwnerType, LimitSource
 
 Base = declarative_base()
+
 
 class DBTeamProduct(Base):
     """
@@ -17,15 +28,22 @@ class DBTeamProduct(Base):
     - Tracking when products were added to teams
     - Maintaining referential integrity between teams and products
     """
+
     __tablename__ = "team_products"
 
-    team_id = Column(Integer, ForeignKey('teams.id'), primary_key=True, nullable=False)
-    product_id = Column(String, ForeignKey('products.id', ondelete='CASCADE'), primary_key=True, nullable=False)
+    team_id = Column(Integer, ForeignKey("teams.id"), primary_key=True, nullable=False)
+    product_id = Column(
+        String,
+        ForeignKey("products.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 
     team = relationship("DBTeam", back_populates="active_products")
     product = relationship("DBProduct", back_populates="teams")
+
 
 class DBTeamRegion(Base):
     """
@@ -37,15 +55,22 @@ class DBTeamRegion(Base):
     - Tracking when regions were associated with teams
     - Maintaining referential integrity between teams and regions
     """
+
     __tablename__ = "team_regions"
 
-    team_id = Column(Integer, ForeignKey('teams.id'), primary_key=True, nullable=False)
-    region_id = Column(Integer, ForeignKey('regions.id', ondelete='CASCADE'), primary_key=True, nullable=False)
+    team_id = Column(Integer, ForeignKey("teams.id"), primary_key=True, nullable=False)
+    region_id = Column(
+        Integer,
+        ForeignKey("regions.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 
     team = relationship("DBTeam", back_populates="dedicated_regions")
     region = relationship("DBRegion", back_populates="teams")
+
 
 class DBRegion(Base):
     __tablename__ = "regions"
@@ -67,6 +92,7 @@ class DBRegion(Base):
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="region")
     teams = relationship("DBTeamRegion", back_populates="region")
 
+
 class DBAPIToken(Base):
     __tablename__ = "api_tokens"
 
@@ -78,6 +104,7 @@ class DBAPIToken(Base):
     user_id = Column(Integer, ForeignKey("users.id"))
 
     owner = relationship("DBUser", back_populates="api_tokens")
+
 
 class DBUser(Base):
     __tablename__ = "users"
@@ -96,6 +123,7 @@ class DBUser(Base):
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="owner")
     api_tokens = relationship("DBAPIToken", back_populates="owner")
     audit_logs = relationship("DBAuditLog", back_populates="user")
+
 
 class DBTeam(Base):
     __tablename__ = "teams"
@@ -120,7 +148,10 @@ class DBTeam(Base):
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="team")
     active_products = relationship("DBTeamProduct", back_populates="team")
     dedicated_regions = relationship("DBTeamRegion", back_populates="team")
-    metrics = relationship("DBTeamMetrics", back_populates="team", uselist=False, cascade="all, delete")
+    metrics = relationship(
+        "DBTeamMetrics", back_populates="team", uselist=False, cascade="all, delete"
+    )
+
 
 class DBTeamMetrics(Base):
     """
@@ -128,10 +159,17 @@ class DBTeamMetrics(Base):
     This table stores pre-calculated metrics to avoid expensive real-time
     LiteLLM API calls in the sales dashboard.
     """
+
     __tablename__ = "team_metrics"
 
     id = Column(Integer, primary_key=True, index=True)
-    team_id = Column(Integer, ForeignKey('teams.id', ondelete='CASCADE'), unique=True, nullable=False, index=True)
+    team_id = Column(
+        Integer,
+        ForeignKey("teams.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
 
     # Spend metrics (the expensive calculation we want to cache)
     total_spend = Column(Float, default=0.0, nullable=False)
@@ -145,6 +183,7 @@ class DBTeamMetrics(Base):
 
     # Relationships
     team = relationship("DBTeam", back_populates="metrics")
+
 
 class DBPrivateAIKey(Base):
     __tablename__ = "ai_tokens"
@@ -183,8 +222,9 @@ class DBPrivateAIKey(Base):
             "owner_id": self.owner_id,
             "team_id": self.team_id,
             "created_at": self.created_at,
-            "cached_spend": self.cached_spend
+            "cached_spend": self.cached_spend,
         }
+
 
 class DBAuditLog(Base):
     __tablename__ = "audit_logs"
@@ -203,6 +243,7 @@ class DBAuditLog(Base):
 
     user = relationship("DBUser", back_populates="audit_logs")
 
+
 class DBSystemSecret(Base):
     __tablename__ = "system_secrets"
 
@@ -212,6 +253,7 @@ class DBSystemSecret(Base):
     description = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
 
 class DBProduct(Base):
     __tablename__ = "products"
@@ -233,11 +275,14 @@ class DBProduct(Base):
 
     teams = relationship("DBTeamProduct", back_populates="product")
 
+
 class DBPricingTable(Base):
     __tablename__ = "pricing_tables"
 
     id = Column(Integer, primary_key=True, index=True)
-    table_type = Column(String, nullable=False, index=True)  # "standard" or "always_free"
+    table_type = Column(
+        String, nullable=False, index=True
+    )  # "standard" or "always_free"
     pricing_table_id = Column(String, nullable=False)  # Stripe pricing table ID
     stripe_publishable_key = Column(String, nullable=False)  # Stripe publishable key
     is_active = Column(Boolean, default=True)
@@ -246,8 +291,11 @@ class DBPricingTable(Base):
 
     # Ensure only one active table per type
     __table_args__ = (
-        UniqueConstraint('table_type', 'is_active', name='uq_pricing_table_type_active'),
+        UniqueConstraint(
+            "table_type", "is_active", name="uq_pricing_table_type_active"
+        ),
     )
+
 
 class DBLimitedResource(Base):
     """
@@ -259,6 +307,7 @@ class DBLimitedResource(Base):
     Source hierarchy: MANUAL > PRODUCT > DEFAULT
     Users inherit team limits unless they have individual overrides.
     """
+
     __tablename__ = "limited_resources"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -266,14 +315,18 @@ class DBLimitedResource(Base):
     resource = Column(Enum(ResourceType), nullable=False)
     unit = Column(Enum(UnitType), nullable=False)
     max_value = Column(Float, nullable=False)
-    current_value = Column(Float, nullable=True)  # None for DP limits, required for CP limits
+    current_value = Column(
+        Float, nullable=True
+    )  # None for DP limits, required for CP limits
     owner_type = Column(Enum(OwnerType), nullable=False)
     owner_id = Column(Integer, nullable=False)
     limited_by = Column(Enum(LimitSource), nullable=False)
-    set_by = Column(String, nullable=True)        # Required if limited_by is "manual"
+    set_by = Column(String, nullable=True)  # Required if limited_by is "manual"
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 
     __table_args__ = (
-        UniqueConstraint('owner_type', 'owner_id', 'resource', name='uq_owner_resource'),
+        UniqueConstraint(
+            "owner_type", "owner_id", "resource", name="uq_owner_resource"
+        ),
     )
