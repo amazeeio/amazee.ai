@@ -190,6 +190,34 @@ class DBTeamMetrics(Base):
     team = relationship("DBTeam", back_populates="metrics")
 
 
+class DBPoolPurchase(Base):
+    """
+    Stores pool budget purchases for teams.
+    Each purchase adds to the team's budget in LiteLLM.
+    """
+
+    __tablename__ = "pool_purchases"
+
+    id = Column(Integer, primary_key=True, index=True)
+    team_id = Column(
+        Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    region_id = Column(
+        Integer,
+        ForeignKey("regions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    amount_cents = Column(Integer, nullable=False)
+    currency = Column(String, nullable=False)
+    purchased_at = Column(DateTime(timezone=True), nullable=False)
+    stripe_payment_id = Column(String, unique=True, nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    team = relationship("DBTeam")
+    region = relationship("DBRegion")
+
+
 class DBPrivateAIKey(Base):
     __tablename__ = "ai_tokens"
 

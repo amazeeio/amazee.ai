@@ -506,3 +506,24 @@ class TeamRegionBudget(BaseModel):
     total_spend: float
     total_budget: float
     model_config = ConfigDict(from_attributes=True)
+
+
+class PoolPurchaseRequest(BaseModel):
+    amount_cents: int
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+
+
+class PoolPurchaseResponse(BaseModel):
+    id: int
+    team_id: int
+    region_id: int
+    amount_cents: int
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+    created_at: datetime
+    new_total_budget_cents: int
+    keys_updated: int
+    model_config = ConfigDict(from_attributes=True)

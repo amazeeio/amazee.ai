@@ -280,3 +280,57 @@ class LiteLLMService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to update LiteLLM key team association: {error_msg}",
             )
+
+    async def get_team_info(self, team_id: str) -> dict:
+        """Get information about a LiteLLM team including budget"""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.api_url}/team/info",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    params={"team_id": team_id},
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            error_msg = str(e)
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get LiteLLM team info: {error_msg}",
+            )
+
+    async def update_team_budget(
+        self, team_id: str, max_budget: float, budget_duration: str = "365d"
+    ):
+        """Update the budget for a LiteLLM team"""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/team/update",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json={
+                        "team_id": team_id,
+                        "max_budget": max_budget,
+                        "budget_duration": budget_duration,
+                    },
+                )
+                response.raise_for_status()
+                logger.info(f"Updated team {team_id} budget to {max_budget} in LiteLLM")
+        except httpx.HTTPStatusError as e:
+            error_msg = str(e)
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update LiteLLM team budget: {error_msg}",
+            )
