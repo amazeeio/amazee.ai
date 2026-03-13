@@ -58,18 +58,6 @@ async def purchase_pool_budget(
             status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
         )
 
-    existing_purchase = (
-        db.query(DBPoolPurchase)
-        .filter(DBPoolPurchase.stripe_payment_id == purchase.stripe_payment_id)
-        .first()
-    )
-
-    if existing_purchase:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A purchase with this stripe_payment_id already exists",
-        )
-
     try:
         purchase_record = DBPoolPurchase(
             team_id=team_id,
