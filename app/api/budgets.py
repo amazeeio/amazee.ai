@@ -4,7 +4,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
 from datetime import datetime, UTC
 import logging
-from collections import defaultdict
 
 from app.db.database import get_db
 from app.db.models import DBTeam, DBRegion, DBPoolPurchase
@@ -149,11 +148,10 @@ async def purchase_pool_budget(
 
 async def sync_pool_team_budgets(db: Session) -> dict:
     """
-    Sync pool team budgets with LiteLLM.
+    Expire pool team budgets after 365 days.
 
-    This cron job ensures that:
-    - Pool teams have correct max_budget in LiteLLM based on purchases - spend
-    - After 365d (budget_duration), any remaining budget is lost
+    This cron job sets max_budget to $0 for pool teams whose last purchase
+    was 365+ days ago. Any remaining budget is lost after this period.
 
     Returns summary of updates made.
     """
@@ -163,90 +161,55 @@ async def sync_pool_team_budgets(db: Session) -> dict:
         .all()
     )
 
-    teams_by_region = defaultdict(list)
-    for team in pool_teams:
-        latest_purchase = (
-            db.query(DBPoolPurchase)
-            .filter(DBPoolPurchase.team_id == team.id)
-            .order_by(DBPoolPurchase.purchased_at.desc())
-            .first()
-        )
-        if not latest_purchase:
-            continue
-
-        region = latest_purchase.region
-        if region not in teams_by_region:
-            teams_by_region[region] = []
-        if team not in teams_by_region[region]:
-            teams_by_region[region].append(team)
-
     total_updated = 0
     errors = []
 
-    for region, teams in teams_by_region.items():
-        litellm_service = LiteLLMService(
-            api_url=region.litellm_api_url, api_key=region.litellm_api_key
-        )
+    regions_cache = {}
 
-        for team in teams:
-            try:
-                latest_purchase = (
-                    db.query(DBPoolPurchase)
-                    .filter(DBPoolPurchase.team_id == team.id)
-                    .filter(DBPoolPurchase.region_id == region.id)
-                    .order_by(DBPoolPurchase.purchased_at.desc())
-                    .first()
+    for team in pool_teams:
+        if team.last_pool_purchase:
+            if team.last_pool_purchase.tzinfo is None:
+                last_purchase = team.last_pool_purchase.replace(tzinfo=UTC)
+            else:
+                last_purchase = team.last_pool_purchase
+
+            days_since_last_purchase = (datetime.now(UTC) - last_purchase).days
+
+            if days_since_last_purchase >= 365:
+                region_id = (
+                    team.dedicated_regions[0].region_id
+                    if team.dedicated_regions
+                    else None
                 )
+                if not region_id:
+                    continue
 
-                days_since_last_purchase = (
-                    datetime.now(UTC) - latest_purchase.purchased_at.replace(tzinfo=UTC)
-                ).days
+                if region_id not in regions_cache:
+                    regions_cache[region_id] = (
+                        db.query(DBRegion).filter(DBRegion.id == region_id).first()
+                    )
+                region = regions_cache[region_id]
 
-                total_purchased_cents = (
-                    db.query(func.sum(DBPoolPurchase.amount_cents))
-                    .filter(DBPoolPurchase.team_id == team.id)
-                    .filter(DBPoolPurchase.region_id == region.id)
-                    .scalar()
-                    or 0
+                if not region:
+                    continue
+
+                litellm_service = LiteLLMService(
+                    api_url=region.litellm_api_url, api_key=region.litellm_api_key
                 )
-                total_purchased_dollars = total_purchased_cents / 100.0
 
                 lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
-
-                if days_since_last_purchase >= 365:
-                    new_budget = 0.0
-                    logger.info(
-                        f"Pool team {team.id} budget expired (365d passed), setting to $0"
-                    )
-                else:
-                    try:
-                        team_info = await litellm_service.get_team_info(lite_team_id)
-                        current_spend = team_info.get("spend") or 0.0
-                    except Exception as e:
-                        logger.warning(
-                            f"Could not get team info for team {team.id}: {e}"
-                        )
-                        continue
-
-                    remaining_budget = total_purchased_dollars - current_spend
-                    if remaining_budget < 0:
-                        remaining_budget = 0.0
-                    new_budget = remaining_budget
 
                 try:
                     await litellm_service.update_team_budget(
                         team_id=lite_team_id,
-                        max_budget=new_budget,
-                        budget_duration="365d",
+                        max_budget=0.0,
                     )
                     total_updated += 1
-                    logger.info(f"Synced pool team {team.id} budget: ${new_budget:.2f}")
+                    logger.info(
+                        f"Pool team {team.id} budget expired (365d passed), set to $0"
+                    )
                 except Exception as e:
                     errors.append(f"Team {team.id}: {str(e)}")
-                    logger.error(f"Failed to update team {team.id} budget: {e}")
-
-            except Exception as e:
-                errors.append(f"Team {team.id}: {str(e)}")
-                logger.error(f"Error syncing team {team.id}: {e}")
+                    logger.error(f"Failed to expire team {team.id} budget: {e}")
 
     return {"teams_updated": total_updated, "errors": errors}
