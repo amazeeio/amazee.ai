@@ -85,6 +85,17 @@ async def purchase_pool_budget(
 
     amount_dollars = purchase.amount_cents / 100.0
 
+    # Flush before external side effects so stripe_payment_id uniqueness is
+    # enforced in this transaction (handles concurrent duplicate requests).
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A purchase with this stripe_payment_id already exists",
+        )
+
     litellm_service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
@@ -93,7 +104,7 @@ async def purchase_pool_budget(
 
     total_purchased_cents = (
         db.query(func.sum(DBPoolPurchase.amount_cents))
-        .filter(DBPoolPurchase.team_id == team_id)
+        .filter(DBPoolPurchase.team_id == team_id, DBPoolPurchase.region_id == region_id)
         .scalar()
         or 0
     )
@@ -106,11 +117,9 @@ async def purchase_pool_budget(
         logger.warning(f"Could not get team info from LiteLLM, assuming $0 spend: {e}")
         current_spend = 0.0
 
-    remaining_budget = total_purchased_dollars - current_spend
-    if remaining_budget < 0:
-        remaining_budget = 0.0
-
-    new_total_budget = remaining_budget + amount_dollars
+    new_total_budget = total_purchased_dollars - current_spend
+    if new_total_budget < 0:
+        new_total_budget = 0.0
 
     try:
         await litellm_service.update_team_budget(
