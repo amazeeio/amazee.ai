@@ -8,6 +8,7 @@ import logging
 from app.db.database import get_db
 from app.db.models import DBTeam, DBRegion, DBPoolPurchase
 from app.core.security import get_role_min_system_admin
+from app.core.config import settings
 from app.schemas.models import (
     PoolPurchaseRequest,
     PoolPurchaseResponse,
@@ -123,7 +124,9 @@ async def purchase_pool_budget(
 
     try:
         await litellm_service.update_team_budget(
-            team_id=lite_team_id, max_budget=new_total_budget, budget_duration="365d"
+            team_id=lite_team_id,
+            max_budget=new_total_budget,
+            budget_duration=f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
         )
     except Exception as e:
         logger.error(f"Failed to update LiteLLM team budget: {e}")
@@ -215,7 +218,7 @@ async def sync_pool_team_budgets(db: Session) -> dict:
 
             days_since_last_purchase = (datetime.now(UTC) - last_purchase).days
 
-            if days_since_last_purchase >= 365:
+            if days_since_last_purchase >= settings.POOL_BUDGET_EXPIRATION_DAYS:
                 region_id = (
                     team.dedicated_regions[0].region_id
                     if team.dedicated_regions
