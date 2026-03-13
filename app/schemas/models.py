@@ -10,7 +10,6 @@ class BudgetType(str, Enum):
     POOL = "pool"
 
 
-
 def lowercase_email(v: str) -> str:
     """Validator to lowercase email addresses."""
     if v is None:
@@ -317,7 +316,6 @@ class TeamCreate(TeamBase):
     budget_type: BudgetType
 
 
-
 class TeamUpdate(BaseModel):
     name: Optional[str] = None
     admin_email: Optional[CaseInsensitiveEmailStr] = None
@@ -327,7 +325,6 @@ class TeamUpdate(BaseModel):
     is_always_free: Optional[bool] = None
     force_user_keys: Optional[bool] = False
     budget_type: Optional[BudgetType] = None
-
 
 
 class Team(TeamBase):

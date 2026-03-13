@@ -322,7 +322,6 @@ app.include_router(limits.router, prefix="/limits", tags=["limits"])
 app.include_router(budgets.router, prefix="/budgets", tags=["budgets"])
 
 
-
 @app.get("/", include_in_schema=False)
 async def custom_swagger_ui_html():
     return get_swagger_ui_html(

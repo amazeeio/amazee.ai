@@ -104,7 +104,9 @@ async def purchase_pool_budget(
 
     total_purchased_cents = (
         db.query(func.sum(DBPoolPurchase.amount_cents))
-        .filter(DBPoolPurchase.team_id == team_id, DBPoolPurchase.region_id == region_id)
+        .filter(
+            DBPoolPurchase.team_id == team_id, DBPoolPurchase.region_id == region_id
+        )
         .scalar()
         or 0
     )

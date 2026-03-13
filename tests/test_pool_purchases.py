@@ -276,7 +276,9 @@ def test_pool_purchase_requires_admin(client, db, test_team, test_region):
 
 
 @pytest.mark.asyncio
-async def test_sync_pool_team_budgets_expires_stale_pool_team(db, test_team, test_region):
+async def test_sync_pool_team_budgets_expires_stale_pool_team(
+    db, test_team, test_region
+):
     """Pool teams with 365+ days since last purchase should be set to $0 budget."""
     test_team.budget_type = "pool"
     test_team.last_pool_purchase = datetime.now(UTC) - timedelta(days=366)
