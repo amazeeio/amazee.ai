@@ -306,19 +306,22 @@ class LiteLLMService:
             )
 
     async def update_team_budget(
-        self, team_id: str, max_budget: float, budget_duration: str = "365d"
+        self, team_id: str, max_budget: float, budget_duration: Optional[str] = None
     ):
         """Update the budget for a LiteLLM team"""
         try:
+            request_data = {
+                "team_id": team_id,
+                "max_budget": max_budget,
+            }
+            if budget_duration:
+                request_data["budget_duration"] = budget_duration
+
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{self.api_url}/team/update",
                     headers={"Authorization": f"Bearer {self.master_key}"},
-                    json={
-                        "team_id": team_id,
-                        "max_budget": max_budget,
-                        "budget_duration": budget_duration,
-                    },
+                    json=request_data,
                 )
                 response.raise_for_status()
                 logger.info(f"Updated team {team_id} budget to {max_budget} in LiteLLM")

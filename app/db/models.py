@@ -148,6 +148,7 @@ class DBTeam(Base):
     last_monitored = Column(DateTime(timezone=True), nullable=True)
     deleted_at = Column(DateTime(timezone=True), nullable=True)
     retention_warning_sent_at = Column(DateTime(timezone=True), nullable=True)
+    last_pool_purchase = Column(DateTime(timezone=True), nullable=True)
 
     users = relationship("DBUser", back_populates="team")
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="team")

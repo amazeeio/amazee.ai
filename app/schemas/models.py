@@ -336,6 +336,7 @@ class Team(TeamBase):
     is_always_free: bool
     force_user_keys: Optional[bool] = False
     budget_type: BudgetType
+    last_pool_purchase: Optional[datetime] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     last_payment: Optional[datetime] = None
