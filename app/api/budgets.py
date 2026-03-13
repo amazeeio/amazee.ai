@@ -24,6 +24,7 @@ router = APIRouter(tags=["budgets"])
 @router.post(
     "/region/{region_id}/teams/{team_id}/purchase",
     response_model=PoolPurchaseResponse,
+    status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(get_role_min_system_admin)],
 )
 async def purchase_pool_budget(
