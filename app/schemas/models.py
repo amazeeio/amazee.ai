@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, AfterValidator
+from pydantic import BaseModel, ConfigDict, EmailStr, AfterValidator, Field
 from typing import Optional, List, ClassVar, Literal, Dict, Annotated
 from datetime import datetime
 from sqlalchemy.orm import relationship
@@ -510,7 +510,7 @@ class TeamRegionBudget(BaseModel):
 
 
 class PoolPurchaseRequest(BaseModel):
-    amount_cents: int
+    amount_cents: int = Field(gt=0)
     currency: str
     purchased_at: datetime
     stripe_payment_id: str
