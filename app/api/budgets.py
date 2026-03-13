@@ -58,23 +58,28 @@ async def purchase_pool_budget(
             status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
         )
 
-    try:
-        purchase_record = DBPoolPurchase(
-            team_id=team_id,
-            region_id=region_id,
-            amount_cents=purchase.amount_cents,
-            currency=purchase.currency,
-            purchased_at=purchase.purchased_at,
-            stripe_payment_id=purchase.stripe_payment_id,
-            created_at=datetime.now(UTC),
-        )
-        db.add(purchase_record)
-    except IntegrityError:
-        db.rollback()
+    existing_purchase = (
+        db.query(DBPoolPurchase)
+        .filter(DBPoolPurchase.stripe_payment_id == purchase.stripe_payment_id)
+        .first()
+    )
+
+    if existing_purchase:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A purchase with this stripe_payment_id already exists",
         )
+
+    purchase_record = DBPoolPurchase(
+        team_id=team_id,
+        region_id=region_id,
+        amount_cents=purchase.amount_cents,
+        currency=purchase.currency,
+        purchased_at=purchase.purchased_at,
+        stripe_payment_id=purchase.stripe_payment_id,
+        created_at=datetime.now(UTC),
+    )
+    db.add(purchase_record)
 
     team.last_pool_purchase = purchase.purchased_at
 
@@ -121,8 +126,15 @@ async def purchase_pool_budget(
             detail=f"Failed to update team budget in LiteLLM: {str(e)}",
         )
 
-    db.commit()
-    db.refresh(purchase_record)
+    try:
+        db.commit()
+        db.refresh(purchase_record)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A purchase with this stripe_payment_id already exists",
+        )
 
     logger.info(
         f"Pool purchase recorded for team {team_id}: "
