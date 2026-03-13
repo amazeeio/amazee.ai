@@ -4,6 +4,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
+from scalar_fastapi import get_scalar_api_reference
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
 from app.api import auth, private_ai_keys, users, regions, audit, teams, billing, products, pricing_tables, limits
 from app.core.config import settings
@@ -262,6 +263,13 @@ async def custom_swagger_ui_html():
         init_oauth={
             "usePkceWithAuthorizationCodeGrant": False,
         }
+    )
+
+@app.get("/scalar", include_in_schema=False)
+async def scalar_html():
+    return get_scalar_api_reference(
+        openapi_url="/openapi.json",
+        scalar_proxy_url="https://proxy.scalar.com",
     )
 
 @app.get("/oauth2-redirect", include_in_schema=False)

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBTeamProduct, DBProduct, DBRegion
 from app.core.worker import _calculate_last_team_activity, _send_retention_warning, _check_team_retention_policy
 from app.core.team_service import soft_delete_team, restore_soft_deleted_team, get_team_keys_by_region
-from conftest import soft_delete_team_for_test
+from tests.conftest import soft_delete_team_for_test
 
 
 def test_calculate_last_team_activity_with_product_association(db: Session, test_team):
