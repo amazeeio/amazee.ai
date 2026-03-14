@@ -203,10 +203,11 @@ async def get_purchase_history(
 
 async def sync_pool_team_budgets(db: Session) -> dict:
     """
-    Expire pool team budgets after 365 days.
+    Expire pool team budgets after the configured number of days.
 
     This cron job sets max_budget to $0 for pool teams whose last purchase
-    was 365+ days ago. Any remaining budget is lost after this period.
+    was more than POOL_BUDGET_EXPIRATION_DAYS ago. Any remaining budget is
+    lost after this period. Defaults to 365 days.
 
     Returns summary of updates made.
     """
