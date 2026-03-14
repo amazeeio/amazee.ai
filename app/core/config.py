@@ -2,6 +2,7 @@ from pydantic_settings import BaseSettings
 from pydantic import ConfigDict
 import os
 
+
 class Settings(BaseSettings):
     # Database settings
     DATABASE_URL: str = "postgresql://postgres:postgres@postgres/postgres_service"
@@ -19,7 +20,7 @@ class Settings(BaseSettings):
         "http://localhost:8080",
         "http://localhost:3000",
         "http://localhost:3001",
-        "http://localhost:8800"
+        "http://localhost:8800",
     ]
     ALLOWED_HOSTS: list[str] = ["*"]  # In production, restrict this
     PUBLIC_PATHS: list[str] = ["/health", "/docs", "/openapi.json"]
@@ -33,7 +34,9 @@ class Settings(BaseSettings):
     SES_REGION: str = "eu-west-1"
     ENABLE_LIMITS: bool = os.getenv("ENABLE_LIMITS", "false") == "true"
     AI_TRIAL_MAX_BUDGET: float = os.getenv("AI_TRIAL_MAX_BUDGET", 2.0)
-    AI_TRIAL_TEAM_EMAIL: str = os.getenv("AI_TRIAL_TEAM_EMAIL", "anonymous-trial-user@example.com")
+    AI_TRIAL_TEAM_EMAIL: str = os.getenv(
+        "AI_TRIAL_TEAM_EMAIL", "anonymous-trial-user@example.com"
+    )
     AI_TRIAL_REGION: str = os.getenv("AI_TRIAL_REGION", "eu-west-1")
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "sk_test_string")
     STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "pk_test_string")
@@ -48,6 +51,9 @@ class Settings(BaseSettings):
     def model_post_init(self, values):
         # Add Lagoon routes to CORS origins if available
         lagoon_routes = os.getenv("LAGOON_ROUTES", "").split(",")
-        self.CORS_ORIGINS.extend([route.strip() for route in lagoon_routes if route.strip()])
+        self.CORS_ORIGINS.extend(
+            [route.strip() for route in lagoon_routes if route.strip()]
+        )
+
 
 settings = Settings()

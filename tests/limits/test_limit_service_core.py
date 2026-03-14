@@ -21,7 +21,7 @@ def test_get_team_limits_returns_all_limits(db, test_team):
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     service_key_limit = DBLimitedResource(
         limit_type=LimitType.CONTROL_PLANE,
@@ -32,7 +32,7 @@ def test_get_team_limits_returns_all_limits(db, test_team):
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.DEFAULT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(user_limit)
     db.add(service_key_limit)
@@ -66,13 +66,15 @@ def test_increment_resource_cp_limit_within_capacity(db, test_team):
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.DEFAULT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(limit)
     db.commit()
 
     limit_service = LimitService(db)
-    result = limit_service.increment_resource(OwnerType.TEAM, test_team.id, ResourceType.SERVICE_KEY)
+    result = limit_service.increment_resource(
+        OwnerType.TEAM, test_team.id, ResourceType.SERVICE_KEY
+    )
 
     assert result is True
 
@@ -97,13 +99,15 @@ def test_increment_resource_cp_limit_at_capacity(db, test_team):
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(limit)
     db.commit()
 
     limit_service = LimitService(db)
-    result = limit_service.increment_resource(OwnerType.TEAM, test_team.id, ResourceType.USER)
+    result = limit_service.increment_resource(
+        OwnerType.TEAM, test_team.id, ResourceType.USER
+    )
 
     assert result is False
 
@@ -128,7 +132,7 @@ def test_increment_resource_dp_limit_raises_exception(db, test_team):
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(limit)
     db.commit()
@@ -136,8 +140,12 @@ def test_increment_resource_dp_limit_raises_exception(db, test_team):
     limit_service = LimitService(db)
 
     # This should now raise an exception instead of returning True
-    with pytest.raises(ValueError, match="Cannot increment/decrement Data Plane resources"):
-        limit_service.increment_resource(OwnerType.TEAM, test_team.id, ResourceType.BUDGET)
+    with pytest.raises(
+        ValueError, match="Cannot increment/decrement Data Plane resources"
+    ):
+        limit_service.increment_resource(
+            OwnerType.TEAM, test_team.id, ResourceType.BUDGET
+        )
 
 
 def test_decrement_resource_cp_limit(db, test_team):
@@ -156,13 +164,15 @@ def test_decrement_resource_cp_limit(db, test_team):
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.DEFAULT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(limit)
     db.commit()
 
     limit_service = LimitService(db)
-    result = limit_service.decrement_resource(OwnerType.TEAM, test_team.id, ResourceType.USER)
+    result = limit_service.decrement_resource(
+        OwnerType.TEAM, test_team.id, ResourceType.USER
+    )
 
     assert result is True
 
@@ -187,7 +197,7 @@ def test_decrement_resource_dp_limit_raises_exception(db, test_team):
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.DEFAULT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(limit)
     db.commit()
@@ -195,8 +205,12 @@ def test_decrement_resource_dp_limit_raises_exception(db, test_team):
     limit_service = LimitService(db)
 
     # This should now raise an exception instead of returning True
-    with pytest.raises(ValueError, match="Cannot increment/decrement Data Plane resources"):
-        limit_service.decrement_resource(OwnerType.TEAM, test_team.id, ResourceType.BUDGET)
+    with pytest.raises(
+        ValueError, match="Cannot increment/decrement Data Plane resources"
+    ):
+        limit_service.decrement_resource(
+            OwnerType.TEAM, test_team.id, ResourceType.BUDGET
+        )
 
 
 def test_overwrite_limit_manual_can_override_anything(db, test_team):
@@ -215,7 +229,7 @@ def test_overwrite_limit_manual_can_override_anything(db, test_team):
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(limit)
     db.commit()
@@ -230,7 +244,7 @@ def test_overwrite_limit_manual_can_override_anything(db, test_team):
         max_value=10.0,
         current_value=2.0,
         limited_by=LimitSource.MANUAL,
-        set_by="admin@example.com"
+        set_by="admin@example.com",
     )
 
     assert result is not None
@@ -258,7 +272,7 @@ def test_overwrite_limit_product_can_override_default(db, test_team):
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.DEFAULT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(limit)
     db.commit()
@@ -272,7 +286,7 @@ def test_overwrite_limit_product_can_override_default(db, test_team):
         unit=UnitType.COUNT,
         max_value=15.0,
         current_value=1.0,
-        limited_by=LimitSource.PRODUCT
+        limited_by=LimitSource.PRODUCT,
     )
 
     assert result is not None
@@ -300,7 +314,7 @@ def test_overwrite_limit_product_cannot_override_manual(db, test_team):
         owner_id=test_team.id,
         limited_by=LimitSource.MANUAL,
         set_by="admin@example.com",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(limit)
     db.commit()
@@ -316,7 +330,7 @@ def test_overwrite_limit_product_cannot_override_manual(db, test_team):
             unit=UnitType.COUNT,
             max_value=12.0,
             current_value=3.0,
-            limited_by=LimitSource.PRODUCT
+            limited_by=LimitSource.PRODUCT,
         )
 
 
@@ -336,7 +350,7 @@ def test_overwrite_limit_default_can_override_product(db, test_team):
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(limit)
     db.commit()
@@ -352,15 +366,19 @@ def test_overwrite_limit_default_can_override_product(db, test_team):
         unit=UnitType.COUNT,
         max_value=5.0,
         current_value=1.0,
-        limited_by=LimitSource.DEFAULT
+        limited_by=LimitSource.DEFAULT,
     )
 
     # Verify the limit was updated
-    updated_limit = db.query(DBLimitedResource).filter(
-        DBLimitedResource.owner_type == OwnerType.TEAM,
-        DBLimitedResource.owner_id == test_team.id,
-        DBLimitedResource.resource == ResourceType.VECTOR_DB
-    ).first()
+    updated_limit = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == test_team.id,
+            DBLimitedResource.resource == ResourceType.VECTOR_DB,
+        )
+        .first()
+    )
 
     assert updated_limit is not None
     assert updated_limit.limited_by == LimitSource.DEFAULT
@@ -383,7 +401,7 @@ def test_overwrite_limit_default_cannot_override_manual(db, test_team):
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.MANUAL,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(limit)
     db.commit()
@@ -400,7 +418,7 @@ def test_overwrite_limit_default_cannot_override_manual(db, test_team):
             unit=UnitType.COUNT,
             max_value=5.0,
             current_value=1.0,
-            limited_by=LimitSource.DEFAULT
+            limited_by=LimitSource.DEFAULT,
         )
 
 
@@ -422,7 +440,7 @@ def test_set_limit_allows_product_to_default_transition(db, test_team):
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(product_limit)
     db.commit()
@@ -438,15 +456,19 @@ def test_set_limit_allows_product_to_default_transition(db, test_team):
         unit=UnitType.COUNT,
         max_value=5.0,
         current_value=2.0,
-        limited_by=LimitSource.DEFAULT
+        limited_by=LimitSource.DEFAULT,
     )
 
     # Verify the limit was updated
-    updated_limit = db.query(DBLimitedResource).filter(
-        DBLimitedResource.owner_type == OwnerType.TEAM,
-        DBLimitedResource.owner_id == test_team.id,
-        DBLimitedResource.resource == ResourceType.USER
-    ).first()
+    updated_limit = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == test_team.id,
+            DBLimitedResource.resource == ResourceType.USER,
+        )
+        .first()
+    )
 
     assert updated_limit is not None
     assert updated_limit.limited_by == LimitSource.DEFAULT

@@ -1,4 +1,5 @@
 """Tests for GET /users/by-email endpoint."""
+
 import pytest
 from datetime import datetime, UTC
 
@@ -89,7 +90,9 @@ def test_by_email_returns_both_variants_for_system_admin(
     assert "name+company@gmail.com" in emails
 
 
-def test_by_email_returns_single_variant(client, admin_token, user_personal, user_company):
+def test_by_email_returns_single_variant(
+    client, admin_token, user_personal, user_company
+):
     """Querying with a +suffix variant normalises and returns matching users."""
     # Normalising name+personal@gmail.com → name@gmail.com matches both variants
     response = client.get(

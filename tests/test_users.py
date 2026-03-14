@@ -1,24 +1,30 @@
-from app.db.models import DBUser, DBTeam, DBProduct, DBTeamProduct, DBPrivateAIKey, DBLimitedResource
+from app.db.models import (
+    DBUser,
+    DBTeam,
+    DBProduct,
+    DBTeamProduct,
+    DBPrivateAIKey,
+    DBLimitedResource,
+)
 from app.core.limit_service import LimitService, DEFAULT_KEYS_PER_USER
 from app.schemas.limits import ResourceType, LimitSource, OwnerType, LimitType, UnitType
 from app.core.config import settings
 from datetime import datetime, UTC
 from unittest.mock import patch, AsyncMock
 
+
 def test_create_user(client, test_admin, admin_token):
     response = client.post(
         "/users/",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "email": "newuser@example.com",
-            "password": "newpassword"
-        }
+        json={"email": "newuser@example.com", "password": "newpassword"},
     )
     assert response.status_code == 201
     user_data = response.json()
     assert user_data["email"] == "newuser@example.com"
     assert user_data["is_admin"] is False
     assert "id" in user_data
+
 
 def test_create_user_duplicate_email(client, test_user, admin_token, db):
     # Refresh test_user to ensure it's attached to the session
@@ -28,79 +34,70 @@ def test_create_user_duplicate_email(client, test_user, admin_token, db):
     response = client.post(
         "/users/",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "email": test_user.email,
-            "password": "newpassword",
-            "is_admin": False
-        }
+        json={"email": test_user.email, "password": "newpassword", "is_admin": False},
     )
     assert response.status_code == 400
     assert "Email already registered" in response.json()["detail"]
 
+
 def test_get_users(client, admin_token, test_user):
-    response = client.get(
-        "/users/",
-        headers={"Authorization": f"Bearer {admin_token}"}
-    )
+    response = client.get("/users/", headers={"Authorization": f"Bearer {admin_token}"})
     assert response.status_code == 200
     users = response.json()
     assert isinstance(users, list)
     assert len(users) >= 1
     assert any(user["email"] == test_user.email for user in users)
 
+
 def test_get_user_by_id(client, admin_token, test_user):
     response = client.get(
-        f"/users/{test_user.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        f"/users/{test_user.id}", headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert response.status_code == 200
     user_data = response.json()
     assert user_data["email"] == test_user.email
     assert user_data["id"] == test_user.id
 
+
 def test_get_nonexistent_user(client, admin_token):
     response = client.get(
-        "/users/99999",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/users/99999", headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert response.status_code == 404
     assert response.json()["detail"] == "User not found"
+
 
 def test_update_user(client, admin_token, test_user):
     response = client.put(
         f"/users/{test_user.id}",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "email": "updated@example.com",
-            "is_admin": False,
-            "is_active": True
-        }
+        json={"email": "updated@example.com", "is_admin": False, "is_active": True},
     )
     assert response.status_code == 200
     user_data = response.json()
     assert user_data["email"] == "updated@example.com"
 
+
 def test_delete_user(client, admin_token, test_user):
     response = client.delete(
-        f"/users/{test_user.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        f"/users/{test_user.id}", headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert response.status_code == 200
     assert response.json()["message"] == "User deleted successfully"
 
     # Verify user is actually deleted
     response = client.get(
-        f"/users/{test_user.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        f"/users/{test_user.id}", headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert response.status_code == 404
 
+
 def test_delete_user_unauthorized(client, test_user, test_token):
     response = client.delete(
-        f"/users/{test_user.id}",
-        headers={"Authorization": f"Bearer {test_token}"}
+        f"/users/{test_user.id}", headers={"Authorization": f"Bearer {test_token}"}
     )
     assert response.status_code == 403
+
 
 def test_delete_team_member(client, admin_token, test_team_user):
     """
@@ -112,7 +109,7 @@ def test_delete_team_member(client, admin_token, test_team_user):
     """
     response = client.delete(
         f"/users/{test_team_user.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert response.status_code == 200
     assert response.json()["message"] == "User deleted successfully"
@@ -120,12 +117,15 @@ def test_delete_team_member(client, admin_token, test_team_user):
     # Verify user is actually deleted
     response = client.get(
         f"/users/{test_team_user.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert response.status_code == 404
 
+
 @patch("httpx.AsyncClient.post", new_callable=AsyncMock)
-def test_delete_team_member_with_ai_keys(mock_post, client, admin_token, test_team_user, test_region, db):
+def test_delete_team_member_with_ai_keys(
+    mock_post, client, admin_token, test_team_user, test_region, db
+):
     """
     Test deleting a user who is a member of a team and has associated AI keys.
 
@@ -149,7 +149,7 @@ def test_delete_team_member_with_ai_keys(mock_post, client, admin_token, test_te
         litellm_api_url="http://localhost:8000",
         owner_id=test_team_user.id,
         region_id=test_region.id,
-        team_id=test_team_user.team_id
+        team_id=test_team_user.team_id,
     )
     db.add(ai_key)
     db.commit()
@@ -158,7 +158,7 @@ def test_delete_team_member_with_ai_keys(mock_post, client, admin_token, test_te
     # Try to delete the user
     response = client.delete(
         f"/users/{test_team_user.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert response.status_code == 400
     assert "Cannot delete user with associated AI keys" in response.json()["detail"]
@@ -166,14 +166,17 @@ def test_delete_team_member_with_ai_keys(mock_post, client, admin_token, test_te
     # Verify user is not deleted
     response = client.get(
         f"/users/{test_team_user.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert response.status_code == 200
+
 
 def test_create_user_by_team_admin(client, team_admin_token, test_team, db):
     """Test that a team admin can create a user in their own team"""
     # Get the team ID directly from the database to avoid detached instance issues
-    team_id = db.query(DBTeam).filter(DBTeam.admin_email == "testteam@example.com").first().id
+    team_id = (
+        db.query(DBTeam).filter(DBTeam.admin_email == "testteam@example.com").first().id
+    )
 
     # Create a new user in the team
     response = client.post(
@@ -182,8 +185,8 @@ def test_create_user_by_team_admin(client, team_admin_token, test_team, db):
         json={
             "email": "newteamuser@example.com",
             "password": "newpassword",
-            "team_id": team_id
-        }
+            "team_id": team_id,
+        },
     )
     assert response.status_code == 201
     user_data = response.json()
@@ -198,12 +201,12 @@ def test_create_user_by_team_admin(client, team_admin_token, test_team, db):
 
     # Verify the user appears in the team's user list
     team_response = client.get(
-        f"/teams/{team_id}",
-        headers={"Authorization": f"Bearer {team_admin_token}"}
+        f"/teams/{team_id}", headers={"Authorization": f"Bearer {team_admin_token}"}
     )
     assert team_response.status_code == 200
     team_data = team_response.json()
     assert any(u["id"] == user_data["id"] for u in team_data["users"])
+
 
 def test_create_user_in_other_team_by_team_admin(client, team_admin_token, db):
     """Test that a team admin cannot create a user in another team"""
@@ -214,7 +217,7 @@ def test_create_user_in_other_team_by_team_admin(client, team_admin_token, db):
         phone="0987654321",
         billing_address="456 Team 2 St, City 2, 54321",
         is_active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(team2)
     db.commit()
@@ -227,11 +230,12 @@ def test_create_user_in_other_team_by_team_admin(client, team_admin_token, db):
         json={
             "email": "newteamuser@example.com",
             "password": "newpassword",
-            "team_id": team2.id
-        }
+            "team_id": team2.id,
+        },
     )
     assert response.status_code == 403
     assert "Not authorized to perform this action" in response.json()["detail"]
+
 
 def test_create_user_in_team_by_system_admin(client, admin_token, test_team, db):
     """
@@ -250,8 +254,8 @@ def test_create_user_in_team_by_system_admin(client, admin_token, test_team, db)
         json={
             "email": "newteamuser@example.com",
             "password": "newpassword",
-            "team_id": team_id
-        }
+            "team_id": team_id,
+        },
     )
     assert response.status_code == 201
     user_data = response.json()
@@ -263,6 +267,7 @@ def test_create_user_in_team_by_system_admin(client, admin_token, test_team, db)
     # Verify the user is actually in the team in the database
     db_user = db.query(DBUser).filter(DBUser.id == user_data["id"]).first()
     assert db_user.team_id == team_id
+
 
 def test_create_read_only_user_by_team_admin(client, team_admin_token, test_team, db):
     """Test that a team admin can create a read-only user in their own team"""
@@ -276,8 +281,8 @@ def test_create_read_only_user_by_team_admin(client, team_admin_token, test_team
             "email": "newreadonly@example.com",
             "password": "newpassword",
             "team_id": team_id,
-            "role": "read_only"
-        }
+            "role": "read_only",
+        },
     )
     assert response.status_code == 201
     user_data = response.json()
@@ -294,14 +299,16 @@ def test_create_read_only_user_by_team_admin(client, team_admin_token, test_team
 
     # Verify the user appears in the team's user list
     team_response = client.get(
-        f"/teams/{team_id}",
-        headers={"Authorization": f"Bearer {team_admin_token}"}
+        f"/teams/{team_id}", headers={"Authorization": f"Bearer {team_admin_token}"}
     )
     assert team_response.status_code == 200
     team_data = team_response.json()
     assert any(u["id"] == user_data["id"] for u in team_data["users"])
 
-def test_create_user_with_invalid_role_by_team_admin(client, team_admin_token, test_team):
+
+def test_create_user_with_invalid_role_by_team_admin(
+    client, team_admin_token, test_team
+):
     """Test that a team admin cannot create a user with an invalid role"""
     team_id = test_team.id
 
@@ -313,11 +320,12 @@ def test_create_user_with_invalid_role_by_team_admin(client, team_admin_token, t
             "email": "invalidrole@example.com",
             "password": "newpassword",
             "team_id": team_id,
-            "role": "nonsense_role"
-        }
+            "role": "nonsense_role",
+        },
     )
     assert response.status_code == 400
     assert "Invalid role" in response.json()["detail"]
+
 
 def test_make_non_team_user_admin(client, admin_token, test_user, db):
     """
@@ -338,15 +346,12 @@ def test_make_non_team_user_admin(client, admin_token, test_user, db):
     response = client.put(
         f"/users/{test_user.id}",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "email": test_user.email,
-            "is_admin": True,
-            "is_active": True
-        }
+        json={"email": test_user.email, "is_admin": True, "is_active": True},
     )
     assert response.status_code == 200
     user_data = response.json()
     assert user_data["is_admin"] is True
+
 
 def test_make_team_member_admin_by_team_admin(client, team_admin_token, admin_token):
     """
@@ -360,10 +365,7 @@ def test_make_team_member_admin_by_team_admin(client, team_admin_token, admin_to
     response = client.post(
         "/users/",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "email": "nonteamuser@example.com",
-            "password": "newpassword"
-        }
+        json={"email": "nonteamuser@example.com", "password": "newpassword"},
     )
     assert response.status_code == 201
     user_data = response.json()
@@ -373,12 +375,11 @@ def test_make_team_member_admin_by_team_admin(client, team_admin_token, admin_to
     response = client.put(
         f"/users/{user_id}",
         headers={"Authorization": f"Bearer {team_admin_token}"},
-        json={
-            "is_admin": True
-        }
+        json={"is_admin": True},
     )
     assert response.status_code == 404
     assert "User not found" in response.json()["detail"]
+
 
 def test_user_privilege_escalation(client, team_admin_token):
     """
@@ -388,10 +389,10 @@ def test_user_privilege_escalation(client, team_admin_token):
     WHEN: A team admin tries to make that user an admin
     THEN: A 403 - Forbidden is returned
     """
-    user = client.post("/auth/register", json={
-        "email": "testuser@example.com",
-        "password": "testpassword"
-    })
+    user = client.post(
+        "/auth/register",
+        json={"email": "testuser@example.com", "password": "testpassword"},
+    )
     assert user.status_code == 200
     user_data = user.json()
     user_id = user_data["id"]
@@ -400,14 +401,13 @@ def test_user_privilege_escalation(client, team_admin_token):
     response = client.put(
         f"/users/{user_id}",
         headers={"Authorization": f"Bearer {team_admin_token}"},
-        json={
-            "is_admin": True
-        }
+        json={"is_admin": True},
     )
     assert response.status_code == 404
     assert "User not found" in response.json()["detail"]
 
-@patch('app.api.users.settings.ENABLE_LIMITS', True)
+
+@patch("app.api.users.settings.ENABLE_LIMITS", True)
 def test_create_user_with_limits_enabled(client, team_admin_token, test_team, db):
     """
     Test that a team cannot create more users when ENABLE_LIMITS is true and they have reached their limit.
@@ -431,15 +431,12 @@ def test_create_user_with_limits_enabled(client, team_admin_token, test_team, db
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(test_product)
 
     # Associate the product with the team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -450,8 +447,8 @@ def test_create_user_with_limits_enabled(client, team_admin_token, test_team, db
         json={
             "email": "user1@example.com",
             "password": "newpassword",
-            "team_id": test_team.id
-        }
+            "team_id": test_team.id,
+        },
     )
     assert response.status_code == 201
 
@@ -462,8 +459,8 @@ def test_create_user_with_limits_enabled(client, team_admin_token, test_team, db
         json={
             "email": "newteamuser@example.com",
             "password": "newpassword",
-            "team_id": test_team.id
-        }
+            "team_id": test_team.id,
+        },
     )
     assert response.status_code == 402
     assert "Team has reached their maximum user limit" in response.json()["detail"]
@@ -483,6 +480,7 @@ def test_create_user_creates_default_limits(client, admin_token, test_team, db):
 
     # Ensure system default limits exist first
     from app.core.limit_service import setup_default_limits
+
     setup_default_limits(db)
 
     # Create a new user in the team
@@ -492,8 +490,8 @@ def test_create_user_creates_default_limits(client, admin_token, test_team, db):
         json={
             "email": "newuser@example.com",
             "password": "newpassword",
-            "team_id": test_team.id
-        }
+            "team_id": test_team.id,
+        },
     )
 
     assert response.status_code == 201
@@ -511,10 +509,19 @@ def test_create_user_creates_default_limits(client, admin_token, test_team, db):
     user_limits = limit_service.get_user_limits(db_user)
 
     # Should have user-specific limits for KEY only - BUDGET and RPM are inherited from team
-    user_specific_limits = [limit for limit in user_limits if limit.owner_type == OwnerType.USER]
+    user_specific_limits = [
+        limit for limit in user_limits if limit.owner_type == OwnerType.USER
+    ]
 
     # Find the user-specific KEY limit
-    key_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.USER_KEY), None)
+    key_limit = next(
+        (
+            limit
+            for limit in user_specific_limits
+            if limit.resource == ResourceType.USER_KEY
+        ),
+        None,
+    )
 
     # Verify KEY limit exists and has correct values
     assert key_limit is not None
@@ -527,10 +534,20 @@ def test_create_user_creates_default_limits(client, admin_token, test_team, db):
     assert key_limit.current_value == 0.0
 
     # Verify that BUDGET and RPM limits are inherited from team (not user-specific)
-    budget_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.BUDGET), None)
-    rpm_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.RPM), None)
+    budget_limit = next(
+        (
+            limit
+            for limit in user_specific_limits
+            if limit.resource == ResourceType.BUDGET
+        ),
+        None,
+    )
+    rpm_limit = next(
+        (limit for limit in user_specific_limits if limit.resource == ResourceType.RPM),
+        None,
+    )
     assert budget_limit is None  # Should be inherited from team, not user-specific
-    assert rpm_limit is None     # Should be inherited from team, not user-specific
+    assert rpm_limit is None  # Should be inherited from team, not user-specific
 
 
 def test_register_user_creates_default_limits(client, db):
@@ -547,15 +564,13 @@ def test_register_user_creates_default_limits(client, db):
 
     # Ensure system default limits exist first
     from app.core.limit_service import setup_default_limits
+
     setup_default_limits(db)
 
     # Register a new user
     response = client.post(
         "/auth/register",
-        json={
-            "email": "newuser@example.com",
-            "password": "newpassword"
-        }
+        json={"email": "newuser@example.com", "password": "newpassword"},
     )
 
     assert response.status_code == 200
@@ -572,10 +587,19 @@ def test_register_user_creates_default_limits(client, db):
     user_limits = limit_service.get_user_limits(db_user)
 
     # Should have user-specific limits for KEY only - BUDGET and RPM are inherited from team
-    user_specific_limits = [limit for limit in user_limits if limit.owner_type == OwnerType.USER]
+    user_specific_limits = [
+        limit for limit in user_limits if limit.owner_type == OwnerType.USER
+    ]
 
     # Find the user-specific KEY limit
-    key_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.USER_KEY), None)
+    key_limit = next(
+        (
+            limit
+            for limit in user_specific_limits
+            if limit.resource == ResourceType.USER_KEY
+        ),
+        None,
+    )
 
     # Verify KEY limit exists and has correct values
     assert key_limit is not None
@@ -585,13 +609,25 @@ def test_register_user_creates_default_limits(client, db):
     assert key_limit.owner_id == user_id
 
     # Verify that BUDGET and RPM limits are inherited from team (not user-specific)
-    budget_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.BUDGET), None)
-    rpm_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.RPM), None)
+    budget_limit = next(
+        (
+            limit
+            for limit in user_specific_limits
+            if limit.resource == ResourceType.BUDGET
+        ),
+        None,
+    )
+    rpm_limit = next(
+        (limit for limit in user_specific_limits if limit.resource == ResourceType.RPM),
+        None,
+    )
     assert budget_limit is None  # Should be inherited from team, not user-specific
-    assert rpm_limit is None     # Should be inherited from team, not user-specific
+    assert rpm_limit is None  # Should be inherited from team, not user-specific
 
 
-def test_create_user_does_not_create_limits_when_disabled(client, admin_token, test_team, db):
+def test_create_user_does_not_create_limits_when_disabled(
+    client, admin_token, test_team, db
+):
     """
     Given: ENABLE_LIMITS is false
     When: A new user is created
@@ -607,8 +643,8 @@ def test_create_user_does_not_create_limits_when_disabled(client, admin_token, t
         json={
             "email": "newuser@example.com",
             "password": "newpassword",
-            "team_id": test_team.id
-        }
+            "team_id": test_team.id,
+        },
     )
 
     assert response.status_code == 201
@@ -620,10 +656,14 @@ def test_create_user_does_not_create_limits_when_disabled(client, admin_token, t
     assert db_user is not None
 
     # Verify that no user-specific limits were created
-    user_limits = db.query(DBLimitedResource).filter(
-        DBLimitedResource.owner_type == OwnerType.USER,
-        DBLimitedResource.owner_id == user_id
-    ).all()
+    user_limits = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.USER,
+            DBLimitedResource.owner_id == user_id,
+        )
+        .all()
+    )
 
     assert len(user_limits) == 0
 
@@ -642,25 +682,20 @@ def test_sign_in_creates_user_with_default_limits(client, db):
 
     # Ensure system default limits exist first
     from app.core.limit_service import setup_default_limits
+
     setup_default_limits(db)
 
     # First register a user
     register_response = client.post(
         "/auth/register",
-        json={
-            "email": "newuser@example.com",
-            "password": "newpassword"
-        }
+        json={"email": "newuser@example.com", "password": "newpassword"},
     )
     assert register_response.status_code == 200
 
     # Then login with the user
     response = client.post(
         "/auth/login",
-        data={
-            "username": "newuser@example.com",
-            "password": "newpassword"
-        }
+        data={"username": "newuser@example.com", "password": "newpassword"},
     )
 
     assert response.status_code == 200
@@ -676,10 +711,19 @@ def test_sign_in_creates_user_with_default_limits(client, db):
     user_limits = limit_service.get_user_limits(db_user)
 
     # Should have user-specific limits for KEY only - BUDGET and RPM are inherited from team
-    user_specific_limits = [limit for limit in user_limits if limit.owner_type == OwnerType.USER]
+    user_specific_limits = [
+        limit for limit in user_limits if limit.owner_type == OwnerType.USER
+    ]
 
     # Find the user-specific KEY limit
-    key_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.USER_KEY), None)
+    key_limit = next(
+        (
+            limit
+            for limit in user_specific_limits
+            if limit.resource == ResourceType.USER_KEY
+        ),
+        None,
+    )
 
     # Verify KEY limit exists and has correct values
     assert key_limit is not None
@@ -689,7 +733,17 @@ def test_sign_in_creates_user_with_default_limits(client, db):
     assert key_limit.owner_id == db_user.id
 
     # Verify that BUDGET and RPM limits are inherited from team (not user-specific)
-    budget_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.BUDGET), None)
-    rpm_limit = next((limit for limit in user_specific_limits if limit.resource == ResourceType.RPM), None)
+    budget_limit = next(
+        (
+            limit
+            for limit in user_specific_limits
+            if limit.resource == ResourceType.BUDGET
+        ),
+        None,
+    )
+    rpm_limit = next(
+        (limit for limit in user_specific_limits if limit.resource == ResourceType.RPM),
+        None,
+    )
     assert budget_limit is None  # Should be inherited from team, not user-specific
-    assert rpm_limit is None     # Should be inherited from team, not user-specific
+    assert rpm_limit is None  # Should be inherited from team, not user-specific

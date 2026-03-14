@@ -1,7 +1,17 @@
 from unittest.mock import patch
 
+
 @patch("httpx.AsyncClient")
-def test_create_key_force_user_keys_enabled(mock_client_class, client, team_admin_token, test_team, test_team_admin, test_region, db, mock_httpx_post_client):
+def test_create_key_force_user_keys_enabled(
+    mock_client_class,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_admin,
+    test_region,
+    db,
+    mock_httpx_post_client,
+):
     """
     Test that when force_user_keys is enabled on a team,
     creating a key with team_id results in a user-owned key instead of a team-owned key.
@@ -26,8 +36,8 @@ def test_create_key_force_user_keys_enabled(mock_client_class, client, team_admi
         json={
             "region_id": test_region.id,
             "name": "Forced User Key",
-            "team_id": team_id
-        }
+            "team_id": team_id,
+        },
     )
 
     assert response.status_code == 200
@@ -68,8 +78,18 @@ def test_create_key_force_user_keys_enabled(mock_client_class, client, team_admi
 
     assert found_generate_call
 
+
 @patch("httpx.AsyncClient")
-def test_create_token_force_user_keys_enabled(mock_client_class, client, team_admin_token, test_team, test_team_admin, test_region, db, mock_httpx_post_client):
+def test_create_token_force_user_keys_enabled(
+    mock_client_class,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_admin,
+    test_region,
+    db,
+    mock_httpx_post_client,
+):
     """
     Test creating just a token (LiteLLM only) with force_user_keys enabled.
     """
@@ -90,8 +110,8 @@ def test_create_token_force_user_keys_enabled(mock_client_class, client, team_ad
         json={
             "region_id": test_region.id,
             "name": "Forced User Token",
-            "team_id": team_id
-        }
+            "team_id": team_id,
+        },
     )
 
     assert response.status_code == 200
@@ -102,8 +122,18 @@ def test_create_token_force_user_keys_enabled(mock_client_class, client, team_ad
     assert data["owner_id"] == user_id
     assert data["team_id"] is None
 
+
 @patch("httpx.AsyncClient")
-def test_create_vector_db_force_user_keys_enabled(mock_client_class, client, team_admin_token, test_team, test_team_admin, test_region, db, mock_httpx_post_client):
+def test_create_vector_db_force_user_keys_enabled(
+    mock_client_class,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_admin,
+    test_region,
+    db,
+    mock_httpx_post_client,
+):
     """
     Test creating just a vector DB with force_user_keys enabled.
     """
@@ -124,8 +154,8 @@ def test_create_vector_db_force_user_keys_enabled(mock_client_class, client, tea
         json={
             "region_id": test_region.id,
             "name": "Forced User DB",
-            "team_id": team_id
-        }
+            "team_id": team_id,
+        },
     )
 
     assert response.status_code == 200
@@ -133,6 +163,7 @@ def test_create_vector_db_force_user_keys_enabled(mock_client_class, client, tea
 
     assert data["owner_id"] == user_id
     assert data["team_id"] is None
+
 
 def test_create_team_with_force_user_keys(client, admin_token):
     """Test registering a new team with force_user_keys enabled"""
@@ -142,21 +173,20 @@ def test_create_team_with_force_user_keys(client, admin_token):
         json={
             "name": "Force User Keys Team",
             "admin_email": "force@example.com",
-            "force_user_keys": True
-        }
+            "force_user_keys": True,
+        },
     )
     assert response.status_code == 201
     data = response.json()
     assert data["force_user_keys"] is True
+
 
 def test_update_team_force_user_keys(client, admin_token, test_team):
     """Test updating a team to enable force_user_keys"""
     response = client.put(
         f"/teams/{test_team.id}",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "force_user_keys": True
-        }
+        json={"force_user_keys": True},
     )
     assert response.status_code == 200
     data = response.json()

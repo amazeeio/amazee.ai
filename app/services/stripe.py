@@ -14,17 +14,31 @@ logger = logging.getLogger(__name__)
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
 # Full list of possible events: https://docs.stripe.com/api/events/types
-INVOICE_SUCCESS_EVENTS = ["invoice.paid"] # Renewal
-SUBSCRIPTION_SUCCESS_EVENTS = ["customer.subscription.resumed", "customer.subscription.created"] # New subscription
-SESSION_FAILURE_EVENTS = ["checkout.session.async_payment_failed", "checkout.session.expired"] # Checkout failure
-SUBSCRIPTION_FAILURE_EVENTS = ["customer.subscription.deleted", "customer.subscription.paused"] # Subscription failure
-INVOICE_FAILURE_EVENTS = ["invoice.payment_failed"] # Invoice failure
+INVOICE_SUCCESS_EVENTS = ["invoice.paid"]  # Renewal
+SUBSCRIPTION_SUCCESS_EVENTS = [
+    "customer.subscription.resumed",
+    "customer.subscription.created",
+]  # New subscription
+SESSION_FAILURE_EVENTS = [
+    "checkout.session.async_payment_failed",
+    "checkout.session.expired",
+]  # Checkout failure
+SUBSCRIPTION_FAILURE_EVENTS = [
+    "customer.subscription.deleted",
+    "customer.subscription.paused",
+]  # Subscription failure
+INVOICE_FAILURE_EVENTS = ["invoice.payment_failed"]  # Invoice failure
 
 SUCCESS_EVENTS = INVOICE_SUCCESS_EVENTS + SUBSCRIPTION_SUCCESS_EVENTS
-FAILURE_EVENTS = SESSION_FAILURE_EVENTS + SUBSCRIPTION_FAILURE_EVENTS + INVOICE_FAILURE_EVENTS
+FAILURE_EVENTS = (
+    SESSION_FAILURE_EVENTS + SUBSCRIPTION_FAILURE_EVENTS + INVOICE_FAILURE_EVENTS
+)
 KNOWN_EVENTS = SUCCESS_EVENTS + FAILURE_EVENTS
 
-def decode_stripe_event( payload: bytes, signature: str, webhook_secret: str) -> stripe.Event:
+
+def decode_stripe_event(
+    payload: bytes, signature: str, webhook_secret: str
+) -> stripe.Event:
     """
     Decode Stripe webhook events.
 
@@ -37,34 +51,26 @@ def decode_stripe_event( payload: bytes, signature: str, webhook_secret: str) ->
         stripe.Event: The Stripe event
     """
     try:
-        event = stripe.Webhook.construct_event(
-            payload, signature, webhook_secret
-        )
+        event = stripe.Webhook.construct_event(payload, signature, webhook_secret)
         logger.info(f"Decoded event of type: {event.type}")
         return event
 
     # If the signature doesn't match, assume bad intent
     except stripe.error.SignatureVerificationError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     except ValueError:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid payload"
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid payload"
         )
     except Exception as e:
         logger.error(f"Error handling Stripe event: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error processing webhook"
+            detail="Error processing webhook",
         )
 
-async def create_portal_session(
-    stripe_customer_id: str,
-    return_url: str
-) -> str:
+
+async def create_portal_session(stripe_customer_id: str, return_url: str) -> str:
     """
     Create a Stripe Customer Portal session for team subscription management.
 
@@ -78,8 +84,7 @@ async def create_portal_session(
     try:
         # Create the portal session
         portal_session = stripe.billing_portal.Session.create(
-            customer=stripe_customer_id,
-            return_url=return_url
+            customer=stripe_customer_id, return_url=return_url
         )
 
         return portal_session.url
@@ -87,10 +92,13 @@ async def create_portal_session(
         logger.error(f"Error creating portal session: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error creating portal session"
+            detail="Error creating portal session",
         )
 
-async def setup_stripe_webhook(webhook_key: str, webhook_route: str, db: Session) -> None:
+
+async def setup_stripe_webhook(
+    webhook_key: str, webhook_route: str, db: Session
+) -> None:
     """
     Set up the Stripe webhook endpoint if it doesn't exist and store its signing secret.
 
@@ -100,9 +108,9 @@ async def setup_stripe_webhook(webhook_key: str, webhook_route: str, db: Session
     """
     try:
         # Check if we already have a webhook secret stored
-        existing_secret = db.query(DBSystemSecret).filter(
-            DBSystemSecret.key == webhook_key
-        ).first()
+        existing_secret = (
+            db.query(DBSystemSecret).filter(DBSystemSecret.key == webhook_key).first()
+        )
 
         if existing_secret:
             return
@@ -129,15 +137,14 @@ async def setup_stripe_webhook(webhook_key: str, webhook_route: str, db: Session
 
         # Create new webhook endpoint
         endpoint = stripe.WebhookEndpoint.create(
-            url=webhook_url,
-            enabled_events=KNOWN_EVENTS
+            url=webhook_url, enabled_events=KNOWN_EVENTS
         )
 
         # Store the signing secret
         secret = DBSystemSecret(
             key="stripe_webhook_secret",
             value=endpoint.secret,
-            description="Stripe webhook signing secret for handling events"
+            description="Stripe webhook signing secret for handling events",
         )
         db.add(secret)
         db.commit()
@@ -146,12 +153,11 @@ async def setup_stripe_webhook(webhook_key: str, webhook_route: str, db: Session
         logger.error(f"Error setting up Stripe webhook: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error setting up Stripe webhook, {str(e)}"
+            detail=f"Error setting up Stripe webhook, {str(e)}",
         )
 
-async def create_stripe_customer(
-    team: DBTeam
-) -> str:
+
+async def create_stripe_customer(team: DBTeam) -> str:
     """
     Create a Stripe customer for a team.
 
@@ -173,10 +179,7 @@ async def create_stripe_customer(
         customer = stripe.Customer.create(
             email=team.admin_email,
             name=team.name,
-            metadata={
-                "team_id": team.id,
-                "team_name": team.name
-            }
+            metadata={"team_id": team.id, "team_name": team.name},
         )
 
         return customer.id
@@ -185,13 +188,12 @@ async def create_stripe_customer(
         logger.error(f"Error creating Stripe customer: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error creating Stripe customer"
+            detail="Error creating Stripe customer",
         )
 
+
 async def create_zero_rated_stripe_subscription(
-    customer_id: str,
-    product_id: str,
-    price_id: str = None
+    customer_id: str, product_id: str, price_id: str = None
 ) -> str:
     """
     Create a Stripe subscription for a customer to a specific free product.
@@ -210,22 +212,19 @@ async def create_zero_rated_stripe_subscription(
     try:
         # If no price_id provided, get the default price for the product
         if not price_id:
-            prices = stripe.Price.list(
-                product=product_id,
-                active=True
-            )
+            prices = stripe.Price.list(product=product_id, active=True)
 
             if not prices.data:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"No active prices found for product {product_id}"
+                    detail=f"No active prices found for product {product_id}",
                 )
 
             # Validate that there is only one price for free products
             if len(prices.data) > 1:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Multiple prices found for product {product_id}. Free products should have only one price."
+                    detail=f"Multiple prices found for product {product_id}. Free products should have only one price.",
                 )
 
             price_id = prices.data[0].id
@@ -237,7 +236,7 @@ async def create_zero_rated_stripe_subscription(
         if price.unit_amount != 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Product {product_id} is not free. Price amount: {price.unit_amount} {price.currency}"
+                detail=f"Product {product_id} is not free. Price amount: {price.unit_amount} {price.currency}",
             )
 
         # Create the subscription for free product
@@ -245,10 +244,12 @@ async def create_zero_rated_stripe_subscription(
             customer=customer_id,
             items=[{"price": price_id}],
             payment_behavior="allow_incomplete",
-            expand=["latest_invoice"]
+            expand=["latest_invoice"],
         )
 
-        logger.info(f"Created free subscription {subscription.id} for customer {customer_id} to product {product_id}")
+        logger.info(
+            f"Created free subscription {subscription.id} for customer {customer_id} to product {product_id}"
+        )
         return subscription.id
 
     except HTTPException:
@@ -258,14 +259,15 @@ async def create_zero_rated_stripe_subscription(
         logger.error(f"Stripe error creating subscription: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Error creating subscription: {str(e)}"
+            detail=f"Error creating subscription: {str(e)}",
         )
     except Exception as e:
         logger.error(f"Error creating Stripe subscription: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error creating subscription"
+            detail="Error creating subscription",
         )
+
 
 async def get_product_id_from_subscription(subscription_id: str) -> str:
     """
@@ -279,17 +281,17 @@ async def get_product_id_from_subscription(subscription_id: str) -> str:
     """
     # Get the list of subscription items
     subscription_items = stripe.SubscriptionItem.list(
-        subscription=subscription_id,
-        expand=['data.price.product']
+        subscription=subscription_id, expand=["data.price.product"]
     )
 
     if not subscription_items.data:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No items found in subscription"
+            detail="No items found in subscription",
         )
 
     return subscription_items.data[0].price.product.id
+
 
 async def get_product_id_from_session(session_id: str) -> str:
     """
@@ -301,18 +303,23 @@ async def get_product_id_from_session(session_id: str) -> str:
     line_items = stripe.checkout.Session.list_line_items(session_id)
     return line_items.data[0].price.product
 
+
 async def get_subscribed_products_for_customer(customer_id: str) -> list[(str, str)]:
     """
     Get a list of products to which the customer is subscribed in Stripe
     Returns a list of tuples, (subscription_id, product_id)
     """
     try:
-        items = stripe.Subscription.list(customer=customer_id, expand=['data.plan.product'])
+        items = stripe.Subscription.list(
+            customer=customer_id, expand=["data.plan.product"]
+        )
     except Exception as e:
-        logger.error(f"Failed to get subscriptions for customer {customer_id}, {str(e)}")
+        logger.error(
+            f"Failed to get subscriptions for customer {customer_id}, {str(e)}"
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error calling Stripe API"
+            detail="Error calling Stripe API",
         )
     subscriptions = []
 
@@ -320,12 +327,12 @@ async def get_subscribed_products_for_customer(customer_id: str) -> list[(str, s
         logger.warning(f"Found no subscription data for customer {customer_id}")
         return subscriptions
 
-
     logger.info(f"Found {len(items.data)} subscriptions for customer {customer_id}")
     for item in items.data:
         subscriptions.append((item.id, item.plan.product.id))
 
     return subscriptions
+
 
 async def cancel_subscription(subscription_id: str):
     """
@@ -337,8 +344,9 @@ async def cancel_subscription(subscription_id: str):
         logger.error(f"Failed to cancel subscription {subscription_id}, {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error cancelling subscription in Stripe"
+            detail="Error cancelling subscription in Stripe",
         )
+
 
 async def get_customer_from_pi(payment_intent: str) -> str:
     """
@@ -347,6 +355,7 @@ async def get_customer_from_pi(payment_intent: str) -> str:
     payment_intent = stripe.PaymentIntent.retrieve(payment_intent)
     logger.info(f"Payment intent is:\n{payment_intent}")
     return payment_intent.customer
+
 
 async def get_pricing_table_secret(customer_id: str) -> str:
     """
@@ -361,10 +370,7 @@ async def get_pricing_table_secret(customer_id: str) -> str:
     try:
         # Create the customer session
         session = stripe.CustomerSession.create(
-            customer=customer_id,
-            components={
-                "pricing_table": {"enabled": True}
-            }
+            customer=customer_id, components={"pricing_table": {"enabled": True}}
         )
 
         return session.client_secret
@@ -372,5 +378,5 @@ async def get_pricing_table_secret(customer_id: str) -> str:
         logger.error(f"Error creating customer session: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error creating customer session"
+            detail="Error creating customer session",
         )

@@ -2,7 +2,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 from app.db.models import DBUser
 
-def test_create_user_uppercase_email_is_stored_lowercase(client: TestClient, admin_token: str, db: Session):
+
+def test_create_user_uppercase_email_is_stored_lowercase(
+    client: TestClient, admin_token: str, db: Session
+):
     """
     Given an admin user
     When creating a user with uppercase email in the payload
@@ -14,10 +17,7 @@ def test_create_user_uppercase_email_is_stored_lowercase(client: TestClient, adm
     response = client.post(
         "/users/",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "email": email,
-            "password": "password123"
-        }
+        json={"email": email, "password": "password123"},
     )
 
     assert response.status_code == 201
@@ -29,6 +29,7 @@ def test_create_user_uppercase_email_is_stored_lowercase(client: TestClient, adm
     assert db_user is not None
     assert db_user.email == lowercase_email
 
+
 def test_login_case_insensitive(client: TestClient, test_user: DBUser):
     """
     Given a user with lowercase email
@@ -39,14 +40,16 @@ def test_login_case_insensitive(client: TestClient, test_user: DBUser):
     mixed_case_email = "Test@Example.com"
 
     response = client.post(
-        "/auth/login",
-        data={"username": mixed_case_email, "password": "testpassword"}
+        "/auth/login", data={"username": mixed_case_email, "password": "testpassword"}
     )
 
     assert response.status_code == 200
     assert "access_token" in response.json()
 
-def test_register_case_insensitive_duplicate_check(client: TestClient, test_user: DBUser):
+
+def test_register_case_insensitive_duplicate_check(
+    client: TestClient, test_user: DBUser
+):
     """
     Given an existing user
     When registering a new user with same email but different casing
@@ -55,17 +58,16 @@ def test_register_case_insensitive_duplicate_check(client: TestClient, test_user
     mixed_case_email = "Test@Example.com"
 
     response = client.post(
-        "/auth/register",
-        json={
-            "email": mixed_case_email,
-            "password": "newpassword123"
-        }
+        "/auth/register", json={"email": mixed_case_email, "password": "newpassword123"}
     )
 
     assert response.status_code == 400
     assert "Email already registered" in response.json()["detail"]
 
-def test_update_email_to_existing_case_insensitive(client: TestClient, test_user: DBUser, admin_token: str, db: Session):
+
+def test_update_email_to_existing_case_insensitive(
+    client: TestClient, test_user: DBUser, admin_token: str, db: Session
+):
     """
     Given two users
     When updating first user's email to second user's email (mixed case)
@@ -76,17 +78,13 @@ def test_update_email_to_existing_case_insensitive(client: TestClient, test_user
     response = client.post(
         "/users/",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={
-            "email": other_email,
-            "password": "password123"
-        }
+        json={"email": other_email, "password": "password123"},
     )
     assert response.status_code == 201
 
     # Login as test_user
     response = client.post(
-        "/auth/login",
-        data={"username": test_user.email, "password": "testpassword"}
+        "/auth/login", data={"username": test_user.email, "password": "testpassword"}
     )
     token = response.json()["access_token"]
 
@@ -94,10 +92,7 @@ def test_update_email_to_existing_case_insensitive(client: TestClient, test_user
     response = client.put(
         "/auth/me/update",
         headers={"Authorization": f"Bearer {token}"},
-        json={
-            "current_password": "testpassword",
-            "email": "Other@Example.com"
-        }
+        json={"current_password": "testpassword", "email": "Other@Example.com"},
     )
 
     assert response.status_code == 400

@@ -1,16 +1,26 @@
 """
 Tests for the consolidated sales API endpoint.
 """
+
 import pytest
 from datetime import datetime, UTC, timedelta
 from unittest.mock import patch, AsyncMock
 from sqlalchemy.orm import Session
-from app.db.models import DBTeam, DBTeamMetrics, DBTeamProduct, DBPrivateAIKey, DBRegion, DBUser
+from app.db.models import (
+    DBTeam,
+    DBTeamMetrics,
+    DBTeamProduct,
+    DBPrivateAIKey,
+    DBRegion,
+    DBUser,
+)
 from app.api.teams import list_teams_for_sales
 
 
 @pytest.fixture
-def test_ai_key(db: Session, test_team: DBTeam, test_region: DBRegion) -> DBPrivateAIKey:
+def test_ai_key(
+    db: Session, test_team: DBTeam, test_region: DBRegion
+) -> DBPrivateAIKey:
     """Create a test AI key."""
     ai_key = DBPrivateAIKey(
         database_name="test-db",
@@ -22,7 +32,7 @@ def test_ai_key(db: Session, test_team: DBTeam, test_region: DBRegion) -> DBPriv
         litellm_api_url="https://test-litellm.com",
         owner_id=None,
         team_id=test_team.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(ai_key)
     db.commit()
@@ -39,7 +49,7 @@ def test_always_free_team(db: Session) -> DBTeam:
         is_active=True,
         is_always_free=True,
         created_at=datetime.now(UTC) - timedelta(days=45),  # 45 days ago
-        last_payment=None
+        last_payment=None,
     )
     db.add(team)
     db.commit()
@@ -56,7 +66,7 @@ def test_paid_team(db: Session) -> DBTeam:
         is_active=True,
         is_always_free=False,
         created_at=datetime.now(UTC) - timedelta(days=60),  # 60 days ago
-        last_payment=datetime.now(UTC) - timedelta(days=5)  # 5 days ago
+        last_payment=datetime.now(UTC) - timedelta(days=5),  # 5 days ago
     )
     db.add(team)
     db.commit()
@@ -75,13 +85,15 @@ def mock_litellm_response():
             "updated_at": "2024-01-02T00:00:00Z",
             "max_budget": 100.0,
             "budget_duration": "monthly",
-            "budget_reset_at": "2024-02-01T00:00:00Z"
+            "budget_reset_at": "2024-02-01T00:00:00Z",
         }
     }
 
 
 @pytest.fixture
-def test_user_owned_ai_key(db: Session, test_team_user: DBUser, test_region: DBRegion) -> DBPrivateAIKey:
+def test_user_owned_ai_key(
+    db: Session, test_team_user: DBUser, test_region: DBRegion
+) -> DBPrivateAIKey:
     """Create a test AI key owned by a team member."""
     ai_key = DBPrivateAIKey(
         database_name="user-db",
@@ -93,7 +105,7 @@ def test_user_owned_ai_key(db: Session, test_team_user: DBUser, test_region: DBR
         litellm_api_url="https://user-litellm.com",
         owner_id=test_team_user.id,
         team_id=None,  # Not team-owned, user-owned
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(ai_key)
     db.commit()
@@ -107,15 +119,21 @@ def test_list_teams_for_sales_requires_admin(client, test_team):
     assert response.status_code == 401  # Unauthorized
 
 
-@patch('app.services.litellm.LiteLLMService.get_key_info', new_callable=AsyncMock)
-def test_list_teams_for_sales_success(mock_get_info, client, admin_token, test_team, test_product,
-                                      test_region, test_ai_key, mock_litellm_response, db):
+@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_list_teams_for_sales_success(
+    mock_get_info,
+    client,
+    admin_token,
+    test_team,
+    test_product,
+    test_region,
+    test_ai_key,
+    mock_litellm_response,
+    db,
+):
     """Test successful retrieval of sales data."""
     # Create team-product association
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -124,7 +142,9 @@ def test_list_teams_for_sales_success(mock_get_info, client, admin_token, test_t
         "name": test_team.name,
         "admin_email": test_team.admin_email,
         "is_always_free": False,
-        "products": [{"id": test_product.id, "name": test_product.name, "active": True}],
+        "products": [
+            {"id": test_product.id, "name": test_product.name, "active": True}
+        ],
         "regions": [test_region.name],
         "total_spend": 25.50,
         "trial_status": "Active Product",
@@ -135,8 +155,7 @@ def test_list_teams_for_sales_success(mock_get_info, client, admin_token, test_t
     mock_get_info.return_value = mock_litellm_response
 
     response = client.get(
-        "/teams/sales/list-teams",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200
@@ -149,14 +168,21 @@ def test_list_teams_for_sales_success(mock_get_info, client, admin_token, test_t
     assert team_data == validation_data
 
 
-@patch('app.services.litellm.LiteLLMService.get_key_info', new_callable=AsyncMock)
-def test_always_free_team_trial_status(mock_get_info, client, admin_token, test_always_free_team,
-                                       test_product, test_region, test_ai_key, db):
+@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_always_free_team_trial_status(
+    mock_get_info,
+    client,
+    admin_token,
+    test_always_free_team,
+    test_product,
+    test_region,
+    test_ai_key,
+    db,
+):
     """Test that always-free teams show correct trial status."""
     # Create team-product association
     team_product = DBTeamProduct(
-        team_id=test_always_free_team.id,
-        product_id=test_product.id
+        team_id=test_always_free_team.id, product_id=test_product.id
     )
     db.add(team_product)
     db.commit()
@@ -165,8 +191,7 @@ def test_always_free_team_trial_status(mock_get_info, client, admin_token, test_
     mock_get_info.return_value = {"info": {"spend": 0.0}}
 
     response = client.get(
-        "/teams/sales/list-teams",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200
@@ -175,15 +200,20 @@ def test_always_free_team_trial_status(mock_get_info, client, admin_token, test_
     assert team_data["trial_status"] == "Always Free"
 
 
-@patch('app.services.litellm.LiteLLMService.get_key_info', new_callable=AsyncMock)
-def test_paid_team_trial_status(mock_get_info, client, admin_token, test_paid_team,
-                                test_product, test_region, test_ai_key, db):
+@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_paid_team_trial_status(
+    mock_get_info,
+    client,
+    admin_token,
+    test_paid_team,
+    test_product,
+    test_region,
+    test_ai_key,
+    db,
+):
     """Test that teams with payment history show correct trial status."""
     # Create team-product association
-    team_product = DBTeamProduct(
-        team_id=test_paid_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_paid_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -191,8 +221,7 @@ def test_paid_team_trial_status(mock_get_info, client, admin_token, test_paid_te
     mock_get_info.return_value = {"info": {"spend": 0.0}}
 
     response = client.get(
-        "/teams/sales/list-teams",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200
@@ -202,15 +231,16 @@ def test_paid_team_trial_status(mock_get_info, client, admin_token, test_paid_te
     assert team_data["trial_status"] == "Active Product"
 
 
-@patch('app.services.litellm.LiteLLMService.get_key_info', new_callable=AsyncMock)
-def test_team_without_products(mock_get_info, client, admin_token, test_team, test_region, test_ai_key, db):
+@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_team_without_products(
+    mock_get_info, client, admin_token, test_team, test_region, test_ai_key, db
+):
     """Test team without any products shows trial status based on creation date."""
     # Mock LiteLLM service
     mock_get_info.return_value = {"info": {"spend": 0.0}}
 
     response = client.get(
-        "/teams/sales/list-teams",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200
@@ -221,9 +251,18 @@ def test_team_without_products(mock_get_info, client, admin_token, test_team, te
     assert team_data["trial_status"] == "30 days left"
     assert len(team_data["products"]) == 0
 
-@patch('app.services.litellm.LiteLLMService.get_key_info', new_callable=AsyncMock)
-def test_team_with_multiple_ai_keys(mock_get_info, client, admin_token, test_team, test_product,
-                                    test_region, test_ai_key, db):
+
+@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_team_with_multiple_ai_keys(
+    mock_get_info,
+    client,
+    admin_token,
+    test_team,
+    test_product,
+    test_region,
+    test_ai_key,
+    db,
+):
     """Test team with multiple AI keys aggregates spend correctly."""
     # Create second AI key
     ai_key2 = DBPrivateAIKey(
@@ -236,28 +275,21 @@ def test_team_with_multiple_ai_keys(mock_get_info, client, admin_token, test_tea
         litellm_api_url="https://test-litellm.com",
         owner_id=None,
         team_id=test_team.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(ai_key2)
     db.commit()
 
     # Create team-product association
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
     # Mock LiteLLM service with different spend values
-    mock_get_info.side_effect = [
-        {"info": {"spend": 25.50}},
-        {"info": {"spend": 15.25}}
-    ]
+    mock_get_info.side_effect = [{"info": {"spend": 25.50}}, {"info": {"spend": 15.25}}]
 
     response = client.get(
-        "/teams/sales/list-teams",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200
@@ -265,15 +297,21 @@ def test_team_with_multiple_ai_keys(mock_get_info, client, admin_token, test_tea
     team_data = data["teams"][0]
     assert team_data["total_spend"] == 40.75  # 25.50 + 15.25
 
-@patch('app.services.litellm.LiteLLMService.get_key_info', new_callable=AsyncMock)
-def test_litellm_service_error_handling(mock_get_info, client, admin_token, test_team, test_product,
-                                        test_region, test_ai_key, db):
+
+@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_litellm_service_error_handling(
+    mock_get_info,
+    client,
+    admin_token,
+    test_team,
+    test_product,
+    test_region,
+    test_ai_key,
+    db,
+):
     """Test that LiteLLM service errors don't break the entire response."""
     # Create team-product association
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -281,8 +319,7 @@ def test_litellm_service_error_handling(mock_get_info, client, admin_token, test
     mock_get_info.side_effect = Exception("LiteLLM service error")
 
     response = client.get(
-        "/teams/sales/list-teams",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     # Should still succeed but with 0 spend
@@ -292,8 +329,10 @@ def test_litellm_service_error_handling(mock_get_info, client, admin_token, test
     assert team_data["total_spend"] == 0.0
 
 
-@patch('app.services.litellm.LiteLLMService.get_key_info', new_callable=AsyncMock)
-def test_expired_trial_status(mock_get_info, client, admin_token, test_team, test_region, test_ai_key, db):
+@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_expired_trial_status(
+    mock_get_info, client, admin_token, test_team, test_region, test_ai_key, db
+):
     """Test that expired trials show correct status."""
     # Update team to be older than 30 days (no products, so should show expired)
     test_team.created_at = datetime.now(UTC) - timedelta(days=35)
@@ -303,8 +342,7 @@ def test_expired_trial_status(mock_get_info, client, admin_token, test_team, tes
     mock_get_info.return_value = {"info": {"spend": 0.0}}
 
     response = client.get(
-        "/teams/sales/list-teams",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200
@@ -313,16 +351,23 @@ def test_expired_trial_status(mock_get_info, client, admin_token, test_team, tes
     assert team_data["trial_status"] == "Expired"
 
 
-@patch('app.services.litellm.LiteLLMService.get_key_info', new_callable=AsyncMock)
-def test_list_teams_for_sales_includes_user_owned_keys(mock_get_info, client, admin_token, test_team, test_product,
-                                                       test_region, test_ai_key, test_team_user,
-                                                       test_user_owned_ai_key, mock_litellm_response, db):
+@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_list_teams_for_sales_includes_user_owned_keys(
+    mock_get_info,
+    client,
+    admin_token,
+    test_team,
+    test_product,
+    test_region,
+    test_ai_key,
+    test_team_user,
+    test_user_owned_ai_key,
+    mock_litellm_response,
+    db,
+):
     """Test that sales data includes both team-owned and user-owned AI keys."""
     # Create team-product association
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
     team_id = test_team.id
@@ -332,12 +377,11 @@ def test_list_teams_for_sales_includes_user_owned_keys(mock_get_info, client, ad
     # Return different spend values for team key vs user key
     mock_get_info.side_effect = [
         {"info": {"spend": 25.50}},  # Team key spend
-        {"info": {"spend": 15.25}}   # User key spend
+        {"info": {"spend": 15.25}},  # User key spend
     ]
 
     response = client.get(
-        "/teams/sales/list-teams",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200
@@ -356,8 +400,10 @@ def test_list_teams_for_sales_includes_user_owned_keys(mock_get_info, client, ad
     assert team_data["regions"][0] == region_name
 
 
-@patch('app.services.litellm.LiteLLMService.get_key_info', new_callable=AsyncMock)
-def test_team_with_15_days_remaining(mock_get_info, client, admin_token, test_team, test_region, test_ai_key, db):
+@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_team_with_15_days_remaining(
+    mock_get_info, client, admin_token, test_team, test_region, test_ai_key, db
+):
     """Test that teams with 15 days remaining show correct format."""
     # Update team to be 15 days old
     test_team.created_at = datetime.now(UTC) - timedelta(days=15)
@@ -367,8 +413,7 @@ def test_team_with_15_days_remaining(mock_get_info, client, admin_token, test_te
     mock_get_info.return_value = {"info": {"spend": 0.0}}
 
     response = client.get(
-        "/teams/sales/list-teams",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200
@@ -378,8 +423,10 @@ def test_team_with_15_days_remaining(mock_get_info, client, admin_token, test_te
     assert team_data["trial_status"] == "15 days left"
 
 
-@patch('app.services.litellm.LiteLLMService.get_key_info', new_callable=AsyncMock)
-def test_team_with_7_days_remaining(mock_get_info, client, admin_token, test_team, test_region, test_ai_key, db):
+@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_team_with_7_days_remaining(
+    mock_get_info, client, admin_token, test_team, test_region, test_ai_key, db
+):
     """Test that teams with 7 days remaining show correct format."""
     # Update team to be 23 days old (7 days remaining)
     test_team.created_at = datetime.now(UTC) - timedelta(days=23)
@@ -389,8 +436,7 @@ def test_team_with_7_days_remaining(mock_get_info, client, admin_token, test_tea
     mock_get_info.return_value = {"info": {"spend": 0.0}}
 
     response = client.get(
-        "/teams/sales/list-teams",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200
@@ -400,8 +446,10 @@ def test_team_with_7_days_remaining(mock_get_info, client, admin_token, test_tea
     assert team_data["trial_status"] == "7 days left"
 
 
-@patch('app.services.litellm.LiteLLMService.get_key_info', new_callable=AsyncMock)
-def test_team_with_last_payment_days_calculation(mock_get_info, client, admin_token, test_team, test_region, test_ai_key, db):
+@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_team_with_last_payment_days_calculation(
+    mock_get_info, client, admin_token, test_team, test_region, test_ai_key, db
+):
     """Test that teams with last_payment calculate days remaining from payment date."""
     # Set last_payment to 10 days ago (so 20 days remaining from payment)
     test_team.last_payment = datetime.now(UTC) - timedelta(days=10)
@@ -411,8 +459,7 @@ def test_team_with_last_payment_days_calculation(mock_get_info, client, admin_to
     mock_get_info.return_value = {"info": {"spend": 0.0}}
 
     response = client.get(
-        "/teams/sales/list-teams",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200
@@ -422,19 +469,24 @@ def test_team_with_last_payment_days_calculation(mock_get_info, client, admin_to
     assert team_data["trial_status"] == "20 days left"
 
 
-@patch('app.services.litellm.LiteLLMService.get_key_info', new_callable=AsyncMock)
-def test_list_teams_for_sales_unreachable_endpoints_logging(mock_get_info, client, admin_token, test_team, test_product,
-                                                           test_region, test_ai_key, db):
+@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_list_teams_for_sales_unreachable_endpoints_logging(
+    mock_get_info,
+    client,
+    admin_token,
+    test_team,
+    test_product,
+    test_region,
+    test_ai_key,
+    db,
+):
     """
     Given a team with AI keys in a region where LiteLLM endpoint is unreachable
     When calling list_teams_for_sales
     Then the function should default spend to 0 and still return successful response
     """
     # Create team-product association
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
 
     # Create a second AI key in the same region to test multiple keys
@@ -448,7 +500,7 @@ def test_list_teams_for_sales_unreachable_endpoints_logging(mock_get_info, clien
         litellm_api_url="https://test-litellm.com",
         owner_id=None,
         team_id=test_team.id,
-        region_id=test_region.id
+        region_id=test_region.id,
     )
     db.add(ai_key2)
     db.commit()
@@ -457,8 +509,7 @@ def test_list_teams_for_sales_unreachable_endpoints_logging(mock_get_info, clien
     mock_get_info.side_effect = Exception("Connection timeout")
 
     response = client.get(
-        "/teams/sales/list-teams",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     # Should still succeed despite LiteLLM errors
@@ -470,9 +521,17 @@ def test_list_teams_for_sales_unreachable_endpoints_logging(mock_get_info, clien
     assert team_data["total_spend"] == 0.0
 
 
-@patch('app.services.litellm.LiteLLMService.get_key_info', new_callable=AsyncMock)
-def test_list_teams_for_sales_multiple_unreachable_regions(mock_get_info, client, admin_token, test_team, test_product,
-                                                          test_region, test_ai_key, db):
+@patch("app.services.litellm.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_list_teams_for_sales_multiple_unreachable_regions(
+    mock_get_info,
+    client,
+    admin_token,
+    test_team,
+    test_product,
+    test_region,
+    test_ai_key,
+    db,
+):
     """
     Given a team with AI keys in multiple regions where some endpoints are unreachable
     When calling list_teams_for_sales
@@ -487,16 +546,13 @@ def test_list_teams_for_sales_multiple_unreachable_regions(mock_get_info, client
         postgres_admin_password="test-pass-2",
         litellm_api_url="https://test-litellm-2.com",
         litellm_api_key="test-key-2",
-        is_active=True
+        is_active=True,
     )
     db.add(region_two)
     db.commit()
 
     # Create team-product association
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
 
     # Create AI key in second region
@@ -510,7 +566,7 @@ def test_list_teams_for_sales_multiple_unreachable_regions(mock_get_info, client
         litellm_api_url="https://test-litellm-2.com",
         owner_id=None,
         team_id=test_team.id,
-        region_id=region_two.id
+        region_id=region_two.id,
     )
     db.add(ai_key2)
     db.commit()
@@ -520,12 +576,11 @@ def test_list_teams_for_sales_multiple_unreachable_regions(mock_get_info, client
     # Mock LiteLLM service to raise different exceptions for different regions
     mock_get_info.side_effect = [
         Exception("Connection timeout"),  # First region fails
-        Exception("Service unavailable")  # Second region fails
+        Exception("Service unavailable"),  # Second region fails
     ]
 
     response = client.get(
-        "/teams/sales/list-teams",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/teams/sales/list-teams", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     # Should still succeed despite LiteLLM errors
@@ -543,8 +598,10 @@ def test_list_teams_for_sales_multiple_unreachable_regions(mock_get_info, client
 
 
 @pytest.mark.asyncio
-@patch('app.api.teams.LiteLLMService')
-async def test_list_teams_for_sales_uses_cached_metrics(mock_litellm_class, db, test_team, test_region):
+@patch("app.api.teams.LiteLLMService")
+async def test_list_teams_for_sales_uses_cached_metrics(
+    mock_litellm_class, db, test_team, test_region
+):
     """
     Test that list_teams_for_sales API uses cached metrics instead of making API calls.
 
@@ -559,7 +616,7 @@ async def test_list_teams_for_sales_uses_cached_metrics(mock_litellm_class, db, 
         total_spend=200.50,
         last_spend_calculation=datetime.now(UTC),
         regions=[test_region.name],
-        last_updated=datetime.now(UTC)
+        last_updated=datetime.now(UTC),
     )
     db.add(cached_metrics)
     db.commit()
@@ -570,13 +627,15 @@ async def test_list_teams_for_sales_uses_cached_metrics(mock_litellm_class, db, 
         team_id=test_team.id,
         region_id=test_region.id,
         litellm_token="test-token-123",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(test_key)
     db.commit()
 
     # Ensure LiteLLM service is never called
-    mock_litellm_class.side_effect = AssertionError("LiteLLM service should not be called when using cached metrics")
+    mock_litellm_class.side_effect = AssertionError(
+        "LiteLLM service should not be called when using cached metrics"
+    )
 
     # Act
     response = await list_teams_for_sales(db)
@@ -590,8 +649,10 @@ async def test_list_teams_for_sales_uses_cached_metrics(mock_litellm_class, db, 
 
 
 @pytest.mark.asyncio
-@patch('app.api.teams.LiteLLMService')
-async def test_list_teams_for_sales_fallback_to_api_calls(mock_litellm_class, db, test_team, test_region):
+@patch("app.api.teams.LiteLLMService")
+async def test_list_teams_for_sales_fallback_to_api_calls(
+    mock_litellm_class, db, test_team, test_region
+):
     """
     Test that list_teams_for_sales falls back to API calls when no cached metrics exist.
 
@@ -606,7 +667,7 @@ async def test_list_teams_for_sales_fallback_to_api_calls(mock_litellm_class, db
         team_id=test_team.id,
         region_id=test_region.id,
         litellm_token="test-token-123",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(test_key)
     db.commit()
@@ -615,16 +676,14 @@ async def test_list_teams_for_sales_fallback_to_api_calls(mock_litellm_class, db
     mock_litellm_service = AsyncMock()
     mock_litellm_class.return_value = mock_litellm_service
     mock_litellm_service.get_key_info.return_value = {
-        "info": {
-            "spend": 300.25,
-            "max_budget": 500.0,
-            "key_alias": "test-key"
-        }
+        "info": {"spend": 300.25, "max_budget": 500.0, "key_alias": "test-key"}
     }
 
     # Act
     response = await list_teams_for_sales(db)
-    updated_metrics = db.query(DBTeamMetrics).filter(DBTeamMetrics.team_id == test_team.id).first()
+    updated_metrics = (
+        db.query(DBTeamMetrics).filter(DBTeamMetrics.team_id == test_team.id).first()
+    )
 
     # Assert
     assert len(response.teams) == 1
