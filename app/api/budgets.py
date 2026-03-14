@@ -262,7 +262,7 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                     )
                     total_updated += 1
                     logger.info(
-                        f"Pool team {team.id} budget expired (365d passed), set to $0"
+                        f"Pool team {team.id} budget expired ({settings.POOL_BUDGET_EXPIRATION_DAYS}d passed), set to $0"
                     )
                 except Exception as e:
                     errors.append(f"Team {team.id}: {str(e)}")
