@@ -76,23 +76,16 @@ def _create_default_limits_for_team(team: DBTeam, db: Session) -> None:
 
 async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
     """
-    Create region-scoped LiteLLM teams for active non-dedicated regions.
-
-    New teams can use non-dedicated regions by default, so we initialize
-    LiteLLM teams there with zero budget.
+    Create region-scoped LiteLLM teams for all active regions.
     """
-    regions = (
-        db.query(DBRegion)
-        .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
-        .all()
-    )
+    regions = db.query(DBRegion).filter(DBRegion.is_active.is_(True)).all()
 
     for region in regions:
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
         lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
-        await litellm_service.create_team(team_id=lite_team_id, max_budget=0.0)
+        await litellm_service.create_team(team_alias=lite_team_id, max_budget=0.0)
 
 
 @router.post("", response_model=Team, status_code=status.HTTP_201_CREATED)

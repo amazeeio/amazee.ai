@@ -82,7 +82,7 @@ def test_register_team_creates_litellm_team_for_active_shared_regions(
     assert response.status_code == 201
     team_data = response.json()
     mock_create_team.assert_awaited_once_with(
-        team_id=f"{test_region.name}_{team_data['id']}",
+        team_alias=f"{test_region.name}_{team_data['id']}",
         max_budget=0.0,
     )
 
