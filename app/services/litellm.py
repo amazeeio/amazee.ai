@@ -59,7 +59,15 @@ class LiteLLMService:
         if len(sanitized) < 2:
             return ""
 
-        return sanitized[:255]
+        # Enforce maximum length, but ensure we still end with an alphanumeric
+        sanitized = sanitized[:255]
+        sanitized = sanitized.rstrip("_-. /")
+
+        # Re-check minimum length after enforcing trailing-character rule
+        if len(sanitized) < 2:
+            return ""
+
+        return sanitized
 
     async def create_key(
         self,
