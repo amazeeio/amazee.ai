@@ -29,7 +29,6 @@ from app.schemas.models import (
     TeamWithUsers,
     TeamMergeRequest,
     TeamMergeResponse,
-    BudgetType,
 )
 from app.core.limit_service import (
     DEFAULT_KEY_DURATION,
