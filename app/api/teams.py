@@ -284,6 +284,20 @@ async def delete_team(team_id: int, db: Session = Depends(get_db)):
     if not db_team:
         raise HTTPException(status_code=404, detail="Team not found")
 
+    # Best-effort: expire LiteLLM team budgets before deleting team locally.
+    regions = db.query(DBRegion).filter(DBRegion.is_active.is_(True)).all()
+    for region in regions:
+        try:
+            litellm_service = LiteLLMService(
+                api_url=region.litellm_api_url, api_key=region.litellm_api_key
+            )
+            lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+            await litellm_service.update_team_budget(team_id=lite_team_id, max_budget=0.0)
+        except Exception as e:
+            logger.warning(
+                f"Failed to zero LiteLLM budget for team {team_id} in region {region.id}: {e}"
+            )
+
     # Remove all product associations
     db.query(DBTeamProduct).filter(DBTeamProduct.team_id == team_id).delete()
 

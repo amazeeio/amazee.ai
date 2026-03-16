@@ -478,6 +478,22 @@ def test_delete_team(client, admin_token, test_team, db):
     assert db_team is None
 
 
+def test_delete_team_zeros_litellm_budget(client, admin_token, test_team, test_region):
+    """Deleting a team should set its LiteLLM team budget to $0 in active regions."""
+    with patch(
+        "app.api.teams.LiteLLMService.update_team_budget", new_callable=AsyncMock
+    ) as mock_update_budget:
+        response = client.delete(
+            f"/teams/{test_team.id}", headers={"Authorization": f"Bearer {admin_token}"}
+        )
+
+    assert response.status_code == 200
+    mock_update_budget.assert_awaited_once_with(
+        team_id=f"{test_region.name}_{test_team.id}",
+        max_budget=0.0,
+    )
+
+
 def test_delete_team_with_products(client, admin_token, db, test_team, test_product):
     """Test deleting a team that has associated products"""
     product_id = test_product.id
