@@ -290,6 +290,17 @@ async def test_sync_pool_team_budgets_expires_stale_pool_team(
             created_at=datetime.now(UTC),
         )
     )
+    db.add(
+        DBPoolPurchase(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            amount_cents=1000,
+            currency="usd",
+            purchased_at=datetime.now(UTC) - timedelta(days=366),
+            stripe_payment_id="pi_sync_stale_region",
+            created_at=datetime.now(UTC),
+        )
+    )
     db.commit()
 
     expected_lite_team_id = f"{test_region.name}_{test_team.id}"
@@ -312,7 +323,7 @@ async def test_sync_pool_team_budgets_expires_stale_pool_team(
 async def test_sync_pool_team_budgets_expires_all_team_regions(
     db, test_team, test_region
 ):
-    """Stale pool teams should be expired in every purchased/dedicated region."""
+    """Only regions with expired purchases should be set to $0."""
     from app.db.models import DBRegion, DBPoolPurchase
 
     second_region = DBRegion(
@@ -332,7 +343,7 @@ async def test_sync_pool_team_budgets_expires_all_team_regions(
     db.flush()
 
     test_team.budget_type = "pool"
-    test_team.last_pool_purchase = datetime.now(UTC) - timedelta(days=366)
+    test_team.last_pool_purchase = datetime.now(UTC) - timedelta(days=1)
     db.add(
         DBTeamRegion(
             team_id=test_team.id,
@@ -364,17 +375,14 @@ async def test_sync_pool_team_budgets_expires_all_team_regions(
             region_id=second_region.id,
             amount_cents=2000,
             currency="usd",
-            purchased_at=datetime.now(UTC) - timedelta(days=390),
+            purchased_at=datetime.now(UTC) - timedelta(days=10),
             stripe_payment_id="pi_multi_region_2",
             created_at=datetime.now(UTC),
         )
     )
     db.commit()
 
-    expected_ids = {
-        f"{test_region.name}_{test_team.id}",
-        f"{second_region.name}_{test_team.id}",
-    }
+    expected_lite_team_id = f"{test_region.name}_{test_team.id}"
 
     with patch(
         "app.api.budgets.LiteLLMService.update_team_budget", new_callable=AsyncMock
@@ -383,8 +391,7 @@ async def test_sync_pool_team_budgets_expires_all_team_regions(
 
     assert result["teams_updated"] == 1
     assert result["errors"] == []
-    assert mock_update_budget.await_count == 2
-    actual_ids = {call.kwargs["team_id"] for call in mock_update_budget.await_args_list}
-    assert actual_ids == expected_ids
-    for call in mock_update_budget.await_args_list:
-        assert call.kwargs["max_budget"] == 0.0
+    mock_update_budget.assert_awaited_once_with(
+        team_id=expected_lite_team_id,
+        max_budget=0.0,
+    )
