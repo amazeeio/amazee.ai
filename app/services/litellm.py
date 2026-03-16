@@ -30,7 +30,7 @@ class LiteLLMService:
     async def create_key(
         self,
         email: str,
-        name: Optional[str],
+        name: str,
         user_id: int,
         team_id: str,
         duration: str = f"{DEFAULT_KEY_DURATION}d",
