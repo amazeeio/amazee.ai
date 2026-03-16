@@ -34,18 +34,20 @@ class LiteLLMService:
         Sanitize key_alias to follow LiteLLM rules:
         - Must be 2-255 chars
         - Start and end with alphanumeric character
-        - Only allow a-zA-Z0-9_-/.
-        - Specifically: change '@' to '_' as per user requirement
+        - Only allow a-zA-Z0-9_-/.@
+        - Allow @ if not at start or end
         """
         if not alias:
             return ""
 
-        # Change @ to _ (user specific request)
-        sanitized = alias.replace("@", "_")
+        # Replace @ with _ only if at start or end (will be stripped later)
+        # Otherwise keep @ in the middle
+        if alias.startswith("@") or alias.endswith("@"):
+            alias = alias.replace("@", "_")
 
-        # Only allow a-zA-Z0-9_-/.
+        # Only allow a-zA-Z0-9_-/.@
         # Replace anything else with _
-        sanitized = re.sub(r"[^a-zA-Z0-9_\-\./]", "_", sanitized)
+        sanitized = re.sub(r"[^a-zA-Z0-9_\-\./@]", "_", alias)
 
         # Collapse multiple underscores
         sanitized = re.sub(r"_+", "_", sanitized)
@@ -97,8 +99,12 @@ class LiteLLMService:
 
             # Add email and name to key_alias and metadata if provided
             # LiteLLM now requires key_alias to be set
+            # Use name directly for key_alias if provided, otherwise fall back to email
             clean_alias = ""
-            if key_alias and isinstance(key_alias, str):
+            if name and isinstance(name, str):
+                clean_alias = self.sanitize_alias(name.strip())
+
+            if not clean_alias and key_alias and isinstance(key_alias, str):
                 clean_alias = self.sanitize_alias(key_alias.strip())
 
             if not clean_alias:
