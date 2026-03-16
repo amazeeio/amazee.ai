@@ -306,7 +306,10 @@ class LiteLLMService:
             )
 
     async def create_team(
-        self, team_id: str, max_budget: float = 0.0, budget_duration: Optional[str] = None
+        self,
+        team_id: str,
+        max_budget: float = 0.0,
+        budget_duration: Optional[str] = None,
     ):
         """Create a LiteLLM team. Treat existing team as success."""
         try:
