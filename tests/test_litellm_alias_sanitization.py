@@ -45,7 +45,8 @@ def test_sanitize_alias_length():
     """Test that alias length rules are followed"""
     # Too short
     assert LiteLLMService.sanitize_alias("a") == ""
-    assert LiteLLMService.sanitize_alias("@") == "at" # @ is now at_ (length 2)
+    # "@" is replaced with "at" (length 2)
+    assert LiteLLMService.sanitize_alias("@") == "at"
     assert LiteLLMService.sanitize_alias("---") == ""
     # Just enough (minimum acceptable length after sanitization is 2)
     assert LiteLLMService.sanitize_alias("ab") == "ab"
