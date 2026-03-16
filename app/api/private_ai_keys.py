@@ -429,9 +429,6 @@ async def create_llm_token(
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
-        # Ensure a non-empty key alias is always sent to LiteLLM:
-        # Use name field for key_alias (sanitized in LiteLLM service)
-        key_alias = private_ai_key.name
         litellm_token = await litellm_service.create_key(
             email=owner_email,
             name=private_ai_key.name,
@@ -440,7 +437,6 @@ async def create_llm_token(
             duration=f"{days_left_in_period}d",
             max_budget=max_max_spend,
             rpm_limit=max_rpm_limit,
-            key_alias=key_alias,
         )
 
         # Create response object

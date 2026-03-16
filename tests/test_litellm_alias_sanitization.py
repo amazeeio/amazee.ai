@@ -16,10 +16,11 @@ def test_sanitize_alias_email():
     """Test sanitization of email-based alias"""
     # @ is replaced with _at_
     assert LiteLLMService.sanitize_alias("test@example.com") == "test_at_example.com"
-    assert (
-        LiteLLMService.sanitize_alias("test@example.com - my-key")
-        == "test_at_example.com_-_my-key"
-    )
+    # The combination of email and name as used in create_key
+    email = "test@example.com"
+    name = "my-key"
+    assert LiteLLMService.sanitize_alias(f"{email} - {name}") == "test_at_example.com_-_my-key"
+
 
 
 def test_sanitize_alias_special_chars():

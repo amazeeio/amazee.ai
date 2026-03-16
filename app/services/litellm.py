@@ -81,7 +81,6 @@ class LiteLLMService:
         duration: str = f"{DEFAULT_KEY_DURATION}d",
         max_budget: float = DEFAULT_MAX_SPEND,
         rpm_limit: int = DEFAULT_RPM_PER_KEY,
-        key_alias: Optional[str] = None,
     ) -> str:
         """Create a new API key for LiteLLM"""
         try:
