@@ -40,11 +40,6 @@ class LiteLLMService:
         if not alias:
             return ""
 
-        # Replace @ with _ only if at start or end (will be stripped later)
-        # Otherwise keep @ in the middle
-        if alias.startswith("@") or alias.endswith("@"):
-            alias = alias.replace("@", "_")
-
         # Only allow a-zA-Z0-9_-/.@
         # Replace anything else with _
         sanitized = re.sub(r"[^a-zA-Z0-9_\-\./@]", "_", alias)
@@ -52,9 +47,10 @@ class LiteLLMService:
         # Collapse multiple underscores
         sanitized = re.sub(r"_+", "_", sanitized)
 
-        # Ensure it starts and ends with alphanumeric
+        # Ensure it starts and ends with alphanumeric:
+        # strip common non-alphanumeric boundary characters, including '@' at edges
         # This might make it shorter than 2 chars
-        sanitized = sanitized.strip("_-. /")
+        sanitized = sanitized.strip("_-. /@")
 
         # Rule: 2-255 characters.
         # If it's too short after stripping, return empty so the caller can use a fallback.
@@ -63,7 +59,7 @@ class LiteLLMService:
 
         # Enforce maximum length, but ensure we still end with an alphanumeric
         sanitized = sanitized[:255]
-        sanitized = sanitized.rstrip("_-. /")
+        sanitized = sanitized.rstrip("_-. /@")
 
         # Re-check minimum length after enforcing trailing-character rule
         if len(sanitized) < 2:
