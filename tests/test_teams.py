@@ -132,7 +132,7 @@ def test_register_team_duplicate_admin_email_case_insensitive(client, db, admin_
         "/teams/",
         json={
             "name": "New Team",
-            "admin_email": "existing@example.com",
+            "admin_email": "EXISTING@EXAMPLE.COM",
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321",
             "budget_type": "pool",
