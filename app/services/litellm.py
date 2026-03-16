@@ -100,19 +100,8 @@ class LiteLLMService:
 
             # Add email and name to key_alias and metadata if provided
             # LiteLLM now requires key_alias to be set
-            # Use name directly for key_alias if provided, otherwise fall back to the
-            # key_alias parameter, and finally to an email-derived value
-            clean_alias = ""
-            if name and isinstance(name, str):
-                clean_alias = self.sanitize_alias(name.strip())
-
-            if not clean_alias and key_alias and isinstance(key_alias, str):
-                clean_alias = self.sanitize_alias(key_alias.strip())
-
-            if not clean_alias:
-                clean_alias = self.sanitize_alias(
-                    f"{email or 'unknown'} - {actual_name}"
-                )
+            # Use "email - name" format for key_alias as requested
+            clean_alias = self.sanitize_alias(f"{email or 'unknown'} - {actual_name}")
 
             if not clean_alias:
                 # If still empty, use a safe default that's guaranteed to be valid
