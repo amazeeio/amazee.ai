@@ -437,6 +437,7 @@ async def create_llm_token(
             duration=f"{days_left_in_period}d",
             max_budget=max_max_spend,
             rpm_limit=max_rpm_limit,
+            key_alias=private_ai_key.key_alias,
         )
 
         # Create response object

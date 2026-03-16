@@ -30,12 +30,13 @@ class LiteLLMService:
     async def create_key(
         self,
         email: str,
-        name: str,
+        name: Optional[str],
         user_id: int,
         team_id: str,
         duration: str = f"{DEFAULT_KEY_DURATION}d",
         max_budget: float = DEFAULT_MAX_SPEND,
         rpm_limit: int = DEFAULT_RPM_PER_KEY,
+        key_alias: Optional[str] = None,
     ) -> str:
         """Create a new API key for LiteLLM"""
         try:
@@ -49,10 +50,16 @@ class LiteLLMService:
                 "spend": 0,
             }
 
+            # If name is not provided, generate a default based on user_id
+            actual_name = name if name else f"key-{user_id or 'unknown'}"
+
             # Add email and name to key_alias and metadata if provided
-            key_alias = f"{email} - {name}"
-            metadata = {"service_account_id": email}
-            metadata["amazeeai_private_ai_key_name"] = name
+            # LiteLLM now requires key_alias to be set
+            if not key_alias:
+                key_alias = f"{email or 'unknown'} - {actual_name}"
+
+            metadata = {"service_account_id": email or "unknown"}
+            metadata["amazeeai_private_ai_key_name"] = actual_name
 
             # Add user_id to metadata if provided
             metadata["amazeeai_user_id"] = str(user_id or None)
