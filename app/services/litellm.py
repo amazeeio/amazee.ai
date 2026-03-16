@@ -1,6 +1,7 @@
 import httpx
 from fastapi import HTTPException, status
 import logging
+import re
 from app.core.limit_service import (
     DEFAULT_KEY_DURATION,
     DEFAULT_MAX_SPEND,
@@ -27,6 +28,47 @@ class LiteLLMService:
         """Generate the correctly formatted team_id for LiteLLM"""
         return f"{region_name.replace(' ', '_')}_{team_id}"
 
+    @staticmethod
+    def sanitize_alias(alias: str) -> str:
+        """
+        Sanitize key_alias to follow LiteLLM rules:
+        - Must be 2-255 chars
+        - Start and end with alphanumeric character
+        - Only allow a-zA-Z0-9_-/.
+        - Specifically: change '@' to '_' as per user requirement
+        """
+        if not alias:
+            return ""
+
+        # Change @ to _ (user specific request)
+        sanitized = alias.replace("@", "_")
+
+        # Only allow a-zA-Z0-9_-/.
+        # Replace anything else with _
+        sanitized = re.sub(r"[^a-zA-Z0-9_\-\./]", "_", sanitized)
+
+        # Collapse multiple underscores
+        sanitized = re.sub(r"_+", "_", sanitized)
+
+        # Ensure it starts and ends with alphanumeric
+        # This might make it shorter than 2 chars
+        sanitized = sanitized.strip("_-. /")
+
+        # Rule: 2-255 characters.
+        # If it's too short after stripping, return empty so the caller can use a fallback.
+        if len(sanitized) < 2:
+            return ""
+
+        # Enforce maximum length, but ensure we still end with an alphanumeric
+        sanitized = sanitized[:255]
+        sanitized = sanitized.rstrip("_-. /")
+
+        # Re-check minimum length after enforcing trailing-character rule
+        if len(sanitized) < 2:
+            return ""
+
+        return sanitized
+
     async def create_key(
         self,
         email: str,
@@ -36,6 +78,7 @@ class LiteLLMService:
         duration: str = f"{DEFAULT_KEY_DURATION}d",
         max_budget: float = DEFAULT_MAX_SPEND,
         rpm_limit: int = DEFAULT_RPM_PER_KEY,
+        key_alias: Optional[str] = None,
     ) -> str:
         """Create a new API key for LiteLLM"""
         try:
@@ -49,16 +92,32 @@ class LiteLLMService:
                 "spend": 0,
             }
 
+            # If name is empty or otherwise falsy, generate a default based on user_id
+            actual_name = name if name else f"key-{user_id or 'unknown'}"
+
             # Add email and name to key_alias and metadata if provided
-            key_alias = f"{email} - {name}"
-            metadata = {"service_account_id": email}
-            metadata["amazeeai_private_ai_key_name"] = name
+            # LiteLLM now requires key_alias to be set
+            clean_alias = ""
+            if key_alias and isinstance(key_alias, str):
+                clean_alias = self.sanitize_alias(key_alias.strip())
+
+            if not clean_alias:
+                clean_alias = self.sanitize_alias(
+                    f"{email or 'unknown'} - {actual_name}"
+                )
+
+            if not clean_alias:
+                # If still empty, use a safe default that's guaranteed to be valid
+                clean_alias = f"key-{user_id or 'unknown'}"
+
+            metadata = {"service_account_id": email or "unknown"}
+            metadata["amazeeai_private_ai_key_name"] = actual_name
 
             # Add user_id to metadata if provided
             metadata["amazeeai_user_id"] = str(user_id or None)
             metadata["amazeeai_team_id"] = team_id
 
-            request_data["key_alias"] = key_alias
+            request_data["key_alias"] = clean_alias
             request_data["metadata"] = metadata
             request_data["team_id"] = team_id
 
