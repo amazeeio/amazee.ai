@@ -13,6 +13,7 @@ from app.schemas.models import (
     PoolPurchaseRequest,
     PoolPurchaseResponse,
     PoolPurchaseHistoryResponse,
+    BudgetType,
 )
 from app.services.litellm import LiteLLMService
 
@@ -46,7 +47,7 @@ async def purchase_pool_budget(
             status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
         )
 
-    if team.budget_type != "pool":
+    if team.budget_type != BudgetType.POOL:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This endpoint only works for teams with pool budget type",
@@ -213,7 +214,9 @@ async def sync_pool_team_budgets(db: Session) -> dict:
     """
     pool_teams = (
         db.query(DBTeam)
-        .filter(DBTeam.budget_type == "pool", DBTeam.last_pool_purchase.isnot(None))
+        .filter(
+            DBTeam.budget_type == BudgetType.POOL, DBTeam.last_pool_purchase.isnot(None)
+        )
         .all()
     )
 

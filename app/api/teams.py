@@ -29,6 +29,7 @@ from app.schemas.models import (
     TeamWithUsers,
     TeamMergeRequest,
     TeamMergeResponse,
+    BudgetType,
 )
 from app.core.limit_service import (
     DEFAULT_KEY_DURATION,
@@ -115,7 +116,7 @@ async def register_team(
         is_active=True,
         created_at=datetime.now(UTC),
         force_user_keys=team.force_user_keys,
-        budget_type=team.budget_type.value,
+        budget_type=team.budget_type,
     )
 
     db.add(db_team)

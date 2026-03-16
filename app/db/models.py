@@ -14,6 +14,7 @@ from datetime import datetime, UTC
 from sqlalchemy.sql import func
 from sqlalchemy import UniqueConstraint
 from app.schemas.limits import LimitType, ResourceType, UnitType, OwnerType, LimitSource
+from app.schemas.models import BudgetType
 
 Base = declarative_base()
 
@@ -137,8 +138,8 @@ class DBTeam(Base):
     is_always_free = Column(Boolean, default=False)
     force_user_keys = Column(Boolean, default=False, nullable=False)
     budget_type = Column(
-        Enum("periodic", "pool", name="budget_type_enum", create_constraint=True),
-        default="periodic",
+        Enum(BudgetType, name="budget_type_enum", create_constraint=True),
+        default=BudgetType.PERIODIC,
         nullable=False,
     )
     created_at = Column(DateTime(timezone=True), default=func.now())
