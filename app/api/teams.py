@@ -85,7 +85,11 @@ async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
         lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
-        await litellm_service.create_team(team_alias=lite_team_id, max_budget=0.0)
+        await litellm_service.create_team(
+            team_id=lite_team_id,
+            team_alias=lite_team_id,
+            max_budget=0.0,
+        )
 
 
 @router.post("", response_model=Team, status_code=status.HTTP_201_CREATED)
@@ -292,7 +296,9 @@ async def delete_team(team_id: int, db: Session = Depends(get_db)):
                 api_url=region.litellm_api_url, api_key=region.litellm_api_key
             )
             lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-            await litellm_service.update_team_budget(team_id=lite_team_id, max_budget=0.0)
+            await litellm_service.update_team_budget(
+                team_id=lite_team_id, max_budget=0.0
+            )
         except Exception as e:
             logger.warning(
                 f"Failed to zero LiteLLM budget for team {team_id} in region {region.id}: {e}"
