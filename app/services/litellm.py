@@ -34,23 +34,28 @@ class LiteLLMService:
         Sanitize key_alias to follow LiteLLM rules:
         - Must be 2-255 chars
         - Start and end with alphanumeric character
-        - Only allow a-zA-Z0-9_-/.@
-        - Allow @ if not at start or end
+        - Only allow a-zA-Z0-9_-/.
+        - Replace @ with _at_
         """
         if not alias:
             return ""
 
-        # Only allow a-zA-Z0-9_-/.@
+        # Replace @ with _at_
+        sanitized = alias.replace("@", "_at_")
+
+        # Replace spaces with _
+        sanitized = sanitized.replace(" ", "_")
+
+        # Only allow a-zA-Z0-9_-/.
         # Replace anything else with _
-        sanitized = re.sub(r"[^a-zA-Z0-9_\-\./@]", "_", alias)
+        sanitized = re.sub(r"[^a-zA-Z0-9_\-\./]", "_", sanitized)
 
         # Collapse multiple underscores
         sanitized = re.sub(r"_+", "_", sanitized)
 
         # Ensure it starts and ends with alphanumeric:
-        # strip common non-alphanumeric boundary characters, including '@' at edges
-        # This might make it shorter than 2 chars
-        sanitized = sanitized.strip("_-. /@")
+        # strip common non-alphanumeric boundary characters
+        sanitized = sanitized.strip("_-. /")
 
         # Rule: 2-255 characters.
         # If it's too short after stripping, return empty so the caller can use a fallback.
@@ -59,7 +64,7 @@ class LiteLLMService:
 
         # Enforce maximum length, but ensure we still end with an alphanumeric
         sanitized = sanitized[:255]
-        sanitized = sanitized.rstrip("_-. /@")
+        sanitized = sanitized.rstrip("_-. /")
 
         # Re-check minimum length after enforcing trailing-character rule
         if len(sanitized) < 2:
