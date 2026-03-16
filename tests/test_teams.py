@@ -61,6 +61,32 @@ def test_register_team(client, admin_token):
     assert "updated_at" in team_data
 
 
+def test_register_team_creates_litellm_team_for_active_shared_regions(
+    client, admin_token, test_region
+):
+    with patch(
+        "app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock
+    ) as mock_create_team:
+        response = client.post(
+            "/teams/",
+            json={
+                "name": "Test Team With LiteLLM",
+                "admin_email": "team-with-litellm@example.com",
+                "phone": "1234567890",
+                "billing_address": "123 Test St, Test City, 12345",
+                "budget_type": "pool",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201
+    team_data = response.json()
+    mock_create_team.assert_awaited_once_with(
+        team_id=f"{test_region.name}_{team_data['id']}",
+        max_budget=0.0,
+    )
+
+
 def test_register_team_unauthenticated(client):
     """Test that unauthenticated requests are rejected"""
     response = client.post(

@@ -305,6 +305,49 @@ class LiteLLMService:
                 detail=f"Failed to get LiteLLM team info: {error_msg}",
             )
 
+    async def create_team(
+        self, team_id: str, max_budget: float = 0.0, budget_duration: Optional[str] = None
+    ):
+        """Create a LiteLLM team. Treat existing team as success."""
+        try:
+            request_data = {
+                "team_id": team_id,
+                "max_budget": max_budget,
+            }
+            if budget_duration:
+                request_data["budget_duration"] = budget_duration
+
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/team/new",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json=request_data,
+                )
+                response.raise_for_status()
+                logger.info(f"Created team {team_id} in LiteLLM")
+        except httpx.HTTPStatusError as e:
+            error_msg = str(e)
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            response_text = ""
+            if hasattr(e, "response") and e.response is not None:
+                status_code = e.response.status_code
+                response_text = e.response.text or ""
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {response_text}"
+
+            # Some LiteLLM versions return 400/409 when team already exists.
+            if status_code in (400, 409) and "already" in response_text.lower():
+                logger.info(f"LiteLLM team {team_id} already exists; continuing")
+                return
+
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to create LiteLLM team: {error_msg}",
+            )
+
     async def update_team_budget(
         self, team_id: str, max_budget: float, budget_duration: Optional[str] = None
     ):

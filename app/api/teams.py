@@ -74,6 +74,27 @@ def _create_default_limits_for_team(team: DBTeam, db: Session) -> None:
             # Don't fail team creation if limit creation fails
 
 
+async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
+    """
+    Create region-scoped LiteLLM teams for active non-dedicated regions.
+
+    New teams can use non-dedicated regions by default, so we initialize
+    LiteLLM teams there with zero budget.
+    """
+    regions = (
+        db.query(DBRegion)
+        .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
+        .all()
+    )
+
+    for region in regions:
+        litellm_service = LiteLLMService(
+            api_url=region.litellm_api_url, api_key=region.litellm_api_key
+        )
+        lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+        await litellm_service.create_team(team_id=lite_team_id, max_budget=0.0)
+
+
 @router.post("", response_model=Team, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=Team, status_code=status.HTTP_201_CREATED)
 async def register_team(
@@ -119,8 +140,20 @@ async def register_team(
     )
 
     db.add(db_team)
-    db.commit()
-    db.refresh(db_team)
+    try:
+        db.flush()
+        await _create_litellm_teams_for_new_team(db_team, db)
+        db.commit()
+        db.refresh(db_team)
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create team: {str(e)}",
+        )
 
     # Create default limits for the team
     _create_default_limits_for_team(db_team, db)
