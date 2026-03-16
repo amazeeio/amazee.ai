@@ -55,8 +55,9 @@ class LiteLLMService:
 
             # Add email and name to key_alias and metadata if provided
             # LiteLLM now requires key_alias to be set
-            if not key_alias:
-                key_alias = f"{email or 'unknown'} - {actual_name}"
+            clean_alias = key_alias.strip() if isinstance(key_alias, str) else ""
+            if not clean_alias:
+                clean_alias = f"{email or 'unknown'} - {actual_name}"
 
             metadata = {"service_account_id": email or "unknown"}
             metadata["amazeeai_private_ai_key_name"] = actual_name
@@ -65,7 +66,7 @@ class LiteLLMService:
             metadata["amazeeai_user_id"] = str(user_id or None)
             metadata["amazeeai_team_id"] = team_id
 
-            request_data["key_alias"] = key_alias
+            request_data["key_alias"] = clean_alias
             request_data["metadata"] = metadata
             request_data["team_id"] = team_id
 
