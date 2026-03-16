@@ -71,9 +71,9 @@ def test_create_key_success(mock_client_class, test_region, mock_httpx_post_clie
 
     assert result == "test-private-key-123"
     mock_httpx_post_client.post.assert_called_once()
-    # Verify key_alias was sanitized (spaces replaced with _)
+    # Verify key_alias was sanitized ("email - name" format)
     call_args = mock_httpx_post_client.post.call_args
-    assert call_args.kwargs["json"]["key_alias"] == "Test_Key"
+    assert call_args.kwargs["json"]["key_alias"] == "test_at_example.com_-_Test_Key"
 
 
 @patch("httpx.AsyncClient")
@@ -87,7 +87,7 @@ def test_create_key_with_email_fallback(
         api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
     )
 
-    # Use empty name to trigger email fallback
+    # Use empty name to trigger email fallback in actual_name
     result = asyncio.run(
         service.create_key(
             email="test@example.com", name="", user_id=123, team_id="team-456"
@@ -96,7 +96,7 @@ def test_create_key_with_email_fallback(
 
     assert result == "test-private-key-123"
     mock_httpx_post_client.post.assert_called_once()
-    # Verify key_alias was sanitized (@ replaced with _at_, spaces/dashes handled)
+    # Verify key_alias was sanitized ("email - fallback_name" format)
     call_args = mock_httpx_post_client.post.call_args
     assert call_args.kwargs["json"]["key_alias"] == "test_at_example.com_-_key-123"
 
