@@ -50,7 +50,7 @@ class LiteLLMService:
                 "spend": 0,
             }
 
-            # If name is not provided, generate a default based on user_id
+            # If name is empty or otherwise falsy, generate a default based on user_id
             actual_name = name if name else f"key-{user_id or 'unknown'}"
 
             # Add email and name to key_alias and metadata if provided
