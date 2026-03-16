@@ -429,6 +429,10 @@ async def create_llm_token(
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
+        # Note: `key_alias` is an optional field on `PrivateAIKeyCreate`.
+        # If `private_ai_key.key_alias` is None or omitted by the client, it will
+        # be forwarded as such to LiteLLM and LiteLLM will apply its default
+        # behavior for key aliases (for example, generating or leaving the alias unset).
         litellm_token = await litellm_service.create_key(
             email=owner_email,
             name=private_ai_key.name,
