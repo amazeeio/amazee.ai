@@ -33,3 +33,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_column("teams", "budget_type")
+    op.execute("DROP TYPE budget_type_enum")
