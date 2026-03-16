@@ -47,7 +47,13 @@ def test_sanitize_alias_length():
     assert LiteLLMService.sanitize_alias("a") == ""
     assert LiteLLMService.sanitize_alias("@") == ""
     assert LiteLLMService.sanitize_alias("---") == ""
-
+    # Just enough (minimum acceptable length after sanitization is 2)
+    assert LiteLLMService.sanitize_alias("ab") == "ab"
+    # Too long (should be truncated to 255 characters)
+    long_alias = "a" * 256
+    sanitized = LiteLLMService.sanitize_alias(long_alias)
+    assert len(sanitized) == 255
+    assert sanitized == "a" * 255
 
 def test_sanitize_alias_collapse_underscores():
     """Test collapsing of multiple underscores"""
