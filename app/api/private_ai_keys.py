@@ -3,7 +3,6 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from fastapi import status
 import logging
-import uuid
 
 from app.db.database import get_db
 from app.core.dependencies import get_limit_service
@@ -431,9 +430,8 @@ async def create_llm_token(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
         # Ensure a non-empty key alias is always sent to LiteLLM:
-        # - When private_ai_key.key_alias is provided, pass it through unchanged.
-        # - When omitted or falsy, generate a fresh alias.
-        key_alias = private_ai_key.key_alias or uuid.uuid4().hex
+        # Use name field for key_alias (sanitized in LiteLLM service)
+        key_alias = private_ai_key.name
         litellm_token = await litellm_service.create_key(
             email=owner_email,
             name=private_ai_key.name,
