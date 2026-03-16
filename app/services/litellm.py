@@ -94,7 +94,9 @@ class LiteLLMService:
                 clean_alias = self.sanitize_alias(key_alias.strip())
 
             if not clean_alias:
-                clean_alias = self.sanitize_alias(f"{email or 'unknown'} - {actual_name}")
+                clean_alias = self.sanitize_alias(
+                    f"{email or 'unknown'} - {actual_name}"
+                )
 
             if not clean_alias:
                 # If still empty, use a safe default that's guaranteed to be valid
