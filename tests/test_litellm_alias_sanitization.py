@@ -56,6 +56,7 @@ def test_sanitize_alias_length():
     assert len(sanitized) == 255
     assert sanitized == "a" * 255
 
+
 def test_sanitize_alias_collapse_underscores():
     """Test collapsing of multiple underscores"""
     assert LiteLLMService.sanitize_alias("my   key") == "my_key"
