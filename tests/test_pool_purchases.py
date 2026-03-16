@@ -305,3 +305,86 @@ async def test_sync_pool_team_budgets_expires_stale_pool_team(
         team_id=expected_lite_team_id,
         max_budget=0.0,
     )
+
+
+@pytest.mark.asyncio
+@patch("app.core.config.settings.POOL_BUDGET_EXPIRATION_DAYS", 365)
+async def test_sync_pool_team_budgets_expires_all_team_regions(
+    db, test_team, test_region
+):
+    """Stale pool teams should be expired in every purchased/dedicated region."""
+    from app.db.models import DBRegion, DBPoolPurchase
+
+    second_region = DBRegion(
+        name="test-region-2",
+        label="Test Region 2",
+        description="Second test region",
+        postgres_host="localhost",
+        postgres_port=5432,
+        postgres_admin_user="admin",
+        postgres_admin_password="password",
+        litellm_api_url="http://localhost:4000",
+        litellm_api_key="test-key-2",
+        is_active=True,
+        is_dedicated=True,
+    )
+    db.add(second_region)
+    db.flush()
+
+    test_team.budget_type = "pool"
+    test_team.last_pool_purchase = datetime.now(UTC) - timedelta(days=366)
+    db.add(
+        DBTeamRegion(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.add(
+        DBTeamRegion(
+            team_id=test_team.id,
+            region_id=second_region.id,
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.add(
+        DBPoolPurchase(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            amount_cents=1000,
+            currency="usd",
+            purchased_at=datetime.now(UTC) - timedelta(days=400),
+            stripe_payment_id="pi_multi_region_1",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.add(
+        DBPoolPurchase(
+            team_id=test_team.id,
+            region_id=second_region.id,
+            amount_cents=2000,
+            currency="usd",
+            purchased_at=datetime.now(UTC) - timedelta(days=390),
+            stripe_payment_id="pi_multi_region_2",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    expected_ids = {
+        f"{test_region.name}_{test_team.id}",
+        f"{second_region.name}_{test_team.id}",
+    }
+
+    with patch(
+        "app.api.budgets.LiteLLMService.update_team_budget", new_callable=AsyncMock
+    ) as mock_update_budget:
+        result = await sync_pool_team_budgets(db)
+
+    assert result["teams_updated"] == 1
+    assert result["errors"] == []
+    assert mock_update_budget.await_count == 2
+    actual_ids = {call.kwargs["team_id"] for call in mock_update_budget.await_args_list}
+    assert actual_ids == expected_ids
+    for call in mock_update_budget.await_args_list:
+        assert call.kwargs["max_budget"] == 0.0

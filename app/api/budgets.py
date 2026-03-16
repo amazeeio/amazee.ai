@@ -235,40 +235,56 @@ async def sync_pool_team_budgets(db: Session) -> dict:
             days_since_last_purchase = (datetime.now(UTC) - last_purchase).days
 
             if days_since_last_purchase >= settings.POOL_BUDGET_EXPIRATION_DAYS:
-                region_id = (
-                    team.dedicated_regions[0].region_id
-                    if team.dedicated_regions
-                    else None
-                )
-                if not region_id:
+                purchased_region_ids = [
+                    region_id
+                    for (region_id,) in db.query(DBPoolPurchase.region_id)
+                    .filter(DBPoolPurchase.team_id == team.id)
+                    .distinct()
+                    .all()
+                    if region_id is not None
+                ]
+                dedicated_region_ids = [
+                    dedicated_region.region_id for dedicated_region in team.dedicated_regions
+                ]
+                region_ids = list(set(purchased_region_ids + dedicated_region_ids))
+
+                if not region_ids:
                     continue
 
-                if region_id not in regions_cache:
-                    regions_cache[region_id] = (
-                        db.query(DBRegion).filter(DBRegion.id == region_id).first()
+                team_had_successful_expiration = False
+
+                for region_id in region_ids:
+                    if region_id not in regions_cache:
+                        regions_cache[region_id] = (
+                            db.query(DBRegion).filter(DBRegion.id == region_id).first()
+                        )
+                    region = regions_cache[region_id]
+
+                    if not region:
+                        continue
+
+                    litellm_service = LiteLLMService(
+                        api_url=region.litellm_api_url, api_key=region.litellm_api_key
                     )
-                region = regions_cache[region_id]
 
-                if not region:
-                    continue
+                    lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
 
-                litellm_service = LiteLLMService(
-                    api_url=region.litellm_api_url, api_key=region.litellm_api_key
-                )
+                    try:
+                        await litellm_service.update_team_budget(
+                            team_id=lite_team_id,
+                            max_budget=0.0,
+                        )
+                        team_had_successful_expiration = True
+                        logger.info(
+                            f"Pool team {team.id} budget expired in region {region.id} ({settings.POOL_BUDGET_EXPIRATION_DAYS}d passed), set to $0"
+                        )
+                    except Exception as e:
+                        errors.append(f"Team {team.id}, region {region_id}: {str(e)}")
+                        logger.error(
+                            f"Failed to expire team {team.id} budget in region {region_id}: {e}"
+                        )
 
-                lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
-
-                try:
-                    await litellm_service.update_team_budget(
-                        team_id=lite_team_id,
-                        max_budget=0.0,
-                    )
+                if team_had_successful_expiration:
                     total_updated += 1
-                    logger.info(
-                        f"Pool team {team.id} budget expired ({settings.POOL_BUDGET_EXPIRATION_DAYS}d passed), set to $0"
-                    )
-                except Exception as e:
-                    errors.append(f"Team {team.id}: {str(e)}")
-                    logger.error(f"Failed to expire team {team.id} budget: {e}")
 
     return {"teams_updated": total_updated, "errors": errors}
