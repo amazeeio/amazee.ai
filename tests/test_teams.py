@@ -12,12 +12,28 @@ from app.main import app
 from app.core.security import get_password_hash
 from app.core.limit_service import LimitService, setup_default_limits
 from app.schemas.limits import OwnerType, LimitSource, ResourceType
+from app.schemas.models import BudgetType
 from app.core.config import settings
 from datetime import datetime, UTC, timedelta
 from unittest.mock import patch, MagicMock, AsyncMock
 from tests.conftest import soft_delete_team_for_test
 
 client = TestClient(app)
+
+
+def test_dbteam_budget_type_defaults_to_periodic(db):
+    """Creating a team without budget_type should use the DB/model default."""
+    team = DBTeam(
+        name="Default Budget Team",
+        admin_email="default-budget-team@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+    )
+    db.add(team)
+    db.commit()
+    db.refresh(team)
+
+    assert team.budget_type == BudgetType.PERIODIC
 
 
 def test_register_team(client, admin_token):
