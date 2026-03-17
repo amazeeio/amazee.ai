@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # Wait for PostgreSQL to be ready and create database if needed
 echo "Waiting for PostgreSQL to be ready..."
