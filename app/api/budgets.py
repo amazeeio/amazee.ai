@@ -117,8 +117,17 @@ async def purchase_pool_budget(
         team_info = await litellm_service.get_team_info(lite_team_id)
         current_spend = team_info.get("spend") or 0.0
     except Exception as e:
-        logger.warning(f"Could not get team info from LiteLLM, assuming $0 spend: {e}")
-        current_spend = 0.0
+        db.rollback()
+        logger.error(
+            "Could not get team info from LiteLLM; rolling back purchase: %s", e
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Failed to retrieve current spend from billing provider; "
+                "purchase was not completed."
+            ),
+        )
 
     new_total_budget = total_purchased_dollars - current_spend
     if new_total_budget < 0:
