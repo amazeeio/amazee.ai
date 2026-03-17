@@ -16,6 +16,7 @@ from app.api import (
     products,
     pricing_tables,
     limits,
+    budgets,
 )
 from app.core.config import settings
 from app.db.database import get_db
@@ -144,6 +145,44 @@ async def lifespan(app: FastAPI):
         hard_delete_teams_job,
         trigger=hard_delete_trigger,
         id="hard_delete_teams",
+        replace_existing=True,
+    )
+
+    # Sync pool team budgets job - runs daily to ensure LiteLLM budgets match purchases - spend
+    async def sync_pool_budgets_job():
+        db = next(get_db())
+        lock_name = "sync_pool_budgets"
+
+        try:
+            if try_acquire_lock(lock_name, db, lock_timeout=10):
+                logger.info("Acquired sync_pool_budgets lock, executing job")
+                try:
+                    result = await budgets.sync_pool_team_budgets(db)
+                    logger.info(
+                        f"Pool budgets sync complete: {result['teams_updated']} teams updated"
+                    )
+                except Exception as e:
+                    logger.error(f"Error in sync_pool_team_budgets: {str(e)}")
+                finally:
+                    release_lock(lock_name, db)
+            else:
+                logger.info(
+                    "Another process has the sync_pool_budgets lock, skipping execution"
+                )
+        except Exception as e:
+            logger.error(f"Error in sync_pool_budgets job: {str(e)}")
+            try:
+                release_lock(lock_name, db)
+            except Exception as release_error:
+                logger.error(f"Error releasing lock: {release_error}")
+        finally:
+            db.close()
+
+    sync_pool_trigger = CronTrigger(hour=4, minute=0, timezone=UTC)  # Run daily at 4 AM
+    scheduler.add_job(
+        sync_pool_budgets_job,
+        trigger=sync_pool_trigger,
+        id="sync_pool_budgets",
         replace_existing=True,
     )
 
@@ -280,6 +319,7 @@ app.include_router(
     pricing_tables.router, prefix="/pricing-tables", tags=["pricing-tables"]
 )
 app.include_router(limits.router, prefix="/limits", tags=["limits"])
+app.include_router(budgets.router, prefix="/budgets", tags=["budgets"])
 
 
 @app.get("/", include_in_schema=False)

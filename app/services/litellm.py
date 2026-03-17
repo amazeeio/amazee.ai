@@ -335,3 +335,112 @@ class LiteLLMService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to update LiteLLM key team association: {error_msg}",
             )
+
+    async def get_team_info(self, team_id: str) -> dict:
+        """Get information about a LiteLLM team including budget"""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.api_url}/team/info",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    params={"team_id": team_id},
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            error_msg = str(e)
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get LiteLLM team info: {error_msg}",
+            )
+
+    async def create_team(
+        self,
+        max_budget: float = 0.0,
+        budget_duration: Optional[str] = None,
+        team_id: Optional[str] = None,
+        team_alias: Optional[str] = None,
+    ):
+        """Create a LiteLLM team. Treat existing team as success."""
+        try:
+            request_data = {
+                "max_budget": max_budget,
+            }
+            if team_id:
+                request_data["team_id"] = team_id
+            if team_alias:
+                request_data["team_alias"] = team_alias
+            if budget_duration:
+                request_data["budget_duration"] = budget_duration
+
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/team/new",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json=request_data,
+                )
+                response.raise_for_status()
+                identifier = team_id or team_alias or "unknown-team"
+                logger.info(f"Created team {identifier} in LiteLLM")
+        except httpx.HTTPStatusError as e:
+            error_msg = str(e)
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            response_text = ""
+            if hasattr(e, "response") and e.response is not None:
+                status_code = e.response.status_code
+                response_text = e.response.text or ""
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {response_text}"
+
+            # Some LiteLLM versions return 400/409 when team already exists.
+            if status_code in (400, 409) and "already" in response_text.lower():
+                identifier = team_id or team_alias or "unknown-team"
+                logger.info(f"LiteLLM team {identifier} already exists; continuing")
+                return
+
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to create LiteLLM team: {error_msg}",
+            )
+
+    async def update_team_budget(
+        self, team_id: str, max_budget: float, budget_duration: Optional[str] = None
+    ):
+        """Update the budget for a LiteLLM team"""
+        try:
+            request_data = {
+                "team_id": team_id,
+                "max_budget": max_budget,
+            }
+            if budget_duration:
+                request_data["budget_duration"] = budget_duration
+
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/team/update",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json=request_data,
+                )
+                response.raise_for_status()
+                logger.info(f"Updated team {team_id} budget to {max_budget} in LiteLLM")
+        except httpx.HTTPStatusError as e:
+            error_msg = str(e)
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update LiteLLM team budget: {error_msg}",
+            )

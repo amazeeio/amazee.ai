@@ -74,6 +74,24 @@ def _create_default_limits_for_team(team: DBTeam, db: Session) -> None:
             # Don't fail team creation if limit creation fails
 
 
+async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
+    """
+    Create region-scoped LiteLLM teams for all active regions.
+    """
+    regions = db.query(DBRegion).filter(DBRegion.is_active.is_(True)).all()
+
+    for region in regions:
+        litellm_service = LiteLLMService(
+            api_url=region.litellm_api_url, api_key=region.litellm_api_key
+        )
+        lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+        await litellm_service.create_team(
+            team_id=lite_team_id,
+            team_alias=lite_team_id,
+            max_budget=0.0,
+        )
+
+
 @router.post("", response_model=Team, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=Team, status_code=status.HTTP_201_CREATED)
 async def register_team(
@@ -115,11 +133,24 @@ async def register_team(
         is_active=True,
         created_at=datetime.now(UTC),
         force_user_keys=team.force_user_keys,
+        budget_type=team.budget_type,
     )
 
     db.add(db_team)
-    db.commit()
-    db.refresh(db_team)
+    try:
+        db.flush()
+        await _create_litellm_teams_for_new_team(db_team, db)
+        db.commit()
+        db.refresh(db_team)
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create team: {str(e)}",
+        )
 
     # Create default limits for the team
     _create_default_limits_for_team(db_team, db)
@@ -256,6 +287,22 @@ async def delete_team(team_id: int, db: Session = Depends(get_db)):
     db_team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not db_team:
         raise HTTPException(status_code=404, detail="Team not found")
+
+    # Best-effort: expire LiteLLM team budgets before deleting team locally.
+    regions = db.query(DBRegion).filter(DBRegion.is_active.is_(True)).all()
+    for region in regions:
+        try:
+            litellm_service = LiteLLMService(
+                api_url=region.litellm_api_url, api_key=region.litellm_api_key
+            )
+            lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+            await litellm_service.update_team_budget(
+                team_id=lite_team_id, max_budget=0.0
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to zero LiteLLM budget for team {team_id} in region {region.id}: {e}"
+            )
 
     # Remove all product associations
     db.query(DBTeamProduct).filter(DBTeamProduct.team_id == team_id).delete()
@@ -514,6 +561,7 @@ async def list_teams_for_sales(db: Session = Depends(get_db)):
                 created_at=team.created_at,
                 last_payment=team.last_payment,
                 is_always_free=team.is_always_free,
+                budget_type=team.budget_type,
                 products=products,
                 regions=regions,
                 total_spend=round(total_spend, 4),

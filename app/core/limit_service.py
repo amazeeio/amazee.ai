@@ -20,6 +20,7 @@ from app.schemas.limits import (
     LimitType,
     ResourceType,
 )
+from app.schemas.models import BudgetType
 import logging
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -746,7 +747,14 @@ class LimitService:
             if max_value is not None:
                 limit_source = LimitSource.PRODUCT
             else:
-                max_value = self.get_default_team_limit_for_resource(resource_type)
+                # POOL teams start with $0 budget, PERIODIC teams get default
+                if (
+                    resource_type == ResourceType.BUDGET
+                    and team.budget_type == BudgetType.POOL
+                ):
+                    max_value = 0.0
+                else:
+                    max_value = self.get_default_team_limit_for_resource(resource_type)
                 limit_source = LimitSource.DEFAULT
 
             # Set the limit (this will update existing or create new)
@@ -1056,9 +1064,7 @@ class LimitService:
                 result.current_service_keys,
             )
             # Ensure the key in progress is recorded
-            increment = self.increment_resource(
-                OwnerType.TEAM, team_id, ResourceType.SERVICE_KEY
-            )
+            self.increment_resource(OwnerType.TEAM, team_id, ResourceType.SERVICE_KEY)
             # Check service key limits (only for team-owned keys)
             if (
                 owner_id is None

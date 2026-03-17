@@ -14,6 +14,7 @@ from datetime import datetime, UTC
 from sqlalchemy.sql import func
 from sqlalchemy import UniqueConstraint
 from app.schemas.limits import LimitType, ResourceType, UnitType, OwnerType, LimitSource
+from app.schemas.models import BudgetType
 
 Base = declarative_base()
 
@@ -136,6 +137,11 @@ class DBTeam(Base):
     is_active = Column(Boolean, default=True)
     is_always_free = Column(Boolean, default=False)
     force_user_keys = Column(Boolean, default=False, nullable=False)
+    budget_type = Column(
+        Enum(BudgetType, name="budget_type_enum", create_constraint=True),
+        default=BudgetType.PERIODIC,
+        nullable=False,
+    )
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     stripe_customer_id = Column(String, nullable=True, unique=True, index=True)
@@ -143,6 +149,7 @@ class DBTeam(Base):
     last_monitored = Column(DateTime(timezone=True), nullable=True)
     deleted_at = Column(DateTime(timezone=True), nullable=True)
     retention_warning_sent_at = Column(DateTime(timezone=True), nullable=True)
+    last_pool_purchase = Column(DateTime(timezone=True), nullable=True)
 
     users = relationship("DBUser", back_populates="team")
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="team")
@@ -183,6 +190,34 @@ class DBTeamMetrics(Base):
 
     # Relationships
     team = relationship("DBTeam", back_populates="metrics")
+
+
+class DBPoolPurchase(Base):
+    """
+    Stores pool budget purchases for teams.
+    Each purchase adds to the team's budget in LiteLLM.
+    """
+
+    __tablename__ = "pool_purchases"
+
+    id = Column(Integer, primary_key=True, index=True)
+    team_id = Column(
+        Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    region_id = Column(
+        Integer,
+        ForeignKey("regions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    amount_cents = Column(Integer, nullable=False)
+    currency = Column(String, nullable=False)
+    purchased_at = Column(DateTime(timezone=True), nullable=False)
+    stripe_payment_id = Column(String, unique=True, nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    team = relationship("DBTeam")
+    region = relationship("DBRegion")
 
 
 class DBPrivateAIKey(Base):

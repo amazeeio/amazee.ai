@@ -56,6 +56,7 @@ from app.schemas.models import (
     SignInData,
     TeamCreate,
     PrivateAIKeyCreate,
+    BudgetType,
 )
 
 from app.api.teams import register_team
@@ -374,6 +375,7 @@ async def sign_in(
             admin_email=sign_in_data.username,
             phone="",  # Required by schema but not used for auto-created teams
             billing_address="",  # Required by schema but not used for auto-created teams
+            budget_type=BudgetType.PERIODIC,
         )
         team = await register_team(team_data, db)
 
@@ -801,6 +803,7 @@ async def generate_trial_access(
                 set_by_context=set_by_context,
                 region_id=region.id,
                 is_active=True,
+                budget_type=BudgetType.PERIODIC,
             )
             team = await register_team(team_data, db)
             # Ensure team has limit set

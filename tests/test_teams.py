@@ -12,12 +12,28 @@ from app.main import app
 from app.core.security import get_password_hash
 from app.core.limit_service import LimitService, setup_default_limits
 from app.schemas.limits import OwnerType, LimitSource, ResourceType
+from app.schemas.models import BudgetType
 from app.core.config import settings
 from datetime import datetime, UTC, timedelta
 from unittest.mock import patch, MagicMock, AsyncMock
 from tests.conftest import soft_delete_team_for_test
 
 client = TestClient(app)
+
+
+def test_dbteam_budget_type_defaults_to_periodic(db):
+    """Creating a team without budget_type should use the DB/model default."""
+    team = DBTeam(
+        name="Default Budget Team",
+        admin_email="default-budget-team@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+    )
+    db.add(team)
+    db.commit()
+    db.refresh(team)
+
+    assert team.budget_type == BudgetType.PERIODIC
 
 
 def test_register_team(client, admin_token):
@@ -29,6 +45,7 @@ def test_register_team(client, admin_token):
             "admin_email": "team@example.com",
             "phone": "1234567890",
             "billing_address": "123 Test St, Test City, 12345",
+            "budget_type": "pool",
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -42,6 +59,33 @@ def test_register_team(client, admin_token):
     assert "id" in team_data
     assert "created_at" in team_data
     assert "updated_at" in team_data
+
+
+def test_register_team_creates_litellm_team_for_active_shared_regions(
+    client, admin_token, test_region
+):
+    with patch(
+        "app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock
+    ) as mock_create_team:
+        response = client.post(
+            "/teams/",
+            json={
+                "name": "Test Team With LiteLLM",
+                "admin_email": "team-with-litellm@example.com",
+                "phone": "1234567890",
+                "billing_address": "123 Test St, Test City, 12345",
+                "budget_type": "pool",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201
+    team_data = response.json()
+    mock_create_team.assert_awaited_once_with(
+        team_id=f"{test_region.name}_{team_data['id']}",
+        team_alias=f"{test_region.name}_{team_data['id']}",
+        max_budget=0.0,
+    )
 
 
 def test_register_team_unauthenticated(client):
@@ -68,6 +112,7 @@ def test_register_team_duplicate_admin_email(client, db, admin_token):
         billing_address="123 Test St, Test City, 12345",
         is_active=True,
         created_at=datetime.now(UTC),
+        budget_type="periodic",
     )
     db.add(team)
     db.commit()
@@ -81,6 +126,7 @@ def test_register_team_duplicate_admin_email(client, db, admin_token):
             "admin_email": "existing@example.com",
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321",
+            "budget_type": "pool",
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -102,6 +148,7 @@ def test_register_team_duplicate_admin_email_case_insensitive(client, db, admin_
         billing_address="123 Test St, Test City, 12345",
         is_active=True,
         created_at=datetime.now(UTC),
+        budget_type="periodic",
     )
     db.add(team)
     db.commit()
@@ -115,6 +162,7 @@ def test_register_team_duplicate_admin_email_case_insensitive(client, db, admin_
             "admin_email": "EXISTING@EXAMPLE.COM",
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321",
+            "budget_type": "pool",
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -151,6 +199,7 @@ def test_register_team_duplicate_admin_email_case_insensitive_reverse(
             "admin_email": "existing@example.com",
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321",
+            "budget_type": "pool",
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -172,6 +221,7 @@ def test_register_team_duplicate_name(client, db, admin_token):
         billing_address="123 Test St, Test City, 12345",
         is_active=True,
         created_at=datetime.now(UTC),
+        budget_type="periodic",
     )
     db.add(team)
     db.commit()
@@ -185,6 +235,7 @@ def test_register_team_duplicate_name(client, db, admin_token):
             "admin_email": "newteam@example.com",
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321",
+            "budget_type": "pool",
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -206,6 +257,7 @@ def test_register_team_duplicate_name_case_insensitive(client, db, admin_token):
         billing_address="123 Test St, Test City, 12345",
         is_active=True,
         created_at=datetime.now(UTC),
+        budget_type="periodic",
     )
     db.add(team)
     db.commit()
@@ -216,9 +268,10 @@ def test_register_team_duplicate_name_case_insensitive(client, db, admin_token):
         "/teams/",
         json={
             "name": "existing team",
-            "admin_email": "newteam@example.com",
+            "admin_email": "newteam2@example.com",
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321",
+            "budget_type": "pool",
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -269,6 +322,7 @@ def test_get_team_as_team_user(client, db):
         billing_address="123 Test St, Test City, 12345",
         is_active=True,
         created_at=datetime.now(UTC),
+        budget_type="periodic",
     )
     db.add(team)
     db.commit()
@@ -348,6 +402,7 @@ def test_update_team_as_team_admin(client, db):
         billing_address="123 Test St, Test City, 12345",
         is_active=True,
         created_at=datetime.now(UTC),
+        budget_type="periodic",
     )
     db.add(team)
     db.commit()
@@ -424,6 +479,22 @@ def test_delete_team(client, admin_token, test_team, db):
     assert db_team is None
 
 
+def test_delete_team_zeros_litellm_budget(client, admin_token, test_team, test_region):
+    """Deleting a team should set its LiteLLM team budget to $0 in active regions."""
+    with patch(
+        "app.api.teams.LiteLLMService.update_team_budget", new_callable=AsyncMock
+    ) as mock_update_budget:
+        response = client.delete(
+            f"/teams/{test_team.id}", headers={"Authorization": f"Bearer {admin_token}"}
+        )
+
+    assert response.status_code == 200
+    mock_update_budget.assert_awaited_once_with(
+        team_id=f"{test_region.name}_{test_team.id}",
+        max_budget=0.0,
+    )
+
+
 def test_delete_team_with_products(client, admin_token, db, test_team, test_product):
     """Test deleting a team that has associated products"""
     product_id = test_product.id
@@ -479,6 +550,7 @@ def test_add_user_to_second_team(client, admin_token, db, test_team, test_team_u
         billing_address="456 Team 2 St, City 2, 54321",
         is_active=True,
         created_at=datetime.now(UTC),
+        budget_type="periodic",
     )
     db.add(team2)
     db.commit()
@@ -896,12 +968,14 @@ def test_merge_teams_endpoint_success(mock_post, client, admin_token, db):
         admin_email="source@example.com",
         is_active=True,
         created_at=datetime.now(UTC),
+        budget_type="periodic",
     )
     target_team = DBTeam(
         name="Target Team",
         admin_email="target@example.com",
         is_active=True,
         created_at=datetime.now(UTC),
+        budget_type="periodic",
     )
     db.add_all([source_team, target_team])
     db.commit()
@@ -992,10 +1066,16 @@ def test_merge_teams_endpoint_with_conflicts_delete_strategy(
 
     # Create teams with conflicting keys
     source_team = DBTeam(
-        name="Source", admin_email="source@example.com", is_active=True
+        name="Source",
+        admin_email="source@example.com",
+        is_active=True,
+        budget_type="periodic",
     )
     target_team = DBTeam(
-        name="Target", admin_email="target@example.com", is_active=True
+        name="Target",
+        admin_email="target@example.com",
+        is_active=True,
+        budget_type="periodic",
     )
     db.add_all([source_team, target_team])
     db.commit()
@@ -1055,10 +1135,16 @@ def test_merge_teams_endpoint_with_conflicts_rename_strategy(
 
     # Create teams with conflicting keys
     source_team = DBTeam(
-        name="Source", admin_email="source@example.com", is_active=True
+        name="Source",
+        admin_email="source@example.com",
+        is_active=True,
+        budget_type="periodic",
     )
     target_team = DBTeam(
-        name="Target", admin_email="target@example.com", is_active=True
+        name="Target",
+        admin_email="target@example.com",
+        is_active=True,
+        budget_type="periodic",
     )
     db.add_all([source_team, target_team])
     db.commit()
@@ -1118,10 +1204,16 @@ def test_merge_teams_endpoint_with_conflicts_cancel_strategy(
 
     # Create teams with conflicting keys
     source_team = DBTeam(
-        name="Source", admin_email="source@example.com", is_active=True
+        name="Source",
+        admin_email="source@example.com",
+        is_active=True,
+        budget_type="periodic",
     )
     target_team = DBTeam(
-        name="Target", admin_email="target@example.com", is_active=True
+        name="Target",
+        admin_email="target@example.com",
+        is_active=True,
+        budget_type="periodic",
     )
     db.add_all([source_team, target_team])
     db.commit()
@@ -1177,10 +1269,16 @@ def test_merge_teams_with_users_and_keys(
 
     # Create teams
     source_team = DBTeam(
-        name="Source", admin_email="source@example.com", is_active=True
+        name="Source",
+        admin_email="source@example.com",
+        is_active=True,
+        budget_type="periodic",
     )
     target_team = DBTeam(
-        name="Target", admin_email="target@example.com", is_active=True
+        name="Target",
+        admin_email="target@example.com",
+        is_active=True,
+        budget_type="periodic",
     )
     db.add_all([source_team, target_team])
     db.commit()
@@ -1275,10 +1373,16 @@ def test_merge_teams_with_product_associations_fails(
 
     # Create teams
     source_team = DBTeam(
-        name="Source", admin_email="source@example.com", is_active=True
+        name="Source",
+        admin_email="source@example.com",
+        is_active=True,
+        budget_type="periodic",
     )
     target_team = DBTeam(
-        name="Target", admin_email="target@example.com", is_active=True
+        name="Target",
+        admin_email="target@example.com",
+        is_active=True,
+        budget_type="periodic",
     )
     db.add_all([source_team, target_team])
     db.commit()
@@ -1342,10 +1446,16 @@ def test_merge_teams_with_source_team_dedicated_regions_fails(client, admin_toke
 
     # Create teams
     source_team = DBTeam(
-        name="Source", admin_email="source@example.com", is_active=True
+        name="Source",
+        admin_email="source@example.com",
+        is_active=True,
+        budget_type="periodic",
     )
     target_team = DBTeam(
-        name="Target", admin_email="target@example.com", is_active=True
+        name="Target",
+        admin_email="target@example.com",
+        is_active=True,
+        budget_type="periodic",
     )
     db.add_all([source_team, target_team])
     db.commit()
@@ -1416,10 +1526,16 @@ def test_merge_teams_with_target_team_dedicated_regions_succeeds(
 
     # Create teams
     source_team = DBTeam(
-        name="Source", admin_email="source@example.com", is_active=True
+        name="Source",
+        admin_email="source@example.com",
+        is_active=True,
+        budget_type="periodic",
     )
     target_team = DBTeam(
-        name="Target", admin_email="target@example.com", is_active=True
+        name="Target",
+        admin_email="target@example.com",
+        is_active=True,
+        budget_type="periodic",
     )
     db.add_all([source_team, target_team])
     db.commit()
@@ -1505,10 +1621,16 @@ def test_merge_teams_with_both_teams_dedicated_regions_fails(client, admin_token
 
     # Create teams
     source_team = DBTeam(
-        name="Source", admin_email="source@example.com", is_active=True
+        name="Source",
+        admin_email="source@example.com",
+        is_active=True,
+        budget_type="periodic",
     )
     target_team = DBTeam(
-        name="Target", admin_email="target@example.com", is_active=True
+        name="Target",
+        admin_email="target@example.com",
+        is_active=True,
+        budget_type="periodic",
     )
     db.add_all([source_team, target_team])
     db.commit()
@@ -1593,6 +1715,7 @@ def test_register_team_creates_default_limits(client, db, admin_token):
             "admin_email": "newteam@example.com",
             "phone": "1234567890",
             "billing_address": "123 New St, New City, 12345",
+            "budget_type": "periodic",
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -1672,9 +1795,10 @@ def test_register_team_does_not_create_limits_when_disabled(client, db, admin_to
         "/teams/",
         json={
             "name": "New Team Without Limits",
-            "admin_email": "newteamnolimits@example.com",
+            "admin_email": "newteamlimits@example.com",
             "phone": "1234567890",
             "billing_address": "123 New St, New City, 12345",
+            "budget_type": "pool",
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -1807,6 +1931,7 @@ def test_soft_deleted_teams_hidden_by_default(client, admin_token, db):
         admin_email="normal@example.com",
         is_active=True,
         created_at=datetime.now(UTC),
+        budget_type="periodic",
     )
     team2 = DBTeam(
         name="Deleted Team",
@@ -1814,6 +1939,7 @@ def test_soft_deleted_teams_hidden_by_default(client, admin_token, db):
         is_active=True,
         created_at=datetime.now(UTC),
         deleted_at=datetime.now(UTC),
+        budget_type="periodic",
     )
     db.add_all([team1, team2])
     db.commit()
@@ -1840,6 +1966,7 @@ def test_soft_deleted_teams_shown_with_flag(client, admin_token, db):
         admin_email="normalflag@example.com",
         is_active=True,
         created_at=datetime.now(UTC),
+        budget_type="periodic",
     )
     team2 = DBTeam(
         name="Deleted Team Flag",
@@ -1847,6 +1974,7 @@ def test_soft_deleted_teams_shown_with_flag(client, admin_token, db):
         is_active=True,
         created_at=datetime.now(UTC),
         deleted_at=datetime.now(UTC),
+        budget_type="periodic",
     )
     db.add_all([team1, team2])
     db.commit()

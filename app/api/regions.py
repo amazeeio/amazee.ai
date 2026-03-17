@@ -246,7 +246,6 @@ async def delete_region(region_id: int, db: Session = Depends(get_db)):
 async def update_region(
     region_id: int, region: RegionUpdate, db: Session = Depends(get_db)
 ):
-
     db_region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
     if not db_region:
         raise HTTPException(

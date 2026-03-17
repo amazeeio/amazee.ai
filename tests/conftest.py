@@ -110,6 +110,7 @@ def test_team(db):
         billing_address="123 Test St, Test City, 12345",
         is_active=True,
         created_at=datetime.now(UTC),
+        budget_type="periodic",
     )
     db.add(team)
     db.commit()

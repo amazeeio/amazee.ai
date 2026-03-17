@@ -1,7 +1,13 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, AfterValidator
+from pydantic import BaseModel, ConfigDict, EmailStr, AfterValidator, Field
 from typing import Optional, List, ClassVar, Literal, Dict, Annotated
 from datetime import datetime
 from sqlalchemy.orm import relationship
+from enum import Enum
+
+
+class BudgetType(str, Enum):
+    PERIODIC = "periodic"
+    POOL = "pool"
 
 
 def lowercase_email(v: str) -> str:
@@ -308,6 +314,7 @@ class TeamBase(BaseModel):
 
 class TeamCreate(TeamBase):
     force_user_keys: bool = False
+    budget_type: BudgetType = BudgetType.PERIODIC
 
 
 class TeamUpdate(BaseModel):
@@ -318,6 +325,7 @@ class TeamUpdate(BaseModel):
     is_active: Optional[bool] = None
     is_always_free: Optional[bool] = None
     force_user_keys: Optional[bool] = False
+    budget_type: Optional[BudgetType] = None
 
 
 class Team(TeamBase):
@@ -325,6 +333,8 @@ class Team(TeamBase):
     is_active: bool
     is_always_free: bool
     force_user_keys: Optional[bool] = False
+    budget_type: BudgetType
+    last_pool_purchase: Optional[datetime] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     last_payment: Optional[datetime] = None
@@ -475,6 +485,7 @@ class SalesTeam(BaseModel):
     created_at: datetime
     last_payment: Optional[datetime] = None
     is_always_free: bool
+    budget_type: BudgetType
     products: List[SalesProduct]
     regions: List[str]
     total_spend: float
@@ -493,4 +504,42 @@ class TeamRegionBudget(BaseModel):
     region_name: str
     total_spend: float
     total_budget: float
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PoolPurchaseRequest(BaseModel):
+    amount_cents: int = Field(gt=0)
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+
+
+class PoolPurchaseResponse(BaseModel):
+    id: int
+    team_id: int
+    region_id: int
+    amount_cents: int
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+    created_at: datetime
+    new_total_budget_cents: int
+    keys_updated: int
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PoolPurchaseHistoryItem(BaseModel):
+    id: int
+    amount_cents: int
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PoolPurchaseHistoryResponse(BaseModel):
+    team_id: int
+    region_id: int
+    purchases: List[PoolPurchaseHistoryItem]
     model_config = ConfigDict(from_attributes=True)

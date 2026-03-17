@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     WEBHOOK_SIG: str = os.getenv("WEBHOOK_SIG", "whsec_test_1234567890")
     ENABLE_METRICS: bool = os.getenv("ENABLE_METRICS", "false") == "true"
     PROMETHEUS_API_KEY: str = os.getenv("PROMETHEUS_API_KEY", "")
+    POOL_BUDGET_EXPIRATION_DAYS: int = int(
+        os.getenv("POOL_BUDGET_EXPIRATION_DAYS", "365")
+    )
 
     model_config = ConfigDict(env_file=".env", extra="ignore")
     main_route: str = os.getenv("LAGOON_ROUTE", "http://localhost:8800")

@@ -142,6 +142,7 @@ def test_list_teams_for_sales_success(
         "name": test_team.name,
         "admin_email": test_team.admin_email,
         "is_always_free": False,
+        "budget_type": "periodic",
         "products": [
             {"id": test_product.id, "name": test_product.name, "active": True}
         ],
