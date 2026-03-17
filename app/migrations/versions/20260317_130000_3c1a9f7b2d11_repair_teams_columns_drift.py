@@ -65,3 +65,6 @@ def downgrade() -> None:
         op.drop_column("teams", "last_pool_purchase")
     if _column_exists(bind, "teams", "budget_type"):
         op.drop_column("teams", "budget_type")
+
+    # Drop enum type created in upgrade if it exists.
+    op.execute("DROP TYPE IF EXISTS budget_type_enum;")
