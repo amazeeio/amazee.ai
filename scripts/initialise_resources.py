@@ -23,6 +23,34 @@ from scripts.migrate_pricing_tables import migrate_pricing_tables
 from app.core.limit_service import setup_default_limits
 
 
+def verify_schema_matches_models() -> None:
+    """Ensure DB schema includes all SQLAlchemy model tables/columns."""
+    inspector = inspect(engine)
+    db_tables = set(inspector.get_table_names())
+
+    missing_tables = []
+    missing_columns = []
+
+    for table in Base.metadata.sorted_tables:
+        table_name = table.name
+        if table_name not in db_tables:
+            missing_tables.append(table_name)
+            continue
+
+        db_columns = {col["name"] for col in inspector.get_columns(table_name)}
+        model_columns = set(table.columns.keys())
+        for col_name in sorted(model_columns - db_columns):
+            missing_columns.append(f"{table_name}.{col_name}")
+
+    if missing_tables or missing_columns:
+        details = []
+        if missing_tables:
+            details.append(f"missing tables: {', '.join(sorted(missing_tables))}")
+        if missing_columns:
+            details.append(f"missing columns: {', '.join(missing_columns)}")
+        raise RuntimeError("Schema verification failed - " + "; ".join(details))
+
+
 def init_database() -> Session:
     # Check if database is empty (no tables exist)
     inspector = inspect(engine)
@@ -48,16 +76,12 @@ def init_database() -> Session:
         print("Stamped alembic version for future migrations")
     else:
         print("Tables already exist - running migrations...")
-        # Run database migrations
-        try:
-            alembic.command.upgrade(alembic_cfg, "head")
-            print("Database migrations completed successfully!")
-        except Exception as e:
-            print(f"Migration failed: {str(e)}")
-            print("Attempting to stamp current version and continue...")
-            # If migration fails, stamp the current version
-            alembic.command.stamp(alembic_cfg, "head")
-            print("Database version stamped successfully!")
+        alembic.command.upgrade(alembic_cfg, "head")
+        print("Database migrations completed successfully!")
+
+    print("Verifying schema against models...")
+    verify_schema_matches_models()
+    print("Schema verification passed!")
 
     # Create initial admin user if none exists
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
