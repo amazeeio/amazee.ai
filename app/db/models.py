@@ -19,6 +19,10 @@ from app.schemas.models import BudgetType
 Base = declarative_base()
 
 
+def enum_values(enum_cls):
+    return [member.value for member in enum_cls]
+
+
 class DBTeamProduct(Base):
     """
     Association table for team-product relationship.
@@ -138,7 +142,12 @@ class DBTeam(Base):
     is_always_free = Column(Boolean, default=False)
     force_user_keys = Column(Boolean, default=False, nullable=False)
     budget_type = Column(
-        Enum(BudgetType, name="budget_type_enum", create_constraint=True),
+        Enum(
+            BudgetType,
+            name="budget_type_enum",
+            create_constraint=True,
+            values_callable=enum_values,
+        ),
         default=BudgetType.PERIODIC,
         nullable=False,
     )
