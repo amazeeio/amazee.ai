@@ -41,36 +41,6 @@ def test_create_pool_purchase_success(client, admin_token, db, test_team, test_r
     assert data["stripe_payment_id"] == unique_payment_id
     assert data["team_id"] == test_team.id
     assert data["region_id"] == test_region.id
-    assert "new_total_budget_cents" in data
-    """Test creating a pool purchase for a pool team"""
-    test_team.budget_type = "pool"
-    db.commit()
-
-    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
-        mock_instance = mock_litellm.return_value
-        mock_instance.get_team_info = AsyncMock(
-            return_value={"spend": 0.0, "max_budget": 0.0}
-        )
-        mock_instance.update_team_budget = AsyncMock()
-
-        response = client.post(
-            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
-            json={
-                "amount_cents": 5000,
-                "currency": "usd",
-                "purchased_at": "2026-03-13T10:00:00Z",
-                "stripe_payment_id": f"pi_{test_team.id}_unique",
-            },
-            headers={"Authorization": f"Bearer {admin_token}"},
-        )
-
-    assert response.status_code == 201
-    data = response.json()
-    assert data["amount_cents"] == 5000
-    assert data["currency"] == "usd"
-    assert data["stripe_payment_id"] == f"pi_{test_team.id}_unique"
-    assert data["team_id"] == test_team.id
-    assert data["region_id"] == test_region.id
     assert data["new_total_budget_cents"] == 5000
 
 

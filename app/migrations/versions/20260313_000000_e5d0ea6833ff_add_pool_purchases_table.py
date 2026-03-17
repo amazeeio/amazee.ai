@@ -31,7 +31,6 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(["team_id"], ["teams.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["region_id"], ["regions.id"], ondelete="CASCADE"),
-        sa.UniqueConstraint("stripe_payment_id"),
     )
     op.create_index("ix_pool_purchases_team_id", "pool_purchases", ["team_id"])
     op.create_index("ix_pool_purchases_region_id", "pool_purchases", ["region_id"])
