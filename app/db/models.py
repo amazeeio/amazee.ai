@@ -138,7 +138,12 @@ class DBTeam(Base):
     is_always_free = Column(Boolean, default=False)
     force_user_keys = Column(Boolean, default=False, nullable=False)
     budget_type = Column(
-        Enum(BudgetType, name="budget_type_enum", create_constraint=True),
+        Enum(
+            BudgetType,
+            name="budget_type_enum",
+            create_constraint=True,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
         default=BudgetType.PERIODIC,
         nullable=False,
     )
