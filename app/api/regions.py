@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 from typing import List
 import requests
 import asyncpg
@@ -24,7 +23,6 @@ from app.db.models import (
     DBTeamRegion,
     DBTeam,
     DBUser,
-    DBPoolPurchase,
 )
 from app.core.security import (
     get_role_min_system_admin,
@@ -426,6 +424,11 @@ async def get_team_region_budget(
 ):
     """
     Get total budget and spend for a team in a specific region.
+
+    Data source by team type:
+    - POOL teams: direct from LiteLLM team-level usage/budget (source of truth).
+      If LiteLLM is unavailable, this endpoint returns 502.
+    - PERIODIC/legacy teams: existing key-level workflow with local fallback behavior.
     """
     team = (
         db.query(DBTeam)
@@ -466,36 +469,24 @@ async def get_team_region_budget(
 
     if team.budget_type == BudgetType.POOL:
         lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-        team_max_budget = None
-        total_purchased_cents = (
-            db.query(func.sum(DBPoolPurchase.amount_cents))
-            .filter(
-                DBPoolPurchase.team_id == team_id,
-                DBPoolPurchase.region_id == region_id,
-            )
-            .scalar()
-            or 0
-        )
 
         try:
             team_info_response = await litellm_service.get_team_info(lite_team_id)
             team_info = team_info_response.get("team_info", team_info_response)
             total_spend = float(team_info.get("spend", 0.0) or 0.0)
-            team_max_budget = team_info.get("max_budget")
+            team_max_budget = float(team_info.get("max_budget", 0.0) or 0.0)
         except Exception as exc:
-            logger.warning(
-                "Failed to get LiteLLM team info for pool team %s in region %s: %s",
+            logger.error(
+                "Failed to get LiteLLM team info for POOL team %s in region %s: %s",
                 team_id,
                 region.name,
                 str(exc),
             )
-
-        if total_purchased_cents > 0:
-            total_budget = max((total_purchased_cents / 100.0) - total_spend, 0.0)
-        elif team_max_budget is not None:
-            total_budget = float(team_max_budget or 0.0)
-        else:
-            total_budget = 0.0
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Failed to retrieve POOL team budget from LiteLLM",
+            )
+        total_budget = max(team_max_budget - total_spend, 0.0)
 
         return TeamRegionBudget(
             team_id=team_id,
