@@ -1,7 +1,7 @@
 from fastapi import HTTPException
-from datetime import datetime, UTC
-from app.db.models import DBTeam, DBRegion, DBPoolPurchase
+from app.db.models import DBTeam, DBRegion
 from unittest.mock import patch, AsyncMock
+from app.services.litellm import LiteLLMService
 
 
 @patch("app.api.regions.validate_litellm_endpoint")
@@ -1265,34 +1265,28 @@ def test_get_team_region_budget_pool_uses_team_budget(
     Then budget is sourced from LiteLLM team budget (pool-level), not per-key defaults.
     """
     test_team.budget_type = "pool"
-    db.add(
-        DBPoolPurchase(
-            team_id=test_team.id,
-            region_id=test_region.id,
-            amount_cents=2500,
-            currency="usd",
-            purchased_at=datetime(2026, 3, 19, 10, 15, 0, tzinfo=UTC),
-            stripe_payment_id="pi_pool_budget_region_test",
-            created_at=datetime.now(UTC),
-        )
-    )
     db.commit()
 
-    with patch("app.api.regions.LiteLLMService") as mock_litellm:
-        mock_instance = mock_litellm.return_value
-        mock_instance.get_team_info = AsyncMock(
-            return_value={"spend": 0.0, "max_budget": 25.0}
-        )
+    with patch(
+        "app.api.regions.LiteLLMService.get_team_info",
+        new_callable=AsyncMock,
+    ) as mock_get_team_info:
+        mock_get_team_info.return_value = {
+            "team_info": {"spend": 5.0, "max_budget": 25.0}
+        }
 
         response = client.get(
             f"/regions/{test_region.id}/teams/{test_team.id}/budget",
             headers={"Authorization": f"Bearer {admin_token}"},
         )
+        mock_get_team_info.assert_awaited_once_with(
+            LiteLLMService.format_team_id(test_region.name, test_team.id)
+        )
 
     assert response.status_code == 200
     data = response.json()
-    assert data["total_spend"] == 0.0
-    assert data["total_budget"] == 25.0
+    assert data["total_spend"] == 5.0
+    assert data["total_budget"] == 20.0
 
 
 def test_get_team_region_budget_pool_requires_litellm(
@@ -1306,15 +1300,18 @@ def test_get_team_region_budget_pool_requires_litellm(
     test_team.budget_type = "pool"
     db.commit()
 
-    with patch("app.api.regions.LiteLLMService") as mock_litellm:
-        mock_instance = mock_litellm.return_value
-        mock_instance.get_team_info = AsyncMock(
-            side_effect=Exception("LiteLLM unavailable")
-        )
+    with patch(
+        "app.api.regions.LiteLLMService.get_team_info",
+        new_callable=AsyncMock,
+    ) as mock_get_team_info:
+        mock_get_team_info.side_effect = Exception("LiteLLM unavailable")
 
         response = client.get(
             f"/regions/{test_region.id}/teams/{test_team.id}/budget",
             headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        mock_get_team_info.assert_awaited_once_with(
+            LiteLLMService.format_team_id(test_region.name, test_team.id)
         )
 
     assert response.status_code == 502
