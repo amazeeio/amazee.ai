@@ -712,7 +712,13 @@ async def get_private_ai_key(
 
         # Combine database key info with LiteLLM info
         key_data = private_ai_key.to_dict()
-        key_data.update(info)
+        # Keep ownership identifiers from our DB authoritative.
+        # LiteLLM `team_id` is region-scoped string (e.g. "ap-southeast-1_12"),
+        # while our API schema expects integer `team_id`.
+        info_without_ownership = {
+            k: v for k, v in info.items() if k not in {"id", "owner_id", "team_id"}
+        }
+        key_data.update(info_without_ownership)
 
         return PrivateAIKeyDetail.model_validate(key_data)
     except Exception as e:

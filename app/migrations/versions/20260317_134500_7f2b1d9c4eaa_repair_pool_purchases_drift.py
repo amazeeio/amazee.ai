@@ -67,7 +67,9 @@ def downgrade() -> None:
     bind = op.get_bind()
     if _table_exists(bind, "pool_purchases"):
         if _index_exists(bind, "pool_purchases", "ix_pool_purchases_stripe_payment_id"):
-            op.drop_index("ix_pool_purchases_stripe_payment_id", table_name="pool_purchases")
+            op.drop_index(
+                "ix_pool_purchases_stripe_payment_id", table_name="pool_purchases"
+            )
         if _index_exists(bind, "pool_purchases", "ix_pool_purchases_region_id"):
             op.drop_index("ix_pool_purchases_region_id", table_name="pool_purchases")
         if _index_exists(bind, "pool_purchases", "ix_pool_purchases_team_id"):
