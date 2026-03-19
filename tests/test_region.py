@@ -1293,3 +1293,31 @@ def test_get_team_region_budget_pool_uses_team_budget(
     data = response.json()
     assert data["total_spend"] == 0.0
     assert data["total_budget"] == 25.0
+
+
+def test_get_team_region_budget_pool_requires_litellm(
+    client, admin_token, db, test_team, test_region
+):
+    """
+    Given a POOL team
+    When LiteLLM is unavailable
+    Then the endpoint should fail (no local fallback for POOL budgets).
+    """
+    test_team.budget_type = "pool"
+    db.commit()
+
+    with patch("app.api.regions.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            side_effect=Exception("LiteLLM unavailable")
+        )
+
+        response = client.get(
+            f"/regions/{test_region.id}/teams/{test_team.id}/budget",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 502
+    assert (
+        response.json()["detail"] == "Failed to retrieve POOL team budget from LiteLLM"
+    )
