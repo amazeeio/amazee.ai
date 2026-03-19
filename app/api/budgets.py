@@ -114,8 +114,9 @@ async def purchase_pool_budget(
     total_purchased_dollars = total_purchased_cents / 100.0
 
     try:
-        team_info = await litellm_service.get_team_info(lite_team_id)
-        current_spend = team_info.get("spend") or 0.0
+        team_info_response = await litellm_service.get_team_info(lite_team_id)
+        team_info = team_info_response.get("team_info", team_info_response)
+        current_spend = float(team_info.get("spend", 0.0) or 0.0)
     except Exception as e:
         db.rollback()
         logger.error(
