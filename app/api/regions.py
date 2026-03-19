@@ -428,7 +428,9 @@ async def get_team_region_budget(
     Data source by team type:
     - POOL teams: direct from LiteLLM team-level usage/budget (source of truth).
       If LiteLLM is unavailable, this endpoint returns 502.
+      `total_budget` is reported as remaining team budget (`max_budget - spend`).
     - PERIODIC/legacy teams: existing key-level workflow with local fallback behavior.
+      `total_budget` follows existing behavior as the aggregated configured key budgets.
     """
     team = (
         db.query(DBTeam)
@@ -445,19 +447,6 @@ async def get_team_region_budget(
     )
     if not region:
         raise HTTPException(status_code=404, detail="Region not found")
-
-    team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
-    team_user_ids = [user.id for user in team_users]
-
-    team_keys = (
-        db.query(DBPrivateAIKey)
-        .filter(
-            DBPrivateAIKey.region_id == region_id,
-            (DBPrivateAIKey.team_id == team_id)
-            | (DBPrivateAIKey.owner_id.in_(team_user_ids)),
-        )
-        .all()
-    )
 
     limit_service = LimitService(db)
     total_spend = 0.0
@@ -495,6 +484,19 @@ async def get_team_region_budget(
             total_spend=round(total_spend, 4),
             total_budget=round(total_budget, 4),
         )
+
+    team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
+    team_user_ids = [user.id for user in team_users]
+
+    team_keys = (
+        db.query(DBPrivateAIKey)
+        .filter(
+            DBPrivateAIKey.region_id == region_id,
+            (DBPrivateAIKey.team_id == team_id)
+            | (DBPrivateAIKey.owner_id.in_(team_user_ids)),
+        )
+        .all()
+    )
 
     for key in team_keys:
         if not key.litellm_token:
