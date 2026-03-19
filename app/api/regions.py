@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from typing import List
 import requests
 import asyncpg
@@ -15,8 +16,16 @@ from app.schemas.models import (
     RegionUpdate,
     TeamSummary,
     TeamRegionBudget,
+    BudgetType,
 )
-from app.db.models import DBRegion, DBPrivateAIKey, DBTeamRegion, DBTeam, DBUser
+from app.db.models import (
+    DBRegion,
+    DBPrivateAIKey,
+    DBTeamRegion,
+    DBTeam,
+    DBUser,
+    DBPoolPurchase,
+)
 from app.core.security import (
     get_role_min_system_admin,
     get_role_min_specific_team_admin,
@@ -454,6 +463,44 @@ async def get_team_region_budget(
     litellm_service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
+
+    if team.budget_type == BudgetType.POOL:
+        lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+        team_max_budget = None
+
+        try:
+            team_info = await litellm_service.get_team_info(lite_team_id)
+            total_spend = float(team_info.get("spend", 0.0) or 0.0)
+            team_max_budget = team_info.get("max_budget")
+        except Exception as exc:
+            logger.warning(
+                "Failed to get LiteLLM team info for pool team %s in region %s: %s",
+                team_id,
+                region.name,
+                str(exc),
+            )
+
+        if team_max_budget is None:
+            total_purchased_cents = (
+                db.query(func.sum(DBPoolPurchase.amount_cents))
+                .filter(
+                    DBPoolPurchase.team_id == team_id,
+                    DBPoolPurchase.region_id == region_id,
+                )
+                .scalar()
+                or 0
+            )
+            total_budget = max((total_purchased_cents / 100.0) - total_spend, 0.0)
+        else:
+            total_budget = float(team_max_budget or 0.0)
+
+        return TeamRegionBudget(
+            team_id=team_id,
+            region_id=region_id,
+            region_name=region.name,
+            total_spend=round(total_spend, 4),
+            total_budget=round(total_budget, 4),
+        )
 
     for key in team_keys:
         if not key.litellm_token:
