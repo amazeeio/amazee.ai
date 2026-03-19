@@ -1256,7 +1256,9 @@ def test_list_teams_for_dedicated_region_with_no_associations(client, admin_toke
     assert len(teams) == 0
 
 
-def test_get_team_region_budget_pool_uses_team_budget(client, admin_token, db, test_team, test_region):
+def test_get_team_region_budget_pool_uses_team_budget(
+    client, admin_token, db, test_team, test_region
+):
     """
     Given a POOL team with purchases
     When requesting region budget
