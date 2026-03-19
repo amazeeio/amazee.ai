@@ -467,9 +467,19 @@ async def get_team_region_budget(
     if team.budget_type == BudgetType.POOL:
         lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
         team_max_budget = None
+        total_purchased_cents = (
+            db.query(func.sum(DBPoolPurchase.amount_cents))
+            .filter(
+                DBPoolPurchase.team_id == team_id,
+                DBPoolPurchase.region_id == region_id,
+            )
+            .scalar()
+            or 0
+        )
 
         try:
-            team_info = await litellm_service.get_team_info(lite_team_id)
+            team_info_response = await litellm_service.get_team_info(lite_team_id)
+            team_info = team_info_response.get("team_info", team_info_response)
             total_spend = float(team_info.get("spend", 0.0) or 0.0)
             team_max_budget = team_info.get("max_budget")
         except Exception as exc:
@@ -480,19 +490,12 @@ async def get_team_region_budget(
                 str(exc),
             )
 
-        if team_max_budget is None:
-            total_purchased_cents = (
-                db.query(func.sum(DBPoolPurchase.amount_cents))
-                .filter(
-                    DBPoolPurchase.team_id == team_id,
-                    DBPoolPurchase.region_id == region_id,
-                )
-                .scalar()
-                or 0
-            )
+        if total_purchased_cents > 0:
             total_budget = max((total_purchased_cents / 100.0) - total_spend, 0.0)
-        else:
+        elif team_max_budget is not None:
             total_budget = float(team_max_budget or 0.0)
+        else:
+            total_budget = 0.0
 
         return TeamRegionBudget(
             team_id=team_id,
