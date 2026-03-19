@@ -1,6 +1,7 @@
 from fastapi import HTTPException
-from app.db.models import DBTeam, DBRegion
-from unittest.mock import patch
+from datetime import datetime, UTC
+from app.db.models import DBTeam, DBRegion, DBPoolPurchase
+from unittest.mock import patch, AsyncMock
 
 
 @patch("app.api.regions.validate_litellm_endpoint")
@@ -1253,3 +1254,40 @@ def test_list_teams_for_dedicated_region_with_no_associations(client, admin_toke
     assert response.status_code == 200
     teams = response.json()
     assert len(teams) == 0
+
+
+def test_get_team_region_budget_pool_uses_team_budget(client, admin_token, db, test_team, test_region):
+    """
+    Given a POOL team with purchases
+    When requesting region budget
+    Then budget is sourced from LiteLLM team budget (pool-level), not per-key defaults.
+    """
+    test_team.budget_type = "pool"
+    db.add(
+        DBPoolPurchase(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            amount_cents=2500,
+            currency="usd",
+            purchased_at=datetime(2026, 3, 19, 10, 15, 0, tzinfo=UTC),
+            stripe_payment_id="pi_pool_budget_region_test",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    with patch("app.api.regions.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"spend": 0.0, "max_budget": 25.0}
+        )
+
+        response = client.get(
+            f"/regions/{test_region.id}/teams/{test_team.id}/budget",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_spend"] == 0.0
+    assert data["total_budget"] == 25.0
