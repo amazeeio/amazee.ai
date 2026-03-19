@@ -1510,6 +1510,65 @@ def test_get_private_ai_key_success(
 
 
 @patch("httpx.AsyncClient")
+def test_get_private_ai_key_preserves_db_team_id_when_litellm_team_id_is_string(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_get_client,
+):
+    """Ensure LiteLLM string team_id does not override DB integer team_id."""
+    db.refresh(test_team)
+    test_key = DBPrivateAIKey(
+        database_name="test-db-get-team-id",
+        name="Test Key Team ID Merge",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="test-token-get-team-id",
+        litellm_api_url="https://test-litellm.com",
+        team_id=test_team.id,
+        region_id=test_region.id,
+    )
+    db.add(test_key)
+    db.commit()
+    db.refresh(test_key)
+
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.raise_for_status.return_value = None
+    mock_response.json.return_value = {
+        "info": {
+            "team_id": f"{test_region.name}_-1",
+            "spend": 10.5,
+            "expires": "2024-12-31T23:59:59Z",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-02T00:00:00Z",
+            "max_budget": 100.0,
+            "budget_duration": "monthly",
+            "budget_reset_at": "2024-02-01T00:00:00Z",
+        }
+    }
+    mock_httpx_get_client.get.return_value = mock_response
+    mock_client_class.return_value = mock_httpx_get_client
+
+    response = client.get(
+        f"/private-ai-keys/{test_key.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["team_id"] == test_team.id
+    assert data["spend"] == 10.5
+
+    db.delete(test_key)
+    db.commit()
+
+
+@patch("httpx.AsyncClient")
 def test_get_private_ai_key_not_found(
     mock_client_class, client, admin_token, mock_httpx_get_client
 ):
