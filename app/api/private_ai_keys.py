@@ -405,14 +405,11 @@ async def create_llm_token(
     # Pool budget teams use purchase_pool_budget to set the team-level
     # max_budget in LiteLLM. Per-key limits are meaningless there — the team
     # budget is the sole ceiling. Skip limit resolution entirely for pool teams.
-    # Prefer explicitly requested team_id. Fall back to owner's team only when
-    # no team_id was provided.
-    effective_team_id = team_id or (owner.team_id if owner is not None else None)
-    effective_team = (
-        db.query(DBTeam).filter(DBTeam.id == effective_team_id).first()
-        if effective_team_id
-        else None
-    )
+    # Reuse the already-fetched team when team_id was provided. Fall back to
+    # owner's team only when no team_id was provided.
+    effective_team = team
+    if effective_team is None and owner is not None and owner.team_id:
+        effective_team = db.query(DBTeam).filter(DBTeam.id == owner.team_id).first()
     is_pool_team = (
         effective_team is not None and effective_team.budget_type == BudgetType.POOL
     )
