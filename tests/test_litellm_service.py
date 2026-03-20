@@ -101,6 +101,33 @@ def test_create_key_with_email_fallback(
     assert call_args.kwargs["json"]["key_alias"] == "test_at_example.com_-_key-123"
 
 
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_create_key_with_limits_requires_non_none_values(test_region):
+    """Test create_key validates required per-key limits when apply_limits is True."""
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        asyncio.run(
+            service.create_key(
+                email="test@example.com",
+                name="Test Key",
+                user_id=123,
+                team_id="team-456",
+                duration=None,
+                max_budget=100.0,
+                rpm_limit=500,
+                apply_limits=True,
+            )
+        )
+
+    assert (
+        str(exc_info.value)
+        == "duration, max_budget, and rpm_limit are required when apply_limits=True"
+    )
+
+
 @patch("httpx.AsyncClient")
 def test_create_key_failure(mock_client_class, test_region, mock_httpx_failure_client):
     """Test key creation failure"""

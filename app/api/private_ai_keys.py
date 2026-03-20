@@ -405,15 +405,16 @@ async def create_llm_token(
     # Pool budget teams use purchase_pool_budget to set the team-level
     # max_budget in LiteLLM. Per-key limits are meaningless there — the team
     # budget is the sole ceiling. Skip limit resolution entirely for pool teams.
-    effective_team_id = (owner.team_id if owner is not None else None) or team_id
+    # Prefer explicitly requested team_id. Fall back to owner's team only when
+    # no team_id was provided.
+    effective_team_id = team_id or (owner.team_id if owner is not None else None)
     effective_team = (
         db.query(DBTeam).filter(DBTeam.id == effective_team_id).first()
         if effective_team_id
         else None
     )
     is_pool_team = (
-        effective_team is not None
-        and effective_team.budget_type == BudgetType.POOL
+        effective_team is not None and effective_team.budget_type == BudgetType.POOL
     )
 
     if (owner is not None and owner.team_id) or team_id:
@@ -454,7 +455,9 @@ async def create_llm_token(
             name=private_ai_key.name,
             user_id=owner_id,
             team_id=LiteLLMService.format_team_id(region.name, litellm_team),
-            duration=f"{days_left_in_period}d" if days_left_in_period is not None else None,
+            duration=f"{days_left_in_period}d"
+            if days_left_in_period is not None
+            else None,
             max_budget=max_max_spend,
             rpm_limit=max_rpm_limit,
             apply_limits=not is_pool_team,
