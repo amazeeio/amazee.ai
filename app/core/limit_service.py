@@ -869,12 +869,14 @@ class LimitService:
             team_id: ID of the team to check
         """
         # POOL teams do not have a user-count cap.
-        team = self.db.query(DBTeam).filter(DBTeam.id == team_id).first()
-        if not team:
+        team_budget_type = (
+            self.db.query(DBTeam.budget_type).filter(DBTeam.id == team_id).scalar()
+        )
+        if team_budget_type is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
             )
-        if team.budget_type == BudgetType.POOL:
+        if team_budget_type == BudgetType.POOL:
             return
 
         # First try the new service, and short circuit if it works
