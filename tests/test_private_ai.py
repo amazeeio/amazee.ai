@@ -1180,6 +1180,43 @@ def test_create_llm_token_with_expiration(
     assert call_args["json"]["rpm_limit"] == DEFAULT_RPM_PER_KEY
 
 
+@patch("httpx.AsyncClient")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_create_llm_token_for_pool_team_skips_per_key_limits(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
+    """POOL teams should only get key expiry, without per-key budget/rate limits."""
+    test_team.budget_type = "pool"
+    db.commit()
+
+    mock_client_class.return_value = mock_httpx_post_client
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Pool Team Key",
+            "team_id": test_team.id,
+        },
+    )
+
+    assert response.status_code == 200
+
+    mock_httpx_post_client.post.assert_called_once()
+    call_args = mock_httpx_post_client.post.call_args[1]
+    assert call_args["json"]["duration"] == "365d"
+    assert "budget_duration" not in call_args["json"]
+    assert "max_budget" not in call_args["json"]
+    assert "rpm_limit" not in call_args["json"]
+
+
 def test_create_vector_db_as_system_admin(client, admin_token, test_region):
     """Test that a system admin can create a vector database for themselves"""
     region_name = test_region.name

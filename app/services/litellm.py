@@ -120,6 +120,10 @@ class LiteLLMService:
 
             request_data["duration"] = "365d"  # Sets the key expiry date
             if settings.ENABLE_LIMITS and apply_limits:
+                if duration is None or max_budget is None or rpm_limit is None:
+                    raise ValueError(
+                        "duration, max_budget, and rpm_limit are required when apply_limits=True"
+                    )
                 # Per-key budget limits. Skipped for pool budget teams — the
                 # team-level max_budget set by purchase_pool_budget is the
                 # sole spending ceiling for those teams.
