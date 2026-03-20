@@ -78,9 +78,10 @@ class LiteLLMService:
         name: str,
         user_id: int,
         team_id: str,
-        duration: str = f"{DEFAULT_KEY_DURATION}d",
-        max_budget: float = DEFAULT_MAX_SPEND,
-        rpm_limit: int = DEFAULT_RPM_PER_KEY,
+        duration: Optional[str] = f"{DEFAULT_KEY_DURATION}d",
+        max_budget: Optional[float] = DEFAULT_MAX_SPEND,
+        rpm_limit: Optional[int] = DEFAULT_RPM_PER_KEY,
+        apply_limits: bool = True,
     ) -> str:
         """Create a new API key for LiteLLM"""
         try:
@@ -117,13 +118,14 @@ class LiteLLMService:
             request_data["metadata"] = metadata
             request_data["team_id"] = team_id
 
-            if settings.ENABLE_LIMITS:
-                request_data["duration"] = "365d"  # Sets the expiry date for the key
+            request_data["duration"] = "365d"  # Sets the key expiry date
+            if settings.ENABLE_LIMITS and apply_limits:
+                # Per-key budget limits. Skipped for pool budget teams — the
+                # team-level max_budget set by purchase_pool_budget is the
+                # sole spending ceiling for those teams.
                 request_data["budget_duration"] = duration
                 request_data["max_budget"] = max_budget
                 request_data["rpm_limit"] = rpm_limit
-            else:
-                request_data["duration"] = "365d"
 
             if user_id is not None:
                 request_data["user_id"] = str(user_id)
