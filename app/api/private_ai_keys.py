@@ -11,6 +11,7 @@ from app.schemas.models import (
     PrivateAIKeyCreate,
     PrivateAIKeySpend,
     BudgetPeriodUpdate,
+    BudgetType,
     LiteLLMToken,
     VectorDBCreate,
     VectorDB,
@@ -401,13 +402,32 @@ async def create_llm_token(
             owner_id = current_user.id
             owner = current_user
 
+    # Pool budget teams use purchase_pool_budget to set the team-level
+    # max_budget in LiteLLM. Per-key limits are meaningless there — the team
+    # budget is the sole ceiling. Skip limit resolution entirely for pool teams.
+    effective_team_id = (owner.team_id if owner is not None else None) or team_id
+    effective_team = (
+        db.query(DBTeam).filter(DBTeam.id == effective_team_id).first()
+        if effective_team_id
+        else None
+    )
+    is_pool_team = (
+        effective_team is not None
+        and effective_team.budget_type == BudgetType.POOL
+    )
+
     if (owner is not None and owner.team_id) or team_id:
-        if settings.ENABLE_LIMITS:
+        if settings.ENABLE_LIMITS and not is_pool_team:
             limit_service.check_key_limits(owner.team_id or team_id, owner_id)
-        # Limits are conditionally applied in LiteLLM service
-        days_left_in_period, max_max_spend, max_rpm_limit = (
-            limit_service.get_token_restrictions(owner.team_id or team_id)
-        )
+        if is_pool_team:
+            days_left_in_period = None
+            max_max_spend = None
+            max_rpm_limit = None
+        else:
+            # Limits are conditionally applied in LiteLLM service
+            days_left_in_period, max_max_spend, max_rpm_limit = (
+                limit_service.get_token_restrictions(owner.team_id or team_id)
+            )
     else:  # Super system users...
         days_left_in_period = DEFAULT_KEY_DURATION
         max_max_spend = DEFAULT_MAX_SPEND
@@ -434,9 +454,10 @@ async def create_llm_token(
             name=private_ai_key.name,
             user_id=owner_id,
             team_id=LiteLLMService.format_team_id(region.name, litellm_team),
-            duration=f"{days_left_in_period}d",
+            duration=f"{days_left_in_period}d" if days_left_in_period is not None else None,
             max_budget=max_max_spend,
             rpm_limit=max_rpm_limit,
+            apply_limits=not is_pool_team,
         )
 
         # Create response object
