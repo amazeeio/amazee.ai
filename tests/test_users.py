@@ -466,6 +466,48 @@ def test_create_user_with_limits_enabled(client, team_admin_token, test_team, db
     assert "Team has reached their maximum user limit" in response.json()["detail"]
 
 
+@patch("app.api.users.settings.ENABLE_LIMITS", True)
+def test_create_user_pool_team_has_no_user_limit(
+    client, team_admin_token, test_team, db
+):
+    """
+    POOL teams should not be blocked by team user-count limits.
+    """
+    test_team.budget_type = "pool"
+    db.add(test_team)
+    db.commit()
+
+    test_product = DBProduct(
+        id="prod_test_pool_unlimited_users",
+        name="Test Product Pool Unlimited Users",
+        user_count=1,
+        keys_per_user=2,
+        total_key_count=10,
+        service_key_count=2,
+        max_budget_per_key=50.0,
+        rpm_per_key=1000,
+        vector_db_count=1,
+        vector_db_storage=100,
+        renewal_period_days=30,
+        active=True,
+        created_at=datetime.now(UTC),
+    )
+    db.add(test_product)
+    db.add(DBTeamProduct(team_id=test_team.id, product_id=test_product.id))
+    db.commit()
+
+    response = client.post(
+        "/users/",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={
+            "email": "pool-user-over-limit@example.com",
+            "password": "newpassword",
+            "team_id": test_team.id,
+        },
+    )
+    assert response.status_code == 201
+
+
 def test_create_user_creates_default_limits(client, admin_token, test_team, db):
     """
     Given: A new user is being created in a team
