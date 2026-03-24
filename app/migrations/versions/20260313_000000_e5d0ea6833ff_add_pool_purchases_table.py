@@ -43,7 +43,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_pool_purchases_stripe_payment_id", table_name="pool_purchases")
-    op.drop_index("ix_pool_purchases_region_id", table_name="pool_purchases")
-    op.drop_index("ix_pool_purchases_team_id", table_name="pool_purchases")
-    op.drop_table("pool_purchases")
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+    if insp.has_table("pool_purchases"):
+        op.drop_index("ix_pool_purchases_stripe_payment_id", table_name="pool_purchases")
+        op.drop_index("ix_pool_purchases_region_id", table_name="pool_purchases")
+        # Note: ix_pool_purchases_team_id might be auto-dropped with the index above if it's the same, 
+        # but let's be explicit and handle it if still there.
+        indexes = [idx["name"] for idx in insp.get_indexes("pool_purchases")]
+        if "ix_pool_purchases_team_id" in indexes:
+            op.drop_index("ix_pool_purchases_team_id", table_name="pool_purchases")
+        op.drop_table("pool_purchases")

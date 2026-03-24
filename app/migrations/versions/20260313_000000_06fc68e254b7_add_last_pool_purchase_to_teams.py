@@ -25,4 +25,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("teams", "last_pool_purchase")
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+    cols = insp.get_columns("teams")
+    if any(col["name"] == "last_pool_purchase" for col in cols):
+        op.drop_column("teams", "last_pool_purchase")
