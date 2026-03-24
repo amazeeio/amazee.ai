@@ -62,8 +62,23 @@ def test_register_team(client, admin_token):
 
 
 def test_register_team_creates_litellm_team_for_active_shared_regions(
-    client, admin_token, test_region
+    client, admin_token, test_region, db
 ):
+    dedicated_region = DBRegion(
+        name="dedicated-team-bootstrap-region",
+        label="Dedicated Bootstrap Region",
+        postgres_host="dedicated-host",
+        postgres_port=5432,
+        postgres_admin_user="dedicated-admin",
+        postgres_admin_password="dedicated-password",
+        litellm_api_url="https://dedicated-litellm.example.com",
+        litellm_api_key="dedicated-key",
+        is_active=True,
+        is_dedicated=True,
+    )
+    db.add(dedicated_region)
+    db.commit()
+
     with patch(
         "app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock
     ) as mock_create_team:

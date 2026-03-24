@@ -620,11 +620,13 @@ def test_list_regions_regular_user_sees_non_dedicated_only(
     assert regions[0]["name"] != "dedicated-region"
 
 
-def test_list_regions_admin_sees_all_regions(client, admin_token, db, test_region):
+def test_list_regions_admin_sees_non_dedicated_regions_only(
+    client, admin_token, db, test_region
+):
     """
     Given an admin user and regions with different dedication statuses
     When the admin lists regions
-    Then they should see all regions regardless of dedication status
+    Then they should only see non-dedicated regions from this endpoint
     """
     # Create a dedicated region
     dedicated_region = (
@@ -653,19 +655,18 @@ def test_list_regions_admin_sees_all_regions(client, admin_token, db, test_regio
 
     assert response.status_code == 200
     regions = response.json()
-    assert len(regions) == 2
-    region_names = [r["name"] for r in regions]
-    assert test_region.name in region_names
-    assert "dedicated-region" in region_names
+    assert len(regions) == 1
+    assert regions[0]["name"] == test_region.name
+    assert regions[0]["name"] != "dedicated-region"
 
 
-def test_list_regions_team_member_sees_team_dedicated_regions(
+def test_list_regions_team_member_sees_non_dedicated_regions_only(
     client, team_admin_token, db, test_region, test_team
 ):
     """
     Given a team member and a dedicated region associated with their team
     When the team member lists regions
-    Then they should see non-dedicated regions plus their team's dedicated regions
+    Then they should only see non-dedicated regions from this endpoint
     """
     # Create a dedicated region associated with the team
     dedicated_region = (
@@ -701,10 +702,9 @@ def test_list_regions_team_member_sees_team_dedicated_regions(
 
     assert response.status_code == 200
     regions = response.json()
-    assert len(regions) == 2
-    region_names = [r["name"] for r in regions]
-    assert test_region.name in region_names
-    assert "team-dedicated-region" in region_names
+    assert len(regions) == 1
+    assert regions[0]["name"] == test_region.name
+    assert regions[0]["name"] != "team-dedicated-region"
 
 
 def test_list_regions_team_member_does_not_see_other_team_dedicated_regions(

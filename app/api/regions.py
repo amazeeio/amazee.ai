@@ -158,37 +158,12 @@ async def list_regions(
     current_user: User = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db),
 ):
-    # System admin users can see all regions
-    if current_user.is_admin:
-        return db.query(DBRegion).filter(DBRegion.is_active.is_(True)).all()
-
-    # Regular users can only see non-dedicated regions
-    if not current_user.team_id:
-        return (
-            db.query(DBRegion)
-            .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
-            .all()
-        )
-
-    # Team members can see non-dedicated regions plus their team's dedicated regions
-    team_dedicated_regions = (
-        db.query(DBRegion)
-        .join(DBTeamRegion)
-        .filter(
-            DBRegion.is_active.is_(True),
-            DBRegion.is_dedicated.is_(True),
-            DBTeamRegion.team_id == current_user.team_id,
-        )
-        .all()
-    )
-
-    non_dedicated_regions = (
+    # Public region listing only exposes active shared regions.
+    return (
         db.query(DBRegion)
         .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
         .all()
     )
-
-    return non_dedicated_regions + team_dedicated_regions
 
 
 @router.get(

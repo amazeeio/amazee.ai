@@ -54,6 +54,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["teams"])
 
 
+def _get_active_shared_regions(db: Session) -> list[DBRegion]:
+    """
+    Return active regions that are part of the shared region pool.
+    """
+    return (
+        db.query(DBRegion)
+        .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
+        .all()
+    )
+
+
 def _create_default_limits_for_team(team: DBTeam, db: Session) -> None:
     """
     Create default limits for a newly created team.
@@ -76,9 +87,9 @@ def _create_default_limits_for_team(team: DBTeam, db: Session) -> None:
 
 async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
     """
-    Create region-scoped LiteLLM teams for all active regions.
+    Create region-scoped LiteLLM teams for all active shared regions.
     """
-    regions = db.query(DBRegion).filter(DBRegion.is_active.is_(True)).all()
+    regions = _get_active_shared_regions(db)
 
     for region in regions:
         litellm_service = LiteLLMService(
@@ -289,7 +300,7 @@ async def delete_team(team_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Team not found")
 
     # Best-effort: expire LiteLLM team budgets before deleting team locally.
-    regions = db.query(DBRegion).filter(DBRegion.is_active.is_(True)).all()
+    regions = _get_active_shared_regions(db)
     for region in regions:
         try:
             litellm_service = LiteLLMService(

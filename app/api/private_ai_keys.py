@@ -19,7 +19,7 @@ from app.schemas.models import (
     PrivateAIKeyDetail,
 )
 from app.db.postgres import PostgresManager
-from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
+from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam, DBTeamRegion
 from app.services.litellm import LiteLLMService
 from app.core.security import (
     get_current_user_from_auth,
@@ -43,6 +43,51 @@ logger = logging.getLogger(__name__)
 
 # Fake ID for resources not stored in the database
 FAKE_ID = -1
+
+
+def _get_region_with_access_check(
+    db: Session, region_id: int, current_user: DBUser
+) -> DBRegion:
+    """
+    Resolve region by id and enforce dedicated-region access rules.
+    """
+    region = (
+        db.query(DBRegion)
+        .filter(DBRegion.id == region_id, DBRegion.is_active.is_(True))
+        .first()
+    )
+    if not region:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found or inactive"
+        )
+
+    if not region.is_dedicated:
+        return region
+
+    if current_user.is_admin:
+        return region
+
+    if not current_user.team_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to use this dedicated region",
+        )
+
+    association = (
+        db.query(DBTeamRegion)
+        .filter(
+            DBTeamRegion.team_id == current_user.team_id,
+            DBTeamRegion.region_id == region.id,
+        )
+        .first()
+    )
+    if not association:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to use this dedicated region",
+        )
+
+    return region
 
 
 def _validate_permissions_and_get_ownership_info(
@@ -122,15 +167,7 @@ async def create_vector_db(
     )
 
     # Get the region
-    region = (
-        db.query(DBRegion)
-        .filter(DBRegion.id == vector_db.region_id, DBRegion.is_active.is_(True))
-        .first()
-    )
-    if not region:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found or inactive"
-        )
+    region = _get_region_with_access_check(db, vector_db.region_id, current_user)
 
     # Check if team forces user keys
     if team_id:
@@ -227,18 +264,9 @@ async def create_private_ai_key(
 
     try:
         # Get the region first for cleanup purposes
-        region = (
-            db.query(DBRegion)
-            .filter(
-                DBRegion.id == private_ai_key.region_id, DBRegion.is_active.is_(True)
-            )
-            .first()
+        region = _get_region_with_access_check(
+            db, private_ai_key.region_id, current_user
         )
-        if not region:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Region not found or inactive",
-            )
 
         # First create the LiteLLM token
         llm_token = await create_llm_token(
@@ -359,15 +387,7 @@ async def create_llm_token(
     )
 
     # Get the region
-    region = (
-        db.query(DBRegion)
-        .filter(DBRegion.id == private_ai_key.region_id, DBRegion.is_active.is_(True))
-        .first()
-    )
-    if not region:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found or inactive"
-        )
+    region = _get_region_with_access_check(db, private_ai_key.region_id, current_user)
 
     # Get the owner user if different from current user
     owner = None
