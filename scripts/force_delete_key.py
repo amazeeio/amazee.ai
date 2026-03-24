@@ -5,12 +5,12 @@ import os
 # Add the project root to the Python path if necessary
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.db.database import SessionLocal
-from app.db.models import DBPrivateAIKey, DBUser
+from app.db.models import DBPrivateAIKey, DBUser, DBRegion
 
 
-def delete_key(key_name: str, user_email: str = None, db_username: str = None):
+def delete_key(key_name: str, user_email: str = None, db_username: str = None, region_name: str = None):
     db: Session = SessionLocal()
     try:
         query = db.query(DBPrivateAIKey)
@@ -28,7 +28,14 @@ def delete_key(key_name: str, user_email: str = None, db_username: str = None):
         if db_username:
             query = query.filter(DBPrivateAIKey.database_username == db_username)
 
-        keys_to_delete = query.all()
+        if region_name:
+            region = db.query(DBRegion).filter(DBRegion.name == region_name).first()
+            if not region:
+                print(f"Region with name '{region_name}' not found.")
+                return
+            query = query.filter(DBPrivateAIKey.region_id == region.id)
+
+        keys_to_delete = query.options(joinedload(DBPrivateAIKey.region)).all()
 
         if not keys_to_delete:
             print("No keys found matching the provided criteria.")
@@ -36,8 +43,9 @@ def delete_key(key_name: str, user_email: str = None, db_username: str = None):
 
         print(f"Found {len(keys_to_delete)} key(s):")
         for key in keys_to_delete:
+            region_str = key.region.name if key.region else "None"
             print(
-                f"  - id: {key.id}, name: '{key.name}', owner_id: {key.owner_id}, db_username: '{key.database_username}'"
+                f"  - id: {key.id}, name: '{key.name}', owner_id: {key.owner_id}, db_username: '{key.database_username}', region: '{region_str}'"
             )
 
         confirm = input("\nAre you sure you want to delete these keys? (y/N): ")
@@ -46,7 +54,8 @@ def delete_key(key_name: str, user_email: str = None, db_username: str = None):
             return
 
         for key in keys_to_delete:
-            print(f"Deleting key: {key.name}")
+            region_str = key.region.name if key.region else "None"
+            print(f"Deleting key: {key.name} (ID: {key.id}) from region: {region_str}")
             db.delete(key)
 
         db.commit()
@@ -65,6 +74,7 @@ if __name__ == "__main__":
     parser.add_argument("--name", required=True, help="Name of the key to delete")
     parser.add_argument("--email", help="Email of the key owner")
     parser.add_argument("--db-username", help="Database username of the key")
+    parser.add_argument("--region", help="Region name of the key")
 
     args = parser.parse_args()
-    delete_key(key_name=args.name, user_email=args.email, db_username=args.db_username)
+    delete_key(key_name=args.name, user_email=args.email, db_username=args.db_username, region_name=args.region)
