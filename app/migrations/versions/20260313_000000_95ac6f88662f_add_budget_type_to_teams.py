@@ -18,6 +18,17 @@ down_revision: Union[str, None] = "1a2b3c4d5e6f"
 
 
 def upgrade() -> None:
+    # Ensure the enum type exists
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'budget_type_enum') THEN
+                CREATE TYPE budget_type_enum AS ENUM ('periodic', 'pool');
+            END IF;
+        END $$;
+        """
+    )
     op.add_column(
         "teams",
         sa.Column(
@@ -33,4 +44,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_column("teams", "budget_type")
-    op.execute("DROP TYPE budget_type_enum")
+    op.execute("DROP TYPE IF EXISTS budget_type_enum")
