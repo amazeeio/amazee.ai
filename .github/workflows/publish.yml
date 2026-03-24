@@ -5,6 +5,9 @@ on:
     branches:
     - dev
 
+permissions:
+  contents: read
+
 env:
   REGISTRY: ghcr.io
   NAMESPACE: ${{ github.repository_owner }}

@@ -2,6 +2,9 @@ name: "Trigger Release PR"
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   create-release:
     runs-on: ubuntu-latest

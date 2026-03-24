@@ -3,7 +3,8 @@ on:
   push:
     branches:
     - dev
-permissions: {}
+permissions:
+  contents: read
 jobs:
   ossf-scorecard-analysis:
     runs-on: ubuntu-latest
