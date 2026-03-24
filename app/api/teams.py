@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from typing import List
+from typing import List, Optional
 from datetime import datetime, UTC
 import logging
 
@@ -75,27 +75,43 @@ def _create_default_limits_for_team(team: DBTeam, db: Session) -> None:
             # Don't fail team creation if limit creation fails
 
 
-async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
+async def _create_litellm_teams_for_new_team(
+    team: DBTeam, db: Session, target_region_id: Optional[int] = None
+) -> None:
     """
     Create region-scoped LiteLLM teams for active regions.
 
     POOL teams are only bootstrapped in shared (non-dedicated) regions.
+    If target_region_id is provided, only that region will be processed.
     """
     regions_query = db.query(DBRegion).filter(DBRegion.is_active.is_(True))
+
+    if target_region_id:
+        regions_query = regions_query.filter(DBRegion.id == target_region_id)
+
     if team.budget_type == BudgetType.POOL:
         regions_query = regions_query.filter(DBRegion.is_dedicated.is_(False))
+
     regions = regions_query.all()
 
     for region in regions:
-        litellm_service = LiteLLMService(
-            api_url=region.litellm_api_url, api_key=region.litellm_api_key
-        )
-        lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
-        await litellm_service.create_team(
-            team_id=lite_team_id,
-            team_alias=lite_team_id,
-            max_budget=0.0,
-        )
+        try:
+            litellm_service = LiteLLMService(
+                api_url=region.litellm_api_url, api_key=region.litellm_api_key
+            )
+            lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+            await litellm_service.create_team(
+                team_id=lite_team_id,
+                team_alias=lite_team_id,
+                max_budget=0.0,
+            )
+        except Exception as e:
+            # Log the error but don't fail the entire team creation.
+            # This handles cases where LiteLLM might be temporarily down
+            # or a region's URL is misconfigured.
+            logger.error(
+                f"Failed to create LiteLLM team for team {team.id} in region {region.name} ({region.id}): {str(e)}"
+            )
 
 
 @router.post("", response_model=Team, status_code=status.HTTP_201_CREATED)
@@ -145,7 +161,7 @@ async def register_team(
     db.add(db_team)
     try:
         db.flush()
-        await _create_litellm_teams_for_new_team(db_team, db)
+        await _create_litellm_teams_for_new_team(db_team, db, team.region_id)
         db.commit()
         db.refresh(db_team)
     except HTTPException:
@@ -155,7 +171,7 @@ async def register_team(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create team: {str(e)}",
+            detail=f"Failed to register team: {str(e)}",
         )
 
     # Create default limits for the team

@@ -315,6 +315,7 @@ class TeamBase(BaseModel):
 class TeamCreate(TeamBase):
     force_user_keys: bool = False
     budget_type: BudgetType = BudgetType.PERIODIC
+    region_id: Optional[int] = None
 
 
 class TeamUpdate(BaseModel):
