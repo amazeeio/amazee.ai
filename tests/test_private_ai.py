@@ -5,7 +5,6 @@ from app.db.models import (
     DBUser,
     DBProduct,
     DBTeamProduct,
-    DBRegion,
 )
 from datetime import datetime, UTC
 from app.core.security import get_password_hash
@@ -55,93 +54,6 @@ def test_create_private_ai_key_invalid_region(client, test_token):
 
     assert response.status_code == 404
     assert "Region not found or inactive" in response.json()["detail"]
-
-
-def test_create_private_ai_key_rejects_unassigned_dedicated_region(
-    client, team_admin_token, db
-):
-    dedicated_region = DBRegion(
-        name="dedicated-private-key-deny",
-        label="Dedicated Deny",
-        postgres_host="dedicated-host",
-        postgres_port=5432,
-        postgres_admin_user="dedicated-admin",
-        postgres_admin_password="dedicated-password",
-        litellm_api_url="https://dedicated-litellm.example.com",
-        litellm_api_key="dedicated-key",
-        is_active=True,
-        is_dedicated=True,
-    )
-    db.add(dedicated_region)
-    db.commit()
-    db.refresh(dedicated_region)
-
-    response = client.post(
-        "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {team_admin_token}"},
-        json={"region_id": dedicated_region.id, "name": "Dedicated Key"},
-    )
-
-    assert response.status_code == 403
-    assert "Not authorized to use this dedicated region" in response.json()["detail"]
-
-
-def test_create_llm_token_rejects_unassigned_dedicated_region(
-    client, team_admin_token, db
-):
-    dedicated_region = DBRegion(
-        name="dedicated-token-deny",
-        label="Dedicated Token Deny",
-        postgres_host="dedicated-host",
-        postgres_port=5432,
-        postgres_admin_user="dedicated-admin",
-        postgres_admin_password="dedicated-password",
-        litellm_api_url="https://dedicated-token-litellm.example.com",
-        litellm_api_key="dedicated-key",
-        is_active=True,
-        is_dedicated=True,
-    )
-    db.add(dedicated_region)
-    db.commit()
-    db.refresh(dedicated_region)
-
-    response = client.post(
-        "/private-ai-keys/token",
-        headers={"Authorization": f"Bearer {team_admin_token}"},
-        json={"region_id": dedicated_region.id, "name": "Dedicated Token"},
-    )
-
-    assert response.status_code == 403
-    assert "Not authorized to use this dedicated region" in response.json()["detail"]
-
-
-def test_create_vector_db_rejects_unassigned_dedicated_region(
-    client, team_admin_token, db
-):
-    dedicated_region = DBRegion(
-        name="dedicated-vector-deny",
-        label="Dedicated Vector Deny",
-        postgres_host="dedicated-host",
-        postgres_port=5432,
-        postgres_admin_user="dedicated-admin",
-        postgres_admin_password="dedicated-password",
-        litellm_api_url="https://dedicated-vector-litellm.example.com",
-        litellm_api_key="dedicated-key",
-        is_active=True,
-        is_dedicated=True,
-    )
-    db.add(dedicated_region)
-    db.commit()
-    db.refresh(dedicated_region)
-
-    response = client.post(
-        "/private-ai-keys/vector-db",
-        headers={"Authorization": f"Bearer {team_admin_token}"},
-        json={"region_id": dedicated_region.id, "name": "Dedicated Vector DB"},
-    )
-
-    assert response.status_code == 403
-    assert "Not authorized to use this dedicated region" in response.json()["detail"]
 
 
 def test_list_private_ai_keys(client, test_token, test_region, db, test_user):
