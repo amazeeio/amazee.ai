@@ -54,7 +54,8 @@ def delete_key(key_name: str, user_email: str = None, db_username: str = None, r
             return
 
         for key in keys_to_delete:
-            print(f"Deleting key: {key.name} (ID: {key.id}) from region: {key.region.name if key.region else 'None'}")
+            region_str = key.region.name if key.region else "None"
+            print(f"Deleting key: {key.name} (ID: {key.id}) from region: {region_str}")
             db.delete(key)
 
         db.commit()
