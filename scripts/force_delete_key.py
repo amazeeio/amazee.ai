@@ -5,7 +5,7 @@ import os
 # Add the project root to the Python path if necessary
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from app.db.database import SessionLocal
 from app.db.models import DBPrivateAIKey, DBUser, DBRegion
 
@@ -35,7 +35,7 @@ def delete_key(key_name: str, user_email: str = None, db_username: str = None, r
                 return
             query = query.filter(DBPrivateAIKey.region_id == region.id)
 
-        keys_to_delete = query.all()
+        keys_to_delete = query.options(joinedload(DBPrivateAIKey.region)).all()
 
         if not keys_to_delete:
             print("No keys found matching the provided criteria.")
