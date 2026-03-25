@@ -315,7 +315,14 @@ class TeamBase(BaseModel):
 class TeamCreate(TeamBase):
     force_user_keys: bool = False
     budget_type: BudgetType = BudgetType.PERIODIC
-    region_id: Optional[int] = None
+    region_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Optional region used only to scope LiteLLM bootstrap for the team. "
+            "This does not create or persist a team↔region association; teams "
+            "relate to regions via team_regions instead."
+        ),
+    )
 
 
 class TeamUpdate(BaseModel):
