@@ -45,9 +45,14 @@ def upgrade() -> None:
 def downgrade() -> None:
     bind = op.get_bind()
     insp = sa.inspect(bind)
-    cols = insp.get_columns("teams")
+    cols = []
+    try:
+        if insp.has_table("teams"):
+            cols = insp.get_columns("teams")
+    except Exception:
+        # If inspection fails (e.g. table does not exist), treat as if column is absent.
+        cols = []
     if any(col["name"] == "budget_type" for col in cols):
         op.drop_column("teams", "budget_type")
-    
     # Check if the enum type exists before dropping it
     op.execute("DROP TYPE IF EXISTS budget_type_enum")
