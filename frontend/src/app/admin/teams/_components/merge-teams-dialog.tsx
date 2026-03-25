@@ -85,8 +85,11 @@ export function MergeTeamsDialog({
         </DialogHeader>
         <form onSubmit={handleMerge} className="space-y-4">
           <div className="space-y-2">
-            <label className="text-sm font-medium">Target Team</label>
+            <label htmlFor="target-team" className="text-sm font-medium">
+              Target Team
+            </label>
             <Combobox
+              id="target-team"
               options={teamOptions}
               value={targetTeamId}
               onValueChange={setTargetTeamId}
@@ -102,8 +105,11 @@ export function MergeTeamsDialog({
             </AlertDescription>
           </Alert>
           <div className="space-y-2">
-            <label className="text-sm font-medium">Source Team</label>
+            <label htmlFor="source-team" className="text-sm font-medium">
+              Source Team
+            </label>
             <Combobox
+              id="source-team"
               options={teamOptions.filter((o) => o.value !== targetTeamId)}
               value={sourceTeamId}
               onValueChange={setSourceTeamId}
@@ -112,14 +118,16 @@ export function MergeTeamsDialog({
             />
           </div>
           <div className="space-y-2">
-            <label className="text-sm font-medium">Conflict Resolution</label>
+            <label htmlFor="conflict-resolution" className="text-sm font-medium">
+              Conflict Resolution
+            </label>
             <Select
               value={conflictResolutionStrategy}
               onValueChange={(value: "delete" | "rename" | "cancel") =>
                 setConflictResolutionStrategy(value)
               }
             >
-              <SelectTrigger>
+              <SelectTrigger id="conflict-resolution">
                 <SelectValue placeholder="Select a strategy" />
               </SelectTrigger>
               <SelectContent>
@@ -137,8 +145,11 @@ export function MergeTeamsDialog({
           </div>
           {conflictResolutionStrategy === "rename" && (
             <div className="space-y-2">
-              <label className="text-sm font-medium">Rename Suffix</label>
+              <label htmlFor="rename-suffix" className="text-sm font-medium">
+                Rename Suffix
+              </label>
               <Input
+                id="rename-suffix"
                 value={renameSuffix}
                 onChange={(e) => setRenameSuffix(e.target.value)}
                 placeholder="e.g., _merged"
