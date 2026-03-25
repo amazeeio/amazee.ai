@@ -60,6 +60,12 @@ export function SubscribeToProductDialog({
     );
   }, [allProducts, searchQuery]);
 
+  const handleClose = () => {
+    setSelectedProductId("");
+    setSearchQuery("");
+    onOpenChange(false);
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!teamId || !selectedProductId) return;
@@ -71,9 +77,7 @@ export function SubscribeToProductDialog({
       },
       {
         onSuccess: () => {
-          onOpenChange(false);
-          setSelectedProductId("");
-          setSearchQuery("");
+          handleClose();
         },
       },
     );
@@ -84,10 +88,10 @@ export function SubscribeToProductDialog({
       open={open}
       onOpenChange={(newOpen) => {
         if (!newOpen) {
-          setSelectedProductId("");
-          setSearchQuery("");
+          handleClose();
+        } else {
+          onOpenChange(newOpen);
         }
-        onOpenChange(newOpen);
       }}
     >
       <DialogContent className="max-w-2xl">
@@ -185,7 +189,7 @@ export function SubscribeToProductDialog({
           <Button
             type="button"
             variant="outline"
-            onClick={() => onOpenChange(false)}
+            onClick={handleClose}
           >
             Cancel
           </Button>
