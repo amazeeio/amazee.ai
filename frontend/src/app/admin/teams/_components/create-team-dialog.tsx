@@ -60,8 +60,11 @@ export function CreateTeamDialog({
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="space-y-2">
-            <label className="text-sm font-medium">Name</label>
+            <label htmlFor="new-team-name" className="text-sm font-medium">
+              Name
+            </label>
             <Input
+              id="new-team-name"
               value={newTeamName}
               onChange={(e) => setNewTeamName(e.target.value)}
               placeholder="Team Name"
@@ -69,8 +72,11 @@ export function CreateTeamDialog({
             />
           </div>
           <div className="space-y-2">
-            <label className="text-sm font-medium">Admin Email</label>
+            <label htmlFor="new-team-admin-email" className="text-sm font-medium">
+              Admin Email
+            </label>
             <Input
+              id="new-team-admin-email"
               type="email"
               value={newTeamAdminEmail}
               onChange={(e) => setNewTeamAdminEmail(e.target.value)}

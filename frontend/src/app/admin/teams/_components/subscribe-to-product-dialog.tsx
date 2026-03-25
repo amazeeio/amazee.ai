@@ -1,5 +1,5 @@
-import { Loader2 } from "lucide-react";
-import { useState } from "react";
+import { Loader2, Search, Check } from "lucide-react";
+import { useState, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -9,13 +9,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
 import { useTeams } from "@/hooks/use-teams";
 import { Product } from "@/types/product";
 import { get } from "@/utils/api";
@@ -33,6 +36,7 @@ export function SubscribeToProductDialog({
   onOpenChange,
 }: SubscribeToProductDialogProps) {
   const [selectedProductId, setSelectedProductId] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const { subscribeToProduct, isSubscribing } = useTeams();
 
   const { data: allProducts = [], isLoading: isLoadingAllProducts } = useQuery<
@@ -45,6 +49,16 @@ export function SubscribeToProductDialog({
     },
     enabled: open,
   });
+
+  const filteredProducts = useMemo(() => {
+    if (!searchQuery.trim()) return allProducts;
+    const query = searchQuery.toLowerCase();
+    return allProducts.filter(
+      (product) =>
+        product.name.toLowerCase().includes(query) ||
+        product.id.toLowerCase().includes(query),
+    );
+  }, [allProducts, searchQuery]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -59,70 +73,130 @@ export function SubscribeToProductDialog({
         onSuccess: () => {
           onOpenChange(false);
           setSelectedProductId("");
+          setSearchQuery("");
         },
       },
     );
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+    <Dialog
+      open={open}
+      onOpenChange={(newOpen) => {
+        if (!newOpen) {
+          setSelectedProductId("");
+          setSearchQuery("");
+        }
+        onOpenChange(newOpen);
+      }}
+    >
+      <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>Subscribe Team to Product</DialogTitle>
           <DialogDescription>
-            Select a product to subscribe this team to.
+            Search and select a product to subscribe this team to.
           </DialogDescription>
         </DialogHeader>
-        <form onSubmit={handleSubmit}>
-          <div className="grid gap-4 py-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Product</label>
-              <Select
-                value={selectedProductId}
-                onValueChange={setSelectedProductId}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select a product" />
-                </SelectTrigger>
-                <SelectContent>
-                  {isLoadingAllProducts ? (
-                    <SelectItem value="loading" disabled>
-                      Loading products...
-                    </SelectItem>
-                  ) : allProducts.length > 0 ? (
-                    allProducts.map((product) => (
-                      <SelectItem key={product.id} value={product.id}>
-                        {product.name} ({product.id})
-                      </SelectItem>
-                    ))
-                  ) : (
-                    <SelectItem value="no-products" disabled>
-                      No products available
-                    </SelectItem>
-                  )}
-                </SelectContent>
-              </Select>
+        <div className="space-y-4 py-4">
+          <div className="space-y-2">
+            <label htmlFor="product-search" className="text-sm font-medium">
+              Product
+            </label>
+            <div className="relative">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                id="product-search"
+                placeholder="Search products by name or ID..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9"
+              />
             </div>
           </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              disabled={isSubscribing || !selectedProductId}
-            >
-              {isSubscribing && (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              )}
-              Subscribe
-            </Button>
-          </DialogFooter>
-        </form>
+
+          <div className="rounded-md border max-h-[300px] overflow-y-auto">
+            <Table>
+              <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
+                <TableRow>
+                  <TableHead>Product Name</TableHead>
+                  <TableHead>ID</TableHead>
+                  <TableHead className="w-20"></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {isLoadingAllProducts ? (
+                  <TableRow>
+                    <TableCell colSpan={3} className="h-24 text-center">
+                      <div className="flex items-center justify-center">
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Loading products...
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ) : filteredProducts.length > 0 ? (
+                  filteredProducts.map((product) => (
+                    <TableRow
+                      key={product.id}
+                      className="cursor-pointer hover:bg-muted/50"
+                      onClick={() => setSelectedProductId(product.id)}
+                    >
+                      <TableCell className="font-medium">
+                        {product.name}
+                      </TableCell>
+                      <TableCell className="text-muted-foreground text-xs font-mono">
+                        {product.id}
+                      </TableCell>
+                      <TableCell>
+                        {selectedProductId === product.id ? (
+                          <Badge variant="default" className="flex items-center">
+                            <Check className="mr-1 h-3 w-3" />
+                            Selected
+                          </Badge>
+                        ) : (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedProductId(product.id);
+                            }}
+                          >
+                            Select
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))
+                ) : (
+                  <TableRow>
+                    <TableCell
+                      colSpan={3}
+                      className="h-24 text-center text-muted-foreground"
+                    >
+                      No products found.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={handleSubmit}
+            disabled={isSubscribing || !selectedProductId}
+          >
+            {isSubscribing && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            Subscribe
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
