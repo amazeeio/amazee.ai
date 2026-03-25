@@ -86,7 +86,7 @@ async def _create_litellm_teams_for_new_team(
     """
     regions_query = db.query(DBRegion).filter(DBRegion.is_active.is_(True))
 
-    if target_region_id:
+    if target_region_id is not None:
         regions_query = regions_query.filter(DBRegion.id == target_region_id)
 
     if team.budget_type == BudgetType.POOL:
