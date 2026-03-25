@@ -110,7 +110,8 @@ async def _create_litellm_teams_for_new_team(
             # This handles cases where LiteLLM might be temporarily down
             # or a region's URL is misconfigured.
             logger.error(
-                f"Failed to create LiteLLM team for team {team.id} in region {region.name} ({region.id}): {str(e)}"
+                f"Failed to create LiteLLM team for team {team.id} in region {region.name} ({region.id}): {str(e)}",
+                exc_info=True,
             )
 
 
