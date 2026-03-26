@@ -7,7 +7,7 @@ vi.mock("./config", () => ({
 }));
 
 describe("API utilities with MSW", () => {
-  it("should successfully fetch user data from mocked /api/auth/me endpoint", async () => {
+  it("should successfully fetch user data from mocked /auth/me endpoint", async () => {
     const response = await get("auth/me");
     const userData = await response.json();
 
@@ -21,7 +21,7 @@ describe("API utilities with MSW", () => {
     });
   });
 
-  it("should successfully post login data to mocked /api/auth/login endpoint", async () => {
+  it("should successfully post login data to mocked /auth/login endpoint", async () => {
     const loginData = {
       email: "test@example.com",
       password: "password123",

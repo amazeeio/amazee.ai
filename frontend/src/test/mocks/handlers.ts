@@ -54,16 +54,48 @@ export const handlers = [
   }),
 
   // Users endpoints
-  http.get("http://localhost:8800/users", () => {
-    return HttpResponse.json([
+  http.get("http://localhost:8800/users", ({ request }) => {
+    const url = new URL(request.url);
+    const search = url.searchParams.get("search");
+
+    const allUsers = [
       {
         id: 1,
         email: "test@example.com",
         name: "Test User",
         role: "user",
         team_id: 1,
+        is_active: true,
+        created_at: "2024-01-01T00:00:00Z",
       },
-    ]);
+      {
+        id: 2,
+        email: "admin@example.com",
+        name: "Admin User",
+        role: "admin",
+        team_id: 1,
+        is_active: true,
+        created_at: "2024-01-01T00:00:00Z",
+      },
+      {
+        id: 3,
+        email: "john@example.com",
+        name: "John Doe",
+        role: "user",
+        team_id: 1,
+        is_active: true,
+        created_at: "2024-01-01T00:00:00Z",
+      },
+    ];
+
+    if (search) {
+      const filtered = allUsers.filter((u) =>
+        u.email.toLowerCase().includes(search.toLowerCase()),
+      );
+      return HttpResponse.json(filtered);
+    }
+
+    return HttpResponse.json(allUsers);
   }),
 
   // Regions endpoints
@@ -115,51 +147,6 @@ export const handlers = [
 
   http.get("http://localhost:8800/regions/:id/teams", () => {
     return HttpResponse.json([{ id: 1, name: "Test Team" }]);
-  }),
-
-  // Users search endpoint
-  http.get("http://localhost:8800/users", ({ request }) => {
-    const url = new URL(request.url);
-    const search = url.searchParams.get("search");
-
-    const allUsers = [
-      {
-        id: 1,
-        email: "test@example.com",
-        name: "Test User",
-        role: "user",
-        team_id: 1,
-        is_active: true,
-        created_at: "2024-01-01T00:00:00Z",
-      },
-      {
-        id: 2,
-        email: "admin@example.com",
-        name: "Admin User",
-        role: "admin",
-        team_id: 1,
-        is_active: true,
-        created_at: "2024-01-01T00:00:00Z",
-      },
-      {
-        id: 3,
-        email: "john@example.com",
-        name: "John Doe",
-        role: "user",
-        team_id: 1,
-        is_active: true,
-        created_at: "2024-01-01T00:00:00Z",
-      },
-    ];
-
-    if (search) {
-      const filtered = allUsers.filter((u) =>
-        u.email.toLowerCase().includes(search.toLowerCase()),
-      );
-      return HttpResponse.json(filtered);
-    }
-
-    return HttpResponse.json(allUsers);
   }),
 
   // Audit logs endpoints
