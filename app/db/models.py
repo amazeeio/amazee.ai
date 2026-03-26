@@ -140,6 +140,7 @@ class DBTeam(Base):
     billing_address = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
     is_always_free = Column(Boolean, default=False)
+    hide_public_regions = Column(Boolean, default=False, nullable=False)
     force_user_keys = Column(Boolean, default=False, nullable=False)
     budget_type = Column(
         Enum(
