@@ -61,6 +61,49 @@ def test_register_team(client, admin_token):
     assert "updated_at" in team_data
 
 
+def test_register_and_update_team_hide_public_regions(client, admin_token):
+    """Test registering and updating a team with hide_public_regions"""
+    # Register team with hide_public_regions=True
+    response = client.post(
+        "/teams/",
+        json={
+            "name": "Hidden Regions Team",
+            "admin_email": "hidden@example.com",
+            "hide_public_regions": True,
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 201
+    team_data = response.json()
+    assert team_data["name"] == "Hidden Regions Team"
+    assert team_data["hide_public_regions"] is True
+    team_id = team_data["id"]
+
+    # Update team with hide_public_regions=False
+    response = client.put(
+        f"/teams/{team_id}",
+        json={
+            "hide_public_regions": False,
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    team_data = response.json()
+    assert team_data["hide_public_regions"] is False
+
+    # Update team with hide_public_regions=True again
+    response = client.put(
+        f"/teams/{team_id}",
+        json={
+            "hide_public_regions": True,
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    team_data = response.json()
+    assert team_data["hide_public_regions"] is True
+
+
 def test_register_team_creates_litellm_team_for_active_shared_regions(
     client, admin_token, test_region
 ):
