@@ -181,7 +181,7 @@ export default function RegionsPage() {
                     </TableRow>
                     <TableRow>
                       <TableCell
-                        colSpan={7}
+                        colSpan={8}
                         className="pt-0 text-xs text-muted-foreground"
                       >
                         {region.description}
