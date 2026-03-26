@@ -2,7 +2,7 @@ import { http, HttpResponse } from "msw";
 
 export const handlers = [
   // Auth endpoints
-  http.post("http://localhost:8800/api/auth/login", () => {
+  http.post("http://localhost:8800/auth/login", () => {
     return HttpResponse.json({
       success: true,
       user: {
@@ -14,11 +14,11 @@ export const handlers = [
     });
   }),
 
-  http.post("http://localhost:8800/api/auth/logout", () => {
+  http.post("http://localhost:8800/auth/logout", () => {
     return HttpResponse.json({ success: true });
   }),
 
-  http.get("http://localhost:8800/api/auth/me", () => {
+  http.get("http://localhost:8800/auth/me", () => {
     return HttpResponse.json({
       id: 1,
       email: "test@example.com",
@@ -29,7 +29,7 @@ export const handlers = [
   }),
 
   // Teams endpoints
-  http.get("http://localhost:8800/api/teams", () => {
+  http.get("http://localhost:8800/teams", () => {
     return HttpResponse.json([
       {
         id: 1,
@@ -40,7 +40,7 @@ export const handlers = [
   }),
 
   // Private AI Keys endpoints
-  http.get("http://localhost:8800/api/private-ai-keys", () => {
+  http.get("http://localhost:8800/private-ai-keys", () => {
     return HttpResponse.json([
       {
         id: 1,
@@ -54,7 +54,7 @@ export const handlers = [
   }),
 
   // Users endpoints
-  http.get("http://localhost:8800/api/users", () => {
+  http.get("http://localhost:8800/users", () => {
     return HttpResponse.json([
       {
         id: 1,
@@ -67,7 +67,7 @@ export const handlers = [
   }),
 
   // Regions endpoints
-  http.get("http://localhost:8800/api/regions/admin", () => {
+  http.get("http://localhost:8800/regions/admin", () => {
     return HttpResponse.json([
       {
         id: "1",
@@ -96,7 +96,7 @@ export const handlers = [
     ]);
   }),
 
-  http.post("http://localhost:8800/api/regions", async ({ request }) => {
+  http.post("http://localhost:8800/regions", async ({ request }) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const data = (await request.json()) as any;
     return HttpResponse.json(
@@ -109,16 +109,16 @@ export const handlers = [
     );
   }),
 
-  http.delete("http://localhost:8800/api/regions/:id", () => {
+  http.delete("http://localhost:8800/regions/:id", () => {
     return new HttpResponse(null, { status: 204 });
   }),
 
-  http.get("http://localhost:8800/api/regions/:id/teams", () => {
+  http.get("http://localhost:8800/regions/:id/teams", () => {
     return HttpResponse.json([{ id: 1, name: "Test Team" }]);
   }),
 
   // Users search endpoint
-  http.get("http://localhost:8800/api/users", ({ request }) => {
+  http.get("http://localhost:8800/users", ({ request }) => {
     const url = new URL(request.url);
     const search = url.searchParams.get("search");
 
@@ -163,7 +163,7 @@ export const handlers = [
   }),
 
   // Audit logs endpoints
-  http.get("http://localhost:8800/api/audit/logs/metadata", () => {
+  http.get("http://localhost:8800/audit/logs/metadata", () => {
     return HttpResponse.json({
       event_types: ["CREATE", "DELETE", "UPDATE", "LOGIN"],
       resource_types: ["user", "team", "key", "product"],
@@ -171,7 +171,7 @@ export const handlers = [
     });
   }),
 
-  http.get("http://localhost:8800/api/audit/logs", ({ request }) => {
+  http.get("http://localhost:8800/audit/logs", ({ request }) => {
     const url = new URL(request.url);
     const skip = parseInt(url.searchParams.get("skip") || "0");
     const limit = parseInt(url.searchParams.get("limit") || "20");

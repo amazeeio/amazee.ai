@@ -114,6 +114,7 @@ export default function RegionsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead>ID</TableHead>
                   <TableHead>Name</TableHead>
                   <TableHead>Label</TableHead>
                   <TableHead>Postgres Host</TableHead>
@@ -127,6 +128,7 @@ export default function RegionsPage() {
                 {paginatedData.map((region) => (
                   <Fragment key={region.id}>
                     <TableRow className="border-b-0">
+                      <TableCell>{region.id}</TableCell>
                       <TableCell>{region.name}</TableCell>
                       <TableCell>{region.label}</TableCell>
                       <TableCell>{region.postgres_host}</TableCell>
@@ -179,7 +181,7 @@ export default function RegionsPage() {
                     </TableRow>
                     <TableRow>
                       <TableCell
-                        colSpan={6}
+                        colSpan={7}
                         className="pt-0 text-xs text-muted-foreground"
                       >
                         {region.description}
