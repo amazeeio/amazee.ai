@@ -10,7 +10,12 @@ from app.db.database import SessionLocal
 from app.db.models import DBPrivateAIKey, DBUser, DBRegion
 
 
-def delete_key(key_name: str, user_email: str = None, db_username: str = None, region_name: str = None):
+def delete_key(
+    key_name: str,
+    user_email: str = None,
+    db_username: str = None,
+    region_name: str = None,
+):
     db: Session = SessionLocal()
     try:
         query = db.query(DBPrivateAIKey)
@@ -77,4 +82,9 @@ if __name__ == "__main__":
     parser.add_argument("--region", help="Region name of the key")
 
     args = parser.parse_args()
-    delete_key(key_name=args.name, user_email=args.email, db_username=args.db_username, region_name=args.region)
+    delete_key(
+        key_name=args.name,
+        user_email=args.email,
+        db_username=args.db_username,
+        region_name=args.region,
+    )

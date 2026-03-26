@@ -314,6 +314,7 @@ class TeamBase(BaseModel):
 
 class TeamCreate(TeamBase):
     force_user_keys: bool = False
+    hide_public_regions: bool = False
     budget_type: BudgetType = BudgetType.PERIODIC
 
 
@@ -325,6 +326,7 @@ class TeamUpdate(BaseModel):
     is_active: Optional[bool] = None
     is_always_free: Optional[bool] = None
     force_user_keys: Optional[bool] = False
+    hide_public_regions: Optional[bool] = None
     budget_type: Optional[BudgetType] = None
 
 
@@ -333,6 +335,7 @@ class Team(TeamBase):
     is_active: bool
     is_always_free: bool
     force_user_keys: Optional[bool] = False
+    hide_public_regions: bool = False
     budget_type: BudgetType
     last_pool_purchase: Optional[datetime] = None
     created_at: datetime
