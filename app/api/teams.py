@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 from typing import List
 from datetime import datetime, UTC
@@ -178,7 +178,9 @@ async def list_teams(include_deleted: bool = False, db: Session = Depends(get_db
     Args:
         include_deleted: If True, include soft-deleted teams in the results. Defaults to False.
     """
-    query = db.query(DBTeam)
+    query = db.query(DBTeam).options(
+        joinedload(DBTeam.active_products).joinedload(DBTeamProduct.product)
+    )
 
     if not include_deleted:
         query = query.filter(DBTeam.deleted_at.is_(None))
@@ -205,7 +207,11 @@ async def get_team(
         include_deleted: If True, allow retrieval of soft-deleted teams. Only available to system admins.
     """
     # Build query based on include_deleted flag
-    query = db.query(DBTeam).filter(DBTeam.id == team_id)
+    query = (
+        db.query(DBTeam)
+        .options(joinedload(DBTeam.active_products).joinedload(DBTeamProduct.product))
+        .filter(DBTeam.id == team_id)
+    )
 
     if not include_deleted:
         query = query.filter(DBTeam.deleted_at.is_(None))
