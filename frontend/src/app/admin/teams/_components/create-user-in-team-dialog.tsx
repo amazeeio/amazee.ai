@@ -111,8 +111,11 @@ export function CreateUserInTeamDialog({
         <form onSubmit={handleSubmit}>
           <div className="grid gap-4 py-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium">Email</label>
+              <label htmlFor="user-email" className="text-sm font-medium">
+                Email
+              </label>
               <Input
+                id="user-email"
                 type="email"
                 value={newUserEmail}
                 onChange={(e) => setNewUserEmail(e.target.value)}
@@ -122,8 +125,11 @@ export function CreateUserInTeamDialog({
             </div>
             {!isPasswordless && (
               <div className="space-y-2">
-                <label className="text-sm font-medium">Password</label>
+                <label htmlFor="user-password" className="text-sm font-medium">
+                  Password
+                </label>
                 <Input
+                  id="user-password"
                   type="password"
                   value={newUserPassword}
                   onChange={(e) => setNewUserPassword(e.target.value)}
@@ -133,9 +139,11 @@ export function CreateUserInTeamDialog({
               </div>
             )}
             <div className="space-y-2">
-              <label className="text-sm font-medium">Role</label>
+              <label htmlFor="user-role" className="text-sm font-medium">
+                Role
+              </label>
               <Select value={newUserRole} onValueChange={setNewUserRole}>
-                <SelectTrigger>
+                <SelectTrigger id="user-role">
                   <SelectValue placeholder="Select a role" />
                 </SelectTrigger>
                 <SelectContent>

@@ -333,9 +333,11 @@ export default function TeamUsersPage() {
               permissions within the team.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-4">
+            <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium">Role</label>
+              <label htmlFor="update-user-role" className="text-sm font-medium">
+                Role
+              </label>
               <Select
                 value={selectedUser?.currentRole || "read_only"}
                 onValueChange={(value) => {
@@ -347,7 +349,7 @@ export default function TeamUsersPage() {
                   setSelectedUser(null);
                 }}
               >
-                <SelectTrigger>
+                <SelectTrigger id="update-user-role">
                   <SelectValue placeholder="Select a role" />
                 </SelectTrigger>
                 <SelectContent>

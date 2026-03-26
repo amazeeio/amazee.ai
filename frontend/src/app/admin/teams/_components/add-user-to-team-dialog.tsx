@@ -104,13 +104,18 @@ export function AddUserToTeamDialog({
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSearch} className="space-y-4">
-          <div className="flex space-x-2">
-            <Input
-              placeholder="Search by email..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="flex-1"
-            />
+          <div className="flex space-x-2 items-end">
+            <div className="flex-1 space-y-2">
+              <label htmlFor="user-search" className="text-sm font-medium">
+                Email
+              </label>
+              <Input
+                id="user-search"
+                placeholder="Search by email..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+            </div>
             <Button type="submit" disabled={isSearching}>
               {isSearching ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
