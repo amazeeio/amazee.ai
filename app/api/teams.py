@@ -23,7 +23,6 @@ from app.core.security import (
     check_sales_or_higher,
 )
 from app.schemas.models import (
-    BudgetType,
     Team,
     TeamCreate,
     TeamUpdate,
