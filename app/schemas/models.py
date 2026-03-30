@@ -546,3 +546,20 @@ class PoolPurchaseHistoryResponse(BaseModel):
     region_id: int
     purchases: List[PoolPurchaseHistoryItem]
     model_config = ConfigDict(from_attributes=True)
+
+
+class PoolRegionPurchaseHistoryItem(BaseModel):
+    id: int
+    team_id: int
+    amount_cents: int
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PoolRegionPurchaseHistoryResponse(BaseModel):
+    region_id: int
+    purchases: List[PoolRegionPurchaseHistoryItem]
+    model_config = ConfigDict(from_attributes=True)
