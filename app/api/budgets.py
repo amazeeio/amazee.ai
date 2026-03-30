@@ -13,6 +13,7 @@ from app.schemas.models import (
     PoolPurchaseRequest,
     PoolPurchaseResponse,
     PoolPurchaseHistoryResponse,
+    PoolRegionPurchaseHistoryResponse,
     BudgetType,
 )
 from app.services.litellm import LiteLLMService
@@ -210,6 +211,29 @@ async def get_purchase_history(
     return PoolPurchaseHistoryResponse(
         team_id=team_id, region_id=region_id, purchases=purchases
     )
+
+
+@router.get(
+    "/region/{region_id}/purchase-history",
+    response_model=PoolRegionPurchaseHistoryResponse,
+    dependencies=[Depends(get_role_min_system_admin)],
+)
+async def get_region_purchase_history(region_id: int, db: Session = Depends(get_db)):
+    """Get purchase history for a region across all teams."""
+    region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+    if not region:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
+        )
+
+    purchases = (
+        db.query(DBPoolPurchase)
+        .filter(DBPoolPurchase.region_id == region_id)
+        .order_by(DBPoolPurchase.purchased_at.desc())
+        .all()
+    )
+
+    return PoolRegionPurchaseHistoryResponse(region_id=region_id, purchases=purchases)
 
 
 async def sync_pool_team_budgets(db: Session) -> dict:
