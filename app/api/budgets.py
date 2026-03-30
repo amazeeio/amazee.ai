@@ -113,26 +113,11 @@ async def purchase_pool_budget(
     )
     total_purchased_dollars = total_purchased_cents / 100.0
 
-    try:
-        team_info_response = await litellm_service.get_team_info(lite_team_id)
-        team_info = team_info_response.get("team_info", team_info_response)
-        current_spend = float(team_info.get("spend", 0.0) or 0.0)
-    except Exception as e:
-        db.rollback()
-        logger.error(
-            "Could not get team info from LiteLLM; rolling back purchase: %s", e
-        )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Failed to retrieve current spend from billing provider; "
-                "purchase was not completed."
-            ),
-        )
-
-    new_total_budget = total_purchased_dollars - current_spend
-    if new_total_budget < 0:
-        new_total_budget = 0.0
+    # LiteLLM's max_budget is a ceiling: requests are rejected when
+    # spend >= max_budget.  Spend is tracked independently by LiteLLM and
+    # never subtracted from max_budget.  Therefore the correct value is the
+    # cumulative total of all purchases — NOT "purchases minus spend".
+    new_total_budget = total_purchased_dollars
 
     try:
         await litellm_service.update_team_budget(
