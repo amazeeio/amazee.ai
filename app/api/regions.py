@@ -171,6 +171,9 @@ async def list_regions(
         )
 
     # Team members can see non-dedicated regions plus their team's dedicated regions
+    team = db.query(DBTeam).filter(DBTeam.id == current_user.team_id).first()
+    hide_public = team.hide_public_regions if team else False
+
     team_dedicated_regions = (
         db.query(DBRegion)
         .join(DBTeamRegion)
@@ -181,6 +184,9 @@ async def list_regions(
         )
         .all()
     )
+
+    if hide_public:
+        return team_dedicated_regions
 
     non_dedicated_regions = (
         db.query(DBRegion)

@@ -7,8 +7,8 @@ vi.mock("./config", () => ({
 }));
 
 describe("API utilities with MSW", () => {
-  it("should successfully fetch user data from mocked /api/auth/me endpoint", async () => {
-    const response = await get("/api/auth/me");
+  it("should successfully fetch user data from mocked /auth/me endpoint", async () => {
+    const response = await get("auth/me");
     const userData = await response.json();
 
     expect(response.ok).toBe(true);
@@ -21,13 +21,13 @@ describe("API utilities with MSW", () => {
     });
   });
 
-  it("should successfully post login data to mocked /api/auth/login endpoint", async () => {
+  it("should successfully post login data to mocked /auth/login endpoint", async () => {
     const loginData = {
       email: "test@example.com",
       password: "password123",
     };
 
-    const response = await post("/api/auth/login", loginData);
+    const response = await post("auth/login", loginData);
     const responseData = await response.json();
 
     expect(response.ok).toBe(true);
@@ -36,7 +36,7 @@ describe("API utilities with MSW", () => {
   });
 
   it("should successfully fetch teams data from mocked endpoint", async () => {
-    const response = await get("/api/teams");
+    const response = await get("teams");
     const teamsData = await response.json();
 
     expect(response.ok).toBe(true);
@@ -49,7 +49,7 @@ describe("API utilities with MSW", () => {
   });
 
   it("should successfully fetch private AI keys from mocked endpoint", async () => {
-    const response = await get("/api/private-ai-keys");
+    const response = await get("private-ai-keys");
     const keysData = await response.json();
 
     expect(response.ok).toBe(true);

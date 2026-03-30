@@ -139,6 +139,7 @@ async def register_team(
         is_active=True,
         created_at=datetime.now(UTC),
         force_user_keys=team.force_user_keys,
+        hide_public_regions=team.hide_public_regions,
         budget_type=team.budget_type,
     )
 

@@ -314,6 +314,7 @@ class TeamBase(BaseModel):
 
 class TeamCreate(TeamBase):
     force_user_keys: bool = False
+    hide_public_regions: bool = False
     budget_type: BudgetType = BudgetType.PERIODIC
 
 
@@ -325,6 +326,7 @@ class TeamUpdate(BaseModel):
     is_active: Optional[bool] = None
     is_always_free: Optional[bool] = None
     force_user_keys: Optional[bool] = False
+    hide_public_regions: Optional[bool] = None
     budget_type: Optional[BudgetType] = None
 
 
@@ -333,6 +335,7 @@ class Team(TeamBase):
     is_active: bool
     is_always_free: bool
     force_user_keys: Optional[bool] = False
+    hide_public_regions: bool = False
     budget_type: BudgetType
     last_pool_purchase: Optional[datetime] = None
     created_at: datetime
@@ -542,4 +545,21 @@ class PoolPurchaseHistoryResponse(BaseModel):
     team_id: int
     region_id: int
     purchases: List[PoolPurchaseHistoryItem]
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PoolRegionPurchaseHistoryItem(BaseModel):
+    id: int
+    team_id: int
+    amount_cents: int
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PoolRegionPurchaseHistoryResponse(BaseModel):
+    region_id: int
+    purchases: List[PoolRegionPurchaseHistoryItem]
     model_config = ConfigDict(from_attributes=True)

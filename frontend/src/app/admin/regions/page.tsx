@@ -1,7 +1,13 @@
 "use client";
 
-import { Loader2, Users } from "lucide-react";
-import { useState, Fragment } from "react";
+import {
+  Loader2,
+  Users,
+  ChevronUp,
+  ChevronDown,
+  ChevronsUpDown,
+} from "lucide-react";
+import { useState, Fragment, useMemo } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,6 +30,9 @@ import { CreateRegionDialog } from "./_components/create-region-dialog";
 import { EditRegionDialog } from "./_components/edit-region-dialog";
 import { ManageRegionTeamsDialog } from "./_components/manage-region-teams-dialog";
 
+type SortField = "id" | "name" | "label";
+type SortDirection = "asc" | "desc";
+
 export default function RegionsPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -33,6 +42,10 @@ export default function RegionsPage() {
   const [editingRegion, setEditingRegion] = useState<Region | null>(null);
   const [selectedRegionForTeams, setSelectedRegionForTeams] =
     useState<Region | null>(null);
+
+  // Sorting state
+  const [sortField, setSortField] = useState<SortField>("id");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
 
   // Queries
   const { data: regions = [], isLoading: isLoadingRegions } = useQuery<
@@ -52,6 +65,63 @@ export default function RegionsPage() {
       return response.json();
     },
   });
+
+  // Handle sorting
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDirection(sortDirection === "asc" ? "desc" : "asc");
+    } else {
+      setSortField(field);
+      setSortDirection("asc");
+    }
+  };
+
+  // Get sort icon
+  const getSortIcon = (field: SortField) => {
+    if (sortField !== field) {
+      return <ChevronsUpDown className="h-4 w-4" />;
+    }
+    return sortDirection === "asc" ? (
+      <ChevronUp className="h-4 w-4" />
+    ) : (
+      <ChevronDown className="h-4 w-4" />
+    );
+  };
+
+  // Memoized sorted regions
+  const sortedRegions = useMemo(() => {
+    const sorted = [...regions];
+    if (sortField) {
+      sorted.sort((a, b) => {
+        let aValue: string | number;
+        let bValue: string | number;
+
+        switch (sortField) {
+          case "id":
+            aValue = Number(a.id);
+            bValue = Number(b.id);
+            break;
+          case "name":
+            aValue = a.name.toLowerCase();
+            bValue = b.name.toLowerCase();
+            break;
+          case "label":
+            aValue = a.label.toLowerCase();
+            bValue = b.label.toLowerCase();
+            break;
+          default:
+            return 0;
+        }
+
+        if (sortDirection === "asc") {
+          return aValue < bValue ? -1 : aValue > bValue ? 1 : 0;
+        } else {
+          return aValue > bValue ? -1 : aValue < bValue ? 1 : 0;
+        }
+      });
+    }
+    return sorted;
+  }, [regions, sortField, sortDirection]);
 
   // Mutations
   const deleteRegionMutation = useMutation({
@@ -93,7 +163,7 @@ export default function RegionsPage() {
     paginatedData,
     goToPage,
     changePageSize,
-  } = useTablePagination(regions, 10);
+  } = useTablePagination(sortedRegions, 10);
 
   return (
     <div className="space-y-4">
@@ -114,9 +184,35 @@ export default function RegionsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Label</TableHead>
+                  <TableHead
+                    className="cursor-pointer hover:bg-gray-50"
+                    onClick={() => handleSort("id")}
+                  >
+                    <div className="flex items-center gap-2">
+                      ID
+                      {getSortIcon("id")}
+                    </div>
+                  </TableHead>
+                  <TableHead
+                    className="cursor-pointer hover:bg-gray-50"
+                    onClick={() => handleSort("name")}
+                  >
+                    <div className="flex items-center gap-2">
+                      Name
+                      {getSortIcon("name")}
+                    </div>
+                  </TableHead>
+                  <TableHead
+                    className="cursor-pointer hover:bg-gray-50"
+                    onClick={() => handleSort("label")}
+                  >
+                    <div className="flex items-center gap-2">
+                      Label
+                      {getSortIcon("label")}
+                    </div>
+                  </TableHead>
                   <TableHead>Postgres Host</TableHead>
+                  <TableHead>LiteLLM URL</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Teams</TableHead>
@@ -127,9 +223,13 @@ export default function RegionsPage() {
                 {paginatedData.map((region) => (
                   <Fragment key={region.id}>
                     <TableRow className="border-b-0">
+                      <TableCell>{region.id}</TableCell>
                       <TableCell>{region.name}</TableCell>
                       <TableCell>{region.label}</TableCell>
                       <TableCell>{region.postgres_host}</TableCell>
+                      <TableCell className="max-w-[200px] truncate">
+                        {region.litellm_api_url}
+                      </TableCell>
                       <TableCell>
                         <Badge
                           variant={
@@ -179,7 +279,7 @@ export default function RegionsPage() {
                     </TableRow>
                     <TableRow>
                       <TableCell
-                        colSpan={6}
+                        colSpan={9}
                         className="pt-0 text-xs text-muted-foreground"
                       >
                         {region.description}

@@ -707,6 +707,64 @@ def test_list_regions_team_member_sees_team_dedicated_regions(
     assert "team-dedicated-region" in region_names
 
 
+def test_list_regions_team_member_hide_public_regions(
+    client, team_admin_token, db, test_region, test_team
+):
+    """
+    Given a team with hide_public_regions=True
+    When a team member lists regions
+    Then they should only see their team's dedicated regions, excluding public regions
+    """
+    # Set hide_public_regions to True for the team
+    test_team.hide_public_regions = True
+    db.commit()
+
+    # Create a dedicated region associated with the team
+    dedicated_region = (
+        db.query(DBRegion)
+        .filter(DBRegion.name == "team-hidden-public-dedicated")
+        .first()
+    )
+    if not dedicated_region:
+        dedicated_region = DBRegion(
+            name="team-hidden-public-dedicated",
+            label="Team Hidden Public Dedicated",
+            postgres_host="team-hidden-public-host",
+            postgres_port=5432,
+            postgres_admin_user="team-hidden-public-admin",
+            postgres_admin_password="team-hidden-public-password",
+            litellm_api_url="https://team-hidden-public-litellm.com",
+            litellm_api_key="team-hidden-public-litellm-key",
+            is_active=True,
+            is_dedicated=True,
+        )
+        db.add(dedicated_region)
+        db.commit()
+        db.refresh(dedicated_region)
+
+    # Create team-region association
+    from app.db.models import DBTeamRegion
+
+    team_region = DBTeamRegion(team_id=test_team.id, region_id=dedicated_region.id)
+    db.add(team_region)
+    db.commit()
+
+    response = client.get(
+        "/regions/", headers={"Authorization": f"Bearer {team_admin_token}"}
+    )
+
+    assert response.status_code == 200
+    regions = response.json()
+    assert len(regions) == 1
+    assert regions[0]["name"] == "team-hidden-public-dedicated"
+    # Ensure public region is NOT present
+    assert test_region.name not in [r["name"] for r in regions]
+
+    # Reset hide_public_regions for other tests
+    test_team.hide_public_regions = False
+    db.commit()
+
+
 def test_list_regions_team_member_does_not_see_other_team_dedicated_regions(
     client, team_admin_token, db, test_region, test_team
 ):

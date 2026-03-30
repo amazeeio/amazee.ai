@@ -13,6 +13,7 @@ from app.schemas.models import (
     PoolPurchaseRequest,
     PoolPurchaseResponse,
     PoolPurchaseHistoryResponse,
+    PoolRegionPurchaseHistoryResponse,
     BudgetType,
 )
 from app.services.litellm import LiteLLMService
@@ -113,26 +114,11 @@ async def purchase_pool_budget(
     )
     total_purchased_dollars = total_purchased_cents / 100.0
 
-    try:
-        team_info_response = await litellm_service.get_team_info(lite_team_id)
-        team_info = team_info_response.get("team_info", team_info_response)
-        current_spend = float(team_info.get("spend", 0.0) or 0.0)
-    except Exception as e:
-        db.rollback()
-        logger.error(
-            "Could not get team info from LiteLLM; rolling back purchase: %s", e
-        )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Failed to retrieve current spend from billing provider; "
-                "purchase was not completed."
-            ),
-        )
-
-    new_total_budget = total_purchased_dollars - current_spend
-    if new_total_budget < 0:
-        new_total_budget = 0.0
+    # LiteLLM's max_budget is a ceiling: requests are rejected when
+    # spend >= max_budget.  Spend is tracked independently by LiteLLM and
+    # never subtracted from max_budget.  Therefore the correct value is the
+    # cumulative total of all purchases — NOT "purchases minus spend".
+    new_total_budget = total_purchased_dollars
 
     try:
         await litellm_service.update_team_budget(
@@ -210,6 +196,29 @@ async def get_purchase_history(
     return PoolPurchaseHistoryResponse(
         team_id=team_id, region_id=region_id, purchases=purchases
     )
+
+
+@router.get(
+    "/region/{region_id}/purchase-history",
+    response_model=PoolRegionPurchaseHistoryResponse,
+    dependencies=[Depends(get_role_min_system_admin)],
+)
+async def get_region_purchase_history(region_id: int, db: Session = Depends(get_db)):
+    """Get purchase history for a region across all teams."""
+    region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+    if not region:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
+        )
+
+    purchases = (
+        db.query(DBPoolPurchase)
+        .filter(DBPoolPurchase.region_id == region_id)
+        .order_by(DBPoolPurchase.purchased_at.desc())
+        .all()
+    )
+
+    return PoolRegionPurchaseHistoryResponse(region_id=region_id, purchases=purchases)
 
 
 async def sync_pool_team_budgets(db: Session) -> dict:
