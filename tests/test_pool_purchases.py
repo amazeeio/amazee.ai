@@ -96,10 +96,11 @@ def test_pool_purchase_sets_max_budget_to_total_purchased(
     # Verify update_team_budget was called with the correct ceiling.
     mock_instance.update_team_budget.assert_awaited_once()
     call_kwargs = mock_instance.update_team_budget.call_args
-    assert call_kwargs.kwargs.get("max_budget") or call_kwargs[1].get("max_budget")
-    budget_arg = call_kwargs.kwargs.get("max_budget") or call_kwargs[1].get(
-        "max_budget"
-    )
+    assert "max_budget" in call_kwargs.kwargs or "max_budget" in call_kwargs[1]
+    if "max_budget" in call_kwargs.kwargs:
+        budget_arg = call_kwargs.kwargs["max_budget"]
+    else:
+        budget_arg = call_kwargs[1]["max_budget"]
     assert budget_arg == 17.0
 
 
