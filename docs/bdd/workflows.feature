@@ -7,7 +7,7 @@ Feature: amazee.ai Key and Team Management Workflows
 
   Scenario: Requesting an anonymous trial key via Drupal CMS AI Recipe
     Given the "Anonymous Trial Team" is configured in the system via environment variables
-    When I perform a "POST" to "/generate-trial-access" from the CMS Recipe
+    When I perform a "POST" to "/auth/generate-trial-access" from the CMS Recipe
     Then a new "fake" user with an email ending in "@example.com" should be created
     And the user should be added to the fixed "Anonymous Trial Team"
     And a new AI key should be generated for this specific user
