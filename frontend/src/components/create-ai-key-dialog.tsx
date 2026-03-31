@@ -123,7 +123,12 @@ export function CreateAIKeyDialog({
         }
       } else if (selectedUserId.startsWith("team-")) {
         // Specific team from global list
-        data.team_id = parseInt(selectedUserId.replace("team-", ""));
+        const teamId = Number(selectedUserId.replace("team-", ""));
+        if (!Number.isFinite(teamId)) {
+          // Invalid team id; abort submission
+          return;
+        }
+        data.team_id = teamId;
       } else if (
         selectedUserId === currentUser?.id.toString() ||
         selectedUserId === "self"
@@ -303,7 +308,7 @@ export function CreateAIKeyDialog({
                   <PopoverContent id="user-search-popover" className="w-full p-0" align="start">
                     <Command>
                       <CommandInput
-                        placeholder="Search users..."
+                        placeholder="Search users or teams..."
                         value={userSearchTerm}
                         onValueChange={setUserSearchTerm}
                       />
