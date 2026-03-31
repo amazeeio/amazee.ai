@@ -23,8 +23,8 @@ Feature: amazee.ai Key and Team Management Workflows
 
   Scenario: Validating a production Drupal AI provider account
     Given I have entered my email "user@example.com" in the Drupal AI settings
-    And the system has sent a 6-digit validation code to my email
-    When I enter the correct 6-digit code into the Drupal interface
+    And the system has sent an 8-character alphanumeric validation code to my email
+    When I enter the correct 8-character alphanumeric code into the Drupal interface
     Then my Drupal site should be successfully linked to my amazee.ai account
     And I should be able to create new named AI keys directly from the Drupal interface
 
