@@ -12,14 +12,17 @@ graph TD
         Drupal --> Trial[Anonymous Trial / CMS AI Recipe]
         Drupal --> MainProd[Main Production Workflow]
         
-        Trial --> GenTrialAPI[generate AI trial endpoint /POST /auth/generate-trial-access]
+        Trial --> GenTrialAPI[POST /auth/generate-trial-access]
         GenTrialAPI --> TrialUser[Create Fake User @example.com]
         TrialUser --> TrialTeam[Assign to Fixed Trial Team]
-        TrialTeam --> TrialKey[Create Key: $AI_TRIAL_MAX_BUDGET (default $2), PERIODIC]
+        TrialTeam --> TrialKey[Create Key: $AI_TRIAL_MAX_BUDGET, PERIODIC]
         
-        MainProd --> EmailVal[Email + 8-Char Alphanumeric Code]
-        EmailVal --> LinkedAccount[Validated Account]
-        LinkedAccount --> CustomKey[User-named Key]
+        MainProd --> EmailVal[POST /auth/validate-email]
+        EmailVal --> CodeSent[8-Char Code Sent via SES]
+        CodeSent --> SignIn[POST /auth/sign-in]
+        SignIn --> AutoReg[Auto-register User & Team]
+        AutoReg --> LinkedAccount[Validated Account]
+        LinkedAccount --> CustomKey[User-named Key via /private-ai-keys]
     end
 
     %% Polydock Workflow
@@ -27,16 +30,19 @@ graph TD
         API --> PolyReq[Polydock Key Request / Claim]
         PolyReq --> RealEntity[Create Real Team/User/Email]
         RealEntity --> DefaultKey[Default Key: PERIODIC / Trial]
-        DefaultKey --> LifeSpan[Lasts 1 month]
+        DefaultKey --> LifeSpan[30-Day Trial Status]
     end
 
     %% MoaD Dashboard
     subgraph Dashboard_Operations [MoaD / Dashboard]
-        Dashboard --> ManCreate[Manual Team/User Creation]
+        Dashboard --> ManCreate[POST /teams]
         Dashboard --> Subscribe[Subscribe Team to Products]
+        Dashboard --> ViewAudit[GET /audit/logs / Admin only]
+        Dashboard --> CreateVector[POST /vector-db / Limit: 5]
         ManCreate --> AssignKey[Assign Key to Team or User]
         AssignKey --> PoolKey[Key Type: POOL / PERIODIC]
         Subscribe --> SubscriptionLogic[Subscription: PERIODIC]
+        CreateVector --> VectorEnforce[Increment VECTOR_DB limit]
     end
 
     %% Core Data
@@ -44,4 +50,20 @@ graph TD
     CustomKey --> LiteLLM
     DefaultKey --> LiteLLM
     PoolKey --> LiteLLM
+    CreateVector --> VectorCreds[Return Vector Credentials]
+
+    %% Limits & Defaults
+    subgraph Limits_Enforcement [LimitService / Core]
+        LimitCheck[LimitService Hierarchy]
+        ManualLimit[MANUAL Override]
+        ProductLimit[PRODUCT Subscription]
+        DefaultLimit[SYSTEM DEFAULT]
+        
+        LimitCheck --> ManualLimit
+        LimitCheck --> ProductLimit
+        LimitCheck --> DefaultLimit
+    end
+
+    LiteLLM -.-> LimitCheck
+    VectorEnforce -.-> LimitCheck
 ```
