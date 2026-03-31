@@ -12,7 +12,7 @@ graph TD
         Drupal --> Trial[Anonymous Trial / CMS AI Recipe]
         Drupal --> MainProd[Main Production Workflow]
         
-        Trial --> GenTrialAPI[generate AI trial endpoint /POST /generate-trial-access]
+        Trial --> GenTrialAPI[generate AI trial endpoint /POST /auth/generate-trial-access]
         GenTrialAPI --> TrialUser[Create Fake User @example.com]
         TrialUser --> TrialTeam[Assign to Fixed Trial Team]
         TrialTeam --> TrialKey[Create Key: $2, PERIODIC]
