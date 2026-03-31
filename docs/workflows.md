@@ -56,7 +56,7 @@ The central management interface (`frontend/`) for all amazee.ai resources.
 
 ### 2.1 Key Management
 *   **Functionality**: Users can create, view, and name their keys.
-*   **Budget Type**: Keys created here typically default to `POOL` type (verify implementation), allowing for more flexible consumption models compared to the fixed periodic resets of trial keys.
+*   **Budget Type**: Keys created and managed here inherit their behavior from the associated Team's `budget_type` (e.g., `PERIODIC` by default, with `POOL` optionally configured for high-volume or enterprise use).
 *   **Monitoring**: Provides real-time spend tracking and budget duration adjustments.
 
 ### 2.2 Team & Admin Operations
