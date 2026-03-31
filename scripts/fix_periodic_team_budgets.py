@@ -20,16 +20,13 @@ import argparse
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from sqlalchemy.orm import Session
 from app.db.database import SessionLocal
 from app.db.models import DBTeam, DBRegion
 from app.schemas.models import BudgetType
 from app.services.litellm import LiteLLMService
 
 
-async def fix_team_budget(
-    session: Session, team: DBTeam, region: DBRegion, dry_run: bool
-) -> dict:
+async def fix_team_budget(team: DBTeam, region: DBRegion, dry_run: bool) -> dict:
     """Remove team-level budget gate for a single team/region pair."""
     litellm_service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
@@ -109,7 +106,7 @@ async def main(dry_run: bool = False):
         results = []
         for team in periodic_teams:
             for region in active_regions:
-                result = await fix_team_budget(session, team, region, dry_run)
+                result = await fix_team_budget(team, region, dry_run)
                 results.append(result)
                 status = "OK" if result["success"] else "FAIL"
                 print(
