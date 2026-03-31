@@ -132,7 +132,7 @@ export default function TeamAIKeysPage() {
     owner_id?: number;
     team_id?: number;
   }) => {
-    if (user?.team_id) {
+    if (user?.team_id && !data.owner_id && !data.team_id) {
       data.team_id = user.team_id;
     }
     createKeyMutation.mutate(data);

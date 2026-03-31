@@ -4,6 +4,7 @@ import { useState } from "react";
 import { CreateAIKeyDialog } from "@/components/create-ai-key-dialog";
 import { PrivateAIKeysTable } from "@/components/private-ai-keys-table";
 import { usePrivateAIKeysData } from "@/hooks/use-private-ai-keys-data";
+import { useTeams } from "@/hooks/use-teams";
 import { useToast } from "@/hooks/use-toast";
 import { PrivateAIKey } from "@/types/private-ai-key";
 import { get, del, put, post } from "@/utils/api";
@@ -13,6 +14,9 @@ export default function PrivateAIKeysPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
+
+  // Fetch all teams for the creation dialog
+  const { teams } = useTeams();
 
   // Fetch all private AI keys
   const { data: privateAIKeys = [], isLoading: isLoadingPrivateAIKeys } =
@@ -128,6 +132,7 @@ export default function PrivateAIKeysPage() {
           isLoading={createKeyMutation.isPending}
           regions={regions}
           teamMembers={teamMembers}
+          teams={teams}
           showUserAssignment={true}
           currentUser={undefined}
           triggerText="Create Key"

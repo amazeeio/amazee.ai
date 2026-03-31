@@ -36,6 +36,7 @@ import {
 import { cn } from "@/lib/utils";
 import { Region } from "@/types/region";
 import { User } from "@/types/user";
+import { Team } from "@/types/team";
 
 interface CreateAIKeyDialogProps {
   open: boolean;
@@ -50,6 +51,7 @@ interface CreateAIKeyDialogProps {
   isLoading?: boolean;
   regions: Region[];
   teamMembers?: User[];
+  teams?: Team[];
   showUserAssignment?: boolean;
   currentUser?:
     | User
@@ -71,6 +73,7 @@ export function CreateAIKeyDialog({
   isLoading = false,
   regions,
   teamMembers = [],
+  teams = [],
   showUserAssignment = false,
   currentUser,
   triggerText = "Create AI Key",
@@ -84,8 +87,10 @@ export function CreateAIKeyDialog({
     "full",
   );
   const [selectedUserId, setSelectedUserId] = React.useState(() => {
-    // Default to current user if available, otherwise "team"
-    return currentUser?.id.toString() || "team";
+    // Default to current user if available, otherwise "team" or empty
+    if (currentUser?.id) return currentUser.id.toString();
+    if (currentUser?.team_id) return "team";
+    return "";
   });
   const [userSearchOpen, setUserSearchOpen] = React.useState(false);
   const [userSearchTerm, setUserSearchTerm] = React.useState("");
@@ -112,10 +117,18 @@ export function CreateAIKeyDialog({
 
     if (showUserAssignment) {
       if (selectedUserId === "team") {
-        // Team shared - set team_id and no specific owner_id
+        // Current user's team shared
         if (currentUser?.team_id) {
           data.team_id = currentUser.team_id;
         }
+      } else if (selectedUserId.startsWith("team-")) {
+        // Specific team from global list
+        const teamId = Number(selectedUserId.replace("team-", ""));
+        if (!Number.isFinite(teamId)) {
+          // Invalid team id; abort submission
+          return;
+        }
+        data.team_id = teamId;
       } else if (
         selectedUserId === currentUser?.id.toString() ||
         selectedUserId === "self"
@@ -123,8 +136,15 @@ export function CreateAIKeyDialog({
         if (currentUser?.id) {
           data.owner_id = Number(currentUser.id);
         }
+      } else if (selectedUserId.startsWith("user-")) {
+        // Specific user from global list
+        data.owner_id = parseInt(selectedUserId.replace("user-", ""));
       } else {
-        data.owner_id = parseInt(selectedUserId);
+        // Compatibility with old behavior where selectedUserId was just the ID
+        const id = parseInt(selectedUserId);
+        if (!isNaN(id)) {
+          data.owner_id = id;
+        }
       }
     }
 
@@ -137,13 +157,13 @@ export function CreateAIKeyDialog({
       setName("");
       setSelectedRegion("");
       setKeyType("full");
-      setSelectedUserId(currentUser?.id.toString() || "team");
+      setSelectedUserId(currentUser?.id.toString() || (currentUser?.team_id ? "team" : ""));
       setUserSearchTerm("");
     }
     onOpenChange(newOpen);
   };
 
-  // Filter team members based on search term
+  // Filter team members and teams based on search term
   const filteredTeamMembers = React.useMemo(() => {
     if (!userSearchTerm) return teamMembers;
     const searchLower = userSearchTerm.toLowerCase();
@@ -152,19 +172,36 @@ export function CreateAIKeyDialog({
     );
   }, [teamMembers, userSearchTerm]);
 
-  // Get display text for selected user
+  const filteredTeams = React.useMemo(() => {
+    if (!userSearchTerm) return teams;
+    const searchLower = userSearchTerm.toLowerCase();
+    return teams.filter((team) => team.name.toLowerCase().includes(searchLower));
+  }, [teams, userSearchTerm]);
+
+  // Get display text for selected user/team
   const getSelectedUserDisplay = () => {
-    if (selectedUserId === "team") return "Team (Shared)";
+    if (selectedUserId === "team") return "My Team (Shared)";
+    if (selectedUserId.startsWith("team-")) {
+      const teamId = selectedUserId.replace("team-", "");
+      const team = teams.find((t) => t.id.toString() === teamId);
+      return team ? `Team: ${team.name}` : "Selected Team";
+    }
     if (
       selectedUserId === currentUser?.id.toString() ||
       selectedUserId === "self"
     ) {
       return currentUser?.email || "Me";
     }
+    
+    // Check if it's user-prefix
+    const userId = selectedUserId.startsWith("user-") 
+      ? selectedUserId.replace("user-", "")
+      : selectedUserId;
+      
     const selectedMember = teamMembers.find(
-      (m) => m.id.toString() === selectedUserId,
+      (m) => m.id.toString() === userId,
     );
-    return selectedMember?.email || "Select user...";
+    return selectedMember?.email || "Select user or team...";
   };
 
   const isFormValid =
@@ -271,13 +308,40 @@ export function CreateAIKeyDialog({
                   <PopoverContent id="user-search-popover" className="w-full p-0" align="start">
                     <Command>
                       <CommandInput
-                        placeholder="Search users..."
+                        placeholder="Search users or teams..."
                         value={userSearchTerm}
                         onValueChange={setUserSearchTerm}
                       />
                       <CommandList>
-                        <CommandEmpty>No users found.</CommandEmpty>
-                        <CommandGroup>
+                        <CommandEmpty>No results found.</CommandEmpty>
+                        
+                        {teams.length > 0 && (
+                          <CommandGroup heading="Teams">
+                            {filteredTeams.map((team) => (
+                              <CommandItem
+                                key={`team-${team.id}`}
+                                value={`team-${team.name}`}
+                                onSelect={() => {
+                                  setSelectedUserId(`team-${team.id}`);
+                                  setUserSearchOpen(false);
+                                  setUserSearchTerm("");
+                                }}
+                              >
+                                <Check
+                                  className={cn(
+                                    "mr-2 h-4 w-4",
+                                    selectedUserId === `team-${team.id}`
+                                      ? "opacity-100"
+                                      : "opacity-0",
+                                  )}
+                                />
+                                {team.name}
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        )}
+
+                        <CommandGroup heading="Users">
                           {currentUser?.team_id && (
                             <CommandItem
                               value="team"
@@ -295,38 +359,37 @@ export function CreateAIKeyDialog({
                                     : "opacity-0",
                                 )}
                               />
-                              Team (Shared)
+                              My Team (Shared)
                             </CommandItem>
                           )}
-                          <CommandItem
-                            value={currentUser?.email || "self"}
-                            onSelect={() => {
-                              setSelectedUserId(
-                                currentUser?.id.toString() || "self",
-                              );
-                              setUserSearchOpen(false);
-                              setUserSearchTerm("");
-                            }}
-                          >
-                            <Check
-                              className={cn(
-                                "mr-2 h-4 w-4",
-                                selectedUserId === currentUser?.id.toString() ||
-                                  selectedUserId === "self"
-                                  ? "opacity-100"
-                                  : "opacity-0",
-                              )}
-                            />
-                            {currentUser?.email || "Me"}
-                          </CommandItem>
+                          {currentUser && (
+                            <CommandItem
+                              value={currentUser.email}
+                              onSelect={() => {
+                                setSelectedUserId(currentUser.id.toString());
+                                setUserSearchOpen(false);
+                                setUserSearchTerm("");
+                              }}
+                            >
+                              <Check
+                                className={cn(
+                                  "mr-2 h-4 w-4",
+                                  selectedUserId === currentUser.id.toString()
+                                    ? "opacity-100"
+                                    : "opacity-0",
+                                )}
+                              />
+                              {currentUser.email} (Me)
+                            </CommandItem>
+                          )}
                           {filteredTeamMembers
                             .filter((member) => member.id !== currentUser?.id)
                             .map((member) => (
                               <CommandItem
                                 key={member.id}
-                                value={member.email}
+                                value={`user-${member.email}`}
                                 onSelect={() => {
-                                  setSelectedUserId(member.id.toString());
+                                  setSelectedUserId(`user-${member.id}`);
                                   setUserSearchOpen(false);
                                   setUserSearchTerm("");
                                 }}
@@ -334,7 +397,7 @@ export function CreateAIKeyDialog({
                                 <Check
                                   className={cn(
                                     "mr-2 h-4 w-4",
-                                    selectedUserId === member.id.toString()
+                                    selectedUserId === `user-${member.id}` || selectedUserId === member.id.toString()
                                       ? "opacity-100"
                                       : "opacity-0",
                                   )}
@@ -348,11 +411,13 @@ export function CreateAIKeyDialog({
                   </PopoverContent>
                 </Popover>
                 <p className="text-sm text-muted-foreground">
-                  {teamMembers.length > 0
-                    ? "Select 'Team (Shared)' to create a key accessible to all team members, or assign to a specific user"
-                    : currentUser?.team_id
-                      ? "Select 'Team (Shared)' to create a key accessible to all team members, or assign to yourself"
-                      : "Assign this key to yourself"}
+                  {teams.length > 0
+                    ? "Select a team or a specific user to assign this key to"
+                    : teamMembers.length > 0
+                      ? "Select 'My Team (Shared)' to create a key accessible to all team members, or assign to a specific user"
+                      : currentUser?.team_id
+                        ? "Select 'My Team (Shared)' to create a key accessible to all team members, or assign to yourself"
+                        : "Assign this key to yourself"}
                 </p>
               </div>
             )}
