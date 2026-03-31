@@ -227,9 +227,7 @@ export default function RegionsPage() {
                       <TableCell>{region.name}</TableCell>
                       <TableCell>{region.label}</TableCell>
                       <TableCell>{region.postgres_host}</TableCell>
-                      <TableCell className="max-w-[200px] truncate">
-                        {region.litellm_api_url}
-                      </TableCell>
+                      <TableCell>{region.litellm_api_url}</TableCell>
                       <TableCell>
                         <Badge
                           variant={
