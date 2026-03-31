@@ -11,7 +11,7 @@ Feature: amazee.ai Key and Team Management Workflows
     Then a new "fake" user with an email ending in "@example.com" should be created
     And the user should be added to the fixed "Anonymous Trial Team"
     And a new AI key should be generated for this specific user
-    And the key should have a $2.00 limit and "PERIODIC" budget type
+    And the key should have the configured trial budget limit and "PERIODIC" budget type
     And I should be able to use this key for AI requests immediately
 
   Scenario: Drupal.org demo instance via Polydock Engine
