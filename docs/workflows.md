@@ -42,7 +42,7 @@ The standard path for site builders and production environments.
 *   **Trigger**: User configures the "amazee.ai" provider in Drupal's AI settings.
 *   **Process**:
     1.  User enters their email address.
-    2.  System sends a 6-digit/character validation code via email.
+    2.  System sends an 8-character uppercase alphanumeric validation code via email.
     3.  User validates the code in Drupal.
     4.  System links the Drupal site to the user's amazee.ai account.
     5.  Users can create new named keys directly from the Drupal interface.
