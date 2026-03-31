@@ -439,8 +439,9 @@ class LiteLLMService:
             request_data = {
                 "team_id": team_id,
             }
-            if max_budget is not None:
-                request_data["max_budget"] = max_budget
+            # Always include max_budget, even when None, so LiteLLM receives
+            # JSON null when the intent is to clear the team-level budget gate.
+            request_data["max_budget"] = max_budget
             if budget_duration:
                 request_data["budget_duration"] = budget_duration
 
