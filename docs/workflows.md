@@ -22,7 +22,7 @@ For a visual representation of these flows, please see the [Workflows Diagram](d
 Designed for low-friction exploration of Drupal AI capabilities.
 *   **Trigger**: User initiates an "Anonymous Trial" from within a Drupal installation using the Drupal CMS AI Recipe.
 *   **Process**:
-    1.  Calls the `generate AI trial` endpoint via a `POST` to `/generate-trial-access`.
+    1.  Calls the `generate AI trial` endpoint via a `POST` to `/auth/generate-trial-access`.
     2.  System creates a "fake" user with an email address ending in `@example.com`.
     3.  User is assigned to the fixed "Anonymous Trial Team" (configured via environment variables).
     4.  A new AI key is generated for this specific user.
