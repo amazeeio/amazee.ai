@@ -175,7 +175,7 @@ export function CreateAIKeyDialog({
 
   // Get display text for selected user/team
   const getSelectedUserDisplay = () => {
-    if (selectedUserId === "team") return "Team (Shared)";
+    if (selectedUserId === "team") return "My Team (Shared)";
     if (selectedUserId.startsWith("team-")) {
       const teamId = selectedUserId.replace("team-", "");
       const team = teams.find((t) => t.id.toString() === teamId);
