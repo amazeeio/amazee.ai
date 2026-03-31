@@ -15,7 +15,7 @@ graph TD
         Trial --> GenTrialAPI[generate AI trial endpoint /POST /auth/generate-trial-access]
         GenTrialAPI --> TrialUser[Create Fake User @example.com]
         TrialUser --> TrialTeam[Assign to Fixed Trial Team]
-        TrialTeam --> TrialKey[Create Key: $2, PERIODIC]
+        TrialTeam --> TrialKey[Create Key: $AI_TRIAL_MAX_BUDGET (default $2), PERIODIC]
         
         MainProd --> EmailVal[Email + 8-Char Alphanumeric Code]
         EmailVal --> LinkedAccount[Validated Account]
