@@ -23,7 +23,6 @@ from app.core.security import (
     check_sales_or_higher,
 )
 from app.schemas.models import (
-    BudgetType,
     Team,
     TeamCreate,
     TeamUpdate,
@@ -79,11 +78,12 @@ async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
     """
     Create region-scoped LiteLLM teams for active regions.
 
-    POOL teams are only bootstrapped in shared (non-dedicated) regions.
+    New teams are bootstrapped only in shared (non-dedicated) regions.
+    Dedicated regions are provisioned only after explicit team-region association.
     """
-    regions_query = db.query(DBRegion).filter(DBRegion.is_active.is_(True))
-    if team.budget_type == BudgetType.POOL:
-        regions_query = regions_query.filter(DBRegion.is_dedicated.is_(False))
+    regions_query = db.query(DBRegion).filter(
+        DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False)
+    )
     regions = regions_query.all()
 
     for region in regions:

@@ -174,6 +174,49 @@ def test_register_pool_team_excludes_dedicated_regions_from_litellm_bootstrap(
     )
 
 
+def test_register_periodic_team_excludes_dedicated_regions_from_litellm_bootstrap(
+    client, admin_token, test_region, db
+):
+    dedicated_region = DBRegion(
+        name="dedicated-periodic-bootstrap-region",
+        label="Dedicated Periodic Bootstrap Region",
+        description="Dedicated region should be excluded for periodic team bootstrap",
+        postgres_host="dedicated-periodic-bootstrap-postgres",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="https://dedicated-periodic-bootstrap-litellm.com",
+        litellm_api_key="dedicated-periodic-bootstrap-key",
+        is_active=True,
+        is_dedicated=True,
+    )
+    db.add(dedicated_region)
+    db.commit()
+
+    with patch(
+        "app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock
+    ) as mock_create_team:
+        response = client.post(
+            "/teams/",
+            json={
+                "name": "Periodic Team Shared Regions Only",
+                "admin_email": "periodic-shared-only@example.com",
+                "phone": "1234567890",
+                "billing_address": "123 Test St, Test City, 12345",
+                "budget_type": "periodic",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201
+    team_data = response.json()
+    mock_create_team.assert_awaited_once_with(
+        team_id=f"{test_region.name}_{team_data['id']}",
+        team_alias=f"{test_region.name}_{team_data['id']}",
+        max_budget=0.0,
+    )
+
+
 def test_register_team_unauthenticated(client):
     """Test that unauthenticated requests are rejected"""
     response = client.post(
