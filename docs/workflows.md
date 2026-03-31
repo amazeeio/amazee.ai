@@ -24,7 +24,7 @@ Designed for low-friction exploration of Drupal AI capabilities.
 *   **Process**:
     1.  Calls the `generate AI trial` endpoint via a `POST` to `/auth/generate-trial-access`.
     2.  System creates a "fake" user with an email address ending in `@example.com`.
-    3.  User is assigned to the fixed "Anonymous Trial Team" (configured via environment variables).
+    3.  User is assigned to the trial team configured via the `AI_TRIAL_TEAM_EMAIL` environment variable (typically named `AI Trial Team {AI_TRIAL_TEAM_EMAIL}`).
     4.  A new AI key is generated for this specific user.
 *   **Limits**: Currently capped at a small budget (e.g., $2.00) to prevent abuse.
 
