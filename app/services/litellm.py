@@ -237,7 +237,7 @@ class LiteLLMService:
                 "budget_duration": budget_duration,
                 "duration": "365d",
             }
-            if budget_amount:
+            if budget_amount is not None:
                 request_data["max_budget"] = budget_amount
 
             async with httpx.AsyncClient() as client:
@@ -368,16 +368,21 @@ class LiteLLMService:
 
     async def create_team(
         self,
-        max_budget: float = 0.0,
+        max_budget: Optional[float] = None,
         budget_duration: Optional[str] = None,
         team_id: Optional[str] = None,
         team_alias: Optional[str] = None,
     ):
-        """Create a LiteLLM team. Treat existing team as success."""
+        """Create a LiteLLM team. Treat existing team as success.
+
+        Args:
+            max_budget: Budget limit. None means no team-level budget gate.
+                        0.0 blocks all requests (used for POOL teams).
+        """
         try:
-            request_data = {
-                "max_budget": max_budget,
-            }
+            request_data = {}
+            if max_budget is not None:
+                request_data["max_budget"] = max_budget
             if team_id:
                 request_data["team_id"] = team_id
             if team_alias:
@@ -419,14 +424,23 @@ class LiteLLMService:
             )
 
     async def update_team_budget(
-        self, team_id: str, max_budget: float, budget_duration: Optional[str] = None
+        self,
+        team_id: str,
+        max_budget: Optional[float],
+        budget_duration: Optional[str] = None,
     ):
-        """Update the budget for a LiteLLM team"""
+        """Update the budget for a LiteLLM team.
+
+        Args:
+            max_budget: Budget limit. None removes the team-level budget gate.
+                        0.0 blocks all requests. Positive float sets explicit limit.
+        """
         try:
             request_data = {
                 "team_id": team_id,
-                "max_budget": max_budget,
             }
+            if max_budget is not None:
+                request_data["max_budget"] = max_budget
             if budget_duration:
                 request_data["budget_duration"] = budget_duration
 
