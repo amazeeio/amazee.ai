@@ -209,10 +209,11 @@ async def propagate_team_budget_to_keys(
     db: Session, team_id: int, budget_amount: float, budget_duration: str
 ) -> None:
     """
-    Propagate a team budget limit change to all keys belonging to the team.
+    Propagate a team budget limit change to the LiteLLM team and all its keys.
 
-    This function updates all keys (both user-owned and team-owned) in LiteLLM
-    with the new budget amount when a team's budget limit is changed.
+    This function updates the LiteLLM team max_budget (shared ceiling) and all
+    keys (both user-owned and team-owned) with the new budget amount when a
+    team's budget limit is changed.
 
     Args:
         db: Database session
@@ -221,22 +222,42 @@ async def propagate_team_budget_to_keys(
         budget_duration: Budget duration string (e.g., "30d")
 
     Note:
-        Errors during key updates are logged but don't raise exceptions.
-        This ensures that limit updates succeed even if some key updates fail.
+        Errors during updates are logged but don't raise exceptions.
+        This ensures that limit updates succeed even if some updates fail.
     """
     try:
+        team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+        if not team:
+            logger.error(f"Team {team_id} not found, skipping budget propagation")
+            return
+
         keys_by_region = get_team_keys_by_region(db, team_id)
 
-        # Update keys for each region
+        # Update team budget and keys for each region
         for region, keys in keys_by_region.items():
             litellm_service = LiteLLMService(
                 api_url=region.litellm_api_url, api_key=region.litellm_api_key
             )
 
+            # Update the LiteLLM team budget (shared ceiling)
+            lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+            try:
+                await litellm_service.update_team_budget(
+                    team_id=lite_team_id,
+                    max_budget=budget_amount,
+                    budget_duration=budget_duration,
+                )
+                logger.info(
+                    f"Updated team {team_id} budget to {budget_amount} in LiteLLM region {region.name}"
+                )
+            except Exception as team_error:
+                logger.error(
+                    f"Failed to update team {team_id} budget in region {region.name}: {str(team_error)}"
+                )
+
             # Update each key's budget via LiteLLM
             for key in keys:
                 try:
-                    # Update budget using the provided budget_duration
                     await litellm_service.update_budget(
                         litellm_token=key.litellm_token,
                         budget_duration=budget_duration,
@@ -249,10 +270,8 @@ async def propagate_team_budget_to_keys(
                     logger.error(
                         f"Failed to update key {key.id} budget in LiteLLM: {str(key_error)}"
                     )
-                    # Continue with other keys even if one fails
                     continue
     except Exception as propagation_error:
         logger.error(
             f"Error propagating budget limit to keys for team {team_id}: {str(propagation_error)}"
         )
-        # Don't raise - allow limit update to succeed even if propagation fails

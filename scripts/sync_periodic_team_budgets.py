@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Fix team budget gates in LiteLLM for existing PERIODIC teams.
+Sync LiteLLM team budgets with local DB limits for existing PERIODIC teams.
 
 Background:
 - PERIODIC teams were bootstrapped with max_budget=0.0 in LiteLLM
 - This blocked all requests because LiteLLM enforces team-level budgets
   as independent gates alongside per-key budgets
-- The fix: set team max_budget to None (no gate) for PERIODIC teams
-- POOL teams keep their 0.0 budget (raised by purchases)
+- The fix: update team max_budget to match the local DB budget limit
+- POOL teams are skipped (their budget is managed via purchases)
 
 Usage:
-    python scripts/fix_periodic_team_budgets.py [--dry-run]
+    python scripts/sync_periodic_team_budgets.py [--dry-run]
 """
 
 import os
@@ -20,18 +20,51 @@ import argparse
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from sqlalchemy.orm import Session
 from app.db.database import SessionLocal
-from app.db.models import DBTeam, DBRegion
+from app.db.models import DBTeam, DBRegion, DBLimitedResource
 from app.schemas.models import BudgetType
+from app.schemas.limits import OwnerType, ResourceType
 from app.services.litellm import LiteLLMService
 
 
-async def fix_team_budget(team: DBTeam, region: DBRegion, dry_run: bool) -> dict:
-    """Remove team-level budget gate only if it's stuck at 0.0."""
+def get_team_budget_limit(session: Session, team_id: int) -> float | None:
+    """Get the team's budget limit from the local DB."""
+    limit = (
+        session.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == team_id,
+            DBLimitedResource.resource == ResourceType.BUDGET,
+        )
+        .first()
+    )
+    return limit.max_value if limit else None
+
+
+async def sync_team_budget(
+    session: Session, team: DBTeam, region: DBRegion, dry_run: bool
+) -> dict:
+    """Sync LiteLLM team budget to match the local DB limit."""
+    lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+
+    budget_limit = get_team_budget_limit(session, team.id)
+    if budget_limit is None:
+        return {
+            "team_id": team.id,
+            "team_name": team.name,
+            "budget_type": team.budget_type,
+            "region": region.name,
+            "lite_team_id": lite_team_id,
+            "action": "skipped",
+            "success": True,
+            "error": None,
+            "detail": "No budget limit found in local DB",
+        }
+
     litellm_service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
-    lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
 
     try:
         team_info = await litellm_service.get_team_info(lite_team_id)
@@ -50,7 +83,7 @@ async def fix_team_budget(team: DBTeam, region: DBRegion, dry_run: bool) -> dict
     info = team_info.get("info", {})
     current_max_budget = info.get("max_budget")
 
-    if current_max_budget != 0.0:
+    if current_max_budget == budget_limit:
         return {
             "team_id": team.id,
             "team_name": team.name,
@@ -60,7 +93,7 @@ async def fix_team_budget(team: DBTeam, region: DBRegion, dry_run: bool) -> dict
             "action": "skipped",
             "success": True,
             "error": None,
-            "detail": f"max_budget is {current_max_budget}, not 0.0",
+            "detail": f"Already synced (max_budget={current_max_budget})",
         }
 
     if dry_run:
@@ -70,16 +103,16 @@ async def fix_team_budget(team: DBTeam, region: DBRegion, dry_run: bool) -> dict
             "budget_type": team.budget_type,
             "region": region.name,
             "lite_team_id": lite_team_id,
-            "action": "would_remove_budget_gate",
+            "action": "would_sync",
             "success": True,
             "error": None,
-            "detail": "max_budget is 0.0",
+            "detail": f"{current_max_budget} -> {budget_limit}",
         }
 
     try:
         await litellm_service.update_team_budget(
             team_id=lite_team_id,
-            max_budget=None,
+            max_budget=budget_limit,
         )
         return {
             "team_id": team.id,
@@ -87,10 +120,10 @@ async def fix_team_budget(team: DBTeam, region: DBRegion, dry_run: bool) -> dict
             "budget_type": team.budget_type,
             "region": region.name,
             "lite_team_id": lite_team_id,
-            "action": "removed_budget_gate",
+            "action": "synced",
             "success": True,
             "error": None,
-            "detail": "was 0.0, set to None",
+            "detail": f"{current_max_budget} -> {budget_limit}",
         }
     except Exception as e:
         return {
@@ -130,7 +163,7 @@ async def main(dry_run: bool = False):
 
         mode = "DRY RUN" if dry_run else "LIVE"
         print(
-            f"[{mode}] Fixing budget gates for {len(periodic_teams)} PERIODIC teams "
+            f"[{mode}] Syncing budgets for {len(periodic_teams)} PERIODIC teams "
             f"across {len(active_regions)} regions ({len(periodic_teams) * len(active_regions)} operations)"
         )
         print()
@@ -139,7 +172,7 @@ async def main(dry_run: bool = False):
         skipped = 0
         for team in periodic_teams:
             for region in active_regions:
-                result = await fix_team_budget(team, region, dry_run)
+                result = await sync_team_budget(session, team, region, dry_run)
                 results.append(result)
                 if result["action"] == "skipped":
                     skipped += 1
@@ -165,7 +198,7 @@ async def main(dry_run: bool = False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Fix LiteLLM team budget gates for existing PERIODIC teams"
+        description="Sync LiteLLM team budgets with local DB limits for PERIODIC teams"
     )
     parser.add_argument(
         "--dry-run",
