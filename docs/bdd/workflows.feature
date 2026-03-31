@@ -3,7 +3,7 @@ Feature: amazee.ai Key and Team Management Workflows
   I want to manage AI keys and teams
   So that I can control access and budgets for AI resources
 
-  ### 1. Drupal AI Workflows
+  Rule: Drupal AI Workflows
 
   Scenario: Requesting an anonymous trial key via Drupal CMS AI Recipe
     Given the "Anonymous Trial Team" is configured in the system via environment variables
@@ -28,7 +28,7 @@ Feature: amazee.ai Key and Team Management Workflows
     Then my Drupal site should be successfully linked to my amazee.ai account
     And I should be able to create new named AI keys directly from the Drupal interface
 
-  ### 2. Admin Operations (Dashboard)
+  Rule: Admin Operations (Dashboard)
 
   Scenario: Assigning a key to a shared team
     Given I am logged into the MoaD Dashboard as an administrator
