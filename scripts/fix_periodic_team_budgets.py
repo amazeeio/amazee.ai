@@ -27,11 +27,41 @@ from app.services.litellm import LiteLLMService
 
 
 async def fix_team_budget(team: DBTeam, region: DBRegion, dry_run: bool) -> dict:
-    """Remove team-level budget gate for a single team/region pair."""
+    """Remove team-level budget gate only if it's stuck at 0.0."""
     litellm_service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+
+    try:
+        team_info = await litellm_service.get_team_info(lite_team_id)
+    except Exception as e:
+        return {
+            "team_id": team.id,
+            "team_name": team.name,
+            "budget_type": team.budget_type,
+            "region": region.name,
+            "lite_team_id": lite_team_id,
+            "action": "skipped",
+            "success": True,
+            "error": f"Could not fetch team info from LiteLLM: {e}",
+        }
+
+    info = team_info.get("info", {})
+    current_max_budget = info.get("max_budget")
+
+    if current_max_budget != 0.0:
+        return {
+            "team_id": team.id,
+            "team_name": team.name,
+            "budget_type": team.budget_type,
+            "region": region.name,
+            "lite_team_id": lite_team_id,
+            "action": "skipped",
+            "success": True,
+            "error": None,
+            "detail": f"max_budget is {current_max_budget}, not 0.0",
+        }
 
     if dry_run:
         return {
@@ -43,6 +73,7 @@ async def fix_team_budget(team: DBTeam, region: DBRegion, dry_run: bool) -> dict
             "action": "would_remove_budget_gate",
             "success": True,
             "error": None,
+            "detail": "max_budget is 0.0",
         }
 
     try:
@@ -59,6 +90,7 @@ async def fix_team_budget(team: DBTeam, region: DBRegion, dry_run: bool) -> dict
             "action": "removed_budget_gate",
             "success": True,
             "error": None,
+            "detail": "was 0.0, set to None",
         }
     except Exception as e:
         return {
@@ -104,21 +136,25 @@ async def main(dry_run: bool = False):
         print()
 
         results = []
+        skipped = 0
         for team in periodic_teams:
             for region in active_regions:
                 result = await fix_team_budget(team, region, dry_run)
                 results.append(result)
+                if result["action"] == "skipped":
+                    skipped += 1
                 status = "OK" if result["success"] else "FAIL"
+                detail = f" ({result.get('detail')})" if result.get("detail") else ""
                 print(
                     f"  [{status}] Team {result['team_id']} ({result['team_name']}) "
-                    f"-> Region {result['region']}: {result['action']}"
+                    f"-> Region {result['region']}: {result['action']}{detail}"
                     + (f" - {result['error']}" if result["error"] else "")
                 )
 
         print()
         successes = sum(1 for r in results if r["success"])
         failures = sum(1 for r in results if not r["success"])
-        print(f"Done: {successes} succeeded, {failures} failed")
+        print(f"Done: {successes} succeeded, {failures} failed, {skipped} skipped")
 
         if dry_run:
             print("\nThis was a dry run. Run without --dry-run to apply changes.")
