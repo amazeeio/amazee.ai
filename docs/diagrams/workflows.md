@@ -17,7 +17,7 @@ graph TD
         TrialUser --> TrialTeam[Assign to Fixed Trial Team]
         TrialTeam --> TrialKey[Create Key: $2, PERIODIC]
         
-        MainProd --> EmailVal[Email + 6-Digit Code]
+        MainProd --> EmailVal[Email + 8-Char Alphanumeric Code]
         EmailVal --> LinkedAccount[Validated Account]
         LinkedAccount --> CustomKey[User-named Key]
     end
