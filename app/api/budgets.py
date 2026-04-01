@@ -121,6 +121,7 @@ async def purchase_pool_budget(
             team_id,
             new_total_budget,
             f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
+            region_id=region_id,
         )
     except Exception as e:
         db.rollback()
