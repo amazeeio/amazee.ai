@@ -87,6 +87,8 @@ async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
     """
     from app.core.limit_service import DEFAULT_MAX_SPEND
 
+    max_budget = 0.0 if team.budget_type == BudgetType.POOL else DEFAULT_MAX_SPEND
+
     regions_query = db.query(DBRegion).filter(
         DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False)
     )
@@ -97,7 +99,6 @@ async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
         lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
-        max_budget = 0.0 if team.budget_type == BudgetType.POOL else DEFAULT_MAX_SPEND
         await litellm_service.create_team(
             team_id=lite_team_id,
             team_alias=lite_team_id,
