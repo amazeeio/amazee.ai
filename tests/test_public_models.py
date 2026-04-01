@@ -1,3 +1,4 @@
+import httpx
 from unittest.mock import AsyncMock, patch
 
 from app.api import public as public_api
@@ -75,7 +76,9 @@ def test_public_models_includes_unavailable_region(client, db):
     db.commit()
     with patch("app.api.public.LiteLLMService") as mock_service_cls:
         mock_service = mock_service_cls.return_value
-        mock_service.get_model_info = AsyncMock(side_effect=Exception("timeout"))
+        mock_service.get_model_info = AsyncMock(
+            side_effect=httpx.ConnectError("connection refused")
+        )
 
         response = client.get("/public/models")
         assert response.status_code == 200

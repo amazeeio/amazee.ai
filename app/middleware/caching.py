@@ -6,9 +6,12 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
 
-        # Public models endpoint is intentionally cacheable for 1 hour.
+        # Public models endpoint is intentionally cacheable for 1 hour on success.
         if request.url.path in {"/public/models", "/public/models/"}:
-            response.headers["Cache-Control"] = "public, max-age=3600"
+            if response.status_code < 400:
+                response.headers["Cache-Control"] = "public, max-age=3600"
+            else:
+                response.headers["Cache-Control"] = "no-store"
         else:
             # Add Cache-Control headers to all responses to prevent caching of sensitive data
             response.headers["Cache-Control"] = (

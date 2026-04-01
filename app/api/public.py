@@ -4,7 +4,8 @@ import re
 from datetime import datetime, timedelta, UTC
 from typing import Any
 
-from fastapi import APIRouter, Depends
+import httpx
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -17,6 +18,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["public"])
 
 _CACHE_TTL = timedelta(hours=1)
+_REGION_TIMEOUT = 10.0  # seconds per-region request
+_REGION_SEMAPHORE = asyncio.Semaphore(10)  # max concurrent region requests
 _cache_lock = asyncio.Lock()
 _models_cache: dict[str, Any] = {
     "expires_at": datetime.min.replace(tzinfo=UTC),
@@ -66,6 +69,37 @@ def _extract_model_data(item: dict[str, Any], fallback_region: str) -> PublicMod
     )
 
 
+async def _fetch_region_models(
+    service: LiteLLMService, region_name: str
+) -> list[PublicModel]:
+    async with _REGION_SEMAPHORE:
+        try:
+            model_info = await asyncio.wait_for(
+                service.get_model_info(), timeout=_REGION_TIMEOUT
+            )
+            return [
+                _extract_model_data(item, region_name)
+                for item in model_info.get("data", [])
+            ]
+        except (httpx.RequestError, HTTPException, asyncio.TimeoutError) as exc:
+            logger.warning(
+                "Region %s unavailable for /public/models: %s",
+                region_name,
+                str(exc),
+            )
+            return [
+                PublicModel(
+                    model_id="unavailable",
+                    display_name=f"{region_name} unavailable",
+                    provider="other",
+                    region=region_name,
+                    type="other",
+                    context_length=None,
+                    status="unavailable",
+                )
+            ]
+
+
 @router.get("/models", response_model=list[PublicModel])
 @router.get("/models/", response_model=list[PublicModel])
 async def list_public_models(db: Session = Depends(get_db)):
@@ -85,33 +119,17 @@ async def list_public_models(db: Session = Depends(get_db)):
             .all()
         )
 
-        all_models: list[PublicModel] = []
-
-        for region in regions:
-            try:
-                service = LiteLLMService(
+        tasks = [
+            _fetch_region_models(
+                LiteLLMService(
                     api_url=region.litellm_api_url, api_key=region.litellm_api_key
-                )
-                model_info = await service.get_model_info()
-                for item in model_info.get("data", []):
-                    all_models.append(_extract_model_data(item, region.name))
-            except Exception as exc:
-                logger.warning(
-                    "Region %s unavailable for /public/models: %s",
-                    region.name,
-                    str(exc),
-                )
-                all_models.append(
-                    PublicModel(
-                        model_id="unavailable",
-                        display_name=f"{region.name} unavailable",
-                        provider="other",
-                        region=region.name,
-                        type="other",
-                        context_length=None,
-                        status="unavailable",
-                    )
-                )
+                ),
+                region.name,
+            )
+            for region in regions
+        ]
+        results = await asyncio.gather(*tasks)
+        all_models = [model for region_models in results for model in region_models]
 
         _models_cache["data"] = all_models
         _models_cache["expires_at"] = datetime.now(UTC) + _CACHE_TTL
