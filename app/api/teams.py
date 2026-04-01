@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 from typing import List
 from datetime import datetime, UTC
@@ -23,7 +23,6 @@ from app.core.security import (
     check_sales_or_higher,
 )
 from app.schemas.models import (
-    BudgetType,
     Team,
     TeamCreate,
     TeamUpdate,
@@ -79,11 +78,12 @@ async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
     """
     Create region-scoped LiteLLM teams for active regions.
 
-    POOL teams are only bootstrapped in shared (non-dedicated) regions.
+    New teams are bootstrapped only in shared (non-dedicated) regions.
+    Dedicated regions are provisioned only after explicit team-region association.
     """
-    regions_query = db.query(DBRegion).filter(DBRegion.is_active.is_(True))
-    if team.budget_type == BudgetType.POOL:
-        regions_query = regions_query.filter(DBRegion.is_dedicated.is_(False))
+    regions_query = db.query(DBRegion).filter(
+        DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False)
+    )
     regions = regions_query.all()
 
     for region in regions:
@@ -178,7 +178,9 @@ async def list_teams(include_deleted: bool = False, db: Session = Depends(get_db
     Args:
         include_deleted: If True, include soft-deleted teams in the results. Defaults to False.
     """
-    query = db.query(DBTeam)
+    query = db.query(DBTeam).options(
+        joinedload(DBTeam.active_products).joinedload(DBTeamProduct.product)
+    )
 
     if not include_deleted:
         query = query.filter(DBTeam.deleted_at.is_(None))
@@ -205,7 +207,11 @@ async def get_team(
         include_deleted: If True, allow retrieval of soft-deleted teams. Only available to system admins.
     """
     # Build query based on include_deleted flag
-    query = db.query(DBTeam).filter(DBTeam.id == team_id)
+    query = (
+        db.query(DBTeam)
+        .options(joinedload(DBTeam.active_products).joinedload(DBTeamProduct.product))
+        .filter(DBTeam.id == team_id)
+    )
 
     if not include_deleted:
         query = query.filter(DBTeam.deleted_at.is_(None))

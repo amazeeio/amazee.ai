@@ -20,7 +20,12 @@ def upgrade() -> None:
     # Add hide_public_regions column to teams table
     op.add_column(
         "teams",
-        sa.Column("hide_public_regions", sa.Boolean(), nullable=False, server_default=sa.text("false"))
+        sa.Column(
+            "hide_public_regions",
+            sa.Boolean(),
+            nullable=False,
+            server_default=sa.text("false"),
+        ),
     )
 
 

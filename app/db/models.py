@@ -169,6 +169,10 @@ class DBTeam(Base):
         "DBTeamMetrics", back_populates="team", uselist=False, cascade="all, delete"
     )
 
+    @property
+    def products(self):
+        return [tp.product for tp in self.active_products if tp.product]
+
 
 class DBTeamMetrics(Base):
     """
