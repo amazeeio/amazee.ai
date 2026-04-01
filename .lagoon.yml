@@ -2,6 +2,19 @@ docker-compose-yaml: docker-compose.yml
 
 environments:
   prod:
+    cronjobs:
+      - name: monitor-teams
+        schedule: "0 * * * *"
+        command: python scripts/trigger_recon_job.py
+        service: backend
+      - name: hard-delete-teams
+        schedule: "0 3 * * *"
+        command: python scripts/trigger_hard_delete_job.py
+        service: backend
+      - name: sync-pool-budgets
+        schedule: "0 4 * * *"
+        command: python scripts/trigger_sync_pool_budgets_job.py
+        service: backend
     routes:
       - backend:
         - api.amazee.ai:
@@ -14,6 +27,21 @@ environments:
             tls-acme: true
             insecure: Redirect
             hstsEnabled: true
+
+  dev:
+    cronjobs:
+      - name: monitor-teams
+        schedule: "0 * * * *"
+        command: python scripts/trigger_recon_job.py
+        service: backend
+      - name: hard-delete-teams
+        schedule: "0 3 * * *"
+        command: python scripts/trigger_hard_delete_job.py
+        service: backend
+      - name: sync-pool-budgets
+        schedule: "0 4 * * *"
+        command: python scripts/trigger_sync_pool_budgets_job.py
+        service: backend
 
 tasks:
   post-rollout:
