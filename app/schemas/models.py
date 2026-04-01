@@ -185,6 +185,16 @@ class Region(RegionBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PublicModel(BaseModel):
+    model_id: str
+    display_name: str
+    provider: str
+    region: str
+    type: str
+    context_length: Optional[int] = None
+    status: Optional[str] = None
+
+
 class PrivateAIKeyBase(BaseModel):
     id: int
     database_name: Optional[str] = None

@@ -366,6 +366,29 @@ class LiteLLMService:
                 detail=f"Failed to get LiteLLM team info: {error_msg}",
             )
 
+    async def get_model_info(self) -> dict:
+        """Get LiteLLM model info for this region."""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.api_url}/v1/model/info",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            error_msg = str(e)
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get LiteLLM model info: {error_msg}",
+            )
+
     async def create_team(
         self,
         max_budget: float = 0.0,
