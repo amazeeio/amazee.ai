@@ -25,7 +25,6 @@ from app.middleware.audit import AuditLogMiddleware
 from app.middleware.caching import CacheControlMiddleware
 from app.middleware.prometheus import PrometheusMiddleware
 from app.middleware.auth import AuthMiddleware
-from app.core.locking import try_acquire_lock, release_lock
 from app.__version__ import __version__
 from contextlib import asynccontextmanager
 import os
