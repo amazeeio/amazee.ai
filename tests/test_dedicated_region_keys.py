@@ -165,12 +165,11 @@ async def test_system_admin_access_to_any_dedicated_region(
     mock_litellm_service_class, client, admin_token, dedicated_region, test_team, db
 ):
     """
-    Given a system admin
-    When creating a key for a team in a dedicated region (even if team doesn't have explicit access yet)
-    Then it should fail because the access check is strict for teams
-    But if the admin gives access first, it works.
-    Actually, system admins are also bound by the access check logic I implemented.
-    Let's verify that even an admin must ensure the team has access.
+    Given a system admin and a team without access to a dedicated region
+    When the admin attempts to create a key for that team in the dedicated region,
+    Then the request should be forbidden because the team lacks region access.
+    When the admin first grants the team access to the dedicated region and retries,
+    Then the request should succeed and the key should be created.
     """
     # Mock LiteLLM service
     mock_service = mock_litellm_service_class.return_value
