@@ -509,9 +509,7 @@ async def create_llm_token(
             # Bootstrapping a team in LiteLLM is idempotent in our service
             # max_budget is set to 0.0 for POOL teams (purchases raise it)
             # and DEFAULT_MAX_SPEND for PERIODIC teams.
-            bootstrap_budget = (
-                0.0 if is_pool_team else (max_max_spend or DEFAULT_MAX_SPEND)
-            )
+            bootstrap_budget = 0.0 if is_pool_team else DEFAULT_MAX_SPEND
             await litellm_service.create_team(
                 team_id=lite_team_id,
                 team_alias=lite_team_id,
