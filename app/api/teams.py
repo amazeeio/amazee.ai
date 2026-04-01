@@ -29,6 +29,7 @@ from app.schemas.models import (
     TeamWithUsers,
     TeamMergeRequest,
     TeamMergeResponse,
+    BudgetType,
 )
 from app.core.limit_service import (
     DEFAULT_KEY_DURATION,
@@ -80,7 +81,14 @@ async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
 
     New teams are bootstrapped only in shared (non-dedicated) regions.
     Dedicated regions are provisioned only after explicit team-region association.
+
+    POOL teams start with $0 budget (purchases raise it).
+    PERIODIC teams start with the default budget (DEFAULT_MAX_SPEND).
     """
+    from app.core.limit_service import DEFAULT_MAX_SPEND
+
+    max_budget = 0.0 if team.budget_type == BudgetType.POOL else DEFAULT_MAX_SPEND
+
     regions_query = db.query(DBRegion).filter(
         DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False)
     )
@@ -94,7 +102,7 @@ async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
         await litellm_service.create_team(
             team_id=lite_team_id,
             team_alias=lite_team_id,
-            max_budget=0.0,
+            max_budget=max_budget,
         )
 
 

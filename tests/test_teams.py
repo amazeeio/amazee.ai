@@ -213,7 +213,7 @@ def test_register_periodic_team_excludes_dedicated_regions_from_litellm_bootstra
     mock_create_team.assert_awaited_once_with(
         team_id=f"{test_region.name}_{team_data['id']}",
         team_alias=f"{test_region.name}_{team_data['id']}",
-        max_budget=0.0,
+        max_budget=27.0,
     )
 
 
