@@ -18,7 +18,10 @@ router = APIRouter(tags=["public"])
 
 _CACHE_TTL = timedelta(hours=1)
 _cache_lock = asyncio.Lock()
-_models_cache: dict[str, Any] = {"expires_at": datetime.min.replace(tzinfo=UTC), "data": []}
+_models_cache: dict[str, Any] = {
+    "expires_at": datetime.min.replace(tzinfo=UTC),
+    "data": [],
+}
 
 
 def _infer_provider(item: dict[str, Any]) -> str:
@@ -36,7 +39,9 @@ def _infer_provider(item: dict[str, Any]) -> str:
 
 def _to_display_name(model_id: str) -> str:
     words = re.split(r"[-_]+", model_id)
-    return " ".join(word.upper() if word.isupper() else word.capitalize() for word in words if word)
+    return " ".join(
+        word.upper() if word.isupper() else word.capitalize() for word in words if word
+    )
 
 
 def _extract_model_data(item: dict[str, Any], fallback_region: str) -> PublicModel:
@@ -92,7 +97,9 @@ async def list_public_models(db: Session = Depends(get_db)):
                     all_models.append(_extract_model_data(item, region.name))
             except Exception as exc:
                 logger.warning(
-                    "Region %s unavailable for /public/models: %s", region.name, str(exc)
+                    "Region %s unavailable for /public/models: %s",
+                    region.name,
+                    str(exc),
                 )
                 all_models.append(
                     PublicModel(

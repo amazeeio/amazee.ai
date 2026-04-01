@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock, patch
 
 from app.api import public as public_api
+from app.db.models import DBRegion
 
 
 def _clear_public_models_cache():
@@ -12,6 +13,19 @@ def _clear_public_models_cache():
 
 def test_public_models_returns_aggregated_data(client, db):
     _clear_public_models_cache()
+    region = DBRegion(
+        name="eu-central-1",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="user",
+        postgres_admin_password="pass",
+        litellm_api_url="https://litellm.example",
+        litellm_api_key="key",
+        is_active=True,
+        is_dedicated=False,
+    )
+    db.add(region)
+    db.commit()
     with patch("app.api.public.LiteLLMService") as mock_service_cls:
         mock_service = mock_service_cls.return_value
         mock_service.get_model_info = AsyncMock(
@@ -46,6 +60,19 @@ def test_public_models_returns_aggregated_data(client, db):
 
 def test_public_models_includes_unavailable_region(client, db):
     _clear_public_models_cache()
+    region = DBRegion(
+        name="us-east-1",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="user",
+        postgres_admin_password="pass",
+        litellm_api_url="https://litellm.example",
+        litellm_api_key="key",
+        is_active=True,
+        is_dedicated=False,
+    )
+    db.add(region)
+    db.commit()
     with patch("app.api.public.LiteLLMService") as mock_service_cls:
         mock_service = mock_service_cls.return_value
         mock_service.get_model_info = AsyncMock(side_effect=Exception("timeout"))
