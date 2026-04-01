@@ -62,3 +62,9 @@ def test_security_headers_on_api_endpoint(client: TestClient, test_token):
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert "Referrer-Policy" in response.headers
     assert response.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
+
+
+def test_public_models_cache_header(client: TestClient):
+    response = client.get("/public/models")
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "public, max-age=3600"
