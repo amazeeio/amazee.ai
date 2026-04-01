@@ -77,7 +77,8 @@ def main():
             logger.info(
                 "⚠️  Sync pool budgets job could not be executed (lock held by another process)"
             )
-            sys.exit(1)
+            # Exiting with status 0 because this is a normal, expected condition (lock held)
+            sys.exit(0)
 
     except Exception as e:
         logger.error(f"❌ Script failed: {str(e)}")
