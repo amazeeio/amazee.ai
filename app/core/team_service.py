@@ -244,10 +244,9 @@ async def propagate_team_budget_to_keys(
             logger.error(f"Team {team_id} not found, skipping budget propagation")
             return {"teams_updated": 0, "errors": [f"Team {team_id} not found"]}
 
-        all_keys_by_region = get_team_keys_by_region(db, team_id)
-
         if region_id is not None:
-            # Update only the specified region, even if it currently has no keys
+            # Update only the specified region, even if it currently has no keys.
+            # Query keys for this region directly rather than loading all regions.
             region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
             if not region:
                 logger.error(
@@ -257,15 +256,31 @@ async def propagate_team_budget_to_keys(
                     "teams_updated": 0,
                     "errors": [f"Region {region_id} not found"],
                 }
-            region_keys = next(
-                (keys for r, keys in all_keys_by_region.items() if r.id == region_id),
-                [],
+            team_user_ids = (
+                db.execute(
+                    select(DBUser.id).filter(DBUser.team_id == team_id)
+                )
+                .scalars()
+                .all()
             )
+            region_keys = [
+                key
+                for key in (
+                    db.query(DBPrivateAIKey)
+                    .filter(
+                        (DBPrivateAIKey.owner_id.in_(team_user_ids))
+                        | (DBPrivateAIKey.team_id == team_id),
+                        DBPrivateAIKey.region_id == region_id,
+                    )
+                    .all()
+                )
+                if key.litellm_token
+            ]
             keys_by_region: Dict[DBRegion, List[DBPrivateAIKey]] = {
                 region: region_keys
             }
         else:
-            keys_by_region = all_keys_by_region
+            keys_by_region = get_team_keys_by_region(db, team_id)
 
         # Update team budget and keys for each region
         for region_obj, keys in keys_by_region.items():
