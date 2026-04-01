@@ -140,15 +140,14 @@ class RegionBase(BaseModel):
     postgres_host: str
     postgres_port: int = 5432
     postgres_admin_user: str
-    postgres_admin_password: str
     litellm_api_url: str
-    litellm_api_key: str
     is_active: bool = True
     is_dedicated: bool = False
 
 
 class RegionCreate(RegionBase):
-    pass
+    postgres_admin_password: str
+    litellm_api_key: str
 
 
 class RegionUpdate(BaseModel):
@@ -172,6 +171,8 @@ class RegionResponse(BaseModel):
     label: Optional[str] = None
     description: Optional[str] = None
     postgres_host: str
+    postgres_port: int = 5432
+    postgres_admin_user: Optional[str] = None
     litellm_api_url: str
     is_active: bool
     is_dedicated: bool
