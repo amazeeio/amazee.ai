@@ -132,7 +132,15 @@ async def create_vector_db(
             status_code=status.HTTP_404_NOT_FOUND, detail="Region not found or inactive"
         )
 
-    # Check access to dedicated regions
+    # Check if team forces user keys before checking dedicated-region access
+    # so that the access check uses the effective owner/team after any rewrite.
+    if team_id:
+        team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+        if team and team.force_user_keys:
+            team_id = None
+            owner_id = current_user.id
+
+    # Check access to dedicated regions using the effective owner/team
     if region.is_dedicated:
         # Determine the team ID for access check
         access_team_id = team_id
@@ -159,13 +167,6 @@ async def create_vector_db(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Team {access_team_id} does not have access to dedicated region {region.name}",
             )
-
-    # Check if team forces user keys
-    if team_id:
-        team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
-        if team and team.force_user_keys:
-            team_id = None
-            owner_id = current_user.id
 
     if settings.ENABLE_LIMITS:
         if (
@@ -500,12 +501,13 @@ async def create_llm_token(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
 
+        lite_team_id = LiteLLMService.format_team_id(region.name, litellm_team)
+
         # For dedicated regions, we must ensure the team exists in LiteLLM
         # before we can create a key associated with it.
         # Bootstrapped regions handle this at team registration, but
         # dedicated regions are on-demand.
         if region.is_dedicated:
-            lite_team_id = LiteLLMService.format_team_id(region.name, litellm_team)
             # Bootstrapping a team in LiteLLM is idempotent in our service
             # max_budget is set to 0.0 for POOL teams (purchases raise it)
             # and DEFAULT_MAX_SPEND for PERIODIC teams.
@@ -520,7 +522,7 @@ async def create_llm_token(
             email=owner_email,
             name=private_ai_key.name,
             user_id=owner_id,
-            team_id=LiteLLMService.format_team_id(region.name, litellm_team),
+            team_id=lite_team_id,
             duration=f"{days_left_in_period}d"
             if days_left_in_period is not None
             else None,
