@@ -303,6 +303,7 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                     await litellm_service.update_team_budget(
                         team_id=lite_team_id,
                         max_budget=0.0,
+                        budget_duration=f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
                     )
                     logger.info(
                         f"Pool team {team.id} budget expired in region {region_id} ({settings.POOL_BUDGET_EXPIRATION_DAYS}d passed), set to $0"
