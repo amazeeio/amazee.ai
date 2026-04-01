@@ -101,7 +101,6 @@ async def _fetch_region_models(
 
 
 @router.get("/models", response_model=list[PublicModel])
-@router.get("/models/", response_model=list[PublicModel])
 async def list_public_models(db: Session = Depends(get_db)):
     now = datetime.now(UTC)
 
