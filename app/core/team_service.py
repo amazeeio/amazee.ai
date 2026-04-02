@@ -257,9 +257,7 @@ async def propagate_team_budget_to_keys(
                     "errors": [f"Region {region_id} not found"],
                 }
             team_user_ids = (
-                db.execute(
-                    select(DBUser.id).filter(DBUser.team_id == team_id)
-                )
+                db.execute(select(DBUser.id).filter(DBUser.team_id == team_id))
                 .scalars()
                 .all()
             )
@@ -276,9 +274,7 @@ async def propagate_team_budget_to_keys(
                 )
                 if key.litellm_token
             ]
-            keys_by_region: Dict[DBRegion, List[DBPrivateAIKey]] = {
-                region: region_keys
-            }
+            keys_by_region: Dict[DBRegion, List[DBPrivateAIKey]] = {region: region_keys}
         else:
             keys_by_region = get_team_keys_by_region(db, team_id)
 
