@@ -471,7 +471,9 @@ async def create_llm_token(
                     team_info = team_info_response.get("team_info", team_info_response)
                 else:
                     team_info = {}
-                team_budget_raw = team_info.get("max_budget") if isinstance(team_info, dict) else None
+                team_budget_raw = (
+                    team_info.get("max_budget") if isinstance(team_info, dict) else None
+                )
                 if team_budget_raw is not None:
                     try:
                         team_budget = float(team_budget_raw)
