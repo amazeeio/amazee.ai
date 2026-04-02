@@ -83,12 +83,18 @@ async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
     New teams are bootstrapped only in shared (non-dedicated) regions.
     Dedicated regions are provisioned only after explicit team-region association.
 
-    POOL teams start with $0 budget (purchases raise it).
+    POOL teams start with $0 budget and 365d duration (purchases raise budget).
     PERIODIC teams start with the default budget (DEFAULT_MAX_SPEND).
     """
     from app.core.limit_service import DEFAULT_MAX_SPEND
+    from app.core.config import settings
 
     max_budget = 0.0 if team.budget_type == BudgetType.POOL else DEFAULT_MAX_SPEND
+    budget_duration = (
+        f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+        if team.budget_type == BudgetType.POOL
+        else None
+    )
 
     regions_query = db.query(DBRegion).filter(
         DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False)
@@ -104,6 +110,7 @@ async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
             team_id=lite_team_id,
             team_alias=lite_team_id,
             max_budget=max_budget,
+            budget_duration=budget_duration,
         )
 
 
