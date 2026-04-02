@@ -94,3 +94,31 @@ def test_public_models_includes_unavailable_region(client, db):
             item["status"] == "unavailable" and item["region"] == "us-east-1"
             for item in data
         )
+
+
+def test_public_models_prefers_master_key_for_model_info(client, db, monkeypatch):
+    _clear_public_models_cache()
+    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-master")
+    region = DBRegion(
+        name="us-west-1",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="user",
+        postgres_admin_password="pass",
+        litellm_api_url="https://litellm.example",
+        litellm_api_key="sk-region",
+        is_active=True,
+        is_dedicated=False,
+    )
+    db.add(region)
+    db.commit()
+
+    with patch("app.api.public.LiteLLMService") as mock_service_cls:
+        mock_service = mock_service_cls.return_value
+        mock_service.get_model_info = AsyncMock(return_value={"data": []})
+
+        response = client.get("/public/models")
+        assert response.status_code == 200
+        mock_service_cls.assert_called_once_with(
+            api_url="https://litellm.example", api_key="sk-master"
+        )
