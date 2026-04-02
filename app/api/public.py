@@ -10,7 +10,12 @@ from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models import DBRegion
-from app.schemas.models import PublicModel
+from app.schemas.models import (
+    PublicModelCapabilities,
+    PublicModelPricing,
+    PublicModelSummary,
+    PublicRegionModels,
+)
 from app.services.litellm import LiteLLMService
 
 logger = logging.getLogger(__name__)
@@ -47,60 +52,59 @@ def _to_display_name(model_id: str) -> str:
     )
 
 
-def _extract_model_data(item: dict[str, Any], fallback_region: str) -> PublicModel:
+def _extract_model_summary(item: dict[str, Any]) -> PublicModelSummary:
     model_info = item.get("model_info", {})
-    litellm_params = item.get("litellm_params", {})
-
     model_id = item.get("model_name") or model_info.get("key") or "unknown"
-    display_name = _to_display_name(model_id)
-    provider = _infer_provider(item)
-    region = litellm_params.get("aws_region_name") or fallback_region
-    model_type = model_info.get("mode") or "other"
-    context_length = model_info.get("max_input_tokens")
 
-    return PublicModel(
+    return PublicModelSummary(
         model_id=model_id,
-        display_name=display_name,
-        provider=provider,
-        region=region,
-        type=model_type,
-        context_length=context_length,
-        status="ga",
+        display_name=_to_display_name(model_id),
+        provider=_infer_provider(item),
+        type=model_info.get("mode") or "other",
+        context_length=model_info.get("max_input_tokens"),
+        max_output_tokens=model_info.get("max_output_tokens"),
+        capabilities=PublicModelCapabilities(
+            supports_vision=bool(model_info.get("supports_vision")),
+            supports_function_calling=bool(model_info.get("supports_function_calling")),
+            supports_reasoning=bool(model_info.get("supports_reasoning")),
+            supports_prompt_caching=bool(model_info.get("supports_prompt_caching")),
+        ),
+        pricing=PublicModelPricing(
+            input_cost_per_token=model_info.get("input_cost_per_token"),
+            output_cost_per_token=model_info.get("output_cost_per_token"),
+        ),
     )
 
 
-async def _fetch_region_models(
+async def _fetch_region_model_group(
     service: LiteLLMService, region_name: str
-) -> list[PublicModel]:
+) -> PublicRegionModels:
     async with _REGION_SEMAPHORE:
         try:
             model_info = await asyncio.wait_for(
                 service.get_model_info(), timeout=_REGION_TIMEOUT
             )
-            return [
-                _extract_model_data(item, region_name)
-                for item in model_info.get("data", [])
-            ]
+            return PublicRegionModels(
+                region=region_name,
+                status="ga",
+                models=[
+                    _extract_model_summary(item) for item in model_info.get("data", [])
+                ],
+            )
         except (httpx.RequestError, HTTPException, asyncio.TimeoutError) as exc:
             logger.warning(
                 "Region %s unavailable for /public/models: %s",
                 region_name,
                 str(exc),
             )
-            return [
-                PublicModel(
-                    model_id="unavailable",
-                    display_name=f"{region_name} unavailable",
-                    provider="other",
-                    region=region_name,
-                    type="other",
-                    context_length=None,
-                    status="unavailable",
-                )
-            ]
+            return PublicRegionModels(
+                region=region_name,
+                status="unavailable",
+                models=[],
+            )
 
 
-@router.get("/models", response_model=list[PublicModel])
+@router.get("/models", response_model=list[PublicRegionModels])
 async def list_public_models(db: Session = Depends(get_db)):
     now = datetime.now(UTC)
 
@@ -119,18 +123,18 @@ async def list_public_models(db: Session = Depends(get_db)):
         )
 
         tasks = [
-            _fetch_region_models(
+            _fetch_region_model_group(
                 LiteLLMService(
-                    api_url=region.litellm_api_url, api_key=region.litellm_api_key
+                    api_url=region.litellm_api_url,
+                    api_key=region.litellm_api_key,
                 ),
                 region.name,
             )
             for region in regions
         ]
-        results = await asyncio.gather(*tasks)
-        all_models = [model for region_models in results for model in region_models]
+        region_groups = await asyncio.gather(*tasks)
 
-        _models_cache["data"] = all_models
+        _models_cache["data"] = region_groups
         _models_cache["expires_at"] = datetime.now(UTC) + _CACHE_TTL
 
     return _models_cache["data"]

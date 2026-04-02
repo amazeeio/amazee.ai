@@ -195,6 +195,35 @@ class PublicModel(BaseModel):
     status: Optional[str] = None
 
 
+class PublicModelPricing(BaseModel):
+    input_cost_per_token: Optional[float] = None
+    output_cost_per_token: Optional[float] = None
+
+
+class PublicModelCapabilities(BaseModel):
+    supports_vision: bool = False
+    supports_function_calling: bool = False
+    supports_reasoning: bool = False
+    supports_prompt_caching: bool = False
+
+
+class PublicModelSummary(BaseModel):
+    model_id: str
+    display_name: str
+    provider: str
+    type: str
+    context_length: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+    capabilities: PublicModelCapabilities
+    pricing: PublicModelPricing
+
+
+class PublicRegionModels(BaseModel):
+    region: str
+    status: str
+    models: List[PublicModelSummary]
+
+
 class PrivateAIKeyBase(BaseModel):
     id: int
     database_name: Optional[str] = None
