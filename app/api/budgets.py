@@ -16,7 +16,7 @@ from app.schemas.models import (
     PoolRegionPurchaseHistoryResponse,
     BudgetType,
 )
-from app.services.litellm import LiteLLMService
+from app.core.team_service import propagate_team_budget_to_keys
 
 
 logger = logging.getLogger(__name__)
@@ -98,12 +98,6 @@ async def purchase_pool_budget(
             detail="A purchase with this stripe_payment_id already exists",
         )
 
-    litellm_service = LiteLLMService(
-        api_url=region.litellm_api_url, api_key=region.litellm_api_key
-    )
-
-    lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-
     total_purchased_cents = (
         db.query(func.sum(DBPoolPurchase.amount_cents))
         .filter(
@@ -121,14 +115,16 @@ async def purchase_pool_budget(
     new_total_budget = total_purchased_dollars
 
     try:
-        await litellm_service.update_team_budget(
-            team_id=lite_team_id,
-            max_budget=new_total_budget,
-            budget_duration=f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
+        await propagate_team_budget_to_keys(
+            db,
+            team_id,
+            new_total_budget,
+            f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
+            region_id=region_id,
         )
     except Exception as e:
         db.rollback()
-        logger.error(f"Failed to update LiteLLM team budget: {e}")
+        logger.error(f"Failed to propagate budget to keys: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update team budget in LiteLLM: {str(e)}",
@@ -236,8 +232,6 @@ async def sync_pool_team_budgets(db: Session) -> dict:
     total_updated = 0
     errors = []
 
-    regions_cache = {}
-
     for team in pool_teams:
         latest_purchases_by_region = (
             db.query(DBPoolPurchase.region_id, func.max(DBPoolPurchase.purchased_at))
@@ -248,7 +242,9 @@ async def sync_pool_team_budgets(db: Session) -> dict:
         if not latest_purchases_by_region:
             continue
 
-        team_had_successful_expiration = False
+        # Check if ALL regions have expired
+        all_regions_expired = True
+        expired_region_ids = []
 
         for region_id, latest_purchase_at in latest_purchases_by_region:
             if not region_id or not latest_purchase_at:
@@ -261,37 +257,50 @@ async def sync_pool_team_budgets(db: Session) -> dict:
 
             days_since_last_purchase = (datetime.now(UTC) - last_purchase).days
             if days_since_last_purchase < settings.POOL_BUDGET_EXPIRATION_DAYS:
-                continue
+                all_regions_expired = False
+            else:
+                expired_region_ids.append(region_id)
 
-            if region_id not in regions_cache:
-                regions_cache[region_id] = (
-                    db.query(DBRegion).filter(DBRegion.id == region_id).first()
+        if not expired_region_ids:
+            continue
+
+        if all_regions_expired:
+            # All regions expired, propagate $0 budget to team and all keys
+            team_had_any_update = False
+            for rid in expired_region_ids:
+                result = await propagate_team_budget_to_keys(
+                    db,
+                    team.id,
+                    0.0,
+                    f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
+                    region_id=rid,
                 )
-            region = regions_cache[region_id]
-            if not region:
-                continue
-
-            litellm_service = LiteLLMService(
-                api_url=region.litellm_api_url, api_key=region.litellm_api_key
-            )
-            lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
-
-            try:
-                await litellm_service.update_team_budget(
-                    team_id=lite_team_id,
-                    max_budget=0.0,
-                )
-                team_had_successful_expiration = True
+                errors.extend(result["errors"])
+                if result["teams_updated"] > 0:
+                    team_had_any_update = True
+            if team_had_any_update:
+                total_updated += 1
                 logger.info(
-                    f"Pool team {team.id} budget expired in region {region.id} ({settings.POOL_BUDGET_EXPIRATION_DAYS}d passed), set to $0"
+                    f"Pool team {team.id} budget expired in all regions ({settings.POOL_BUDGET_EXPIRATION_DAYS}d passed), set to $0"
                 )
-            except Exception as e:
-                errors.append(f"Team {team.id}, region {region_id}: {str(e)}")
-                logger.error(
-                    f"Failed to expire team {team.id} budget in region {region_id}: {e}"
+        else:
+            # Only some regions expired - update only those regions
+            team_had_any_update = False
+            for rid in expired_region_ids:
+                result = await propagate_team_budget_to_keys(
+                    db,
+                    team.id,
+                    0.0,
+                    f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
+                    region_id=rid,
                 )
-
-        if team_had_successful_expiration:
-            total_updated += 1
+                errors.extend(result["errors"])
+                if result["teams_updated"] > 0:
+                    team_had_any_update = True
+                    logger.info(
+                        f"Pool team {team.id} budget expired in region {rid} ({settings.POOL_BUDGET_EXPIRATION_DAYS}d passed), set to $0"
+                    )
+            if team_had_any_update:
+                total_updated += 1
 
     return {"teams_updated": total_updated, "errors": errors}
