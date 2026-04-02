@@ -506,10 +506,21 @@ class LimitService:
         # Import here to avoid circular import
         from app.core.team_service import propagate_team_budget_to_keys
         from app.db.database import get_db
+        from app.core.config import settings
 
-        # Get budget_duration from team's token restrictions (all keys should have same duration)
-        days_left, _, _ = self.get_token_restrictions(team_id)
-        budget_duration = f"{days_left}d"
+        team = self.db.query(DBTeam).filter(DBTeam.id == team_id).first()
+        if not team:
+            logger.error(f"Team {team_id} not found, skipping budget propagation")
+            return
+
+        # POOL budgets are purchase-driven and must always use the configured
+        # POOL expiration window for duration.
+        if team.budget_type == BudgetType.POOL:
+            budget_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+        else:
+            # For periodic teams, keep duration aligned with token restrictions.
+            days_left, _, _ = self.get_token_restrictions(team_id)
+            budget_duration = f"{days_left}d"
 
         def run_async_propagation():
             """Helper to run async propagation in a new event loop with its own session.
@@ -736,6 +747,15 @@ class LimitService:
             # Skip if manual limit already exists
             existing_limit = limit_map.get(resource_type, None)
             if existing_limit and existing_limit.limited_by == LimitSource.MANUAL:
+                continue
+
+            # POOL team budget is purchase-driven and should not be reset by the
+            # periodic limit reconciliation once it has been set.
+            if (
+                resource_type == ResourceType.BUDGET
+                and team.budget_type == BudgetType.POOL
+                and existing_limit is not None
+            ):
                 continue
 
             limit_type, unit, current_value = self._get_limit_details(
