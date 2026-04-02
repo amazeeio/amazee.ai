@@ -253,8 +253,10 @@ def test_set_team_limits_preserves_existing_pool_budget_limit(db, test_team):
     # Periodic reconciliation path
     limit_service.set_team_limits(test_team)
 
-    budget_limit = limit_service.get_limit(
-        OwnerType.TEAM, test_team.id, ResourceType.BUDGET
+    budget_limit = next(
+        limit
+        for limit in limit_service.get_team_limits(test_team)
+        if limit.resource == ResourceType.BUDGET
     )
     assert budget_limit.max_value == 25.0
 
