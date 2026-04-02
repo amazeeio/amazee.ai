@@ -371,7 +371,7 @@ class LiteLLMService:
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"{self.api_url}/v1/model/info",
+                    f"{self.api_url}/model/info",
                     headers={"Authorization": f"Bearer {self.master_key}"},
                 )
                 response.raise_for_status()

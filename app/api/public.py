@@ -125,7 +125,8 @@ async def list_public_models(db: Session = Depends(get_db)):
         tasks = [
             _fetch_region_model_group(
                 LiteLLMService(
-                    api_url=region.litellm_api_url, api_key=region.litellm_api_key
+                    api_url=region.litellm_api_url,
+                    api_key=region.litellm_api_key,
                 ),
                 region.name,
             )
