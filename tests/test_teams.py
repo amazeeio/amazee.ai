@@ -1,21 +1,22 @@
-from fastapi.testclient import TestClient
+from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from app.core.config import settings
+from app.core.limit_service import LimitService, setup_default_limits
+from app.core.security import get_password_hash
 from app.db.models import (
-    DBTeam,
-    DBUser,
     DBPrivateAIKey,
     DBProduct,
-    DBTeamProduct,
     DBRegion,
+    DBTeam,
+    DBTeamProduct,
     DBTeamRegion,
+    DBUser,
 )
 from app.main import app
-from app.core.security import get_password_hash
-from app.core.limit_service import LimitService, setup_default_limits
-from app.schemas.limits import OwnerType, LimitSource, ResourceType
+from app.schemas.limits import LimitSource, OwnerType, ResourceType
 from app.schemas.models import BudgetType
-from app.core.config import settings
-from datetime import datetime, UTC, timedelta
-from unittest.mock import patch, MagicMock, AsyncMock
+from fastapi.testclient import TestClient
 from tests.conftest import soft_delete_team_for_test
 
 client = TestClient(app)
@@ -128,6 +129,7 @@ def test_register_team_creates_litellm_team_for_active_shared_regions(
         team_id=f"{test_region.name}_{team_data['id']}",
         team_alias=f"{test_region.name}_{team_data['id']}",
         max_budget=0.0,
+        budget_duration="365d",
     )
 
 
@@ -171,6 +173,7 @@ def test_register_pool_team_excludes_dedicated_regions_from_litellm_bootstrap(
         team_id=f"{test_region.name}_{team_data['id']}",
         team_alias=f"{test_region.name}_{team_data['id']}",
         max_budget=0.0,
+        budget_duration="365d",
     )
 
 
@@ -213,7 +216,8 @@ def test_register_periodic_team_excludes_dedicated_regions_from_litellm_bootstra
     mock_create_team.assert_awaited_once_with(
         team_id=f"{test_region.name}_{team_data['id']}",
         team_alias=f"{test_region.name}_{team_data['id']}",
-        max_budget=0.0,
+        max_budget=27.0,
+        budget_duration=None,
     )
 
 

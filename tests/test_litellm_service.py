@@ -279,6 +279,31 @@ def test_update_budget_success(mock_client_class, test_region, mock_httpx_post_c
 
 
 @patch("httpx.AsyncClient")
+def test_update_budget_zero_amount_sends_max_budget(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    """Test that budget_amount=0.0 still includes max_budget in the request payload"""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(service.update_budget("test-token", "monthly", 0.0))
+
+    mock_httpx_post_client.post.assert_called_once_with(
+        f"{test_region.litellm_api_url}/key/update",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={
+            "key": "test-token",
+            "budget_duration": "monthly",
+            "duration": "365d",
+            "max_budget": 0.0,
+        },
+    )
+
+
+@patch("httpx.AsyncClient")
 def test_update_budget_failure(
     mock_client_class, test_region, mock_httpx_failure_client
 ):

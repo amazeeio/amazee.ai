@@ -10,6 +10,7 @@ from app.api import (
     private_ai_keys,
     users,
     regions,
+    public,
     audit,
     teams,
     billing,
@@ -311,6 +312,7 @@ app.include_router(
 )
 app.include_router(users.router, prefix="/users", tags=["users"])
 app.include_router(regions.router, prefix="/regions", tags=["regions"])
+app.include_router(public.router, prefix="/public", tags=["public"])
 app.include_router(audit.router, prefix="/audit", tags=["audit"])
 app.include_router(teams.router, prefix="/teams", tags=["teams"])
 app.include_router(billing.router, prefix="/billing", tags=["billing"])
@@ -398,6 +400,8 @@ def custom_openapi():
                 "/auth/register",
                 "/health",
                 "/auth/generate-trial-access",
+                "/public/models",
+                "/public/models/",
             ]:
                 if "security" in operation:
                     del operation["security"]

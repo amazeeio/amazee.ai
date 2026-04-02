@@ -229,6 +229,70 @@ def test_get_token_restrictions_with_limit_service_and_products(
     assert rpm_limit == 2500.0  # From limit service, not product
 
 
+def test_set_team_limits_preserves_existing_pool_budget_limit(db, test_team):
+    """
+    GIVEN: A POOL team with an existing team budget limit set from purchases
+    WHEN: set_team_limits is called by periodic reconciliation
+    THEN: The existing budget value is preserved (not reset to 0/default)
+    """
+    test_team.budget_type = "pool"
+    db.add(test_team)
+    db.commit()
+
+    limit_service = LimitService(db)
+    limit_service.set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.BUDGET,
+        limit_type=LimitType.DATA_PLANE,
+        unit=UnitType.DOLLAR,
+        max_value=25.0,
+        limited_by=LimitSource.DEFAULT,
+    )
+
+    # Periodic reconciliation path
+    limit_service.set_team_limits(test_team)
+
+    budget_limit = next(
+        limit
+        for limit in limit_service.get_team_limits(test_team)
+        if limit.resource == ResourceType.BUDGET
+    )
+    assert budget_limit.max_value == 25.0
+
+
+@patch("app.core.team_service.propagate_team_budget_to_keys")
+def test_trigger_budget_propagation_uses_pool_duration(
+    mock_propagate, db, test_team, test_region
+):
+    """
+    GIVEN: A POOL team budget update
+    WHEN: _trigger_team_budget_propagation runs
+    THEN: It propagates with POOL_BUDGET_EXPIRATION_DAYS duration, not product default duration
+    """
+    from app.core.config import settings
+
+    test_team.budget_type = "pool"
+    db.add(test_team)
+    db.commit()
+
+    # Avoid background thread timing in test; execute submitted function inline.
+    class InlineExecutor:
+        def submit(self, fn):
+            fn()
+
+    limit_service = LimitService(db)
+    with patch("app.core.limit_service._get_budget_propagation_executor") as mock_exec:
+        mock_exec.return_value = InlineExecutor()
+        limit_service._trigger_team_budget_propagation(test_team.id, 42.0)
+
+    assert mock_propagate.called
+    args = mock_propagate.call_args[0]
+    assert args[1] == test_team.id
+    assert args[2] == 42.0
+    assert args[3] == f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+
+
 def test_get_product_max_by_type_no_products(db, test_team):
     """
     GIVEN: A team with no associated products

@@ -403,8 +403,8 @@ async def create_llm_token(
             owner = current_user
 
     # Pool budget teams use purchase_pool_budget to set the team-level
-    # max_budget in LiteLLM. Per-key limits are meaningless there — the team
-    # budget is the sole ceiling. Skip limit resolution entirely for pool teams.
+    # max_budget in LiteLLM. Per-key limits are also set to match the team
+    # budget so that LiteLLM's dual-gate enforcement applies consistently.
     # Reuse the already-fetched team when team_id was provided. Fall back to
     # owner's team only when no team_id was provided.
     effective_team = team
@@ -459,6 +459,41 @@ async def create_llm_token(
             rpm_limit=max_rpm_limit,
             apply_limits=not is_pool_team,
         )
+
+        # For POOL teams, fetch the team's current budget from LiteLLM and
+        # apply it to the newly created key so both gates have the same limit.
+        if is_pool_team:
+            try:
+                lite_team_id = LiteLLMService.format_team_id(region.name, litellm_team)
+                team_info_response = await litellm_service.get_team_info(lite_team_id)
+                # Normalize response: some variants return {"team_info": {...}}
+                if isinstance(team_info_response, dict):
+                    team_info = team_info_response.get("team_info", team_info_response)
+                else:
+                    team_info = {}
+                team_budget_raw = (
+                    team_info.get("max_budget") if isinstance(team_info, dict) else None
+                )
+                if team_budget_raw is not None:
+                    try:
+                        team_budget = float(team_budget_raw)
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            f"Received non-numeric max_budget for team {lite_team_id}: {team_budget_raw}"
+                        )
+                    else:
+                        await litellm_service.update_budget(
+                            litellm_token=litellm_token,
+                            budget_duration=f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
+                            budget_amount=team_budget,
+                        )
+                        logger.info(
+                            f"Set pool key {litellm_token[:10]}... budget to ${team_budget}"
+                        )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to set pool key budget (key will still work via team budget): {e}"
+                )
 
         # Create response object
         db_token = DBPrivateAIKey(
