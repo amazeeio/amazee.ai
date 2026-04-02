@@ -96,9 +96,8 @@ def test_public_models_includes_unavailable_region(client, db):
         )
 
 
-def test_public_models_prefers_master_key_for_model_info(client, db, monkeypatch):
+def test_public_models_uses_region_key_for_model_info(client, db):
     _clear_public_models_cache()
-    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-master")
     region = DBRegion(
         name="us-west-1",
         postgres_host="host",
@@ -120,5 +119,5 @@ def test_public_models_prefers_master_key_for_model_info(client, db, monkeypatch
         response = client.get("/public/models")
         assert response.status_code == 200
         mock_service_cls.assert_called_once_with(
-            api_url="https://litellm.example", api_key="sk-master"
+            api_url="https://litellm.example", api_key="sk-region"
         )

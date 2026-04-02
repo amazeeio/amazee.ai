@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import re
-import os
 from datetime import datetime, timedelta, UTC
 from typing import Any
 
@@ -31,10 +30,6 @@ _models_cache: dict[str, Any] = {
     "expires_at": datetime.min.replace(tzinfo=UTC),
     "data": [],
 }
-
-
-def _get_litellm_model_info_key(region_key: str) -> str:
-    return os.getenv("LITELLM_MASTER_KEY") or region_key
 
 
 def _infer_provider(item: dict[str, Any]) -> str:
@@ -131,7 +126,7 @@ async def list_public_models(db: Session = Depends(get_db)):
             _fetch_region_model_group(
                 LiteLLMService(
                     api_url=region.litellm_api_url,
-                    api_key=_get_litellm_model_info_key(region.litellm_api_key),
+                    api_key=region.litellm_api_key,
                 ),
                 region.name,
             )
