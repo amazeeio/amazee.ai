@@ -19,7 +19,7 @@ from app.schemas.models import (
     PrivateAIKeyDetail,
 )
 from app.db.postgres import PostgresManager
-from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
+from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam, DBTeamRegion
 from app.services.litellm import LiteLLMService
 from app.core.security import (
     get_current_user_from_auth,
@@ -132,12 +132,41 @@ async def create_vector_db(
             status_code=status.HTTP_404_NOT_FOUND, detail="Region not found or inactive"
         )
 
-    # Check if team forces user keys
+    # Check if team forces user keys before checking dedicated-region access
+    # so that the access check uses the effective owner/team after any rewrite.
     if team_id:
         team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
         if team and team.force_user_keys:
             team_id = None
             owner_id = current_user.id
+
+    # Check access to dedicated regions using the effective owner/team
+    if region.is_dedicated:
+        # Determine the team ID for access check
+        access_team_id = team_id
+        if not access_team_id:
+            user = db.query(DBUser).filter(DBUser.id == owner_id).first()
+            access_team_id = user.team_id if user else None
+
+        if not access_team_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User without a team cannot access a dedicated region",
+            )
+
+        has_access = (
+            db.query(DBTeamRegion)
+            .filter(
+                DBTeamRegion.team_id == access_team_id,
+                DBTeamRegion.region_id == region.id,
+            )
+            .first()
+        )
+        if not has_access:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Team {access_team_id} does not have access to dedicated region {region.name}",
+            )
 
     if settings.ENABLE_LIMITS:
         if (
@@ -442,16 +471,58 @@ async def create_llm_token(
             status_code=status.HTTP_404_NOT_FOUND, detail="Owner or team not found"
         )
 
+    # Check access to dedicated regions
+    if region.is_dedicated:
+        # Check if team or owner's team has access
+        access_team_id = team_id or (owner.team_id if owner else None)
+        if not access_team_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="User without a team cannot access a dedicated region",
+            )
+
+        has_access = (
+            db.query(DBTeamRegion)
+            .filter(
+                DBTeamRegion.team_id == access_team_id,
+                DBTeamRegion.region_id == region.id,
+            )
+            .first()
+        )
+        if not has_access:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Team {access_team_id} does not have access to dedicated region {region.name}",
+            )
+
     try:
         # Generate LiteLLM token
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
+
+        lite_team_id = LiteLLMService.format_team_id(region.name, litellm_team)
+
+        # For dedicated regions, we must ensure the team exists in LiteLLM
+        # before we can create a key associated with it.
+        # Bootstrapped regions handle this at team registration, but
+        # dedicated regions are on-demand.
+        if region.is_dedicated:
+            # Bootstrapping a team in LiteLLM is idempotent in our service
+            # max_budget is set to 0.0 for POOL teams (purchases raise it)
+            # and DEFAULT_MAX_SPEND for PERIODIC teams.
+            bootstrap_budget = 0.0 if is_pool_team else DEFAULT_MAX_SPEND
+            await litellm_service.create_team(
+                team_id=lite_team_id,
+                team_alias=lite_team_id,
+                max_budget=bootstrap_budget,
+            )
+
         litellm_token = await litellm_service.create_key(
             email=owner_email,
             name=private_ai_key.name,
             user_id=owner_id,
-            team_id=LiteLLMService.format_team_id(region.name, litellm_team),
+            team_id=lite_team_id,
             duration=f"{days_left_in_period}d"
             if days_left_in_period is not None
             else None,
