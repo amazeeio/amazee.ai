@@ -86,9 +86,6 @@ async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
     POOL teams start with $0 budget and a configurable duration (purchases raise budget).
     PERIODIC teams start with the default budget (DEFAULT_MAX_SPEND).
     """
-    from app.core.limit_service import DEFAULT_MAX_SPEND
-    from app.core.config import settings
-
     max_budget = 0.0 if team.budget_type == BudgetType.POOL else DEFAULT_MAX_SPEND
     budget_duration = (
         f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
