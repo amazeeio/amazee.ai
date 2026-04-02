@@ -1,53 +1,55 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func
-from typing import List
-from datetime import datetime, UTC
 import logging
+from datetime import UTC, datetime
+from typing import List
 
-from app.db.database import get_db
-from app.db.models import (
-    DBTeam,
-    DBTeamProduct,
-    DBUser,
-    DBPrivateAIKey,
-    DBRegion,
-    DBTeamRegion,
-    DBProduct,
-    DBTeamMetrics,
-)
-from app.core.security import (
-    get_role_min_system_admin,
-    get_role_min_specific_team_admin,
-    get_current_user_from_auth,
-    check_sales_or_higher,
-)
-from app.schemas.models import (
-    Team,
-    TeamCreate,
-    TeamUpdate,
-    TeamWithUsers,
-    TeamMergeRequest,
-    TeamMergeResponse,
-)
+from app.api.private_ai_keys import delete_private_ai_key
+from app.core.config import settings
 from app.core.limit_service import (
     DEFAULT_KEY_DURATION,
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
     LimitService,
 )
-from app.core.config import settings
-from app.services.litellm import LiteLLMService
-from app.services.ses import SESService
-from app.core.worker import generate_pricing_url, get_team_admin_email
+from app.core.security import (
+    check_sales_or_higher,
+    get_current_user_from_auth,
+    get_role_min_specific_team_admin,
+    get_role_min_system_admin,
+)
 from app.core.team_service import (
     get_team_keys_by_region,
     restore_soft_deleted_team,
     soft_delete_team,
 )
-from app.api.private_ai_keys import delete_private_ai_key
-from app.schemas.models import SalesTeamsResponse, SalesProduct, SalesTeam
-
+from app.core.worker import generate_pricing_url, get_team_admin_email
+from app.db.database import get_db
+from app.db.models import (
+    DBPrivateAIKey,
+    DBProduct,
+    DBRegion,
+    DBTeam,
+    DBTeamMetrics,
+    DBTeamProduct,
+    DBTeamRegion,
+    DBUser,
+)
+from app.schemas.models import (
+    BudgetType,
+    SalesProduct,
+    SalesTeam,
+    SalesTeamsResponse,
+    Team,
+    TeamCreate,
+    TeamMergeRequest,
+    TeamMergeResponse,
+    TeamUpdate,
+    TeamWithUsers,
+)
+from app.services.litellm import LiteLLMService
+from app.services.ses import SESService
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func
+from sqlalchemy.orm import Session, joinedload
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +82,14 @@ async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
 
     New teams are bootstrapped only in shared (non-dedicated) regions.
     Dedicated regions are provisioned only after explicit team-region association.
+
+    POOL teams start with $0 budget (purchases raise it).
+    PERIODIC teams start with the default budget (DEFAULT_MAX_SPEND).
     """
+    from app.core.limit_service import DEFAULT_MAX_SPEND
+
+    max_budget = 0.0 if team.budget_type == BudgetType.POOL else DEFAULT_MAX_SPEND
+
     regions_query = db.query(DBRegion).filter(
         DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False)
     )
@@ -94,7 +103,7 @@ async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
         await litellm_service.create_team(
             team_id=lite_team_id,
             team_alias=lite_team_id,
-            max_budget=0.0,
+            max_budget=max_budget,
         )
 
 

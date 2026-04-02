@@ -298,12 +298,28 @@ async def apply_product_for_team(
         # Get all keys for the team grouped by region
         keys_by_region = get_team_keys_by_region(db, team.id)
 
-        # Update keys for each region
+        # Update keys and team budget for each region
         for region, keys in keys_by_region.items():
             # Initialize LiteLLM service for this region
             litellm_service = LiteLLMService(
                 api_url=region.litellm_api_url, api_key=region.litellm_api_key
             )
+
+            # Update the team-level budget (shared ceiling for all keys)
+            lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+            try:
+                await litellm_service.update_team_budget(
+                    team_id=lite_team_id,
+                    max_budget=max_max_spend,
+                    budget_duration=f"{days_left_in_period}d",
+                )
+                logger.info(
+                    f"Updated team {team.id} budget to {max_max_spend} in region {region.name}"
+                )
+            except Exception as e:
+                logger.error(
+                    f"Failed to update team {team.id} budget in region {region.name}: {str(e)}"
+                )
 
             # Update each key's duration and budget via LiteLLM
             for key in keys:

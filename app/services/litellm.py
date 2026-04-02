@@ -237,7 +237,7 @@ class LiteLLMService:
                 "budget_duration": budget_duration,
                 "duration": "365d",
             }
-            if budget_amount:
+            if budget_amount is not None:
                 request_data["max_budget"] = budget_amount
 
             async with httpx.AsyncClient() as client:
@@ -366,18 +366,46 @@ class LiteLLMService:
                 detail=f"Failed to get LiteLLM team info: {error_msg}",
             )
 
+    async def get_model_info(self) -> dict:
+        """Get LiteLLM model info for this region."""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.api_url}/v1/model/info",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            error_msg = str(e)
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get LiteLLM model info: {error_msg}",
+            )
+
     async def create_team(
         self,
-        max_budget: float = 0.0,
+        max_budget: Optional[float] = None,
         budget_duration: Optional[str] = None,
         team_id: Optional[str] = None,
         team_alias: Optional[str] = None,
     ):
-        """Create a LiteLLM team. Treat existing team as success."""
+        """Create a LiteLLM team. Treat existing team as success.
+
+        Args:
+            max_budget: Budget limit. None means no team-level budget gate.
+                        0.0 blocks all requests (used for POOL teams).
+        """
         try:
-            request_data = {
-                "max_budget": max_budget,
-            }
+            request_data = {}
+            if max_budget is not None:
+                request_data["max_budget"] = max_budget
             if team_id:
                 request_data["team_id"] = team_id
             if team_alias:
@@ -419,14 +447,24 @@ class LiteLLMService:
             )
 
     async def update_team_budget(
-        self, team_id: str, max_budget: float, budget_duration: Optional[str] = None
+        self,
+        team_id: str,
+        max_budget: Optional[float],
+        budget_duration: Optional[str] = None,
     ):
-        """Update the budget for a LiteLLM team"""
+        """Update the budget for a LiteLLM team.
+
+        Args:
+            max_budget: Budget limit. None removes the team-level budget gate.
+                        0.0 blocks all requests. Positive float sets explicit limit.
+        """
         try:
             request_data = {
                 "team_id": team_id,
-                "max_budget": max_budget,
             }
+            # Always include max_budget, even when None, so LiteLLM receives
+            # JSON null when the intent is to clear the team-level budget gate.
+            request_data["max_budget"] = max_budget
             if budget_duration:
                 request_data["budget_duration"] = budget_duration
 

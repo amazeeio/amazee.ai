@@ -410,7 +410,8 @@ async def test_sync_pool_team_budgets_expires_stale_pool_team(
     expected_lite_team_id = f"{test_region.name}_{test_team.id}"
 
     with patch(
-        "app.api.budgets.LiteLLMService.update_team_budget", new_callable=AsyncMock
+        "app.core.team_service.LiteLLMService.update_team_budget",
+        new_callable=AsyncMock,
     ) as mock_update_budget:
         result = await sync_pool_team_budgets(db)
 
@@ -419,6 +420,7 @@ async def test_sync_pool_team_budgets_expires_stale_pool_team(
     mock_update_budget.assert_awaited_once_with(
         team_id=expected_lite_team_id,
         max_budget=0.0,
+        budget_duration="365d",
     )
 
 
@@ -489,7 +491,8 @@ async def test_sync_pool_team_budgets_expires_all_team_regions(
     expected_lite_team_id = f"{test_region.name}_{test_team.id}"
 
     with patch(
-        "app.api.budgets.LiteLLMService.update_team_budget", new_callable=AsyncMock
+        "app.core.team_service.LiteLLMService.update_team_budget",
+        new_callable=AsyncMock,
     ) as mock_update_budget:
         result = await sync_pool_team_budgets(db)
 
@@ -498,4 +501,5 @@ async def test_sync_pool_team_budgets_expires_all_team_regions(
     mock_update_budget.assert_awaited_once_with(
         team_id=expected_lite_team_id,
         max_budget=0.0,
+        budget_duration="365d",
     )
