@@ -1,6 +1,5 @@
 from app.db.models import (
     DBRegion,
-    DBTeamRegion,
     DBUser,
     DBTeam,
     DBProduct,
@@ -423,7 +422,8 @@ def test_get_user_spend_unavailable_region_not_cached(
     db.commit()
 
     mock_get_team_info.side_effect = HTTPException(
-        status_code=500, detail="Failed to get LiteLLM team info: Status 503: unavailable"
+        status_code=500,
+        detail="Failed to get LiteLLM team info: Status 503: unavailable",
     )
 
     response = client.get(
@@ -450,7 +450,9 @@ def test_get_user_spend_unavailable_region_not_cached(
 
 
 def test_get_user_spend_validation_and_not_found(client, admin_token):
-    missing = client.get("/users/spend", headers={"Authorization": f"Bearer {admin_token}"})
+    missing = client.get(
+        "/users/spend", headers={"Authorization": f"Bearer {admin_token}"}
+    )
     assert missing.status_code == 400
 
     invalid = client.get(

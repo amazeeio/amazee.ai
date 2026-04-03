@@ -51,7 +51,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(op.f("ix_user_spend_cache_normalized_email"), table_name="user_spend_cache")
+    op.drop_index(
+        op.f("ix_user_spend_cache_normalized_email"), table_name="user_spend_cache"
+    )
     op.drop_index(op.f("ix_user_spend_cache_id"), table_name="user_spend_cache")
     op.drop_index(op.f("ix_user_spend_cache_expires_at"), table_name="user_spend_cache")
     op.drop_table("user_spend_cache")

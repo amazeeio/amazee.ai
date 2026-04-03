@@ -20,7 +20,14 @@ from app.schemas.models import (
     UserSpendResponse,
     UserSpendTeam,
 )
-from app.db.models import DBPrivateAIKey, DBRegion, DBTeam, DBTeamRegion, DBUser, DBUserSpendCache
+from app.db.models import (
+    DBPrivateAIKey,
+    DBRegion,
+    DBTeam,
+    DBTeamRegion,
+    DBUser,
+    DBUserSpendCache,
+)
 from app.core.security import (
     get_password_hash,
     get_role_min_system_admin,
@@ -76,7 +83,9 @@ def _is_litellm_unavailable(exc: Exception) -> bool:
     return False
 
 
-def _get_user_spend_cache(db: Session, normalized_email: str) -> Optional[DBUserSpendCache]:
+def _get_user_spend_cache(
+    db: Session, normalized_email: str
+) -> Optional[DBUserSpendCache]:
     now = datetime.now(UTC)
     return (
         db.query(DBUserSpendCache)
@@ -123,7 +132,9 @@ async def _fetch_region_spend(
     user_emails: set[str],
 ) -> Optional[UserSpendRegion]:
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-    service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
 
     async with _USER_SPEND_SEMAPHORE:
         try:
@@ -177,7 +188,9 @@ async def _fetch_region_spend(
     )
 
 
-async def _compute_user_spend(normalized_email: str, db: Session) -> tuple[UserSpendResponse, bool]:
+async def _compute_user_spend(
+    normalized_email: str, db: Session
+) -> tuple[UserSpendResponse, bool]:
     users = (
         db.query(DBUser, DBTeam.name.label("team_name"))
         .join(DBTeam, DBUser.team_id == DBTeam.id)
@@ -215,7 +228,8 @@ async def _compute_user_spend(normalized_email: str, db: Session) -> tuple[UserS
     )
 
     regions_by_team: dict[int, dict[int, DBRegion]] = {
-        team_id: {region.id: region for region in public_regions} for team_id in team_ids
+        team_id: {region.id: region for region in public_regions}
+        for team_id in team_ids
     }
     for assoc, region in team_regions:
         regions_by_team.setdefault(assoc.team_id, {})[region.id] = region
