@@ -70,8 +70,8 @@ def _extract_model_summary(item: dict[str, Any]) -> PublicModelSummary:
             supports_prompt_caching=bool(model_info.get("supports_prompt_caching")),
         ),
         pricing=PublicModelPricing(
-            input_cost_per_token=model_info.get("input_cost_per_token"),
-            output_cost_per_token=model_info.get("output_cost_per_token"),
+            input_cost_per_token="n/a",
+            output_cost_per_token="n/a",
         ),
     )
 
