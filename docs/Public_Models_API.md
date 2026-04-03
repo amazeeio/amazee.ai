@@ -81,7 +81,7 @@ Returns a JSON array of region objects, each containing its model catalog.
 | `model_id` | `string` | Unique model identifier |
 | `display_name` | `string` | Human-readable model name |
 | `provider` | `string` | Infrastructure provider: `aws`, `gcp`, `azure`, or `other` |
-| `type` | `string` | Model type: `chat`, `embedding`, or `image_generation` |
+| `type` | `string` | Model mode forwarded from LiteLLM's `model_info.mode`; commonly `chat`, `embedding`, or `image_generation`, with `other` used as a fallback when no mode is available |
 | `context_length` | `integer` | Maximum input context length in tokens |
 | `max_output_tokens` | `integer` | Maximum output tokens (null for embeddings) |
 | `capabilities` | `object` | Capability flags (see below) |
