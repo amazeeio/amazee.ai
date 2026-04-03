@@ -157,24 +157,25 @@ def test_get_token_restrictions_with_limit_service(db, test_team):
 
     # Set up budget and RPM limits in the new service
     limit_service = LimitService(db)
-    limit_service.set_limit(
-        owner_type=OwnerType.TEAM,
-        owner_id=test_team.id,
-        resource_type=ResourceType.BUDGET,
-        limit_type=LimitType.DATA_PLANE,
-        unit=UnitType.DOLLAR,
-        max_value=100.0,
-        limited_by=LimitSource.DEFAULT,
-    )
-    limit_service.set_limit(
-        owner_type=OwnerType.TEAM,
-        owner_id=test_team.id,
-        resource_type=ResourceType.RPM,
-        limit_type=LimitType.DATA_PLANE,
-        unit=UnitType.COUNT,
-        max_value=1500.0,
-        limited_by=LimitSource.DEFAULT,
-    )
+    with patch.object(limit_service, "_trigger_team_budget_propagation"):
+        limit_service.set_limit(
+            owner_type=OwnerType.TEAM,
+            owner_id=test_team.id,
+            resource_type=ResourceType.BUDGET,
+            limit_type=LimitType.DATA_PLANE,
+            unit=UnitType.DOLLAR,
+            max_value=100.0,
+            limited_by=LimitSource.DEFAULT,
+        )
+        limit_service.set_limit(
+            owner_type=OwnerType.TEAM,
+            owner_id=test_team.id,
+            resource_type=ResourceType.RPM,
+            limit_type=LimitType.DATA_PLANE,
+            unit=UnitType.COUNT,
+            max_value=1500.0,
+            limited_by=LimitSource.DEFAULT,
+        )
 
     # Test that get_token_restrictions returns the limit service values
     limit_service = LimitService(db)
@@ -200,24 +201,25 @@ def test_get_token_restrictions_with_limit_service_and_products(
 
     # Set up budget and RPM limits in the new service (different from product)
     limit_service = LimitService(db)
-    limit_service.set_limit(
-        owner_type=OwnerType.TEAM,
-        owner_id=test_team.id,
-        resource_type=ResourceType.BUDGET,
-        limit_type=LimitType.DATA_PLANE,
-        unit=UnitType.DOLLAR,
-        max_value=200.0,  # Different from product's 50.0
-        limited_by=LimitSource.DEFAULT,
-    )
-    limit_service.set_limit(
-        owner_type=OwnerType.TEAM,
-        owner_id=test_team.id,
-        resource_type=ResourceType.RPM,
-        limit_type=LimitType.DATA_PLANE,
-        unit=UnitType.COUNT,
-        max_value=2500.0,  # Different from product's 1000
-        limited_by=LimitSource.DEFAULT,
-    )
+    with patch.object(limit_service, "_trigger_team_budget_propagation"):
+        limit_service.set_limit(
+            owner_type=OwnerType.TEAM,
+            owner_id=test_team.id,
+            resource_type=ResourceType.BUDGET,
+            limit_type=LimitType.DATA_PLANE,
+            unit=UnitType.DOLLAR,
+            max_value=200.0,  # Different from product's 50.0
+            limited_by=LimitSource.DEFAULT,
+        )
+        limit_service.set_limit(
+            owner_type=OwnerType.TEAM,
+            owner_id=test_team.id,
+            resource_type=ResourceType.RPM,
+            limit_type=LimitType.DATA_PLANE,
+            unit=UnitType.COUNT,
+            max_value=2500.0,  # Different from product's 1000
+            limited_by=LimitSource.DEFAULT,
+        )
 
     # Test that get_token_restrictions returns the limit service values
     limit_service = LimitService(db)
