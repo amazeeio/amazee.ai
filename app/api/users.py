@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from sqlalchemy import func
+from sqlalchemy import func, text
 
 from typing import List, Optional
+from collections import defaultdict
 
 from app.core.config import settings
 from app.core.limit_service import LimitService
@@ -15,8 +16,11 @@ from app.schemas.models import (
     UserCreate,
     TeamOperation,
     UserRoleUpdate,
+    UserSpendRegion,
+    UserSpendResponse,
+    UserSpendTeam,
 )
-from app.db.models import DBUser, DBTeam
+from app.db.models import DBPrivateAIKey, DBRegion, DBTeam, DBTeamRegion, DBUser, DBUserSpendCache
 from app.core.security import (
     get_password_hash,
     get_role_min_system_admin,
@@ -26,8 +30,16 @@ from app.core.security import (
 from app.core.roles import UserRole
 from datetime import datetime, UTC
 import logging
+import asyncio
+import re
+import httpx
+from app.services.litellm import LiteLLMService
 
 logger = logging.getLogger(__name__)
+_EMAIL_PATTERN = re.compile(r"^[^@]+@[^@]+\.[^@]+$")
+_USER_SPEND_CACHE_TTL_SECONDS = 15 * 60
+_USER_SPEND_TIMEOUT_SECONDS = 10.0
+_USER_SPEND_SEMAPHORE = asyncio.Semaphore(10)
 
 
 def get_user_by_email(db: Session, email: str) -> Optional[DBUser]:
@@ -38,6 +50,243 @@ def get_user_by_email(db: Session, email: str) -> Optional[DBUser]:
 
 
 router = APIRouter(tags=["users"])
+
+
+def _normalize_email_for_lookup(email: str) -> str:
+    parts = email.lower().rsplit("@", 1)
+    if len(parts) == 2:
+        local_part = parts[0].split("+")[0]
+        return f"{local_part}@{parts[1]}"
+    return email.lower()
+
+
+def _is_litellm_404(exc: Exception) -> bool:
+    if isinstance(exc, HTTPException):
+        detail = str(exc.detail)
+        return "Status 404" in detail or "404" in detail
+    return False
+
+
+def _is_litellm_unavailable(exc: Exception) -> bool:
+    if isinstance(exc, (httpx.RequestError, asyncio.TimeoutError)):
+        return True
+    if isinstance(exc, HTTPException):
+        detail = str(exc.detail)
+        return any(f"Status {code}" in detail for code in (500, 502, 503, 504))
+    return False
+
+
+def _get_user_spend_cache(db: Session, normalized_email: str) -> Optional[DBUserSpendCache]:
+    now = datetime.now(UTC)
+    return (
+        db.query(DBUserSpendCache)
+        .filter(
+            DBUserSpendCache.normalized_email == normalized_email,
+            DBUserSpendCache.expires_at > now,
+        )
+        .first()
+    )
+
+
+def _upsert_user_spend_cache(
+    db: Session, normalized_email: str, response_data: dict, cached_at: datetime
+) -> None:
+    expires_at = datetime.fromtimestamp(
+        cached_at.timestamp() + _USER_SPEND_CACHE_TTL_SECONDS, tz=UTC
+    )
+    existing = (
+        db.query(DBUserSpendCache)
+        .filter(DBUserSpendCache.normalized_email == normalized_email)
+        .first()
+    )
+    if existing:
+        existing.response_data = response_data
+        existing.cached_at = cached_at
+        existing.expires_at = expires_at
+    else:
+        db.add(
+            DBUserSpendCache(
+                normalized_email=normalized_email,
+                response_data=response_data,
+                cached_at=cached_at,
+                expires_at=expires_at,
+            )
+        )
+    db.commit()
+
+
+async def _fetch_region_spend(
+    team_id: int,
+    team_name: str,
+    region: DBRegion,
+    user_ids: set[int],
+    user_emails: set[str],
+) -> Optional[UserSpendRegion]:
+    lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+    service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+
+    async with _USER_SPEND_SEMAPHORE:
+        try:
+            team_info = await asyncio.wait_for(
+                service.get_team_info(lite_team_id),
+                timeout=_USER_SPEND_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            if _is_litellm_404(exc):
+                return None
+            if _is_litellm_unavailable(exc):
+                logger.warning(
+                    "LiteLLM unavailable for team %s (%s) in region %s: %s",
+                    team_id,
+                    team_name,
+                    region.name,
+                    str(exc),
+                )
+                return UserSpendRegion(
+                    region_id=region.id,
+                    region_name=region.name,
+                    spend=0.0,
+                    status="unavailable",
+                )
+            raise
+
+    keys = team_info.get("keys", []) if isinstance(team_info, dict) else []
+    spend = 0.0
+    for key in keys:
+        if not isinstance(key, dict):
+            continue
+        metadata = key.get("metadata") or {}
+        meta_user_id = metadata.get("amazeeai_user_id")
+        service_account_id = metadata.get("service_account_id")
+        matches = False
+        if meta_user_id is not None:
+            matches = str(meta_user_id) in {str(uid) for uid in user_ids}
+        if not matches and service_account_id:
+            matches = str(service_account_id).lower() in user_emails
+        if matches:
+            try:
+                spend += float(key.get("spend") or 0.0)
+            except (TypeError, ValueError):
+                continue
+
+    return UserSpendRegion(
+        region_id=region.id,
+        region_name=region.name,
+        spend=spend,
+        status="ok",
+    )
+
+
+async def _compute_user_spend(normalized_email: str, db: Session) -> tuple[UserSpendResponse, bool]:
+    users = (
+        db.query(DBUser, DBTeam.name.label("team_name"))
+        .join(DBTeam, DBUser.team_id == DBTeam.id)
+        .filter(
+            func.regexp_replace(func.lower(DBUser.email), r"\+[^@]*@", "@")
+            == normalized_email,
+            DBUser.is_active.is_(True),
+            DBTeam.deleted_at.is_(None),
+            DBUser.team_id.isnot(None),
+        )
+        .all()
+    )
+    if not users:
+        raise HTTPException(status_code=404, detail="No users found for the email")
+
+    user_ids_by_team: dict[int, set[int]] = defaultdict(set)
+    user_emails_by_team: dict[int, set[str]] = defaultdict(set)
+    team_names: dict[int, str] = {}
+    for user, team_name in users:
+        user_ids_by_team[user.team_id].add(user.id)
+        user_emails_by_team[user.team_id].add(user.email.lower())
+        team_names[user.team_id] = team_name
+
+    team_ids = list(user_ids_by_team.keys())
+    public_regions = (
+        db.query(DBRegion)
+        .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
+        .all()
+    )
+    team_regions = (
+        db.query(DBTeamRegion, DBRegion)
+        .join(DBRegion, DBTeamRegion.region_id == DBRegion.id)
+        .filter(DBTeamRegion.team_id.in_(team_ids), DBRegion.is_active.is_(True))
+        .all()
+    )
+
+    regions_by_team: dict[int, dict[int, DBRegion]] = {
+        team_id: {region.id: region for region in public_regions} for team_id in team_ids
+    }
+    for assoc, region in team_regions:
+        regions_by_team.setdefault(assoc.team_id, {})[region.id] = region
+
+    tasks = []
+    task_meta: list[tuple[int, str, int]] = []
+    region_failures = False
+
+    for team_id in team_ids:
+        team_name = team_names[team_id]
+        for region in regions_by_team.get(team_id, {}).values():
+            key_exists = (
+                db.query(DBPrivateAIKey.id)
+                .filter(
+                    DBPrivateAIKey.team_id == team_id,
+                    DBPrivateAIKey.region_id == region.id,
+                    DBPrivateAIKey.owner_id.in_(list(user_ids_by_team[team_id])),
+                )
+                .first()
+                is not None
+            )
+            if not key_exists:
+                continue
+
+            tasks.append(
+                _fetch_region_spend(
+                    team_id=team_id,
+                    team_name=team_name,
+                    region=region,
+                    user_ids=user_ids_by_team[team_id],
+                    user_emails=user_emails_by_team[team_id],
+                )
+            )
+            task_meta.append((team_id, team_name, region.id))
+
+    team_region_results: dict[int, list[UserSpendRegion]] = defaultdict(list)
+    if tasks:
+        fetch_results = await asyncio.gather(*tasks)
+        for idx, region_result in enumerate(fetch_results):
+            team_id, _, _ = task_meta[idx]
+            if region_result is None:
+                continue
+            if region_result.status == "unavailable":
+                region_failures = True
+            team_region_results[team_id].append(region_result)
+
+    teams: List[UserSpendTeam] = []
+    total_spend = 0.0
+    for team_id in team_ids:
+        regions = sorted(
+            team_region_results.get(team_id, []),
+            key=lambda r: (r.region_name, r.region_id),
+        )
+        team_spend = sum(r.spend for r in regions)
+        total_spend += team_spend
+        teams.append(
+            UserSpendTeam(
+                team_id=team_id,
+                team_name=team_names[team_id],
+                spend=team_spend,
+                regions=regions,
+            )
+        )
+
+    response = UserSpendResponse(
+        email=normalized_email,
+        total_spend=total_spend,
+        teams=sorted(teams, key=lambda t: t.team_id),
+        cached_at=datetime.now(UTC),
+    )
+    return response, region_failures
 
 
 def _create_default_limits_for_user(user: DBUser, db: Session) -> None:
@@ -137,6 +386,55 @@ async def get_users_by_email(
         user.team_name = team_name
         result.append(user)
     return result
+
+
+@router.get(
+    "/spend",
+    response_model=UserSpendResponse,
+    dependencies=[Depends(get_role_min_system_admin)],
+)
+async def get_user_spend(
+    email: Optional[str] = Query(
+        None,
+        description="Exact base email to look up; any +suffix is stripped before matching",
+        example="alice@example.com",
+    ),
+    db: Session = Depends(get_db),
+):
+    if not email or not _EMAIL_PATTERN.match(email):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing or invalid email",
+        )
+    normalized_email = _normalize_email_for_lookup(email)
+
+    cached = _get_user_spend_cache(db, normalized_email)
+    if cached:
+        payload = dict(cached.response_data or {})
+        payload["cached_at"] = cached.cached_at
+        return UserSpendResponse.model_validate(payload)
+
+    lock_key = f"user_spend_cache:{normalized_email}"
+    db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": lock_key})
+    try:
+        cached = _get_user_spend_cache(db, normalized_email)
+        if cached:
+            payload = dict(cached.response_data or {})
+            payload["cached_at"] = cached.cached_at
+            db.commit()
+            return UserSpendResponse.model_validate(payload)
+
+        response, had_region_failures = await _compute_user_spend(normalized_email, db)
+        if not had_region_failures:
+            payload = response.model_dump(mode="json")
+            payload.pop("cached_at", None)
+            _upsert_user_spend_cache(db, normalized_email, payload, response.cached_at)
+        else:
+            db.commit()
+        return response
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.get(
