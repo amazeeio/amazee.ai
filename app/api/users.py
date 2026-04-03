@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from sqlalchemy import func, text
+from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from typing import List, Optional
 from collections import defaultdict
@@ -66,17 +67,14 @@ def _normalize_email_for_lookup(email: str) -> str:
 
 
 def _is_valid_email_input(email: str) -> bool:
-    parts = email.split("@")
-    if len(parts) != 2:
+    at_idx = email.find("@")
+    if at_idx <= 0:
         return False
-    local, domain = parts
-    if not local or not domain:
+    domain = email[at_idx + 1 :]
+    if not domain or "@" in domain:
         return False
-    if "." not in domain:
-        return False
-    if domain.startswith(".") or domain.endswith("."):
-        return False
-    return True
+    dot_idx = domain.rfind(".")
+    return 0 < dot_idx < len(domain) - 1
 
 
 def _is_litellm_404(exc: Exception) -> bool:
@@ -115,24 +113,24 @@ def _upsert_user_spend_cache(
     expires_at = datetime.fromtimestamp(
         cached_at.timestamp() + _USER_SPEND_CACHE_TTL_SECONDS, tz=UTC
     )
-    existing = (
-        db.query(DBUserSpendCache)
-        .filter(DBUserSpendCache.normalized_email == normalized_email)
-        .first()
-    )
-    if existing:
-        existing.response_data = response_data
-        existing.cached_at = cached_at
-        existing.expires_at = expires_at
-    else:
-        db.add(
-            DBUserSpendCache(
-                normalized_email=normalized_email,
+    stmt = (
+        pg_insert(DBUserSpendCache)
+        .values(
+            normalized_email=normalized_email,
+            response_data=response_data,
+            cached_at=cached_at,
+            expires_at=expires_at,
+        )
+        .on_conflict_do_update(
+            index_elements=["normalized_email"],
+            set_=dict(
                 response_data=response_data,
                 cached_at=cached_at,
                 expires_at=expires_at,
-            )
+            ),
         )
+    )
+    db.execute(stmt)
     db.commit()
 
 
@@ -175,6 +173,7 @@ async def _fetch_region_spend(
 
     keys = team_info.get("keys", []) if isinstance(team_info, dict) else []
     spend = 0.0
+    user_id_strs = {str(uid) for uid in user_ids}
     for key in keys:
         if not isinstance(key, dict):
             continue
@@ -183,7 +182,7 @@ async def _fetch_region_spend(
         service_account_id = metadata.get("service_account_id")
         matches = False
         if meta_user_id is not None:
-            matches = str(meta_user_id) in {str(uid) for uid in user_ids}
+            matches = str(meta_user_id) in user_id_strs
         if not matches and service_account_id:
             matches = str(service_account_id).lower() in user_emails
         if matches:
@@ -250,20 +249,25 @@ async def _compute_user_spend(
     task_meta: list[tuple[int, str, int]] = []
     region_failures = False
 
+    all_owner_ids: set[int] = set()
+    for uid_set in user_ids_by_team.values():
+        all_owner_ids.update(uid_set)
+
+    key_pair_rows = (
+        db.query(DBPrivateAIKey.team_id, DBPrivateAIKey.region_id)
+        .filter(
+            DBPrivateAIKey.team_id.in_(team_ids),
+            DBPrivateAIKey.owner_id.in_(all_owner_ids),
+        )
+        .distinct()
+        .all()
+    )
+    key_exists_set = {(row.team_id, row.region_id) for row in key_pair_rows}
+
     for team_id in team_ids:
         team_name = team_names[team_id]
         for region in regions_by_team.get(team_id, {}).values():
-            key_exists = (
-                db.query(DBPrivateAIKey.id)
-                .filter(
-                    DBPrivateAIKey.team_id == team_id,
-                    DBPrivateAIKey.region_id == region.id,
-                    DBPrivateAIKey.owner_id.in_(list(user_ids_by_team[team_id])),
-                )
-                .first()
-                is not None
-            )
-            if not key_exists:
+            if (team_id, region.id) not in key_exists_set:
                 continue
 
             tasks.append(
@@ -440,27 +444,12 @@ async def get_user_spend(
         payload["cached_at"] = cached.cached_at
         return UserSpendResponse.model_validate(payload)
 
-    lock_key = f"user_spend_cache:{normalized_email}"
-    db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": lock_key})
-    try:
-        cached = _get_user_spend_cache(db, normalized_email)
-        if cached:
-            payload = dict(cached.response_data or {})
-            payload["cached_at"] = cached.cached_at
-            db.commit()
-            return UserSpendResponse.model_validate(payload)
-
-        response, had_region_failures = await _compute_user_spend(normalized_email, db)
-        if not had_region_failures:
-            payload = response.model_dump(mode="json")
-            payload.pop("cached_at", None)
-            _upsert_user_spend_cache(db, normalized_email, payload, response.cached_at)
-        else:
-            db.commit()
-        return response
-    except Exception:
-        db.rollback()
-        raise
+    response, had_region_failures = await _compute_user_spend(normalized_email, db)
+    if not had_region_failures:
+        payload = response.model_dump(mode="json")
+        payload.pop("cached_at", None)
+        _upsert_user_spend_cache(db, normalized_email, payload, response.cached_at)
+    return response
 
 
 @router.get(
