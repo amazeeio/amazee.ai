@@ -47,7 +47,7 @@ For each team, determine which regions to query:
 
 For each `(team, region)` pair, call the existing `LiteLLMService.get_team_info()` using the formatted team ID (`{region_name}_{team_id}`).
 
-From the response, filter `keys[]` by matching `metadata.service_account_id` against the user's DB email to get the user's spend (sum of matching `key.spend`).
+From the response, filter `keys[]` by matching `metadata.service_account_id` against the user's DB email to get the user's spend (sum of matching `key.spend`). Note: a single normalized email (e.g., `alice@example.com`) can match multiple DB users across different teams, each with a different `+suffix` email (e.g., `alice+598@example.com`). The agent must collect all matching DB users and match each user's actual DB email against the corresponding LiteLLM keys. If there is a more reliable way to correlate keys to users (e.g., via `metadata.amazeeai_user_id`), prefer that approach.
 
 **If a region's LiteLLM instance is unavailable** (timeout, connection error, 5xx): log a warning, mark the region with an appropriate status, return zeroed spend, and continue. Do NOT fail the entire request.
 
@@ -55,7 +55,7 @@ From the response, filter `keys[]` by matching `metadata.service_account_id` aga
 
 ### Step 4 — Optimize: skip regions where user has no keys
 
-Before calling LiteLLM, check `DBPrivateAIKey` for any keys owned by the user in that region. If none exist, skip the LiteLLM call and return zeroed spend with a status indicating no keys. This is an optimization — if it proves problematic, fall back to querying LiteLLM for all pairs.
+Before calling LiteLLM, check `DBPrivateAIKey` for any keys owned by the user in that region. If none exist, skip the LiteLLM call and exclude that region from the response entirely. This is an optimization — if it proves problematic, fall back to querying LiteLLM for all pairs.
 
 ### Step 5 — Aggregate and return
 
@@ -74,7 +74,12 @@ Cache logic:
 - On hit (non-expired row exists): return cached data immediately, no LiteLLM calls.
 - On miss: fetch fresh data. Only cache the result if all LiteLLM calls for the request succeeded (no unavailable regions). If any region failed, return the partial result to the caller but do NOT write it to the cache.
 - On cache write: upsert into the cache table with a new expiry. The upsert replaces any existing row for that email (no separate cleanup needed).
-- Use a locking mechanism to prevent thundering herd: when a cache miss occurs, ensure only one request fetches from LiteLLM while others wait for the result.
+- Use a locking mechanism to prevent thundering herd: when a cache miss occurs, ensure only one request fetches from LiteLLM while others wait for the result. Note: since the app may run across multiple replicas, consider a locking approach that works across processes (e.g., DB advisory locks).
+
+### Known limitations
+
+- **Stale data on team changes**: If a user is added to or removed from a team, the cached spend data will not reflect the change for up to 15 minutes. This is acceptable.
+- **Budget data is excluded**: Spend-only for now; budget scope is deferred to a future iteration.
 
 An Alembic migration must be created for this table.
 
@@ -116,8 +121,8 @@ Tests live in `tests/`. Use existing fixtures from `conftest.py` and follow patt
 - [ ] Skips inactive regions entirely
 - [ ] Skips unavailable LiteLLM regions gracefully (logs warning, returns zeroed spend with status)
 - [ ] Skips team-region pairs where LiteLLM returns 404 (team not provisioned)
-- [ ] Filters spend by user via `service_account_id` matching
-- [ ] Skips LiteLLM calls when user has no keys in a region (DB optimization)
+- [ ] Filters spend by user via `service_account_id` matching (or a more reliable method if available, e.g., `amazeeai_user_id`)
+- [ ] Skips LiteLLM calls when user has no keys in a region (DB optimization) — excluded from response
 - [ ] `total_spend` is the sum of the user's key spend across all teams and regions
 - [ ] Response cached in PostgreSQL for 15 minutes per normalized email — only successful responses (no region failures)
 - [ ] Cache upserts on miss, replaces old entry (no separate cleanup needed)
