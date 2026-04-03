@@ -52,8 +52,8 @@ Returns a JSON array of region objects, each containing its model catalog.
           "supports_prompt_caching": true
         },
         "pricing": {
-          "input_cost_per_token": 3e-06,
-          "output_cost_per_token": 1.5e-05
+          "input_cost_per_token": 'n/a',
+          "output_cost_per_token": 'n/a'
         }
       }
     ]
@@ -85,7 +85,7 @@ Returns a JSON array of region objects, each containing its model catalog.
 | `context_length` | `integer` | Maximum input context length in tokens |
 | `max_output_tokens` | `integer` | Maximum output tokens (null for embeddings) |
 | `capabilities` | `object` | Capability flags (see below) |
-| `pricing` | `object` | Per-token pricing (see below) |
+| `pricing` | `object` | Per-token pricing (see below) NOTE: using `n/a` for now |
 
 #### Capabilities
 
@@ -100,8 +100,8 @@ Returns a JSON array of region objects, each containing its model catalog.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `input_cost_per_token` | `float` | Cost per input token in USD |
-| `output_cost_per_token` | `float` | Cost per output token in USD |
+| `input_cost_per_token` | `float` | Cost per input token in USD (NOTE: using `n/a` for now) |
+| `output_cost_per_token` | `float` | Cost per output token in USD (NOTE: using `n/a` for now) |
 
 ## Caching
 
