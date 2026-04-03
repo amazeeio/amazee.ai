@@ -38,12 +38,10 @@ from app.core.roles import UserRole
 from datetime import datetime, UTC
 import logging
 import asyncio
-import re
 import httpx
 from app.services.litellm import LiteLLMService
 
 logger = logging.getLogger(__name__)
-_EMAIL_PATTERN = re.compile(r"^[^@]+@[^@]+\.[^@]+$")
 _USER_SPEND_CACHE_TTL_SECONDS = 15 * 60
 _USER_SPEND_TIMEOUT_SECONDS = 10.0
 _USER_SPEND_SEMAPHORE = asyncio.Semaphore(10)
@@ -65,6 +63,20 @@ def _normalize_email_for_lookup(email: str) -> str:
         local_part = parts[0].split("+")[0]
         return f"{local_part}@{parts[1]}"
     return email.lower()
+
+
+def _is_valid_email_input(email: str) -> bool:
+    parts = email.split("@")
+    if len(parts) != 2:
+        return False
+    local, domain = parts
+    if not local or not domain:
+        return False
+    if "." not in domain:
+        return False
+    if domain.startswith(".") or domain.endswith("."):
+        return False
+    return True
 
 
 def _is_litellm_404(exc: Exception) -> bool:
@@ -415,7 +427,7 @@ async def get_user_spend(
     ),
     db: Session = Depends(get_db),
 ):
-    if not email or not _EMAIL_PATTERN.match(email):
+    if not email or not _is_valid_email_input(email):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Missing or invalid email",
