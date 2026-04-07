@@ -15,6 +15,7 @@ def trial_team(db: Session):
     )
     db.add(team)
     db.commit()
+    db.refresh(team)
     return team
 
 @pytest.fixture
@@ -27,6 +28,7 @@ def trial_user(db: Session, trial_team: DBTeam):
     )
     db.add(user)
     db.commit()
+    db.refresh(user)
     return user
 
 @pytest.fixture
@@ -39,6 +41,7 @@ def trial_region(db: Session):
     )
     db.add(region)
     db.commit()
+    db.refresh(region)
     return region
 
 @pytest.fixture
@@ -52,6 +55,7 @@ def trial_key(db: Session, trial_user: DBUser, trial_region: DBRegion, trial_tea
     )
     db.add(key)
     db.commit()
+    db.refresh(key)
     return key
 
 @pytest.fixture
@@ -69,6 +73,7 @@ def user_budget_limit(db: Session, trial_user: DBUser):
     )
     db.add(limit)
     db.commit()
+    db.refresh(limit)
     return limit
 
 @pytest.fixture
