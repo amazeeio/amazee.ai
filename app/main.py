@@ -20,7 +20,6 @@ from app.api import (
     budgets,
 )
 from app.core.config import settings
-from app.db.database import get_db
 from app.middleware.audit import AuditLogMiddleware
 from app.middleware.caching import CacheControlMiddleware
 from app.middleware.prometheus import PrometheusMiddleware
