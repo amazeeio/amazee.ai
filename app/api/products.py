@@ -5,19 +5,29 @@ from datetime import datetime, UTC
 
 from app.db.database import get_db
 from app.db.models import DBProduct, DBTeamProduct, DBTeam
-from app.core.security import get_role_min_system_admin, get_current_user_from_auth, get_role_min_team_admin
+from app.core.security import (
+    get_role_min_system_admin,
+    get_current_user_from_auth,
+    get_role_min_team_admin,
+)
 from app.schemas.models import Product, ProductCreate, ProductUpdate
 
-router = APIRouter(
-    tags=["products"]
-)
+router = APIRouter(tags=["products"])
 
-@router.post("", response_model=Product, status_code=status.HTTP_201_CREATED, dependencies=[Depends(get_role_min_system_admin)])
-@router.post("/", response_model=Product, status_code=status.HTTP_201_CREATED, dependencies=[Depends(get_role_min_system_admin)])
-async def create_product(
-    product: ProductCreate,
-    db: Session = Depends(get_db)
-):
+
+@router.post(
+    "",
+    response_model=Product,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(get_role_min_system_admin)],
+)
+@router.post(
+    "/",
+    response_model=Product,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(get_role_min_system_admin)],
+)
+async def create_product(product: ProductCreate, db: Session = Depends(get_db)):
     """
     Create a new product. Only accessible by system admin users.
     """
@@ -26,7 +36,7 @@ async def create_product(
     if existing_product:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Product with this ID already exists"
+            detail="Product with this ID already exists",
         )
 
     # Create the product with all fields
@@ -43,7 +53,7 @@ async def create_product(
         vector_db_storage=product.vector_db_storage,
         renewal_period_days=product.renewal_period_days,
         active=product.active,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
 
     db.add(db_product)
@@ -52,12 +62,17 @@ async def create_product(
 
     return db_product
 
-@router.get("", response_model=List[Product], dependencies=[Depends(get_role_min_team_admin)])
-@router.get("/", response_model=List[Product], dependencies=[Depends(get_role_min_team_admin)])
+
+@router.get(
+    "", response_model=List[Product], dependencies=[Depends(get_role_min_team_admin)]
+)
+@router.get(
+    "/", response_model=List[Product], dependencies=[Depends(get_role_min_team_admin)]
+)
 async def list_products(
     team_id: Optional[int] = None,
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user_from_auth)
+    current_user=Depends(get_current_user_from_auth),
 ):
     """
     List all products. Only accessible by team admin users or higher privileges.
@@ -70,8 +85,7 @@ async def list_products(
         team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
         if not team:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Team not found"
+                status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
             )
 
         # System admins can view any team's products
@@ -80,11 +94,16 @@ async def list_products(
             if current_user.team_id != team_id:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail="You can only view products for your own team"
+                    detail="You can only view products for your own team",
                 )
 
         # Get products associated with the team
-        return db.query(DBProduct).join(DBTeamProduct).filter(DBTeamProduct.team_id == team_id).all()
+        return (
+            db.query(DBProduct)
+            .join(DBTeamProduct)
+            .filter(DBTeamProduct.team_id == team_id)
+            .all()
+        )
 
     # If no team_id provided
     if current_user.is_admin:
@@ -92,15 +111,23 @@ async def list_products(
         return db.query(DBProduct).all()
     else:
         # Non-system-admins only see their own team's products
-        return db.query(DBProduct).join(DBTeamProduct).filter(
-            DBTeamProduct.team_id == current_user.team_id
-        ).all()
+        return (
+            db.query(DBProduct)
+            .join(DBTeamProduct)
+            .filter(DBTeamProduct.team_id == current_user.team_id)
+            .all()
+        )
 
-@router.get("/{product_id}", response_model=Product, dependencies=[Depends(get_role_min_team_admin)])
+
+@router.get(
+    "/{product_id}",
+    response_model=Product,
+    dependencies=[Depends(get_role_min_team_admin)],
+)
 async def get_product(
     product_id: str,
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user_from_auth)
+    current_user=Depends(get_current_user_from_auth),
 ):
     """
     Get a specific product by ID. Only accessible by team admin users or higher privileges.
@@ -109,29 +136,34 @@ async def get_product(
     product = db.query(DBProduct).filter(DBProduct.id == product_id).first()
     if not product:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Product not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
         )
 
     # Non-system-admins can only view products associated with their team
     if not current_user.is_admin:
-        team_product = db.query(DBTeamProduct).filter(
-            DBTeamProduct.product_id == product_id,
-            DBTeamProduct.team_id == current_user.team_id
-        ).first()
+        team_product = (
+            db.query(DBTeamProduct)
+            .filter(
+                DBTeamProduct.product_id == product_id,
+                DBTeamProduct.team_id == current_user.team_id,
+            )
+            .first()
+        )
         if not team_product:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Product not found"
+                status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
             )
 
     return product
 
-@router.put("/{product_id}", response_model=Product, dependencies=[Depends(get_role_min_system_admin)])
+
+@router.put(
+    "/{product_id}",
+    response_model=Product,
+    dependencies=[Depends(get_role_min_system_admin)],
+)
 async def update_product(
-    product_id: str,
-    product_update: ProductUpdate,
-    db: Session = Depends(get_db)
+    product_id: str, product_update: ProductUpdate, db: Session = Depends(get_db)
 ):
     """
     Update a product. Only accessible by system admin users.
@@ -139,8 +171,7 @@ async def update_product(
     product = db.query(DBProduct).filter(DBProduct.id == product_id).first()
     if not product:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Product not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
         )
 
     # Update the product with all provided fields
@@ -154,27 +185,26 @@ async def update_product(
 
     return product
 
+
 @router.delete("/{product_id}", dependencies=[Depends(get_role_min_system_admin)])
-async def delete_product(
-    product_id: str,
-    db: Session = Depends(get_db)
-):
+async def delete_product(product_id: str, db: Session = Depends(get_db)):
     """
     Delete a product. Only accessible by system admin users.
     """
     product = db.query(DBProduct).filter(DBProduct.id == product_id).first()
     if not product:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Product not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
         )
 
     # Check if the product is associated with any teams
-    team_association = db.query(DBTeamProduct).filter(DBTeamProduct.product_id == product_id).first()
+    team_association = (
+        db.query(DBTeamProduct).filter(DBTeamProduct.product_id == product_id).first()
+    )
     if team_association:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot delete product that is associated with one or more teams"
+            detail="Cannot delete product that is associated with one or more teams",
         )
 
     db.delete(product)

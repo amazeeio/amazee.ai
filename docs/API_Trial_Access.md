@@ -42,6 +42,7 @@ curl -X POST http://localhost:8800/auth/generate-trial-access
     "owner_id": 456,
     "team_id": 789,
     "region": "us-east-1",
+    "label": "US East 1",
     "created_at": "2024-01-15T10:30:00Z"
   },
   "user": {

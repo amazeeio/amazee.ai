@@ -9,10 +9,7 @@ from app.schemas.limits import ResourceType, OwnerType, LimitType, UnitType, Lim
 def test_create_key_within_limits(db, test_team, test_product, test_region):
     """Test creating an LLM token when within product limits"""
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -26,10 +23,7 @@ def test_create_key_exceeding_total_limit(db, test_team, test_product, test_regi
     # Add product to team
     test_product.service_key_count = 2  # Set a low service key limit
     db.add(test_product)
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -47,7 +41,7 @@ def test_create_key_exceeding_total_limit(db, test_team, test_product, test_regi
             owner_id=None,  # Service key
             team_id=test_team.id,
             region_id=test_region.id,
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         )
         db.add(key)
         db.commit()
@@ -58,16 +52,15 @@ def test_create_key_exceeding_total_limit(db, test_team, test_product, test_regi
         limit_service.check_key_limits(test_team.id, None)
     assert exc_info.value.status_code == 402
     # Now that fallback creates a limit, subsequent calls use LimitService which returns generic message
-    assert "Entity has reached their maximum number of AI keys" in str(exc_info.value.detail)
+    assert "Entity has reached their maximum number of AI keys" in str(
+        exc_info.value.detail
+    )
 
 
 def test_create_key_exceeding_user_limit(db, test_team, test_product, test_region):
     """Test creating an LLM token when it would exceed user token limit"""
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -79,7 +72,7 @@ def test_create_key_exceeding_user_limit(db, test_team, test_product, test_regio
         is_admin=False,
         role="user",
         team_id=test_team.id,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(user)
     db.commit()
@@ -98,7 +91,7 @@ def test_create_key_exceeding_user_limit(db, test_team, test_product, test_regio
             owner_id=user.id,
             team_id=None,
             region_id=test_region.id,
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         )
         db.add(key)
         db.commit()
@@ -109,16 +102,17 @@ def test_create_key_exceeding_user_limit(db, test_team, test_product, test_regio
         limit_service.check_key_limits(test_team.id, user.id)
     assert exc_info.value.status_code == 402
     # Now that fallback creates a limit, subsequent calls use LimitService which returns generic message
-    assert "Entity has reached their maximum number of AI keys" in str(exc_info.value.detail)
+    assert "Entity has reached their maximum number of AI keys" in str(
+        exc_info.value.detail
+    )
 
 
-def test_create_key_exceeding_service_key_limit(db, test_team, test_product, test_region):
+def test_create_key_exceeding_service_key_limit(
+    db, test_team, test_product, test_region
+):
     """Test creating an LLM token when it would exceed service token limit"""
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -134,7 +128,7 @@ def test_create_key_exceeding_service_key_limit(db, test_team, test_product, tes
             owner_id=None,  # Service tokens have no owner
             team_id=test_team.id,
             region_id=test_region.id,
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         )
         db.add(key)
     db.commit()
@@ -144,7 +138,10 @@ def test_create_key_exceeding_service_key_limit(db, test_team, test_product, tes
         limit_service = LimitService(db)
         limit_service.check_key_limits(test_team.id, None)
     assert exc_info.value.status_code == 402
-    assert f"Team has reached the maximum service LLM key limit of {test_product.service_key_count} keys" in str(exc_info.value.detail)
+    assert (
+        f"Team has reached the maximum service LLM key limit of {test_product.service_key_count} keys"
+        in str(exc_info.value.detail)
+    )
 
 
 def test_create_key_with_default_limits(db, test_team, test_region):
@@ -164,15 +161,12 @@ def test_create_key_with_default_limits(db, test_team, test_region):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(test_product)
 
     # Associate the product with the team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -188,7 +182,7 @@ def test_create_key_with_default_limits(db, test_team, test_region):
             owner_id=None,  # Service key
             team_id=test_team.id,
             region_id=test_region.id,
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         )
         db.add(key)
     db.commit()
@@ -198,7 +192,10 @@ def test_create_key_with_default_limits(db, test_team, test_region):
         limit_service = LimitService(db)
         limit_service.check_key_limits(test_team.id, None)
     assert exc_info.value.status_code == 402
-    assert f"Team has reached the maximum service LLM key limit of {test_product.service_key_count} keys" in str(exc_info.value.detail)
+    assert (
+        f"Team has reached the maximum service LLM key limit of {test_product.service_key_count} keys"
+        in str(exc_info.value.detail)
+    )
 
 
 def test_create_key_with_multiple_products(db, test_team, test_region):
@@ -217,7 +214,7 @@ def test_create_key_with_multiple_products(db, test_team, test_region):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     product2 = DBProduct(
         id="prod_test2",
@@ -232,21 +229,15 @@ def test_create_key_with_multiple_products(db, test_team, test_region):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(product1)
     db.add(product2)
     db.commit()
 
     # Add both products to team
-    team_product1 = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=product1.id
-    )
-    team_product2 = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=product2.id
-    )
+    team_product1 = DBTeamProduct(team_id=test_team.id, product_id=product1.id)
+    team_product2 = DBTeamProduct(team_id=test_team.id, product_id=product2.id)
     db.add(team_product1)
     db.add(team_product2)
     db.commit()
@@ -265,7 +256,7 @@ def test_create_key_with_multiple_products(db, test_team, test_region):
             owner_id=None,
             team_id=test_team.id,
             region_id=test_region.id,
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         )
         db.add(key)
         db.commit()
@@ -276,7 +267,9 @@ def test_create_key_with_multiple_products(db, test_team, test_region):
         limit_service.check_key_limits(test_team.id, None)
     assert exc_info.value.status_code == 402
     # Now that fallback creates a limit, subsequent calls use LimitService which returns generic message
-    assert "Entity has reached their maximum number of AI keys" in str(exc_info.value.detail)
+    assert "Entity has reached their maximum number of AI keys" in str(
+        exc_info.value.detail
+    )
 
 
 def test_create_key_with_multiple_users_default_limits(db, test_team, test_region):
@@ -296,15 +289,12 @@ def test_create_key_with_multiple_users_default_limits(db, test_team, test_regio
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(test_product)
 
     # Associate the product with the team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -316,7 +306,7 @@ def test_create_key_with_multiple_users_default_limits(db, test_team, test_regio
         is_admin=False,
         role="user",
         team_id=test_team.id,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     user2 = DBUser(
         email="user2@example.com",
@@ -325,7 +315,7 @@ def test_create_key_with_multiple_users_default_limits(db, test_team, test_regio
         is_admin=False,
         role="user",
         team_id=test_team.id,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(user1)
     db.add(user2)
@@ -343,7 +333,7 @@ def test_create_key_with_multiple_users_default_limits(db, test_team, test_regio
             owner_id=user.id,
             team_id=None,  # Keys with owner_id should not have team_id
             region_id=test_region.id,
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         )
         db.add(key)
     db.commit()
@@ -351,9 +341,14 @@ def test_create_key_with_multiple_users_default_limits(db, test_team, test_regio
     # Test that check_key_limits raises an exception when trying to create another user key
     with pytest.raises(HTTPException) as exc_info:
         limit_service = LimitService(db)
-        limit_service.check_key_limits(test_team.id, user1.id)  # Try to create another key for user1
+        limit_service.check_key_limits(
+            test_team.id, user1.id
+        )  # Try to create another key for user1
     assert exc_info.value.status_code == 402
-    assert f"User has reached the maximum LLM key limit of {test_product.keys_per_user} keys" in str(exc_info.value.detail)
+    assert (
+        f"User has reached the maximum LLM key limit of {test_product.keys_per_user} keys"
+        in str(exc_info.value.detail)
+    )
 
 
 def test_create_key_with_mixed_service_and_user_keys(db, test_team, test_region):
@@ -372,16 +367,13 @@ def test_create_key_with_mixed_service_and_user_keys(db, test_team, test_region)
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(product)
     db.commit()
 
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=product.id)
     db.add(team_product)
     db.commit()
 
@@ -393,7 +385,7 @@ def test_create_key_with_mixed_service_and_user_keys(db, test_team, test_region)
         is_admin=False,
         role="user",
         team_id=test_team.id,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     user2 = DBUser(
         email="user2@example.com",
@@ -402,7 +394,7 @@ def test_create_key_with_mixed_service_and_user_keys(db, test_team, test_region)
         is_admin=False,
         role="user",
         team_id=test_team.id,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(user1)
     db.add(user2)
@@ -419,7 +411,7 @@ def test_create_key_with_mixed_service_and_user_keys(db, test_team, test_region)
         owner_id=None,  # Service key has no owner
         team_id=test_team.id,
         region_id=test_region.id,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(service_key)
 
@@ -434,7 +426,7 @@ def test_create_key_with_mixed_service_and_user_keys(db, test_team, test_region)
         owner_id=user1.id,
         team_id=None,  # Keys with owner_id should not have team_id
         region_id=test_region.id,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(user1_key)
     db.commit()
@@ -442,9 +434,14 @@ def test_create_key_with_mixed_service_and_user_keys(db, test_team, test_region)
     # Test that check_key_limits raises an exception when trying to create another service key
     with pytest.raises(HTTPException) as exc_info:
         limit_service = LimitService(db)
-        limit_service.check_key_limits(test_team.id, None)  # Try to create another service key
+        limit_service.check_key_limits(
+            test_team.id, None
+        )  # Try to create another service key
     assert exc_info.value.status_code == 402
-    assert f"Team has reached the maximum service LLM key limit of {product.service_key_count} keys" in str(exc_info.value.detail)
+    assert (
+        f"Team has reached the maximum service LLM key limit of {product.service_key_count} keys"
+        in str(exc_info.value.detail)
+    )
 
 
 def test_check_key_limits_with_limit_service(db, test_team):
@@ -456,15 +453,15 @@ def test_check_key_limits_with_limit_service(db, test_team):
     # Set up a limit in the new service
     limit_service = LimitService(db)
     limit_service.set_limit(
-            owner_type=OwnerType.TEAM,
-            owner_id=test_team.id,
-            resource_type=ResourceType.SERVICE_KEY,
-            limit_type=LimitType.CONTROL_PLANE,
-            unit=UnitType.COUNT,
-            max_value=10.0,
-            current_value=3.0,
-            limited_by=LimitSource.DEFAULT
-        )
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.SERVICE_KEY,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=10.0,
+        current_value=3.0,
+        limited_by=LimitSource.DEFAULT,
+    )
 
     # Test that check_key_limits doesn't raise an exception
     limit_service.check_key_limits(test_team.id, None)
@@ -483,7 +480,7 @@ def test_check_key_limits_with_limit_service_at_capacity(db, test_team):
             team_id=test_team.id,
             owner_id=None,  # Service keys have no owner
             litellm_token=f"service_key_{i}",
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         )
         db.add(key)
     db.commit()
@@ -491,22 +488,24 @@ def test_check_key_limits_with_limit_service_at_capacity(db, test_team):
     # Set up a limit in the new service at capacity
     limit_service = LimitService(db)
     limit_service.set_limit(
-            owner_type=OwnerType.TEAM,
-            owner_id=test_team.id,
-            resource_type=ResourceType.SERVICE_KEY,
-            limit_type=LimitType.CONTROL_PLANE,
-            unit=UnitType.COUNT,
-            max_value=5.0,
-            current_value=5.0,  # At capacity
-            limited_by=LimitSource.DEFAULT
-        )
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        resource_type=ResourceType.SERVICE_KEY,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=5.0,
+        current_value=5.0,  # At capacity
+        limited_by=LimitSource.DEFAULT,
+    )
 
     # Test that check_key_limits raises an exception
     with pytest.raises(HTTPException) as exc_info:
         limit_service = LimitService(db)
         limit_service.check_key_limits(test_team.id, None)
     assert exc_info.value.status_code == 402
-    assert "Entity has reached their maximum number of AI keys" in str(exc_info.value.detail)
+    assert "Entity has reached their maximum number of AI keys" in str(
+        exc_info.value.detail
+    )
 
 
 def test_check_key_limits_fallback_creates_limit(db, test_team, test_product):
@@ -516,17 +515,16 @@ def test_check_key_limits_fallback_creates_limit(db, test_team, test_product):
     THEN: The fallback code runs and creates a new limit in the service
     """
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
     # Verify no limit exists in the service initially
     limit_service = LimitService(db)
     try:
-        limit_service.increment_resource(OwnerType.TEAM, test_team.id, ResourceType.SERVICE_KEY)
+        limit_service.increment_resource(
+            OwnerType.TEAM, test_team.id, ResourceType.SERVICE_KEY
+        )
         assert False, "Should have raised LimitNotFoundError"
     except Exception:
         pass  # Expected
@@ -540,7 +538,9 @@ def test_check_key_limits_fallback_creates_limit(db, test_team, test_product):
     team_limits = limit_service.get_team_limits(team)
 
     # Should have a SERVICE_KEY limit now
-    key_limits = [limit for limit in team_limits if limit.resource == ResourceType.SERVICE_KEY]
+    key_limits = [
+        limit for limit in team_limits if limit.resource == ResourceType.SERVICE_KEY
+    ]
     assert len(key_limits) == 1
     key_limit = key_limits[0]
     # The fallback should correctly use service_key_count (not total_key_count)
@@ -548,24 +548,25 @@ def test_check_key_limits_fallback_creates_limit(db, test_team, test_product):
     assert key_limit.current_value == 1.0  # Should be 1 after the increment
 
 
-def test_check_key_limits_fallback_creates_user_limit(db, test_team, test_product, test_team_user):
+def test_check_key_limits_fallback_creates_user_limit(
+    db, test_team, test_product, test_team_user
+):
     """
     GIVEN: A team with no limits in the new service but with products
     WHEN: Checking key limits for a specific user
     THEN: The fallback code runs and creates user-level limits in the service
     """
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
     # Verify no limit exists in the service initially
     limit_service = LimitService(db)
     try:
-        limit_service.increment_resource(OwnerType.USER, test_team_user.id, ResourceType.USER_KEY)
+        limit_service.increment_resource(
+            OwnerType.USER, test_team_user.id, ResourceType.USER_KEY
+        )
         assert False, "Should have raised LimitNotFoundError"
     except Exception:
         pass  # Expected
@@ -578,7 +579,9 @@ def test_check_key_limits_fallback_creates_user_limit(db, test_team, test_produc
     user_limits = limit_service.get_user_limits(test_team_user)
 
     # Should have a USER_KEY limit now
-    key_limits = [limit for limit in user_limits if limit.resource == ResourceType.USER_KEY]
+    key_limits = [
+        limit for limit in user_limits if limit.resource == ResourceType.USER_KEY
+    ]
     assert len(key_limits) == 1
     key_limit = key_limits[0]
     # The fallback should correctly use product values

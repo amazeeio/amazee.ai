@@ -47,7 +47,6 @@ The version bump will automatically update all version references and create a g
 - Make (for running convenience commands)
 - Node.js and npm (for local frontend development)
 - Python 3.x (for local backend development)
-- Terraform for creating AWS resources (+default credentials with sufficient permissions)
 
 ## 🛠️ Setup & Installation
 
@@ -55,14 +54,6 @@ The version bump will automatically update all version references and create a g
    ```bash
    git clone [repository-url]
    cd [repository-name]
-   ```
-
-1. Run terraform in the dev account you are using locally
-   ```bash
-   cd terraform
-   terraform init
-   terraform apply -var "aws_account_id=your-cool-dev-account"
-   cd ../
    ```
 
 1. Install node dependencies
@@ -98,7 +89,7 @@ make backend-test-regex # Waits for a string which pytest will parse to only col
 ```
 
 ### 💳 Testing Stripe
-See [[tests/stripe_test_trigger.md]] for detailed instructions on testing integration with Stripe for billing purposes.
+See [[tests/stripe_test_trigger.md]] for detailed instructions on testing Stripe integration for billing.
 
 ### Frontend Tests
 ```bash
@@ -159,6 +150,85 @@ Access the services at:
 - Backend API: http://localhost:8800
 
 
+## 🗄️ How to Restore from a Database Dump
+
+If you have a database dump, you can restore it into your local PostgreSQL service following these steps:
+
+1. **Extract the dump**:
+   ```bash
+   mkdir -p ./restore-data
+   tar -xf the-postgres-database-dump.tar -C ./restore-data
+   ```
+
+2. **Prepare the restore script**:
+   The dump should contain a `restore.sql` file, which then contains placeholders and likely a different database name. Update it for your local environment:
+   ```bash
+   # Replace the data path placeholder
+   sed -i '' 's/\$\$PATH\$\$/\/tmp\/restore/g' ./restore-data/restore.sql
+   # Replace the dumped database name (`dumped-database-example-name`) with your local one (e.g. `postgres_service`)
+   sed -i '' 's/dumped-database-example-name/postgres_service/g' ./restore-data/restore.sql
+   ```
+
+3. **Stop the backend**:
+   To prevent active connections during the restoration, stop the backend container:
+   ```bash
+   docker compose stop backend
+   ```
+
+4. **Get the name of the postgres container**
+   Copy the name e.g. `amazeeai-postgres-1` and replace `<postgres-container-name>` in the following commands.
+   ```bash
+   docker compose ps
+   ```
+
+5. **Transfer and restore**:
+   Copy the files to the database container, fix permissions, and run the restoration:
+   ```bash
+   # Create directory and copy files
+   docker exec <postgres-container-name> mkdir -p /tmp/restore
+   docker cp ./restore-data/. <postgres-container-name>:/tmp/restore/
+
+   # Fix permissions so the postgres user can read the .dat files
+   docker exec <postgres-container-name> chown -R postgres:postgres /tmp/restore
+
+   # Run the restoration script
+   docker exec <postgres-container-name> psql -U postgres -f /tmp/restore/restore.sql
+   ```
+
+6. **Restart and Clean up**:
+   ```bash
+   # Start the backend again
+   docker compose start backend
+
+   # Optional: remove temporary files from the container
+   docker exec <postgres-container-name> rm -rf /tmp/restore
+   ```
+
+## 🛠️ Development Workflow
+
+We follow a structured branching and deployment process to ensure stability across environments.
+
+### 1. Feature Development
+* **Default Branch**: `dev` is the default branch, and it is linked to the `dev` environment on Lagoon.
+* **Branching**: Always create new feature branches from `dev`. Bugfixes can potentially be created from the `main` branch if they need to be merged into `main` and `prod` faster than in-progress `dev` work.
+* **Review**: Create a Pull Request (PR) back into `dev`. All PRs must be reviewed and tested locally before merging.
+
+### 2. Testing & Staging
+* **Dev Testing**: After merging, verify your changes on the `dev` environment.
+* **Staging**: Once verified on dev, create a PR from `dev` to `main`. The `main` branch serves as our **Stage** environment.
+
+### 3. Production Deployment
+* **Lagoon**: Deployments are managed via Lagoon.
+* **Promotion**: Deploy to **Prod** by promoting the build from the `main` branch directly on the Lagoon Dashboard or via Lagoon CLI.
+
+## 👥 Contributing
+
+1. Create a new branch from `dev`: `git checkout -b feature/my-feature`
+2. Make your changes and commit.
+3. Run the test suite: `make test-all`
+4. Submit a pull request to the `dev` branch.
+
+
 ## 📁 Project Structure
 
 ```
@@ -167,7 +237,6 @@ Access the services at:
 ├── docs/                  # Documentation around design decisions
 ├── frontend/              # React frontend application
 ├── tests/                 # Backend tests
-├── terraform/             # Terraform configuration for remote resources
 ├── scripts/               # Utility scripts
 ├── docker-compose.yml     # Docker services configuration
 ├── Dockerfile             # Backend service Dockerfile
@@ -189,10 +258,6 @@ Access the services at:
 
 ### Frontend
 - `NEXT_PUBLIC_API_URL`: Backend API URL
-
-## 🌍 Terraform
-
-This project includes the default terraform details needed to set up remote AWS resources (IAM roles and users, DDB tables, etc).
 
 ## 👥 Contributing
 

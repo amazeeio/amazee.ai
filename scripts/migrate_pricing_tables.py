@@ -5,12 +5,13 @@ import sys
 from datetime import datetime, UTC
 
 # Add the parent directory to the Python path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from sqlalchemy.orm import sessionmaker, Session
 from app.db.database import engine
 from app.db.models import DBSystemSecret, DBPricingTable
 from app.core.config import settings
+
 
 def migrate_pricing_tables(db: Session) -> bool:
     """
@@ -26,24 +27,30 @@ def migrate_pricing_tables(db: Session) -> bool:
         inspector = db.bind.dialect.inspector(db.bind)
         existing_tables = inspector.get_table_names()
 
-        if 'pricing_tables' not in existing_tables:
+        if "pricing_tables" not in existing_tables:
             print("pricing_tables table does not exist yet - skipping migration")
             return True
 
         # Check if we already have any DBPricingTable records
         existing_new_tables = db.query(DBPricingTable).count()
         if existing_new_tables > 0:
-            print(f"Found {existing_new_tables} existing DBPricingTable records - skipping migration")
+            print(
+                f"Found {existing_new_tables} existing DBPricingTable records - skipping migration"
+            )
             return True
 
         # Get existing system secrets
-        standard_secret = db.query(DBSystemSecret).filter(
-            DBSystemSecret.key == "CurrentPricingTable"
-        ).first()
+        standard_secret = (
+            db.query(DBSystemSecret)
+            .filter(DBSystemSecret.key == "CurrentPricingTable")
+            .first()
+        )
 
-        always_free_secret = db.query(DBSystemSecret).filter(
-            DBSystemSecret.key == "AlwaysFreePricingTable"
-        ).first()
+        always_free_secret = (
+            db.query(DBSystemSecret)
+            .filter(DBSystemSecret.key == "AlwaysFreePricingTable")
+            .first()
+        )
 
         migrated_count = 0
 
@@ -56,7 +63,7 @@ def migrate_pricing_tables(db: Session) -> bool:
                 stripe_publishable_key=settings.STRIPE_PUBLISHABLE_KEY,
                 is_active=True,
                 created_at=standard_secret.created_at or datetime.now(UTC),
-                updated_at=standard_secret.updated_at
+                updated_at=standard_secret.updated_at,
             )
             db.add(standard_table)
             migrated_count += 1
@@ -72,7 +79,7 @@ def migrate_pricing_tables(db: Session) -> bool:
                 stripe_publishable_key=settings.STRIPE_PUBLISHABLE_KEY,
                 is_active=True,
                 created_at=always_free_secret.created_at or datetime.now(UTC),
-                updated_at=always_free_secret.updated_at
+                updated_at=always_free_secret.updated_at,
             )
             db.add(always_free_table)
             migrated_count += 1
@@ -91,6 +98,7 @@ def migrate_pricing_tables(db: Session) -> bool:
         print(f"Error during pricing table migration: {str(e)}")
         db.rollback()
         return False
+
 
 def main():
     """Main function to run the pricing table migration"""
@@ -115,6 +123,7 @@ def main():
     except Exception as e:
         print(f"Error during migration script execution: {str(e)}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

@@ -56,3 +56,5 @@ terraform/.terraform/
 .claude/
 CLAUDE.local.md
 CLAUDE.md
+# review.nvim
+.review

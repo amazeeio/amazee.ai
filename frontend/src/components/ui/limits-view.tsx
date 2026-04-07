@@ -1,22 +1,10 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
-import { Loader2, Plus } from 'lucide-react';
-import { useToast } from '@/hooks/use-toast';
-import { put, post } from '@/utils/api';
-import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
+import { Loader2, Plus } from "lucide-react";
+import { useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { DeleteConfirmationDialog } from "@/components/ui/delete-confirmation-dialog";
 import {
   Dialog,
   DialogContent,
@@ -25,25 +13,37 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select';
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { useToast } from "@/hooks/use-toast";
+import { put, post } from "@/utils/api";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 export interface LimitedResource {
   id: number;
-  limit_type: 'control_plane' | 'data_plane';
+  limit_type: "control_plane" | "data_plane";
   resource: string;
-  unit: 'count' | 'dollar' | 'gigabyte';
+  unit: "count" | "dollar" | "gigabyte";
   max_value: number;
   current_value: number | null;
-  owner_type: 'system' | 'team' | 'user';
+  owner_type: "system" | "team" | "user";
   owner_id: number;
-  limited_by: 'product' | 'default' | 'manual';
+  limited_by: "product" | "default" | "manual";
   set_by: string | null;
   created_at: string;
   updated_at: string | null;
@@ -51,34 +51,34 @@ export interface LimitedResource {
 
 // Enum constants matching the backend
 const LIMIT_TYPES = [
-  { value: 'control_plane', label: 'Control Plane' },
-  { value: 'data_plane', label: 'Data Plane' },
+  { value: "control_plane", label: "Control Plane" },
+  { value: "data_plane", label: "Data Plane" },
 ] as const;
 
 const RESOURCE_TYPES = [
   // Control Plane Resources
-  { value: 'user_key', label: 'User Keys', limitType: 'control_plane' },
-  { value: 'service_key', label: 'Service Keys', limitType: 'control_plane' },
-  { value: 'user', label: 'Users', limitType: 'control_plane' },
-  { value: 'vector_db', label: 'Vector DBs', limitType: 'control_plane' },
-  { value: 'gpt_instance', label: 'GPT Instances', limitType: 'control_plane' },
+  { value: "user_key", label: "User Keys", limitType: "control_plane" },
+  { value: "service_key", label: "Service Keys", limitType: "control_plane" },
+  { value: "user", label: "Users", limitType: "control_plane" },
+  { value: "vector_db", label: "Vector DBs", limitType: "control_plane" },
+  { value: "gpt_instance", label: "GPT Instances", limitType: "control_plane" },
   // Data Plane Resources
-  { value: 'max_budget', label: 'Max Budget', limitType: 'data_plane' },
-  { value: 'rpm', label: 'RPM', limitType: 'data_plane' },
-  { value: 'storage', label: 'Storage', limitType: 'data_plane' },
-  { value: 'document', label: 'Documents', limitType: 'data_plane' },
+  { value: "max_budget", label: "Max Budget", limitType: "data_plane" },
+  { value: "rpm", label: "RPM", limitType: "data_plane" },
+  { value: "storage", label: "Storage", limitType: "data_plane" },
+  { value: "document", label: "Documents", limitType: "data_plane" },
 ] as const;
 
 const UNIT_TYPES = [
-  { value: 'count', label: 'Count' },
-  { value: 'dollar', label: 'Dollar ($)' },
-  { value: 'gigabyte', label: 'Gigabyte (GB)' },
+  { value: "count", label: "Count" },
+  { value: "dollar", label: "Dollar ($)" },
+  { value: "gigabyte", label: "Gigabyte (GB)" },
 ] as const;
 
 interface LimitsViewProps {
   limits: LimitedResource[];
   isLoading: boolean;
-  ownerType: 'team' | 'user' | 'system';
+  ownerType: "team" | "user" | "system";
   ownerId: string;
   queryKey: string[];
   showResetAll?: boolean;
@@ -106,8 +106,8 @@ export function LimitsView({
 
   // Create limit dialog state
   const [isCreatingLimit, setIsCreatingLimit] = useState(false);
-  const [newLimitType, setNewLimitType] = useState<string>('');
-  const [newResourceType, setNewResourceType] = useState<string>('');
+  const [newLimitType, setNewLimitType] = useState<string>("");
+  const [newResourceType, setNewResourceType] = useState<string>("");
   const [newMaxValue, setNewMaxValue] = useState<number>(0);
   const [newCurrentValue, setNewCurrentValue] = useState<number | null>(null);
 
@@ -122,30 +122,32 @@ export function LimitsView({
       current_value: number | null;
     }) => {
       try {
-        const response = await put('/limits/overwrite', limitData);
+        const response = await put("/limits/overwrite", limitData);
         return response.json();
       } catch (error) {
         if (error instanceof Error) {
           throw new Error(`Failed to update limit: ${error.message}`);
         } else {
-          throw new Error('An unexpected error occurred while updating the limit.');
+          throw new Error(
+            "An unexpected error occurred while updating the limit.",
+          );
         }
       }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey });
       toast({
-        title: 'Success',
-        description: 'Limit updated successfully',
+        title: "Success",
+        description: "Limit updated successfully",
       });
       setIsEditingLimit(false);
       setEditingLimitId(null);
     },
     onError: (error: Error) => {
       toast({
-        title: 'Error',
+        title: "Error",
         description: error.message,
-        variant: 'destructive',
+        variant: "destructive",
       });
     },
   });
@@ -157,28 +159,30 @@ export function LimitsView({
       resource: string;
     }) => {
       try {
-        const response = await post('/limits/reset', limitData);
+        const response = await post("/limits/reset", limitData);
         return response.json();
       } catch (error) {
         if (error instanceof Error) {
           throw new Error(`Failed to reset limit: ${error.message}`);
         } else {
-          throw new Error('An unexpected error occurred while resetting the limit.');
+          throw new Error(
+            "An unexpected error occurred while resetting the limit.",
+          );
         }
       }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey });
       toast({
-        title: 'Success',
-        description: 'Limit reset successfully',
+        title: "Success",
+        description: "Limit reset successfully",
       });
     },
     onError: (error: Error) => {
       toast({
-        title: 'Error',
+        title: "Error",
         description: error.message,
-        variant: 'destructive',
+        variant: "destructive",
       });
     },
   });
@@ -194,34 +198,36 @@ export function LimitsView({
       current_value: number | null;
     }) => {
       try {
-        const response = await put('/limits/overwrite', limitData);
+        const response = await put("/limits/overwrite", limitData);
         return response.json();
       } catch (error) {
         if (error instanceof Error) {
           throw new Error(`Failed to create limit: ${error.message}`);
         } else {
-          throw new Error('An unexpected error occurred while creating the limit.');
+          throw new Error(
+            "An unexpected error occurred while creating the limit.",
+          );
         }
       }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey });
       toast({
-        title: 'Success',
-        description: 'Limit created successfully',
+        title: "Success",
+        description: "Limit created successfully",
       });
       setIsCreatingLimit(false);
       // Reset form
-      setNewLimitType('');
-      setNewResourceType('');
+      setNewLimitType("");
+      setNewResourceType("");
       setNewMaxValue(0);
       setNewCurrentValue(null);
     },
     onError: (error: Error) => {
       toast({
-        title: 'Error',
+        title: "Error",
         description: error.message,
-        variant: 'destructive',
+        variant: "destructive",
       });
     },
   });
@@ -256,19 +262,22 @@ export function LimitsView({
     e.preventDefault();
     if (!newLimitType || !newResourceType) {
       toast({
-        title: 'Error',
-        description: 'Please fill in all required fields',
-        variant: 'destructive',
+        title: "Error",
+        description: "Please fill in all required fields",
+        variant: "destructive",
       });
       return;
     }
 
     // For control plane limits, current_value is required
-    if (newLimitType === 'control_plane' && (newCurrentValue === null || newCurrentValue === undefined)) {
+    if (
+      newLimitType === "control_plane" &&
+      (newCurrentValue === null || newCurrentValue === undefined)
+    ) {
       toast({
-        title: 'Error',
-        description: 'Current value is required for control plane limits',
-        variant: 'destructive',
+        title: "Error",
+        description: "Current value is required for control plane limits",
+        variant: "destructive",
       });
       return;
     }
@@ -289,57 +298,61 @@ export function LimitsView({
   // Get filtered resource types based on selected limit type
   const getFilteredResourceTypes = () => {
     if (!newLimitType) return RESOURCE_TYPES;
-    return RESOURCE_TYPES.filter(resource => resource.limitType === newLimitType);
+    return RESOURCE_TYPES.filter(
+      (resource) => resource.limitType === newLimitType,
+    );
   };
 
   // Get the unit for a given resource type
   const getUnitForResource = (resourceType: string): string => {
     const unitMapping: Record<string, string> = {
-      'user_key': 'count',
-      'service_key': 'count',
-      'user': 'count',
-      'vector_db': 'count',
-      'gpt_instance': 'count',
-      'max_budget': 'dollar',
-      'rpm': 'count',
-      'storage': 'gigabyte',
-      'document': 'count',
+      user_key: "count",
+      service_key: "count",
+      user: "count",
+      vector_db: "count",
+      gpt_instance: "count",
+      max_budget: "dollar",
+      rpm: "count",
+      storage: "gigabyte",
+      document: "count",
     };
-    return unitMapping[resourceType] || 'count';
+    return unitMapping[resourceType] || "count";
   };
 
   // Get the current unit based on selected resource type
-  const currentUnit = newResourceType ? getUnitForResource(newResourceType) : '';
+  const currentUnit = newResourceType
+    ? getUnitForResource(newResourceType)
+    : "";
 
   const formatResourceName = (resource: string): string => {
     const mapping: Record<string, string> = {
-      'user_key': 'User Keys',
-      'service_key': 'Service Keys',
-      'user': 'Users',
-      'vector_db': 'Vector DBs',
-      'gpt_instance': 'GPT Instances',
-      'max_budget': 'Max Budget',
-      'rpm': 'RPM',
-      'storage': 'Storage',
-      'document': 'Documents',
+      user_key: "User Keys",
+      service_key: "Service Keys",
+      user: "Users",
+      vector_db: "Vector DBs",
+      gpt_instance: "GPT Instances",
+      max_budget: "Max Budget",
+      rpm: "RPM",
+      storage: "Storage",
+      document: "Documents",
     };
     return mapping[resource] || resource;
   };
 
   const formatUnit = (unit: string): string => {
     const mapping: Record<string, string> = {
-      'count': '',
-      'dollar': '$',
-      'gigabyte': 'GB',
+      count: "",
+      dollar: "$",
+      gigabyte: "GB",
     };
     return mapping[unit] || unit;
   };
 
   const formatValue = (value: number | null, unit: string): string => {
-    if (value === null) return 'N/A';
+    if (value === null) return "N/A";
 
     const unitSymbol = formatUnit(unit);
-    if (unit === 'count') {
+    if (unit === "count") {
       return value.toString();
     }
     return `${unitSymbol}${value}`;
@@ -347,26 +360,26 @@ export function LimitsView({
 
   const formatLimitType = (limitType: string): string => {
     const mapping: Record<string, string> = {
-      'control_plane': 'Control Plane',
-      'data_plane': 'Data Plane',
+      control_plane: "Control Plane",
+      data_plane: "Data Plane",
     };
     return mapping[limitType] || limitType;
   };
 
   const formatLimitSource = (source: string): string => {
     const mapping: Record<string, string> = {
-      'product': 'Product',
-      'default': 'Default',
-      'manual': 'Manual',
+      product: "Product",
+      default: "Default",
+      manual: "Manual",
     };
     return mapping[source] || source;
   };
 
   const formatOwnerType = (ownerType: string): string => {
     const mapping: Record<string, string> = {
-      'system': 'System',
-      'team': 'Team',
-      'user': 'User',
+      system: "System",
+      team: "Team",
+      user: "User",
     };
     return mapping[ownerType] || ownerType;
   };
@@ -395,7 +408,8 @@ export function LimitsView({
               <DialogHeader>
                 <DialogTitle>Create New Limit</DialogTitle>
                 <DialogDescription>
-                  Create a new limit for this {ownerType}. This will override any existing product or default limits.
+                  Create a new limit for this {ownerType}. This will override
+                  any existing product or default limits.
                 </DialogDescription>
               </DialogHeader>
               <form onSubmit={handleCreateLimit} className="space-y-4">
@@ -405,7 +419,7 @@ export function LimitsView({
                     value={newLimitType}
                     onValueChange={(value) => {
                       setNewLimitType(value);
-                      setNewResourceType(''); // Reset resource type when limit type changes
+                      setNewResourceType(""); // Reset resource type when limit type changes
                       // Reset current value when limit type changes
                       setNewCurrentValue(null);
                     }}
@@ -449,7 +463,8 @@ export function LimitsView({
                   <div className="space-y-2">
                     <label className="text-sm font-medium">Unit</label>
                     <div className="px-3 py-2 border rounded-md bg-muted text-sm">
-                      {UNIT_TYPES.find(unit => unit.value === currentUnit)?.label || currentUnit}
+                      {UNIT_TYPES.find((unit) => unit.value === currentUnit)
+                        ?.label || currentUnit}
                     </div>
                     <p className="text-xs text-muted-foreground">
                       Unit is automatically determined by the resource type
@@ -464,7 +479,7 @@ export function LimitsView({
                     value={newMaxValue}
                     onChange={(e) => {
                       const value = e.target.value;
-                      if (currentUnit === 'count') {
+                      if (currentUnit === "count") {
                         setNewMaxValue(parseInt(value) || 0);
                       } else {
                         setNewMaxValue(parseFloat(value) || 0);
@@ -473,23 +488,26 @@ export function LimitsView({
                     placeholder="Enter max value"
                     required
                     min="0"
-                    step={currentUnit === 'count' ? '1' : '0.01'}
+                    step={currentUnit === "count" ? "1" : "0.01"}
                   />
                 </div>
 
                 <div className="space-y-2">
                   <label className="text-sm font-medium">
-                    Current Value {newLimitType === 'control_plane' ? '(Required)' : '(Optional)'}
+                    Current Value{" "}
+                    {newLimitType === "control_plane"
+                      ? "(Required)"
+                      : "(Optional)"}
                   </label>
                   <Input
                     type="number"
-                    value={newCurrentValue !== null ? newCurrentValue : ''}
+                    value={newCurrentValue !== null ? newCurrentValue : ""}
                     onChange={(e) => {
                       const value = e.target.value;
-                      if (value === '') {
+                      if (value === "") {
                         setNewCurrentValue(null);
                       } else {
-                        if (currentUnit === 'count') {
+                        if (currentUnit === "count") {
                           const numValue = parseInt(value);
                           setNewCurrentValue(isNaN(numValue) ? null : numValue);
                         } else {
@@ -498,12 +516,16 @@ export function LimitsView({
                         }
                       }
                     }}
-                    placeholder={newLimitType === 'control_plane' ? 'Enter current value' : 'Enter current value (optional)'}
+                    placeholder={
+                      newLimitType === "control_plane"
+                        ? "Enter current value"
+                        : "Enter current value (optional)"
+                    }
                     min="0"
-                    step={currentUnit === 'count' ? '1' : '0.01'}
-                    required={newLimitType === 'control_plane'}
+                    step={currentUnit === "count" ? "1" : "0.01"}
+                    required={newLimitType === "control_plane"}
                   />
-                  {newLimitType === 'control_plane' && (
+                  {newLimitType === "control_plane" && (
                     <p className="text-xs text-muted-foreground">
                       Current value is required for control plane limits
                     </p>
@@ -528,7 +550,7 @@ export function LimitsView({
                         Creating...
                       </>
                     ) : (
-                      'Create Limit'
+                      "Create Limit"
                     )}
                   </Button>
                 </DialogFooter>
@@ -538,9 +560,9 @@ export function LimitsView({
 
           {showResetAll && onResetAll && (
             <DeleteConfirmationDialog
-              title={`Reset All ${ownerType === 'team' ? 'Team' : 'User'} Limits`}
+              title={`Reset All ${ownerType === "team" ? "Team" : "User"} Limits`}
               description={`Are you sure you want to reset all limits for this ${ownerType}? This will revert all manual overrides back to product or default limits.`}
-              triggerText={`Reset All ${ownerType === 'team' ? 'Team' : 'User'} Limits`}
+              triggerText={`Reset All ${ownerType === "team" ? "Team" : "User"} Limits`}
               confirmText="Reset"
               onConfirm={onResetAll}
               isLoading={isResettingAll}
@@ -578,18 +600,18 @@ export function LimitsView({
                   <TableCell>
                     <Badge
                       variant={
-                        limit.owner_type === 'user' ? 'default' :
-                        limit.owner_type === 'team' ? 'secondary' :
-                        'outline'
+                        limit.owner_type === "user"
+                          ? "default"
+                          : limit.owner_type === "team"
+                            ? "secondary"
+                            : "outline"
                       }
                     >
                       {formatOwnerType(limit.owner_type)}
                     </Badge>
                   </TableCell>
                   <TableCell>
-                    <span>
-                      {formatValue(limit.current_value, limit.unit)}
-                    </span>
+                    <span>{formatValue(limit.current_value, limit.unit)}</span>
                   </TableCell>
                   <TableCell>
                     {isEditingLimit && editingLimitId === limit.id ? (
@@ -598,7 +620,7 @@ export function LimitsView({
                         value={editMaxValue}
                         onChange={(e) => {
                           const value = e.target.value;
-                          if (limit.unit === 'count') {
+                          if (limit.unit === "count") {
                             setEditMaxValue(parseInt(value) || 0);
                           } else {
                             setEditMaxValue(parseFloat(value) || 0);
@@ -606,20 +628,20 @@ export function LimitsView({
                         }}
                         className="w-24"
                         required
-                        step={limit.unit === 'count' ? '1' : '0.01'}
+                        step={limit.unit === "count" ? "1" : "0.01"}
                       />
                     ) : (
-                      <span>
-                        {formatValue(limit.max_value, limit.unit)}
-                      </span>
+                      <span>{formatValue(limit.max_value, limit.unit)}</span>
                     )}
                   </TableCell>
                   <TableCell>
                     <Badge
                       variant={
-                        limit.limited_by === 'manual' ? 'default' :
-                        limit.limited_by === 'product' ? 'secondary' :
-                        'outline'
+                        limit.limited_by === "manual"
+                          ? "default"
+                          : limit.limited_by === "product"
+                            ? "secondary"
+                            : "outline"
                       }
                     >
                       {formatLimitSource(limit.limited_by)}
@@ -643,7 +665,7 @@ export function LimitsView({
                           {updateLimitMutation.isPending ? (
                             <Loader2 className="h-4 w-4 animate-spin" />
                           ) : (
-                            'Save'
+                            "Save"
                           )}
                         </Button>
                         <Button
@@ -687,7 +709,9 @@ export function LimitsView({
         </div>
       ) : (
         <div className="text-center py-8 border rounded-md">
-          <p className="text-muted-foreground">No limits configured for this {ownerType}.</p>
+          <p className="text-muted-foreground">
+            No limits configured for this {ownerType}.
+          </p>
         </div>
       )}
     </div>

@@ -1,6 +1,7 @@
-"use client"
+"use client";
 
-import * as React from "react"
+import { Loader2 } from "lucide-react";
+import * as React from "react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -11,22 +12,21 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   AlertDialogTrigger,
-} from "@/components/ui/alert-dialog"
-import { Button } from "@/components/ui/button"
-import { Loader2 } from "lucide-react"
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 
 interface ConfirmationDialogProps {
-  title?: string
-  description?: string
-  triggerText?: string
-  confirmText?: string
-  cancelText?: string
-  onConfirm: () => void
-  isLoading?: boolean
-  disabled?: boolean
-  variant?: "default" | "outline"
-  size?: "default" | "sm" | "lg" | "icon"
-  children?: React.ReactNode
+  title?: string;
+  description?: string;
+  triggerText?: string;
+  confirmText?: string;
+  cancelText?: string;
+  onConfirm: () => void;
+  isLoading?: boolean;
+  disabled?: boolean;
+  variant?: "default" | "outline";
+  size?: "default" | "sm" | "lg" | "icon";
+  children?: React.ReactNode;
 }
 
 export function ConfirmationDialog({
@@ -58,10 +58,7 @@ export function ConfirmationDialog({
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>{cancelText}</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={onConfirm}
-            disabled={isLoading}
-          >
+          <AlertDialogAction onClick={onConfirm} disabled={isLoading}>
             {isLoading ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -74,5 +71,5 @@ export function ConfirmationDialog({
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
-  )
+  );
 }

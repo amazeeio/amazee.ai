@@ -16,7 +16,7 @@ def test_get_audit_logs_admin_access_success(client, admin_token, db):
             email="test@example.com",
             hashed_password=get_password_hash("testpassword"),
             is_active=True,
-            is_admin=False
+            is_admin=False,
         )
         db.add(test_user)
         db.commit()
@@ -34,7 +34,7 @@ def test_get_audit_logs_admin_access_success(client, admin_token, db):
             ip_address="127.0.0.1",
             user_agent="test-agent",
             request_source="frontend",
-            timestamp=datetime.now(UTC)
+            timestamp=datetime.now(UTC),
         ),
         DBAuditLog(
             user_id=test_user.id,
@@ -46,8 +46,8 @@ def test_get_audit_logs_admin_access_success(client, admin_token, db):
             ip_address="127.0.0.1",
             user_agent="test-agent",
             request_source="api",
-            timestamp=datetime.now(UTC) - timedelta(hours=1)
-        )
+            timestamp=datetime.now(UTC) - timedelta(hours=1),
+        ),
     ]
 
     for log in audit_logs:
@@ -55,8 +55,7 @@ def test_get_audit_logs_admin_access_success(client, admin_token, db):
     db.commit()
 
     response = client.get(
-        "/audit/logs",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/audit/logs", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200
@@ -74,8 +73,7 @@ def test_get_audit_logs_non_admin_forbidden(client, test_token):
     Then: The request is forbidden
     """
     response = client.get(
-        "/audit/logs",
-        headers={"Authorization": f"Bearer {test_token}"}
+        "/audit/logs", headers={"Authorization": f"Bearer {test_token}"}
     )
 
     assert response.status_code == 403
@@ -106,7 +104,7 @@ def test_get_audit_logs_with_event_type_filter(client, admin_token, db):
             email="test@example.com",
             hashed_password=get_password_hash("testpassword"),
             is_active=True,
-            is_admin=False
+            is_admin=False,
         )
         db.add(test_user)
         db.commit()
@@ -119,7 +117,7 @@ def test_get_audit_logs_with_event_type_filter(client, admin_token, db):
             resource_type="users",
             action="GET /users",
             details={"status_code": 200},
-            timestamp=datetime.now(UTC)
+            timestamp=datetime.now(UTC),
         ),
         DBAuditLog(
             user_id=test_user.id,
@@ -127,7 +125,7 @@ def test_get_audit_logs_with_event_type_filter(client, admin_token, db):
             resource_type="auth",
             action="POST /auth/login",
             details={"status_code": 200},
-            timestamp=datetime.now(UTC)
+            timestamp=datetime.now(UTC),
         ),
         DBAuditLog(
             user_id=test_user.id,
@@ -135,8 +133,8 @@ def test_get_audit_logs_with_event_type_filter(client, admin_token, db):
             resource_type="users",
             action="DELETE /users/123",
             details={"status_code": 204},
-            timestamp=datetime.now(UTC)
-        )
+            timestamp=datetime.now(UTC),
+        ),
     ]
 
     for log in audit_logs:
@@ -145,7 +143,7 @@ def test_get_audit_logs_with_event_type_filter(client, admin_token, db):
 
     response = client.get(
         "/audit/logs?event_type=GET,POST",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     assert response.status_code == 200
@@ -169,7 +167,7 @@ def test_get_audit_logs_with_resource_type_filter(client, admin_token, db):
             email="test@example.com",
             hashed_password=get_password_hash("testpassword"),
             is_active=True,
-            is_admin=False
+            is_admin=False,
         )
         db.add(test_user)
         db.commit()
@@ -182,7 +180,7 @@ def test_get_audit_logs_with_resource_type_filter(client, admin_token, db):
             resource_type="users",
             action="GET /users",
             details={"status_code": 200},
-            timestamp=datetime.now(UTC)
+            timestamp=datetime.now(UTC),
         ),
         DBAuditLog(
             user_id=test_user.id,
@@ -190,7 +188,7 @@ def test_get_audit_logs_with_resource_type_filter(client, admin_token, db):
             resource_type="auth",
             action="POST /auth/login",
             details={"status_code": 200},
-            timestamp=datetime.now(UTC)
+            timestamp=datetime.now(UTC),
         ),
         DBAuditLog(
             user_id=test_user.id,
@@ -198,8 +196,8 @@ def test_get_audit_logs_with_resource_type_filter(client, admin_token, db):
             resource_type="teams",
             action="GET /teams",
             details={"status_code": 200},
-            timestamp=datetime.now(UTC)
-        )
+            timestamp=datetime.now(UTC),
+        ),
     ]
 
     for log in audit_logs:
@@ -208,7 +206,7 @@ def test_get_audit_logs_with_resource_type_filter(client, admin_token, db):
 
     response = client.get(
         "/audit/logs?resource_type=users,auth",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     assert response.status_code == 200
@@ -231,13 +229,13 @@ def test_get_audit_logs_with_user_email_filter(client, admin_token, db):
         email="user1@example.com",
         hashed_password=get_password_hash("password"),
         is_active=True,
-        is_admin=False
+        is_admin=False,
     )
     user2 = DBUser(
         email="user2@example.com",
         hashed_password=get_password_hash("password"),
         is_active=True,
-        is_admin=False
+        is_admin=False,
     )
     db.add_all([user1, user2])
     db.commit()
@@ -251,7 +249,7 @@ def test_get_audit_logs_with_user_email_filter(client, admin_token, db):
             resource_type="users",
             action="GET /users",
             details={"status_code": 200},
-            timestamp=datetime.now(UTC)
+            timestamp=datetime.now(UTC),
         ),
         DBAuditLog(
             user_id=user2.id,
@@ -259,8 +257,8 @@ def test_get_audit_logs_with_user_email_filter(client, admin_token, db):
             resource_type="auth",
             action="POST /auth/login",
             details={"status_code": 200},
-            timestamp=datetime.now(UTC)
-        )
+            timestamp=datetime.now(UTC),
+        ),
     ]
 
     for log in audit_logs:
@@ -269,7 +267,7 @@ def test_get_audit_logs_with_user_email_filter(client, admin_token, db):
 
     response = client.get(
         "/audit/logs?user_email=user1",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     assert response.status_code == 200
@@ -293,7 +291,7 @@ def test_get_audit_logs_with_date_range_filter(client, admin_token, db):
             email="test@example.com",
             hashed_password=get_password_hash("testpassword"),
             is_active=True,
-            is_admin=False
+            is_admin=False,
         )
         db.add(test_user)
         db.commit()
@@ -310,7 +308,7 @@ def test_get_audit_logs_with_date_range_filter(client, admin_token, db):
             resource_type="users",
             action="GET /users",
             details={"status_code": 200},
-            timestamp=yesterday
+            timestamp=yesterday,
         ),
         DBAuditLog(
             user_id=test_user.id,
@@ -318,7 +316,7 @@ def test_get_audit_logs_with_date_range_filter(client, admin_token, db):
             resource_type="auth",
             action="POST /auth/login",
             details={"status_code": 200},
-            timestamp=now
+            timestamp=now,
         ),
         DBAuditLog(
             user_id=test_user.id,
@@ -326,8 +324,8 @@ def test_get_audit_logs_with_date_range_filter(client, admin_token, db):
             resource_type="users",
             action="DELETE /users/123",
             details={"status_code": 204},
-            timestamp=tomorrow
-        )
+            timestamp=tomorrow,
+        ),
     ]
 
     for log in audit_logs:
@@ -341,7 +339,7 @@ def test_get_audit_logs_with_date_range_filter(client, admin_token, db):
 
     response = client.get(
         f"/audit/logs?from_date={from_date}&to_date={to_date}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     assert response.status_code == 200
@@ -361,7 +359,7 @@ def test_get_audit_logs_with_status_code_filter(client, admin_token, db):
             email="test@example.com",
             hashed_password=get_password_hash("testpassword"),
             is_active=True,
-            is_admin=False
+            is_admin=False,
         )
         db.add(test_user)
         db.commit()
@@ -374,7 +372,7 @@ def test_get_audit_logs_with_status_code_filter(client, admin_token, db):
             resource_type="users",
             action="GET /users",
             details={"status_code": 200},
-            timestamp=datetime.now(UTC)
+            timestamp=datetime.now(UTC),
         ),
         DBAuditLog(
             user_id=test_user.id,
@@ -382,7 +380,7 @@ def test_get_audit_logs_with_status_code_filter(client, admin_token, db):
             resource_type="auth",
             action="POST /auth/login",
             details={"status_code": 401},
-            timestamp=datetime.now(UTC)
+            timestamp=datetime.now(UTC),
         ),
         DBAuditLog(
             user_id=test_user.id,
@@ -390,8 +388,8 @@ def test_get_audit_logs_with_status_code_filter(client, admin_token, db):
             resource_type="users",
             action="DELETE /users/123",
             details={"status_code": 404},
-            timestamp=datetime.now(UTC)
-        )
+            timestamp=datetime.now(UTC),
+        ),
     ]
 
     for log in audit_logs:
@@ -400,7 +398,7 @@ def test_get_audit_logs_with_status_code_filter(client, admin_token, db):
 
     response = client.get(
         "/audit/logs?status_code=200,401",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     assert response.status_code == 200
@@ -409,7 +407,9 @@ def test_get_audit_logs_with_status_code_filter(client, admin_token, db):
 
     # Check that only logs with status codes 200 or 401 are returned
     # The status codes in the response are integers, not strings
-    status_codes = [log["details"]["status_code"] for log in data["items"] if log["details"]]
+    status_codes = [
+        log["details"]["status_code"] for log in data["items"] if log["details"]
+    ]
     assert all(sc in [200, 401] for sc in status_codes)
 
 
@@ -425,7 +425,7 @@ def test_get_audit_logs_with_pagination(client, admin_token, db):
             email="test@example.com",
             hashed_password=get_password_hash("testpassword"),
             is_active=True,
-            is_admin=False
+            is_admin=False,
         )
         db.add(test_user)
         db.commit()
@@ -440,7 +440,7 @@ def test_get_audit_logs_with_pagination(client, admin_token, db):
             resource_type="users",
             action=f"GET /users/{i}",
             details={"status_code": 200},
-            timestamp=datetime.now(UTC) - timedelta(hours=i)
+            timestamp=datetime.now(UTC) - timedelta(hours=i),
         )
         audit_logs.append(log)
 
@@ -450,8 +450,7 @@ def test_get_audit_logs_with_pagination(client, admin_token, db):
 
     # Test pagination with limit=2, skip=1
     response = client.get(
-        "/audit/logs?limit=2&skip=1",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/audit/logs?limit=2&skip=1", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200
@@ -468,22 +467,19 @@ def test_get_audit_logs_invalid_pagination_parameters(client, admin_token):
     """
     # Test negative skip
     response = client.get(
-        "/audit/logs?skip=-1",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/audit/logs?skip=-1", headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert response.status_code == 422
 
     # Test invalid limit
     response = client.get(
-        "/audit/logs?limit=0",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/audit/logs?limit=0", headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert response.status_code == 422
 
     # Test limit too high
     response = client.get(
-        "/audit/logs?limit=1001",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/audit/logs?limit=1001", headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert response.status_code == 422
 
@@ -501,7 +497,7 @@ def test_get_audit_logs_metadata_admin_access_success(client, admin_token, db):
             email="test@example.com",
             hashed_password=get_password_hash("testpassword"),
             is_active=True,
-            is_admin=False
+            is_admin=False,
         )
         db.add(test_user)
         db.commit()
@@ -514,7 +510,7 @@ def test_get_audit_logs_metadata_admin_access_success(client, admin_token, db):
             resource_type="users",
             action="GET /users",
             details={"status_code": 200},
-            timestamp=datetime.now(UTC)
+            timestamp=datetime.now(UTC),
         ),
         DBAuditLog(
             user_id=test_user.id,
@@ -522,7 +518,7 @@ def test_get_audit_logs_metadata_admin_access_success(client, admin_token, db):
             resource_type="auth",
             action="POST /auth/login",
             details={"status_code": 401},
-            timestamp=datetime.now(UTC)
+            timestamp=datetime.now(UTC),
         ),
         DBAuditLog(
             user_id=test_user.id,
@@ -530,8 +526,8 @@ def test_get_audit_logs_metadata_admin_access_success(client, admin_token, db):
             resource_type="teams",
             action="DELETE /teams/123",
             details={"status_code": 404},
-            timestamp=datetime.now(UTC)
-        )
+            timestamp=datetime.now(UTC),
+        ),
     ]
 
     for log in audit_logs:
@@ -539,8 +535,7 @@ def test_get_audit_logs_metadata_admin_access_success(client, admin_token, db):
     db.commit()
 
     response = client.get(
-        "/audit/logs/metadata",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/audit/logs/metadata", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200
@@ -569,8 +564,7 @@ def test_get_audit_logs_metadata_non_admin_forbidden(client, test_token):
     Then: The request is forbidden
     """
     response = client.get(
-        "/audit/logs/metadata",
-        headers={"Authorization": f"Bearer {test_token}"}
+        "/audit/logs/metadata", headers={"Authorization": f"Bearer {test_token}"}
     )
 
     assert response.status_code == 403
@@ -600,7 +594,7 @@ def test_get_audit_logs_with_combined_filters(client, admin_token, db):
             email="test@example.com",
             hashed_password=get_password_hash("testpassword"),
             is_active=True,
-            is_admin=False
+            is_admin=False,
         )
         db.add(test_user)
         db.commit()
@@ -613,7 +607,7 @@ def test_get_audit_logs_with_combined_filters(client, admin_token, db):
             resource_type="users",
             action="GET /users",
             details={"status_code": 200},
-            timestamp=datetime.now(UTC)
+            timestamp=datetime.now(UTC),
         ),
         DBAuditLog(
             user_id=test_user.id,
@@ -621,7 +615,7 @@ def test_get_audit_logs_with_combined_filters(client, admin_token, db):
             resource_type="users",
             action="POST /users",
             details={"status_code": 201},
-            timestamp=datetime.now(UTC)
+            timestamp=datetime.now(UTC),
         ),
         DBAuditLog(
             user_id=test_user.id,
@@ -629,8 +623,8 @@ def test_get_audit_logs_with_combined_filters(client, admin_token, db):
             resource_type="auth",
             action="GET /auth/me",
             details={"status_code": 200},
-            timestamp=datetime.now(UTC)
-        )
+            timestamp=datetime.now(UTC),
+        ),
     ]
 
     for log in audit_logs:
@@ -640,7 +634,7 @@ def test_get_audit_logs_with_combined_filters(client, admin_token, db):
     # Filter by event_type=GET and resource_type=users
     response = client.get(
         "/audit/logs?event_type=GET&resource_type=users",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     assert response.status_code == 200
@@ -661,7 +655,7 @@ def test_get_audit_logs_empty_result(client, admin_token):
     """
     response = client.get(
         "/audit/logs?event_type=NONEXISTENT",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     assert response.status_code == 200
@@ -683,14 +677,13 @@ def test_get_audit_logs_with_null_user(client, admin_token, db):
         resource_type="public",
         action="GET /public/health",
         details={"status_code": 200},
-        timestamp=datetime.now(UTC)
+        timestamp=datetime.now(UTC),
     )
     db.add(audit_log)
     db.commit()
 
     response = client.get(
-        "/audit/logs",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/audit/logs", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200

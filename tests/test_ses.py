@@ -6,6 +6,7 @@ from app.services.ses import SESService
 from botocore.exceptions import ClientError
 from datetime import datetime, timedelta, UTC
 
+
 @pytest.fixture
 def mock_templates_dir():
     """Fixture to mock the templates directory."""
@@ -14,38 +15,43 @@ def mock_templates_dir():
     mock_dir.__truediv__.return_value = mock_file
     return mock_dir, mock_file
 
+
 @pytest.fixture
 def mock_ses_client():
     """Fixture to mock SES v2 client."""
     return MagicMock()
 
+
 @pytest.fixture
 def mock_sts_service():
     """Fixture to mock STS client."""
     mock_sts = MagicMock()
-    mock_sts.get_caller_identity.return_value = {'Account': '123456789012'}
+    mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
     mock_sts.assume_role.return_value = {
-        'Credentials': {
-            'AccessKeyId': 'test-access-key',
-            'SecretAccessKey': 'test-secret-key',
-            'SessionToken': 'test-session-token',
-            'Expiration': datetime.now(UTC) + timedelta(hours=1)
+        "Credentials": {
+            "AccessKeyId": "test-access-key",
+            "SecretAccessKey": "test-secret-key",
+            "SessionToken": "test-session-token",
+            "Expiration": datetime.now(UTC) + timedelta(hours=1),
         }
     }
     return mock_sts
 
+
 @pytest.fixture
 def mock_boto3_client(mock_ses_client, mock_sts_service):
     """Fixture to mock boto3 client creation."""
+
     def boto3_side_effect(service_name, **kwargs):
-        if service_name == 'sesv2':
+        if service_name == "sesv2":
             return mock_ses_client
-        if service_name == 'sts':
+        if service_name == "sts":
             return mock_sts_service
         return MagicMock()
 
-    with patch('boto3.client', side_effect=boto3_side_effect) as mock:
+    with patch("boto3.client", side_effect=boto3_side_effect) as mock:
         yield mock
+
 
 def test_read_template_success(mock_sts_client, mock_templates_dir):
     """Test successful template reading and markdown conversion."""
@@ -66,51 +72,59 @@ This is a **bold** test template.
     mock_file.exists.return_value = True
     mock_file.read_text.return_value = markdown_content
 
-    with patch('app.services.ses.role_name', 'test-role'), \
-         patch('app.services.ses.ses_region', 'eu-central-1'):
-
+    with (
+        patch("app.services.ses.role_name", "test-role"),
+        patch("app.services.ses.ses_region", "eu-central-1"),
+    ):
         service = SESService()
         service.templates_dir = mock_dir
 
-        subject, text_content, html_content = service._read_template('test_template')
+        subject, text_content, html_content = service._read_template("test_template")
 
         assert subject == "Test Subject"
-        assert text_content == markdown_content.split('\n', 1)[1].strip()
+        assert text_content == markdown_content.split("\n", 1)[1].strip()
         assert html_content == expected_html
+
 
 def test_read_template_not_found(mock_sts_client, mock_templates_dir):
     """Test template reading fails when file doesn't exist."""
     mock_dir, mock_file = mock_templates_dir
     mock_file.exists.return_value = False
 
-    with patch('app.services.ses.role_name', 'test-role'), \
-         patch('app.services.ses.ses_region', 'eu-central-1'):
-
+    with (
+        patch("app.services.ses.role_name", "test-role"),
+        patch("app.services.ses.ses_region", "eu-central-1"),
+    ):
         service = SESService()
         service.templates_dir = mock_dir
 
         with pytest.raises(FileNotFoundError, match="Template nonexistent not found"):
-            service._read_template('nonexistent')
+            service._read_template("nonexistent")
+
 
 def test_read_template_empty(mock_sts_client, mock_templates_dir):
     """Test template reading with empty content."""
     mock_dir, mock_file = mock_templates_dir
     mock_file.exists.return_value = True
-    mock_file.read_text.return_value = 'Test Subject'
+    mock_file.read_text.return_value = "Test Subject"
 
-    with patch('app.services.ses.role_name', 'test-role'), \
-         patch('app.services.ses.ses_region', 'eu-central-1'):
-
+    with (
+        patch("app.services.ses.role_name", "test-role"),
+        patch("app.services.ses.ses_region", "eu-central-1"),
+    ):
         service = SESService()
         service.templates_dir = mock_dir
 
-        subject, text_content, html_content = service._read_template('empty_template')
+        subject, text_content, html_content = service._read_template("empty_template")
 
         assert subject == "Test Subject"
         assert text_content == ""
         assert html_content == ""
 
-def test_create_or_update_template_new(mock_boto3_client, mock_ses_client, mock_templates_dir):
+
+def test_create_or_update_template_new(
+    mock_boto3_client, mock_ses_client, mock_templates_dir
+):
     """Test creating a new template."""
     mock_dir, mock_file = mock_templates_dir
 
@@ -121,28 +135,31 @@ This is a test template."""
     mock_file.read_text.return_value = markdown_content
 
     mock_ses_client.get_email_template.side_effect = ClientError(
-        {'Error': {'Code': 'NotFoundException'}},
-        'GetEmailTemplate'
+        {"Error": {"Code": "NotFoundException"}}, "GetEmailTemplate"
     )
 
-    with patch('app.services.ses.role_name', 'test-role'), \
-         patch('app.services.ses.ses_region', 'eu-central-1'), \
-         patch('app.services.ses.env_suffix', 'test'):
-
+    with (
+        patch("app.services.ses.role_name", "test-role"),
+        patch("app.services.ses.ses_region", "eu-central-1"),
+        patch("app.services.ses.env_suffix", "test"),
+    ):
         service = SESService()
         service.templates_dir = mock_dir
 
-        result = service.create_or_update_template('test_template')
+        result = service.create_or_update_template("test_template")
 
         assert result is True
         mock_ses_client.create_email_template.assert_called_once()
         call_args = mock_ses_client.create_email_template.call_args[1]
-        assert call_args['TemplateName'] == 'test_template-test'
-        assert call_args['TemplateContent']['Subject'] == 'Test Subject'
-        assert 'Text' in call_args['TemplateContent']
-        assert 'Html' in call_args['TemplateContent']
+        assert call_args["TemplateName"] == "test_template-test"
+        assert call_args["TemplateContent"]["Subject"] == "Test Subject"
+        assert "Text" in call_args["TemplateContent"]
+        assert "Html" in call_args["TemplateContent"]
 
-def test_create_or_update_template_existing(mock_boto3_client, mock_ses_client, mock_templates_dir):
+
+def test_create_or_update_template_existing(
+    mock_boto3_client, mock_ses_client, mock_templates_dir
+):
     """Test updating an existing template."""
     mock_dir, mock_file = mock_templates_dir
 
@@ -152,71 +169,76 @@ This is a test template."""
     mock_file.exists.return_value = True
     mock_file.read_text.return_value = markdown_content
 
-    mock_ses_client.get_email_template.return_value = {'TemplateName': 'test_template-test'}
+    mock_ses_client.get_email_template.return_value = {
+        "TemplateName": "test_template-test"
+    }
 
-    with patch('app.services.ses.role_name', 'test-role'), \
-         patch('app.services.ses.ses_region', 'eu-central-1'), \
-         patch('app.services.ses.env_suffix', 'test'):
-
+    with (
+        patch("app.services.ses.role_name", "test-role"),
+        patch("app.services.ses.ses_region", "eu-central-1"),
+        patch("app.services.ses.env_suffix", "test"),
+    ):
         service = SESService()
         service.templates_dir = mock_dir
 
-        result = service.create_or_update_template('test_template')
+        result = service.create_or_update_template("test_template")
 
         assert result is True
         mock_ses_client.update_email_template.assert_called_once()
         call_args = mock_ses_client.update_email_template.call_args[1]
-        assert call_args['TemplateName'] == 'test_template-test'
-        assert call_args['TemplateContent']['Subject'] == 'Test Subject'
-        assert 'Text' in call_args['TemplateContent']
-        assert 'Html' in call_args['TemplateContent']
+        assert call_args["TemplateName"] == "test_template-test"
+        assert call_args["TemplateContent"]["Subject"] == "Test Subject"
+        assert "Text" in call_args["TemplateContent"]
+        assert "Html" in call_args["TemplateContent"]
+
 
 def test_send_email_success(mock_boto3_client, mock_ses_client):
     """Test successful email sending with template."""
-    mock_ses_client.send_email.return_value = {'MessageId': 'test-message-id'}
+    mock_ses_client.send_email.return_value = {"MessageId": "test-message-id"}
 
-    template_data = {
-        'user': 'testuser',
-        'code': '123456'
-    }
+    template_data = {"user": "testuser", "code": "123456"}
 
-    with patch('app.services.ses.role_name', 'test-role'), \
-         patch('app.services.ses.ses_region', 'eu-central-1'), \
-         patch('app.services.ses.env_suffix', 'test'), \
-         patch.dict(os.environ, {'SES_SENDER_EMAIL': 'test@example.com'}):
-
+    with (
+        patch("app.services.ses.role_name", "test-role"),
+        patch("app.services.ses.ses_region", "eu-central-1"),
+        patch("app.services.ses.env_suffix", "test"),
+        patch.dict(os.environ, {"SES_SENDER_EMAIL": "test@example.com"}),
+    ):
         service = SESService()
         result = service.send_email(
-            to_addresses=['recipient@example.com'],
-            template_name='test_template',
-            template_data=template_data
+            to_addresses=["recipient@example.com"],
+            template_name="test_template",
+            template_data=template_data,
         )
 
         assert result is True
         mock_ses_client.send_email.assert_called_once()
         call_args = mock_ses_client.send_email.call_args[1]
-        assert call_args['FromEmailAddress'] == 'test@example.com'
-        assert call_args['Destination']['ToAddresses'] == ['recipient@example.com']
-        assert call_args['Content']['Template']['TemplateName'] == 'test_template-test'
-        assert call_args['Content']['Template']['TemplateData'] == json.dumps(template_data)
+        assert call_args["FromEmailAddress"] == "test@example.com"
+        assert call_args["Destination"]["ToAddresses"] == ["recipient@example.com"]
+        assert call_args["Content"]["Template"]["TemplateName"] == "test_template-test"
+        assert call_args["Content"]["Template"]["TemplateData"] == json.dumps(
+            template_data
+        )
+
 
 def test_send_email_failure(mock_boto3_client, mock_ses_client):
     """Test email sending failure."""
     mock_ses_client.send_email.side_effect = ClientError(
-        {'Error': {'Code': 'MessageRejected'}},
-        'SendEmail'
+        {"Error": {"Code": "MessageRejected"}}, "SendEmail"
     )
 
-    with patch('app.services.ses.role_name', 'test-role'), \
-         patch('app.services.ses.ses_region', 'eu-central-1'), \
-         patch('app.services.ses.env_suffix', 'test'), \
-         patch.dict(os.environ, {'SES_SENDER_EMAIL': 'test@example.com'}):
-
+    with (
+        patch("app.services.ses.role_name", "test-role"),
+        patch("app.services.ses.ses_region", "eu-central-1"),
+        patch("app.services.ses.env_suffix", "test"),
+        patch.dict(os.environ, {"SES_SENDER_EMAIL": "test@example.com"}),
+    ):
         service = SESService()
         result = service.send_email(
-            to_addresses=['recipient@example.com'],
-            template_name='test_template',
-            template_data={'test': 'data'}
+            to_addresses=["recipient@example.com"],
+            template_name="test_template",
+            template_data={"test": "data"},
         )
 
         assert result is False

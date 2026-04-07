@@ -1,8 +1,16 @@
-"use client"
+"use client";
 
-import * as React from "react"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
+import { Loader2, Plus, ChevronsUpDown, Check } from "lucide-react";
+import * as React from "react";
+import { Button } from "@/components/ui/button";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
 import {
   Dialog,
   DialogContent,
@@ -11,66 +19,51 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from "@/components/ui/dialog"
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select"
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command"
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover"
-import { Loader2, Plus, ChevronsUpDown, Check } from "lucide-react"
-import { cn } from "@/lib/utils"
-
-interface Region {
-  id: number
-  name: string
-  is_active: boolean
-}
-
-interface TeamUser {
-  id: number
-  email: string
-  is_active: boolean
-  role: string
-}
+} from "@/components/ui/select";
+import { cn } from "@/lib/utils";
+import { Region } from "@/types/region";
+import { User } from "@/types/user";
+import { Team } from "@/types/team";
 
 interface CreateAIKeyDialogProps {
-  open: boolean
-  onOpenChange: (open: boolean) => void
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   onSubmit: (data: {
-    name: string
-    region_id: number
-    key_type: 'full' | 'llm' | 'vector'
-    owner_id?: number
-    team_id?: number
-  }) => void
-  isLoading?: boolean
-  regions: Region[]
-  teamMembers?: TeamUser[]
-  showUserAssignment?: boolean
-  currentUser?: {
-    id: number
-    email: string
-    team_id?: number | null
-  }
-  triggerText?: string
-  title?: string
-  description?: string
-  children?: React.ReactNode
+    name: string;
+    region_id: number;
+    key_type: "full" | "llm" | "vector";
+    owner_id?: number;
+    team_id?: number;
+  }) => void;
+  isLoading?: boolean;
+  regions: Region[];
+  teamMembers?: User[];
+  teams?: Team[];
+  showUserAssignment?: boolean;
+  currentUser?:
+    | User
+    | {
+        id: number;
+        email: string;
+        team_id?: number | null;
+      };
+  triggerText?: string;
+  title?: string;
+  description?: string;
+  children?: React.ReactNode;
 }
 
 export function CreateAIKeyDialog({
@@ -80,6 +73,7 @@ export function CreateAIKeyDialog({
   isLoading = false,
   regions,
   teamMembers = [],
+  teams = [],
   showUserAssignment = false,
   currentUser,
   triggerText = "Create AI Key",
@@ -87,84 +81,131 @@ export function CreateAIKeyDialog({
   description = "Create a new AI key with database credentials.",
   children,
 }: CreateAIKeyDialogProps) {
-  const [name, setName] = React.useState("")
-  const [selectedRegion, setSelectedRegion] = React.useState("")
-  const [keyType, setKeyType] = React.useState<'full' | 'llm' | 'vector'>('full')
+  const [name, setName] = React.useState("");
+  const [selectedRegion, setSelectedRegion] = React.useState("");
+  const [keyType, setKeyType] = React.useState<"full" | "llm" | "vector">(
+    "full",
+  );
   const [selectedUserId, setSelectedUserId] = React.useState(() => {
-    // Default to current user if available, otherwise "team"
-    return currentUser?.id.toString() || "team"
-  })
-  const [userSearchOpen, setUserSearchOpen] = React.useState(false)
-  const [userSearchTerm, setUserSearchTerm] = React.useState("")
+    // Default to current user if available, otherwise "team" or empty
+    if (currentUser?.id) return currentUser.id.toString();
+    if (currentUser?.team_id) return "team";
+    return "";
+  });
+  const [userSearchOpen, setUserSearchOpen] = React.useState(false);
+  const [userSearchTerm, setUserSearchTerm] = React.useState("");
 
   const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
+    e.preventDefault();
 
-    if (!name || !selectedRegion) return
+    if (!name || !selectedRegion) return;
 
-    const region = regions.find(r => r.name === selectedRegion)
-    if (!region) return
+    const region = regions.find((r) => r.name === selectedRegion);
+    if (!region) return;
 
     const data: {
-      name: string
-      region_id: number
-      key_type: 'full' | 'llm' | 'vector'
-      owner_id?: number
-      team_id?: number
+      name: string;
+      region_id: number;
+      key_type: "full" | "llm" | "vector";
+      owner_id?: number;
+      team_id?: number;
     } = {
       name,
       region_id: region.id,
       key_type: keyType,
-    }
+    };
 
     if (showUserAssignment) {
       if (selectedUserId === "team") {
-        // Team shared - set team_id and no specific owner_id
+        // Current user's team shared
         if (currentUser?.team_id) {
-          data.team_id = currentUser.team_id
+          data.team_id = currentUser.team_id;
         }
-      } else if (selectedUserId === currentUser?.id.toString() || selectedUserId === "self") {
-        data.owner_id = currentUser?.id
+      } else if (selectedUserId.startsWith("team-")) {
+        // Specific team from global list
+        const teamId = Number(selectedUserId.replace("team-", ""));
+        if (!Number.isFinite(teamId)) {
+          // Invalid team id; abort submission
+          return;
+        }
+        data.team_id = teamId;
+      } else if (
+        selectedUserId === currentUser?.id.toString() ||
+        selectedUserId === "self"
+      ) {
+        if (currentUser?.id) {
+          data.owner_id = Number(currentUser.id);
+        }
+      } else if (selectedUserId.startsWith("user-")) {
+        // Specific user from global list
+        data.owner_id = parseInt(selectedUserId.replace("user-", ""));
       } else {
-        data.owner_id = parseInt(selectedUserId)
+        // Compatibility with old behavior where selectedUserId was just the ID
+        const id = parseInt(selectedUserId);
+        if (!isNaN(id)) {
+          data.owner_id = id;
+        }
       }
     }
 
-    onSubmit(data)
-  }
+    onSubmit(data);
+  };
 
   const handleOpenChange = (newOpen: boolean) => {
     if (!newOpen) {
       // Reset form when closing
-      setName("")
-      setSelectedRegion("")
-      setKeyType('full')
-      setSelectedUserId(currentUser?.id.toString() || "team")
-      setUserSearchTerm("")
+      setName("");
+      setSelectedRegion("");
+      setKeyType("full");
+      setSelectedUserId(currentUser?.id.toString() || (currentUser?.team_id ? "team" : ""));
+      setUserSearchTerm("");
     }
-    onOpenChange(newOpen)
-  }
+    onOpenChange(newOpen);
+  };
 
-  // Filter team members based on search term
+  // Filter team members and teams based on search term
   const filteredTeamMembers = React.useMemo(() => {
-    if (!userSearchTerm) return teamMembers
-    const searchLower = userSearchTerm.toLowerCase()
-    return teamMembers.filter(member =>
-      member.email.toLowerCase().includes(searchLower)
-    )
-  }, [teamMembers, userSearchTerm])
+    if (!userSearchTerm) return teamMembers;
+    const searchLower = userSearchTerm.toLowerCase();
+    return teamMembers.filter((member) =>
+      member.email.toLowerCase().includes(searchLower),
+    );
+  }, [teamMembers, userSearchTerm]);
 
-  // Get display text for selected user
+  const filteredTeams = React.useMemo(() => {
+    if (!userSearchTerm) return teams;
+    const searchLower = userSearchTerm.toLowerCase();
+    return teams.filter((team) => team.name.toLowerCase().includes(searchLower));
+  }, [teams, userSearchTerm]);
+
+  // Get display text for selected user/team
   const getSelectedUserDisplay = () => {
-    if (selectedUserId === "team") return "Team (Shared)"
-    if (selectedUserId === currentUser?.id.toString() || selectedUserId === "self") {
-      return currentUser?.email || "Me"
+    if (selectedUserId === "team") return "My Team (Shared)";
+    if (selectedUserId.startsWith("team-")) {
+      const teamId = selectedUserId.replace("team-", "");
+      const team = teams.find((t) => t.id.toString() === teamId);
+      return team ? `Team: ${team.name}` : "Selected Team";
     }
-    const selectedMember = teamMembers.find(m => m.id.toString() === selectedUserId)
-    return selectedMember?.email || "Select user..."
-  }
+    if (
+      selectedUserId === currentUser?.id.toString() ||
+      selectedUserId === "self"
+    ) {
+      return currentUser?.email || "Me";
+    }
+    
+    // Check if it's user-prefix
+    const userId = selectedUserId.startsWith("user-") 
+      ? selectedUserId.replace("user-", "")
+      : selectedUserId;
+      
+    const selectedMember = teamMembers.find(
+      (m) => m.id.toString() === userId,
+    );
+    return selectedMember?.email || "Select user or team...";
+  };
 
-  const isFormValid = name && selectedRegion && (!showUserAssignment || selectedUserId)
+  const isFormValid =
+    name && selectedRegion && (!showUserAssignment || selectedUserId);
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -179,9 +220,7 @@ export function CreateAIKeyDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>
-            {description}
-          </DialogDescription>
+          <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit}>
           <div className="grid gap-4 py-4">
@@ -205,18 +244,26 @@ export function CreateAIKeyDialog({
               <label htmlFor="type" className="text-sm font-medium">
                 Type <span className="text-red-500">*</span>
               </label>
-              <Select value={keyType} onValueChange={(value: 'full' | 'llm' | 'vector') => setKeyType(value)}>
+              <Select
+                value={keyType}
+                onValueChange={(value: "full" | "llm" | "vector") =>
+                  setKeyType(value)
+                }
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="Select a type" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="full">Full Key (LLM + Vector DB)</SelectItem>
+                  <SelectItem value="full">
+                    Full Key (LLM + Vector DB)
+                  </SelectItem>
                   <SelectItem value="llm">LLM Token Only</SelectItem>
                   <SelectItem value="vector">Vector DB Only</SelectItem>
                 </SelectContent>
               </Select>
               <p className="text-sm text-muted-foreground">
-                Choose whether to create a full key with both LLM and Vector DB access, or just one component
+                Choose whether to create a full key with both LLM and Vector DB
+                access, or just one component
               </p>
             </div>
 
@@ -230,8 +277,8 @@ export function CreateAIKeyDialog({
                 </SelectTrigger>
                 <SelectContent>
                   {regions
-                    .filter(region => region.is_active)
-                    .map(region => (
+                    .filter((region) => region.is_active)
+                    .map((region) => (
                       <SelectItem key={region.id} value={region.name}>
                         {region.name}
                       </SelectItem>
@@ -250,6 +297,7 @@ export function CreateAIKeyDialog({
                     <Button
                       variant="outline"
                       role="combobox"
+                      aria-controls="user-search-popover"
                       aria-expanded={userSearchOpen}
                       className="w-full justify-between"
                     >
@@ -257,66 +305,101 @@ export function CreateAIKeyDialog({
                       <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                     </Button>
                   </PopoverTrigger>
-                  <PopoverContent className="w-full p-0" align="start">
+                  <PopoverContent id="user-search-popover" className="w-full p-0" align="start">
                     <Command>
                       <CommandInput
-                        placeholder="Search users..."
+                        placeholder="Search users or teams..."
                         value={userSearchTerm}
                         onValueChange={setUserSearchTerm}
                       />
                       <CommandList>
-                        <CommandEmpty>No users found.</CommandEmpty>
-                        <CommandGroup>
-                          {currentUser?.team_id && (
-                            <CommandItem
-                              value="team"
-                              onSelect={() => {
-                                setSelectedUserId("team")
-                                setUserSearchOpen(false)
-                                setUserSearchTerm("")
-                              }}
-                            >
-                              <Check
-                                className={cn(
-                                  "mr-2 h-4 w-4",
-                                  selectedUserId === "team" ? "opacity-100" : "opacity-0"
-                                )}
-                              />
-                              Team (Shared)
-                            </CommandItem>
-                          )}
-                          <CommandItem
-                            value={currentUser?.email || "self"}
-                            onSelect={() => {
-                              setSelectedUserId(currentUser?.id.toString() || "self")
-                              setUserSearchOpen(false)
-                              setUserSearchTerm("")
-                            }}
-                          >
-                            <Check
-                              className={cn(
-                                "mr-2 h-4 w-4",
-                                selectedUserId === currentUser?.id.toString() || selectedUserId === "self" ? "opacity-100" : "opacity-0"
-                              )}
-                            />
-                            {currentUser?.email || "Me"}
-                          </CommandItem>
-                          {filteredTeamMembers
-                            .filter(member => member.id !== currentUser?.id)
-                            .map(member => (
+                        <CommandEmpty>No results found.</CommandEmpty>
+                        
+                        {teams.length > 0 && (
+                          <CommandGroup heading="Teams">
+                            {filteredTeams.map((team) => (
                               <CommandItem
-                                key={member.id}
-                                value={member.email}
+                                key={`team-${team.id}`}
+                                value={`team-${team.name}`}
                                 onSelect={() => {
-                                  setSelectedUserId(member.id.toString())
-                                  setUserSearchOpen(false)
-                                  setUserSearchTerm("")
+                                  setSelectedUserId(`team-${team.id}`);
+                                  setUserSearchOpen(false);
+                                  setUserSearchTerm("");
                                 }}
                               >
                                 <Check
                                   className={cn(
                                     "mr-2 h-4 w-4",
-                                    selectedUserId === member.id.toString() ? "opacity-100" : "opacity-0"
+                                    selectedUserId === `team-${team.id}`
+                                      ? "opacity-100"
+                                      : "opacity-0",
+                                  )}
+                                />
+                                {team.name}
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        )}
+
+                        <CommandGroup heading="Users">
+                          {currentUser?.team_id && (
+                            <CommandItem
+                              value="team"
+                              onSelect={() => {
+                                setSelectedUserId("team");
+                                setUserSearchOpen(false);
+                                setUserSearchTerm("");
+                              }}
+                            >
+                              <Check
+                                className={cn(
+                                  "mr-2 h-4 w-4",
+                                  selectedUserId === "team"
+                                    ? "opacity-100"
+                                    : "opacity-0",
+                                )}
+                              />
+                              My Team (Shared)
+                            </CommandItem>
+                          )}
+                          {currentUser && (
+                            <CommandItem
+                              value={currentUser.email}
+                              onSelect={() => {
+                                setSelectedUserId(currentUser.id.toString());
+                                setUserSearchOpen(false);
+                                setUserSearchTerm("");
+                              }}
+                            >
+                              <Check
+                                className={cn(
+                                  "mr-2 h-4 w-4",
+                                  selectedUserId === currentUser.id.toString()
+                                    ? "opacity-100"
+                                    : "opacity-0",
+                                )}
+                              />
+                              {currentUser.email} (Me)
+                            </CommandItem>
+                          )}
+                          {filteredTeamMembers
+                            .filter((member) => member.id !== currentUser?.id)
+                            .map((member) => (
+                              <CommandItem
+                                key={member.id}
+                                value={`user-${member.email}`}
+                                onSelect={() => {
+                                  setSelectedUserId(`user-${member.id}`);
+                                  setUserSearchOpen(false);
+                                  setUserSearchTerm("");
+                                }}
+                              >
+                                <Check
+                                  className={cn(
+                                    "mr-2 h-4 w-4",
+                                    selectedUserId === `user-${member.id}` || selectedUserId === member.id.toString()
+                                      ? "opacity-100"
+                                      : "opacity-0",
                                   )}
                                 />
                                 {member.email}
@@ -328,29 +411,25 @@ export function CreateAIKeyDialog({
                   </PopoverContent>
                 </Popover>
                 <p className="text-sm text-muted-foreground">
-                  {teamMembers.length > 0
-                    ? "Select 'Team (Shared)' to create a key accessible to all team members, or assign to a specific user"
-                    : currentUser?.team_id
-                      ? "Select 'Team (Shared)' to create a key accessible to all team members, or assign to yourself"
-                      : "Assign this key to yourself"
-                  }
+                  {teams.length > 0
+                    ? "Select a team or a specific user to assign this key to"
+                    : teamMembers.length > 0
+                      ? "Select 'My Team (Shared)' to create a key accessible to all team members, or assign to a specific user"
+                      : currentUser?.team_id
+                        ? "Select 'My Team (Shared)' to create a key accessible to all team members, or assign to yourself"
+                        : "Assign this key to yourself"}
                 </p>
               </div>
             )}
           </div>
           <DialogFooter>
-            <Button
-              type="submit"
-              disabled={isLoading || !isFormValid}
-            >
-              {isLoading && (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              )}
+            <Button type="submit" disabled={isLoading || !isFormValid}>
+              {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Create Key
             </Button>
           </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
-  )
+  );
 }

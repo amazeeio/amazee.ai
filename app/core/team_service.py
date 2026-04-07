@@ -1,9 +1,10 @@
 """
 Team service for centralized team operations including soft-delete and restore.
 """
+
 import logging
 from datetime import datetime, UTC
-from typing import Dict, List
+from typing import Dict, List, Optional
 from collections import defaultdict
 from sqlalchemy.orm import Session
 from sqlalchemy import select
@@ -16,7 +17,9 @@ from app.core.limit_service import DEFAULT_KEY_DURATION
 logger = logging.getLogger(__name__)
 
 
-def get_team_keys_by_region(db: Session, team_id: int) -> Dict[DBRegion, List[DBPrivateAIKey]]:
+def get_team_keys_by_region(
+    db: Session, team_id: int
+) -> Dict[DBRegion, List[DBPrivateAIKey]]:
     """
     Get all keys for a team grouped by region.
 
@@ -28,12 +31,18 @@ def get_team_keys_by_region(db: Session, team_id: int) -> Dict[DBRegion, List[DB
         Dictionary mapping regions to lists of keys
     """
     # Get all keys for the team with their regions
-    team_user_ids = db.execute(select(DBUser.id).filter(DBUser.team_id == team_id)).scalars().all()
+    team_user_ids = (
+        db.execute(select(DBUser.id).filter(DBUser.team_id == team_id)).scalars().all()
+    )
     # Return keys owned by users in the team OR owned by the team
-    team_keys = db.query(DBPrivateAIKey).filter(
-        (DBPrivateAIKey.owner_id.in_(team_user_ids)) |
-        (DBPrivateAIKey.team_id == team_id)
-    ).all()
+    team_keys = (
+        db.query(DBPrivateAIKey)
+        .filter(
+            (DBPrivateAIKey.owner_id.in_(team_user_ids))
+            | (DBPrivateAIKey.team_id == team_id)
+        )
+        .all()
+    )
 
     # Group keys by region
     keys_by_region = defaultdict(list)
@@ -46,11 +55,15 @@ def get_team_keys_by_region(db: Session, team_id: int) -> Dict[DBRegion, List[DB
             continue
         keys_by_region[key.region].append(key)
 
-    logger.info(f"Found {len(team_keys)} keys in {len(keys_by_region)} regions for team {team_id}")
+    logger.info(
+        f"Found {len(team_keys)} keys in {len(keys_by_region)} regions for team {team_id}"
+    )
     return keys_by_region
 
 
-async def soft_delete_team(db: Session, team: DBTeam, current_time: datetime = None) -> None:
+async def soft_delete_team(
+    db: Session, team: DBTeam, current_time: datetime = None
+) -> None:
     """
     Soft delete a team with full cascade behavior.
 
@@ -76,11 +89,14 @@ async def soft_delete_team(db: Session, team: DBTeam, current_time: datetime = N
     team.is_active = False
 
     # Deactivate all users in the team
-    users_deactivated = db.query(DBUser).filter(DBUser.team_id == team.id).update(
-        {"is_active": False},
-        synchronize_session=False
+    users_deactivated = (
+        db.query(DBUser)
+        .filter(DBUser.team_id == team.id)
+        .update({"is_active": False}, synchronize_session=False)
     )
-    logger.info(f"Deactivated {users_deactivated} users for soft-deleted team {team.id}")
+    logger.info(
+        f"Deactivated {users_deactivated} users for soft-deleted team {team.id}"
+    )
 
     # Commit the deletion and user deactivation
     db.commit()
@@ -91,21 +107,25 @@ async def soft_delete_team(db: Session, team: DBTeam, current_time: datetime = N
         for region, keys in keys_by_region.items():
             try:
                 litellm_service = LiteLLMService(
-                    api_url=region.litellm_api_url,
-                    api_key=region.litellm_api_key
+                    api_url=region.litellm_api_url, api_key=region.litellm_api_key
                 )
                 for key in keys:
                     if key.litellm_token:
                         try:
                             await litellm_service.update_key_duration(
-                                litellm_token=key.litellm_token,
-                                duration="0d"
+                                litellm_token=key.litellm_token, duration="0d"
                             )
-                            logger.info(f"Expired key {key.id} in LiteLLM for soft-deleted team {team.id}")
+                            logger.info(
+                                f"Expired key {key.id} in LiteLLM for soft-deleted team {team.id}"
+                            )
                         except Exception as key_error:
-                            logger.error(f"Failed to expire key {key.id} in LiteLLM: {str(key_error)}")
+                            logger.error(
+                                f"Failed to expire key {key.id} in LiteLLM: {str(key_error)}"
+                            )
             except Exception as region_error:
-                logger.error(f"Failed to expire keys in region {region.name}: {str(region_error)}")
+                logger.error(
+                    f"Failed to expire keys in region {region.name}: {str(region_error)}"
+                )
     except Exception as expire_error:
         logger.error(f"Failed to expire keys for team {team.id}: {str(expire_error)}")
         # Don't fail soft-deletion if key expiration fails
@@ -140,23 +160,30 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> None:
         for region, keys in keys_by_region.items():
             try:
                 litellm_service = LiteLLMService(
-                    api_url=region.litellm_api_url,
-                    api_key=region.litellm_api_key
+                    api_url=region.litellm_api_url, api_key=region.litellm_api_key
                 )
                 for key in keys:
                     if key.litellm_token:
                         try:
                             await litellm_service.update_key_duration(
                                 litellm_token=key.litellm_token,
-                                duration=f"{DEFAULT_KEY_DURATION}d"
+                                duration=f"{DEFAULT_KEY_DURATION}d",
                             )
-                            logger.info(f"Un-expired key {key.id} in LiteLLM for restored team {team.id}")
+                            logger.info(
+                                f"Un-expired key {key.id} in LiteLLM for restored team {team.id}"
+                            )
                         except Exception as key_error:
-                            logger.error(f"Failed to un-expire key {key.id} in LiteLLM: {str(key_error)}")
+                            logger.error(
+                                f"Failed to un-expire key {key.id} in LiteLLM: {str(key_error)}"
+                            )
             except Exception as region_error:
-                logger.error(f"Failed to un-expire keys in region {region.name}: {str(region_error)}")
+                logger.error(
+                    f"Failed to un-expire keys in region {region.name}: {str(region_error)}"
+                )
     except Exception as restore_error:
-        logger.error(f"Failed to un-expire keys for team {team.id}: {str(restore_error)}")
+        logger.error(
+            f"Failed to un-expire keys for team {team.id}: {str(restore_error)}"
+        )
         # Don't block restoration if key un-expiration fails
 
     # Reset deletion and warning timestamps and reactivate team
@@ -166,9 +193,10 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> None:
     team.updated_at = datetime.now(UTC)
 
     # Reactivate all users in the team
-    users_reactivated = db.query(DBUser).filter(DBUser.team_id == team.id).update(
-        {"is_active": True},
-        synchronize_session=False
+    users_reactivated = (
+        db.query(DBUser)
+        .filter(DBUser.team_id == team.id)
+        .update({"is_active": True}, synchronize_session=False)
     )
     logger.info(f"Reactivated {users_reactivated} users for restored team {team.id}")
 
@@ -177,48 +205,125 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> None:
     logger.info(f"Successfully restored team {team.id} ({team.name})")
 
 
-async def propagate_team_budget_to_keys(db: Session, team_id: int, budget_amount: float, budget_duration: str) -> None:
+async def propagate_team_budget_to_keys(
+    db: Session,
+    team_id: int,
+    budget_amount: float,
+    budget_duration: str,
+    region_id: Optional[int] = None,
+) -> dict:
     """
-    Propagate a team budget limit change to all keys belonging to the team.
+    Propagate a team budget limit change to the LiteLLM team and all its keys.
 
-    This function updates all keys (both user-owned and team-owned) in LiteLLM
-    with the new budget amount when a team's budget limit is changed.
+    This function updates the LiteLLM team max_budget (shared ceiling) and all
+    keys (both user-owned and team-owned) with the new budget amount when a
+    team's budget limit is changed.
 
     Args:
         db: Database session
         team_id: ID of the team whose keys should be updated
         budget_amount: New budget amount to set for all keys
         budget_duration: Budget duration string (e.g., "30d")
+        region_id: Optional region ID to restrict updates to a single region.
+            When provided the LiteLLM team for that region is updated even if
+            the team currently has no keys there.
+
+    Returns:
+        dict with "teams_updated" (number of LiteLLM teams successfully updated)
+        and "errors" (list of error message strings).
 
     Note:
-        Errors during key updates are logged but don't raise exceptions.
-        This ensures that limit updates succeed even if some key updates fail.
+        Errors during updates are logged but don't raise exceptions.
+        This ensures that limit updates succeed even if some updates fail.
     """
+    teams_updated = 0
+    errors: List[str] = []
     try:
-        keys_by_region = get_team_keys_by_region(db, team_id)
+        team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+        if not team:
+            logger.error(f"Team {team_id} not found, skipping budget propagation")
+            return {"teams_updated": 0, "errors": [f"Team {team_id} not found"]}
 
-        # Update keys for each region
-        for region, keys in keys_by_region.items():
-            litellm_service = LiteLLMService(
-                api_url=region.litellm_api_url,
-                api_key=region.litellm_api_key
+        if region_id is not None:
+            # Update only the specified region, even if it currently has no keys.
+            # Query keys for this region directly rather than loading all regions.
+            region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+            if not region:
+                logger.error(
+                    f"Region {region_id} not found, skipping budget propagation"
+                )
+                return {
+                    "teams_updated": 0,
+                    "errors": [f"Region {region_id} not found"],
+                }
+            team_user_ids = (
+                db.execute(select(DBUser.id).filter(DBUser.team_id == team_id))
+                .scalars()
+                .all()
             )
+            region_keys = [
+                key
+                for key in (
+                    db.query(DBPrivateAIKey)
+                    .filter(
+                        (DBPrivateAIKey.owner_id.in_(team_user_ids))
+                        | (DBPrivateAIKey.team_id == team_id),
+                        DBPrivateAIKey.region_id == region_id,
+                    )
+                    .all()
+                )
+                if key.litellm_token
+            ]
+            keys_by_region: Dict[DBRegion, List[DBPrivateAIKey]] = {region: region_keys}
+        else:
+            keys_by_region = get_team_keys_by_region(db, team_id)
+
+        # Update team budget and keys for each region
+        for region_obj, keys in keys_by_region.items():
+            litellm_service = LiteLLMService(
+                api_url=region_obj.litellm_api_url, api_key=region_obj.litellm_api_key
+            )
+
+            # Update the LiteLLM team budget (shared ceiling)
+            lite_team_id = LiteLLMService.format_team_id(region_obj.name, team_id)
+            try:
+                await litellm_service.update_team_budget(
+                    team_id=lite_team_id,
+                    max_budget=budget_amount,
+                    budget_duration=budget_duration,
+                )
+                teams_updated += 1
+                logger.info(
+                    f"Updated team {team_id} budget to {budget_amount} in LiteLLM region {region_obj.name}"
+                )
+            except Exception as team_error:
+                errors.append(
+                    f"Team {team_id}, region {region_obj.name}: {str(team_error)}"
+                )
+                logger.error(
+                    f"Failed to update team {team_id} budget in region {region_obj.name}: {str(team_error)}"
+                )
 
             # Update each key's budget via LiteLLM
             for key in keys:
                 try:
-                    # Update budget using the provided budget_duration
                     await litellm_service.update_budget(
                         litellm_token=key.litellm_token,
                         budget_duration=budget_duration,
-                        budget_amount=budget_amount
+                        budget_amount=budget_amount,
                     )
-                    logger.info(f"Updated key {key.id} budget to {budget_amount} in LiteLLM after team budget limit change")
+                    logger.info(
+                        f"Updated key {key.id} budget to {budget_amount} in LiteLLM after team budget limit change"
+                    )
                 except Exception as key_error:
-                    logger.error(f"Failed to update key {key.id} budget in LiteLLM: {str(key_error)}")
-                    # Continue with other keys even if one fails
-                    continue
+                    errors.append(f"Key {key.id}: {str(key_error)}")
+                    logger.error(
+                        f"Failed to update key {key.id} budget in LiteLLM: {str(key_error)}"
+                    )
     except Exception as propagation_error:
-        logger.error(f"Error propagating budget limit to keys for team {team_id}: {str(propagation_error)}")
-        # Don't raise - allow limit update to succeed even if propagation fails
+        errors.append(str(propagation_error))
+        logger.error(
+            f"Error propagating budget limit to keys for team {team_id}: {str(propagation_error)}"
+        )
 
+    return {"teams_updated": teams_updated, "errors": errors}

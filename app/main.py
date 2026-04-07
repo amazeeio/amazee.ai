@@ -5,7 +5,20 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
-from app.api import auth, private_ai_keys, users, regions, audit, teams, billing, products, pricing_tables, limits
+from app.api import (
+    auth,
+    private_ai_keys,
+    users,
+    regions,
+    public,
+    audit,
+    teams,
+    billing,
+    products,
+    pricing_tables,
+    limits,
+    budgets,
+)
 from app.core.config import settings
 from app.db.database import get_db
 from app.middleware.audit import AuditLogMiddleware
@@ -23,22 +36,23 @@ import logging
 from datetime import UTC
 
 # Set timezone environment variable to prevent tzlocal warning
-if not os.environ.get('TZ'):
-    os.environ['TZ'] = 'UTC'
+if not os.environ.get("TZ"):
+    os.environ["TZ"] = "UTC"
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
 logger = logging.getLogger(__name__)
+
 
 class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         if request.headers.get("X-Forwarded-Proto") == "https":
             request.scope["scheme"] = "https"
         return await call_next(request)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -61,7 +75,9 @@ async def lifespan(app: FastAPI):
                     # Always release the lock when done
                     release_lock(lock_name, db)
             else:
-                logger.info("Another process has the monitor_teams lock, skipping execution")
+                logger.info(
+                    "Another process has the monitor_teams lock, skipping execution"
+                )
         except Exception as e:
             logger.error(f"Error in monitor_teams job: {str(e)}")
             # Try to release lock in case of error
@@ -74,16 +90,16 @@ async def lifespan(app: FastAPI):
 
     # Set schedule based on environment
     if settings.ENV_SUFFIX == "local":
-        cron_trigger = CronTrigger(minute='*/10', timezone=UTC, jitter=180)
+        cron_trigger = CronTrigger(minute="*/10", timezone=UTC, jitter=180)
     else:
         # Run every hour in other environments with jitter
-        cron_trigger = CronTrigger(hour='*', minute=0, timezone=UTC, jitter=60)
+        cron_trigger = CronTrigger(hour="*", minute=0, timezone=UTC, jitter=60)
 
     scheduler.add_job(
         monitor_teams_job,
         trigger=cron_trigger,
-        id='monitor_teams',
-        replace_existing=True
+        id="monitor_teams",
+        replace_existing=True,
     )
 
     # Hard delete job for teams that have been soft-deleted for 60+ days
@@ -98,12 +114,16 @@ async def lifespan(app: FastAPI):
                 try:
                     await hard_delete_expired_teams(db)
                 except Exception as e:
-                    logger.error(f"Error in hard_delete_expired_teams background task: {str(e)}")
+                    logger.error(
+                        f"Error in hard_delete_expired_teams background task: {str(e)}"
+                    )
                 finally:
                     # Always release the lock when done
                     release_lock(lock_name, db)
             else:
-                logger.info("Another process has the hard_delete_teams lock, skipping execution")
+                logger.info(
+                    "Another process has the hard_delete_teams lock, skipping execution"
+                )
         except Exception as e:
             logger.error(f"Error in hard_delete_teams job: {str(e)}")
             # Try to release lock in case of error
@@ -117,7 +137,7 @@ async def lifespan(app: FastAPI):
     # Set schedule based on environment for hard delete job
     if settings.ENV_SUFFIX == "local":
         # In local env, run every hour at :30 for testing
-        hard_delete_trigger = CronTrigger(hour='*', minute=30, timezone=UTC)
+        hard_delete_trigger = CronTrigger(hour="*", minute=30, timezone=UTC)
     else:
         # In production, run daily at 3 AM
         hard_delete_trigger = CronTrigger(hour=3, minute=0, timezone=UTC)
@@ -125,8 +145,46 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(
         hard_delete_teams_job,
         trigger=hard_delete_trigger,
-        id='hard_delete_teams',
-        replace_existing=True
+        id="hard_delete_teams",
+        replace_existing=True,
+    )
+
+    # Sync pool team budgets job - runs daily to ensure LiteLLM budgets match purchases - spend
+    async def sync_pool_budgets_job():
+        db = next(get_db())
+        lock_name = "sync_pool_budgets"
+
+        try:
+            if try_acquire_lock(lock_name, db, lock_timeout=10):
+                logger.info("Acquired sync_pool_budgets lock, executing job")
+                try:
+                    result = await budgets.sync_pool_team_budgets(db)
+                    logger.info(
+                        f"Pool budgets sync complete: {result['teams_updated']} teams updated"
+                    )
+                except Exception as e:
+                    logger.error(f"Error in sync_pool_team_budgets: {str(e)}")
+                finally:
+                    release_lock(lock_name, db)
+            else:
+                logger.info(
+                    "Another process has the sync_pool_budgets lock, skipping execution"
+                )
+        except Exception as e:
+            logger.error(f"Error in sync_pool_budgets job: {str(e)}")
+            try:
+                release_lock(lock_name, db)
+            except Exception as release_error:
+                logger.error(f"Error releasing lock: {release_error}")
+        finally:
+            db.close()
+
+    sync_pool_trigger = CronTrigger(hour=4, minute=0, timezone=UTC)  # Run daily at 4 AM
+    scheduler.add_job(
+        sync_pool_budgets_job,
+        trigger=sync_pool_trigger,
+        id="sync_pool_budgets",
+        replace_existing=True,
     )
 
     # Start the scheduler
@@ -136,6 +194,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown the scheduler
     scheduler.shutdown()
+
 
 app = FastAPI(
     title="Private AI Keys as a Service",
@@ -171,20 +230,27 @@ app = FastAPI(
     openapi_tags=[
         {
             "name": "Authentication",
-            "description": "Operations for user registration, login, and session management"
+            "description": "Operations for user registration, login, and session management",
         },
         {
             "name": "Private AI Keys",
-            "description": "Operations for managing your private AI keys"
-        }
+            "description": "Operations for managing your private AI keys",
+        },
     ],
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # Get allowed origins from environment
-default_origins = ["http://localhost:8080", "http://localhost:3000", "http://localhost:8800"]
+default_origins = [
+    "http://localhost:8080",
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://localhost:8800",
+]
 lagoon_routes = os.getenv("LAGOON_ROUTES", "").split(",")
-allowed_origins = default_origins + [route.strip() for route in lagoon_routes if route.strip()]
+allowed_origins = default_origins + [
+    route.strip() for route in lagoon_routes if route.strip()
+]
 
 # Add HTTPS redirect middleware first
 app.add_middleware(HTTPSRedirectMiddleware)
@@ -198,17 +264,14 @@ app.add_middleware(PrometheusMiddleware)
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Add trusted host middleware
-app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=settings.ALLOWED_HOSTS
-)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.ALLOWED_HOSTS)
 
 app.add_middleware(AuditLogMiddleware)
 app.add_middleware(CacheControlMiddleware)
@@ -231,45 +294,54 @@ instrumentator.add(metrics.default())
 # Instrument the app
 instrumentator.instrument(app).expose(app)
 
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
 
 @app.get("/version", tags=["system"])
 async def get_version():
     return {"version": __version__}
 
+
 # Include routers
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
-app.include_router(private_ai_keys.router, prefix="/private-ai-keys", tags=["private-ai-keys"])
+app.include_router(
+    private_ai_keys.router, prefix="/private-ai-keys", tags=["private-ai-keys"]
+)
 app.include_router(users.router, prefix="/users", tags=["users"])
 app.include_router(regions.router, prefix="/regions", tags=["regions"])
+app.include_router(public.router, prefix="/public", tags=["public"])
 app.include_router(audit.router, prefix="/audit", tags=["audit"])
 app.include_router(teams.router, prefix="/teams", tags=["teams"])
 app.include_router(billing.router, prefix="/billing", tags=["billing"])
 app.include_router(products.router, prefix="/products", tags=["products"])
-app.include_router(pricing_tables.router, prefix="/pricing-tables", tags=["pricing-tables"])
+app.include_router(
+    pricing_tables.router, prefix="/pricing-tables", tags=["pricing-tables"]
+)
 app.include_router(limits.router, prefix="/limits", tags=["limits"])
+app.include_router(budgets.router, prefix="/budgets", tags=["budgets"])
+
 
 @app.get("/", include_in_schema=False)
 async def custom_swagger_ui_html():
     return get_swagger_ui_html(
         openapi_url="/openapi.json",
         title="API Documentation",
-        swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui-bundle.js",
-        swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.9.0/swagger-ui.css",
+        swagger_js_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.31.0/swagger-ui-bundle.js",
+        swagger_css_url="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.31.0/swagger-ui.css",
         oauth2_redirect_url="/oauth2-redirect",
         init_oauth={
             "usePkceWithAuthorizationCodeGrant": False,
-        }
+        },
     )
+
 
 @app.get("/oauth2-redirect", include_in_schema=False)
 async def oauth2_redirect():
-    return get_swagger_ui_html(
-        openapi_url="/openapi.json",
-        title="OAuth2 Redirect"
-    )
+    return get_swagger_ui_html(openapi_url="/openapi.json", title="OAuth2 Redirect")
+
 
 def custom_openapi():
     if app.openapi_schema:
@@ -292,7 +364,7 @@ def custom_openapi():
             "type": "http",
             "scheme": "bearer",
             "bearerFormat": "JWT",
-            "description": "Enter your JWT token in the format: Bearer <token>"
+            "description": "Enter your JWT token in the format: Bearer <token>",
         }
     }
 
@@ -306,16 +378,36 @@ def custom_openapi():
     # Remove all auth-related parameters and clean up paths
     for path_name, path_item in openapi_schema.get("paths", {}).items():
         for operation in path_item.values():
-            # Remove all parameters
+            # Remove auth-related parameters injected by dependencies
             if "parameters" in operation:
-                del operation["parameters"]
+                operation["parameters"] = [
+                    p
+                    for p in operation["parameters"]
+                    if not (
+                        (p.get("in") == "cookie" and p.get("name") == "access_token")
+                        or (
+                            p.get("in") == "header"
+                            and p.get("name", "").lower() == "authorization"
+                        )
+                    )
+                ]
+                if not operation["parameters"]:
+                    del operation["parameters"]
 
             # Remove security from non-protected endpoints
-            if path_name in ["/auth/login", "/auth/register", "/health", "/auth/generate-trial-access"]:
+            if path_name in [
+                "/auth/login",
+                "/auth/register",
+                "/health",
+                "/auth/generate-trial-access",
+                "/public/models",
+                "/public/models/",
+            ]:
                 if "security" in operation:
                     del operation["security"]
 
     app.openapi_schema = openapi_schema
     return app.openapi_schema
+
 
 app.openapi = custom_openapi

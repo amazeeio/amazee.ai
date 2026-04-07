@@ -1,12 +1,12 @@
-'use client';
+"use client";
 
-import { ReactNode } from 'react';
-import { useAuth, isTeamAdmin } from '@/hooks/use-auth';
-import { useRouter } from 'next/navigation';
-import { useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { get } from '@/utils/api';
-import { Loader2 } from 'lucide-react';
+import { Loader2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { ReactNode } from "react";
+import { useEffect } from "react";
+import { useAuth, isTeamAdmin } from "@/hooks/use-auth";
+import { get } from "@/utils/api";
+import { useQuery } from "@tanstack/react-query";
 
 interface Team {
   id: number;
@@ -24,7 +24,7 @@ export default function TeamAdminLayout({ children }: { children: ReactNode }) {
   const router = useRouter();
 
   const { data: team, isLoading: isLoadingTeam } = useQuery<Team>({
-    queryKey: ['team', user?.team_id],
+    queryKey: ["team", user?.team_id],
     queryFn: async () => {
       if (!user?.team_id) return null;
       const response = await get(`teams/${user.team_id}`);
@@ -36,7 +36,7 @@ export default function TeamAdminLayout({ children }: { children: ReactNode }) {
   useEffect(() => {
     // Redirect if user is not a team admin
     if (!isTeamAdmin(user)) {
-      router.push('/');
+      router.push("/");
     }
   }, [user, router]);
 

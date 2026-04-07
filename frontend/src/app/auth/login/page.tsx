@@ -1,9 +1,9 @@
-'use client';
+"use client";
 
-import { useEffect, useState } from 'react';
-import { LoginForm } from '@/components/auth/login-form';
-import { PasswordlessLoginForm } from '@/components/auth/passwordless-login-form';
-import { getConfig } from '@/utils/config';
+import { useEffect, useState } from "react";
+import { LoginForm } from "@/components/auth/login-form";
+import { PasswordlessLoginForm } from "@/components/auth/passwordless-login-form";
+import { getConfig } from "@/utils/config";
 
 export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(true);
@@ -15,7 +15,7 @@ export default function LoginPage() {
         const config = await getConfig();
         setIsPasswordless(config.PASSWORDLESS_SIGN_IN);
       } catch (error) {
-        console.error('Failed to load config:', error);
+        console.error("Failed to load config:", error);
       } finally {
         setIsLoading(false);
       }
@@ -84,7 +84,8 @@ export default function LoginPage() {
         <div className="relative z-20 mt-auto">
           <blockquote className="space-y-2">
             <p className="text-lg">
-              &ldquo;Welcome to amazee.ai - Your AI-powered development platform.&rdquo;
+              &ldquo;Welcome to amazee.ai - Your AI-powered development
+              platform.&rdquo;
             </p>
           </blockquote>
         </div>
@@ -93,16 +94,20 @@ export default function LoginPage() {
         <div className="mx-auto flex w-full flex-col justify-center space-y-6 sm:w-[350px]">
           <div className="flex flex-col space-y-2 text-center">
             <h1 className="text-2xl font-semibold tracking-tight">
-              {isPasswordless ? 'Sign in with email' : 'Sign in to your account'}
+              {isPasswordless
+                ? "Sign in with email"
+                : "Sign in to your account"}
             </h1>
             <p className="text-sm text-muted-foreground">
               {isPasswordless
-                ? 'Enter your email to receive a verification code'
-                : 'Enter your email and password to sign in to your account'}
+                ? "Enter your email to receive a verification code"
+                : "Enter your email and password to sign in to your account"}
             </p>
           </div>
           {isPasswordless ? (
-            <PasswordlessLoginForm onSwitchToPassword={handleSwitchToPassword} />
+            <PasswordlessLoginForm
+              onSwitchToPassword={handleSwitchToPassword}
+            />
           ) : (
             <LoginForm />
           )}

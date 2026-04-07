@@ -5,8 +5,10 @@ from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, L
 from app.core.worker import set_team_and_user_limits
 
 
-@patch('app.core.worker.LimitService')
-def test_set_team_and_user_limits_sets_team_limits(mock_limit_service_class, db, test_team, test_team_user):
+@patch("app.core.worker.LimitService")
+def test_set_team_and_user_limits_sets_team_limits(
+    mock_limit_service_class, db, test_team, test_team_user
+):
     """
     Given: A team with users and existing limits
     When: Calling set_team_and_user_limits with the team
@@ -17,7 +19,7 @@ def test_set_team_and_user_limits_sets_team_limits(mock_limit_service_class, db,
         email="second@test.com",
         team_id=test_team.id,
         role="member",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(second_user)
     db.commit()
@@ -32,19 +34,19 @@ def test_set_team_and_user_limits_sets_team_limits(mock_limit_service_class, db,
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.DEFAULT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     team_key_limit = DBLimitedResource(
-            limit_type=LimitType.CONTROL_PLANE,
-            resource=ResourceType.SERVICE_KEY,
-            unit=UnitType.COUNT,
-            max_value=10.0,
-            current_value=0.0,
-            owner_type=OwnerType.TEAM,
-            owner_id=test_team.id,
-            limited_by=LimitSource.DEFAULT,
-            created_at=datetime.now(UTC)
-        )
+        limit_type=LimitType.CONTROL_PLANE,
+        resource=ResourceType.SERVICE_KEY,
+        unit=UnitType.COUNT,
+        max_value=10.0,
+        current_value=0.0,
+        owner_type=OwnerType.TEAM,
+        owner_id=test_team.id,
+        limited_by=LimitSource.DEFAULT,
+        created_at=datetime.now(UTC),
+    )
     db.add(team_user_limit)
     db.add(team_key_limit)
     db.commit()
@@ -53,11 +55,19 @@ def test_set_team_and_user_limits_sets_team_limits(mock_limit_service_class, db,
     mock_limit_service = mock_limit_service_class.return_value
     mock_limit_service.set_team_limits = Mock()
     mock_limit_service.set_user_limits = Mock()
-    mock_limit_service.get_team_limits = Mock(return_value=[
-        Mock(resource=ResourceType.USER, unit=UnitType.COUNT, current_value=0.0),
-        Mock(resource=ResourceType.SERVICE_KEY, unit=UnitType.COUNT, current_value=0.0),
-        Mock(resource=ResourceType.VECTOR_DB, unit=UnitType.COUNT, current_value=0.0)
-    ])
+    mock_limit_service.get_team_limits = Mock(
+        return_value=[
+            Mock(resource=ResourceType.USER, unit=UnitType.COUNT, current_value=0.0),
+            Mock(
+                resource=ResourceType.SERVICE_KEY,
+                unit=UnitType.COUNT,
+                current_value=0.0,
+            ),
+            Mock(
+                resource=ResourceType.VECTOR_DB, unit=UnitType.COUNT, current_value=0.0
+            ),
+        ]
+    )
     mock_limit_service.set_current_value = Mock()
 
     # Call the function
@@ -72,8 +82,10 @@ def test_set_team_and_user_limits_sets_team_limits(mock_limit_service_class, db,
     mock_limit_service.set_user_limits.assert_any_call(second_user)
 
 
-@patch('app.core.worker.LimitService')
-def test_set_team_and_user_limits_updates_current_values(mock_limit_service_class, db, test_team, test_team_user):
+@patch("app.core.worker.LimitService")
+def test_set_team_and_user_limits_updates_current_values(
+    mock_limit_service_class, db, test_team, test_team_user
+):
     """
     Given: A team with users and keys
     When: Calling set_team_and_user_limits with the team
@@ -84,7 +96,7 @@ def test_set_team_and_user_limits_updates_current_values(mock_limit_service_clas
         email="second@test.com",
         team_id=test_team.id,
         role="member",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(second_user)
     db.commit()
@@ -94,14 +106,14 @@ def test_set_team_and_user_limits_updates_current_values(mock_limit_service_clas
         name="Team Key",
         team_id=test_team.id,
         litellm_token="team_token_123",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     user_key = DBPrivateAIKey(
         name="User Key",
         owner_id=test_team_user.id,
         team_id=test_team.id,
         litellm_token="user_token_123",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(team_key)
     db.add(user_key)
@@ -113,14 +125,24 @@ def test_set_team_and_user_limits_updates_current_values(mock_limit_service_clas
     mock_limit_service.set_user_limits = Mock()
 
     # Create mock team limits that need current value updates
-    user_limit = Mock(resource=ResourceType.USER, unit=UnitType.COUNT, current_value=0.0)
-    key_limit = Mock(resource=ResourceType.SERVICE_KEY, unit=UnitType.COUNT, current_value=0.0)
-    vector_db_limit = Mock(resource=ResourceType.VECTOR_DB, unit=UnitType.COUNT, current_value=0.0)
+    user_limit = Mock(
+        resource=ResourceType.USER, unit=UnitType.COUNT, current_value=0.0
+    )
+    key_limit = Mock(
+        resource=ResourceType.SERVICE_KEY, unit=UnitType.COUNT, current_value=0.0
+    )
+    vector_db_limit = Mock(
+        resource=ResourceType.VECTOR_DB, unit=UnitType.COUNT, current_value=0.0
+    )
 
     # Create mock user limits that need current value updates
-    user_key_limit = Mock(resource=ResourceType.USER_KEY, unit=UnitType.COUNT, current_value=0.0)
+    user_key_limit = Mock(
+        resource=ResourceType.USER_KEY, unit=UnitType.COUNT, current_value=0.0
+    )
 
-    mock_limit_service.get_team_limits = Mock(return_value=[user_limit, key_limit, vector_db_limit])
+    mock_limit_service.get_team_limits = Mock(
+        return_value=[user_limit, key_limit, vector_db_limit]
+    )
     mock_limit_service.get_user_limits = Mock(return_value=[user_key_limit])
     mock_limit_service.set_current_value = Mock()
 
@@ -136,19 +158,27 @@ def test_set_team_and_user_limits_updates_current_values(mock_limit_service_clas
     calls = mock_limit_service.set_current_value.call_args_list
 
     # Find the calls for each resource type (team limits)
-    team_user_call = next(call for call in calls if call[0][0].resource == ResourceType.USER)
-    team_key_call = next(call for call in calls if call[0][0].resource == ResourceType.SERVICE_KEY)
-    vector_db_call = next(call for call in calls if call[0][0].resource == ResourceType.VECTOR_DB)
+    team_user_call = next(
+        call for call in calls if call[0][0].resource == ResourceType.USER
+    )
+    team_key_call = next(
+        call for call in calls if call[0][0].resource == ResourceType.SERVICE_KEY
+    )
+    vector_db_call = next(
+        call for call in calls if call[0][0].resource == ResourceType.VECTOR_DB
+    )
 
     # Verify the team limit counts are correct
     assert team_user_call[0][1] == 2  # 2 users in team
-    assert team_key_call[0][1] == 1   # 1 service key (team_key with owner_id=None)
+    assert team_key_call[0][1] == 1  # 1 service key (team_key with owner_id=None)
     assert vector_db_call[0][1] == 0  # 0 vector dbs
 
     # Verify user key limits were updated (should be called twice, once per user)
     # We expect 5 total calls: 3 team limits + 2 user limits
     # The user key calls should have values 1 and 0 (one user has 1 key, the other has 0)
-    user_key_calls = [call for call in calls if call[0][0].resource == ResourceType.USER_KEY]
+    user_key_calls = [
+        call for call in calls if call[0][0].resource == ResourceType.USER_KEY
+    ]
     # We should have 2 USER_KEY calls total: 1 per user
     assert len(user_key_calls) == 2
 
@@ -158,8 +188,10 @@ def test_set_team_and_user_limits_updates_current_values(mock_limit_service_clas
     assert 0 in key_counts  # Second user has 0 keys
 
 
-@patch('app.core.worker.LimitService')
-def test_set_team_and_user_limits_handles_team_with_no_users(mock_limit_service_class, db, test_team):
+@patch("app.core.worker.LimitService")
+def test_set_team_and_user_limits_handles_team_with_no_users(
+    mock_limit_service_class, db, test_team
+):
     """
     Given: A team with no users
     When: Calling set_team_and_user_limits with the team
@@ -182,8 +214,10 @@ def test_set_team_and_user_limits_handles_team_with_no_users(mock_limit_service_
     mock_limit_service.set_user_limits.assert_not_called()
 
 
-@patch('app.core.worker.LimitService')
-def test_set_team_and_user_limits_handles_team_with_no_keys(mock_limit_service_class, db, test_team, test_team_user):
+@patch("app.core.worker.LimitService")
+def test_set_team_and_user_limits_handles_team_with_no_keys(
+    mock_limit_service_class, db, test_team, test_team_user
+):
     """
     Given: A team with users but no keys
     When: Calling set_team_and_user_limits with the team
@@ -195,11 +229,19 @@ def test_set_team_and_user_limits_handles_team_with_no_keys(mock_limit_service_c
     mock_limit_service.set_user_limits = Mock()
 
     # Create mock limits that need current value updates
-    user_limit = Mock(resource=ResourceType.USER, unit=UnitType.COUNT, current_value=0.0)
-    key_limit = Mock(resource=ResourceType.SERVICE_KEY, unit=UnitType.COUNT, current_value=0.0)
-    vector_db_limit = Mock(resource=ResourceType.VECTOR_DB, unit=UnitType.COUNT, current_value=0.0)
+    user_limit = Mock(
+        resource=ResourceType.USER, unit=UnitType.COUNT, current_value=0.0
+    )
+    key_limit = Mock(
+        resource=ResourceType.SERVICE_KEY, unit=UnitType.COUNT, current_value=0.0
+    )
+    vector_db_limit = Mock(
+        resource=ResourceType.VECTOR_DB, unit=UnitType.COUNT, current_value=0.0
+    )
 
-    mock_limit_service.get_team_limits = Mock(return_value=[user_limit, key_limit, vector_db_limit])
+    mock_limit_service.get_team_limits = Mock(
+        return_value=[user_limit, key_limit, vector_db_limit]
+    )
     mock_limit_service.set_current_value = Mock()
 
     # Call the function
@@ -210,17 +252,23 @@ def test_set_team_and_user_limits_handles_team_with_no_keys(mock_limit_service_c
 
     # Find the calls for each resource type
     user_call = next(call for call in calls if call[0][0].resource == ResourceType.USER)
-    key_call = next(call for call in calls if call[0][0].resource == ResourceType.SERVICE_KEY)
-    vector_db_call = next(call for call in calls if call[0][0].resource == ResourceType.VECTOR_DB)
+    key_call = next(
+        call for call in calls if call[0][0].resource == ResourceType.SERVICE_KEY
+    )
+    vector_db_call = next(
+        call for call in calls if call[0][0].resource == ResourceType.VECTOR_DB
+    )
 
     # Verify the counts are correct
     assert user_call[0][1] == 1  # 1 user in team
-    assert key_call[0][1] == 0   # 0 keys
+    assert key_call[0][1] == 0  # 0 keys
     assert vector_db_call[0][1] == 0  # 0 vector dbs
 
 
-@patch('app.core.worker.LimitService')
-def test_set_team_and_user_limits_skips_non_count_limits(mock_limit_service_class, db, test_team, test_team_user):
+@patch("app.core.worker.LimitService")
+def test_set_team_and_user_limits_skips_non_count_limits(
+    mock_limit_service_class, db, test_team, test_team_user
+):
     """
     Given: A team with limits that are not COUNT type
     When: Calling set_team_and_user_limits with the team
@@ -232,11 +280,19 @@ def test_set_team_and_user_limits_skips_non_count_limits(mock_limit_service_clas
     mock_limit_service.set_user_limits = Mock()
 
     # Create mock limits - some COUNT, some not
-    user_limit = Mock(resource=ResourceType.USER, unit=UnitType.COUNT, current_value=0.0)
-    budget_limit = Mock(resource=ResourceType.BUDGET, unit=UnitType.DOLLAR, current_value=0.0)  # Not COUNT
-    key_limit = Mock(resource=ResourceType.SERVICE_KEY, unit=UnitType.COUNT, current_value=0.0)
+    user_limit = Mock(
+        resource=ResourceType.USER, unit=UnitType.COUNT, current_value=0.0
+    )
+    budget_limit = Mock(
+        resource=ResourceType.BUDGET, unit=UnitType.DOLLAR, current_value=0.0
+    )  # Not COUNT
+    key_limit = Mock(
+        resource=ResourceType.SERVICE_KEY, unit=UnitType.COUNT, current_value=0.0
+    )
 
-    mock_limit_service.get_team_limits = Mock(return_value=[user_limit, budget_limit, key_limit])
+    mock_limit_service.get_team_limits = Mock(
+        return_value=[user_limit, budget_limit, key_limit]
+    )
     mock_limit_service.set_current_value = Mock()
 
     # Call the function
@@ -253,8 +309,10 @@ def test_set_team_and_user_limits_skips_non_count_limits(mock_limit_service_clas
     assert ResourceType.BUDGET not in resources_updated
 
 
-@patch('app.core.worker.LimitService')
-def test_set_team_and_user_limits_skips_limits_with_non_zero_current_value(mock_limit_service_class, db, test_team, test_team_user):
+@patch("app.core.worker.LimitService")
+def test_set_team_and_user_limits_skips_limits_with_non_zero_current_value(
+    mock_limit_service_class, db, test_team, test_team_user
+):
     """
     Given: A team with limits that already have non-zero current values
     When: Calling set_team_and_user_limits with the team
@@ -266,11 +324,19 @@ def test_set_team_and_user_limits_skips_limits_with_non_zero_current_value(mock_
     mock_limit_service.set_user_limits = Mock()
 
     # Create mock limits - some with zero current value, some with non-zero
-    user_limit = Mock(resource=ResourceType.USER, unit=UnitType.COUNT, current_value=0.0)
-    key_limit = Mock(resource=ResourceType.SERVICE_KEY, unit=UnitType.COUNT, current_value=5.0)  # Non-zero
-    vector_db_limit = Mock(resource=ResourceType.VECTOR_DB, unit=UnitType.COUNT, current_value=0.0)
+    user_limit = Mock(
+        resource=ResourceType.USER, unit=UnitType.COUNT, current_value=0.0
+    )
+    key_limit = Mock(
+        resource=ResourceType.SERVICE_KEY, unit=UnitType.COUNT, current_value=5.0
+    )  # Non-zero
+    vector_db_limit = Mock(
+        resource=ResourceType.VECTOR_DB, unit=UnitType.COUNT, current_value=0.0
+    )
 
-    mock_limit_service.get_team_limits = Mock(return_value=[user_limit, key_limit, vector_db_limit])
+    mock_limit_service.get_team_limits = Mock(
+        return_value=[user_limit, key_limit, vector_db_limit]
+    )
     mock_limit_service.set_current_value = Mock()
 
     # Call the function
@@ -287,8 +353,10 @@ def test_set_team_and_user_limits_skips_limits_with_non_zero_current_value(mock_
     assert ResourceType.SERVICE_KEY not in resources_updated
 
 
-@patch('app.core.worker.LimitService')
-def test_set_team_and_user_limits_handles_vector_db_counting(mock_limit_service_class, db, test_team, test_team_user):
+@patch("app.core.worker.LimitService")
+def test_set_team_and_user_limits_handles_vector_db_counting(
+    mock_limit_service_class, db, test_team, test_team_user
+):
     """
     Given: A team with keys that have database_username set
     When: Calling set_team_and_user_limits with the team
@@ -300,14 +368,14 @@ def test_set_team_and_user_limits_handles_vector_db_counting(mock_limit_service_
         team_id=test_team.id,
         litellm_token="token_1",
         database_username="db_user",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     key_without_db = DBPrivateAIKey(
         name="Key without DB",
         team_id=test_team.id,
         litellm_token="token_2",
         database_username=None,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(key_with_db)
     db.add(key_without_db)
@@ -319,11 +387,19 @@ def test_set_team_and_user_limits_handles_vector_db_counting(mock_limit_service_
     mock_limit_service.set_user_limits = Mock()
 
     # Create mock limits
-    user_limit = Mock(resource=ResourceType.USER, unit=UnitType.COUNT, current_value=0.0)
-    key_limit = Mock(resource=ResourceType.SERVICE_KEY, unit=UnitType.COUNT, current_value=0.0)
-    vector_db_limit = Mock(resource=ResourceType.VECTOR_DB, unit=UnitType.COUNT, current_value=0.0)
+    user_limit = Mock(
+        resource=ResourceType.USER, unit=UnitType.COUNT, current_value=0.0
+    )
+    key_limit = Mock(
+        resource=ResourceType.SERVICE_KEY, unit=UnitType.COUNT, current_value=0.0
+    )
+    vector_db_limit = Mock(
+        resource=ResourceType.VECTOR_DB, unit=UnitType.COUNT, current_value=0.0
+    )
 
-    mock_limit_service.get_team_limits = Mock(return_value=[user_limit, key_limit, vector_db_limit])
+    mock_limit_service.get_team_limits = Mock(
+        return_value=[user_limit, key_limit, vector_db_limit]
+    )
     mock_limit_service.set_current_value = Mock()
 
     # Call the function
@@ -331,12 +407,16 @@ def test_set_team_and_user_limits_handles_vector_db_counting(mock_limit_service_
 
     # Verify vector DB count was set correctly
     calls = mock_limit_service.set_current_value.call_args_list
-    vector_db_call = next(call for call in calls if call[0][0].resource == ResourceType.VECTOR_DB)
+    vector_db_call = next(
+        call for call in calls if call[0][0].resource == ResourceType.VECTOR_DB
+    )
     assert vector_db_call[0][1] == 1  # Only 1 key has database_username
 
 
-@patch('app.core.worker.LimitService')
-def test_set_team_and_user_limits_handles_key_counting_with_litellm_token(mock_limit_service_class, db, test_team, test_team_user):
+@patch("app.core.worker.LimitService")
+def test_set_team_and_user_limits_handles_key_counting_with_litellm_token(
+    mock_limit_service_class, db, test_team, test_team_user
+):
     """
     Given: A team with keys - some with litellm_token, some without
     When: Calling set_team_and_user_limits with the team
@@ -347,13 +427,13 @@ def test_set_team_and_user_limits_handles_key_counting_with_litellm_token(mock_l
         name="Key with token",
         team_id=test_team.id,
         litellm_token="token_1",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     key_without_token = DBPrivateAIKey(
         name="Key without token",
         team_id=test_team.id,
         litellm_token=None,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(key_with_token)
     db.add(key_without_token)
@@ -365,12 +445,22 @@ def test_set_team_and_user_limits_handles_key_counting_with_litellm_token(mock_l
     mock_limit_service.set_user_limits = Mock()
 
     # Create mock limits
-    user_limit = Mock(resource=ResourceType.USER, unit=UnitType.COUNT, current_value=0.0)
-    key_limit = Mock(resource=ResourceType.SERVICE_KEY, unit=UnitType.COUNT, current_value=0.0)
-    vector_db_limit = Mock(resource=ResourceType.VECTOR_DB, unit=UnitType.COUNT, current_value=0.0)
+    user_limit = Mock(
+        resource=ResourceType.USER, unit=UnitType.COUNT, current_value=0.0
+    )
+    key_limit = Mock(
+        resource=ResourceType.SERVICE_KEY, unit=UnitType.COUNT, current_value=0.0
+    )
+    vector_db_limit = Mock(
+        resource=ResourceType.VECTOR_DB, unit=UnitType.COUNT, current_value=0.0
+    )
 
-    mock_limit_service.get_team_limits = Mock(return_value=[user_limit, key_limit, vector_db_limit])
-    mock_limit_service.get_user_limits = Mock(return_value=[])  # No user limits for this test
+    mock_limit_service.get_team_limits = Mock(
+        return_value=[user_limit, key_limit, vector_db_limit]
+    )
+    mock_limit_service.get_user_limits = Mock(
+        return_value=[]
+    )  # No user limits for this test
     mock_limit_service.set_current_value = Mock()
 
     # Call the function
@@ -378,12 +468,16 @@ def test_set_team_and_user_limits_handles_key_counting_with_litellm_token(mock_l
 
     # Verify key count only includes keys with litellm_token
     calls = mock_limit_service.set_current_value.call_args_list
-    key_call = next(call for call in calls if call[0][0].resource == ResourceType.SERVICE_KEY)
+    key_call = next(
+        call for call in calls if call[0][0].resource == ResourceType.SERVICE_KEY
+    )
     assert key_call[0][1] == 1  # Only 1 key has litellm_token
 
 
-@patch('app.core.worker.LimitService')
-def test_set_team_and_user_limits_updates_user_key_current_values(mock_limit_service_class, db, test_team, test_team_user):
+@patch("app.core.worker.LimitService")
+def test_set_team_and_user_limits_updates_user_key_current_values(
+    mock_limit_service_class, db, test_team, test_team_user
+):
     """
     Given: A team with users that have different numbers of keys
     When: Calling set_team_and_user_limits with the team
@@ -394,7 +488,7 @@ def test_set_team_and_user_limits_updates_user_key_current_values(mock_limit_ser
         email="second@test.com",
         team_id=test_team.id,
         role="member",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(second_user)
     db.commit()
@@ -406,14 +500,14 @@ def test_set_team_and_user_limits_updates_user_key_current_values(mock_limit_ser
         owner_id=test_team_user.id,
         team_id=test_team.id,
         litellm_token="user1_token_1",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     user1_key2 = DBPrivateAIKey(
         name="User 1 Key 2",
         owner_id=test_team_user.id,
         team_id=test_team.id,
         litellm_token="user1_token_2",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
 
     # Second user has 1 key
@@ -422,7 +516,7 @@ def test_set_team_and_user_limits_updates_user_key_current_values(mock_limit_ser
         owner_id=second_user.id,
         team_id=test_team.id,
         litellm_token="user2_token_1",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
 
     db.add(user1_key1)
@@ -436,9 +530,13 @@ def test_set_team_and_user_limits_updates_user_key_current_values(mock_limit_ser
     mock_limit_service.set_user_limits = Mock()
 
     # Create mock user limits that need current value updates
-    user_key_limit = Mock(resource=ResourceType.USER_KEY, unit=UnitType.COUNT, current_value=0.0)
+    user_key_limit = Mock(
+        resource=ResourceType.USER_KEY, unit=UnitType.COUNT, current_value=0.0
+    )
 
-    mock_limit_service.get_team_limits = Mock(return_value=[])  # No team limits for this test
+    mock_limit_service.get_team_limits = Mock(
+        return_value=[]
+    )  # No team limits for this test
     mock_limit_service.get_user_limits = Mock(return_value=[user_key_limit])
     mock_limit_service.set_current_value = Mock()
 

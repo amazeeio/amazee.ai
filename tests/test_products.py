@@ -1,6 +1,7 @@
 from app.db.models import DBProduct, DBTeam, DBTeamProduct
 from datetime import datetime, UTC
 
+
 def test_create_product_as_system_admin(client, admin_token, db):
     """
     Test that a system admin can create a product.
@@ -24,8 +25,8 @@ def test_create_product_as_system_admin(client, admin_token, db):
             "vector_db_count": 1,
             "vector_db_storage": 100,
             "renewal_period_days": 30,
-            "active": True
-        }
+            "active": True,
+        },
     )
     assert response.status_code == 201
     data = response.json()
@@ -42,6 +43,7 @@ def test_create_product_as_system_admin(client, admin_token, db):
     assert data["renewal_period_days"] == 30
     assert data["active"] is True
     assert "created_at" in data
+
 
 def test_create_product_duplicate_id(client, admin_token, db):
     """
@@ -67,8 +69,8 @@ def test_create_product_duplicate_id(client, admin_token, db):
             "vector_db_count": 1,
             "vector_db_storage": 100,
             "renewal_period_days": 30,
-            "active": True
-        }
+            "active": True,
+        },
     )
 
     # Try to create another product with the same ID
@@ -87,11 +89,12 @@ def test_create_product_duplicate_id(client, admin_token, db):
             "vector_db_count": 1,
             "vector_db_storage": 100,
             "renewal_period_days": 30,
-            "active": True
-        }
+            "active": True,
+        },
     )
     assert response.status_code == 400
     assert "already exists" in response.json()["detail"]
+
 
 def test_create_product_unauthorized(client, test_token, db):
     """
@@ -116,10 +119,11 @@ def test_create_product_unauthorized(client, test_token, db):
             "vector_db_count": 1,
             "vector_db_storage": 100,
             "renewal_period_days": 30,
-            "active": True
-        }
+            "active": True,
+        },
     )
     assert response.status_code == 403
+
 
 def test_list_products_as_team_admin(client, team_admin_token, db, test_team):
     """
@@ -143,7 +147,7 @@ def test_list_products_as_team_admin(client, team_admin_token, db, test_team):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db_product2 = DBProduct(
         id="prod_test2",
@@ -158,7 +162,7 @@ def test_list_products_as_team_admin(client, team_admin_token, db, test_team):
         vector_db_storage=200,
         renewal_period_days=60,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(db_product1)
     db.add(db_product2)
@@ -170,14 +174,14 @@ def test_list_products_as_team_admin(client, team_admin_token, db, test_team):
     db.commit()
 
     response = client.get(
-        "/products/",
-        headers={"Authorization": f"Bearer {team_admin_token}"}
+        "/products/", headers={"Authorization": f"Bearer {team_admin_token}"}
     )
     assert response.status_code == 200
     data = response.json()
     assert len(data) >= 2
     assert any(p["name"] == "Test Product 1" for p in data)
     assert any(p["name"] == "Test Product 2" for p in data)
+
 
 def test_list_products_unauthorized(client, test_token, db):
     """
@@ -188,10 +192,10 @@ def test_list_products_unauthorized(client, test_token, db):
     THEN: A 403 - Forbidden is returned
     """
     response = client.get(
-        "/products/",
-        headers={"Authorization": f"Bearer {test_token}"}
+        "/products/", headers={"Authorization": f"Bearer {test_token}"}
     )
     assert response.status_code == 403
+
 
 def test_get_product_as_team_admin(client, team_admin_token, db, test_team):
     """
@@ -215,7 +219,7 @@ def test_get_product_as_team_admin(client, team_admin_token, db, test_team):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(db_product)
     db.commit()
@@ -226,7 +230,7 @@ def test_get_product_as_team_admin(client, team_admin_token, db, test_team):
 
     response = client.get(
         f"/products/{db_product.id}",
-        headers={"Authorization": f"Bearer {team_admin_token}"}
+        headers={"Authorization": f"Bearer {team_admin_token}"},
     )
     assert response.status_code == 200
     data = response.json()
@@ -243,6 +247,7 @@ def test_get_product_as_team_admin(client, team_admin_token, db, test_team):
     assert data["renewal_period_days"] == 30
     assert data["active"] is True
 
+
 def test_get_product_not_found(client, team_admin_token, db):
     """
     Test that getting a non-existent product returns 404.
@@ -253,9 +258,10 @@ def test_get_product_not_found(client, team_admin_token, db):
     """
     response = client.get(
         "/products/prod_nonexistent",
-        headers={"Authorization": f"Bearer {team_admin_token}"}
+        headers={"Authorization": f"Bearer {team_admin_token}"},
     )
     assert response.status_code == 404
+
 
 def test_update_product_as_system_admin(client, admin_token, db):
     """
@@ -279,7 +285,7 @@ def test_update_product_as_system_admin(client, admin_token, db):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(db_product)
     db.commit()
@@ -298,8 +304,8 @@ def test_update_product_as_system_admin(client, admin_token, db):
             "vector_db_count": 2,
             "vector_db_storage": 200,
             "renewal_period_days": 60,
-            "active": False
-        }
+            "active": False,
+        },
     )
     assert response.status_code == 200
     data = response.json()
@@ -315,6 +321,7 @@ def test_update_product_as_system_admin(client, admin_token, db):
     assert data["vector_db_storage"] == 200
     assert data["renewal_period_days"] == 60
     assert data["active"] is False
+
 
 def test_update_product_unauthorized(client, team_admin_token, db):
     """
@@ -338,7 +345,7 @@ def test_update_product_unauthorized(client, team_admin_token, db):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(db_product)
     db.commit()
@@ -346,11 +353,10 @@ def test_update_product_unauthorized(client, team_admin_token, db):
     response = client.put(
         f"/products/{db_product.id}",
         headers={"Authorization": f"Bearer {team_admin_token}"},
-        json={
-            "name": "Updated Product"
-        }
+        json={"name": "Updated Product"},
     )
     assert response.status_code == 403
+
 
 def test_delete_product_as_system_admin(client, admin_token, db):
     """
@@ -374,14 +380,13 @@ def test_delete_product_as_system_admin(client, admin_token, db):
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(db_product)
     db.commit()
 
     response = client.delete(
-        f"/products/{db_product.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        f"/products/{db_product.id}", headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert response.status_code == 200
 
@@ -389,7 +394,10 @@ def test_delete_product_as_system_admin(client, admin_token, db):
     deleted_product = db.query(DBProduct).filter(DBProduct.id == db_product.id).first()
     assert deleted_product is None
 
-def test_delete_product_with_team_association(client, admin_token, db, test_team, test_product):
+
+def test_delete_product_with_team_association(
+    client, admin_token, db, test_team, test_product
+):
     """
     Test that a product cannot be deleted if it's associated with a team.
 
@@ -398,26 +406,28 @@ def test_delete_product_with_team_association(client, admin_token, db, test_team
     THEN: An error is returned
     """
     # Associate the product with a team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
     # Try to delete the product
     response = client.delete(
         f"/products/{test_product.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert response.status_code == 400
     assert "cannot delete product" in response.json()["detail"].lower()
 
     # Verify the product still exists
-    existing_product = db.query(DBProduct).filter(DBProduct.id == test_product.id).first()
+    existing_product = (
+        db.query(DBProduct).filter(DBProduct.id == test_product.id).first()
+    )
     assert existing_product is not None
 
-def test_list_products_by_team_as_system_admin(client, admin_token, db, test_team, test_product):
+
+def test_list_products_by_team_as_system_admin(
+    client, admin_token, db, test_team, test_product
+):
     """
     Test that a system admin can list products for any team.
 
@@ -426,16 +436,13 @@ def test_list_products_by_team_as_system_admin(client, admin_token, db, test_tea
     THEN: A 200 - OK is returned with the team's products
     """
     # Associate the product with the team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
     response = client.get(
         f"/products/?team_id={test_team.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert response.status_code == 200
     data = response.json()
@@ -443,7 +450,10 @@ def test_list_products_by_team_as_system_admin(client, admin_token, db, test_tea
     assert data[0]["id"] == test_product.id
     assert data[0]["name"] == test_product.name
 
-def test_list_products_by_team_as_team_admin(client, team_admin_token, db, test_team, test_product):
+
+def test_list_products_by_team_as_team_admin(
+    client, team_admin_token, db, test_team, test_product
+):
     """
     Test that a team admin can list products for their own team.
 
@@ -452,16 +462,13 @@ def test_list_products_by_team_as_team_admin(client, team_admin_token, db, test_
     THEN: A 200 - OK is returned with their team's products
     """
     # Associate the product with the team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
     response = client.get(
         f"/products/?team_id={test_team.id}",
-        headers={"Authorization": f"Bearer {team_admin_token}"}
+        headers={"Authorization": f"Bearer {team_admin_token}"},
     )
     assert response.status_code == 200
     data = response.json()
@@ -469,7 +476,10 @@ def test_list_products_by_team_as_team_admin(client, team_admin_token, db, test_
     assert data[0]["id"] == test_product.id
     assert data[0]["name"] == test_product.name
 
-def test_list_products_by_other_team_as_team_admin(client, team_admin_token, db, test_team, test_product):
+
+def test_list_products_by_other_team_as_team_admin(
+    client, team_admin_token, db, test_team, test_product
+):
     """
     Test that a team admin cannot list products for another team.
 
@@ -478,27 +488,22 @@ def test_list_products_by_other_team_as_team_admin(client, team_admin_token, db,
     THEN: A 403 - Forbidden is returned
     """
     # Create another team
-    other_team = DBTeam(
-        name="Other Team",
-        admin_email="other@example.com"
-    )
+    other_team = DBTeam(name="Other Team", admin_email="other@example.com")
     db.add(other_team)
     db.commit()
 
     # Associate the product with the other team
-    team_product = DBTeamProduct(
-        team_id=other_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=other_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
     response = client.get(
         f"/products/?team_id={other_team.id}",
-        headers={"Authorization": f"Bearer {team_admin_token}"}
+        headers={"Authorization": f"Bearer {team_admin_token}"},
     )
     assert response.status_code == 403
     assert "own team" in response.json()["detail"].lower()
+
 
 def test_list_products_by_nonexistent_team(client, admin_token, db):
     """
@@ -509,8 +514,7 @@ def test_list_products_by_nonexistent_team(client, admin_token, db):
     THEN: A 404 - Not Found is returned
     """
     response = client.get(
-        "/products/?team_id=999999",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/products/?team_id=999999", headers={"Authorization": f"Bearer {admin_token}"}
     )
     assert response.status_code == 404
     assert "Team not found" in response.json()["detail"]

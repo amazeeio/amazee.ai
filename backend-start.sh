@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 
 # Wait for PostgreSQL to be ready and create database if needed
 echo "Waiting for PostgreSQL to be ready..."
@@ -15,7 +16,7 @@ echo "PostgreSQL is up - initializing database"
 python /app/scripts/initialise_resources.py
 
 # Check if running in production (Lagoon) or development mode
-if [ -n "${LAGOON_ENVIRONMENT}" ]; then
+if [ -n "${LAGOON_ENVIRONMENT:-}" ]; then
     # Production mode (Lagoon)
     exec uvicorn app.main:app --host 0.0.0.0 --port 8800 --workers 4
 else

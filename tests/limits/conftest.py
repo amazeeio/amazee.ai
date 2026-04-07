@@ -26,7 +26,7 @@ def sample_team_limit(db, test_team):
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.DEFAULT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(limit)
     db.commit()
@@ -46,7 +46,7 @@ def sample_user_limit(db, test_team_user):
         owner_id=test_team_user.id,
         limited_by=LimitSource.MANUAL,
         set_by="admin@example.com",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(limit)
     db.commit()
@@ -65,7 +65,7 @@ def sample_system_limit(db):
         owner_type=OwnerType.SYSTEM,
         owner_id=0,
         limited_by=LimitSource.DEFAULT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(limit)
     db.commit()

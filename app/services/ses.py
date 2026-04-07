@@ -9,18 +9,18 @@ import json
 from app.services import aws_auth
 
 # Get role name from environment variable
-role_name = os.getenv('SES_ROLE_NAME')
-env_suffix = os.getenv('ENV_SUFFIX')
-ses_region = os.getenv('SES_REGION', "eu-central-1") # SES defaults to Frankfurt as Zurich is not available
+role_name = os.getenv("SES_ROLE_NAME")
+env_suffix = os.getenv("ENV_SUFFIX")
+ses_region = os.getenv(
+    "SES_REGION", "eu-central-1"
+)  # SES defaults to Frankfurt as Zurich is not available
 
 # Set up logging
 logger = logging.getLogger(__name__)
 
+
 class SESService:
-    def __init__(
-        self,
-        session_name: str = "SESServiceSession"
-    ):
+    def __init__(self, session_name: str = "SESServiceSession"):
         """
         Initialize the SES service with temporary credentials from STS AssumeRole.
 
@@ -47,9 +47,9 @@ class SESService:
 
         # Create SESv2 client with temporary credentials
         self.ses = boto3.client(
-            'sesv2',
+            "sesv2",
             region_name=ses_region,
-            **aws_auth.get_credentials(role_name, ses_region)
+            **aws_auth.get_credentials(role_name, ses_region),
         )
 
     def _read_template(self, template_name: str) -> Tuple[str, str, str]:
@@ -78,7 +78,7 @@ class SESService:
         content = template_path.read_text()
 
         # Split into subject and body
-        lines = content.split('\n', 1)
+        lines = content.split("\n", 1)
         subject = lines[0].strip()
         markdown_content = lines[1].strip() if len(lines) > 1 else ""
 
@@ -86,12 +86,12 @@ class SESService:
         html_content = markdown.markdown(
             markdown_content,
             extensions=[
-                'markdown.extensions.tables',
-                'markdown.extensions.fenced_code',
-                'markdown.extensions.sane_lists',
-                'markdown.extensions.nl2br'
+                "markdown.extensions.tables",
+                "markdown.extensions.fenced_code",
+                "markdown.extensions.sane_lists",
+                "markdown.extensions.nl2br",
             ],
-            output_format='html5'
+            output_format="html5",
         )
 
         return subject, markdown_content, html_content
@@ -108,10 +108,12 @@ class SESService:
             Optional[Dict[str, Any]]: The template if it exists, None otherwise
         """
         try:
-            response = self.ses.get_email_template(TemplateName=f"{template_name}-{env_suffix}")
+            response = self.ses.get_email_template(
+                TemplateName=f"{template_name}-{env_suffix}"
+            )
             return response
         except ClientError as e:
-            if e.response['Error']['Code'] == 'NotFoundException':
+            if e.response["Error"]["Code"] == "NotFoundException":
                 return None
             raise e
 
@@ -133,12 +135,12 @@ class SESService:
             subject, text_content, html_content = self._read_template(template_name)
 
             template_data = {
-                'TemplateName': f"{template_name}-{env_suffix}",
-                'TemplateContent': {
-                    'Subject': subject,
-                    'Text': text_content,
-                    'Html': html_content
-                }
+                "TemplateName": f"{template_name}-{env_suffix}",
+                "TemplateContent": {
+                    "Subject": subject,
+                    "Text": text_content,
+                    "Html": html_content,
+                },
             }
 
             # Check if template exists
@@ -166,7 +168,7 @@ class SESService:
         to_addresses: list[str],
         template_name: str,
         template_data: Dict[str, Any],
-        from_address: Optional[str] = None
+        from_address: Optional[str] = None,
     ) -> bool:
         """
         Send an email using an SES template.
@@ -183,7 +185,7 @@ class SESService:
         try:
             # Get the sender email address
             if not from_address:
-                from_address = os.getenv('SES_SENDER_EMAIL')
+                from_address = os.getenv("SES_SENDER_EMAIL")
                 if not from_address:
                     raise ValueError("SES_SENDER_EMAIL environment variable is not set")
 
@@ -193,19 +195,22 @@ class SESService:
             # Send the email using the template
             response = self.ses.send_email(
                 FromEmailAddress=from_address,
-                Destination={
-                    'ToAddresses': to_addresses
-                },
+                Destination={"ToAddresses": to_addresses},
                 Content={
-                    'Template': {
-                        'TemplateName': f"{template_name}-{env_suffix}",
-                        'TemplateData': template_data_json
+                    "Template": {
+                        "TemplateName": f"{template_name}-{env_suffix}",
+                        "TemplateData": template_data_json,
                     }
-                }
+                },
             )
-            logger.info(f"Successfully sent email using template {template_name}-{env_suffix} to {to_addresses}, message ID: {response['MessageId']}")
+            logger.info(
+                f"Successfully sent email using template {template_name}-{env_suffix} to {to_addresses}, message ID: {response['MessageId']}"
+            )
             return True
 
         except ClientError as e:
-            logger.error(f"Error sending email using template {template_name}-{env_suffix}: {str(e)}", exc_info=True)
+            logger.error(
+                f"Error sending email using template {template_name}-{env_suffix}: {str(e)}",
+                exc_info=True,
+            )
             return False

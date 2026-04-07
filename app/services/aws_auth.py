@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, UTC
 
 _credentials_map: Dict[str, Dict[str, Any]] = {}
 
+
 def _get_account_id(region_name: str = "eu-central-2") -> str:
     """
     Get the AWS account ID using GetCallerIdentity.
@@ -17,11 +18,12 @@ def _get_account_id(region_name: str = "eu-central-2") -> str:
     """
     try:
         _region_name = region_name
-        sts_client = boto3.client('sts', region_name=_region_name)
+        sts_client = boto3.client("sts", region_name=_region_name)
         response = sts_client.get_caller_identity()
-        return response['Account']
+        return response["Account"]
     except ClientError as e:
         raise Exception(f"Failed to get account ID: {str(e)}")
+
 
 def _check_credentials(role_name: str, region_name: str = "eu-central-2") -> None:
     """
@@ -33,13 +35,18 @@ def _check_credentials(role_name: str, region_name: str = "eu-central-2") -> Non
         return
 
     credentials = _credentials_map[role_name]
-    expiry = credentials['Expiration']
+    expiry = credentials["Expiration"]
 
     # Refresh if credentials expire in less than 5 minutes
     if datetime.now(UTC) + timedelta(minutes=5) >= expiry:
         _assume_role(role_name, region_name)
 
-def _assume_role(role_name: str, region_name: str = "eu-central-2", session_name: str = "AWSServiceSession") -> None:
+
+def _assume_role(
+    role_name: str,
+    region_name: str = "eu-central-2",
+    session_name: str = "AWSServiceSession",
+) -> None:
     """
     Assume the specified IAM role and get temporary credentials.
     Updates the credentials map with the new credentials.
@@ -56,27 +63,29 @@ def _assume_role(role_name: str, region_name: str = "eu-central-2", session_name
         role_arn = f"arn:aws:iam::{account_id}:role/{role_name}"
 
         # Create STS client with default credentials
-        sts_client = boto3.client('sts', region_name=region_name)
+        sts_client = boto3.client("sts", region_name=region_name)
 
         # Assume the role
         response = sts_client.assume_role(
-            RoleArn=role_arn,
-            RoleSessionName=session_name
+            RoleArn=role_arn, RoleSessionName=session_name
         )
 
         # Store credentials and expiry
-        credentials = response['Credentials']
+        credentials = response["Credentials"]
         _credentials_map[role_name] = {
-            'AccessKeyId': credentials['AccessKeyId'],
-            'SecretAccessKey': credentials['SecretAccessKey'],
-            'SessionToken': credentials['SessionToken'],
-            'Expiration': credentials['Expiration'].replace(tzinfo=UTC)
+            "AccessKeyId": credentials["AccessKeyId"],
+            "SecretAccessKey": credentials["SecretAccessKey"],
+            "SessionToken": credentials["SessionToken"],
+            "Expiration": credentials["Expiration"].replace(tzinfo=UTC),
         }
 
     except ClientError as e:
         raise Exception(f"Failed to assume role: {str(e)}")
 
-def get_credentials(role_name: str, region_name: str = "eu-central-2") -> Dict[str, str]:
+
+def get_credentials(
+    role_name: str, region_name: str = "eu-central-2"
+) -> Dict[str, str]:
     """
     Get the current AWS credentials.
 
@@ -86,12 +95,15 @@ def get_credentials(role_name: str, region_name: str = "eu-central-2") -> Dict[s
     _check_credentials(role_name, region_name)
     credentials = _credentials_map[role_name]
     return {
-        'aws_access_key_id': credentials['AccessKeyId'],
-        'aws_secret_access_key': credentials['SecretAccessKey'],
-        'aws_session_token': credentials['SessionToken']
+        "aws_access_key_id": credentials["AccessKeyId"],
+        "aws_secret_access_key": credentials["SecretAccessKey"],
+        "aws_session_token": credentials["SessionToken"],
     }
 
-def ensure_valid_credentials(role_name: str, region_name: str = "eu-central-2") -> Callable:
+
+def ensure_valid_credentials(
+    role_name: str, region_name: str = "eu-central-2"
+) -> Callable:
     """
     Decorator to ensure valid credentials before executing AWS operations.
 
@@ -101,9 +113,12 @@ def ensure_valid_credentials(role_name: str, region_name: str = "eu-central-2") 
     Returns:
         Callable: The decorated function
     """
+
     def inner(func: Callable) -> Callable:
         def wrapper(*args, **kwargs):
             _check_credentials(role_name, region_name)
             return func(*args, **kwargs)
+
         return wrapper
+
     return inner

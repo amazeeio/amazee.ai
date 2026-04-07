@@ -3,6 +3,7 @@ from sqlalchemy.exc import IntegrityError
 from app.db.models import DBSystemSecret
 from datetime import datetime, UTC, timedelta
 
+
 def try_acquire_lock(lock_name: str, db: Session, lock_timeout: int = 10) -> bool:
     """
     Try to acquire a lock.
@@ -25,7 +26,9 @@ def try_acquire_lock(lock_name: str, db: Session, lock_timeout: int = 10) -> boo
 
     if lock:
         # Lock exists - check if it's active
-        lock_active = lock.value.lower() == "true" and lock.updated_at > datetime.now(UTC) - timedelta(minutes=lock_timeout)
+        lock_active = lock.value.lower() == "true" and lock.updated_at > datetime.now(
+            UTC
+        ) - timedelta(minutes=lock_timeout)
         if lock_active:
             return False
         else:
@@ -37,7 +40,9 @@ def try_acquire_lock(lock_name: str, db: Session, lock_timeout: int = 10) -> boo
     else:
         # Lock doesn't exist - try to create it
         try:
-            lock = DBSystemSecret(key=lock_key, value="true", updated_at=datetime.now(UTC))
+            lock = DBSystemSecret(
+                key=lock_key, value="true", updated_at=datetime.now(UTC)
+            )
             db.add(lock)
             db.commit()
             return True
@@ -46,8 +51,13 @@ def try_acquire_lock(lock_name: str, db: Session, lock_timeout: int = 10) -> boo
             db.rollback()
             return False
 
+
 def release_lock(lock_name: str, db: Session):
-    lock = db.query(DBSystemSecret).filter(DBSystemSecret.key == f"lock_{lock_name}").first()
+    lock = (
+        db.query(DBSystemSecret)
+        .filter(DBSystemSecret.key == f"lock_{lock_name}")
+        .first()
+    )
     if lock:
         lock.value = "false"
         db.commit()

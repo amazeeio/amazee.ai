@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { getConfig, getCachedConfig } from '../utils/config';
+import { useState, useEffect } from "react";
+import { getConfig, getCachedConfig } from "../utils/config";
 
 export function useConfig() {
   const [config, setConfig] = useState(getCachedConfig());

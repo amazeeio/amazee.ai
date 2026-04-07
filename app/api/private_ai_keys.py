@@ -7,9 +7,16 @@ import logging
 from app.db.database import get_db
 from app.core.dependencies import get_limit_service
 from app.schemas.models import (
-    PrivateAIKey, PrivateAIKeyCreate, PrivateAIKeySpend,
-    BudgetPeriodUpdate, LiteLLMToken, VectorDBCreate, VectorDB,
-    TokenDurationUpdate, PrivateAIKeyDetail
+    PrivateAIKey,
+    PrivateAIKeyCreate,
+    PrivateAIKeySpend,
+    BudgetPeriodUpdate,
+    BudgetType,
+    LiteLLMToken,
+    VectorDBCreate,
+    VectorDB,
+    TokenDurationUpdate,
+    PrivateAIKeyDetail,
 )
 from app.db.postgres import PostgresManager
 from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
@@ -18,15 +25,18 @@ from app.core.security import (
     get_current_user_from_auth,
     get_role_min_team_admin,
     get_private_ai_access,
-    get_role_min_system_admin
+    get_role_min_system_admin,
 )
 from app.core.roles import UserRole
 from app.core.config import settings
-from app.core.limit_service import LimitService, DEFAULT_KEY_DURATION, DEFAULT_MAX_SPEND, DEFAULT_RPM_PER_KEY
-
-router = APIRouter(
-    tags=["private-ai-keys"]
+from app.core.limit_service import (
+    LimitService,
+    DEFAULT_KEY_DURATION,
+    DEFAULT_MAX_SPEND,
+    DEFAULT_RPM_PER_KEY,
 )
+
+router = APIRouter(tags=["private-ai-keys"])
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -34,11 +44,12 @@ logger = logging.getLogger(__name__)
 # Fake ID for resources not stored in the database
 FAKE_ID = -1
 
+
 def _validate_permissions_and_get_ownership_info(
     owner_id: Optional[int],
     team_id: Optional[int],
     current_user: DBUser,
-    user_role: UserRole
+    user_role: UserRole,
 ) -> tuple[Optional[int], Optional[int]]:
     """
     Helper function to determine ownership information based on user role and input.
@@ -49,36 +60,37 @@ def _validate_permissions_and_get_ownership_info(
         owner_id = current_user.id
 
     # Fail fast without having to do DB lookups
-    team_users : list[UserRole] = [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR]
+    team_users: list[UserRole] = [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR]
     if user_role == UserRole.DEFAULT:
         if owner_id != current_user.id or team_id is not None:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to perform this action"
+                detail="Not authorized to perform this action",
             )
     elif user_role in team_users:
         if team_id is not None and team_id != current_user.team_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to perform this action"
+                detail="Not authorized to perform this action",
             )
 
     if team_id is not None and owner_id is not None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Either owner_id or team_id must be specified, not both"
+            detail="Either owner_id or team_id must be specified, not both",
         )
 
     return owner_id, team_id
 
+
 @router.post("/vector-db", response_model=VectorDB)
 async def create_vector_db(
     vector_db: VectorDBCreate,
-    current_user = Depends(get_current_user_from_auth),
+    current_user=Depends(get_current_user_from_auth),
     user_role: UserRole = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
     limit_service: LimitService = Depends(get_limit_service),
-    store_result: bool = True
+    store_result: bool = True,
 ):
     """
     Create a new vector database.
@@ -106,25 +118,31 @@ async def create_vector_db(
     """
     # Get ownership information
     owner_id, team_id = _validate_permissions_and_get_ownership_info(
-        vector_db.owner_id,
-        vector_db.team_id,
-        current_user,
-        user_role
+        vector_db.owner_id, vector_db.team_id, current_user, user_role
     )
 
     # Get the region
-    region = db.query(DBRegion).filter(
-        DBRegion.id == vector_db.region_id,
-        DBRegion.is_active.is_(True)
-    ).first()
+    region = (
+        db.query(DBRegion)
+        .filter(DBRegion.id == vector_db.region_id, DBRegion.is_active.is_(True))
+        .first()
+    )
     if not region:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Region not found or inactive"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found or inactive"
         )
 
+    # Check if team forces user keys
+    if team_id:
+        team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+        if team and team.force_user_keys:
+            team_id = None
+            owner_id = current_user.id
+
     if settings.ENABLE_LIMITS:
-        if not team_id: # if the team_id is not set we have already validated the owner_id
+        if (
+            not team_id
+        ):  # if the team_id is not set we have already validated the owner_id
             user = db.query(DBUser).filter(DBUser.id == owner_id).first()
             team_id = user.team_id  # Remove the FAKE_ID fallback
         if team_id:  # Only check limits if we have a valid team_id
@@ -146,7 +164,7 @@ async def create_vector_db(
             owner_id=owner_id,
             team_id=team_id,
             name=vector_db.name,
-            region_id = vector_db.region_id
+            region_id=vector_db.region_id,
         )
 
         # If store_result is True, store the vector DB info in DBPrivateAIKey
@@ -166,17 +184,18 @@ async def create_vector_db(
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create vector database: {str(e)}"
+            detail=f"Failed to create vector database: {str(e)}",
         )
+
 
 @router.post("", response_model=PrivateAIKey)
 @router.post("/", response_model=PrivateAIKey)
 async def create_private_ai_key(
     private_ai_key: PrivateAIKeyCreate,
-    current_user = Depends(get_current_user_from_auth),
+    current_user=Depends(get_current_user_from_auth),
     user_role: UserRole = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
-    limit_service: LimitService = Depends(get_limit_service)
+    limit_service: LimitService = Depends(get_limit_service),
 ):
     """
     Create a new private AI key.
@@ -208,27 +227,39 @@ async def create_private_ai_key(
 
     try:
         # Get the region first for cleanup purposes
-        region = db.query(DBRegion).filter(
-            DBRegion.id == private_ai_key.region_id,
-            DBRegion.is_active.is_(True)
-        ).first()
+        region = (
+            db.query(DBRegion)
+            .filter(
+                DBRegion.id == private_ai_key.region_id, DBRegion.is_active.is_(True)
+            )
+            .first()
+        )
         if not region:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Region not found or inactive"
+                detail="Region not found or inactive",
             )
 
         # First create the LiteLLM token
-        llm_token = await create_llm_token(private_ai_key, current_user, user_role, db, limit_service, store_result=False)
+        llm_token = await create_llm_token(
+            private_ai_key,
+            current_user,
+            user_role,
+            db,
+            limit_service,
+            store_result=False,
+        )
 
         # Then create the vector database
         vector_db = VectorDBCreate(
             region_id=private_ai_key.region_id,
             name=private_ai_key.name,
             owner_id=private_ai_key.owner_id,
-            team_id=private_ai_key.team_id
+            team_id=private_ai_key.team_id,
         )
-        db_info = await create_vector_db(vector_db, current_user, user_role, db, limit_service, store_result=False)
+        db_info = await create_vector_db(
+            vector_db, current_user, user_role, db, limit_service, store_result=False
+        )
 
         # Store private AI key info in main application database
         new_key = DBPrivateAIKey(
@@ -241,7 +272,7 @@ async def create_private_ai_key(
             litellm_api_url=llm_token.litellm_api_url,
             owner_id=db_info.owner_id,
             team_id=db_info.team_id,
-            region_id=private_ai_key.region_id
+            region_id=private_ai_key.region_id,
         )
         db.add(new_key)
         db.commit()
@@ -260,13 +291,14 @@ async def create_private_ai_key(
             if llm_token and region:
                 # Delete LiteLLM token
                 litellm_service = LiteLLMService(
-                    api_url=region.litellm_api_url,
-                    api_key=region.litellm_api_key
+                    api_url=region.litellm_api_url, api_key=region.litellm_api_key
                 )
                 await litellm_service.delete_key(llm_token.litellm_token)
                 logger.info("Cleaned up LiteLLM token after failure")
         except Exception as cleanup_error:
-            logger.error(f"Failed to cleanup LiteLLM token: {str(cleanup_error)}", exc_info=True)
+            logger.error(
+                f"Failed to cleanup LiteLLM token: {str(cleanup_error)}", exc_info=True
+            )
 
         try:
             if db_info and region:
@@ -275,7 +307,10 @@ async def create_private_ai_key(
                 await postgres_manager.delete_database(db_info.database_name)
                 logger.info("Cleaned up vector database after failure")
         except Exception as cleanup_error:
-            logger.error(f"Failed to cleanup vector database: {str(cleanup_error)}", exc_info=True)
+            logger.error(
+                f"Failed to cleanup vector database: {str(cleanup_error)}",
+                exc_info=True,
+            )
 
         # Re-raise the original exception
         if isinstance(e, HTTPException):
@@ -283,17 +318,18 @@ async def create_private_ai_key(
         else:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to create private AI key: {str(e)}"
+                detail=f"Failed to create private AI key: {str(e)}",
             )
+
 
 @router.post("/token", response_model=LiteLLMToken)
 async def create_llm_token(
     private_ai_key: PrivateAIKeyCreate,
-    current_user = Depends(get_current_user_from_auth),
+    current_user=Depends(get_current_user_from_auth),
     user_role: UserRole = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
     limit_service: LimitService = Depends(get_limit_service),
-    store_result: bool = True
+    store_result: bool = True,
 ):
     """
     Create a new LiteLLM token without creating a vector database.
@@ -319,31 +355,33 @@ async def create_llm_token(
     """
     # Get ownership information
     owner_id, team_id = _validate_permissions_and_get_ownership_info(
-        private_ai_key.owner_id,
-        private_ai_key.team_id,
-        current_user,
-        user_role
+        private_ai_key.owner_id, private_ai_key.team_id, current_user, user_role
     )
 
     # Get the region
-    region = db.query(DBRegion).filter(
-        DBRegion.id == private_ai_key.region_id,
-        DBRegion.is_active.is_(True)
-    ).first()
+    region = (
+        db.query(DBRegion)
+        .filter(DBRegion.id == private_ai_key.region_id, DBRegion.is_active.is_(True))
+        .first()
+    )
     if not region:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Region not found or inactive"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found or inactive"
         )
 
     # Get the owner user if different from current user
     owner = None
-    if owner_id is not None and current_user is not None and owner_id != current_user.id:
+    if (
+        owner_id is not None
+        and current_user is not None
+        and owner_id != current_user.id
+    ):
         owner = db.query(DBUser).filter(DBUser.id == owner_id).first()
-        if not owner or (user_role == "admin" and owner.team_id != current_user.team_id):
+        if not owner or (
+            user_role == "admin" and owner.team_id != current_user.team_id
+        ):
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Owner user not found"
+                status_code=status.HTTP_404_NOT_FOUND, detail="Owner user not found"
             )
     else:
         owner = current_user
@@ -354,16 +392,41 @@ async def create_llm_token(
         team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
         if not team:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Team not found"
+                status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
             )
 
+        # Check if team forces user keys
+        if team.force_user_keys:
+            team_id = None
+            team = None
+            owner_id = current_user.id
+            owner = current_user
+
+    # Pool budget teams use purchase_pool_budget to set the team-level
+    # max_budget in LiteLLM. Per-key limits are also set to match the team
+    # budget so that LiteLLM's dual-gate enforcement applies consistently.
+    # Reuse the already-fetched team when team_id was provided. Fall back to
+    # owner's team only when no team_id was provided.
+    effective_team = team
+    if effective_team is None and owner is not None and owner.team_id:
+        effective_team = db.query(DBTeam).filter(DBTeam.id == owner.team_id).first()
+    is_pool_team = (
+        effective_team is not None and effective_team.budget_type == BudgetType.POOL
+    )
+
     if (owner is not None and owner.team_id) or team_id:
-        if settings.ENABLE_LIMITS:
+        if settings.ENABLE_LIMITS and not is_pool_team:
             limit_service.check_key_limits(owner.team_id or team_id, owner_id)
-        # Limits are conditionally applied in LiteLLM service
-        days_left_in_period, max_max_spend, max_rpm_limit = limit_service.get_token_restrictions(owner.team_id or team_id)
-    else: # Super system users...
+        if is_pool_team:
+            days_left_in_period = None
+            max_max_spend = None
+            max_rpm_limit = None
+        else:
+            # Limits are conditionally applied in LiteLLM service
+            days_left_in_period, max_max_spend, max_rpm_limit = (
+                limit_service.get_token_restrictions(owner.team_id or team_id)
+            )
+    else:  # Super system users...
         days_left_in_period = DEFAULT_KEY_DURATION
         max_max_spend = DEFAULT_MAX_SPEND
         max_rpm_limit = DEFAULT_RPM_PER_KEY
@@ -376,25 +439,61 @@ async def create_llm_token(
         litellm_team = owner.team_id or FAKE_ID
     else:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Owner or team not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Owner or team not found"
         )
 
     try:
         # Generate LiteLLM token
         litellm_service = LiteLLMService(
-            api_url=region.litellm_api_url,
-            api_key=region.litellm_api_key
+            api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
         litellm_token = await litellm_service.create_key(
             email=owner_email,
             name=private_ai_key.name,
             user_id=owner_id,
             team_id=LiteLLMService.format_team_id(region.name, litellm_team),
-            duration=f"{days_left_in_period}d",
+            duration=f"{days_left_in_period}d"
+            if days_left_in_period is not None
+            else None,
             max_budget=max_max_spend,
-            rpm_limit=max_rpm_limit
+            rpm_limit=max_rpm_limit,
+            apply_limits=not is_pool_team,
         )
+
+        # For POOL teams, fetch the team's current budget from LiteLLM and
+        # apply it to the newly created key so both gates have the same limit.
+        if is_pool_team:
+            try:
+                lite_team_id = LiteLLMService.format_team_id(region.name, litellm_team)
+                team_info_response = await litellm_service.get_team_info(lite_team_id)
+                # Normalize response: some variants return {"team_info": {...}}
+                if isinstance(team_info_response, dict):
+                    team_info = team_info_response.get("team_info", team_info_response)
+                else:
+                    team_info = {}
+                team_budget_raw = (
+                    team_info.get("max_budget") if isinstance(team_info, dict) else None
+                )
+                if team_budget_raw is not None:
+                    try:
+                        team_budget = float(team_budget_raw)
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            f"Received non-numeric max_budget for team {lite_team_id}: {team_budget_raw}"
+                        )
+                    else:
+                        await litellm_service.update_budget(
+                            litellm_token=litellm_token,
+                            budget_duration=f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
+                            budget_amount=team_budget,
+                        )
+                        logger.info(
+                            f"Set pool key {litellm_token[:10]}... budget to ${team_budget}"
+                        )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to set pool key budget (key will still work via team budget): {e}"
+                )
 
         # Create response object
         db_token = DBPrivateAIKey(
@@ -403,7 +502,7 @@ async def create_llm_token(
             owner_id=owner_id,
             team_id=None if team_id is None else team_id,
             name=private_ai_key.name,
-            region_id = private_ai_key.region_id
+            region_id=private_ai_key.region_id,
         )
 
         if store_result:
@@ -421,16 +520,18 @@ async def create_llm_token(
         logger.error(f"Failed to create LiteLLM token: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create LiteLLM token: {str(e)}"
+            detail=f"Failed to create LiteLLM token: {str(e)}",
         )
+
 
 @router.get("", response_model=List[PrivateAIKey])
 @router.get("/", response_model=List[PrivateAIKey])
 async def list_private_ai_keys(
     owner_id: Optional[int] = None,
     team_id: Optional[int] = None,
-    current_user = Depends(get_current_user_from_auth),
-    db: Session = Depends(get_db)
+    search: Optional[str] = None,
+    current_user=Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db),
 ):
     """
     List private AI keys.
@@ -445,12 +546,22 @@ async def list_private_ai_keys(
 
     Keys from soft-deleted teams are excluded from the results.
     """
-    query = db.query(DBPrivateAIKey).outerjoin(DBTeam, DBPrivateAIKey.team_id == DBTeam.id)
+    query = db.query(DBPrivateAIKey).outerjoin(
+        DBTeam, DBPrivateAIKey.team_id == DBTeam.id
+    )
 
     # Exclude keys from soft-deleted teams
     query = query.filter(
         (DBPrivateAIKey.team_id.is_(None)) | (DBTeam.deleted_at.is_(None))
     )
+
+    # Search by database name or database username
+    if search:
+        search_pattern = f"%{search}%"
+        query = query.filter(
+            (DBPrivateAIKey.database_name.ilike(search_pattern))
+            | (DBPrivateAIKey.database_username.ilike(search_pattern))
+        )
 
     if current_user.is_admin:
         if owner_id is not None:
@@ -461,27 +572,42 @@ async def list_private_ai_keys(
             team_user_ids = [user.id for user in team_users]
             # Return keys owned by users in the team OR owned by the team
             query = query.filter(
-                (DBPrivateAIKey.owner_id.in_(team_user_ids)) |
-                (DBPrivateAIKey.team_id == team_id)
+                (DBPrivateAIKey.owner_id.in_(team_user_ids))
+                | (DBPrivateAIKey.team_id == team_id)
             )
     else:
         # Check if user is a team admin
         if current_user.team_id is not None:
+            # Check if team enforces user keys
+            user_team = (
+                db.query(DBTeam).filter(DBTeam.id == current_user.team_id).first()
+            )
+            force_user_keys = user_team.force_user_keys if user_team else False
+
             if current_user.role == UserRole.TEAM_ADMIN:
                 # Get all users in the team
-                team_users = db.query(DBUser).filter(DBUser.team_id == current_user.team_id).all()
+                team_users = (
+                    db.query(DBUser)
+                    .filter(DBUser.team_id == current_user.team_id)
+                    .all()
+                )
                 team_user_ids = [user.id for user in team_users]
                 # Return keys owned by any user in the team OR owned by the team
                 query = query.filter(
-                    (DBPrivateAIKey.owner_id.in_(team_user_ids)) |
-                    (DBPrivateAIKey.team_id == current_user.team_id)
+                    (DBPrivateAIKey.owner_id.in_(team_user_ids))
+                    | (DBPrivateAIKey.team_id == current_user.team_id)
                 )
             else:
-                # Non-admin users can see their own keys and team-owned keys
-                query = query.filter(
-                    (DBPrivateAIKey.owner_id == current_user.id) |
-                    (DBPrivateAIKey.team_id == current_user.team_id)
-                )
+                # Non-admin users
+                if force_user_keys:
+                    # If force_user_keys is enabled, users can only see their own keys
+                    query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
+                else:
+                    # Otherwise, can see their own keys and team-owned keys
+                    query = query.filter(
+                        (DBPrivateAIKey.owner_id == current_user.id)
+                        | (DBPrivateAIKey.team_id == current_user.team_id)
+                    )
         else:
             # Regular users can only see their own keys
             query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
@@ -489,11 +615,115 @@ async def list_private_ai_keys(
     private_ai_keys = query.all()
     return [key.to_dict() for key in private_ai_keys]
 
-@router.get("/{key_id}", response_model=PrivateAIKeyDetail, dependencies=[Depends(get_role_min_system_admin)])
+
+@router.get("/region/{region_id}", response_model=List[PrivateAIKey])
+async def list_private_ai_keys_by_region(
+    region_id: int,
+    team_id: Optional[int] = None,
+    user_id: Optional[int] = None,
+    current_user=Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db),
+):
+    """
+    List private AI keys for a specific region.
+    Applies the same access rules as the standard list endpoint.
+
+    Keys from soft-deleted teams are excluded from the results.
+
+    Optional query parameters (admin only):
+    - **team_id**: Filter keys owned by users in this team or owned by this team directly.
+      Silently ignored for non-admin callers.
+    - **user_id**: Filter keys owned by this specific user.
+      Only respected when the caller is a system admin; non-admin callers have this
+      parameter silently ignored. May be combined with `team_id` to further scope
+      results to keys owned by that user within a particular team.
+      Returns an empty list when the specified user does not exist.
+    """
+    query = db.query(DBPrivateAIKey).outerjoin(
+        DBTeam, DBPrivateAIKey.team_id == DBTeam.id
+    )
+
+    # Exclude keys from soft-deleted teams
+    query = query.filter(
+        (DBPrivateAIKey.team_id.is_(None)) | (DBTeam.deleted_at.is_(None))
+    )
+
+    query = query.filter(DBPrivateAIKey.region_id == region_id)
+
+    if current_user.is_admin:
+        if team_id is not None:
+            # Check team exists and is not soft-deleted
+            team = (
+                db.query(DBTeam)
+                .filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None))
+                .first()
+            )
+            if team is None:
+                return []
+
+            # Use subquery instead of loading users into memory
+            team_user_ids_subq = db.query(DBUser.id).filter(DBUser.team_id == team_id)
+            query = query.filter(
+                (DBPrivateAIKey.owner_id.in_(team_user_ids_subq))
+                | (DBPrivateAIKey.team_id == team_id)
+            )
+
+        if user_id is not None:
+            # Verify the user exists; return empty list if not found
+            user = db.query(DBUser).filter(DBUser.id == user_id).first()
+            if user is None:
+                return []
+            query = query.filter(DBPrivateAIKey.owner_id == user_id)
+    else:
+        # Check if user is a team admin
+        if current_user.team_id is not None:
+            # Check if team enforces user keys
+            user_team = (
+                db.query(DBTeam).filter(DBTeam.id == current_user.team_id).first()
+            )
+            force_user_keys = user_team.force_user_keys if user_team else False
+
+            if current_user.role == UserRole.TEAM_ADMIN:
+                # Get all users in the team
+                team_users = (
+                    db.query(DBUser)
+                    .filter(DBUser.team_id == current_user.team_id)
+                    .all()
+                )
+                team_user_ids = [user.id for user in team_users]
+                # Return keys owned by any user in the team OR owned by the team
+                query = query.filter(
+                    (DBPrivateAIKey.owner_id.in_(team_user_ids))
+                    | (DBPrivateAIKey.team_id == current_user.team_id)
+                )
+            else:
+                # Non-admin users
+                if force_user_keys:
+                    # If force_user_keys is enabled, users can only see their own keys
+                    query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
+                else:
+                    # Otherwise, can see their own keys and team-owned keys
+                    query = query.filter(
+                        (DBPrivateAIKey.owner_id == current_user.id)
+                        | (DBPrivateAIKey.team_id == current_user.team_id)
+                    )
+        else:
+            # Regular users can only see their own keys
+            query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
+
+    private_ai_keys = query.all()
+    return [key.to_dict() for key in private_ai_keys]
+
+
+@router.get(
+    "/{key_id}",
+    response_model=PrivateAIKeyDetail,
+    dependencies=[Depends(get_role_min_system_admin)],
+)
 async def get_private_ai_key(
     key_id: int,
-    current_user = Depends(get_current_user_from_auth),
-    db: Session = Depends(get_db)
+    current_user=Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db),
 ):
     """
     Get details of a specific private AI key.
@@ -522,48 +752,54 @@ async def get_private_ai_key(
     region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
     if not region:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Region not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
         )
 
     # Create LiteLLM service instance
     litellm_service = LiteLLMService(
-        api_url=region.litellm_api_url,
-        api_key=region.litellm_api_key
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
 
     try:
         # Get LiteLLM key info
         litellm_data = await litellm_service.get_key_info(private_ai_key.litellm_token)
         info = litellm_data.get("info", {})
-        logger.info(f"LiteLLM key info: {info}")
+        logger.debug("Retrieved LiteLLM key info successfully")
 
         # Combine database key info with LiteLLM info
         key_data = private_ai_key.to_dict()
-        key_data.update(info)
+        # Keep ownership identifiers from our DB authoritative.
+        # LiteLLM `team_id` is region-scoped string (e.g. "ap-southeast-1_12"),
+        # while our API schema expects integer `team_id`.
+        info_without_ownership = {
+            k: v for k, v in info.items() if k not in {"id", "owner_id", "team_id"}
+        }
+        key_data.update(info_without_ownership)
 
         return PrivateAIKeyDetail.model_validate(key_data)
     except Exception as e:
         logger.error(f"Failed to get Private AI Key details: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get Private AI Key details: {str(e)}"
+            detail=f"Failed to get Private AI Key details: {str(e)}",
         )
 
-def _get_key_if_allowed(key_id: int, current_user: DBUser, user_role: UserRole, db: Session) -> DBPrivateAIKey:
+
+def _get_key_if_allowed(
+    key_id: int, current_user: DBUser, user_role: UserRole, db: Session
+) -> DBPrivateAIKey:
     # First try to find the key
-    private_ai_key = db.query(DBPrivateAIKey).filter(
-        DBPrivateAIKey.id == key_id
-    ).first()
+    private_ai_key = (
+        db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
+    )
 
     if not private_ai_key:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Private AI Key not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Private AI Key not found"
         )
 
     # Check if user has permission to view the key
-    team_users : list[UserRole] = [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR]
+    team_users: list[UserRole] = [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR]
     if current_user.is_admin:
         # System admin can view any key
         pass
@@ -575,46 +811,46 @@ def _get_key_if_allowed(key_id: int, current_user: DBUser, user_role: UserRole, 
                 logger.warning(f"User {current_user.id} trying to delete across teams.")
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Private AI Key not found"
+                    detail="Private AI Key not found",
                 )
         else:
             # For user-owned keys, check if the owner is in the viewer's team
-            owner = db.query(DBUser).filter(DBUser.id == private_ai_key.owner_id).first()
+            owner = (
+                db.query(DBUser).filter(DBUser.id == private_ai_key.owner_id).first()
+            )
             if not owner or owner.team_id != current_user.team_id:
                 logger.warning("Keys owned by different teams")
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Private AI Key not found"
+                    detail="Private AI Key not found",
                 )
     else:
         # Regular users can only view their own keys
         if private_ai_key.owner_id != current_user.id:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Private AI Key not found"
+                status_code=status.HTTP_404_NOT_FOUND, detail="Private AI Key not found"
             )
     return private_ai_key
+
 
 @router.delete("/{key_id}")
 async def delete_private_ai_key(
     key_id: int,
-    current_user = Depends(get_current_user_from_auth),
+    current_user=Depends(get_current_user_from_auth),
     user_role: UserRole = Depends(get_private_ai_access),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     private_ai_key = _get_key_if_allowed(key_id, current_user, user_role, db)
     # Get the region
     region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
     if not region:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Region not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
         )
 
     # Delete LiteLLM token first
     litellm_service = LiteLLMService(
-        api_url=region.litellm_api_url,
-        api_key=region.litellm_api_key
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     try:
         await litellm_service.delete_key(private_ai_key.litellm_token)
@@ -625,9 +861,7 @@ async def delete_private_ai_key(
     # Only delete the database if it exists
     if private_ai_key.database_name:
         postgres_manager = PostgresManager(region=region)
-        await postgres_manager.delete_database(
-            private_ai_key.database_name
-        )
+        await postgres_manager.delete_database(private_ai_key.database_name)
 
     # Remove the private AI key record from the application database
     db.delete(private_ai_key)
@@ -635,11 +869,12 @@ async def delete_private_ai_key(
 
     return {"message": "Private AI Key deleted successfully"}
 
+
 @router.get("/{key_id}/spend", response_model=PrivateAIKeySpend)
 async def get_private_ai_key_spend(
     key_id: int,
-    current_user = Depends(get_current_user_from_auth),
-    db: Session = Depends(get_db)
+    current_user=Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db),
 ):
     user_role = current_user.role
     private_ai_key = _get_key_if_allowed(key_id, current_user, user_role, db)
@@ -648,14 +883,12 @@ async def get_private_ai_key_spend(
     region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
     if not region:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Region not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
         )
 
     # Create LiteLLM service instance
     litellm_service = LiteLLMService(
-        api_url=region.litellm_api_url,
-        api_key=region.litellm_api_key
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
 
     try:
@@ -663,26 +896,24 @@ async def get_private_ai_key_spend(
         info = data.get("info", {})
 
         # Only set default for spend field
-        spend_info = {
-            "spend": info.get("spend", 0.0),
-            **info
-        }
+        spend_info = {"spend": info.get("spend", 0.0), **info}
 
         return PrivateAIKeySpend.model_validate(spend_info)
     except Exception as e:
         logger.error(f"Failed to get Private AI Key spend: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get Private AI Key spend: {str(e)}"
+            detail=f"Failed to get Private AI Key spend: {str(e)}",
         )
+
 
 @router.put("/{key_id}/budget-period")
 async def update_budget_period(
     key_id: int,
     budget_update: BudgetPeriodUpdate,
-    current_user = Depends(get_current_user_from_auth),
+    current_user=Depends(get_current_user_from_auth),
     user_role: UserRole = Depends(get_role_min_team_admin),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Update the budget period for a private AI key.
@@ -704,20 +935,18 @@ async def update_budget_period(
     region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
     if not region:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Region not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
         )
 
     litellm_service = LiteLLMService(
-        api_url=region.litellm_api_url,
-        api_key=region.litellm_api_key
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
 
     try:
         # Update budget period in LiteLLM
         await litellm_service.update_budget(
             litellm_token=private_ai_key.litellm_token,
-            budget_duration=budget_update.budget_duration
+            budget_duration=budget_update.budget_duration,
         )
 
         # Get updated spend information
@@ -725,26 +954,24 @@ async def update_budget_period(
         info = spend_data.get("info", {})
 
         # Only set default for spend field
-        spend_info = {
-            "spend": info.get("spend", 0.0),
-            **info
-        }
+        spend_info = {"spend": info.get("spend", 0.0), **info}
 
         return PrivateAIKeySpend.model_validate(spend_info)
     except Exception as e:
         logger.error(f"Failed to update budget period: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update budget period: {str(e)}"
+            detail=f"Failed to update budget period: {str(e)}",
         )
+
 
 @router.put("/{key_id}/extend-token-life")
 async def extend_token_life(
     key_id: int,
     duration_update: TokenDurationUpdate,
-    current_user = Depends(get_current_user_from_auth),
+    current_user=Depends(get_current_user_from_auth),
     user_role: UserRole = Depends(get_role_min_team_admin),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Extend the life of a private AI key.
@@ -766,20 +993,18 @@ async def extend_token_life(
     region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
     if not region:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Region not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
         )
 
     litellm_service = LiteLLMService(
-        api_url=region.litellm_api_url,
-        api_key=region.litellm_api_key
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
 
     try:
         # Update key duration in LiteLLM
         await litellm_service.update_key_duration(
             litellm_token=private_ai_key.litellm_token,
-            duration=duration_update.duration
+            duration=duration_update.duration,
         )
 
         # Get updated key information
@@ -788,5 +1013,5 @@ async def extend_token_life(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to extend token life: {str(e)}"
+            detail=f"Failed to extend token life: {str(e)}",
         )

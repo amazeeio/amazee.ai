@@ -1,6 +1,8 @@
 from fastapi import HTTPException
 from app.db.models import DBTeam, DBRegion
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
+from app.services.litellm import LiteLLMService
+
 
 @patch("app.api.regions.validate_litellm_endpoint")
 @patch("app.api.regions.validate_database_connection")
@@ -16,42 +18,48 @@ def test_create_region(mock_validate_db, mock_validate_litellm, client, admin_to
 
     region_data = {
         "name": "new-region",
+        "label": "New Region",
+        "description": "A new test region with description",
         "postgres_host": "new-host",
         "postgres_port": 5432,
         "postgres_admin_user": "new-admin",
         "postgres_admin_password": "new-password",
         "litellm_api_url": "https://new-litellm.com",
-        "litellm_api_key": "new-litellm-key"
+        "litellm_api_key": "new-litellm-key",
     }
 
     response = client.post(
         "/regions/",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json=region_data
+        json=region_data,
     )
 
     assert response.status_code == 200
     data = response.json()
     assert data["name"] == region_data["name"]
+    assert data["label"] == region_data["label"]
+    assert data["description"] == region_data["description"]
     assert data["postgres_host"] == region_data["postgres_host"]
     assert data["litellm_api_url"] == region_data["litellm_api_url"]
     assert "id" in data
 
     # Verify validation functions were called
     mock_validate_litellm.assert_called_once_with(
-        region_data["litellm_api_url"],
-        region_data["litellm_api_key"]
+        region_data["litellm_api_url"], region_data["litellm_api_key"]
     )
     mock_validate_db.assert_called_once_with(
         region_data["postgres_host"],
         region_data["postgres_port"],
         region_data["postgres_admin_user"],
-        region_data["postgres_admin_password"]
+        region_data["postgres_admin_password"],
     )
+
 
 @patch("app.api.regions.validate_litellm_endpoint")
 @patch("app.api.regions.validate_database_connection")
-def test_create_region_duplicate_name(mock_validate_db, mock_validate_litellm, client, admin_token, test_region):
+def test_create_region_duplicate_name(
+    mock_validate_db, mock_validate_litellm, client, admin_token, test_region
+):
     """
     Given an admin user and an existing region
     When they try to create a region with the same name
@@ -63,30 +71,37 @@ def test_create_region_duplicate_name(mock_validate_db, mock_validate_litellm, c
 
     region_data = {
         "name": test_region.name,  # Use existing region name
+        "label": "New Region",
         "postgres_host": "new-host",
         "postgres_port": 5432,
         "postgres_admin_user": "new-admin",
         "postgres_admin_password": "new-password",
         "litellm_api_url": "https://new-litellm.com",
-        "litellm_api_key": "new-litellm-key"
+        "litellm_api_key": "new-litellm-key",
     }
 
     response = client.post(
         "/regions/",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json=region_data
+        json=region_data,
     )
 
     assert response.status_code == 400
-    assert f"A region with the name '{test_region.name}' already exists" in response.json()["detail"]
+    assert (
+        f"A region with the name '{test_region.name}' already exists"
+        in response.json()["detail"]
+    )
 
     # Verify validation functions were not called due to early exit
     mock_validate_litellm.assert_not_called()
     mock_validate_db.assert_not_called()
 
+
 @patch("app.api.regions.validate_litellm_endpoint")
 @patch("app.api.regions.validate_database_connection")
-def test_create_region_litellm_validation_fails(mock_validate_db, mock_validate_litellm, client, admin_token):
+def test_create_region_litellm_validation_fails(
+    mock_validate_db, mock_validate_litellm, client, admin_token
+):
     """
     Given an admin user and region data with invalid LiteLLM endpoint
     When they try to create a region
@@ -94,25 +109,25 @@ def test_create_region_litellm_validation_fails(mock_validate_db, mock_validate_
     """
     # Mock LiteLLM validation to fail with HTTPException
     mock_validate_litellm.side_effect = HTTPException(
-        status_code=400,
-        detail="LiteLLM endpoint validation failed: Connection timeout"
+        status_code=400, detail="LiteLLM endpoint validation failed: Connection timeout"
     )
     mock_validate_db.return_value = True
 
     region_data = {
         "name": "new-region",
+        "label": "New Region",
         "postgres_host": "new-host",
         "postgres_port": 5432,
         "postgres_admin_user": "new-admin",
         "postgres_admin_password": "new-password",
         "litellm_api_url": "https://invalid-litellm.com",
-        "litellm_api_key": "invalid-litellm-key"
+        "litellm_api_key": "invalid-litellm-key",
     }
 
     response = client.post(
         "/regions/",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json=region_data
+        json=region_data,
     )
 
     assert response.status_code == 400
@@ -122,9 +137,12 @@ def test_create_region_litellm_validation_fails(mock_validate_db, mock_validate_
     mock_validate_litellm.assert_called_once()
     mock_validate_db.assert_not_called()
 
+
 @patch("app.api.regions.validate_litellm_endpoint")
 @patch("app.api.regions.validate_database_connection")
-def test_create_region_database_validation_fails(mock_validate_db, mock_validate_litellm, client, admin_token):
+def test_create_region_database_validation_fails(
+    mock_validate_db, mock_validate_litellm, client, admin_token
+):
     """
     Given an admin user and region data with invalid database connection
     When they try to create a region
@@ -134,23 +152,24 @@ def test_create_region_database_validation_fails(mock_validate_db, mock_validate
     mock_validate_litellm.return_value = True
     mock_validate_db.side_effect = HTTPException(
         status_code=400,
-        detail="Database connection validation failed: Connection refused"
+        detail="Database connection validation failed: Connection refused",
     )
 
     region_data = {
         "name": "new-region",
+        "label": "New Region",
         "postgres_host": "invalid-host",
         "postgres_port": 5432,
         "postgres_admin_user": "invalid-admin",
         "postgres_admin_password": "invalid-password",
         "litellm_api_url": "https://valid-litellm.com",
-        "litellm_api_key": "valid-litellm-key"
+        "litellm_api_key": "valid-litellm-key",
     }
 
     response = client.post(
         "/regions/",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json=region_data
+        json=region_data,
     )
 
     assert response.status_code == 400
@@ -160,26 +179,27 @@ def test_create_region_database_validation_fails(mock_validate_db, mock_validate
     mock_validate_litellm.assert_called_once()
     mock_validate_db.assert_called_once()
 
+
 def test_create_region_non_admin(client, test_token):
     """Test that non-admin users cannot create regions"""
     region_data = {
         "name": "new-region",
+        "label": "New Region",
         "postgres_host": "new-host",
         "postgres_port": 5432,
         "postgres_admin_user": "new-admin",
         "postgres_admin_password": "new-password",
         "litellm_api_url": "https://new-litellm.com",
-        "litellm_api_key": "new-litellm-key"
+        "litellm_api_key": "new-litellm-key",
     }
 
     response = client.post(
-        "/regions/",
-        headers={"Authorization": f"Bearer {test_token}"},
-        json=region_data
+        "/regions/", headers={"Authorization": f"Bearer {test_token}"}, json=region_data
     )
 
     assert response.status_code == 403
     assert "Not authorized to perform this action" in response.json()["detail"]
+
 
 def test_get_region(client, admin_token, test_region):
     """
@@ -188,15 +208,17 @@ def test_get_region(client, admin_token, test_region):
     Then they should receive the region details
     """
     response = client.get(
-        f"/regions/{test_region.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        f"/regions/{test_region.id}", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200
     data = response.json()
     assert data["id"] == test_region.id
+    assert data["label"] == test_region.label
+    assert data["description"] == test_region.description
     assert data["name"] == test_region.name
     assert data["postgres_host"] == test_region.postgres_host
+
 
 def test_get_region_non_admin(client, test_token, test_region):
     """
@@ -205,12 +227,12 @@ def test_get_region_non_admin(client, test_token, test_region):
     Then the request should be denied
     """
     response = client.get(
-        f"/regions/{test_region.id}",
-        headers={"Authorization": f"Bearer {test_token}"}
+        f"/regions/{test_region.id}", headers={"Authorization": f"Bearer {test_token}"}
     )
 
     assert response.status_code == 403
     assert "Not authorized to perform this action" in response.json()["detail"]
+
 
 def test_get_non_existent_region(client, admin_token):
     """
@@ -219,12 +241,12 @@ def test_get_non_existent_region(client, admin_token):
     Then they should receive a 404 error
     """
     response = client.get(
-        "/regions/99999",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/regions/99999", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 404
     assert "Region not found" in response.json()["detail"]
+
 
 def test_update_region(client, admin_token, test_region):
     """
@@ -234,6 +256,8 @@ def test_update_region(client, admin_token, test_region):
     """
     update_data = {
         "name": "updated-region-name",
+        "label": "Updated Region",
+        "description": "Updated description for test region",
         "postgres_host": "updated-host",
         "postgres_port": 5433,
         "postgres_admin_user": "updated-admin",
@@ -241,20 +265,23 @@ def test_update_region(client, admin_token, test_region):
         "litellm_api_url": "https://updated-litellm.com",
         "litellm_api_key": "updated-litellm-key",
         "is_active": True,
-        "is_dedicated": False
+        "is_dedicated": False,
     }
 
     response = client.put(
         f"/regions/{test_region.id}",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json=update_data
+        json=update_data,
     )
 
     assert response.status_code == 200
     data = response.json()
     assert data["name"] == update_data["name"]
+    assert data["label"] == update_data["label"]
+    assert data["description"] == update_data["description"]
     assert data["postgres_host"] == update_data["postgres_host"]
     assert data["postgres_port"] == update_data["postgres_port"]
+
 
 def test_update_region_duplicate_name(client, admin_token, test_region, db):
     """
@@ -265,6 +292,7 @@ def test_update_region_duplicate_name(client, admin_token, test_region, db):
     # Create another region
     other_region = DBRegion(
         name="other-region",
+        label="Other Region",
         postgres_host="other-host",
         postgres_port=5432,
         postgres_admin_user="other-admin",
@@ -272,7 +300,7 @@ def test_update_region_duplicate_name(client, admin_token, test_region, db):
         litellm_api_url="https://other-litellm.com",
         litellm_api_key="other-litellm-key",
         is_active=True,
-        is_dedicated=False
+        is_dedicated=False,
     )
     db.add(other_region)
     db.commit()
@@ -280,6 +308,7 @@ def test_update_region_duplicate_name(client, admin_token, test_region, db):
 
     update_data = {
         "name": other_region.name,  # Use the other region's name
+        "label": "Updated Region",
         "postgres_host": "updated-host",
         "postgres_port": 5433,
         "postgres_admin_user": "updated-admin",
@@ -287,17 +316,21 @@ def test_update_region_duplicate_name(client, admin_token, test_region, db):
         "litellm_api_url": "https://updated-litellm.com",
         "litellm_api_key": "updated-litellm-key",
         "is_active": True,
-        "is_dedicated": False
+        "is_dedicated": False,
     }
 
     response = client.put(
         f"/regions/{test_region.id}",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json=update_data
+        json=update_data,
     )
 
     assert response.status_code == 400
-    assert f"A region with the name '{other_region.name}' already exists" in response.json()["detail"]
+    assert (
+        f"A region with the name '{other_region.name}' already exists"
+        in response.json()["detail"]
+    )
+
 
 def test_update_region_non_admin(client, test_token, test_region):
     """
@@ -307,6 +340,7 @@ def test_update_region_non_admin(client, test_token, test_region):
     """
     update_data = {
         "name": "updated-region-name",
+        "label": "Updated Region",
         "postgres_host": "updated-host",
         "postgres_port": 5433,
         "postgres_admin_user": "updated-admin",
@@ -314,17 +348,18 @@ def test_update_region_non_admin(client, test_token, test_region):
         "litellm_api_url": "https://updated-litellm.com",
         "litellm_api_key": "updated-litellm-key",
         "is_active": True,
-        "is_dedicated": False
+        "is_dedicated": False,
     }
 
     response = client.put(
         f"/regions/{test_region.id}",
         headers={"Authorization": f"Bearer {test_token}"},
-        json=update_data
+        json=update_data,
     )
 
     assert response.status_code == 403
     assert "Not authorized to perform this action" in response.json()["detail"]
+
 
 def test_update_non_existent_region(client, admin_token):
     """
@@ -334,6 +369,7 @@ def test_update_non_existent_region(client, admin_token):
     """
     update_data = {
         "name": "updated-region-name",
+        "label": "Updated Region",
         "postgres_host": "updated-host",
         "postgres_port": 5433,
         "postgres_admin_user": "updated-admin",
@@ -341,17 +377,18 @@ def test_update_non_existent_region(client, admin_token):
         "litellm_api_url": "https://updated-litellm.com",
         "litellm_api_key": "updated-litellm-key",
         "is_active": True,
-        "is_dedicated": False
+        "is_dedicated": False,
     }
 
     response = client.put(
         "/regions/99999",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json=update_data
+        json=update_data,
     )
 
     assert response.status_code == 404
     assert "Region not found" in response.json()["detail"]
+
 
 def test_delete_region_success(client, admin_token, db):
     """
@@ -362,6 +399,7 @@ def test_delete_region_success(client, admin_token, db):
     # Create a region for deletion
     region_to_delete = DBRegion(
         name="region-to-delete",
+        label="Region to Delete",
         postgres_host="delete-host",
         postgres_port=5432,
         postgres_admin_user="delete-admin",
@@ -369,7 +407,7 @@ def test_delete_region_success(client, admin_token, db):
         litellm_api_url="https://delete-litellm.com",
         litellm_api_key="delete-litellm-key",
         is_active=True,
-        is_dedicated=False
+        is_dedicated=False,
     )
     db.add(region_to_delete)
     db.commit()
@@ -379,8 +417,7 @@ def test_delete_region_success(client, admin_token, db):
     region_id = region_to_delete.id
 
     response = client.delete(
-        f"/regions/{region_id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        f"/regions/{region_id}", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200
@@ -390,6 +427,7 @@ def test_delete_region_success(client, admin_token, db):
     deleted_region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
     assert not deleted_region.is_active
 
+
 def test_delete_region_non_admin(client, test_token, test_region):
     """
     Given a non-admin user and an existing region
@@ -397,12 +435,12 @@ def test_delete_region_non_admin(client, test_token, test_region):
     Then the request should be denied
     """
     response = client.delete(
-        f"/regions/{test_region.id}",
-        headers={"Authorization": f"Bearer {test_token}"}
+        f"/regions/{test_region.id}", headers={"Authorization": f"Bearer {test_token}"}
     )
 
     assert response.status_code == 403
     assert "Not authorized to perform this action" in response.json()["detail"]
+
 
 def test_delete_non_existent_region(client, admin_token):
     """
@@ -411,15 +449,23 @@ def test_delete_non_existent_region(client, admin_token):
     Then they should receive a 404 error
     """
     response = client.delete(
-        "/regions/99999",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/regions/99999", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 404
     assert "Region not found" in response.json()["detail"]
 
+
 @patch("httpx.AsyncClient")
-def test_delete_region_with_active_keys(mock_client_class, client, admin_token, test_region, db, test_admin, mock_httpx_post_client):
+def test_delete_region_with_active_keys(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_admin,
+    mock_httpx_post_client,
+):
     """Test that a region with active private AI keys cannot be deleted"""
     # Use the httpx POST client fixture
     mock_client_class.return_value = mock_httpx_post_client
@@ -431,23 +477,31 @@ def test_delete_region_with_active_keys(mock_client_class, client, admin_token, 
         json={
             "region_id": test_region.id,
             "name": "Test Key",
-            "owner_id": test_admin.id
-        }
+            "owner_id": test_admin.id,
+        },
     )
     assert response.status_code == 200
     response.json()
 
     response = client.delete(
-        f"/regions/{test_region.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        f"/regions/{test_region.id}", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 400
     assert "Cannot delete region" in response.json()["detail"]
     assert "keys(s) are currently using this region" in response.json()["detail"]
 
+
 @patch("httpx.AsyncClient")
-def test_delete_region_with_active_vector_db(mock_client_class, client, admin_token, test_region, db, test_admin, mock_httpx_post_client):
+def test_delete_region_with_active_vector_db(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_admin,
+    mock_httpx_post_client,
+):
     """Test that a region with an active vector database cannot be deleted"""
     # Use the httpx POST client fixture
     mock_client_class.return_value = mock_httpx_post_client
@@ -459,20 +513,20 @@ def test_delete_region_with_active_vector_db(mock_client_class, client, admin_to
         json={
             "region_id": test_region.id,
             "name": "Test Vector DB",
-            "owner_id": test_admin.id
-        }
+            "owner_id": test_admin.id,
+        },
     )
     assert response.status_code == 200
     response.json()
 
     response = client.delete(
-        f"/regions/{test_region.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        f"/regions/{test_region.id}", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 400
     assert "Cannot delete region" in response.json()["detail"]
     assert "keys(s) are currently using this region" in response.json()["detail"]
+
 
 def test_list_admin_regions(client, admin_token, db, test_region):
     """
@@ -483,6 +537,7 @@ def test_list_admin_regions(client, admin_token, db, test_region):
     # Create an inactive region
     inactive_region = DBRegion(
         name="inactive-region",
+        label="Inactive Region",
         postgres_host="inactive-host",
         postgres_port=5432,
         postgres_admin_user="inactive-admin",
@@ -490,14 +545,13 @@ def test_list_admin_regions(client, admin_token, db, test_region):
         litellm_api_url="https://inactive-litellm.com",
         litellm_api_key="inactive-litellm-key",
         is_active=False,
-        is_dedicated=False
+        is_dedicated=False,
     )
     db.add(inactive_region)
     db.commit()
 
     response = client.get(
-        "/regions/admin",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/regions/admin", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200
@@ -507,6 +561,7 @@ def test_list_admin_regions(client, admin_token, db, test_region):
     assert test_region.name in region_names
     assert "inactive-region" in region_names
 
+
 def test_list_admin_regions_non_admin(client, test_token):
     """
     Given a non-admin user
@@ -514,26 +569,32 @@ def test_list_admin_regions_non_admin(client, test_token):
     Then the request should be denied
     """
     response = client.get(
-        "/regions/admin",
-        headers={"Authorization": f"Bearer {test_token}"}
+        "/regions/admin", headers={"Authorization": f"Bearer {test_token}"}
     )
 
     assert response.status_code == 403
     assert "Not authorized to perform this action" in response.json()["detail"]
 
+
 # Dedicated Regions Tests
 
-def test_list_regions_regular_user_sees_non_dedicated_only(client, test_token, db, test_region):
+
+def test_list_regions_regular_user_sees_non_dedicated_only(
+    client, test_token, db, test_region
+):
     """
     Given a regular user and regions with different dedication statuses
     When the user lists regions
     Then they should only see non-dedicated regions
     """
     # Create a dedicated region
-    dedicated_region = db.query(DBRegion).filter(DBRegion.name == "dedicated-region").first()
+    dedicated_region = (
+        db.query(DBRegion).filter(DBRegion.name == "dedicated-region").first()
+    )
     if not dedicated_region:
         dedicated_region = DBRegion(
             name="dedicated-region",
+            label="Dedicated Region",
             postgres_host="dedicated-host",
             postgres_port=5432,
             postgres_admin_user="dedicated-admin",
@@ -541,22 +602,23 @@ def test_list_regions_regular_user_sees_non_dedicated_only(client, test_token, d
             litellm_api_url="https://dedicated-litellm.com",
             litellm_api_key="dedicated-litellm-key",
             is_active=True,
-            is_dedicated=True
+            is_dedicated=True,
         )
         db.add(dedicated_region)
         db.commit()
         db.refresh(dedicated_region)
 
     response = client.get(
-        "/regions/",
-        headers={"Authorization": f"Bearer {test_token}"}
+        "/regions/", headers={"Authorization": f"Bearer {test_token}"}
     )
 
     assert response.status_code == 200
     regions = response.json()
     assert len(regions) == 1
     assert regions[0]["name"] == test_region.name
+    assert regions[0]["label"] == test_region.label
     assert regions[0]["name"] != "dedicated-region"
+
 
 def test_list_regions_admin_sees_all_regions(client, admin_token, db, test_region):
     """
@@ -565,10 +627,13 @@ def test_list_regions_admin_sees_all_regions(client, admin_token, db, test_regio
     Then they should see all regions regardless of dedication status
     """
     # Create a dedicated region
-    dedicated_region = db.query(DBRegion).filter(DBRegion.name == "dedicated-region").first()
+    dedicated_region = (
+        db.query(DBRegion).filter(DBRegion.name == "dedicated-region").first()
+    )
     if not dedicated_region:
         dedicated_region = DBRegion(
             name="dedicated-region",
+            label="Dedicated Region",
             postgres_host="dedicated-host",
             postgres_port=5432,
             postgres_admin_user="dedicated-admin",
@@ -576,15 +641,14 @@ def test_list_regions_admin_sees_all_regions(client, admin_token, db, test_regio
             litellm_api_url="https://dedicated-litellm.com",
             litellm_api_key="dedicated-litellm-key",
             is_active=True,
-            is_dedicated=True
+            is_dedicated=True,
         )
         db.add(dedicated_region)
         db.commit()
         db.refresh(dedicated_region)
 
     response = client.get(
-        "/regions/",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/regions/", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 200
@@ -594,17 +658,23 @@ def test_list_regions_admin_sees_all_regions(client, admin_token, db, test_regio
     assert test_region.name in region_names
     assert "dedicated-region" in region_names
 
-def test_list_regions_team_member_sees_team_dedicated_regions(client, team_admin_token, db, test_region, test_team):
+
+def test_list_regions_team_member_sees_team_dedicated_regions(
+    client, team_admin_token, db, test_region, test_team
+):
     """
     Given a team member and a dedicated region associated with their team
     When the team member lists regions
     Then they should see non-dedicated regions plus their team's dedicated regions
     """
     # Create a dedicated region associated with the team
-    dedicated_region = db.query(DBRegion).filter(DBRegion.name == "team-dedicated-region").first()
+    dedicated_region = (
+        db.query(DBRegion).filter(DBRegion.name == "team-dedicated-region").first()
+    )
     if not dedicated_region:
         dedicated_region = DBRegion(
             name="team-dedicated-region",
+            label="Team Dedicated Region",
             postgres_host="team-dedicated-host",
             postgres_port=5432,
             postgres_admin_user="team-dedicated-admin",
@@ -612,7 +682,7 @@ def test_list_regions_team_member_sees_team_dedicated_regions(client, team_admin
             litellm_api_url="https://team-dedicated-litellm.com",
             litellm_api_key="team-dedicated-litellm-key",
             is_active=True,
-            is_dedicated=True
+            is_dedicated=True,
         )
         db.add(dedicated_region)
         db.commit()
@@ -620,16 +690,13 @@ def test_list_regions_team_member_sees_team_dedicated_regions(client, team_admin
 
     # Create team-region association
     from app.db.models import DBTeamRegion
-    team_region = DBTeamRegion(
-        team_id=test_team.id,
-        region_id=dedicated_region.id
-    )
+
+    team_region = DBTeamRegion(team_id=test_team.id, region_id=dedicated_region.id)
     db.add(team_region)
     db.commit()
 
     response = client.get(
-        "/regions/",
-        headers={"Authorization": f"Bearer {team_admin_token}"}
+        "/regions/", headers={"Authorization": f"Bearer {team_admin_token}"}
     )
 
     assert response.status_code == 200
@@ -639,7 +706,68 @@ def test_list_regions_team_member_sees_team_dedicated_regions(client, team_admin
     assert test_region.name in region_names
     assert "team-dedicated-region" in region_names
 
-def test_list_regions_team_member_does_not_see_other_team_dedicated_regions(client, team_admin_token, db, test_region, test_team):
+
+def test_list_regions_team_member_hide_public_regions(
+    client, team_admin_token, db, test_region, test_team
+):
+    """
+    Given a team with hide_public_regions=True
+    When a team member lists regions
+    Then they should only see their team's dedicated regions, excluding public regions
+    """
+    # Set hide_public_regions to True for the team
+    test_team.hide_public_regions = True
+    db.commit()
+
+    # Create a dedicated region associated with the team
+    dedicated_region = (
+        db.query(DBRegion)
+        .filter(DBRegion.name == "team-hidden-public-dedicated")
+        .first()
+    )
+    if not dedicated_region:
+        dedicated_region = DBRegion(
+            name="team-hidden-public-dedicated",
+            label="Team Hidden Public Dedicated",
+            postgres_host="team-hidden-public-host",
+            postgres_port=5432,
+            postgres_admin_user="team-hidden-public-admin",
+            postgres_admin_password="team-hidden-public-password",
+            litellm_api_url="https://team-hidden-public-litellm.com",
+            litellm_api_key="team-hidden-public-litellm-key",
+            is_active=True,
+            is_dedicated=True,
+        )
+        db.add(dedicated_region)
+        db.commit()
+        db.refresh(dedicated_region)
+
+    # Create team-region association
+    from app.db.models import DBTeamRegion
+
+    team_region = DBTeamRegion(team_id=test_team.id, region_id=dedicated_region.id)
+    db.add(team_region)
+    db.commit()
+
+    response = client.get(
+        "/regions/", headers={"Authorization": f"Bearer {team_admin_token}"}
+    )
+
+    assert response.status_code == 200
+    regions = response.json()
+    assert len(regions) == 1
+    assert regions[0]["name"] == "team-hidden-public-dedicated"
+    # Ensure public region is NOT present
+    assert test_region.name not in [r["name"] for r in regions]
+
+    # Reset hide_public_regions for other tests
+    test_team.hide_public_regions = False
+    db.commit()
+
+
+def test_list_regions_team_member_does_not_see_other_team_dedicated_regions(
+    client, team_admin_token, db, test_region, test_team
+):
     """
     Given a team member and a dedicated region associated with a different team
     When the team member lists regions
@@ -647,19 +775,22 @@ def test_list_regions_team_member_does_not_see_other_team_dedicated_regions(clie
     """
     # Create another team
     other_team = DBTeam(
-        name="Other Team",
-        admin_email="other@example.com",
-        is_active=True
+        name="Other Team", admin_email="other@example.com", is_active=True
     )
     db.add(other_team)
     db.commit()
     db.refresh(other_team)
 
     # Create a dedicated region associated with the other team
-    dedicated_region = db.query(DBRegion).filter(DBRegion.name == "other-team-dedicated-region").first()
+    dedicated_region = (
+        db.query(DBRegion)
+        .filter(DBRegion.name == "other-team-dedicated-region")
+        .first()
+    )
     if not dedicated_region:
         dedicated_region = DBRegion(
             name="other-team-dedicated-region",
+            label="Other Team Dedicated Region",
             postgres_host="other-team-dedicated-host",
             postgres_port=5432,
             postgres_admin_user="other-team-dedicated-admin",
@@ -667,7 +798,7 @@ def test_list_regions_team_member_does_not_see_other_team_dedicated_regions(clie
             litellm_api_url="https://other-team-dedicated-litellm.com",
             litellm_api_key="other-team-dedicated-litellm-key",
             is_active=True,
-            is_dedicated=True
+            is_dedicated=True,
         )
         db.add(dedicated_region)
         db.commit()
@@ -675,27 +806,28 @@ def test_list_regions_team_member_does_not_see_other_team_dedicated_regions(clie
 
     # Create team-region association for other team
     from app.db.models import DBTeamRegion
-    team_region = DBTeamRegion(
-        team_id=other_team.id,
-        region_id=dedicated_region.id
-    )
+
+    team_region = DBTeamRegion(team_id=other_team.id, region_id=dedicated_region.id)
     db.add(team_region)
     db.commit()
 
     response = client.get(
-        "/regions/",
-        headers={"Authorization": f"Bearer {team_admin_token}"}
+        "/regions/", headers={"Authorization": f"Bearer {team_admin_token}"}
     )
 
     assert response.status_code == 200
     regions = response.json()
     assert len(regions) == 1
     assert regions[0]["name"] == test_region.name
+    assert regions[0]["label"] == test_region.label
     assert "other-team-dedicated-region" not in [r["name"] for r in regions]
+
 
 @patch("app.api.regions.validate_litellm_endpoint")
 @patch("app.api.regions.validate_database_connection")
-def test_create_dedicated_region(mock_validate_db, mock_validate_litellm, client, admin_token):
+def test_create_dedicated_region(
+    mock_validate_db, mock_validate_litellm, client, admin_token
+):
     """
     Given an admin user
     When they create a region with is_dedicated=True
@@ -707,37 +839,39 @@ def test_create_dedicated_region(mock_validate_db, mock_validate_litellm, client
 
     region_data = {
         "name": "new-dedicated-region",
+        "label": "New Dedicated Region",
         "postgres_host": "new-dedicated-host",
         "postgres_port": 5432,
         "postgres_admin_user": "new-dedicated-admin",
         "postgres_admin_password": "new-dedicated-password",
         "litellm_api_url": "https://new-dedicated-litellm.com",
         "litellm_api_key": "new-dedicated-litellm-key",
-        "is_dedicated": True
+        "is_dedicated": True,
     }
 
     response = client.post(
         "/regions/",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json=region_data
+        json=region_data,
     )
 
     assert response.status_code == 200
     data = response.json()
     assert data["name"] == region_data["name"]
+    assert data["label"] == region_data["label"]
     assert data["is_dedicated"]
 
     # Verify validation functions were called
     mock_validate_litellm.assert_called_once_with(
-        region_data["litellm_api_url"],
-        region_data["litellm_api_key"]
+        region_data["litellm_api_url"], region_data["litellm_api_key"]
     )
     mock_validate_db.assert_called_once_with(
         region_data["postgres_host"],
         region_data["postgres_port"],
         region_data["postgres_admin_user"],
-        region_data["postgres_admin_password"]
+        region_data["postgres_admin_password"],
     )
+
 
 def test_create_dedicated_region_non_admin_fails(client, test_token):
     """
@@ -747,23 +881,23 @@ def test_create_dedicated_region_non_admin_fails(client, test_token):
     """
     region_data = {
         "name": "new-dedicated-region",
+        "label": "New Dedicated Region",
         "postgres_host": "new-dedicated-host",
         "postgres_port": 5432,
         "postgres_admin_user": "new-dedicated-admin",
         "postgres_admin_password": "new-dedicated-password",
         "litellm_api_url": "https://new-dedicated-litellm.com",
         "litellm_api_key": "new-dedicated-litellm-key",
-        "is_dedicated": True
+        "is_dedicated": True,
     }
 
     response = client.post(
-        "/regions/",
-        headers={"Authorization": f"Bearer {test_token}"},
-        json=region_data
+        "/regions/", headers={"Authorization": f"Bearer {test_token}"}, json=region_data
     )
 
     assert response.status_code == 403
     assert "Not authorized to perform this action" in response.json()["detail"]
+
 
 def test_associate_team_with_dedicated_region(client, admin_token, db, test_team):
     """
@@ -774,6 +908,7 @@ def test_associate_team_with_dedicated_region(client, admin_token, db, test_team
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-for-association",
+        label="Dedicated Region for Association",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",
@@ -781,7 +916,7 @@ def test_associate_team_with_dedicated_region(client, admin_token, db, test_team
         litellm_api_url="https://dedicated-litellm.com",
         litellm_api_key="dedicated-litellm-key",
         is_active=True,
-        is_dedicated=True
+        is_dedicated=True,
     )
     db.add(dedicated_region)
     db.commit()
@@ -789,13 +924,16 @@ def test_associate_team_with_dedicated_region(client, admin_token, db, test_team
 
     response = client.post(
         f"/regions/{dedicated_region.id}/teams/{test_team.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     assert response.status_code == 200
     assert response.json()["message"] == "Team associated with region successfully"
 
-def test_associate_team_with_non_dedicated_region_fails(client, admin_token, db, test_team, test_region):
+
+def test_associate_team_with_non_dedicated_region_fails(
+    client, admin_token, db, test_team, test_region
+):
     """
     Given an admin user and a non-dedicated region
     When they try to associate a team with the region
@@ -803,11 +941,14 @@ def test_associate_team_with_non_dedicated_region_fails(client, admin_token, db,
     """
     response = client.post(
         f"/regions/{test_region.id}/teams/{test_team.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     assert response.status_code == 400
-    assert "Can only associate teams with dedicated regions" in response.json()["detail"]
+    assert (
+        "Can only associate teams with dedicated regions" in response.json()["detail"]
+    )
+
 
 def test_associate_team_with_region_non_admin_fails(client, test_token, db, test_team):
     """
@@ -818,6 +959,7 @@ def test_associate_team_with_region_non_admin_fails(client, test_token, db, test
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-for-non-admin-test",
+        label="Dedicated Region for Non-Admin Test",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",
@@ -825,7 +967,7 @@ def test_associate_team_with_region_non_admin_fails(client, test_token, db, test
         litellm_api_url="https://dedicated-litellm.com",
         litellm_api_key="dedicated-litellm-key",
         is_active=True,
-        is_dedicated=True
+        is_dedicated=True,
     )
     db.add(dedicated_region)
     db.commit()
@@ -833,11 +975,12 @@ def test_associate_team_with_region_non_admin_fails(client, test_token, db, test
 
     response = client.post(
         f"/regions/{dedicated_region.id}/teams/{test_team.id}",
-        headers={"Authorization": f"Bearer {test_token}"}
+        headers={"Authorization": f"Bearer {test_token}"},
     )
 
     assert response.status_code == 403
     assert "Not authorized to perform this action" in response.json()["detail"]
+
 
 def test_associate_team_with_non_existent_region(client, admin_token, db, test_team):
     """
@@ -847,11 +990,12 @@ def test_associate_team_with_non_existent_region(client, admin_token, db, test_t
     """
     response = client.post(
         f"/regions/99999/teams/{test_team.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     assert response.status_code == 404
     assert "Region not found" in response.json()["detail"]
+
 
 def test_associate_non_existent_team_with_region(client, admin_token, db):
     """
@@ -862,6 +1006,7 @@ def test_associate_non_existent_team_with_region(client, admin_token, db):
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-for-non-existent-team",
+        label="Dedicated Region for Non-Existent Team",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",
@@ -869,7 +1014,7 @@ def test_associate_non_existent_team_with_region(client, admin_token, db):
         litellm_api_url="https://dedicated-litellm.com",
         litellm_api_key="dedicated-litellm-key",
         is_active=True,
-        is_dedicated=True
+        is_dedicated=True,
     )
     db.add(dedicated_region)
     db.commit()
@@ -877,13 +1022,16 @@ def test_associate_non_existent_team_with_region(client, admin_token, db):
 
     response = client.post(
         f"/regions/{dedicated_region.id}/teams/99999",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     assert response.status_code == 404
     assert "Team not found" in response.json()["detail"]
 
-def test_associate_team_with_already_associated_region(client, admin_token, db, test_team):
+
+def test_associate_team_with_already_associated_region(
+    client, admin_token, db, test_team
+):
     """
     Given an admin user and a team already associated with a region
     When they try to associate the team with the same region again
@@ -892,6 +1040,7 @@ def test_associate_team_with_already_associated_region(client, admin_token, db, 
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-for-duplicate-association",
+        label="Dedicated Region for Duplicate Association",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",
@@ -899,7 +1048,7 @@ def test_associate_team_with_already_associated_region(client, admin_token, db, 
         litellm_api_url="https://dedicated-litellm.com",
         litellm_api_key="dedicated-litellm-key",
         is_active=True,
-        is_dedicated=True
+        is_dedicated=True,
     )
     db.add(dedicated_region)
     db.commit()
@@ -907,21 +1056,20 @@ def test_associate_team_with_already_associated_region(client, admin_token, db, 
 
     # Create initial association
     from app.db.models import DBTeamRegion
-    team_region = DBTeamRegion(
-        team_id=test_team.id,
-        region_id=dedicated_region.id
-    )
+
+    team_region = DBTeamRegion(team_id=test_team.id, region_id=dedicated_region.id)
     db.add(team_region)
     db.commit()
 
     # Try to associate again
     response = client.post(
         f"/regions/{dedicated_region.id}/teams/{test_team.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     assert response.status_code == 400
     assert "Team is already associated with this region" in response.json()["detail"]
+
 
 def test_disassociate_team_from_dedicated_region(client, admin_token, db, test_team):
     """
@@ -932,6 +1080,7 @@ def test_disassociate_team_from_dedicated_region(client, admin_token, db, test_t
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-for-disassociation",
+        label="Dedicated Region for Disassociation",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",
@@ -939,7 +1088,7 @@ def test_disassociate_team_from_dedicated_region(client, admin_token, db, test_t
         litellm_api_url="https://dedicated-litellm.com",
         litellm_api_key="dedicated-litellm-key",
         is_active=True,
-        is_dedicated=True
+        is_dedicated=True,
     )
     db.add(dedicated_region)
     db.commit()
@@ -947,22 +1096,23 @@ def test_disassociate_team_from_dedicated_region(client, admin_token, db, test_t
 
     # Create team-region association
     from app.db.models import DBTeamRegion
-    team_region = DBTeamRegion(
-        team_id=test_team.id,
-        region_id=dedicated_region.id
-    )
+
+    team_region = DBTeamRegion(team_id=test_team.id, region_id=dedicated_region.id)
     db.add(team_region)
     db.commit()
 
     response = client.delete(
         f"/regions/{dedicated_region.id}/teams/{test_team.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     assert response.status_code == 200
     assert response.json()["message"] == "Team disassociated from region successfully"
 
-def test_disassociate_team_from_region_non_admin_fails(client, test_token, db, test_team):
+
+def test_disassociate_team_from_region_non_admin_fails(
+    client, test_token, db, test_team
+):
     """
     Given a non-admin user
     When they try to disassociate a team from a region
@@ -971,6 +1121,7 @@ def test_disassociate_team_from_region_non_admin_fails(client, test_token, db, t
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-for-non-admin-disassociation",
+        label="Dedicated Region for Non-Admin Disassociation",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",
@@ -978,7 +1129,7 @@ def test_disassociate_team_from_region_non_admin_fails(client, test_token, db, t
         litellm_api_url="https://dedicated-litellm.com",
         litellm_api_key="dedicated-litellm-key",
         is_active=True,
-        is_dedicated=True
+        is_dedicated=True,
     )
     db.add(dedicated_region)
     db.commit()
@@ -986,13 +1137,16 @@ def test_disassociate_team_from_region_non_admin_fails(client, test_token, db, t
 
     response = client.delete(
         f"/regions/{dedicated_region.id}/teams/{test_team.id}",
-        headers={"Authorization": f"Bearer {test_token}"}
+        headers={"Authorization": f"Bearer {test_token}"},
     )
 
     assert response.status_code == 403
     assert "Not authorized to perform this action" in response.json()["detail"]
 
-def test_disassociate_team_from_non_existent_association(client, admin_token, db, test_team):
+
+def test_disassociate_team_from_non_existent_association(
+    client, admin_token, db, test_team
+):
     """
     Given an admin user and a non-existent team-region association
     When they try to disassociate the team from the region
@@ -1001,6 +1155,7 @@ def test_disassociate_team_from_non_existent_association(client, admin_token, db
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-for-non-existent-disassociation",
+        label="Dedicated Region for Non-Existent Disassociation",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",
@@ -1008,7 +1163,7 @@ def test_disassociate_team_from_non_existent_association(client, admin_token, db
         litellm_api_url="https://dedicated-litellm.com",
         litellm_api_key="dedicated-litellm-key",
         is_active=True,
-        is_dedicated=True
+        is_dedicated=True,
     )
     db.add(dedicated_region)
     db.commit()
@@ -1016,11 +1171,12 @@ def test_disassociate_team_from_non_existent_association(client, admin_token, db
 
     response = client.delete(
         f"/regions/{dedicated_region.id}/teams/{test_team.id}",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     assert response.status_code == 404
     assert "Team-region association not found" in response.json()["detail"]
+
 
 def test_list_teams_for_dedicated_region(client, admin_token, db, test_team):
     """
@@ -1031,6 +1187,7 @@ def test_list_teams_for_dedicated_region(client, admin_token, db, test_team):
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-for-team-listing",
+        label="Dedicated Region for Team Listing",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",
@@ -1038,7 +1195,7 @@ def test_list_teams_for_dedicated_region(client, admin_token, db, test_team):
         litellm_api_url="https://dedicated-litellm.com",
         litellm_api_key="dedicated-litellm-key",
         is_active=True,
-        is_dedicated=True
+        is_dedicated=True,
     )
     db.add(dedicated_region)
     db.commit()
@@ -1046,16 +1203,14 @@ def test_list_teams_for_dedicated_region(client, admin_token, db, test_team):
 
     # Create team-region association
     from app.db.models import DBTeamRegion
-    team_region = DBTeamRegion(
-        team_id=test_team.id,
-        region_id=dedicated_region.id
-    )
+
+    team_region = DBTeamRegion(team_id=test_team.id, region_id=dedicated_region.id)
     db.add(team_region)
     db.commit()
 
     response = client.get(
         f"/regions/{dedicated_region.id}/teams",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     assert response.status_code == 200
@@ -1063,6 +1218,7 @@ def test_list_teams_for_dedicated_region(client, admin_token, db, test_team):
     assert len(teams) == 1
     assert teams[0]["id"] == test_team.id
     assert teams[0]["name"] == test_team.name
+
 
 def test_list_teams_for_dedicated_region_non_admin_fails(client, test_token, db):
     """
@@ -1073,6 +1229,7 @@ def test_list_teams_for_dedicated_region_non_admin_fails(client, test_token, db)
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-for-non-admin-team-listing",
+        label="Dedicated Region for Non-Admin Team Listing",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",
@@ -1080,7 +1237,7 @@ def test_list_teams_for_dedicated_region_non_admin_fails(client, test_token, db)
         litellm_api_url="https://dedicated-litellm.com",
         litellm_api_key="dedicated-litellm-key",
         is_active=True,
-        is_dedicated=True
+        is_dedicated=True,
     )
     db.add(dedicated_region)
     db.commit()
@@ -1088,11 +1245,12 @@ def test_list_teams_for_dedicated_region_non_admin_fails(client, test_token, db)
 
     response = client.get(
         f"/regions/{dedicated_region.id}/teams",
-        headers={"Authorization": f"Bearer {test_token}"}
+        headers={"Authorization": f"Bearer {test_token}"},
     )
 
     assert response.status_code == 403
     assert "Not authorized to perform this action" in response.json()["detail"]
+
 
 def test_list_teams_for_non_dedicated_region_fails(client, admin_token, test_region):
     """
@@ -1102,11 +1260,12 @@ def test_list_teams_for_non_dedicated_region_fails(client, admin_token, test_reg
     """
     response = client.get(
         f"/regions/{test_region.id}/teams",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     assert response.status_code == 400
     assert "Can only list teams for dedicated regions" in response.json()["detail"]
+
 
 def test_list_teams_for_non_existent_region(client, admin_token):
     """
@@ -1115,12 +1274,12 @@ def test_list_teams_for_non_existent_region(client, admin_token):
     Then they should receive a 404 error
     """
     response = client.get(
-        "/regions/99999/teams",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        "/regions/99999/teams", headers={"Authorization": f"Bearer {admin_token}"}
     )
 
     assert response.status_code == 404
     assert "Region not found" in response.json()["detail"]
+
 
 def test_list_teams_for_dedicated_region_with_no_associations(client, admin_token, db):
     """
@@ -1131,6 +1290,7 @@ def test_list_teams_for_dedicated_region_with_no_associations(client, admin_toke
     # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-with-no-teams",
+        label="Dedicated Region with No Teams",
         postgres_host="dedicated-host",
         postgres_port=5432,
         postgres_admin_user="dedicated-admin",
@@ -1138,7 +1298,7 @@ def test_list_teams_for_dedicated_region_with_no_associations(client, admin_toke
         litellm_api_url="https://dedicated-litellm.com",
         litellm_api_key="dedicated-litellm-key",
         is_active=True,
-        is_dedicated=True
+        is_dedicated=True,
     )
     db.add(dedicated_region)
     db.commit()
@@ -1146,9 +1306,73 @@ def test_list_teams_for_dedicated_region_with_no_associations(client, admin_toke
 
     response = client.get(
         f"/regions/{dedicated_region.id}/teams",
-        headers={"Authorization": f"Bearer {admin_token}"}
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
 
     assert response.status_code == 200
     teams = response.json()
     assert len(teams) == 0
+
+
+def test_get_team_region_budget_pool_uses_team_budget(
+    client, admin_token, db, test_team, test_region
+):
+    """
+    Given a POOL team with purchases
+    When requesting region budget
+    Then budget is sourced from LiteLLM team budget (pool-level), not per-key defaults.
+    """
+    test_team.budget_type = "pool"
+    db.commit()
+
+    with patch(
+        "app.api.regions.LiteLLMService.get_team_info",
+        new_callable=AsyncMock,
+    ) as mock_get_team_info:
+        mock_get_team_info.return_value = {
+            "team_info": {"spend": 5.0, "max_budget": 25.0}
+        }
+
+        response = client.get(
+            f"/regions/{test_region.id}/teams/{test_team.id}/budget",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        mock_get_team_info.assert_awaited_once_with(
+            LiteLLMService.format_team_id(test_region.name, test_team.id)
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_spend"] == 5.0
+    assert data["total_budget"] == 20.0
+
+
+def test_get_team_region_budget_pool_requires_litellm(
+    client, admin_token, db, test_team, test_region
+):
+    """
+    Given a POOL team
+    When LiteLLM is unavailable
+    Then the endpoint should fail (no local fallback for POOL budgets).
+    """
+    test_team.budget_type = "pool"
+    db.commit()
+
+    with patch(
+        "app.api.regions.LiteLLMService.get_team_info",
+        new_callable=AsyncMock,
+    ) as mock_get_team_info:
+        mock_get_team_info.side_effect = Exception("LiteLLM unavailable")
+
+        response = client.get(
+            f"/regions/{test_region.id}/teams/{test_team.id}/budget",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        mock_get_team_info.assert_awaited_once_with(
+            LiteLLMService.format_team_id(test_region.name, test_team.id)
+        )
+
+    assert response.status_code == 502
+    assert (
+        response.json()["detail"] == "Failed to retrieve POOL team budget from LiteLLM"
+    )

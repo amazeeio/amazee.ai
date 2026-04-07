@@ -1,12 +1,11 @@
-'use client';
+"use client";
 
-import { useState, useEffect, useRef } from 'react';
-import { useRouter } from 'next/navigation';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { useForm } from 'react-hook-form';
-import * as z from 'zod';
-
-import { Button } from '@/components/ui/button';
+import * as z from "zod";
+import { useForm } from "react-hook-form";
+import { useRouter } from "next/navigation";
+import { useState, useEffect, useRef } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import {
   Form,
   FormControl,
@@ -14,48 +13,50 @@ import {
   FormItem,
   FormLabel,
   FormMessage,
-} from '@/components/ui/form';
-import { Input } from '@/components/ui/input';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { useToast } from '@/hooks/use-toast';
-import { useAuth } from '@/hooks/use-auth';
-import { get } from '@/utils/api';
-import { getCachedConfig } from '@/utils/config';
+} from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
+import { useAuth } from "@/hooks/use-auth";
+import { useToast } from "@/hooks/use-toast";
+import { get } from "@/utils/api";
+import { getCachedConfig } from "@/utils/config";
+import { zodResolver } from "@hookform/resolvers/zod";
 
 const emailFormSchema = z.object({
-  email: z.string().email('Invalid email address'),
+  email: z.string().email("Invalid email address"),
 });
 
 const verificationFormSchema = z.object({
-  verificationCode: z.string().min(1, 'Verification code is required'),
+  verificationCode: z.string().min(1, "Verification code is required"),
 });
 
 interface PasswordlessLoginFormProps {
   onSwitchToPassword: () => void;
 }
 
-export function PasswordlessLoginForm({ onSwitchToPassword }: PasswordlessLoginFormProps) {
+export function PasswordlessLoginForm({
+  onSwitchToPassword,
+}: PasswordlessLoginFormProps) {
   const router = useRouter();
   const { toast } = useToast();
   const { setUser } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [emailSent, setEmailSent] = useState(false);
-  const [email, setEmail] = useState('');
-  const [codeChars, setCodeChars] = useState(Array(8).fill(''));
+  const [email, setEmail] = useState("");
+  const [codeChars, setCodeChars] = useState(Array(8).fill(""));
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   const emailForm = useForm<z.infer<typeof emailFormSchema>>({
     resolver: zodResolver(emailFormSchema),
     defaultValues: {
-      email: '',
+      email: "",
     },
   });
 
   const verificationForm = useForm<z.infer<typeof verificationFormSchema>>({
     resolver: zodResolver(verificationFormSchema),
     defaultValues: {
-      verificationCode: '',
+      verificationCode: "",
     },
   });
 
@@ -70,10 +71,13 @@ export function PasswordlessLoginForm({ onSwitchToPassword }: PasswordlessLoginF
   const handleCodeChange = (index: number, value: string) => {
     if (value.length > 1) {
       // Handle pasting of full code
-      const chars = value.slice(0, 8).split('').map(char => {
-        return /[a-zA-Z0-9]/.test(char) ? char : '';
-      });
-      setCodeChars(chars.concat(Array(8 - chars.length).fill('')));
+      const chars = value
+        .slice(0, 8)
+        .split("")
+        .map((char) => {
+          return /[a-zA-Z0-9]/.test(char) ? char : "";
+        });
+      setCodeChars(chars.concat(Array(8 - chars.length).fill("")));
       // Focus the last filled input or the next empty one
       const lastIndex = Math.min(chars.length, 7);
       inputRefs.current[lastIndex]?.focus();
@@ -92,13 +96,16 @@ export function PasswordlessLoginForm({ onSwitchToPassword }: PasswordlessLoginF
   // Handler for paste event
   const handlePaste = (e: React.ClipboardEvent) => {
     e.preventDefault();
-    const pastedData = e.clipboardData.getData('text');
+    const pastedData = e.clipboardData.getData("text");
     handleCodeChange(0, pastedData);
   };
 
   // Handler for backspace
-  const handleCodeKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Backspace' && !codeChars[index] && index > 0) {
+  const handleCodeKeyDown = (
+    index: number,
+    e: React.KeyboardEvent<HTMLInputElement>,
+  ) => {
+    if (e.key === "Backspace" && !codeChars[index] && index > 0) {
       inputRefs.current[index - 1]?.focus();
     }
   };
@@ -110,82 +117,98 @@ export function PasswordlessLoginForm({ onSwitchToPassword }: PasswordlessLoginF
 
       const { NEXT_PUBLIC_API_URL: apiUrl } = getCachedConfig();
       const response = await fetch(`${apiUrl}/auth/validate-email`, {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({ email: data.email }),
       });
 
       if (!response.ok) {
         const result = await response.json();
-        throw new Error(result.detail || 'Failed to send verification code');
+        throw new Error(result.detail || "Failed to send verification code");
       }
 
       setEmail(data.email);
       setEmailSent(true);
-      verificationForm.reset({ verificationCode: '' });
+      verificationForm.reset({ verificationCode: "" });
       toast({
-        title: 'Verification code sent',
-        description: 'Please check your email for the verification code',
+        title: "Verification code sent",
+        description: "Please check your email for the verification code",
       });
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'An error occurred while sending the verification code');
+      setError(
+        error instanceof Error
+          ? error.message
+          : "An error occurred while sending the verification code",
+      );
     } finally {
       setIsLoading(false);
     }
   }
 
-  async function onVerificationSubmit({ email, verificationCode }: { email: string, verificationCode: string }) {
+  async function onVerificationSubmit({
+    email,
+    verificationCode,
+  }: {
+    email: string;
+    verificationCode: string;
+  }) {
     try {
       setIsLoading(true);
       setError(null);
 
       const { NEXT_PUBLIC_API_URL: apiUrl } = getCachedConfig();
       const response = await fetch(`${apiUrl}/auth/sign-in`, {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
           username: email,
           verification_code: verificationCode,
         }),
-        credentials: 'include',
+        credentials: "include",
       });
 
       const result = await response.json();
 
       if (!response.ok) {
-        throw new Error(result.detail || 'Failed to sign in');
+        throw new Error(result.detail || "Failed to sign in");
       }
 
       if (result.access_token) {
         // Fetch user profile
         try {
-          const profileResponse = await get('/auth/me');
+          const profileResponse = await get("/auth/me");
           const profileData = await profileResponse.json();
           setUser(profileData);
 
           toast({
-            title: 'Success',
-            description: 'Successfully signed in',
+            title: "Success",
+            description: "Successfully signed in",
           });
 
           router.refresh();
           // Redirect based on user role
-          if (profileData.role === 'sales') {
-            router.push('/sales');
+          if (profileData.role === "sales") {
+            router.push("/sales");
           } else {
-            router.push('/private-ai-keys');
+            router.push("/private-ai-keys");
           }
         } catch (profileError) {
-          console.error('Failed to fetch user profile:', profileError);
-          setError('Successfully signed in but failed to fetch user profile. Please refresh the page.');
+          console.error("Failed to fetch user profile:", profileError);
+          setError(
+            "Successfully signed in but failed to fetch user profile. Please refresh the page.",
+          );
         }
       }
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'An error occurred during sign in');
+      setError(
+        error instanceof Error
+          ? error.message
+          : "An error occurred during sign in",
+      );
     } finally {
       setIsLoading(false);
     }
@@ -201,7 +224,10 @@ export function PasswordlessLoginForm({ onSwitchToPassword }: PasswordlessLoginF
 
       {!emailSent ? (
         <Form {...emailForm}>
-          <form onSubmit={emailForm.handleSubmit(onEmailSubmit)} className="space-y-4">
+          <form
+            onSubmit={emailForm.handleSubmit(onEmailSubmit)}
+            className="space-y-4"
+          >
             <FormField
               control={emailForm.control}
               name="email"
@@ -220,20 +246,32 @@ export function PasswordlessLoginForm({ onSwitchToPassword }: PasswordlessLoginF
               )}
             />
 
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={isLoading}
-            >
-              {isLoading ? 'Sending code...' : 'Send verification code'}
+            <Button type="submit" className="w-full" disabled={isLoading}>
+              {isLoading ? "Sending code..." : "Send verification code"}
             </Button>
           </form>
         </Form>
       ) : (
         <Form {...verificationForm}>
-          <form onSubmit={e => { e.preventDefault(); onVerificationSubmit({ email, verificationCode: codeChars.join('') }); }} className="space-y-4" autoComplete="off">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              onVerificationSubmit({
+                email,
+                verificationCode: codeChars.join(""),
+              });
+            }}
+            className="space-y-4"
+            autoComplete="off"
+          >
             <FormLabel>Verification Code</FormLabel>
-            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'center' }}>
+            <div
+              style={{
+                display: "flex",
+                gap: "0.5rem",
+                justifyContent: "center",
+              }}
+            >
               {codeChars.map((char, idx) => (
                 <Input
                   key={idx}
@@ -241,11 +279,17 @@ export function PasswordlessLoginForm({ onSwitchToPassword }: PasswordlessLoginF
                   inputMode="text"
                   maxLength={1}
                   value={char}
-                  onChange={e => handleCodeChange(idx, e.target.value)}
-                  onKeyDown={e => handleCodeKeyDown(idx, e)}
+                  onChange={(e) => handleCodeChange(idx, e.target.value)}
+                  onKeyDown={(e) => handleCodeKeyDown(idx, e)}
                   onPaste={idx === 0 ? handlePaste : undefined}
-                  ref={el => { inputRefs.current[idx] = el; }}
-                  style={{ width: '2.5rem', textAlign: 'center', fontSize: '1.5rem' }}
+                  ref={(el) => {
+                    inputRefs.current[idx] = el;
+                  }}
+                  style={{
+                    width: "2.5rem",
+                    textAlign: "center",
+                    fontSize: "1.5rem",
+                  }}
                   autoComplete="off"
                   aria-label={`Verification code character ${idx + 1}`}
                 />
@@ -255,9 +299,9 @@ export function PasswordlessLoginForm({ onSwitchToPassword }: PasswordlessLoginF
             <Button
               type="submit"
               className="w-full"
-              disabled={isLoading || codeChars.some(c => !c)}
+              disabled={isLoading || codeChars.some((c) => !c)}
             >
-              {isLoading ? 'Signing in...' : 'Sign in'}
+              {isLoading ? "Signing in..." : "Sign in"}
             </Button>
             <Button
               type="button"
@@ -266,7 +310,7 @@ export function PasswordlessLoginForm({ onSwitchToPassword }: PasswordlessLoginF
               onClick={() => {
                 setEmailSent(false);
                 setError(null);
-                setCodeChars(Array(8).fill(''));
+                setCodeChars(Array(8).fill(""));
               }}
             >
               Use a different email
@@ -280,18 +324,12 @@ export function PasswordlessLoginForm({ onSwitchToPassword }: PasswordlessLoginF
           <span className="w-full border-t" />
         </div>
         <div className="relative flex justify-center text-xs uppercase">
-          <span className="bg-background px-2 text-muted-foreground">
-            Or
-          </span>
+          <span className="bg-background px-2 text-muted-foreground">Or</span>
         </div>
       </div>
 
       <div className="text-center text-sm">
-        <Button
-          variant="link"
-          className="text-sm"
-          onClick={onSwitchToPassword}
-        >
+        <Button variant="link" className="text-sm" onClick={onSwitchToPassword}>
           Sign in with password
         </Button>
       </div>

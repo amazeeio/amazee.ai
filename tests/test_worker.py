@@ -1,5 +1,12 @@
 import pytest
-from app.db.models import DBProduct, DBTeamProduct, DBPrivateAIKey, DBTeam, DBTeamMetrics, DBLimitedResource
+from app.db.models import (
+    DBProduct,
+    DBTeamProduct,
+    DBPrivateAIKey,
+    DBTeam,
+    DBTeamMetrics,
+    DBLimitedResource,
+)
 from datetime import datetime, UTC, timedelta
 from app.core.worker import (
     apply_product_for_team,
@@ -11,20 +18,45 @@ from app.core.worker import (
     key_spend_percentage,
     team_total_spend,
     active_team_labels,
-    reconcile_team_keys
+    reconcile_team_keys,
 )
 from app.core.team_service import get_team_keys_by_region
-from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType, LimitedResource
+from app.schemas.limits import (
+    ResourceType,
+    UnitType,
+    OwnerType,
+    LimitSource,
+    LimitType,
+    LimitedResource,
+)
 from unittest.mock import AsyncMock, patch, Mock
 
-@pytest.mark.parametrize("event_type,object_type,get_product_func", [
-    ("customer.subscription.deleted", "subscription", "get_product_id_from_subscription"),
-    ("checkout.session.async_payment_failed", "session", "get_product_id_from_session"),
-    ("checkout.session.expired", "session", "get_product_id_from_session"),
-    ("customer.subscription.paused", "subscription", "get_product_id_from_subscription"),
-])
+
+@pytest.mark.parametrize(
+    "event_type,object_type,get_product_func",
+    [
+        (
+            "customer.subscription.deleted",
+            "subscription",
+            "get_product_id_from_subscription",
+        ),
+        (
+            "checkout.session.async_payment_failed",
+            "session",
+            "get_product_id_from_session",
+        ),
+        ("checkout.session.expired", "session", "get_product_id_from_session"),
+        (
+            "customer.subscription.paused",
+            "subscription",
+            "get_product_id_from_subscription",
+        ),
+    ],
+)
 @pytest.mark.asyncio
-async def test_handle_stripe_events_remove_product(event_type, object_type, get_product_func, db, test_team, test_product):
+async def test_handle_stripe_events_remove_product(
+    event_type, object_type, get_product_func, db, test_team, test_product
+):
     """
     Test that various Stripe events correctly remove product associations from teams.
 
@@ -53,10 +85,7 @@ async def test_handle_stripe_events_remove_product(event_type, object_type, get_
     mock_event.data.object = mock_object
 
     # Set up initial team-product association
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -65,8 +94,15 @@ async def test_handle_stripe_events_remove_product(event_type, object_type, get_
     product_id = test_product.id
 
     # Act
-    with patch(f'app.core.worker.{get_product_func}', new_callable=AsyncMock) as mock_get_product, \
-         patch('app.core.worker.get_subscribed_products_for_customer', new_callable=AsyncMock) as mock_get_subscriptions:
+    with (
+        patch(
+            f"app.core.worker.{get_product_func}", new_callable=AsyncMock
+        ) as mock_get_product,
+        patch(
+            "app.core.worker.get_subscribed_products_for_customer",
+            new_callable=AsyncMock,
+        ) as mock_get_subscriptions,
+    ):
         mock_get_product.return_value = product_id
         mock_get_subscriptions.return_value = []  # No active subscriptions (allowing removal)
         await handle_stripe_event_background(mock_event)
@@ -74,11 +110,15 @@ async def test_handle_stripe_events_remove_product(event_type, object_type, get_
     # Assert
     mock_get_product.assert_called_once_with(mock_object.id)
     # Verify team-product association was removed
-    team_product = db.query(DBTeamProduct).filter(
-        DBTeamProduct.team_id == team_id,
-        DBTeamProduct.product_id == product_id
-    ).first()
+    team_product = (
+        db.query(DBTeamProduct)
+        .filter(
+            DBTeamProduct.team_id == team_id, DBTeamProduct.product_id == product_id
+        )
+        .first()
+    )
     assert team_product is None
+
 
 @pytest.mark.asyncio
 async def test_handle_unknown_event_type(db):
@@ -90,6 +130,7 @@ async def test_handle_unknown_event_type(db):
     await handle_stripe_event_background(mock_event)
 
     # No assertion needed as we're just verifying no error occurs
+
 
 @pytest.mark.asyncio
 async def test_apply_product_success(db, test_team, test_product):
@@ -105,7 +146,9 @@ async def test_apply_product_success(db, test_team, test_product):
     db.commit()
 
     # Apply product to team
-    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
+    await apply_product_for_team(
+        db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
+    )
 
     # Refresh team from database
     db.refresh(test_team)
@@ -114,6 +157,7 @@ async def test_apply_product_success(db, test_team, test_product):
     assert len(test_team.active_products) == 1
     assert test_team.active_products[0].product.id == test_product.id
     assert test_team.last_payment is not None
+
 
 @pytest.mark.asyncio
 async def test_apply_product_team_not_found(db, test_product):
@@ -125,8 +169,11 @@ async def test_apply_product_team_not_found(db, test_product):
     THEN: The operation completes without error
     """
     # Try to apply product to non-existent team
-    await apply_product_for_team(db, "cus_nonexistent", test_product.id, datetime.now(UTC))
+    await apply_product_for_team(
+        db, "cus_nonexistent", test_product.id, datetime.now(UTC)
+    )
     # No assertions needed as function should complete without error
+
 
 @pytest.mark.asyncio
 async def test_apply_product_product_not_found(db, test_team):
@@ -142,8 +189,11 @@ async def test_apply_product_product_not_found(db, test_team):
     db.commit()
 
     # Try to apply non-existent product
-    await apply_product_for_team(db, test_team.stripe_customer_id, "prod_nonexistent", datetime.now(UTC))
+    await apply_product_for_team(
+        db, test_team.stripe_customer_id, "prod_nonexistent", datetime.now(UTC)
+    )
     # No assertions needed as function should complete without error
+
 
 @pytest.mark.asyncio
 async def test_apply_product_multiple_products(db, test_team, test_product):
@@ -162,8 +212,8 @@ async def test_apply_product_multiple_products(db, test_team, test_product):
     products = [test_product]  # Start with the fixture product
     for i in range(2):  # Create 2 more products
         product = DBProduct(
-            id=f"prod_test{i+1}",
-            name=f"Test Product {i+1}",
+            id=f"prod_test{i + 1}",
+            name=f"Test Product {i + 1}",
             user_count=5,
             keys_per_user=2,
             total_key_count=10,
@@ -174,7 +224,7 @@ async def test_apply_product_multiple_products(db, test_team, test_product):
             vector_db_storage=100,
             renewal_period_days=30,
             active=True,
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         )
         db.add(product)
         products.append(product)
@@ -182,15 +232,20 @@ async def test_apply_product_multiple_products(db, test_team, test_product):
 
     # Apply each product to the team
     for product in products:
-        await apply_product_for_team(db, test_team.stripe_customer_id, product.id, datetime.now(UTC))
+        await apply_product_for_team(
+            db, test_team.stripe_customer_id, product.id, datetime.now(UTC)
+        )
 
     # Refresh team from database
     db.refresh(test_team)
 
     # Verify all products were added
     assert len(test_team.active_products) == 3
-    product_ids = [team_product.product.id for team_product in test_team.active_products]
+    product_ids = [
+        team_product.product.id for team_product in test_team.active_products
+    ]
     assert all(expected_product.id in product_ids for expected_product in products)
+
 
 @pytest.mark.asyncio
 async def test_apply_product_already_active(db, test_team, test_product):
@@ -208,14 +263,18 @@ async def test_apply_product_already_active(db, test_team, test_product):
     db.refresh(test_team)  # Refresh to ensure we have the latest data
 
     # First apply the product
-    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
+    await apply_product_for_team(
+        db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
+    )
 
     # Get the initial last payment date
     db.refresh(test_team)
     initial_last_payment = test_team.last_payment
 
     # Apply the same product again
-    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
+    await apply_product_for_team(
+        db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
+    )
 
     # Refresh team from database
     db.refresh(test_team)
@@ -227,10 +286,13 @@ async def test_apply_product_already_active(db, test_team, test_product):
     # Verify the last payment date was updated
     assert test_team.last_payment > initial_last_payment
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.LiteLLMService')
-async def test_apply_product_calls_limit_service(mock_litellm, mock_limit_service, db, test_team, test_product):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.LiteLLMService")
+async def test_apply_product_calls_limit_service(
+    mock_litellm, mock_limit_service, db, test_team, test_product
+):
     """
     Test that applying a product calls the limit service to set team limits.
 
@@ -248,16 +310,28 @@ async def test_apply_product_calls_limit_service(mock_litellm, mock_limit_servic
     mock_limit_instance.get_token_restrictions = Mock(return_value=(30, 50.0, 1000))
 
     # Apply product to team
-    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
+    await apply_product_for_team(
+        db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
+    )
 
     # Verify limit service was called with the correct team
     mock_limit_service.assert_called_once_with(db)
     mock_limit_instance.set_team_limits.assert_called_once_with(test_team)
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.LiteLLMService')
-async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, mock_limit_service, db, test_team, test_product, test_region, test_team_user, test_team_key_creator):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.LiteLLMService")
+async def test_apply_product_extends_keys_and_sets_budget(
+    mock_litellm,
+    mock_limit_service,
+    db,
+    test_team,
+    test_product,
+    test_region,
+    test_team_user,
+    test_team_key_creator,
+):
     """
     Test that applying a product extends keys and sets max budget correctly.
 
@@ -281,7 +355,7 @@ async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, mock_lim
             team_id=test_team.id,
             region_id=test_region.id,
             litellm_token=f"test_token_team_{i}",
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         )
         db.add(key)
         team_keys.append(key)
@@ -299,7 +373,7 @@ async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, mock_lim
                 team_id=test_team.id,
                 region_id=test_region.id,
                 litellm_token=f"test_token_user_{user.id}_{i}",
-                created_at=datetime.now(UTC)
+                created_at=datetime.now(UTC),
             )
             db.add(key)
             user_keys.append(key)
@@ -315,12 +389,13 @@ async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, mock_lim
     mock_limit_instance.get_token_restrictions = Mock(return_value=(30, 50.0, 1000))
 
     # Apply product to team
-    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
+    await apply_product_for_team(
+        db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
+    )
 
     # Verify LiteLLM service was initialized with correct region settings
     mock_litellm.assert_called_once_with(
-        api_url=test_region.litellm_api_url,
-        api_key=test_region.litellm_api_key
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
     )
 
     # Verify LiteLLM service was called for all keys (both team and user owned)
@@ -330,13 +405,24 @@ async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, mock_lim
     # Verify each key was updated with correct duration and budget
     for key in all_keys:
         # Verify key restrictions update
-        restriction_calls = [call for call in mock_instance.set_key_restrictions.call_args_list
-                        if call[1]['litellm_token'] == key.litellm_token]
+        restriction_calls = [
+            call
+            for call in mock_instance.set_key_restrictions.call_args_list
+            if call[1]["litellm_token"] == key.litellm_token
+        ]
         assert len(restriction_calls) == 1
-        assert restriction_calls[0][1]['duration'] == f"{test_product.renewal_period_days}d"
-        assert restriction_calls[0][1]['budget_duration'] == f"{test_product.renewal_period_days}d"
-        assert restriction_calls[0][1]['budget_amount'] == test_product.max_budget_per_key
-        assert restriction_calls[0][1]['rpm_limit'] == test_product.rpm_per_key
+        assert (
+            restriction_calls[0][1]["duration"]
+            == f"{test_product.renewal_period_days}d"
+        )
+        assert (
+            restriction_calls[0][1]["budget_duration"]
+            == f"{test_product.renewal_period_days}d"
+        )
+        assert (
+            restriction_calls[0][1]["budget_amount"] == test_product.max_budget_per_key
+        )
+        assert restriction_calls[0][1]["rpm_limit"] == test_product.rpm_per_key
 
     # Verify limit service was called with the correct team
     mock_limit_service.assert_called_once_with(db)
@@ -348,10 +434,13 @@ async def test_apply_product_extends_keys_and_sets_budget(mock_litellm, mock_lim
     assert test_team.active_products[0].product.id == test_product.id
     assert test_team.last_payment is not None
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.get_subscribed_products_for_customer', new_callable=AsyncMock)
-async def test_remove_product_calls_limit_service(mock_get_subscriptions, mock_limit_service, db, test_team, test_product):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.get_subscribed_products_for_customer", new_callable=AsyncMock)
+async def test_remove_product_calls_limit_service(
+    mock_get_subscriptions, mock_limit_service, db, test_team, test_product
+):
     """
     Test that removing a product calls the limit service to set team limits.
 
@@ -369,7 +458,9 @@ async def test_remove_product_calls_limit_service(mock_get_subscriptions, mock_l
     mock_limit_instance.get_token_restrictions = Mock(return_value=(30, 50.0, 1000))
 
     # First apply the product to ensure it exists
-    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
+    await apply_product_for_team(
+        db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
+    )
 
     # Mock Stripe API to return no active subscriptions (allowing removal)
     mock_get_subscriptions.return_value = []  # No active subscriptions
@@ -382,10 +473,13 @@ async def test_remove_product_calls_limit_service(mock_get_subscriptions, mock_l
     assert mock_limit_service.call_count == 2
     mock_limit_instance.set_team_limits.assert_called_with(test_team)
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.get_subscribed_products_for_customer', new_callable=AsyncMock)
-async def test_remove_product_success(mock_get_subscriptions, mock_limit_service, db, test_team, test_product):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.get_subscribed_products_for_customer", new_callable=AsyncMock)
+async def test_remove_product_success(
+    mock_get_subscriptions, mock_limit_service, db, test_team, test_product
+):
     """
     Test successful removal of a product from a team.
 
@@ -403,7 +497,9 @@ async def test_remove_product_success(mock_get_subscriptions, mock_limit_service
     mock_limit_instance.get_token_restrictions = Mock(return_value=(30, 50.0, 1000))
 
     # First apply the product to ensure it exists
-    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
+    await apply_product_for_team(
+        db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
+    )
 
     # Mock Stripe API to return no active subscriptions (allowing removal)
     mock_get_subscriptions.return_value = []  # No active subscriptions
@@ -421,6 +517,7 @@ async def test_remove_product_success(mock_get_subscriptions, mock_limit_service
     # Verify product was removed
     assert len(test_team.active_products) == 0
 
+
 @pytest.mark.asyncio
 async def test_remove_product_team_not_found(db, test_product):
     """
@@ -433,6 +530,7 @@ async def test_remove_product_team_not_found(db, test_product):
     # Try to remove product from non-existent team
     result = await remove_product_from_team(db, "cus_nonexistent", test_product.id)
     assert result is None
+
 
 @pytest.mark.asyncio
 async def test_remove_product_product_not_found(db, test_team):
@@ -448,8 +546,11 @@ async def test_remove_product_product_not_found(db, test_team):
     db.commit()
 
     # Try to remove non-existent product
-    result = await remove_product_from_team(db, test_team.stripe_customer_id, "prod_nonexistent")
+    result = await remove_product_from_team(
+        db, test_team.stripe_customer_id, "prod_nonexistent"
+    )
     assert result is None
+
 
 @pytest.mark.asyncio
 async def test_remove_product_not_active(db, test_team, test_product):
@@ -465,12 +566,17 @@ async def test_remove_product_not_active(db, test_team, test_product):
     db.commit()
 
     # Try to remove product that was never added
-    result = await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
+    result = await remove_product_from_team(
+        db, test_team.stripe_customer_id, test_product.id
+    )
     assert result is None
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.get_subscribed_products_for_customer', new_callable=AsyncMock)
-async def test_remove_product_multiple_products(mock_get_subscriptions, db, test_team, test_product):
+@patch("app.core.worker.get_subscribed_products_for_customer", new_callable=AsyncMock)
+async def test_remove_product_multiple_products(
+    mock_get_subscriptions, db, test_team, test_product
+):
     """
     Test removing one product while keeping others active.
 
@@ -496,14 +602,18 @@ async def test_remove_product_multiple_products(mock_get_subscriptions, db, test
         vector_db_storage=100,
         renewal_period_days=30,
         active=True,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(second_product)
     db.commit()
 
     # Apply both products to the team
-    await apply_product_for_team(db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC))
-    await apply_product_for_team(db, test_team.stripe_customer_id, second_product.id, datetime.now(UTC))
+    await apply_product_for_team(
+        db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
+    )
+    await apply_product_for_team(
+        db, test_team.stripe_customer_id, second_product.id, datetime.now(UTC)
+    )
 
     # Mock Stripe API to return no active subscriptions (allowing removal)
     mock_get_subscriptions.return_value = []  # No active subscriptions
@@ -518,12 +628,15 @@ async def test_remove_product_multiple_products(mock_get_subscriptions, db, test
     assert len(test_team.active_products) == 1
     assert test_team.active_products[0].product.id == second_product.id
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.LiteLLMService')
-@patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_calls_limit_service(mock_litellm, mock_ses, mock_limit_service, db, test_team):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_calls_limit_service(
+    mock_litellm, mock_ses, mock_limit_service, db, test_team
+):
     """
     Test that monitor_teams calls the limit service to set team limits.
 
@@ -547,13 +660,22 @@ async def test_monitor_teams_calls_limit_service(mock_litellm, mock_ses, mock_li
     mock_limit_service.assert_called_with(db)
     mock_limit_instance.set_team_limits.assert_called_with(test_team)
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.LiteLLMService')
-@patch('app.core.worker.get_subscribed_products_for_customer')
-@patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_basic_metrics(mock_get_subscriptions, mock_litellm, mock_ses, mock_limit_service, db, test_team, test_product):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.get_subscribed_products_for_customer")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_basic_metrics(
+    mock_get_subscriptions,
+    mock_litellm,
+    mock_ses,
+    mock_limit_service,
+    db,
+    test_team,
+    test_product,
+):
     """
     Test basic team monitoring metrics for teams with and without products.
     """
@@ -567,22 +689,23 @@ async def test_monitor_teams_basic_metrics(mock_get_subscriptions, mock_litellm,
         name="Team With Payment",
         stripe_customer_id="cus_456",
         created_at=datetime.now(UTC) - timedelta(days=20),  # 20 days old
-        last_payment=datetime.now(UTC) - timedelta(days=10)  # Last payment 10 days ago
+        last_payment=datetime.now(UTC) - timedelta(days=10),  # Last payment 10 days ago
     )
     db.add(team_with_payment)
     db.commit()
 
     # Add product to second team
     team_product = DBTeamProduct(
-        team_id=team_with_payment.id,
-        product_id=test_product.id
+        team_id=team_with_payment.id, product_id=test_product.id
     )
     db.add(team_product)
     db.commit()
 
     # Setup mock LiteLLM service
     mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock(return_value={"info": {"spend": 0, "max_budget": 100, "key_alias": "test"}})
+    mock_instance.get_key_info = AsyncMock(
+        return_value={"info": {"spend": 0, "max_budget": 100, "key_alias": "test"}}
+    )
 
     # Setup mock limit service
     mock_limit_instance = mock_limit_service.return_value
@@ -595,33 +718,53 @@ async def test_monitor_teams_basic_metrics(mock_get_subscriptions, mock_litellm,
     await monitor_teams(db)
 
     # Verify metrics for team without payment (age since creation)
-    assert team_freshness_days.labels(
-        team_id=str(test_team.id),
-        team_name=test_team.name
-    )._value.get() == 15
+    assert (
+        team_freshness_days.labels(
+            team_id=str(test_team.id), team_name=test_team.name
+        )._value.get()
+        == 15
+    )
 
     # Verify metrics for team with payment (age since last payment)
-    assert team_freshness_days.labels(
-        team_id=str(team_with_payment.id),
-        team_name=team_with_payment.name
-    )._value.get() == 10
+    assert (
+        team_freshness_days.labels(
+            team_id=str(team_with_payment.id), team_name=team_with_payment.name
+        )._value.get()
+        == 10
+    )
 
     # Verify limit service was called for both teams
     # Called once at start of monitor_teams, then once per team in set_team_and_user_limits, then once per team in reconcile_team_keys
-    assert mock_limit_service.call_count == 5  # 1 at start + 2 teams (set_team_and_user_limits) + 2 teams (reconcile_team_keys)
+    assert (
+        mock_limit_service.call_count == 5
+    )  # 1 at start + 2 teams (set_team_and_user_limits) + 2 teams (reconcile_team_keys)
     mock_limit_instance.set_team_limits.assert_called()
 
-@pytest.mark.parametrize("team_age,expected_days_remaining,template_name", [
-    (23, 7, "team-expiring"),
-    (25, 5, "team-expiring"),
-    (30, 0, "trial-expired"),
-])
+
+@pytest.mark.parametrize(
+    "team_age,expected_days_remaining,template_name",
+    [
+        (23, 7, "team-expiring"),
+        (25, 5, "team-expiring"),
+        (30, 0, "trial-expired"),
+    ],
+)
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.LiteLLMService')
-@patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_notification_scenarios(mock_litellm, mock_ses, mock_limit_service, team_age, expected_days_remaining, template_name, db, test_team, test_team_admin):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_notification_scenarios(
+    mock_litellm,
+    mock_ses,
+    mock_limit_service,
+    team_age,
+    expected_days_remaining,
+    template_name,
+    db,
+    test_team,
+    test_team_admin,
+):
     """
     Test notification scenarios for teams approaching or reaching expiration.
 
@@ -649,24 +792,33 @@ async def test_monitor_teams_notification_scenarios(mock_litellm, mock_ses, mock
     # Verify email was sent
     mock_ses_instance.send_email.assert_called_once()
     call_args = mock_ses_instance.send_email.call_args[1]
-    assert call_args['to_addresses'] == [test_team.admin_email]
-    assert call_args['template_name'] == template_name
-    assert call_args['template_data']['name'] == test_team.name
+    assert call_args["to_addresses"] == [test_team.admin_email]
+    assert call_args["template_name"] == template_name
+    assert call_args["template_data"]["name"] == test_team.name
 
     # For trial-expired template, there's no days_remaining field
     if template_name == "team-expiring":
-        assert call_args['template_data']['days_remaining'] == expected_days_remaining
+        assert call_args["template_data"]["days_remaining"] == expected_days_remaining
 
     # Verify limit service was called
     mock_limit_service.assert_called_with(db)
     mock_limit_instance.set_team_limits.assert_called_with(test_team)
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.LiteLLMService')
-@patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_key_expiration(mock_litellm, mock_ses, mock_limit_service, db, test_team, test_region, test_team_key_creator):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_key_expiration(
+    mock_litellm,
+    mock_ses,
+    mock_limit_service,
+    db,
+    test_team,
+    test_region,
+    test_team_key_creator,
+):
     """
     Test key expiration for expired teams.
     """
@@ -685,20 +837,18 @@ async def test_monitor_teams_key_expiration(mock_litellm, mock_ses, mock_limit_s
         team_id=test_team.id,
         region_id=test_region.id,
         litellm_token="test_token",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(test_key)
     db.commit()
 
     # Setup mock LiteLLM service
     mock_litellm_instance = mock_litellm.return_value
-    mock_litellm_instance.get_key_info = AsyncMock(return_value={
-        "info": {
-            "spend": 40.0,
-            "max_budget": 50.0,
-            "key_alias": "test-key"
+    mock_litellm_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {"spend": 40.0, "max_budget": 50.0, "key_alias": "test-key"}
         }
-    })
+    )
     mock_litellm_instance.update_key_duration = AsyncMock()
 
     # Setup mock limit service
@@ -709,24 +859,37 @@ async def test_monitor_teams_key_expiration(mock_litellm, mock_ses, mock_limit_s
     await monitor_teams(db)
 
     # Verify key was expired
-    mock_litellm_instance.update_key_duration.assert_called_once_with("test_token", "0d")
+    mock_litellm_instance.update_key_duration.assert_called_once_with(
+        "test_token", "0d"
+    )
 
     # Verify expired metric was incremented
-    assert team_expired_metric.labels(
-        team_id=str(test_team.id),
-        team_name=test_team.name
-    )._value.get() == 1
+    assert (
+        team_expired_metric.labels(
+            team_id=str(test_team.id), team_name=test_team.name
+        )._value.get()
+        == 1
+    )
 
     # Verify limit service was called
     mock_limit_service.assert_called_with(db)
     mock_limit_instance.set_team_limits.assert_called_with(test_team)
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.LiteLLMService')
-@patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_key_spend(mock_litellm, mock_ses, mock_limit_service, db, test_team, test_region, test_team_key_creator):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_key_spend(
+    mock_litellm,
+    mock_ses,
+    mock_limit_service,
+    db,
+    test_team,
+    test_region,
+    test_team_key_creator,
+):
     """
     Test key spend monitoring and metrics.
     """
@@ -740,20 +903,18 @@ async def test_monitor_teams_key_spend(mock_litellm, mock_ses, mock_limit_servic
         team_id=test_team.id,
         region_id=test_region.id,
         litellm_token="test_token",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(test_key)
     db.commit()
 
     # Setup mock LiteLLM service
     mock_litellm_instance = mock_litellm.return_value
-    mock_litellm_instance.get_key_info = AsyncMock(return_value={
-        "info": {
-            "spend": 40.0,
-            "max_budget": 50.0,
-            "key_alias": "test-key"
+    mock_litellm_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {"spend": 40.0, "max_budget": 50.0, "key_alias": "test-key"}
         }
-    })
+    )
 
     # Setup mock limit service
     mock_limit_instance = mock_limit_service.return_value
@@ -763,17 +924,20 @@ async def test_monitor_teams_key_spend(mock_litellm, mock_ses, mock_limit_servic
     await monitor_teams(db)
 
     # Verify key spend metrics
-    assert key_spend_percentage.labels(
-        team_id=str(test_team.id),
-        team_name=test_team.name,
-        key_alias="test-key"
-    )._value.get() == 80.0  # 40/50 * 100
+    assert (
+        key_spend_percentage.labels(
+            team_id=str(test_team.id), team_name=test_team.name, key_alias="test-key"
+        )._value.get()
+        == 80.0
+    )  # 40/50 * 100
 
     # Verify team total spend
-    assert team_total_spend.labels(
-        team_id=str(test_team.id),
-        team_name=test_team.name
-    )._value.get() == 40.0
+    assert (
+        team_total_spend.labels(
+            team_id=str(test_team.id), team_name=test_team.name
+        )._value.get()
+        == 40.0
+    )
 
     # Verify key was not expired (team is not expired)
     mock_litellm_instance.update_key_duration.assert_not_called()
@@ -782,11 +946,14 @@ async def test_monitor_teams_key_spend(mock_litellm, mock_ses, mock_limit_servic
     mock_limit_service.assert_called_with(db)
     mock_limit_instance.set_team_limits.assert_called_with(test_team)
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.LiteLLMService')
-async def test_monitor_teams_active_labels(mock_litellm, mock_ses, mock_limit_service, db, test_team):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+async def test_monitor_teams_active_labels(
+    mock_litellm, mock_ses, mock_limit_service, db, test_team
+):
     """
     Test handling of active team labels.
     """
@@ -808,10 +975,12 @@ async def test_monitor_teams_active_labels(mock_litellm, mock_ses, mock_limit_se
     await monitor_teams(db)
 
     # Verify test team metrics are zeroed out
-    assert team_freshness_days.labels(
-        team_id=str(test_team.id),
-        team_name=test_team.name
-    )._value.get() == 0
+    assert (
+        team_freshness_days.labels(
+            team_id=str(test_team.id), team_name=test_team.name
+        )._value.get()
+        == 0
+    )
 
     # Verify test team is no longer in active labels
     assert (str(test_team.id), test_team.name) not in active_team_labels
@@ -820,11 +989,14 @@ async def test_monitor_teams_active_labels(mock_litellm, mock_ses, mock_limit_se
     mock_limit_service.assert_called_with(db)
     mock_limit_instance.set_team_limits.assert_called()
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.LiteLLMService')
-async def test_monitor_teams_error_handling(mock_litellm, mock_ses, mock_limit_service, db, test_team, test_region):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+async def test_monitor_teams_error_handling(
+    mock_litellm, mock_ses, mock_limit_service, db, test_team, test_region
+):
     """
     Test error handling in team monitoring.
     """
@@ -837,7 +1009,7 @@ async def test_monitor_teams_error_handling(mock_litellm, mock_ses, mock_limit_s
         team_id=test_team.id,
         region_id=test_region.id,
         litellm_token="invalid_token",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(test_key)
     db.commit()
@@ -854,21 +1026,26 @@ async def test_monitor_teams_error_handling(mock_litellm, mock_ses, mock_limit_s
     await monitor_teams(db)
 
     # Verify team metrics are still set
-    assert team_freshness_days.labels(
-        team_id=str(test_team.id),
-        team_name=test_team.name
-    )._value.get() is not None
+    assert (
+        team_freshness_days.labels(
+            team_id=str(test_team.id), team_name=test_team.name
+        )._value.get()
+        is not None
+    )
 
     # Verify limit service was called
     mock_limit_service.assert_called_with(db)
     mock_limit_instance.set_team_limits.assert_called_with(test_team)
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.LiteLLMService')
-@patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_last_monitored_recently(mock_litellm, mock_ses, mock_limit_service, db, test_team, test_team_admin):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_last_monitored_recently(
+    mock_litellm, mock_ses, mock_limit_service, db, test_team, test_team_admin
+):
     """
     Test that notifications are not sent when team was monitored recently (within 24 hours).
     """
@@ -904,12 +1081,15 @@ async def test_monitor_teams_last_monitored_recently(mock_litellm, mock_ses, moc
     mock_limit_service.assert_called_with(db)
     mock_limit_instance.set_team_limits.assert_called_with(test_team)
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.LiteLLMService')
-@patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_last_monitored_old(mock_litellm, mock_ses, mock_limit_service, db, test_team, test_team_admin):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_last_monitored_old(
+    mock_litellm, mock_ses, mock_limit_service, db, test_team, test_team_admin
+):
     """
     Test that notifications are sent when team was last monitored more than 24 hours ago.
     """
@@ -936,9 +1116,9 @@ async def test_monitor_teams_last_monitored_old(mock_litellm, mock_ses, mock_lim
     # Verify email was sent (team was not recently monitored)
     mock_ses_instance.send_email.assert_called_once()
     call_args = mock_ses_instance.send_email.call_args[1]
-    assert call_args['to_addresses'] == [test_team.admin_email]
-    assert call_args['template_name'] == "team-expiring"
-    assert call_args['template_data']['days_remaining'] == 7
+    assert call_args["to_addresses"] == [test_team.admin_email]
+    assert call_args["template_name"] == "team-expiring"
+    assert call_args["template_data"]["days_remaining"] == 7
 
     # Verify last_monitored was updated (since notifications were sent)
     db.refresh(test_team)
@@ -949,12 +1129,15 @@ async def test_monitor_teams_last_monitored_old(mock_litellm, mock_ses, mock_lim
     mock_limit_service.assert_called_with(db)
     mock_limit_instance.set_team_limits.assert_called_with(test_team)
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.LiteLLMService')
-@patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_last_monitored_none(mock_litellm, mock_ses, mock_limit_service, db, test_team, test_team_admin):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_last_monitored_none(
+    mock_litellm, mock_ses, mock_limit_service, db, test_team, test_team_admin
+):
     """
     Test that notifications are sent when team has never been monitored (last_monitored is None).
     """
@@ -980,9 +1163,9 @@ async def test_monitor_teams_last_monitored_none(mock_litellm, mock_ses, mock_li
     # Verify email was sent (team was never monitored)
     mock_ses_instance.send_email.assert_called_once()
     call_args = mock_ses_instance.send_email.call_args[1]
-    assert call_args['to_addresses'] == [test_team.admin_email]
-    assert call_args['template_name'] == "team-expiring"
-    assert call_args['template_data']['days_remaining'] == 7
+    assert call_args["to_addresses"] == [test_team.admin_email]
+    assert call_args["template_name"] == "team-expiring"
+    assert call_args["template_data"]["days_remaining"] == 7
 
     # Verify last_monitored was updated (since notifications were sent)
     db.refresh(test_team)
@@ -992,18 +1175,23 @@ async def test_monitor_teams_last_monitored_none(mock_litellm, mock_ses, mock_li
     mock_limit_service.assert_called_with(db)
     mock_limit_instance.set_team_limits.assert_called_with(test_team)
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.LiteLLMService')
-@patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_metrics_always_emitted(mock_litellm, mock_ses, mock_limit_service, db, test_team):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_metrics_always_emitted(
+    mock_litellm, mock_ses, mock_limit_service, db, test_team
+):
     """
     Test that metrics are always emitted regardless of last_monitored status.
     """
     # Setup test team with recent monitoring
     test_team.created_at = datetime.now(UTC) - timedelta(days=15)
-    expected_last_monitored = datetime.now(UTC) - timedelta(hours=12)  # Recently monitored
+    expected_last_monitored = datetime.now(UTC) - timedelta(
+        hours=12
+    )  # Recently monitored
     test_team.last_monitored = expected_last_monitored
     db.add(test_team)
     db.commit()
@@ -1016,10 +1204,12 @@ async def test_monitor_teams_metrics_always_emitted(mock_litellm, mock_ses, mock
     await monitor_teams(db)
 
     # Verify metrics are still emitted even though team was recently monitored
-    assert team_freshness_days.labels(
-        team_id=str(test_team.id),
-        team_name=test_team.name
-    )._value.get() == 15
+    assert (
+        team_freshness_days.labels(
+            team_id=str(test_team.id), team_name=test_team.name
+        )._value.get()
+        == 15
+    )
 
     # Verify last_monitored was not updated (no notifications sent)
     db.refresh(test_team)
@@ -1030,12 +1220,15 @@ async def test_monitor_teams_metrics_always_emitted(mock_litellm, mock_ses, mock
     mock_limit_service.assert_called_with(db)
     mock_limit_instance.set_team_limits.assert_called_with(test_team)
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.LiteLLMService')
-@patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_includes_renewal_period_check(mock_litellm, mock_ses, mock_limit_service, db, test_team, test_product, test_region):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_includes_renewal_period_check(
+    mock_litellm, mock_ses, mock_limit_service, db, test_team, test_product, test_region
+):
     """
     Test that the monitoring workflow includes renewal period checks when conditions are met.
 
@@ -1044,14 +1237,13 @@ async def test_monitor_teams_includes_renewal_period_check(mock_litellm, mock_se
     Then: The reconcile_team_keys function should be called with renewal_period_days
     """
     # Setup test data
-    test_team.last_payment = datetime.now(UTC) - timedelta(days=35)  # 35 days ago (past 30-day renewal period)
+    test_team.last_payment = datetime.now(UTC) - timedelta(
+        days=35
+    )  # 35 days ago (past 30-day renewal period)
     db.add(test_team)
 
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
 
     # Create a key for the team
@@ -1059,14 +1251,16 @@ async def test_monitor_teams_includes_renewal_period_check(mock_litellm, mock_se
         name="Team Key",
         litellm_token="team_token_123",
         region=test_region,
-        team_id=test_team.id
+        team_id=test_team.id,
     )
     db.add(team_key)
     db.commit()
 
     # Setup mocks
     mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock(return_value={"info": {"spend": 0, "max_budget": 100, "key_alias": "test"}})
+    mock_instance.get_key_info = AsyncMock(
+        return_value={"info": {"spend": 0, "max_budget": 100, "key_alias": "test"}}
+    )
 
     # Setup mock limit service
     mock_limit_instance = mock_limit_service.return_value
@@ -1083,12 +1277,15 @@ async def test_monitor_teams_includes_renewal_period_check(mock_litellm, mock_se
     mock_limit_service.assert_called_with(db)
     mock_limit_instance.set_team_limits.assert_called_with(test_team)
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.LiteLLMService')
-@patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_does_not_include_renewal_period_check_when_not_passed(mock_litellm, mock_ses, mock_limit_service, db, test_team, test_product, test_region):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_does_not_include_renewal_period_check_when_not_passed(
+    mock_litellm, mock_ses, mock_limit_service, db, test_team, test_product, test_region
+):
     """
     Test that the monitoring workflow does not include renewal period checks when conditions are not met.
 
@@ -1097,14 +1294,13 @@ async def test_monitor_teams_does_not_include_renewal_period_check_when_not_pass
     Then: The reconcile_team_keys function should be called without renewal_period_days
     """
     # Setup test data
-    test_team.last_payment = datetime.now(UTC) - timedelta(days=15)  # 15 days ago (before 30-day renewal period)
+    test_team.last_payment = datetime.now(UTC) - timedelta(
+        days=15
+    )  # 15 days ago (before 30-day renewal period)
     db.add(test_team)
 
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
 
     # Create a key for the team
@@ -1112,14 +1308,16 @@ async def test_monitor_teams_does_not_include_renewal_period_check_when_not_pass
         name="Team Key",
         litellm_token="team_token_123",
         region=test_region,
-        team_id=test_team.id
+        team_id=test_team.id,
     )
     db.add(team_key)
     db.commit()
 
     # Setup mocks
     mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock(return_value={"info": {"spend": 0, "max_budget": 100, "key_alias": "test"}})
+    mock_instance.get_key_info = AsyncMock(
+        return_value={"info": {"spend": 0, "max_budget": 100, "key_alias": "test"}}
+    )
 
     # Setup mock limit service
     mock_limit_instance = mock_limit_service.return_value
@@ -1136,9 +1334,18 @@ async def test_monitor_teams_does_not_include_renewal_period_check_when_not_pass
     mock_limit_service.assert_called_with(db)
     mock_limit_instance.set_team_limits.assert_called_with(test_team)
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_reconcile_team_keys_with_renewal_period_updates(mock_litellm, db, test_team, test_product, test_region, test_team_user, test_team_key_creator):
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_with_renewal_period_updates(
+    mock_litellm,
+    db,
+    test_team,
+    test_product,
+    test_region,
+    test_team_user,
+    test_team_key_creator,
+):
     """
     Test that reconcile_team_keys updates keys after renewal period when LiteLLM has reset their budget within the last hour.
 
@@ -1147,14 +1354,13 @@ async def test_reconcile_team_keys_with_renewal_period_updates(mock_litellm, db,
     Then: The budget_duration should be updated to match the product renewal period
     """
     # Setup test data
-    test_team.last_payment = datetime.now(UTC) - timedelta(days=35)  # 35 days ago (past 30-day renewal period)
+    test_team.last_payment = datetime.now(UTC) - timedelta(
+        days=35
+    )  # 35 days ago (past 30-day renewal period)
     db.add(test_team)
 
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
 
     # Create keys for the team
@@ -1162,7 +1368,7 @@ async def test_reconcile_team_keys_with_renewal_period_updates(mock_litellm, db,
         name="Team Key",
         litellm_token="team_token_123",
         region=test_region,
-        team_id=test_team.id
+        team_id=test_team.id,
     )
     db.add(team_key)
 
@@ -1170,7 +1376,7 @@ async def test_reconcile_team_keys_with_renewal_period_updates(mock_litellm, db,
         name="User Key",
         litellm_token="user_token_456",
         region=test_region,
-        owner_id=test_team_user.id
+        owner_id=test_team_user.id,
     )
     db.add(user_key)
 
@@ -1190,7 +1396,7 @@ async def test_reconcile_team_keys_with_renewal_period_updates(mock_litellm, db,
                 "key_alias": "team_key",
                 "spend": 0.0,
                 "max_budget": 100.0,  # Different from expected (50.0)
-                "budget_duration": "15d"
+                "budget_duration": "15d",
             }
         },
         # User key - different budget amount triggers update
@@ -1200,21 +1406,27 @@ async def test_reconcile_team_keys_with_renewal_period_updates(mock_litellm, db,
                 "key_alias": "user_key",
                 "spend": 5.0,
                 "max_budget": 25.0,  # Different from expected (50.0)
-                "budget_duration": "15d"
+                "budget_duration": "15d",
             }
-        }
+        },
     ]
 
     # Get keys by region
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the combined function with renewal period days and budget amount
-    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+    team_total = await reconcile_team_keys(
+        db,
+        test_team,
+        keys_by_region,
+        False,
+        test_product.renewal_period_days,
+        test_product.max_budget_per_key,
+    )
 
     # Verify LiteLLM service was initialized correctly
     mock_litellm.assert_called_once_with(
-        api_url=test_region.litellm_api_url,
-        api_key=test_region.litellm_api_key
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
     )
 
     # Verify get_key_info was called for both keys
@@ -1225,22 +1437,29 @@ async def test_reconcile_team_keys_with_renewal_period_updates(mock_litellm, db,
 
     # Check the first call (team key)
     first_call = mock_instance.update_budget.call_args_list[0]
-    assert first_call[0][0] == "team_token_123"  # First positional argument should be litellm_token
-    assert first_call[1]['budget_amount'] == test_product.max_budget_per_key
+    assert (
+        first_call[0][0] == "team_token_123"
+    )  # First positional argument should be litellm_token
+    assert first_call[1]["budget_amount"] == test_product.max_budget_per_key
     # budget_duration should not be updated since it's not None and no other conditions trigger an update
 
     # Check the second call (user key)
     second_call = mock_instance.update_budget.call_args_list[1]
-    assert second_call[0][0] == "user_token_456"  # First positional argument should be litellm_token
-    assert second_call[1]['budget_amount'] == test_product.max_budget_per_key
+    assert (
+        second_call[0][0] == "user_token_456"
+    )  # First positional argument should be litellm_token
+    assert second_call[1]["budget_amount"] == test_product.max_budget_per_key
     # budget_duration should not be updated since it's not None and no other conditions trigger an update
 
     # Verify team total spend is calculated correctly
     assert team_total == 5.0  # 0.0 + 5.0
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_reconcile_team_keys_with_renewal_period_updates_no_products(mock_litellm, db, test_team, test_region, test_team_user, test_team_key_creator):
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_with_renewal_period_updates_no_products(
+    mock_litellm, db, test_team, test_region, test_team_user, test_team_key_creator
+):
     """
     Test that reconcile_team_keys updates budget_duration even when no products are found.
 
@@ -1249,7 +1468,9 @@ async def test_reconcile_team_keys_with_renewal_period_updates_no_products(mock_
     Then: The budget_duration should be updated but budget_amount should not be set
     """
     # Setup test data - team with no products
-    test_team.last_payment = datetime.now(UTC) - timedelta(days=35)  # 35 days ago (past 30-day renewal period)
+    test_team.last_payment = datetime.now(UTC) - timedelta(
+        days=35
+    )  # 35 days ago (past 30-day renewal period)
     db.add(test_team)
 
     # Create keys for the team
@@ -1257,7 +1478,7 @@ async def test_reconcile_team_keys_with_renewal_period_updates_no_products(mock_
         name="Team Key",
         litellm_token="team_token_123",
         region=test_region,
-        team_id=test_team.id
+        team_id=test_team.id,
     )
     db.add(team_key)
 
@@ -1265,7 +1486,7 @@ async def test_reconcile_team_keys_with_renewal_period_updates_no_products(mock_
         name="User Key",
         litellm_token="user_token_456",
         region=test_region,
-        owner_id=test_team_user.id
+        owner_id=test_team_user.id,
     )
     db.add(user_key)
 
@@ -1285,7 +1506,7 @@ async def test_reconcile_team_keys_with_renewal_period_updates_no_products(mock_
                 "key_alias": "team_key",
                 "spend": 0.0,
                 "max_budget": 100.0,
-                "budget_duration": None  # None triggers update
+                "budget_duration": None,  # None triggers update
             }
         },
         # User key - None budget_duration triggers update
@@ -1295,21 +1516,22 @@ async def test_reconcile_team_keys_with_renewal_period_updates_no_products(mock_
                 "key_alias": "user_key",
                 "spend": 5.0,
                 "max_budget": 50.0,
-                "budget_duration": None  # None triggers update
+                "budget_duration": None,  # None triggers update
             }
-        }
+        },
     ]
 
     # Get keys by region
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the combined function with renewal period days (no budget amount)
-    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, 30, None)  # Use default 30 days, no budget amount
+    team_total = await reconcile_team_keys(
+        db, test_team, keys_by_region, False, 30, None
+    )  # Use default 30 days, no budget amount
 
     # Verify LiteLLM service was initialized correctly
     mock_litellm.assert_called_once_with(
-        api_url=test_region.litellm_api_url,
-        api_key=test_region.litellm_api_key
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
     )
 
     # Verify get_key_info was called for both keys
@@ -1320,29 +1542,41 @@ async def test_reconcile_team_keys_with_renewal_period_updates_no_products(mock_
 
     # Check the first call (team key)
     first_call = mock_instance.update_budget.call_args_list[0]
-    assert first_call[0][0] == "team_token_123"  # First positional argument should be litellm_token
-    assert first_call[0][1] == "30d"  # Second positional argument should be budget_duration
+    assert (
+        first_call[0][0] == "team_token_123"
+    )  # First positional argument should be litellm_token
+    assert (
+        first_call[0][1] == "30d"
+    )  # Second positional argument should be budget_duration
     # Should not have budget_amount since no products were found
-    assert first_call[1]['budget_amount'] is None
+    assert first_call[1]["budget_amount"] is None
 
     # Check the second call (user key)
     second_call = mock_instance.update_budget.call_args_list[1]
-    assert second_call[0][0] == "user_token_456"  # First positional argument should be litellm_token
-    assert second_call[0][1] == "30d"  # Second positional argument should be budget_duration
+    assert (
+        second_call[0][0] == "user_token_456"
+    )  # First positional argument should be litellm_token
+    assert (
+        second_call[0][1] == "30d"
+    )  # Second positional argument should be budget_duration
     # Should not have budget_amount since no products were found
-    assert second_call[1]['budget_amount'] is None
+    assert second_call[1]["budget_amount"] is None
 
     # Verify team total spend is calculated correctly
     assert team_total == 5.0  # 0.0 + 5.0
 
 
-
-
-
-
 @pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_reconcile_team_keys_none_budget_duration_handled(mock_litellm, db, test_team, test_product, test_region, test_team_user, test_team_key_creator):
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_none_budget_duration_handled(
+    mock_litellm,
+    db,
+    test_team,
+    test_product,
+    test_region,
+    test_team_user,
+    test_team_key_creator,
+):
     """
     Test that reconcile_team_keys handles None budget_duration gracefully.
 
@@ -1351,14 +1585,13 @@ async def test_reconcile_team_keys_none_budget_duration_handled(mock_litellm, db
     Then: The function should not error and should handle None budget_duration gracefully
     """
     # Setup test data
-    test_team.last_payment = datetime.now(UTC) - timedelta(days=35)  # 35 days ago (past 30-day renewal period)
+    test_team.last_payment = datetime.now(UTC) - timedelta(
+        days=35
+    )  # 35 days ago (past 30-day renewal period)
     db.add(test_team)
 
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
 
     # Create a key for the team
@@ -1366,7 +1599,7 @@ async def test_reconcile_team_keys_none_budget_duration_handled(mock_litellm, db
         name="Team Key",
         litellm_token="team_token_123",
         region=test_region,
-        team_id=test_team.id
+        team_id=test_team.id,
     )
     db.add(team_key)
     db.commit()
@@ -1385,7 +1618,7 @@ async def test_reconcile_team_keys_none_budget_duration_handled(mock_litellm, db
             "key_alias": "team_key",
             "spend": 10.0,  # Non-zero spend
             "max_budget": 100.0,
-            "budget_duration": None  # None budget_duration
+            "budget_duration": None,  # None budget_duration
         }
     }
 
@@ -1393,21 +1626,41 @@ async def test_reconcile_team_keys_none_budget_duration_handled(mock_litellm, db
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the function with renewal period days
-    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+    team_total = await reconcile_team_keys(
+        db,
+        test_team,
+        keys_by_region,
+        False,
+        test_product.renewal_period_days,
+        test_product.max_budget_per_key,
+    )
 
     # Verify update_budget was called because budget_duration is None (forces update)
     assert mock_instance.update_budget.call_count == 1
     update_call = mock_instance.update_budget.call_args
-    assert update_call[0][0] == "team_token_123"  # First positional argument should be litellm_token
-    assert update_call[0][1] == f"{test_product.renewal_period_days}d"  # Second positional argument should be budget_duration
-    assert update_call[1]['budget_amount'] == test_product.max_budget_per_key
+    assert (
+        update_call[0][0] == "team_token_123"
+    )  # First positional argument should be litellm_token
+    assert (
+        update_call[0][1] == f"{test_product.renewal_period_days}d"
+    )  # Second positional argument should be budget_duration
+    assert update_call[1]["budget_amount"] == test_product.max_budget_per_key
 
     # Verify team total spend is calculated correctly
     assert team_total == 10.0
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_reconcile_team_keys_zero_duration_renewal(mock_litellm, db, test_team, test_product, test_region, test_team_user, test_team_key_creator):
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_zero_duration_renewal(
+    mock_litellm,
+    db,
+    test_team,
+    test_product,
+    test_region,
+    test_team_user,
+    test_team_key_creator,
+):
     """
     Test that reconcile_team_keys properly renews keys with "0d" duration.
 
@@ -1416,14 +1669,13 @@ async def test_reconcile_team_keys_zero_duration_renewal(mock_litellm, db, test_
     Then: The key should be updated to the correct duration
     """
     # Setup test data
-    test_team.last_payment = datetime.now(UTC) - timedelta(days=35)  # 35 days ago (past 30-day renewal period)
+    test_team.last_payment = datetime.now(UTC) - timedelta(
+        days=35
+    )  # 35 days ago (past 30-day renewal period)
     db.add(test_team)
 
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
 
     # Create a key for the team
@@ -1431,7 +1683,7 @@ async def test_reconcile_team_keys_zero_duration_renewal(mock_litellm, db, test_
         name="Team Key",
         litellm_token="team_token_123",
         region=test_region,
-        team_id=test_team.id
+        team_id=test_team.id,
     )
     db.add(team_key)
     db.commit()
@@ -1446,11 +1698,13 @@ async def test_reconcile_team_keys_zero_duration_renewal(mock_litellm, db, test_
     # Mock key info response - key has "0d" duration (expired due to bug)
     mock_instance.get_key_info.return_value = {
         "info": {
-            "budget_reset_at": (current_time - timedelta(days=2)).isoformat(),  # Reset time in the past
+            "budget_reset_at": (
+                current_time - timedelta(days=2)
+            ).isoformat(),  # Reset time in the past
             "key_alias": "team_key",
             "spend": 10.0,
             "max_budget": 100.0,
-            "budget_duration": "0d"  # Expired key due to bug
+            "budget_duration": "0d",  # Expired key due to bug
         }
     }
 
@@ -1458,21 +1712,41 @@ async def test_reconcile_team_keys_zero_duration_renewal(mock_litellm, db, test_
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the function with renewal period days
-    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+    team_total = await reconcile_team_keys(
+        db,
+        test_team,
+        keys_by_region,
+        False,
+        test_product.renewal_period_days,
+        test_product.max_budget_per_key,
+    )
 
     # Verify update_budget was called to fix the "0d" duration
     assert mock_instance.update_budget.call_count == 1
     update_call = mock_instance.update_budget.call_args
-    assert update_call[0][0] == "team_token_123"  # First positional argument should be litellm_token
-    assert update_call[0][1] == f"{test_product.renewal_period_days}d"  # Second positional argument should be budget_duration
-    assert update_call[1]['budget_amount'] == test_product.max_budget_per_key
+    assert (
+        update_call[0][0] == "team_token_123"
+    )  # First positional argument should be litellm_token
+    assert (
+        update_call[0][1] == f"{test_product.renewal_period_days}d"
+    )  # Second positional argument should be budget_duration
+    assert update_call[1]["budget_amount"] == test_product.max_budget_per_key
 
     # Verify team total spend is calculated correctly
     assert team_total == 10.0
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_reconcile_team_keys_update_budget_parameter_issue(mock_litellm, db, test_team, test_product, test_region, test_team_user, test_team_key_creator):
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_update_budget_parameter_issue(
+    mock_litellm,
+    db,
+    test_team,
+    test_product,
+    test_region,
+    test_team_user,
+    test_team_key_creator,
+):
     """
     Test that update_budget is called with correct parameters when budget amount needs updating.
 
@@ -1481,10 +1755,7 @@ async def test_reconcile_team_keys_update_budget_parameter_issue(mock_litellm, d
     THEN: update_budget should be called with litellm_token as first positional argument, not as keyword argument
     """
     # Set up team-product association
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
 
     # Create a key for the team
@@ -1492,7 +1763,7 @@ async def test_reconcile_team_keys_update_budget_parameter_issue(mock_litellm, d
         name="Team Key",
         litellm_token="team_token_123",
         region=test_region,
-        team_id=test_team.id
+        team_id=test_team.id,
     )
     db.add(team_key)
     db.commit()
@@ -1509,7 +1780,7 @@ async def test_reconcile_team_keys_update_budget_parameter_issue(mock_litellm, d
             "key_alias": "test_key",
             "spend": 0.0,
             "max_budget": 27.0,  # Different from expected (120.0)
-            "budget_duration": "30d"
+            "budget_duration": "30d",
         }
     }
 
@@ -1517,7 +1788,14 @@ async def test_reconcile_team_keys_update_budget_parameter_issue(mock_litellm, d
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the function with renewal period days and budget amount
-    await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+    await reconcile_team_keys(
+        db,
+        test_team,
+        keys_by_region,
+        False,
+        test_product.renewal_period_days,
+        test_product.max_budget_per_key,
+    )
 
     # Verify update_budget was called with correct parameters
     assert mock_instance.update_budget.call_count == 1
@@ -1525,12 +1803,25 @@ async def test_reconcile_team_keys_update_budget_parameter_issue(mock_litellm, d
     # Check that litellm_token is passed as first positional argument, not as keyword
     call_args = mock_instance.update_budget.call_args
     # After the fix, litellm_token should be the first positional argument
-    assert call_args[0][0] == "team_token_123"  # First positional argument should be litellm_token
-    assert call_args[1]['budget_amount'] == test_product.max_budget_per_key  # budget_amount as keyword argument
+    assert (
+        call_args[0][0] == "team_token_123"
+    )  # First positional argument should be litellm_token
+    assert (
+        call_args[1]["budget_amount"] == test_product.max_budget_per_key
+    )  # budget_amount as keyword argument
+
 
 @pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_reconcile_team_keys_expiry_within_next_month(mock_litellm, db, test_team, test_product, test_region, test_team_user, test_team_key_creator):
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_expiry_within_next_month(
+    mock_litellm,
+    db,
+    test_team,
+    test_product,
+    test_region,
+    test_team_user,
+    test_team_key_creator,
+):
     """
     Test that reconcile_team_keys updates keys that expire within the next month.
 
@@ -1539,14 +1830,13 @@ async def test_reconcile_team_keys_expiry_within_next_month(mock_litellm, db, te
     Then: The key should be updated to the renewal period duration
     """
     # Setup test data
-    test_team.last_payment = datetime.now(UTC) - timedelta(days=35)  # 35 days ago (past 30-day renewal period)
+    test_team.last_payment = datetime.now(UTC) - timedelta(
+        days=35
+    )  # 35 days ago (past 30-day renewal period)
     db.add(test_team)
 
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
 
     # Create a key for the team
@@ -1554,7 +1844,7 @@ async def test_reconcile_team_keys_expiry_within_next_month(mock_litellm, db, te
         name="Team Key",
         litellm_token="team_token_123",
         region=test_region,
-        team_id=test_team.id
+        team_id=test_team.id,
     )
     db.add(team_key)
     db.commit()
@@ -1576,7 +1866,7 @@ async def test_reconcile_team_keys_expiry_within_next_month(mock_litellm, db, te
             "spend": 10.0,
             "max_budget": test_product.max_budget_per_key,  # Use the same budget amount to avoid Rule 1 trigger
             "budget_duration": "30d",
-            "expires": expiry_date.isoformat()
+            "expires": expiry_date.isoformat(),
         }
     }
 
@@ -1584,22 +1874,42 @@ async def test_reconcile_team_keys_expiry_within_next_month(mock_litellm, db, te
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the function with renewal period days
-    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+    team_total = await reconcile_team_keys(
+        db,
+        test_team,
+        keys_by_region,
+        False,
+        test_product.renewal_period_days,
+        test_product.max_budget_per_key,
+    )
 
     # Verify update_budget was called to update the duration for expiring key
     assert mock_instance.update_budget.call_count == 1
     update_call = mock_instance.update_budget.call_args
-    assert update_call[0][0] == "team_token_123"  # First positional argument should be litellm_token
-    assert update_call[0][1] == f"{test_product.renewal_period_days}d"  # Second positional argument should be budget_duration
+    assert (
+        update_call[0][0] == "team_token_123"
+    )  # First positional argument should be litellm_token
+    assert (
+        update_call[0][1] == f"{test_product.renewal_period_days}d"
+    )  # Second positional argument should be budget_duration
     # When updating for expiry reasons, budget_amount should be None since we're only updating duration
-    assert update_call[1]['budget_amount'] is None
+    assert update_call[1]["budget_amount"] is None
 
     # Verify team total spend is calculated correctly
     assert team_total == 10.0
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_reconcile_team_keys_expired_key(mock_litellm, db, test_team, test_product, test_region, test_team_user, test_team_key_creator):
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_expired_key(
+    mock_litellm,
+    db,
+    test_team,
+    test_product,
+    test_region,
+    test_team_user,
+    test_team_key_creator,
+):
     """
     Test that reconcile_team_keys updates keys that are already expired.
 
@@ -1608,14 +1918,13 @@ async def test_reconcile_team_keys_expired_key(mock_litellm, db, test_team, test
     Then: The key should be updated to the renewal period duration
     """
     # Setup test data
-    test_team.last_payment = datetime.now(UTC) - timedelta(days=35)  # 35 days ago (past 30-day renewal period)
+    test_team.last_payment = datetime.now(UTC) - timedelta(
+        days=35
+    )  # 35 days ago (past 30-day renewal period)
     db.add(test_team)
 
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
 
     # Create a key for the team
@@ -1623,7 +1932,7 @@ async def test_reconcile_team_keys_expired_key(mock_litellm, db, test_team, test
         name="Team Key",
         litellm_token="team_token_123",
         region=test_region,
-        team_id=test_team.id
+        team_id=test_team.id,
     )
     db.add(team_key)
     db.commit()
@@ -1645,7 +1954,7 @@ async def test_reconcile_team_keys_expired_key(mock_litellm, db, test_team, test
             "spend": 10.0,
             "max_budget": test_product.max_budget_per_key,  # Use the same budget amount to avoid Rule 1 trigger
             "budget_duration": "30d",
-            "expires": expiry_date.isoformat()
+            "expires": expiry_date.isoformat(),
         }
     }
 
@@ -1653,22 +1962,42 @@ async def test_reconcile_team_keys_expired_key(mock_litellm, db, test_team, test
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the function with renewal period days
-    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+    team_total = await reconcile_team_keys(
+        db,
+        test_team,
+        keys_by_region,
+        False,
+        test_product.renewal_period_days,
+        test_product.max_budget_per_key,
+    )
 
     # Verify update_budget was called to update the duration for expired key
     assert mock_instance.update_budget.call_count == 1
     update_call = mock_instance.update_budget.call_args
-    assert update_call[0][0] == "team_token_123"  # First positional argument should be litellm_token
-    assert update_call[0][1] == f"{test_product.renewal_period_days}d"  # Second positional argument should be budget_duration
+    assert (
+        update_call[0][0] == "team_token_123"
+    )  # First positional argument should be litellm_token
+    assert (
+        update_call[0][1] == f"{test_product.renewal_period_days}d"
+    )  # Second positional argument should be budget_duration
     # When updating for expiry reasons, budget_amount should be None since we're only updating duration
-    assert update_call[1]['budget_amount'] is None
+    assert update_call[1]["budget_amount"] is None
 
     # Verify team total spend is calculated correctly
     assert team_total == 10.0
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_reconcile_team_keys_expiry_beyond_next_month(mock_litellm, db, test_team, test_product, test_region, test_team_user, test_team_key_creator):
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_expiry_beyond_next_month(
+    mock_litellm,
+    db,
+    test_team,
+    test_product,
+    test_region,
+    test_team_user,
+    test_team_key_creator,
+):
     """
     Test that reconcile_team_keys does not update keys that expire beyond the next month.
 
@@ -1677,14 +2006,13 @@ async def test_reconcile_team_keys_expiry_beyond_next_month(mock_litellm, db, te
     Then: The key should not be updated for expiry reasons
     """
     # Setup test data
-    test_team.last_payment = datetime.now(UTC) - timedelta(days=35)  # 35 days ago (past 30-day renewal period)
+    test_team.last_payment = datetime.now(UTC) - timedelta(
+        days=35
+    )  # 35 days ago (past 30-day renewal period)
     db.add(test_team)
 
     # Add product to team
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
 
     # Create a key for the team
@@ -1692,7 +2020,7 @@ async def test_reconcile_team_keys_expiry_beyond_next_month(mock_litellm, db, te
         name="Team Key",
         litellm_token="team_token_123",
         region=test_region,
-        team_id=test_team.id
+        team_id=test_team.id,
     )
     db.add(team_key)
     db.commit()
@@ -1714,7 +2042,7 @@ async def test_reconcile_team_keys_expiry_beyond_next_month(mock_litellm, db, te
             "spend": 10.0,
             "max_budget": test_product.max_budget_per_key,  # Use the same budget amount to avoid Rule 1 trigger
             "budget_duration": "30d",
-            "expires": expiry_date.isoformat()
+            "expires": expiry_date.isoformat(),
         }
     }
 
@@ -1722,7 +2050,14 @@ async def test_reconcile_team_keys_expiry_beyond_next_month(mock_litellm, db, te
     keys_by_region = get_team_keys_by_region(db, test_team.id)
 
     # Call the function with renewal period days
-    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False, test_product.renewal_period_days, test_product.max_budget_per_key)
+    team_total = await reconcile_team_keys(
+        db,
+        test_team,
+        keys_by_region,
+        False,
+        test_product.renewal_period_days,
+        test_product.max_budget_per_key,
+    )
 
     # Verify update_budget was not called for expiry reasons
     assert mock_instance.update_budget.call_count == 0
@@ -1730,11 +2065,14 @@ async def test_reconcile_team_keys_expiry_beyond_next_month(mock_litellm, db, te
     # Verify team total spend is calculated correctly
     assert team_total == 10.0
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.LiteLLMService')
-@patch('app.core.worker.SESService')
-async def test_monitor_teams_populates_team_metrics(mock_ses, mock_litellm_class, mock_limit_service, db, test_team, test_region):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.SESService")
+async def test_monitor_teams_populates_team_metrics(
+    mock_ses, mock_litellm_class, mock_limit_service, db, test_team, test_region
+):
     """
     Test that monitor_teams function populates DBTeamMetrics table.
 
@@ -1749,7 +2087,7 @@ async def test_monitor_teams_populates_team_metrics(mock_ses, mock_litellm_class
         team_id=test_team.id,
         region_id=test_region.id,
         litellm_token="test-token-123",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(test_key)
     db.commit()
@@ -1758,11 +2096,7 @@ async def test_monitor_teams_populates_team_metrics(mock_ses, mock_litellm_class
     mock_litellm_service = AsyncMock()
     mock_litellm_class.return_value = mock_litellm_service
     mock_litellm_service.get_key_info.return_value = {
-        "info": {
-            "spend": 75.50,
-            "max_budget": 100.0,
-            "key_alias": "test-key"
-        }
+        "info": {"spend": 75.50, "max_budget": 100.0, "key_alias": "test-key"}
     }
 
     # Setup mock limit service
@@ -1773,7 +2107,9 @@ async def test_monitor_teams_populates_team_metrics(mock_ses, mock_litellm_class
     await monitor_teams(db)
 
     # Assert
-    metrics = db.query(DBTeamMetrics).filter(DBTeamMetrics.team_id == test_team.id).first()
+    metrics = (
+        db.query(DBTeamMetrics).filter(DBTeamMetrics.team_id == test_team.id).first()
+    )
     assert metrics is not None
     assert metrics.total_spend == 75.50
     assert test_region.name in metrics.regions
@@ -1785,10 +2121,12 @@ async def test_monitor_teams_populates_team_metrics(mock_ses, mock_litellm_class
 
 
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.LiteLLMService')
-@patch('app.core.worker.SESService')
-async def test_monitor_teams_sql_count_error(mock_ses, mock_litellm_class, mock_limit_service, db, test_team):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.SESService")
+async def test_monitor_teams_sql_count_error(
+    mock_ses, mock_litellm_class, mock_limit_service, db, test_team
+):
     """
     Test that monitor_teams handles SQL count queries correctly without throwing SQL expression errors.
 
@@ -1806,7 +2144,14 @@ async def test_monitor_teams_sql_count_error(mock_ses, mock_litellm_class, mock_
     mock_limit_instance.set_team_limits = Mock()
 
     # Create mock limits that will trigger the count queries
-    from app.schemas.limits import LimitedResource, ResourceType, UnitType, LimitType, OwnerType, LimitSource
+    from app.schemas.limits import (
+        LimitedResource,
+        ResourceType,
+        UnitType,
+        LimitType,
+        OwnerType,
+        LimitSource,
+    )
 
     mock_limits = [
         LimitedResource(
@@ -1819,7 +2164,7 @@ async def test_monitor_teams_sql_count_error(mock_ses, mock_litellm_class, mock_
             owner_type=OwnerType.TEAM,
             owner_id=test_team.id,
             limited_by=LimitSource.DEFAULT,
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         ),
         LimitedResource(
             id=2,
@@ -1831,7 +2176,7 @@ async def test_monitor_teams_sql_count_error(mock_ses, mock_litellm_class, mock_
             owner_type=OwnerType.TEAM,
             owner_id=test_team.id,
             limited_by=LimitSource.DEFAULT,
-            created_at=datetime.now(UTC)
+            created_at=datetime.now(UTC),
         ),
         LimitedResource(
             id=3,
@@ -1843,8 +2188,8 @@ async def test_monitor_teams_sql_count_error(mock_ses, mock_litellm_class, mock_
             owner_type=OwnerType.TEAM,
             owner_id=test_team.id,
             limited_by=LimitSource.DEFAULT,
-            created_at=datetime.now(UTC)
-        )
+            created_at=datetime.now(UTC),
+        ),
     ]
 
     mock_limit_instance.get_team_limits.return_value = mock_limits
@@ -1857,11 +2202,14 @@ async def test_monitor_teams_sql_count_error(mock_ses, mock_litellm_class, mock_
     mock_limit_service.assert_called_with(db)
     mock_limit_instance.set_team_limits.assert_called_with(test_team)
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.LiteLLMService')
-@patch('app.core.worker.SESService')
-async def test_monitor_teams_updates_existing_metrics(mock_ses, mock_litellm_class, mock_limit_service, db, test_team, test_region):
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.SESService")
+async def test_monitor_teams_updates_existing_metrics(
+    mock_ses, mock_litellm_class, mock_limit_service, db, test_team, test_region
+):
     """
     Test that monitor_teams updates existing DBTeamMetrics records.
 
@@ -1877,7 +2225,7 @@ async def test_monitor_teams_updates_existing_metrics(mock_ses, mock_litellm_cla
         total_spend=50.0,
         last_spend_calculation=old_timestamp,
         regions=["old-region"],
-        last_updated=old_timestamp
+        last_updated=old_timestamp,
     )
     db.add(existing_metrics)
     db.commit()
@@ -1889,7 +2237,7 @@ async def test_monitor_teams_updates_existing_metrics(mock_ses, mock_litellm_cla
         team_id=test_team.id,
         region_id=test_region.id,
         litellm_token="test-token-123",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(test_key)
     db.commit()
@@ -1898,11 +2246,7 @@ async def test_monitor_teams_updates_existing_metrics(mock_ses, mock_litellm_cla
     mock_litellm_service = AsyncMock()
     mock_litellm_class.return_value = mock_litellm_service
     mock_litellm_service.get_key_info.return_value = {
-        "info": {
-            "spend": 125.75,
-            "max_budget": 200.0,
-            "key_alias": "test-key"
-        }
+        "info": {"spend": 125.75, "max_budget": 200.0, "key_alias": "test-key"}
     }
 
     # Setup mock limit service
@@ -1913,7 +2257,9 @@ async def test_monitor_teams_updates_existing_metrics(mock_ses, mock_litellm_cla
     await monitor_teams(db)
 
     # Assert
-    updated_metrics = db.query(DBTeamMetrics).filter(DBTeamMetrics.team_id == test_team.id).first()
+    updated_metrics = (
+        db.query(DBTeamMetrics).filter(DBTeamMetrics.team_id == test_team.id).first()
+    )
     assert updated_metrics is not None
     assert updated_metrics.total_spend == 125.75
     assert test_region.name in updated_metrics.regions
@@ -1925,15 +2271,23 @@ async def test_monitor_teams_updates_existing_metrics(mock_ses, mock_litellm_cla
 
 
 @pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_reconcile_team_keys_updates_user_budget_limit(mock_litellm, db, test_team, test_region, test_team_user):
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_updates_user_budget_limit(
+    mock_litellm, db, test_team, test_region, test_team_user
+):
     """
     Given: A team with user-owned keys that have accumulated spend
     When: reconcile_team_keys is called
     Then: User's BUDGET limit current_value is updated with their total spend via set_current_value
     """
     from app.db.models import DBLimitedResource
-    from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType
+    from app.schemas.limits import (
+        ResourceType,
+        UnitType,
+        OwnerType,
+        LimitSource,
+        LimitType,
+    )
 
     # Create user budget limit
     user_budget_limit = DBLimitedResource(
@@ -1945,7 +2299,7 @@ async def test_reconcile_team_keys_updates_user_budget_limit(mock_litellm, db, t
         owner_type=OwnerType.USER,
         owner_id=test_team_user.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(user_budget_limit)
 
@@ -1954,20 +2308,18 @@ async def test_reconcile_team_keys_updates_user_budget_limit(mock_litellm, db, t
         name="User Key",
         litellm_token="user_token_123",
         region=test_region,
-        owner_id=test_team_user.id
+        owner_id=test_team_user.id,
     )
     db.add(user_key)
     db.commit()
 
     # Setup mock LiteLLM service
     mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock(return_value={
-        "info": {
-            "spend": 45.50,
-            "max_budget": 100.0,
-            "key_alias": "user_key"
+    mock_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {"spend": 45.50, "max_budget": 100.0, "key_alias": "user_key"}
         }
-    })
+    )
 
     # Get keys by region
     keys_by_region = get_team_keys_by_region(db, test_team.id)
@@ -1981,13 +2333,23 @@ async def test_reconcile_team_keys_updates_user_budget_limit(mock_litellm, db, t
 
 
 @pytest.mark.asyncio
-@patch('app.core.worker.reconcile_team_keys', new_callable=AsyncMock)
-@patch('app.core.worker.LimitService')
-@patch('app.core.worker.LiteLLMService')
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.get_subscribed_products_for_customer')
-@patch('app.core.config.settings.ENABLE_LIMITS', True)
-async def test_monitor_teams_uses_budget_from_limits_not_products(mock_get_subscriptions, mock_ses, mock_litellm, mock_limit_service, mock_reconcile, db, test_team, test_product, test_region):
+@patch("app.core.worker.reconcile_team_keys", new_callable=AsyncMock)
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.get_subscribed_products_for_customer")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_uses_budget_from_limits_not_products(
+    mock_get_subscriptions,
+    mock_ses,
+    mock_litellm,
+    mock_limit_service,
+    mock_reconcile,
+    db,
+    test_team,
+    test_product,
+    test_region,
+):
     """
     GIVEN: A team with a product (budget 50.0) and a budget limit (200.0)
     WHEN: monitor_teams is called
@@ -1999,10 +2361,7 @@ async def test_monitor_teams_uses_budget_from_limits_not_products(mock_get_subsc
     db.add(test_team)
 
     # Add product to team (has budget of 50.0)
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
 
     # Create budget limit for team with different budget (200.0)
@@ -2015,7 +2374,7 @@ async def test_monitor_teams_uses_budget_from_limits_not_products(mock_get_subsc
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(team_budget_limit)
 
@@ -2025,20 +2384,18 @@ async def test_monitor_teams_uses_budget_from_limits_not_products(mock_get_subsc
         team_id=test_team.id,
         region_id=test_region.id,
         litellm_token="test-token-123",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(test_key)
     db.commit()
 
     # Setup mock LiteLLM service
     mock_litellm_instance = mock_litellm.return_value
-    mock_litellm_instance.get_key_info = AsyncMock(return_value={
-        "info": {
-            "spend": 10.0,
-            "max_budget": 100.0,
-            "key_alias": "test-key"
+    mock_litellm_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {"spend": 10.0, "max_budget": 100.0, "key_alias": "test-key"}
         }
-    })
+    )
 
     # Setup mock limit service - return the team limits including our budget limit
     mock_limit_instance = mock_limit_service.return_value
@@ -2053,7 +2410,7 @@ async def test_monitor_teams_uses_budget_from_limits_not_products(mock_get_subsc
         owner_id=test_team.id,
         limited_by=LimitSource.PRODUCT,
         created_at=datetime.now(UTC),
-        updated_at=None
+        updated_at=None,
     )
     mock_limit_instance.get_team_limits = Mock(return_value=[mock_budget_limit])
     mock_limit_instance.set_team_limits = Mock()
@@ -2082,25 +2439,37 @@ async def test_monitor_teams_uses_budget_from_limits_not_products(mock_get_subsc
             team_call = call
             break
 
-    assert team_call is not None, f"reconcile_team_keys should have been called for team {test_team.id}"
+    assert team_call is not None, (
+        f"reconcile_team_keys should have been called for team {test_team.id}"
+    )
 
     # Arguments are: (db, team, keys_by_region, expire_keys, renewal_period_days, max_budget_amount)
     called_max_budget_amount = team_call[0][5]  # 6th positional argument (0-indexed)
 
     # Verify that budget came from limits (200.0), not from products (50.0)
-    assert called_max_budget_amount == 200.0, f"Expected budget from limits (200.0), but got {called_max_budget_amount}"
+    assert called_max_budget_amount == 200.0, (
+        f"Expected budget from limits (200.0), but got {called_max_budget_amount}"
+    )
 
 
 @pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_reconcile_team_keys_updates_service_key_budget_limit(mock_litellm, db, test_team, test_region):
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_updates_service_key_budget_limit(
+    mock_litellm, db, test_team, test_region
+):
     """
     Given: A team with service keys (no owner_id) that have accumulated spend
     When: reconcile_team_keys is called
     Then: Team's BUDGET limit current_value is updated with service key total spend via set_current_value
     """
     from app.db.models import DBLimitedResource
-    from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType
+    from app.schemas.limits import (
+        ResourceType,
+        UnitType,
+        OwnerType,
+        LimitSource,
+        LimitType,
+    )
 
     # Create team budget limit
     team_budget_limit = DBLimitedResource(
@@ -2112,7 +2481,7 @@ async def test_reconcile_team_keys_updates_service_key_budget_limit(mock_litellm
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(team_budget_limit)
 
@@ -2121,20 +2490,18 @@ async def test_reconcile_team_keys_updates_service_key_budget_limit(mock_litellm
         name="Service Key",
         litellm_token="service_token_123",
         region=test_region,
-        team_id=test_team.id
+        team_id=test_team.id,
     )
     db.add(service_key)
     db.commit()
 
     # Setup mock LiteLLM service
     mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock(return_value={
-        "info": {
-            "spend": 75.25,
-            "max_budget": 200.0,
-            "key_alias": "service_key"
+    mock_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {"spend": 75.25, "max_budget": 200.0, "key_alias": "service_key"}
         }
-    })
+    )
 
     # Get keys by region
     keys_by_region = get_team_keys_by_region(db, test_team.id)
@@ -2148,22 +2515,30 @@ async def test_reconcile_team_keys_updates_service_key_budget_limit(mock_litellm
 
 
 @pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_reconcile_team_keys_handles_multiple_users_with_varying_spend(mock_litellm, db, test_team, test_region, test_team_user):
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_handles_multiple_users_with_varying_spend(
+    mock_litellm, db, test_team, test_region, test_team_user
+):
     """
     Given: A team with multiple users, each with keys showing different spend amounts
     When: reconcile_team_keys is called
     Then: Each user's BUDGET limit is updated with their individual total spend
     """
     from app.db.models import DBLimitedResource, DBUser
-    from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType
+    from app.schemas.limits import (
+        ResourceType,
+        UnitType,
+        OwnerType,
+        LimitSource,
+        LimitType,
+    )
 
     # Create second user
     second_user = DBUser(
         email="second@test.com",
         team_id=test_team.id,
         role="member",
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(second_user)
     db.commit()
@@ -2178,7 +2553,7 @@ async def test_reconcile_team_keys_handles_multiple_users_with_varying_spend(moc
         owner_type=OwnerType.USER,
         owner_id=test_team_user.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     user2_budget_limit = DBLimitedResource(
         limit_type=LimitType.DATA_PLANE,
@@ -2189,7 +2564,7 @@ async def test_reconcile_team_keys_handles_multiple_users_with_varying_spend(moc
         owner_type=OwnerType.USER,
         owner_id=second_user.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(user1_budget_limit)
     db.add(user2_budget_limit)
@@ -2199,13 +2574,13 @@ async def test_reconcile_team_keys_handles_multiple_users_with_varying_spend(moc
         name="User 1 Key",
         litellm_token="user1_token_123",
         region=test_region,
-        owner_id=test_team_user.id
+        owner_id=test_team_user.id,
     )
     user2_key = DBPrivateAIKey(
         name="User 2 Key",
         litellm_token="user2_token_456",
         region=test_region,
-        owner_id=second_user.id
+        owner_id=second_user.id,
     )
     db.add(user1_key)
     db.add(user2_key)
@@ -2213,10 +2588,12 @@ async def test_reconcile_team_keys_handles_multiple_users_with_varying_spend(moc
 
     # Setup mock LiteLLM service
     mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock(side_effect=[
-        {"info": {"spend": 30.0, "max_budget": 100.0, "key_alias": "user1_key"}},
-        {"info": {"spend": 50.5, "max_budget": 100.0, "key_alias": "user2_key"}}
-    ])
+    mock_instance.get_key_info = AsyncMock(
+        side_effect=[
+            {"info": {"spend": 30.0, "max_budget": 100.0, "key_alias": "user1_key"}},
+            {"info": {"spend": 50.5, "max_budget": 100.0, "key_alias": "user2_key"}},
+        ]
+    )
 
     # Get keys by region
     keys_by_region = get_team_keys_by_region(db, test_team.id)
@@ -2232,15 +2609,23 @@ async def test_reconcile_team_keys_handles_multiple_users_with_varying_spend(moc
 
 
 @pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_reconcile_team_keys_separates_user_and_service_key_spend(mock_litellm, db, test_team, test_region, test_team_user):
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_separates_user_and_service_key_spend(
+    mock_litellm, db, test_team, test_region, test_team_user
+):
     """
     Given: A team with both user-owned keys (5.0 spend) and service keys (10.0 spend)
     When: reconcile_team_keys is called
     Then: User limits show 5.0 and team limit shows 10.0 separately
     """
     from app.db.models import DBLimitedResource
-    from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType
+    from app.schemas.limits import (
+        ResourceType,
+        UnitType,
+        OwnerType,
+        LimitSource,
+        LimitType,
+    )
 
     # Create budget limits
     user_budget_limit = DBLimitedResource(
@@ -2252,7 +2637,7 @@ async def test_reconcile_team_keys_separates_user_and_service_key_spend(mock_lit
         owner_type=OwnerType.USER,
         owner_id=test_team_user.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     team_budget_limit = DBLimitedResource(
         limit_type=LimitType.DATA_PLANE,
@@ -2263,7 +2648,7 @@ async def test_reconcile_team_keys_separates_user_and_service_key_spend(mock_lit
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(user_budget_limit)
     db.add(team_budget_limit)
@@ -2273,13 +2658,13 @@ async def test_reconcile_team_keys_separates_user_and_service_key_spend(mock_lit
         name="User Key",
         litellm_token="user_token_123",
         region=test_region,
-        owner_id=test_team_user.id
+        owner_id=test_team_user.id,
     )
     service_key = DBPrivateAIKey(
         name="Service Key",
         litellm_token="service_token_456",
         region=test_region,
-        team_id=test_team.id
+        team_id=test_team.id,
     )
     db.add(user_key)
     db.add(service_key)
@@ -2287,11 +2672,17 @@ async def test_reconcile_team_keys_separates_user_and_service_key_spend(mock_lit
 
     # Setup mock LiteLLM service with a function that returns different values based on token
     mock_instance = mock_litellm.return_value
+
     async def mock_get_key_info(token):
         if token == "service_token_456":
-            return {"info": {"spend": 10.0, "max_budget": 200.0, "key_alias": "service_key"}}
+            return {
+                "info": {"spend": 10.0, "max_budget": 200.0, "key_alias": "service_key"}
+            }
         else:  # user_token_123
-            return {"info": {"spend": 5.0, "max_budget": 100.0, "key_alias": "user_key"}}
+            return {
+                "info": {"spend": 5.0, "max_budget": 100.0, "key_alias": "user_key"}
+            }
+
     mock_instance.get_key_info = mock_get_key_info
 
     # Get keys by region
@@ -2308,8 +2699,10 @@ async def test_reconcile_team_keys_separates_user_and_service_key_spend(mock_lit
 
 
 @pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_reconcile_team_keys_handles_missing_user_budget_limit(mock_litellm, db, test_team, test_region, test_team_user):
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_handles_missing_user_budget_limit(
+    mock_litellm, db, test_team, test_region, test_team_user
+):
     """
     Given: A team with user keys but user has no BUDGET limit in database
     When: reconcile_team_keys is called
@@ -2320,20 +2713,18 @@ async def test_reconcile_team_keys_handles_missing_user_budget_limit(mock_litell
         name="User Key",
         litellm_token="user_token_123",
         region=test_region,
-        owner_id=test_team_user.id
+        owner_id=test_team_user.id,
     )
     db.add(user_key)
     db.commit()
 
     # Setup mock LiteLLM service
     mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock(return_value={
-        "info": {
-            "spend": 25.0,
-            "max_budget": 100.0,
-            "key_alias": "user_key"
+    mock_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {"spend": 25.0, "max_budget": 100.0, "key_alias": "user_key"}
         }
-    })
+    )
 
     # Get keys by region
     keys_by_region = get_team_keys_by_region(db, test_team.id)
@@ -2343,8 +2734,10 @@ async def test_reconcile_team_keys_handles_missing_user_budget_limit(mock_litell
 
 
 @pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_reconcile_team_keys_handles_missing_team_budget_limit(mock_litellm, db, test_team, test_region):
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_handles_missing_team_budget_limit(
+    mock_litellm, db, test_team, test_region
+):
     """
     Given: A team with service keys but team has no BUDGET limit in database
     When: reconcile_team_keys is called
@@ -2355,20 +2748,18 @@ async def test_reconcile_team_keys_handles_missing_team_budget_limit(mock_litell
         name="Service Key",
         litellm_token="service_token_123",
         region=test_region,
-        team_id=test_team.id
+        team_id=test_team.id,
     )
     db.add(service_key)
     db.commit()
 
     # Setup mock LiteLLM service
     mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock(return_value={
-        "info": {
-            "spend": 50.0,
-            "max_budget": 200.0,
-            "key_alias": "service_key"
+    mock_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {"spend": 50.0, "max_budget": 200.0, "key_alias": "service_key"}
         }
-    })
+    )
 
     # Get keys by region
     keys_by_region = get_team_keys_by_region(db, test_team.id)
@@ -2378,15 +2769,23 @@ async def test_reconcile_team_keys_handles_missing_team_budget_limit(mock_litell
 
 
 @pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_reconcile_team_keys_accumulates_spend_for_multiple_user_keys(mock_litellm, db, test_team, test_region, test_team_user):
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_accumulates_spend_for_multiple_user_keys(
+    mock_litellm, db, test_team, test_region, test_team_user
+):
     """
     Given: A user with 3 keys showing spend of 5.0, 10.0, and 3.5
     When: reconcile_team_keys is called
     Then: User's BUDGET limit current_value is set to 18.5
     """
     from app.db.models import DBLimitedResource
-    from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType
+    from app.schemas.limits import (
+        ResourceType,
+        UnitType,
+        OwnerType,
+        LimitSource,
+        LimitType,
+    )
 
     # Create user budget limit
     user_budget_limit = DBLimitedResource(
@@ -2398,7 +2797,7 @@ async def test_reconcile_team_keys_accumulates_spend_for_multiple_user_keys(mock
         owner_type=OwnerType.USER,
         owner_id=test_team_user.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(user_budget_limit)
 
@@ -2407,19 +2806,19 @@ async def test_reconcile_team_keys_accumulates_spend_for_multiple_user_keys(mock
         name="User Key 1",
         litellm_token="user_token_1",
         region=test_region,
-        owner_id=test_team_user.id
+        owner_id=test_team_user.id,
     )
     key2 = DBPrivateAIKey(
         name="User Key 2",
         litellm_token="user_token_2",
         region=test_region,
-        owner_id=test_team_user.id
+        owner_id=test_team_user.id,
     )
     key3 = DBPrivateAIKey(
         name="User Key 3",
         litellm_token="user_token_3",
         region=test_region,
-        owner_id=test_team_user.id
+        owner_id=test_team_user.id,
     )
     db.add(key1)
     db.add(key2)
@@ -2428,11 +2827,13 @@ async def test_reconcile_team_keys_accumulates_spend_for_multiple_user_keys(mock
 
     # Setup mock LiteLLM service
     mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock(side_effect=[
-        {"info": {"spend": 5.0, "max_budget": 100.0, "key_alias": "key1"}},
-        {"info": {"spend": 10.0, "max_budget": 100.0, "key_alias": "key2"}},
-        {"info": {"spend": 3.5, "max_budget": 100.0, "key_alias": "key3"}}
-    ])
+    mock_instance.get_key_info = AsyncMock(
+        side_effect=[
+            {"info": {"spend": 5.0, "max_budget": 100.0, "key_alias": "key1"}},
+            {"info": {"spend": 10.0, "max_budget": 100.0, "key_alias": "key2"}},
+            {"info": {"spend": 3.5, "max_budget": 100.0, "key_alias": "key3"}},
+        ]
+    )
 
     # Get keys by region
     keys_by_region = get_team_keys_by_region(db, test_team.id)
@@ -2446,15 +2847,23 @@ async def test_reconcile_team_keys_accumulates_spend_for_multiple_user_keys(mock
 
 
 @pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_reconcile_team_keys_handles_zero_spend(mock_litellm, db, test_team, test_region, test_team_user):
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_handles_zero_spend(
+    mock_litellm, db, test_team, test_region, test_team_user
+):
     """
     Given: A team with keys that have 0.0 spend
     When: reconcile_team_keys is called
     Then: BUDGET limits are updated to 0.0 without error
     """
     from app.db.models import DBLimitedResource
-    from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType
+    from app.schemas.limits import (
+        ResourceType,
+        UnitType,
+        OwnerType,
+        LimitSource,
+        LimitType,
+    )
 
     # Create budget limits
     user_budget_limit = DBLimitedResource(
@@ -2466,7 +2875,7 @@ async def test_reconcile_team_keys_handles_zero_spend(mock_litellm, db, test_tea
         owner_type=OwnerType.USER,
         owner_id=test_team_user.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(user_budget_limit)
 
@@ -2475,20 +2884,18 @@ async def test_reconcile_team_keys_handles_zero_spend(mock_litellm, db, test_tea
         name="User Key",
         litellm_token="user_token_123",
         region=test_region,
-        owner_id=test_team_user.id
+        owner_id=test_team_user.id,
     )
     db.add(user_key)
     db.commit()
 
     # Setup mock LiteLLM service with zero spend
     mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock(return_value={
-        "info": {
-            "spend": 0.0,
-            "max_budget": 100.0,
-            "key_alias": "user_key"
+    mock_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {"spend": 0.0, "max_budget": 100.0, "key_alias": "user_key"}
         }
-    })
+    )
 
     # Get keys by region
     keys_by_region = get_team_keys_by_region(db, test_team.id)
@@ -2502,15 +2909,23 @@ async def test_reconcile_team_keys_handles_zero_spend(mock_litellm, db, test_tea
 
 
 @pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_reconcile_team_keys_handles_none_spend_from_litellm(mock_litellm, db, test_team, test_region, test_team_user):
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_handles_none_spend_from_litellm(
+    mock_litellm, db, test_team, test_region, test_team_user
+):
     """
     Given: Keys where LiteLLM returns None for spend
     When: reconcile_team_keys is called
     Then: Spend is treated as 0.0 and limits are updated correctly
     """
     from app.db.models import DBLimitedResource
-    from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitSource, LimitType
+    from app.schemas.limits import (
+        ResourceType,
+        UnitType,
+        OwnerType,
+        LimitSource,
+        LimitType,
+    )
 
     # Create user budget limit
     user_budget_limit = DBLimitedResource(
@@ -2522,7 +2937,7 @@ async def test_reconcile_team_keys_handles_none_spend_from_litellm(mock_litellm,
         owner_type=OwnerType.USER,
         owner_id=test_team_user.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(user_budget_limit)
 
@@ -2531,20 +2946,22 @@ async def test_reconcile_team_keys_handles_none_spend_from_litellm(mock_litellm,
         name="User Key",
         litellm_token="user_token_123",
         region=test_region,
-        owner_id=test_team_user.id
+        owner_id=test_team_user.id,
     )
     db.add(user_key)
     db.commit()
 
     # Setup mock LiteLLM service with None spend
     mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock(return_value={
-        "info": {
-            "spend": None,  # LiteLLM returns None
-            "max_budget": 100.0,
-            "key_alias": "user_key"
+    mock_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {
+                "spend": None,  # LiteLLM returns None
+                "max_budget": 100.0,
+                "key_alias": "user_key",
+            }
         }
-    })
+    )
 
     # Get keys by region
     keys_by_region = get_team_keys_by_region(db, test_team.id)
@@ -2558,8 +2975,10 @@ async def test_reconcile_team_keys_handles_none_spend_from_litellm(mock_litellm,
 
 
 @pytest.mark.asyncio
-@patch('app.core.worker.LiteLLMService')
-async def test_reconcile_team_keys_defaultdict_initialization(mock_litellm, db, test_team, test_region, test_team_user):
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_defaultdict_initialization(
+    mock_litellm, db, test_team, test_region, test_team_user
+):
     """
     Given: The reconcile_team_keys function with total_by_user defaultdict
     When: Accumulating spend for a new user_id
@@ -2576,7 +2995,7 @@ async def test_reconcile_team_keys_defaultdict_initialization(mock_litellm, db, 
         owner_type=OwnerType.USER,
         owner_id=test_team_user.id,
         limited_by=LimitSource.PRODUCT,
-        created_at=datetime.now(UTC)
+        created_at=datetime.now(UTC),
     )
     db.add(user_budget_limit)
 
@@ -2585,20 +3004,18 @@ async def test_reconcile_team_keys_defaultdict_initialization(mock_litellm, db, 
         name="User Key",
         litellm_token="user_token_123",
         region=test_region,
-        owner_id=test_team_user.id
+        owner_id=test_team_user.id,
     )
     db.add(user_key)
     db.commit()
 
     # Setup mock LiteLLM service
     mock_instance = mock_litellm.return_value
-    mock_instance.get_key_info = AsyncMock(return_value={
-        "info": {
-            "spend": 15.0,
-            "max_budget": 100.0,
-            "key_alias": "user_key"
+    mock_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {"spend": 15.0, "max_budget": 100.0, "key_alias": "user_key"}
         }
-    })
+    )
 
     # Get keys by region
     keys_by_region = get_team_keys_by_region(db, test_team.id)
@@ -2611,9 +3028,12 @@ async def test_reconcile_team_keys_defaultdict_initialization(mock_litellm, db, 
     db.refresh(user_budget_limit)
     assert user_budget_limit.current_value == 15.0
 
+
 @pytest.mark.asyncio
-@patch('app.core.worker.get_subscribed_products_for_customer', new_callable=AsyncMock)
-async def test_remove_product_should_verify_subscription_status(mock_get_subscriptions, db, test_team, test_product):
+@patch("app.core.worker.get_subscribed_products_for_customer", new_callable=AsyncMock)
+async def test_remove_product_should_verify_subscription_status(
+    mock_get_subscriptions, db, test_team, test_product
+):
     """
     Test that product removal verifies subscription is inactive before removing.
 
@@ -2626,10 +3046,7 @@ async def test_remove_product_should_verify_subscription_status(mock_get_subscri
     db.commit()
 
     # Create team-product association
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -2643,15 +3060,24 @@ async def test_remove_product_should_verify_subscription_status(mock_get_subscri
     mock_get_subscriptions.assert_called_once_with(test_team.stripe_customer_id)
 
     # Verify product was NOT removed because subscription is still active
-    remaining_association = db.query(DBTeamProduct).filter(
-        DBTeamProduct.team_id == test_team.id,
-        DBTeamProduct.product_id == test_product.id
-    ).first()
-    assert remaining_association is not None, "Product should not be removed when subscription is still active"
+    remaining_association = (
+        db.query(DBTeamProduct)
+        .filter(
+            DBTeamProduct.team_id == test_team.id,
+            DBTeamProduct.product_id == test_product.id,
+        )
+        .first()
+    )
+    assert remaining_association is not None, (
+        "Product should not be removed when subscription is still active"
+    )
+
 
 @pytest.mark.asyncio
-@patch('app.core.worker.get_subscribed_products_for_customer', new_callable=AsyncMock)
-async def test_remove_product_removes_when_subscription_inactive(mock_get_subscriptions, db, test_team, test_product):
+@patch("app.core.worker.get_subscribed_products_for_customer", new_callable=AsyncMock)
+async def test_remove_product_removes_when_subscription_inactive(
+    mock_get_subscriptions, db, test_team, test_product
+):
     """
     Test that product removal works correctly when subscription is inactive.
 
@@ -2664,10 +3090,7 @@ async def test_remove_product_removes_when_subscription_inactive(mock_get_subscr
     db.commit()
 
     # Create team-product association
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -2681,17 +3104,23 @@ async def test_remove_product_removes_when_subscription_inactive(mock_get_subscr
     mock_get_subscriptions.assert_called_once_with(test_team.stripe_customer_id)
 
     # Verify product was removed because subscription is inactive
-    remaining_association = db.query(DBTeamProduct).filter(
-        DBTeamProduct.team_id == test_team.id,
-        DBTeamProduct.product_id == test_product.id
-    ).first()
-    assert remaining_association is None, "Product should be removed when subscription is inactive"
+    remaining_association = (
+        db.query(DBTeamProduct)
+        .filter(
+            DBTeamProduct.team_id == test_team.id,
+            DBTeamProduct.product_id == test_product.id,
+        )
+        .first()
+    )
+    assert remaining_association is None, (
+        "Product should be removed when subscription is inactive"
+    )
 
 
 @pytest.mark.asyncio
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.reconcile_team_keys', new_callable=AsyncMock)
-@patch('app.core.worker.get_subscribed_products_for_customer')
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.reconcile_team_keys", new_callable=AsyncMock)
+@patch("app.core.worker.get_subscribed_products_for_customer")
 async def test_monitor_teams_reconciles_product_customer_associations(
     mock_get_subscriptions, mock_reconcile, mock_ses, db, test_team, test_product
 ):
@@ -2717,17 +3146,23 @@ async def test_monitor_teams_reconciles_product_customer_associations(
 
     # Assert
     # Check that the product was added to the team
-    team_product = db.query(DBTeamProduct).filter(
-        DBTeamProduct.team_id == test_team.id,
-        DBTeamProduct.product_id == test_product.id
-    ).first()
-    assert team_product is not None, "Product should be added to team when found in Stripe"
+    team_product = (
+        db.query(DBTeamProduct)
+        .filter(
+            DBTeamProduct.team_id == test_team.id,
+            DBTeamProduct.product_id == test_product.id,
+        )
+        .first()
+    )
+    assert team_product is not None, (
+        "Product should be added to team when found in Stripe"
+    )
 
 
 @pytest.mark.asyncio
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.reconcile_team_keys', new_callable=AsyncMock)
-@patch('app.core.worker.get_subscribed_products_for_customer')
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.reconcile_team_keys", new_callable=AsyncMock)
+@patch("app.core.worker.get_subscribed_products_for_customer")
 async def test_monitor_teams_removes_extra_products_not_in_stripe(
     mock_get_subscriptions, mock_reconcile, mock_ses, db, test_team, test_product
 ):
@@ -2743,10 +3178,7 @@ async def test_monitor_teams_removes_extra_products_not_in_stripe(
     db.add(test_team)
 
     # Add a product association that shouldn't exist
-    team_product = DBTeamProduct(
-        team_id=test_team.id,
-        product_id=test_product.id
-    )
+    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
     db.add(team_product)
     db.commit()
 
@@ -2760,17 +3192,21 @@ async def test_monitor_teams_removes_extra_products_not_in_stripe(
 
     # Assert
     # Check that the product was removed from the team
-    team_product = db.query(DBTeamProduct).filter(
-        DBTeamProduct.team_id == test_team.id,
-        DBTeamProduct.product_id == test_product.id
-    ).first()
+    team_product = (
+        db.query(DBTeamProduct)
+        .filter(
+            DBTeamProduct.team_id == test_team.id,
+            DBTeamProduct.product_id == test_product.id,
+        )
+        .first()
+    )
     assert team_product is None, "Product should be removed when not found in Stripe"
 
 
 @pytest.mark.asyncio
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.reconcile_team_keys', new_callable=AsyncMock)
-@patch('app.core.worker.get_subscribed_products_for_customer')
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.reconcile_team_keys", new_callable=AsyncMock)
+@patch("app.core.worker.get_subscribed_products_for_customer")
 async def test_monitor_teams_skips_teams_without_customer_id(
     mock_get_subscriptions, mock_reconcile, mock_ses, db, test_team, test_product
 ):
@@ -2798,12 +3234,18 @@ async def test_monitor_teams_skips_teams_without_customer_id(
 
 
 @pytest.mark.asyncio
-@patch('app.core.worker.reconcile_team_product_associations', new_callable=AsyncMock)
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.reconcile_team_keys', new_callable=AsyncMock)
-@patch('app.core.worker.get_subscribed_products_for_customer')
+@patch("app.core.worker.reconcile_team_product_associations", new_callable=AsyncMock)
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.reconcile_team_keys", new_callable=AsyncMock)
+@patch("app.core.worker.get_subscribed_products_for_customer")
 async def test_monitor_teams_handles_individual_team_errors_gracefully(
-    mock_get_subscriptions, mock_reconcile, mock_ses, mock_reconcile_products, db, test_team, test_product
+    mock_get_subscriptions,
+    mock_reconcile,
+    mock_ses,
+    mock_reconcile_products,
+    db,
+    test_team,
+    test_product,
 ):
     """
     Test that monitor_teams handles individual team errors gracefully and continues processing.
@@ -2813,10 +3255,7 @@ async def test_monitor_teams_handles_individual_team_errors_gracefully(
     THEN: The failing team should be logged and skipped, but other teams should continue processing
     """
     # Create a second team
-    second_team = DBTeam(
-        name="Second Team",
-        admin_email="second@example.com"
-    )
+    second_team = DBTeam(name="Second Team", admin_email="second@example.com")
     db.add(second_team)
     db.commit()
 
@@ -2839,12 +3278,18 @@ async def test_monitor_teams_handles_individual_team_errors_gracefully(
 
 
 @pytest.mark.asyncio
-@patch('app.core.worker.reconcile_team_product_associations', new_callable=AsyncMock)
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.reconcile_team_keys', new_callable=AsyncMock)
-@patch('app.core.worker.get_subscribed_products_for_customer')
+@patch("app.core.worker.reconcile_team_product_associations", new_callable=AsyncMock)
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.reconcile_team_keys", new_callable=AsyncMock)
+@patch("app.core.worker.get_subscribed_products_for_customer")
 async def test_monitor_teams_records_failure_metric_on_error(
-    mock_get_subscriptions, mock_reconcile, mock_ses, mock_reconcile_products, db, test_team, test_product
+    mock_get_subscriptions,
+    mock_reconcile,
+    mock_ses,
+    mock_reconcile_products,
+    db,
+    test_team,
+    test_product,
 ):
     """
     Test that monitor_teams records a failure metric when a team fails to process.
@@ -2871,12 +3316,18 @@ async def test_monitor_teams_records_failure_metric_on_error(
 
 
 @pytest.mark.asyncio
-@patch('app.core.worker.reconcile_team_product_associations', new_callable=AsyncMock)
-@patch('app.core.worker.SESService')
-@patch('app.core.worker.reconcile_team_keys', new_callable=AsyncMock)
-@patch('app.core.worker.get_subscribed_products_for_customer')
+@patch("app.core.worker.reconcile_team_product_associations", new_callable=AsyncMock)
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.reconcile_team_keys", new_callable=AsyncMock)
+@patch("app.core.worker.get_subscribed_products_for_customer")
 async def test_monitor_teams_continues_processing_after_error(
-    mock_get_subscriptions, mock_reconcile, mock_ses, mock_reconcile_products, db, test_team, test_product
+    mock_get_subscriptions,
+    mock_reconcile,
+    mock_ses,
+    mock_reconcile_products,
+    db,
+    test_team,
+    test_product,
 ):
     """
     Test that monitor_teams continues processing other teams after one fails.
@@ -2889,8 +3340,8 @@ async def test_monitor_teams_continues_processing_after_error(
     teams = []
     for team_index in range(3):
         team = DBTeam(
-            name=f"Team {team_index+2}",
-            admin_email=f"team{team_index+2}@example.com"
+            name=f"Team {team_index + 2}",
+            admin_email=f"team{team_index + 2}@example.com",
         )
         db.add(team)
         teams.append(team)
@@ -2919,4 +3370,3 @@ async def test_monitor_teams_continues_processing_after_error(
     assert mock_reconcile_products.call_count == 4  # test_team + 3 new teams
     # reconcile_team_keys should have been called for all teams except the failing one
     assert mock_reconcile.call_count == 3  # 4 teams - 1 failing = 3 successful
-

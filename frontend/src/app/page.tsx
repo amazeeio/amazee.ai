@@ -1,8 +1,8 @@
-'use client';
+"use client";
 
-import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { useAuth } from '@/hooks/use-auth';
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
+import { useAuth } from "@/hooks/use-auth";
 
 export default function Home() {
   const router = useRouter();
@@ -11,13 +11,13 @@ export default function Home() {
   useEffect(() => {
     if (user) {
       // Redirect sales users to their dashboard
-      if (user.role === 'sales') {
-        router.replace('/sales');
+      if (user.role === "sales") {
+        router.replace("/sales");
       } else {
-        router.replace('/private-ai-keys');
+        router.replace("/private-ai-keys");
       }
     } else {
-      router.replace('/auth/login');
+      router.replace("/auth/login");
     }
   }, [user, router]);
 

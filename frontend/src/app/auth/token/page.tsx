@@ -1,15 +1,15 @@
-'use client';
+"use client";
 
-import { useState, useEffect, useCallback } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { DeleteConfirmationDialog } from '@/components/ui/delete-confirmation-dialog';
-import { useToast } from '@/hooks/use-toast';
-import { Loader2, X } from 'lucide-react';
-import { get, post, del } from '@/utils/api';
+import { Loader2, X } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DeleteConfirmationDialog } from "@/components/ui/delete-confirmation-dialog";
+import { Input } from "@/components/ui/input";
+import { useToast } from "@/hooks/use-toast";
+import { get, post, del } from "@/utils/api";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 interface APIToken {
   id: string;
@@ -22,14 +22,14 @@ interface APIToken {
 export default function APITokensPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [newTokenName, setNewTokenName] = useState('');
+  const [newTokenName, setNewTokenName] = useState("");
   const [showNewToken, setShowNewToken] = useState<APIToken | null>(null);
   const [tokens, setTokens] = useState<APIToken[]>([]);
 
   const { isLoading: queryLoading } = useQuery({
-    queryKey: ['tokens'],
+    queryKey: ["tokens"],
     queryFn: async () => {
-      const response = await get('/auth/token');
+      const response = await get("/auth/token");
       const data = await response.json();
       return data;
     },
@@ -37,25 +37,25 @@ export default function APITokensPage() {
 
   const createMutation = useMutation({
     mutationFn: async (name: string) => {
-      const response = await post('/auth/token', { name });
+      const response = await post("/auth/token", { name });
       const data = await response.json();
       return data;
     },
     onSuccess: (newToken) => {
-      queryClient.invalidateQueries({ queryKey: ['tokens'] });
-      queryClient.refetchQueries({ queryKey: ['tokens'], exact: true });
+      queryClient.invalidateQueries({ queryKey: ["tokens"] });
+      queryClient.refetchQueries({ queryKey: ["tokens"], exact: true });
       setShowNewToken(newToken);
-      setNewTokenName('');
+      setNewTokenName("");
       toast({
-        title: 'Success',
-        description: 'Token created successfully',
+        title: "Success",
+        description: "Token created successfully",
       });
     },
     onError: (error: Error) => {
       toast({
-        title: 'Error',
+        title: "Error",
         description: error.message,
-        variant: 'destructive',
+        variant: "destructive",
       });
     },
   });
@@ -65,33 +65,33 @@ export default function APITokensPage() {
       await del(`/auth/token/${tokenId}`);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tokens'] });
-      queryClient.refetchQueries({ queryKey: ['tokens'], exact: true });
+      queryClient.invalidateQueries({ queryKey: ["tokens"] });
+      queryClient.refetchQueries({ queryKey: ["tokens"], exact: true });
       toast({
-        title: 'Success',
-        description: 'Token deleted successfully',
+        title: "Success",
+        description: "Token deleted successfully",
       });
     },
     onError: (error: Error) => {
       toast({
-        title: 'Error',
+        title: "Error",
         description: error.message,
-        variant: 'destructive',
+        variant: "destructive",
       });
     },
   });
 
   const fetchTokens = useCallback(async () => {
     try {
-      const response = await get('auth/token', { credentials: 'include' });
+      const response = await get("auth/token", { credentials: "include" });
       const data = await response.json();
       setTokens(data);
     } catch (error) {
-      console.error('Error fetching tokens:', error);
+      console.error("Error fetching tokens:", error);
       toast({
-        title: 'Error',
-        description: 'Failed to fetch tokens',
-        variant: 'destructive',
+        title: "Error",
+        description: "Failed to fetch tokens",
+        variant: "destructive",
       });
     }
   }, [toast, setTokens]);
@@ -104,18 +104,18 @@ export default function APITokensPage() {
 
   const handleDeleteToken = async (tokenId: string) => {
     try {
-      await del('/auth/token/' + tokenId, { credentials: 'include' });
-      setTokens(tokens.filter(token => token.id !== tokenId));
+      await del("/auth/token/" + tokenId, { credentials: "include" });
+      setTokens(tokens.filter((token) => token.id !== tokenId));
       toast({
-        title: 'Success',
-        description: 'Token deleted successfully',
+        title: "Success",
+        description: "Token deleted successfully",
       });
     } catch (error) {
-      console.error('Error deleting token:', error);
+      console.error("Error deleting token:", error);
       toast({
-        title: 'Error',
-        description: 'Failed to delete token',
-        variant: 'destructive',
+        title: "Error",
+        description: "Failed to delete token",
+        variant: "destructive",
       });
     }
   };
@@ -162,7 +162,7 @@ export default function APITokensPage() {
                   Creating...
                 </>
               ) : (
-                'Create Token'
+                "Create Token"
               )}
             </Button>
           </form>
@@ -176,7 +176,8 @@ export default function APITokensPage() {
             <div>
               <h3 className="font-medium">New Token Created</h3>
               <AlertDescription className="text-green-700 mt-1">
-                Make sure to copy your token now. You won&apos;t be able to see it again!
+                Make sure to copy your token now. You won&apos;t be able to see
+                it again!
               </AlertDescription>
             </div>
             <Button
@@ -203,9 +204,14 @@ export default function APITokensPage() {
                 <div>
                   <h3 className="text-lg font-medium">{token.name}</h3>
                   <div className="text-sm text-muted-foreground space-y-1">
-                    <p>Created: {new Date(token.created_at).toLocaleDateString()}</p>
+                    <p>
+                      Created: {new Date(token.created_at).toLocaleDateString()}
+                    </p>
                     {token.last_used_at && (
-                      <p>Last used: {new Date(token.last_used_at).toLocaleDateString()}</p>
+                      <p>
+                        Last used:{" "}
+                        {new Date(token.last_used_at).toLocaleDateString()}
+                      </p>
                     )}
                   </div>
                 </div>

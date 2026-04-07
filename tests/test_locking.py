@@ -18,7 +18,9 @@ def test_try_acquire_lock_new_lock(db):
     assert result is True
 
     # Verify lock was created in database
-    lock = db.query(DBSystemSecret).filter(DBSystemSecret.key == "lock_test_lock").first()
+    lock = (
+        db.query(DBSystemSecret).filter(DBSystemSecret.key == "lock_test_lock").first()
+    )
     assert lock is not None
     assert lock.value == "true"
     assert lock.key == "lock_test_lock"
@@ -36,7 +38,7 @@ def test_try_acquire_lock_existing_valid_lock(db):
     existing_lock = DBSystemSecret(
         key="lock_test_lock",
         value="true",
-        updated_at=datetime.now(UTC) - timedelta(minutes=5)
+        updated_at=datetime.now(UTC) - timedelta(minutes=5),
     )
     db.add(existing_lock)
     db.commit()
@@ -48,7 +50,9 @@ def test_try_acquire_lock_existing_valid_lock(db):
     assert result is False
 
     # Verify the original lock is still there and unchanged
-    lock = db.query(DBSystemSecret).filter(DBSystemSecret.key == "lock_test_lock").first()
+    lock = (
+        db.query(DBSystemSecret).filter(DBSystemSecret.key == "lock_test_lock").first()
+    )
     assert lock is not None
     assert lock.value == "true"
     # The updated_at should still be the original time (not changed)
@@ -67,7 +71,7 @@ def test_try_acquire_lock_expired_lock(db):
     old_lock = DBSystemSecret(
         key="lock_test_lock",
         value="true",
-        updated_at=datetime.now(UTC) - timedelta(minutes=15)
+        updated_at=datetime.now(UTC) - timedelta(minutes=15),
     )
     db.add(old_lock)
     db.commit()
@@ -79,7 +83,9 @@ def test_try_acquire_lock_expired_lock(db):
     assert result is True
 
     # Verify the lock was updated (stolen)
-    lock = db.query(DBSystemSecret).filter(DBSystemSecret.key == "lock_test_lock").first()
+    lock = (
+        db.query(DBSystemSecret).filter(DBSystemSecret.key == "lock_test_lock").first()
+    )
     assert lock is not None
     assert lock.value == "true"
     # The updated_at should be recent (indicating the lock was stolen)
@@ -98,7 +104,7 @@ def test_try_acquire_lock_custom_timeout(db):
     old_lock = DBSystemSecret(
         key="lock_test_lock",
         value="true",
-        updated_at=datetime.now(UTC) - timedelta(minutes=5)
+        updated_at=datetime.now(UTC) - timedelta(minutes=5),
     )
     db.add(old_lock)
     db.commit()
@@ -110,7 +116,9 @@ def test_try_acquire_lock_custom_timeout(db):
     assert result is True
 
     # Verify the lock was stolen
-    lock = db.query(DBSystemSecret).filter(DBSystemSecret.key == "lock_test_lock").first()
+    lock = (
+        db.query(DBSystemSecret).filter(DBSystemSecret.key == "lock_test_lock").first()
+    )
     assert lock is not None
     assert lock.updated_at > datetime.now(UTC) - timedelta(minutes=1)
 
@@ -127,7 +135,7 @@ def test_try_acquire_lock_zero_timeout(db):
     old_lock = DBSystemSecret(
         key="lock_test_lock",
         value="true",
-        updated_at=datetime.now(UTC) - timedelta(minutes=1)
+        updated_at=datetime.now(UTC) - timedelta(minutes=1),
     )
     db.add(old_lock)
     db.commit()
@@ -139,7 +147,9 @@ def test_try_acquire_lock_zero_timeout(db):
     assert result is True
 
     # Verify the lock was stolen
-    lock = db.query(DBSystemSecret).filter(DBSystemSecret.key == "lock_test_lock").first()
+    lock = (
+        db.query(DBSystemSecret).filter(DBSystemSecret.key == "lock_test_lock").first()
+    )
     assert lock is not None
     assert lock.updated_at > datetime.now(UTC) - timedelta(minutes=1)
 
@@ -195,7 +205,9 @@ def test_release_lock_existing_lock(db):
     assert result is True
 
     # Verify the lock was updated
-    updated_lock = db.query(DBSystemSecret).filter(DBSystemSecret.key == "lock_test_lock").first()
+    updated_lock = (
+        db.query(DBSystemSecret).filter(DBSystemSecret.key == "lock_test_lock").first()
+    )
     assert updated_lock is not None
     assert updated_lock.value == "false"
 
@@ -215,7 +227,11 @@ def test_release_lock_nonexistent_lock(db):
     assert result is False
 
     # Verify no lock was created
-    lock = db.query(DBSystemSecret).filter(DBSystemSecret.key == "lock_nonexistent_lock").first()
+    lock = (
+        db.query(DBSystemSecret)
+        .filter(DBSystemSecret.key == "lock_nonexistent_lock")
+        .first()
+    )
     assert lock is None
 
 
@@ -239,7 +255,9 @@ def test_release_lock_already_released(db):
     assert result is True
 
     # Verify the lock remains "false"
-    updated_lock = db.query(DBSystemSecret).filter(DBSystemSecret.key == "lock_test_lock").first()
+    updated_lock = (
+        db.query(DBSystemSecret).filter(DBSystemSecret.key == "lock_test_lock").first()
+    )
     assert updated_lock is not None
     assert updated_lock.value == "false"
 
@@ -269,7 +287,11 @@ def test_lock_lifecycle(db):
     assert result4 is True
 
     # Verify the final state
-    lock = db.query(DBSystemSecret).filter(DBSystemSecret.key == "lock_lifecycle_lock").first()
+    lock = (
+        db.query(DBSystemSecret)
+        .filter(DBSystemSecret.key == "lock_lifecycle_lock")
+        .first()
+    )
     assert lock is not None
     assert lock.value == "true"
 
@@ -293,7 +315,11 @@ def test_lock_with_special_characters(db):
     assert result2 is True
 
     # Verify the lock was created and released
-    lock = db.query(DBSystemSecret).filter(DBSystemSecret.key == f"lock_{lock_name}").first()
+    lock = (
+        db.query(DBSystemSecret)
+        .filter(DBSystemSecret.key == f"lock_{lock_name}")
+        .first()
+    )
     assert lock is not None
     assert lock.value == "false"
 
@@ -317,7 +343,11 @@ def test_lock_with_unicode_characters(db):
     assert result2 is True
 
     # Verify the lock was created and released
-    lock = db.query(DBSystemSecret).filter(DBSystemSecret.key == f"lock_{lock_name}").first()
+    lock = (
+        db.query(DBSystemSecret)
+        .filter(DBSystemSecret.key == f"lock_{lock_name}")
+        .first()
+    )
     assert lock is not None
     assert lock.value == "false"
 
@@ -344,7 +374,11 @@ def test_concurrent_lock_attempts(db):
     assert result4 is False
 
     # Verify only one lock exists
-    locks = db.query(DBSystemSecret).filter(DBSystemSecret.key == "lock_concurrent_lock").all()
+    locks = (
+        db.query(DBSystemSecret)
+        .filter(DBSystemSecret.key == "lock_concurrent_lock")
+        .all()
+    )
     assert len(locks) == 1
     assert locks[0].value == "true"
 
@@ -359,11 +393,7 @@ def test_lock_timeout_edge_case(db):
     """
     # Arrange - Create a lock that's exactly 10 minutes old (default timeout)
     exact_time = datetime.now(UTC) - timedelta(minutes=10)
-    old_lock = DBSystemSecret(
-        key="lock_edge_lock",
-        value="true",
-        updated_at=exact_time
-    )
+    old_lock = DBSystemSecret(key="lock_edge_lock", value="true", updated_at=exact_time)
     db.add(old_lock)
     db.commit()
 
@@ -374,7 +404,9 @@ def test_lock_timeout_edge_case(db):
     assert result is True
 
     # Verify the lock was updated
-    lock = db.query(DBSystemSecret).filter(DBSystemSecret.key == "lock_edge_lock").first()
+    lock = (
+        db.query(DBSystemSecret).filter(DBSystemSecret.key == "lock_edge_lock").first()
+    )
     assert lock is not None
     assert lock.updated_at > exact_time
 
@@ -420,6 +452,10 @@ def test_lock_with_very_long_name(db):
     assert result2 is True
 
     # Verify the lock was created and released
-    lock = db.query(DBSystemSecret).filter(DBSystemSecret.key == f"lock_{long_name}").first()
+    lock = (
+        db.query(DBSystemSecret)
+        .filter(DBSystemSecret.key == f"lock_{long_name}")
+        .first()
+    )
     assert lock is not None
     assert lock.value == "false"

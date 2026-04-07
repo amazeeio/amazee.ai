@@ -1,24 +1,47 @@
-from pydantic import BaseModel, ConfigDict, EmailStr
-from typing import Optional, List, ClassVar, Literal, Dict
+from pydantic import BaseModel, ConfigDict, EmailStr, AfterValidator, Field
+from typing import Optional, List, ClassVar, Literal, Dict, Annotated
 from datetime import datetime
 from sqlalchemy.orm import relationship
+from enum import Enum
+
+
+class BudgetType(str, Enum):
+    PERIODIC = "periodic"
+    POOL = "pool"
+
+
+def lowercase_email(v: str) -> str:
+    """Validator to lowercase email addresses."""
+    if v is None:
+        return v
+    return v.lower()
+
+
+# Custom type for case-insensitive emails
+CaseInsensitiveEmailStr = Annotated[EmailStr, AfterValidator(lowercase_email)]
+
 
 class Token(BaseModel):
     access_token: str
     token_type: str
 
+
 class TokenData(BaseModel):
-    email: Optional[EmailStr] = None
+    email: Optional[CaseInsensitiveEmailStr] = None
+
 
 class EmailValidation(BaseModel):
-    email: EmailStr
+    email: CaseInsensitiveEmailStr
+
 
 class LoginData(BaseModel):
-    username: EmailStr  # Using username to match OAuth2 form field
+    username: CaseInsensitiveEmailStr  # Using username to match OAuth2 form field
     password: str
 
+
 class UserBase(BaseModel):
-    email: EmailStr
+    email: CaseInsensitiveEmailStr
+
 
 class UserCreate(UserBase):
     password: Optional[str] = None
@@ -26,11 +49,13 @@ class UserCreate(UserBase):
     role: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
+
 class UserUpdate(BaseModel):
-    email: Optional[EmailStr] = None
+    email: Optional[CaseInsensitiveEmailStr] = None
     is_admin: Optional[bool] = None
     current_password: Optional[str] = None
     new_password: Optional[str] = None
+
 
 class User(UserBase):
     id: int
@@ -42,11 +67,14 @@ class User(UserBase):
     model_config = ConfigDict(from_attributes=True)
     audit_logs: ClassVar = relationship("AuditLog", back_populates="user")
 
+
 class APITokenBase(BaseModel):
     name: str
 
+
 class APITokenCreate(APITokenBase):
     user_id: Optional[int] = None
+
 
 class APIToken(APITokenBase):
     id: int
@@ -56,6 +84,7 @@ class APIToken(APITokenBase):
     user_id: int
     model_config = ConfigDict(from_attributes=True)
 
+
 class APITokenResponse(APITokenBase):
     id: int
     created_at: datetime
@@ -63,8 +92,51 @@ class APITokenResponse(APITokenBase):
     user_id: int
     model_config = ConfigDict(from_attributes=True)
 
+
+class ProductBase(BaseModel):
+    name: str
+    id: str  # This is the Stripe product ID, format should be prod_XXX
+    user_count: Optional[int] = 1
+    keys_per_user: Optional[int] = 1
+    total_key_count: Optional[int] = 6
+    service_key_count: Optional[int] = 5
+    max_budget_per_key: Optional[float] = 20.0
+    rpm_per_key: Optional[int] = 500
+    vector_db_count: Optional[int] = 1
+    vector_db_storage: Optional[int] = 50  # Not used yet, should be a number in GiB
+    renewal_period_days: int = 30
+    active: bool = True
+
+
+class ProductCreate(ProductBase):
+    pass
+
+
+class ProductUpdate(BaseModel):
+    name: Optional[str] = None
+    user_count: Optional[int] = None
+    keys_per_user: Optional[int] = None
+    total_key_count: Optional[int] = None
+    service_key_count: Optional[int] = None
+    max_budget_per_key: Optional[float] = None
+    rpm_per_key: Optional[int] = None
+    vector_db_count: Optional[int] = None
+    vector_db_storage: Optional[int] = None
+    renewal_period_days: Optional[int] = None
+    active: Optional[bool] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class Product(ProductBase):
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
 class RegionBase(BaseModel):
     name: str
+    label: Optional[str] = None
+    description: Optional[str] = None
     postgres_host: str
     postgres_port: int = 5432
     postgres_admin_user: str
@@ -74,11 +146,15 @@ class RegionBase(BaseModel):
     is_active: bool = True
     is_dedicated: bool = False
 
+
 class RegionCreate(RegionBase):
     pass
 
+
 class RegionUpdate(BaseModel):
     name: str
+    label: Optional[str] = None
+    description: Optional[str] = None
     postgres_host: str
     postgres_port: int
     postgres_admin_user: str
@@ -89,9 +165,12 @@ class RegionUpdate(BaseModel):
     is_dedicated: bool
     model_config = ConfigDict(from_attributes=True)
 
+
 class RegionResponse(BaseModel):
     id: int
     name: str
+    label: Optional[str] = None
+    description: Optional[str] = None
     postgres_host: str
     litellm_api_url: str
     is_active: bool
@@ -99,35 +178,83 @@ class RegionResponse(BaseModel):
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
+
 class Region(RegionBase):
     id: int
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+
+class PublicModel(BaseModel):
+    model_id: str
+    display_name: str
+    provider: str
+    region: str
+    type: str
+    context_length: Optional[int] = None
+    status: Optional[str] = None
+
+
+class PublicModelPricing(BaseModel):
+    input_cost_per_token: str = "n/a"
+    output_cost_per_token: str = "n/a"
+
+
+class PublicModelCapabilities(BaseModel):
+    supports_vision: bool = False
+    supports_function_calling: bool = False
+    supports_reasoning: bool = False
+    supports_prompt_caching: bool = False
+
+
+class PublicModelSummary(BaseModel):
+    model_id: str
+    display_name: str
+    provider: str
+    type: str
+    context_length: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+    capabilities: PublicModelCapabilities
+    pricing: PublicModelPricing
+
+
+class PublicRegionModels(BaseModel):
+    region: str
+    status: str
+    models: List[PublicModelSummary]
+
 
 class PrivateAIKeyBase(BaseModel):
     id: int
     database_name: Optional[str] = None
     name: Optional[str] = None
     database_host: Optional[str] = None
-    database_username: Optional[str] = None  # This is the database username, not the user's email
+    database_username: Optional[str] = (
+        None  # This is the database username, not the user's email
+    )
     database_password: Optional[str] = None
     litellm_token: Optional[str] = None
     litellm_api_url: Optional[str] = None
     region: Optional[str] = None
+    region_label: Optional[str] = None
     created_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
+
 
 class PrivateAIKeyCreate(BaseModel):
     region_id: int
     name: str
+    key_alias: Optional[str] = None
     owner_id: Optional[int] = None
     team_id: Optional[int] = None
+
 
 class VectorDBCreate(BaseModel):
     region_id: int
     name: str
     owner_id: Optional[int] = None
     team_id: Optional[int] = None
+
 
 class VectorDB(BaseModel):
     id: int
@@ -141,14 +268,17 @@ class VectorDB(BaseModel):
     name: str
     model_config = ConfigDict(from_attributes=True)
 
+
 class TeamPrivateAIKeyCreate(PrivateAIKeyCreate):
     team_id: int  # Override to make team_id required
     owner_id: Optional[int] = None  # Explicitly set to None for team keys
+
 
 class PrivateAIKey(PrivateAIKeyBase):
     owner_id: Optional[int] = None
     team_id: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
+
 
 class PrivateAIKeyDetail(PrivateAIKey):
     spend: Optional[float] = None
@@ -168,6 +298,7 @@ class PrivateAIKeyDetail(PrivateAIKey):
     metadata: Optional[dict] = None
     model_config = ConfigDict(from_attributes=True)
 
+
 class TrialAccessResponse(BaseModel):
     key: PrivateAIKey
     user: User
@@ -175,12 +306,16 @@ class TrialAccessResponse(BaseModel):
     team_id: int
     team_name: str
 
+
 class BudgetPeriodUpdate(BaseModel):
     budget_duration: str
 
+
 class TokenDurationUpdate(BaseModel):
     """Schema for updating a token's duration"""
+
     duration: str  # e.g. "30d" for 30 days, "1y" for 1 year
+
 
 class PrivateAIKeySpend(BaseModel):
     spend: float
@@ -192,6 +327,7 @@ class PrivateAIKeySpend(BaseModel):
     budget_reset_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
+
 class LiteLLMToken(BaseModel):
     id: int
     litellm_token: str
@@ -201,6 +337,7 @@ class LiteLLMToken(BaseModel):
     region: str
     name: str
     model_config = ConfigDict(from_attributes=True)
+
 
 class AuditLog(BaseModel):
     id: int
@@ -215,6 +352,7 @@ class AuditLog(BaseModel):
     user_agent: Optional[str]
     request_source: Optional[str]
     model_config = ConfigDict(from_attributes=True)
+
 
 class AuditLogResponse(BaseModel):
     id: int
@@ -231,10 +369,12 @@ class AuditLogResponse(BaseModel):
     request_source: Optional[str]
     model_config = ConfigDict(from_attributes=True)
 
+
 class PaginatedAuditLogResponse(BaseModel):
     items: List[AuditLogResponse]
     total: int
     model_config = ConfigDict(from_attributes=True)
+
 
 class AuditLogMetadata(BaseModel):
     event_types: List[str]
@@ -242,51 +382,70 @@ class AuditLogMetadata(BaseModel):
     status_codes: List[str]
     model_config = ConfigDict(from_attributes=True)
 
+
 # Team schemas
 class TeamBase(BaseModel):
     name: str
-    admin_email: EmailStr
+    admin_email: CaseInsensitiveEmailStr
     phone: Optional[str] = None
     billing_address: Optional[str] = None
 
+
 class TeamCreate(TeamBase):
-    pass
+    force_user_keys: bool = False
+    hide_public_regions: bool = False
+    budget_type: BudgetType = BudgetType.PERIODIC
+
 
 class TeamUpdate(BaseModel):
     name: Optional[str] = None
-    admin_email: Optional[EmailStr] = None
+    admin_email: Optional[CaseInsensitiveEmailStr] = None
     phone: Optional[str] = None
     billing_address: Optional[str] = None
     is_active: Optional[bool] = None
     is_always_free: Optional[bool] = None
+    force_user_keys: Optional[bool] = False
+    hide_public_regions: Optional[bool] = None
+    budget_type: Optional[BudgetType] = None
+
 
 class Team(TeamBase):
     id: int
     is_active: bool
     is_always_free: bool
+    force_user_keys: Optional[bool] = False
+    hide_public_regions: bool = False
+    budget_type: BudgetType
+    last_pool_purchase: Optional[datetime] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     last_payment: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
     retention_warning_sent_at: Optional[datetime] = None
+    products: List[Product] = []
     model_config = ConfigDict(from_attributes=True)
+
 
 class TeamWithUsers(Team):
     users: List[User] = []
     model_config = ConfigDict(from_attributes=True)
+
 
 class TeamSummary(BaseModel):
     id: int
     name: str
     model_config = ConfigDict(from_attributes=True)
 
+
 class TeamOperation(BaseModel):
     team_id: int
+
 
 class TeamMergeRequest(BaseModel):
     source_team_id: int
     conflict_resolution_strategy: Literal["delete", "rename", "cancel"]
     rename_suffix: Optional[str] = None  # For rename strategy
+
 
 class TeamMergeResponse(BaseModel):
     success: bool
@@ -295,62 +454,34 @@ class TeamMergeResponse(BaseModel):
     keys_migrated: int
     users_migrated: int
 
+
 class UserRoleUpdate(BaseModel):
     role: str
     model_config = ConfigDict(from_attributes=True)
 
+
 class SignInData(BaseModel):
-    username: EmailStr
+    username: CaseInsensitiveEmailStr
     verification_code: str
+
 
 class CheckoutSessionCreate(BaseModel):
     price_lookup_token: str
 
-class ProductBase(BaseModel):
-    name: str
-    id: str # This is the Stripe product ID, format should be prod_XXX
-    user_count: Optional[int] = 1
-    keys_per_user: Optional[int] = 1
-    total_key_count: Optional[int] = 6
-    service_key_count: Optional[int] = 5
-    max_budget_per_key: Optional[float] = 20.0
-    rpm_per_key: Optional[int] = 500
-    vector_db_count: Optional[int] = 1
-    vector_db_storage: Optional[int] = 50 # Not used yet, should be a number in GiB
-    renewal_period_days: int = 30
-    active: bool = True
-
-class ProductCreate(ProductBase):
-    pass
-
-class ProductUpdate(BaseModel):
-    name: Optional[str] = None
-    user_count: Optional[int] = None
-    keys_per_user: Optional[int] = None
-    total_key_count: Optional[int] = None
-    service_key_count: Optional[int] = None
-    max_budget_per_key: Optional[float] = None
-    rpm_per_key: Optional[int] = None
-    vector_db_count: Optional[int] = None
-    vector_db_storage: Optional[int] = None
-    renewal_period_days: Optional[int] = None
-    active: Optional[bool] = None
-    model_config = ConfigDict(from_attributes=True)
-
-class Product(ProductBase):
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-    model_config = ConfigDict(from_attributes=True)
 
 class PricingTableSession(BaseModel):
     client_secret: str
     model_config = ConfigDict(from_attributes=True)
 
+
 class PricingTableCreate(BaseModel):
     pricing_table_id: str
     table_type: Literal["standard", "always_free", "gpt"] = "standard"
-    stripe_publishable_key: Optional[str] = None  # Optional on create, defaults to system config
+    stripe_publishable_key: Optional[str] = (
+        None  # Optional on create, defaults to system config
+    )
     model_config = ConfigDict(from_attributes=True)
+
 
 class PricingTableResponse(BaseModel):
     pricing_table_id: str
@@ -358,13 +489,16 @@ class PricingTableResponse(BaseModel):
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
+
 class PricingTablesResponse(BaseModel):
     tables: Dict[str, PricingTableResponse | None]
     model_config = ConfigDict(from_attributes=True)
 
+
 class SubscriptionCreate(BaseModel):
     product_id: str  # Stripe product ID
     model_config = ConfigDict(from_attributes=True)
+
 
 class SubscriptionResponse(BaseModel):
     subscription_id: str
@@ -373,9 +507,11 @@ class SubscriptionResponse(BaseModel):
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
+
 class PortalRequest(BaseModel):
     return_url: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
+
 
 # Sales Dashboard schemas
 class SalesProduct(BaseModel):
@@ -384,6 +520,7 @@ class SalesProduct(BaseModel):
     active: bool
     model_config = ConfigDict(from_attributes=True)
 
+
 class SalesTeam(BaseModel):
     id: int
     name: str
@@ -391,12 +528,78 @@ class SalesTeam(BaseModel):
     created_at: datetime
     last_payment: Optional[datetime] = None
     is_always_free: bool
+    budget_type: BudgetType
     products: List[SalesProduct]
     regions: List[str]
     total_spend: float
     trial_status: str
     model_config = ConfigDict(from_attributes=True)
 
+
 class SalesTeamsResponse(BaseModel):
     teams: List[SalesTeam]
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TeamRegionBudget(BaseModel):
+    team_id: int
+    region_id: int
+    region_name: str
+    total_spend: float
+    total_budget: float
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PoolPurchaseRequest(BaseModel):
+    amount_cents: int = Field(gt=0)
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+
+
+class PoolPurchaseResponse(BaseModel):
+    id: int
+    team_id: int
+    region_id: int
+    amount_cents: int
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+    created_at: datetime
+    new_total_budget_cents: int
+    keys_updated: int
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PoolPurchaseHistoryItem(BaseModel):
+    id: int
+    amount_cents: int
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PoolPurchaseHistoryResponse(BaseModel):
+    team_id: int
+    region_id: int
+    purchases: List[PoolPurchaseHistoryItem]
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PoolRegionPurchaseHistoryItem(BaseModel):
+    id: int
+    team_id: int
+    amount_cents: int
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PoolRegionPurchaseHistoryResponse(BaseModel):
+    region_id: int
+    purchases: List[PoolRegionPurchaseHistoryItem]
     model_config = ConfigDict(from_attributes=True)

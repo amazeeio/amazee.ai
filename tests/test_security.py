@@ -15,7 +15,9 @@ class TestSecurityFunctions:
         When calling check_sales_or_higher
         Then it should return sales role
         """
-        user = DBUser(id=1, email="sales@test.com", is_admin=False, team_id=None, role="sales")
+        user = DBUser(
+            id=1, email="sales@test.com", is_admin=False, team_id=None, role="sales"
+        )
 
         result = await check_sales_or_higher(current_user=user)
         assert result == UserRole.SALES
@@ -27,7 +29,9 @@ class TestSecurityFunctions:
         When calling check_sales_or_higher
         Then it should return system_admin role
         """
-        user = DBUser(id=1, email="admin@test.com", is_admin=True, team_id=None, role=None)
+        user = DBUser(
+            id=1, email="admin@test.com", is_admin=True, team_id=None, role=None
+        )
 
         result = await check_sales_or_higher(current_user=user)
         assert result == UserRole.SYSTEM_ADMIN
@@ -39,7 +43,9 @@ class TestSecurityFunctions:
         When calling check_sales_or_higher
         Then it should raise HTTPException with 403 status
         """
-        user = DBUser(id=1, email="user@test.com", is_admin=False, team_id=None, role="user")
+        user = DBUser(
+            id=1, email="user@test.com", is_admin=False, team_id=None, role="user"
+        )
 
         with pytest.raises(HTTPException) as exc_info:
             await check_sales_or_higher(current_user=user)
@@ -54,7 +60,9 @@ class TestSecurityFunctions:
         When calling check_sales_or_higher
         Then it should raise HTTPException with 403 status
         """
-        user = DBUser(id=1, email="teamuser@test.com", is_admin=False, team_id=1, role="admin")
+        user = DBUser(
+            id=1, email="teamuser@test.com", is_admin=False, team_id=1, role="admin"
+        )
 
         with pytest.raises(HTTPException) as exc_info:
             await check_sales_or_higher(current_user=user)
@@ -69,7 +77,9 @@ class TestSecurityFunctions:
         When calling check_system_admin
         Then it should return system_admin role
         """
-        user = DBUser(id=1, email="admin@test.com", is_admin=True, team_id=None, role=None)
+        user = DBUser(
+            id=1, email="admin@test.com", is_admin=True, team_id=None, role=None
+        )
 
         result = await get_role_min_system_admin(current_user=user)
         assert result == UserRole.SYSTEM_ADMIN
@@ -81,7 +91,9 @@ class TestSecurityFunctions:
         When calling check_system_admin
         Then it should raise HTTPException with 403 status
         """
-        user = DBUser(id=1, email="user@test.com", is_admin=False, team_id=None, role="user")
+        user = DBUser(
+            id=1, email="user@test.com", is_admin=False, team_id=None, role="user"
+        )
 
         with pytest.raises(HTTPException) as exc_info:
             await get_role_min_system_admin(current_user=user)

@@ -23,7 +23,7 @@ services:
       dockerfile: Dockerfile
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres/postgres_service
-      SECRET_KEY: "dKq2BK3pqGQfNqC7SK8ZxNCdqJnGV4F9"  # More secure key for development
+      AMAZEEAI_JWT_SECRET: ${AMAZEEAI_JWT_SECRET}
       ENABLE_METRICS: "true"  # Enable Prometheus metrics
     ports:
       - "8800:8800"

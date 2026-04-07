@@ -22,7 +22,7 @@ def test_system_limits_cannot_be_reset(db: Session):
         current_value=0.0,
         owner_type=OwnerType.SYSTEM,
         owner_id=0,
-        limited_by=LimitSource.DEFAULT
+        limited_by=LimitSource.DEFAULT,
     )
     db.add(system_limit)
     db.commit()
@@ -32,9 +32,7 @@ def test_system_limits_cannot_be_reset(db: Session):
     # Attempt to reset SYSTEM limit should raise an exception
     with pytest.raises(ValueError, match="Cannot reset SYSTEM limits"):
         limit_service.reset_limit(
-            owner_type=OwnerType.SYSTEM,
-            owner_id=0,
-            resource_type=ResourceType.USER
+            owner_type=OwnerType.SYSTEM, owner_id=0, resource_type=ResourceType.USER
         )
 
 
@@ -47,7 +45,9 @@ def test_system_limits_only_allow_default_or_manual_source(db: Session):
     limit_service = LimitService(db)
 
     # Attempt to create SYSTEM limit with PRODUCT source should fail
-    with pytest.raises(ValueError, match="SYSTEM limits can only have DEFAULT or MANUAL source"):
+    with pytest.raises(
+        ValueError, match="SYSTEM limits can only have DEFAULT or MANUAL source"
+    ):
         limit_service.set_limit(
             owner_type=OwnerType.SYSTEM,
             owner_id=0,
@@ -56,7 +56,7 @@ def test_system_limits_only_allow_default_or_manual_source(db: Session):
             unit=UnitType.COUNT,
             max_value=1.0,
             current_value=0.0,
-            limited_by=LimitSource.PRODUCT
+            limited_by=LimitSource.PRODUCT,
         )
 
 
@@ -76,7 +76,7 @@ def test_system_limits_allow_default_source(db: Session):
         unit=UnitType.COUNT,
         max_value=1.0,
         current_value=0.0,
-        limited_by=LimitSource.DEFAULT
+        limited_by=LimitSource.DEFAULT,
     )
 
     assert result.owner_type == OwnerType.SYSTEM
@@ -101,7 +101,7 @@ def test_system_limits_allow_manual_source(db: Session):
         max_value=2.0,
         current_value=0.0,
         limited_by=LimitSource.MANUAL,
-        set_by="admin@example.com"
+        set_by="admin@example.com",
     )
 
     assert result.owner_type == OwnerType.SYSTEM
@@ -125,7 +125,7 @@ def test_inheritance_user_team_system(db: Session, test_team, test_team_user):
         current_value=0.0,
         owner_type=OwnerType.SYSTEM,
         owner_id=0,
-        limited_by=LimitSource.DEFAULT
+        limited_by=LimitSource.DEFAULT,
     )
     db.add(system_limit)
     db.commit()
@@ -134,7 +134,9 @@ def test_inheritance_user_team_system(db: Session, test_team, test_team_user):
     user_limits = limit_service.get_user_limits(test_team_user)
 
     # Should find the system default limit
-    user_limit = next((limit for limit in user_limits if limit.resource == ResourceType.USER), None)
+    user_limit = next(
+        (limit for limit in user_limits if limit.resource == ResourceType.USER), None
+    )
     assert user_limit is not None
     assert user_limit.max_value == 5.0
     assert user_limit.owner_type == OwnerType.TEAM
@@ -156,7 +158,7 @@ def test_inheritance_team_overrides_system(db: Session, test_team, test_team_use
         current_value=0.0,
         owner_type=OwnerType.SYSTEM,
         owner_id=0,
-        limited_by=LimitSource.DEFAULT
+        limited_by=LimitSource.DEFAULT,
     )
     db.add(system_limit)
 
@@ -170,7 +172,7 @@ def test_inheritance_team_overrides_system(db: Session, test_team, test_team_use
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.MANUAL,
-        set_by="admin@example.com"
+        set_by="admin@example.com",
     )
     db.add(team_limit)
     db.commit()
@@ -179,13 +181,17 @@ def test_inheritance_team_overrides_system(db: Session, test_team, test_team_use
     user_limits = limit_service.get_user_limits(test_team_user)
 
     # Should find the team limit (not system)
-    user_limit = next((limit for limit in user_limits if limit.resource == ResourceType.USER), None)
+    user_limit = next(
+        (limit for limit in user_limits if limit.resource == ResourceType.USER), None
+    )
     assert user_limit is not None
     assert user_limit.max_value == 10.0
     assert user_limit.owner_type == OwnerType.TEAM
 
 
-def test_inheritance_user_overrides_team_and_system(db: Session, test_team, test_team_user):
+def test_inheritance_user_overrides_team_and_system(
+    db: Session, test_team, test_team_user
+):
     """
     Given: A user with individual limits, team with limits, and system defaults
     When: Getting user limits
@@ -200,7 +206,7 @@ def test_inheritance_user_overrides_team_and_system(db: Session, test_team, test
         current_value=0.0,
         owner_type=OwnerType.SYSTEM,
         owner_id=0,
-        limited_by=LimitSource.DEFAULT
+        limited_by=LimitSource.DEFAULT,
     )
     db.add(system_limit)
 
@@ -214,7 +220,7 @@ def test_inheritance_user_overrides_team_and_system(db: Session, test_team, test
         owner_type=OwnerType.TEAM,
         owner_id=test_team.id,
         limited_by=LimitSource.MANUAL,
-        set_by="admin@example.com"
+        set_by="admin@example.com",
     )
     db.add(team_limit)
 
@@ -228,7 +234,7 @@ def test_inheritance_user_overrides_team_and_system(db: Session, test_team, test
         owner_type=OwnerType.USER,
         owner_id=test_team_user.id,
         limited_by=LimitSource.MANUAL,
-        set_by="admin@example.com"
+        set_by="admin@example.com",
     )
     db.add(user_limit)
     db.commit()
@@ -237,7 +243,9 @@ def test_inheritance_user_overrides_team_and_system(db: Session, test_team, test
     user_limits = limit_service.get_user_limits(test_team_user)
 
     # Should find the user limit (not team or system)
-    found_limit = next((limit for limit in user_limits if limit.resource == ResourceType.USER), None)
+    found_limit = next(
+        (limit for limit in user_limits if limit.resource == ResourceType.USER), None
+    )
     assert found_limit is not None
     assert found_limit.max_value == 15.0
     assert found_limit.owner_type == OwnerType.USER
@@ -259,7 +267,7 @@ def test_get_system_limits(db: Session):
             current_value=0.0,
             owner_type=OwnerType.SYSTEM,
             owner_id=0,
-            limited_by=LimitSource.DEFAULT
+            limited_by=LimitSource.DEFAULT,
         ),
         DBLimitedResource(
             limit_type=LimitType.CONTROL_PLANE,
@@ -269,8 +277,8 @@ def test_get_system_limits(db: Session):
             current_value=0.0,
             owner_type=OwnerType.SYSTEM,
             owner_id=0,
-            limited_by=LimitSource.DEFAULT
-        )
+            limited_by=LimitSource.DEFAULT,
+        ),
     ]
     for limit in system_limits:
         db.add(limit)
@@ -284,7 +292,7 @@ def test_get_system_limits(db: Session):
     assert all(limit.owner_id == 0 for limit in system_limits_result)
 
 
-@patch.dict(os.environ, {'ENABLE_LIMITS': 'true'})
+@patch.dict(os.environ, {"ENABLE_LIMITS": "true"})
 def test_setup_default_limits_creates_all_defaults(db: Session):
     """
     Given: ENABLE_LIMITS is true and no default limits exist
@@ -319,7 +327,7 @@ def test_setup_default_limits_creates_all_defaults(db: Session):
         assert limit.limited_by == LimitSource.DEFAULT
 
 
-@patch.dict(os.environ, {'ENABLE_LIMITS': 'true'})
+@patch.dict(os.environ, {"ENABLE_LIMITS": "true"})
 def test_setup_default_limits_uses_current_constant_values(db: Session):
     """
     Given: ENABLE_LIMITS is true
@@ -335,28 +343,45 @@ def test_setup_default_limits_uses_current_constant_values(db: Session):
     system_limits = limit_service.get_system_limits()
 
     # Find specific limits and verify values match constants
-    user_limit = next((limit for limit in system_limits if limit.resource == ResourceType.USER), None)
+    user_limit = next(
+        (limit for limit in system_limits if limit.resource == ResourceType.USER), None
+    )
     assert user_limit is not None
     assert user_limit.max_value == 1.0  # DEFAULT_USER_COUNT
 
-    key_limit = next((limit for limit in system_limits if limit.resource == ResourceType.SERVICE_KEY), None)
+    key_limit = next(
+        (
+            limit
+            for limit in system_limits
+            if limit.resource == ResourceType.SERVICE_KEY
+        ),
+        None,
+    )
     assert key_limit is not None
     assert key_limit.max_value == 5.0  # DEFAULT_SERVICE_KEYS
 
-    vector_db_limit = next((limit for limit in system_limits if limit.resource == ResourceType.VECTOR_DB), None)
+    vector_db_limit = next(
+        (limit for limit in system_limits if limit.resource == ResourceType.VECTOR_DB),
+        None,
+    )
     assert vector_db_limit is not None
     assert vector_db_limit.max_value == 5.0  # DEFAULT_VECTOR_DB_COUNT
 
-    budget_limit = next((limit for limit in system_limits if limit.resource == ResourceType.BUDGET), None)
+    budget_limit = next(
+        (limit for limit in system_limits if limit.resource == ResourceType.BUDGET),
+        None,
+    )
     assert budget_limit is not None
     assert budget_limit.max_value == 27.0  # DEFAULT_MAX_SPEND
 
-    rpm_limit = next((limit for limit in system_limits if limit.resource == ResourceType.RPM), None)
+    rpm_limit = next(
+        (limit for limit in system_limits if limit.resource == ResourceType.RPM), None
+    )
     assert rpm_limit is not None
     assert rpm_limit.max_value == 500.0  # DEFAULT_RPM_PER_KEY
 
 
-@patch.dict(os.environ, {'ENABLE_LIMITS': 'true'})
+@patch.dict(os.environ, {"ENABLE_LIMITS": "true"})
 def test_setup_default_limits_idempotent(db: Session):
     """
     Given: Default limits already exist
@@ -380,14 +405,21 @@ def test_setup_default_limits_idempotent(db: Session):
 
     # Should have same limit values
     for first_limit in first_run_limits:
-        second_limit = next((limit for limit in second_run_limits if limit.resource == first_limit.resource), None)
+        second_limit = next(
+            (
+                limit
+                for limit in second_run_limits
+                if limit.resource == first_limit.resource
+            ),
+            None,
+        )
         assert second_limit is not None
         assert second_limit.max_value == first_limit.max_value
         assert second_limit.limit_type == first_limit.limit_type
         assert second_limit.unit == first_limit.unit
 
 
-@patch.dict(os.environ, {'ENABLE_LIMITS': 'false'})
+@patch.dict(os.environ, {"ENABLE_LIMITS": "false"})
 def test_setup_default_limits_skipped_when_disabled(db: Session):
     """
     Given: ENABLE_LIMITS is false
@@ -404,7 +436,7 @@ def test_setup_default_limits_skipped_when_disabled(db: Session):
     assert len(system_limits) == 0
 
 
-@patch.dict(os.environ, {'ENABLE_LIMITS': 'true'})
+@patch.dict(os.environ, {"ENABLE_LIMITS": "true"})
 def test_setup_default_limits_runs_when_enabled(db: Session):
     """
     Given: ENABLE_LIMITS is true
@@ -421,7 +453,7 @@ def test_setup_default_limits_runs_when_enabled(db: Session):
     assert len(system_limits) > 0
 
 
-@patch.dict(os.environ, {'ENABLE_LIMITS': 'true'})
+@patch.dict(os.environ, {"ENABLE_LIMITS": "true"})
 def test_setup_default_limits_control_plane_limits_have_current_value(db: Session):
     """
     Given: ENABLE_LIMITS is true

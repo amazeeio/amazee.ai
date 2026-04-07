@@ -9,17 +9,15 @@ from app.services.aws_auth import ensure_valid_credentials, get_credentials
 # Set up logging
 logger = logging.getLogger(__name__)
 
-env_suffix = os.getenv('ENV_SUFFIX')
+env_suffix = os.getenv("ENV_SUFFIX")
 VALIDATION_CODE_TABLE_NAME = f"verification-codes-{env_suffix}"
 # Get role name from environment variable
-role_name = os.getenv('DYNAMODB_ROLE_NAME')
-dynamodb_region = os.getenv('DYNAMODB_REGION', "eu-central-2")
+role_name = os.getenv("DYNAMODB_ROLE_NAME")
+dynamodb_region = os.getenv("DYNAMODB_REGION", "eu-central-2")
+
 
 class DynamoDBService:
-    def __init__(
-        self,
-        session_name: str = "DynamoDBServiceSession"
-    ):
+    def __init__(self, session_name: str = "DynamoDBServiceSession"):
         """
         Initialize the DynamoDB service with temporary credentials from STS AssumeRole.
 
@@ -43,9 +41,9 @@ class DynamoDBService:
 
         # Create DynamoDB resource with temporary credentials
         self.dynamodb = boto3.resource(
-            'dynamodb',
+            "dynamodb",
             region_name=dynamodb_region,
-            **get_credentials(role_name, dynamodb_region)
+            **get_credentials(role_name, dynamodb_region),
         )
 
     @ensure_valid_credentials(role_name=role_name, region_name=dynamodb_region)
@@ -69,10 +67,12 @@ class DynamoDBService:
             table = self.dynamodb.Table(VALIDATION_CODE_TABLE_NAME)
             table.put_item(
                 Item={
-                    'email': email,
-                    'code': code,
-                    'ttl': ttl,
-                    'updated_at': datetime.now(UTC).isoformat()  # Track when the code was last updated
+                    "email": email,
+                    "code": code,
+                    "ttl": ttl,
+                    "updated_at": datetime.now(
+                        UTC
+                    ).isoformat(),  # Track when the code was last updated
                 }
             )
             return True
@@ -93,11 +93,7 @@ class DynamoDBService:
         """
         try:
             table = self.dynamodb.Table(VALIDATION_CODE_TABLE_NAME)
-            response = table.get_item(
-                Key={
-                    'email': email
-                }
-            )
-            return response.get('Item')
+            response = table.get_item(Key={"email": email})
+            return response.get("Item")
         except ClientError:
             return None

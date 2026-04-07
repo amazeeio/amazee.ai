@@ -12,7 +12,9 @@ import time
 
 def create_database_if_not_exists():
     """Attempt to connect to database and create it if it doesn't exist."""
-    database_url = os.getenv("DATABASE_URL", "postgres://postgres:postgres@postgres:5432/postgres_service")
+    database_url = os.getenv(
+        "DATABASE_URL", "postgres://postgres:postgres@postgres:5432/postgres_service"
+    )
 
     # Parse the database URL to extract components
     parsed = urlparse(database_url)
@@ -36,7 +38,7 @@ def create_database_if_not_exists():
                 cursor = conn.cursor()
 
                 # Extract database name from the original URL
-                db_name = parsed.path.lstrip('/')
+                db_name = parsed.path.lstrip("/")
 
                 # Create the database
                 cursor.execute(f"CREATE DATABASE {db_name}")
@@ -63,7 +65,9 @@ def wait_for_database(max_retries=60, retry_interval=1):
     for attempt in range(max_retries):
         if create_database_if_not_exists():
             return True
-        print(f"Database not ready, retrying in {retry_interval} seconds... (attempt {attempt + 1}/{max_retries})")
+        print(
+            f"Database not ready, retrying in {retry_interval} seconds... (attempt {attempt + 1}/{max_retries})"
+        )
         time.sleep(retry_interval)
 
     print("Failed to connect to database after maximum retries")
