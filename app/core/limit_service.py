@@ -503,6 +503,31 @@ class LimitService:
             team_id: ID of the team whose keys should be updated
             budget_amount: New budget amount to set for all keys
         """
+        # Check if there are any keys to propagate to BEFORE starting the background thread
+        # This avoids unnecessary database connections in tests and production
+        team_user_ids = (
+            self.db.execute(select(DBUser.id).filter(DBUser.team_id == team_id))
+            .scalars()
+            .all()
+        )
+        has_keys = (
+            self.db.query(DBPrivateAIKey)
+            .filter(
+                or_(
+                    DBPrivateAIKey.owner_id.in_(team_user_ids)
+                    if team_user_ids
+                    else False,
+                    DBPrivateAIKey.team_id == team_id,
+                )
+            )
+            .first()
+            is not None
+        )
+
+        if not has_keys:
+            logger.info(f"No keys found for team {team_id}, skipping budget propagation")
+            return
+
         # Import here to avoid circular import
         from app.core.team_service import propagate_team_budget_to_keys
         from app.db.database import get_db
