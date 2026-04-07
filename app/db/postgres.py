@@ -92,7 +92,9 @@ class PostgresManager:
         finally:
             await conn.close()
 
-    async def delete_database(self, database_name: str):
+    async def delete_database(
+        self, database_name: str, database_username: str | None = None
+    ):
         conn = await asyncpg.connect(
             host=self.host,
             port=self.port,
@@ -108,5 +110,12 @@ class PostgresManager:
                 WHERE pg_stat_activity.datname = '{database_name}'
             """)
             await conn.execute(f'DROP DATABASE IF EXISTS "{database_name}"')
+            if database_username:
+                await conn.execute(f"""
+                    SELECT pg_terminate_backend(pg_stat_activity.pid)
+                    FROM pg_stat_activity
+                    WHERE pg_stat_activity.usename = '{database_username}'
+                """)
+                await conn.execute(f'DROP USER IF EXISTS "{database_username}"')
         finally:
             await conn.close()

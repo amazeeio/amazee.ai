@@ -1938,8 +1938,6 @@ def test_delete_private_ai_key_with_only_vector_db(
     mock_client_class, client, admin_token, test_region, db, mock_httpx_post_client
 ):
     """Test deleting a private AI key that only has a vector database (no LLM token)"""
-    litellm_api_url = test_region.litellm_api_url
-    litellm_api_key = test_region.litellm_api_key
     # Create a test key with only vector DB
     test_key = DBPrivateAIKey(
         database_name="test-db-vector-only",
@@ -1978,12 +1976,8 @@ def test_delete_private_ai_key_with_only_vector_db(
     )
     assert deleted_key is None
 
-    # Verify that LiteLLM API was called with None token
-    mock_httpx_post_client.post.assert_called_with(
-        f"{litellm_api_url}/key/delete",
-        headers={"Authorization": f"Bearer {litellm_api_key}"},
-        json={"keys": [None]},
-    )
+    # Verify that LiteLLM API was not called because no token exists
+    mock_httpx_post_client.post.assert_not_called()
 
 
 @patch("httpx.AsyncClient")
@@ -2036,6 +2030,49 @@ def test_delete_private_ai_key_with_only_llm_token(
         f"{litellm_api_url}/key/delete",
         headers={"Authorization": f"Bearer {api_key}"},
         json={"keys": [test_key.litellm_token]},
+    )
+
+
+@patch("app.db.postgres.PostgresManager.delete_database")
+@patch("httpx.AsyncClient")
+def test_delete_private_ai_key_cleans_up_database_user(
+    mock_client_class,
+    mock_delete_database,
+    client,
+    admin_token,
+    test_region,
+    db,
+    mock_httpx_post_client,
+):
+    """Test deleting a private AI key removes both DB and DB user when available."""
+    mock_client_class.return_value = mock_httpx_post_client
+    mock_httpx_post_client.post.return_value.status_code = 200
+    mock_httpx_post_client.post.return_value.raise_for_status.return_value = None
+
+    test_key = DBPrivateAIKey(
+        database_name="test-db-cleanup-user",
+        name="Test DB User Cleanup",
+        database_host="test-host",
+        database_username="test-user-cleanup",
+        database_password="test-pass",
+        litellm_token="test-token-cleanup-user",
+        litellm_api_url="https://test-litellm.com",
+        owner_id=None,
+        region_id=test_region.id,
+    )
+    db.add(test_key)
+    db.commit()
+    db.refresh(test_key)
+
+    delete_response = client.delete(
+        f"/private-ai-keys/{test_key.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert delete_response.status_code == 200
+    assert delete_response.json()["message"] == "Private AI Key deleted successfully"
+    mock_delete_database.assert_called_once_with(
+        test_key.database_name, test_key.database_username
     )
 
 
