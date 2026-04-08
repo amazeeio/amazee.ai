@@ -385,7 +385,7 @@ async def associate_team_with_region(
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to bootstrap team in LiteLLM: {str(e)}",
+            detail="Failed to bootstrap team in LiteLLM",
         )
 
     return {"message": "Team associated with region successfully"}
