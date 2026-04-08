@@ -1,9 +1,20 @@
 import asyncpg
+import re
 import uuid
 import logging
 from app.db.models import DBRegion
 
 logger = logging.getLogger(__name__)
+
+_IDENTIFIER_RE = re.compile(r"^[a-zA-Z0-9_]+$")
+
+
+def _validate_identifier(name: str, label: str = "identifier") -> None:
+    """Raise ValueError if *name* is not a safe SQL identifier."""
+    if not _IDENTIFIER_RE.match(name):
+        raise ValueError(
+            f"Invalid {label} '{name}': only alphanumeric characters and underscores are allowed"
+        )
 
 
 class PostgresManager:
@@ -92,7 +103,13 @@ class PostgresManager:
         finally:
             await conn.close()
 
-    async def delete_database(self, database_name: str):
+    async def delete_database(
+        self, database_name: str, database_username: str | None = None
+    ):
+        _validate_identifier(database_name, "database name")
+        if database_username:
+            _validate_identifier(database_username, "database username")
+
         conn = await asyncpg.connect(
             host=self.host,
             port=self.port,
@@ -101,12 +118,25 @@ class PostgresManager:
         )
 
         try:
-            # Terminate all connections to the database
-            await conn.execute(f"""
+            # Terminate all connections to the database (parameterized to prevent injection)
+            await conn.execute(
+                """
                 SELECT pg_terminate_backend(pg_stat_activity.pid)
                 FROM pg_stat_activity
-                WHERE pg_stat_activity.datname = '{database_name}'
-            """)
-            await conn.execute(f'DROP DATABASE IF EXISTS "{database_name}"')
+                WHERE pg_stat_activity.datname = $1
+                """,
+                database_name,
+            )
+            await conn.execute(f"DROP DATABASE IF EXISTS {database_name}")
+            if database_username:
+                await conn.execute(
+                    """
+                    SELECT pg_terminate_backend(pg_stat_activity.pid)
+                    FROM pg_stat_activity
+                    WHERE pg_stat_activity.usename = $1
+                    """,
+                    database_username,
+                )
+                await conn.execute(f"DROP USER IF EXISTS {database_username}")
         finally:
             await conn.close()
