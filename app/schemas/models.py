@@ -328,6 +328,38 @@ class PrivateAIKeySpend(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class SpendKeyItem(BaseModel):
+    key_id: int
+    key_name: Optional[str] = None
+    owner_id: Optional[int] = None
+    team_id: Optional[int] = None
+    spend: float
+    max_budget: Optional[float] = None
+    cached_spend: Optional[float] = None
+
+
+class TeamSpendResponse(BaseModel):
+    region_id: int
+    region_name: str
+    team_id: int
+    team_name: str
+    total_spend: float
+    total_budget: float
+    key_count: int
+    keys: List[SpendKeyItem]
+
+
+class UserSpendResponse(BaseModel):
+    region_id: int
+    region_name: str
+    user_id: int
+    team_id: Optional[int] = None
+    team_name: Optional[str] = None
+    total_spend: float
+    key_count: int
+    keys: List[SpendKeyItem]
+
+
 class LiteLLMToken(BaseModel):
     id: int
     litellm_token: str

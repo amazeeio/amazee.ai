@@ -1,0 +1,100 @@
+from unittest.mock import AsyncMock, patch
+
+from app.db.models import DBPrivateAIKey
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_get_team_spend_by_region(mock_get_key_info, client, team_admin_token, test_team, test_team_user, test_region, db):
+    team_key = DBPrivateAIKey(
+        name="team-key",
+        litellm_token="team-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    user_key = DBPrivateAIKey(
+        name="user-key",
+        litellm_token="user-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team.id,
+    )
+    db.add(team_key)
+    db.add(user_key)
+    db.commit()
+
+    mock_get_key_info.side_effect = [
+        {"info": {"spend": 12.5, "max_budget": 50.0}},
+        {"info": {"spend": 7.5, "max_budget": 25.0}},
+    ]
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["team_id"] == test_team.id
+    assert data["region_id"] == test_region.id
+    assert data["total_spend"] == 20.0
+    assert data["total_budget"] == 75.0
+    assert data["key_count"] == 2
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_get_user_spend_by_region(mock_get_key_info, client, team_admin_token, test_team_user, test_region, db):
+    key = DBPrivateAIKey(
+        name="user-only-key",
+        litellm_token="user-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team_user.team_id,
+    )
+    db.add(key)
+    db.commit()
+
+    mock_get_key_info.return_value = {"info": {"spend": 11.25, "max_budget": 40.0}}
+
+    response = client.get(
+        f"/spend/{test_region.id}/user/{test_team_user.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["user_id"] == test_team_user.id
+    assert data["total_spend"] == 11.25
+    assert data["key_count"] == 1
+    assert data["keys"][0]["key_id"] == key.id
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_key_spend_alias(mock_get_key_info, client, team_admin_token, test_team_user, test_region, db):
+    key = DBPrivateAIKey(
+        name="alias-key",
+        litellm_token="alias-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team_user.team_id,
+    )
+    db.add(key)
+    db.commit()
+
+    mock_get_key_info.return_value = {
+        "info": {
+            "spend": 10.5,
+            "expires": "2026-12-31T23:59:59Z",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-02T00:00:00Z",
+            "max_budget": 100.0,
+            "budget_duration": "30d",
+            "budget_reset_at": "2026-02-01T00:00:00Z",
+        }
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["spend"] == 10.5
+    assert data["max_budget"] == 100.0

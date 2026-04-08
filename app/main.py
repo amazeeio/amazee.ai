@@ -18,6 +18,7 @@ from app.api import (
     pricing_tables,
     limits,
     budgets,
+    spend,
 )
 from app.core.config import settings
 from app.db.database import get_db
@@ -322,6 +323,7 @@ app.include_router(
 )
 app.include_router(limits.router, prefix="/limits", tags=["limits"])
 app.include_router(budgets.router, prefix="/budgets", tags=["budgets"])
+app.include_router(spend.router, prefix="/spend", tags=["spend"])
 
 
 @app.get("/", include_in_schema=False)
