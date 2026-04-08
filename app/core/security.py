@@ -136,7 +136,9 @@ async def get_current_user_from_auth(
     except HTTPException:
         raise
     except Exception:
-        pass
+        logger.exception(
+            "Unexpected error during API token validation; falling back to JWT validation"
+        )
 
     # If API token validation fails, try JWT validation
     try:

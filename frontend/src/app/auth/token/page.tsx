@@ -1,7 +1,7 @@
 "use client";
 
 import { Loader2, X } from "lucide-react";
-import { useState, useEffect, useCallback } from "react";
+import { useState } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -42,7 +42,6 @@ export default function APITokensPage() {
   const [newTokenName, setNewTokenName] = useState("");
   const [selectedExpiry, setSelectedExpiry] = useState("forever");
   const [showNewToken, setShowNewToken] = useState<APIToken | null>(null);
-  const [tokens, setTokens] = useState<APIToken[]>([]);
 
   const { data: expiryOptions } = useQuery({
     queryKey: ["expiry-options"],
@@ -52,12 +51,12 @@ export default function APITokensPage() {
     },
   });
 
-  const { isLoading: queryLoading } = useQuery({
+  const { isLoading: tokensLoading, data: tokens = [] } = useQuery({
     queryKey: ["tokens"],
     queryFn: async () => {
       const response = await get("/auth/token");
       const data = await response.json();
-      return data;
+      return data as APIToken[];
     },
   });
 
@@ -69,11 +68,9 @@ export default function APITokensPage() {
     },
     onSuccess: (newToken) => {
       queryClient.invalidateQueries({ queryKey: ["tokens"] });
-      queryClient.refetchQueries({ queryKey: ["tokens"], exact: true });
       setShowNewToken(newToken);
       setNewTokenName("");
       setSelectedExpiry("forever");
-      fetchTokens(); // Refresh local state too
       toast({
         title: "Success",
         description: "Token created successfully",
@@ -94,8 +91,6 @@ export default function APITokensPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["tokens"] });
-      queryClient.refetchQueries({ queryKey: ["tokens"], exact: true });
-      fetchTokens(); // Refresh local state too
       toast({
         title: "Success",
         description: "Token deleted successfully",
@@ -110,21 +105,6 @@ export default function APITokensPage() {
     },
   });
 
-  const fetchTokens = useCallback(async () => {
-    try {
-      const response = await get("auth/token", { credentials: "include" });
-      const data = await response.json();
-      setTokens(data);
-    } catch (error) {
-      console.error("Error fetching tokens:", error);
-      toast({
-        title: "Error",
-        description: "Failed to fetch tokens",
-        variant: "destructive",
-      });
-    }
-  }, [toast, setTokens]);
-
   const handleCreateToken = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!newTokenName.trim()) return;
@@ -135,11 +115,7 @@ export default function APITokensPage() {
     deleteMutation.mutate(tokenId);
   };
 
-  useEffect(() => {
-    void fetchTokens();
-  }, [fetchTokens]);
-
-  if (queryLoading) {
+  if (tokensLoading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <Loader2 className="h-8 w-8 animate-spin" />
@@ -189,7 +165,7 @@ export default function APITokensPage() {
                       {opt.name}
                     </SelectItem>
                   ))}
-                  {!expiryOptions && (
+                  {(!expiryOptions || expiryOptions.length === 0) && (
                     <SelectItem value="forever">forever</SelectItem>
                   )}
                 </SelectContent>

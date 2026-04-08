@@ -522,12 +522,13 @@ def generate_api_token() -> str:
 
 @router.get("/token/expiry-options", response_model=List[APITokenExpiryOption])
 async def list_expiry_options(
+    current_user=Depends(get_current_user_from_auth),
     db: Session = Depends(get_db),
 ):
     """List available API token expiry options"""
     return (
         db.query(DBAPITokenExpiryOption)
-        .filter(DBAPITokenExpiryOption.is_active)
+        .filter(DBAPITokenExpiryOption.is_active == True)  # noqa: E712
         .order_by(DBAPITokenExpiryOption.id)
         .all()
     )
@@ -566,18 +567,21 @@ async def create_token(
         # Create token for the current user
         user_id = current_user.id
 
-    # Fetch expiry option from DB
+    # Fetch expiry option from DB (only active options are valid)
     expiry_slug = token_create.expiry or "forever"
     db_expiry_opt = (
         db.query(DBAPITokenExpiryOption)
-        .filter(DBAPITokenExpiryOption.slug == expiry_slug)
+        .filter(
+            DBAPITokenExpiryOption.slug == expiry_slug,
+            DBAPITokenExpiryOption.is_active == True,  # noqa: E712
+        )
         .first()
     )
 
     if not db_expiry_opt:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid expiry option: {expiry_slug}",
+            detail=f"Invalid or inactive expiry option: {expiry_slug}",
         )
 
     # Calculate expiration date

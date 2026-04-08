@@ -1,9 +1,13 @@
+import logging
+
 from app.db.models import Base, DBAPITokenExpiryOption
 from app.db.database import engine, SessionLocal
 
+logger = logging.getLogger(__name__)
+
 
 def init_api_token_expiry_options():
-    print("Initializing API token expiry options...")
+    logger.info("Initializing API token expiry options...")
     db = SessionLocal()
     try:
         options = [
@@ -35,18 +39,19 @@ def init_api_token_expiry_options():
                 db.add(db_opt)
 
         db.commit()
-        print("API token expiry options initialized successfully!")
+        logger.info("API token expiry options initialized successfully!")
     except Exception as e:
-        print(f"Error initializing API token expiry options: {e}")
+        logger.exception("Error initializing API token expiry options: %s", e)
         db.rollback()
+        raise
     finally:
         db.close()
 
 
 def init_db():
-    print("Creating database tables...")
+    logger.info("Creating database tables...")
     Base.metadata.create_all(bind=engine)
-    print("Database tables created successfully!")
+    logger.info("Database tables created successfully!")
     init_api_token_expiry_options()
 
 

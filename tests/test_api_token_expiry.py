@@ -1,12 +1,34 @@
 import pytest
 from datetime import datetime, timedelta, UTC
 from app.db.models import DBAPIToken
-from app.db.init_db import init_api_token_expiry_options
+import app.db.init_db as init_db
+
+
+class _SessionProxy:
+    """Proxy that delegates to the test session but suppresses close() calls."""
+
+    def __init__(self, session):
+        self._session = session
+
+    def __getattr__(self, name):
+        return getattr(self._session, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def close(self):
+        # Keep the pytest-managed session alive for the duration of the test.
+        return None
 
 
 @pytest.fixture(autouse=True)
-def seed_expiry_options(db):
-    init_api_token_expiry_options()
+def seed_expiry_options(db, monkeypatch):
+    session_proxy = _SessionProxy(db)
+    monkeypatch.setattr(init_db, "SessionLocal", lambda: session_proxy)
+    init_db.init_api_token_expiry_options()
 
 
 def test_list_expiry_options(client, test_token):
@@ -33,10 +55,15 @@ def test_create_token_with_expiry(client, test_token, test_user, db):
         "/auth/token/expiry-options",
         headers={"Authorization": f"Bearer {test_token}"},
     )
-    response.json()
+    assert response.status_code == 200
+    options = response.json()
+    assert isinstance(options, list)
 
     # Test a few specific ones
     test_cases = {"1_day": 1, "1_week": 7, "1_month": 30, "1_year": 365}
+    option_slugs = [opt["slug"] for opt in options]
+    for slug in test_cases:
+        assert slug in option_slugs
 
     for slug, days in test_cases.items():
         response = client.post(
