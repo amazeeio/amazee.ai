@@ -97,7 +97,10 @@ async def sync_add_user_to_team(
 
 
 async def sync_remove_user_from_team(
-    db: Session, db_user: DBUser, team_id: int, force_regions: List[DBRegion] | None = None
+    db: Session,
+    db_user: DBUser,
+    team_id: int,
+    force_regions: List[DBRegion] | None = None,
 ) -> None:
     regions = force_regions or get_target_regions_for_user(db, team_id)
     for region in regions:
@@ -109,7 +112,10 @@ async def sync_remove_user_from_team(
 
 
 async def sync_update_user_team_role(
-    db: Session, db_user: DBUser, team_id: int, force_regions: List[DBRegion] | None = None
+    db: Session,
+    db_user: DBUser,
+    team_id: int,
+    force_regions: List[DBRegion] | None = None,
 ) -> None:
     regions = force_regions or get_target_regions_for_user(db, team_id)
     role = _team_role_for_litellm(db_user)
@@ -133,5 +139,7 @@ async def sync_delete_user_across_regions(
         )
         if team_id is not None:
             lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-            await service.remove_team_member(team_id=lite_team_id, user_id=str(db_user.id))
+            await service.remove_team_member(
+                team_id=lite_team_id, user_id=str(db_user.id)
+            )
         await service.delete_user(user_id=str(db_user.id))

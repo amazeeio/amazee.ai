@@ -19,7 +19,9 @@ def mock_auth_deps():
         patch(
             "app.api.auth.register_team", new_callable=AsyncMock
         ) as mock_register_team,
-        patch("app.api.auth._create_user_in_db", new_callable=AsyncMock) as mock_create_user,
+        patch(
+            "app.api.auth._create_user_in_db", new_callable=AsyncMock
+        ) as mock_create_user,
         patch("httpx.AsyncClient") as mock_httpx_client_cls,
         patch("app.api.auth.LiteLLMService") as mock_litellm_service_cls,
         patch("app.api.auth.create_and_set_access_token") as mock_create_token,

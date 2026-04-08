@@ -575,7 +575,9 @@ class LiteLLMService:
                 detail=f"Failed to delete LiteLLM user: {error_msg}",
             )
 
-    async def add_team_member(self, team_id: str, user_id: str, role: str = "user") -> None:
+    async def add_team_member(
+        self, team_id: str, user_id: str, role: str = "user"
+    ) -> None:
         """Add a user as a team member in LiteLLM. Treat existing membership as success."""
         payload = {
             "team_id": team_id,
@@ -635,7 +637,9 @@ class LiteLLMService:
         except httpx.HTTPStatusError as e:
             status_code, error_msg, response_text = self._parse_http_error(e)
             if self._is_idempotent_litellm_error(
-                status_code, response_text, ["not found", "does not exist", "not a member"]
+                status_code,
+                response_text,
+                ["not found", "does not exist", "not a member"],
             ):
                 logger.info(
                     f"LiteLLM membership already absent team={team_id} user={user_id}; continuing"
