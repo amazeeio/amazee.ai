@@ -304,6 +304,17 @@ class DBSystemSecret(Base):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 
+class DBUserSpendCache(Base):
+    __tablename__ = "user_spend_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    normalized_email = Column(String, unique=True, index=True, nullable=False)
+    response_data = Column(JSON, nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    cached_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+
 class DBProduct(Base):
     __tablename__ = "products"
 

@@ -1,16 +1,20 @@
 from app.db.models import (
+    DBRegion,
     DBUser,
     DBTeam,
     DBProduct,
     DBTeamProduct,
     DBPrivateAIKey,
     DBLimitedResource,
+    DBUserSpendCache,
 )
 from app.core.limit_service import LimitService, DEFAULT_KEYS_PER_USER
 from app.schemas.limits import ResourceType, LimitSource, OwnerType, LimitType, UnitType
 from app.core.config import settings
+from app.core.security import get_password_hash
 from datetime import datetime, UTC
 from unittest.mock import patch, AsyncMock
+from fastapi import HTTPException
 
 
 def test_create_user(client, test_admin, admin_token):
@@ -206,6 +210,270 @@ def test_create_user_by_team_admin(client, team_admin_token, test_team, db):
     assert team_response.status_code == 200
     team_data = team_response.json()
     assert any(u["id"] == user_data["id"] for u in team_data["users"])
+
+
+@patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_user_spend_success_with_cache_and_normalization(
+    mock_get_team_info, client, admin_token, db
+):
+    team = DBTeam(
+        name="Spend Team",
+        admin_email="spend-team@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    region = DBRegion(
+        name="public-region",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.local",
+        litellm_api_key="k",
+        is_active=True,
+        is_dedicated=False,
+    )
+    user = DBUser(
+        email="alice+123@example.com",
+        hashed_password=get_password_hash("pw"),
+        is_active=True,
+        is_admin=False,
+        team=team,
+    )
+    db.add_all([team, region, user])
+    db.commit()
+    db.refresh(team)
+    db.refresh(region)
+    db.refresh(user)
+
+    db.add(
+        DBPrivateAIKey(
+            database_name="db1",
+            database_username="u1",
+            owner_id=user.id,
+            team_id=team.id,
+            region_id=region.id,
+        )
+    )
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "keys": [
+            {
+                "metadata": {"service_account_id": "alice+123@example.com"},
+                "spend": 12.5,
+            }
+        ]
+    }
+
+    response = client.get(
+        "/users/spend?email=alice@example.com",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["email"] == "alice@example.com"
+    assert data["total_spend"] == 12.5
+    assert len(data["teams"]) == 1
+    assert data["teams"][0]["spend"] == 12.5
+    assert data["teams"][0]["regions"][0]["status"] == "ok"
+    first_cached_at = data["cached_at"]
+    assert mock_get_team_info.await_count == 1
+
+    response2 = client.get(
+        "/users/spend?email=alice@example.com",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response2.status_code == 200
+    data2 = response2.json()
+    assert data2["total_spend"] == 12.5
+    assert data2["cached_at"] == first_cached_at
+    assert mock_get_team_info.await_count == 1
+
+    cache_row = (
+        db.query(DBUserSpendCache)
+        .filter(DBUserSpendCache.normalized_email == "alice@example.com")
+        .first()
+    )
+    assert cache_row is not None
+
+
+@patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_user_spend_skips_regions_without_user_keys(
+    mock_get_team_info, client, admin_token, db
+):
+    team = DBTeam(
+        name="Skip Team",
+        admin_email="skip-team@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    region_with_key = DBRegion(
+        name="region-a",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.a",
+        litellm_api_key="ka",
+        is_active=True,
+        is_dedicated=False,
+    )
+    region_without_key = DBRegion(
+        name="region-b",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.b",
+        litellm_api_key="kb",
+        is_active=True,
+        is_dedicated=False,
+    )
+    user = DBUser(
+        email="bob+1@example.com",
+        hashed_password=get_password_hash("pw"),
+        is_active=True,
+        is_admin=False,
+        team=team,
+    )
+    db.add_all([team, region_with_key, region_without_key, user])
+    db.commit()
+    db.refresh(team)
+    db.refresh(region_with_key)
+    db.refresh(region_without_key)
+    db.refresh(user)
+
+    db.add(
+        DBPrivateAIKey(
+            database_name="db2",
+            database_username="u2",
+            owner_id=user.id,
+            team_id=team.id,
+            region_id=region_with_key.id,
+        )
+    )
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "keys": [
+            {"metadata": {"amazeeai_user_id": str(user.id)}, "spend": 4.0},
+        ]
+    }
+
+    response = client.get(
+        "/users/spend?email=bob@example.com",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_spend"] == 4.0
+    assert len(data["teams"][0]["regions"]) == 1
+    assert data["teams"][0]["regions"][0]["region_name"] == "region-a"
+    assert mock_get_team_info.await_count == 1
+
+
+@patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_user_spend_unavailable_region_not_cached(
+    mock_get_team_info, client, admin_token, db
+):
+    team = DBTeam(
+        name="Unavailable Team",
+        admin_email="unavail-team@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    region = DBRegion(
+        name="region-u",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.u",
+        litellm_api_key="ku",
+        is_active=True,
+        is_dedicated=False,
+    )
+    user = DBUser(
+        email="carol+1@example.com",
+        hashed_password=get_password_hash("pw"),
+        is_active=True,
+        is_admin=False,
+        team=team,
+    )
+    db.add_all([team, region, user])
+    db.commit()
+    db.refresh(team)
+    db.refresh(region)
+    db.refresh(user)
+
+    db.add(
+        DBPrivateAIKey(
+            database_name="db3",
+            database_username="u3",
+            owner_id=user.id,
+            team_id=team.id,
+            region_id=region.id,
+        )
+    )
+    db.commit()
+
+    mock_get_team_info.side_effect = HTTPException(
+        status_code=500,
+        detail="Failed to get LiteLLM team info: Status 503: unavailable",
+    )
+
+    response = client.get(
+        "/users/spend?email=carol@example.com",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_spend"] == 0.0
+    assert data["teams"][0]["regions"][0]["status"] == "unavailable"
+    assert (
+        db.query(DBUserSpendCache)
+        .filter(DBUserSpendCache.normalized_email == "carol@example.com")
+        .first()
+        is None
+    )
+
+    response2 = client.get(
+        "/users/spend?email=carol@example.com",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response2.status_code == 200
+    assert mock_get_team_info.await_count == 2
+
+
+def test_get_user_spend_validation_and_not_found(client, admin_token):
+    missing = client.get(
+        "/users/spend", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert missing.status_code == 400
+
+    invalid = client.get(
+        "/users/spend?email=not-an-email",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert invalid.status_code == 400
+
+    not_found = client.get(
+        "/users/spend?email=nobody@example.com",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert not_found.status_code == 404
+
+
+def test_get_user_spend_requires_system_admin(client, test_token):
+    response = client.get(
+        "/users/spend?email=test@example.com",
+        headers={"Authorization": f"Bearer {test_token}"},
+    )
+    assert response.status_code == 403
 
 
 def test_create_user_in_other_team_by_team_admin(client, team_admin_token, db):

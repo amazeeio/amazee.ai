@@ -603,3 +603,24 @@ class PoolRegionPurchaseHistoryResponse(BaseModel):
     region_id: int
     purchases: List[PoolRegionPurchaseHistoryItem]
     model_config = ConfigDict(from_attributes=True)
+
+
+class UserSpendRegion(BaseModel):
+    region_id: int
+    region_name: str
+    spend: float
+    status: str
+
+
+class UserSpendTeam(BaseModel):
+    team_id: int
+    team_name: str
+    spend: float
+    regions: List[UserSpendRegion]
+
+
+class UserSpendResponse(BaseModel):
+    email: str
+    total_spend: float
+    teams: List[UserSpendTeam]
+    cached_at: datetime
