@@ -273,14 +273,11 @@ async def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
     db.add(db_user)
     db.flush()
 
-    if settings.ENABLE_LITELLM_USER_SYNC:
-        try:
-            await sync_create_user_across_regions(
-                db=db, db_user=db_user, team_id=user.team_id
-            )
-        except Exception:
-            db.rollback()
-            raise
+    try:
+        await sync_create_user_across_regions(db=db, db_user=db_user, team_id=user.team_id)
+    except Exception:
+        db.rollback()
+        raise
 
     db.commit()
     db.refresh(db_user)
@@ -394,12 +391,11 @@ async def add_user_to_team(
 
     # Add user to team
     db_user.team_id = team_operation.team_id
-    if settings.ENABLE_LITELLM_USER_SYNC:
-        try:
-            await sync_add_user_to_team(db=db, db_user=db_user, team_id=db_team.id)
-        except Exception:
-            db.rollback()
-            raise
+    try:
+        await sync_add_user_to_team(db=db, db_user=db_user, team_id=db_team.id)
+    except Exception:
+        db.rollback()
+        raise
     db.commit()
     db.refresh(db_user)
     return db_user
@@ -431,14 +427,11 @@ async def remove_user_from_team(
 
     # Remove user from team
     previous_team_id = db_user.team_id
-    if settings.ENABLE_LITELLM_USER_SYNC:
-        try:
-            await sync_remove_user_from_team(
-                db=db, db_user=db_user, team_id=previous_team_id
-            )
-        except Exception:
-            db.rollback()
-            raise
+    try:
+        await sync_remove_user_from_team(db=db, db_user=db_user, team_id=previous_team_id)
+    except Exception:
+        db.rollback()
+        raise
     db_user.team_id = None
     db.commit()
     db.refresh(db_user)
@@ -461,14 +454,11 @@ async def delete_user(
             status_code=400, detail="Cannot delete user with associated AI keys"
         )
 
-    if settings.ENABLE_LITELLM_USER_SYNC:
-        try:
-            await sync_delete_user_across_regions(
-                db=db, db_user=db_user, team_id=db_user.team_id
-            )
-        except Exception:
-            db.rollback()
-            raise
+    try:
+        await sync_delete_user_across_regions(db=db, db_user=db_user, team_id=db_user.team_id)
+    except Exception:
+        db.rollback()
+        raise
 
     db.delete(db_user)
     db.commit()
@@ -521,7 +511,7 @@ async def update_user_role(
     db_user.role = role_update.role
     db_user.updated_at = datetime.now(UTC)
 
-    if settings.ENABLE_LITELLM_USER_SYNC and db_user.team_id is not None:
+    if db_user.team_id is not None:
         try:
             await sync_update_user_team_role(
                 db=db, db_user=db_user, team_id=db_user.team_id
