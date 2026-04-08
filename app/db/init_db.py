@@ -6,9 +6,13 @@ from app.db.database import engine, SessionLocal
 logger = logging.getLogger(__name__)
 
 
-def init_api_token_expiry_options():
-    logger.info("Initializing API token expiry options...")
-    db = SessionLocal()
+def init_api_token_expiry_options(db=None):
+    print("Initializing API token expiry options...")
+    own_db = False
+    if db is None:
+        db = SessionLocal()
+        own_db = True
+
     try:
         options = [
             {"name": "1 day", "slug": "1_day", "days": 1},
@@ -39,13 +43,13 @@ def init_api_token_expiry_options():
                 db.add(db_opt)
 
         db.commit()
-        logger.info("API token expiry options initialized successfully!")
+        print("API token expiry options initialized successfully!")
     except Exception as e:
-        logger.exception("Error initializing API token expiry options: %s", e)
+        print(f"Error initializing API token expiry options: {e}")
         db.rollback()
-        raise
     finally:
-        db.close()
+        if own_db:
+            db.close()
 
 
 def init_db():
