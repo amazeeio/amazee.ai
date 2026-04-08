@@ -29,6 +29,11 @@ from app.core.security import (
     get_role_min_specific_team_admin,
 )
 from app.core.limit_service import LimitService, DEFAULT_MAX_SPEND
+from app.core.config import settings
+from app.core.litellm_user_sync import (
+    sync_add_user_to_team,
+    sync_remove_user_from_team,
+)
 from app.schemas.limits import ResourceType
 from app.services.litellm import LiteLLMService
 
@@ -340,6 +345,33 @@ async def associate_team_with_region(
     team_region = DBTeamRegion(team_id=team_id, region_id=region_id)
     db.add(team_region)
 
+    if settings.ENABLE_LITELLM_USER_SYNC:
+        litellm_service = LiteLLMService(
+            api_url=region.litellm_api_url, api_key=region.litellm_api_key
+        )
+        lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+        max_budget = 0.0 if team.budget_type == BudgetType.POOL else DEFAULT_MAX_SPEND
+        budget_duration = (
+            f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+            if team.budget_type == BudgetType.POOL
+            else None
+        )
+        await litellm_service.create_team(
+            team_id=lite_team_id,
+            team_alias=lite_team_id,
+            max_budget=max_budget,
+            budget_duration=budget_duration,
+        )
+
+        team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
+        for team_user in team_users:
+            await sync_add_user_to_team(
+                db=db,
+                db_user=team_user,
+                team_id=team_id,
+                force_regions=[region],
+            )
+
     try:
         db.commit()
     except Exception as e:
@@ -372,6 +404,16 @@ async def disassociate_team_from_region(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Team-region association not found",
         )
+
+    if settings.ENABLE_LITELLM_USER_SYNC:
+        team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
+        for team_user in team_users:
+            await sync_remove_user_from_team(
+                db=db,
+                db_user=team_user,
+                team_id=team_id,
+                force_regions=[association.region],
+            )
 
     # Remove the association
     db.delete(association)
