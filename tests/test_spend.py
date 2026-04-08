@@ -23,8 +23,24 @@ def test_get_team_spend_by_region(mock_get_key_info, client, team_admin_token, t
     db.commit()
 
     mock_get_key_info.side_effect = [
-        {"info": {"spend": 12.5, "max_budget": 50.0}},
-        {"info": {"spend": 7.5, "max_budget": 25.0}},
+        {
+            "info": {
+                "spend": 12.5,
+                "max_budget": 50.0,
+                "prompt_tokens": 100,
+                "completion_tokens": 40,
+                "total_tokens": 140,
+            }
+        },
+        {
+            "info": {
+                "spend": 7.5,
+                "max_budget": 25.0,
+                "prompt_tokens": 60,
+                "completion_tokens": 20,
+                "total_tokens": 80,
+            }
+        },
     ]
 
     response = client.get(
@@ -37,6 +53,9 @@ def test_get_team_spend_by_region(mock_get_key_info, client, team_admin_token, t
     assert data["region_id"] == test_region.id
     assert data["total_spend"] == 20.0
     assert data["total_budget"] == 75.0
+    assert data["total_prompt_tokens"] == 160
+    assert data["total_completion_tokens"] == 60
+    assert data["total_tokens"] == 220
     assert data["key_count"] == 2
 
 
@@ -52,7 +71,15 @@ def test_get_user_spend_by_region(mock_get_key_info, client, team_admin_token, t
     db.add(key)
     db.commit()
 
-    mock_get_key_info.return_value = {"info": {"spend": 11.25, "max_budget": 40.0}}
+    mock_get_key_info.return_value = {
+        "info": {
+            "spend": 11.25,
+            "max_budget": 40.0,
+            "prompt_tokens": 200,
+            "completion_tokens": 50,
+            "total_tokens": 250,
+        }
+    }
 
     response = client.get(
         f"/spend/{test_region.id}/user/{test_team_user.id}",
@@ -62,8 +89,14 @@ def test_get_user_spend_by_region(mock_get_key_info, client, team_admin_token, t
     data = response.json()
     assert data["user_id"] == test_team_user.id
     assert data["total_spend"] == 11.25
+    assert data["total_prompt_tokens"] == 200
+    assert data["total_completion_tokens"] == 50
+    assert data["total_tokens"] == 250
     assert data["key_count"] == 1
     assert data["keys"][0]["key_id"] == key.id
+    assert data["keys"][0]["prompt_tokens"] == 200
+    assert data["keys"][0]["completion_tokens"] == 50
+    assert data["keys"][0]["total_tokens"] == 250
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
@@ -87,6 +120,9 @@ def test_key_spend_alias(mock_get_key_info, client, team_admin_token, test_team_
             "max_budget": 100.0,
             "budget_duration": "30d",
             "budget_reset_at": "2026-02-01T00:00:00Z",
+            "prompt_tokens": 1200,
+            "completion_tokens": 300,
+            "total_tokens": 1500,
         }
     }
 
@@ -98,6 +134,9 @@ def test_key_spend_alias(mock_get_key_info, client, team_admin_token, test_team_
     data = response.json()
     assert data["spend"] == 10.5
     assert data["max_budget"] == 100.0
+    assert data["prompt_tokens"] == 1200
+    assert data["completion_tokens"] == 300
+    assert data["total_tokens"] == 1500
 
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
