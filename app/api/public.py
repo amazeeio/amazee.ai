@@ -45,6 +45,16 @@ def _infer_provider(item: dict[str, Any]) -> str:
     return "other"
 
 
+def _safe_float(value: Any) -> float | None:
+    """Coerce *value* to float, returning None on any parse failure."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _to_display_name(model_id: str) -> str:
     words = re.split(r"[-_]+", model_id)
     return " ".join(
@@ -70,8 +80,8 @@ def _extract_model_summary(item: dict[str, Any]) -> PublicModelSummary:
             supports_prompt_caching=bool(model_info.get("supports_prompt_caching")),
         ),
         pricing=PublicModelPricing(
-            input_cost_per_token="n/a",
-            output_cost_per_token="n/a",
+            input_cost_per_token=_safe_float(model_info.get("input_cost_per_token")),
+            output_cost_per_token=_safe_float(model_info.get("output_cost_per_token")),
         ),
     )
 

@@ -196,8 +196,8 @@ class PublicModel(BaseModel):
 
 
 class PublicModelPricing(BaseModel):
-    input_cost_per_token: str = "n/a"
-    output_cost_per_token: str = "n/a"
+    input_cost_per_token: Optional[float] = None
+    output_cost_per_token: Optional[float] = None
 
 
 class PublicModelCapabilities(BaseModel):
