@@ -523,6 +523,7 @@ def generate_api_token() -> str:
 @router.get("/token/expiry-options", response_model=List[APITokenExpiryOption])
 async def list_expiry_options(
     current_user=Depends(get_current_user_from_auth),
+    current_user=Depends(get_current_user_from_auth),
     db: Session = Depends(get_db),
 ):
     """List available API token expiry options"""
