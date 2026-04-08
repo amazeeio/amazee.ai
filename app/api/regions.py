@@ -28,6 +28,7 @@ from app.core.security import (
     get_role_min_system_admin,
     get_role_min_specific_team_admin,
 )
+from app.core.config import settings
 from app.core.limit_service import LimitService, DEFAULT_MAX_SPEND
 from app.schemas.limits import ResourceType
 from app.services.litellm import LiteLLMService
@@ -347,6 +348,43 @@ async def associate_team_with_region(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to associate team with region: {str(e)}",
+        )
+
+    # Bootstrap the team in the dedicated region's LiteLLM instance.
+    # POOL teams start at $0 (purchases raise the budget).
+    # PERIODIC teams start at DEFAULT_MAX_SPEND.
+    # Must happen after commit so the association is durable before touching
+    # the external service. Roll back on failure to avoid a broken half-state
+    # where the DB association exists but LiteLLM has no team entry.
+    max_budget = 0.0 if team.budget_type == BudgetType.POOL else DEFAULT_MAX_SPEND
+    budget_duration = (
+        f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+        if team.budget_type == BudgetType.POOL
+        else None
+    )
+    litellm_service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+    try:
+        await litellm_service.create_team(
+            team_id=lite_team_id,
+            team_alias=lite_team_id,
+            max_budget=max_budget,
+            budget_duration=budget_duration,
+        )
+    except Exception as e:
+        db.delete(team_region)
+        db.commit()
+        logger.error(
+            "Failed to bootstrap LiteLLM team %s in dedicated region %s: %s",
+            team_id,
+            region.name,
+            str(e),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to bootstrap team in LiteLLM: {str(e)}",
         )
 
     return {"message": "Team associated with region successfully"}
