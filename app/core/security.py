@@ -121,10 +121,20 @@ async def get_current_user_from_auth(
     try:
         db_token = db.query(DBAPIToken).filter(DBAPIToken.token == token_to_try).first()
         if db_token:
+            # Check if token is expired
+            if db_token.expires_at and db_token.expires_at < datetime.now(UTC):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="API token has expired",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+
             # Update last used timestamp
             db_token.last_used_at = datetime.now(UTC)
             db.commit()
             return db_token.owner
+    except HTTPException:
+        raise
     except Exception:
         pass
 

@@ -4,7 +4,7 @@ import secrets
 import os
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, UTC
 import email_validator
 
 from typing import Optional, List, Union
@@ -36,7 +36,7 @@ from app.core.limit_service import (
 from app.core.worker import generate_pricing_url
 
 from app.db.database import get_db
-from app.db.models import DBUser, DBAPIToken, DBRegion, DBTeam
+from app.db.models import DBUser, DBAPIToken, DBRegion, DBTeam, DBAPITokenExpiryOption
 
 from app.services.litellm import LiteLLMService
 from app.services.dynamodb import DynamoDBService
@@ -50,6 +50,7 @@ from app.schemas.models import (
     APIToken,
     APITokenCreate,
     APITokenResponse,
+    APITokenExpiryOption,
     UserUpdate,
     EmailValidation,
     LoginData,
@@ -519,6 +520,19 @@ def generate_api_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+@router.get("/token/expiry-options", response_model=List[APITokenExpiryOption])
+async def list_expiry_options(
+    db: Session = Depends(get_db),
+):
+    """List available API token expiry options"""
+    return (
+        db.query(DBAPITokenExpiryOption)
+        .filter(DBAPITokenExpiryOption.is_active)
+        .order_by(DBAPITokenExpiryOption.id)
+        .all()
+    )
+
+
 @router.post("/token", response_model=APIToken)
 async def create_token(
     token_create: APITokenCreate,
@@ -552,8 +566,31 @@ async def create_token(
         # Create token for the current user
         user_id = current_user.id
 
+    # Fetch expiry option from DB
+    expiry_slug = token_create.expiry or "forever"
+    db_expiry_opt = (
+        db.query(DBAPITokenExpiryOption)
+        .filter(DBAPITokenExpiryOption.slug == expiry_slug)
+        .first()
+    )
+
+    if not db_expiry_opt:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid expiry option: {expiry_slug}",
+        )
+
+    # Calculate expiration date
+    expires_at = None
+    if db_expiry_opt.days is not None:
+        expires_at = datetime.now(UTC) + timedelta(days=db_expiry_opt.days)
+
     db_token = DBAPIToken(
-        name=token_create.name, token=generate_api_token(), user_id=user_id
+        name=token_create.name,
+        token=generate_api_token(),
+        user_id=user_id,
+        expires_at=expires_at,
+        expiry_option=db_expiry_opt.slug,
     )
     db.add(db_token)
     db.commit()
