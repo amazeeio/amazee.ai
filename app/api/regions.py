@@ -377,7 +377,8 @@ async def associate_team_with_region(
         db.delete(team_region)
         db.commit()
         logger.error(
-            "Failed to bootstrap LiteLLM team %s in dedicated region %s: %s",
+            "Failed to bootstrap LiteLLM team %s (db team_id=%s) in dedicated region %s: %s",
+            lite_team_id,
             team_id,
             region.name,
             str(e),
