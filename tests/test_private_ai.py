@@ -99,10 +99,10 @@ def test_delete_private_ai_key(
 
     # Create a test private AI key
     test_key = DBPrivateAIKey(
-        database_name="test-db-delete",
+        database_name="test_db_delete",
         name="Test Key to Delete",
         database_host="test-host",
-        database_username="test-user",
+        database_username="test_user",
         database_password="test-pass",
         litellm_token="test-token-delete",
         litellm_api_url="https://test-litellm.com",
@@ -1940,10 +1940,10 @@ def test_delete_private_ai_key_with_only_vector_db(
     """Test deleting a private AI key that only has a vector database (no LLM token)"""
     # Create a test key with only vector DB
     test_key = DBPrivateAIKey(
-        database_name="test-db-vector-only",
+        database_name="test_db_vector_only",
         name="Test Vector DB Only",
         database_host="test-host",
-        database_username="test-user",
+        database_username="test_user",
         database_password="test-pass",
         litellm_token=None,  # No LLM token
         litellm_api_url=None,  # No LLM API URL

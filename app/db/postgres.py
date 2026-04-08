@@ -106,6 +106,10 @@ class PostgresManager:
     async def delete_database(
         self, database_name: str, database_username: str | None = None
     ):
+        _validate_identifier(database_name, "database name")
+        if database_username:
+            _validate_identifier(database_username, "database username")
+
         conn = await asyncpg.connect(
             host=self.host,
             port=self.port,
@@ -114,7 +118,6 @@ class PostgresManager:
         )
 
         try:
-            _validate_identifier(database_name, "database name")
             # Terminate all connections to the database (parameterized to prevent injection)
             await conn.execute(
                 """
@@ -126,7 +129,6 @@ class PostgresManager:
             )
             await conn.execute(f"DROP DATABASE IF EXISTS {database_name}")
             if database_username:
-                _validate_identifier(database_username, "database username")
                 await conn.execute(
                     """
                     SELECT pg_terminate_backend(pg_stat_activity.pid)
