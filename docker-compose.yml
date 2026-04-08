@@ -71,6 +71,44 @@ services:
     labels:
       lagoon.type: none
 
+  litellm2:
+    image: ghcr.io/berriai/litellm-database:main-latest
+    ports:
+      - "4010:4000"
+    environment:
+        DATABASE_URL: "postgresql://llmproxy:dbpassword9090@litellm2_db:5432/litellm"
+        STORE_MODEL_IN_DB: "True"
+        LITELLM_MASTER_KEY: "sk-1234"
+    depends_on:
+      - litellm2_db
+    healthcheck:
+      test: [ "CMD", "wget", "--spider", "--quiet", "http://localhost:4000/health/liveliness", "||", "exit", "1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    labels:
+      lagoon.type: none
+
+  litellm3:
+    image: ghcr.io/berriai/litellm-database:main-latest
+    ports:
+      - "4011:4000"
+    environment:
+        DATABASE_URL: "postgresql://llmproxy:dbpassword9090@litellm3_db:5432/litellm"
+        STORE_MODEL_IN_DB: "True"
+        LITELLM_MASTER_KEY: "sk-1234"
+    depends_on:
+      - litellm3_db
+    healthcheck:
+      test: [ "CMD", "wget", "--spider", "--quiet", "http://localhost:4000/health/liveliness", "||", "exit", "1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    labels:
+      lagoon.type: none
+
   litellm_db:
     image: postgres:16
     restart: always
@@ -80,6 +118,40 @@ services:
       POSTGRES_PASSWORD: dbpassword9090
     volumes:
       - litellm_postgres_data:/var/lib/postgresql/data  # Persists Postgres data across container restarts
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d litellm -U llmproxy"]
+      interval: 1s
+      timeout: 5s
+      retries: 10
+    labels:
+      lagoon.type: none
+
+  litellm2_db:
+    image: postgres:16
+    restart: always
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: llmproxy
+      POSTGRES_PASSWORD: dbpassword9090
+    volumes:
+      - litellm2_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d litellm -U llmproxy"]
+      interval: 1s
+      timeout: 5s
+      retries: 10
+    labels:
+      lagoon.type: none
+
+  litellm3_db:
+    image: postgres:16
+    restart: always
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: llmproxy
+      POSTGRES_PASSWORD: dbpassword9090
+    volumes:
+      - litellm3_postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -d litellm -U llmproxy"]
       interval: 1s
@@ -125,5 +197,9 @@ volumes:
   postgres_data:
   litellm_postgres_data:
     name: litellm_postgres_data  # Named volume for Postgres data persistence
+  litellm2_postgres_data:
+    name: litellm2_postgres_data
+  litellm3_postgres_data:
+    name: litellm3_postgres_data
   prometheus_data:
   grafana_data:
