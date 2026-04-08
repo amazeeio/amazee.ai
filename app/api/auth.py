@@ -745,11 +745,11 @@ async def generate_trial_access(
         .first()
     )
 
-    # Try region ID if region name is not found
-    if not region:
+    # Try region ID if region name is not found and the setting is numeric
+    if not region and settings.AI_TRIAL_REGION.isdigit():
         region = (
             db.query(DBRegion)
-            .filter(DBRegion.id == settings.AI_TRIAL_REGION, DBRegion.is_active)
+            .filter(DBRegion.id == int(settings.AI_TRIAL_REGION), DBRegion.is_active)
             .first()
         )
 

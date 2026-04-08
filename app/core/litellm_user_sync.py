@@ -8,6 +8,11 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 
+def _should_skip_litellm_sync(db_user: DBUser) -> bool:
+    email = (db_user.email or "").lower()
+    return email.startswith("trial-") and email.endswith("@example.com")
+
+
 def _dedupe_regions(regions: Iterable[DBRegion]) -> List[DBRegion]:
     seen: set[int] = set()
     deduped: List[DBRegion] = []
@@ -53,6 +58,10 @@ async def sync_create_user_across_regions(
     team_id: int | None = None,
     force_regions: List[DBRegion] | None = None,
 ) -> None:
+    if _should_skip_litellm_sync(db_user):
+        logger.info("Skipping LiteLLM user sync for trial user %s", db_user.email)
+        return
+
     regions = force_regions or get_target_regions_for_user(db, team_id)
     for region in regions:
         service = LiteLLMService(
@@ -78,6 +87,12 @@ async def sync_add_user_to_team(
     team_id: int,
     force_regions: List[DBRegion] | None = None,
 ) -> None:
+    if _should_skip_litellm_sync(db_user):
+        logger.info(
+            "Skipping LiteLLM team membership sync for trial user %s", db_user.email
+        )
+        return
+
     regions = force_regions or get_target_regions_for_user(db, team_id)
     for region in regions:
         service = LiteLLMService(
@@ -102,6 +117,12 @@ async def sync_remove_user_from_team(
     team_id: int,
     force_regions: List[DBRegion] | None = None,
 ) -> None:
+    if _should_skip_litellm_sync(db_user):
+        logger.info(
+            "Skipping LiteLLM team membership removal for trial user %s", db_user.email
+        )
+        return
+
     regions = force_regions or get_target_regions_for_user(db, team_id)
     for region in regions:
         service = LiteLLMService(
@@ -117,6 +138,10 @@ async def sync_update_user_team_role(
     team_id: int,
     force_regions: List[DBRegion] | None = None,
 ) -> None:
+    if _should_skip_litellm_sync(db_user):
+        logger.info("Skipping LiteLLM team role sync for trial user %s", db_user.email)
+        return
+
     regions = force_regions or get_target_regions_for_user(db, team_id)
     role = _team_role_for_litellm(db_user)
     for region in regions:
@@ -132,6 +157,12 @@ async def sync_update_user_team_role(
 async def sync_delete_user_across_regions(
     db: Session, db_user: DBUser, team_id: int | None = None
 ) -> None:
+    if _should_skip_litellm_sync(db_user):
+        logger.info(
+            "Skipping LiteLLM user delete sync for trial user %s", db_user.email
+        )
+        return
+
     regions = get_target_regions_for_user(db, team_id)
     for region in regions:
         service = LiteLLMService(
