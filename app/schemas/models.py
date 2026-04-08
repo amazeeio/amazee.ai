@@ -360,6 +360,24 @@ class UserSpendResponse(BaseModel):
     keys: List[SpendKeyItem]
 
 
+class SpendBudgetUpdateRequest(BaseModel):
+    max_budget: Optional[float] = Field(default=None, ge=0)
+    budget_duration: Optional[str] = None
+
+
+class SpendBudgetUpdateResponse(BaseModel):
+    scope: Literal["team", "user", "key", "team_member"]
+    source_endpoint: str
+    region_id: int
+    region_name: str
+    team_id: Optional[int] = None
+    user_id: Optional[int] = None
+    key_id: Optional[int] = None
+    max_budget: Optional[float] = None
+    budget_duration: Optional[str] = None
+    note: Optional[str] = None
+
+
 class LiteLLMToken(BaseModel):
     id: int
     litellm_token: str

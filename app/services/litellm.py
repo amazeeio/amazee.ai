@@ -286,6 +286,47 @@ class LiteLLMService:
                 detail=f"Failed to update LiteLLM budget: {error_msg}",
             )
 
+    async def update_key_budget(
+        self,
+        litellm_token: str,
+        budget_duration: Optional[str] = None,
+        max_budget: Optional[float] = None,
+        clear_max_budget: bool = False,
+    ) -> None:
+        """Update budget fields for a LiteLLM key.
+
+        When clear_max_budget=True, max_budget is explicitly sent as null.
+        """
+        try:
+            request_data = {
+                "key": litellm_token,
+                "duration": "365d",
+            }
+            if budget_duration is not None:
+                request_data["budget_duration"] = budget_duration
+            if clear_max_budget or max_budget is not None:
+                request_data["max_budget"] = max_budget
+
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/key/update",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json=request_data,
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            error_msg = str(e)
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update LiteLLM key budget: {error_msg}",
+            )
+
     async def update_key_duration(self, litellm_token: str, duration: str):
         """Update the duration for a LiteLLM API key"""
         try:
@@ -629,9 +670,17 @@ class LiteLLMService:
                 detail=f"Failed to add LiteLLM team member: {error_msg}",
             )
 
-    async def update_team_member(self, team_id: str, user_id: str, role: str) -> None:
+    async def update_team_member(
+        self,
+        team_id: str,
+        user_id: str,
+        role: str,
+        max_budget_in_team: Optional[float] = None,
+    ) -> None:
         """Update a user's role within a LiteLLM team."""
         payload = {"team_id": team_id, "user_id": user_id, "role": role}
+        if max_budget_in_team is not None:
+            payload["max_budget_in_team"] = max_budget_in_team
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(

@@ -3,11 +3,22 @@ from sqlalchemy.orm import Session
 
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
 from app.core.roles import UserRole
-from app.core.security import get_current_user_from_auth, get_private_ai_access
+from app.core.security import (
+    get_current_user_from_auth,
+    get_private_ai_access,
+    get_role_min_team_admin,
+)
 from app.db.database import get_db
 from app.db.models import DBPrivateAIKey, DBRegion, DBTeam, DBUser
 from app.schemas.limits import ResourceType
-from app.schemas.models import PrivateAIKeySpend, SpendKeyItem, TeamSpendResponse, UserSpendResponse
+from app.schemas.models import (
+    PrivateAIKeySpend,
+    SpendBudgetUpdateRequest,
+    SpendBudgetUpdateResponse,
+    SpendKeyItem,
+    TeamSpendResponse,
+    UserSpendResponse,
+)
 from app.services.litellm import LiteLLMService
 
 router = APIRouter(tags=["spend"])
@@ -51,6 +62,32 @@ def _assert_user_access(current_user: DBUser, role: str, target_user: DBUser) ->
         status_code=status.HTTP_403_FORBIDDEN,
         detail="Not authorized to perform this action",
     )
+
+
+def _assert_team_budget_write_access(current_user: DBUser, team_id: int) -> None:
+    if current_user.is_admin:
+        return
+    if current_user.role != UserRole.TEAM_ADMIN or current_user.team_id != team_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action",
+        )
+
+
+def _assert_user_budget_write_access(
+    current_user: DBUser, target_user: DBUser
+) -> None:
+    if current_user.is_admin:
+        return
+    if (
+        current_user.role != UserRole.TEAM_ADMIN
+        or current_user.team_id is None
+        or current_user.team_id != target_user.team_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action",
+        )
 
 
 async def _get_key_spend_items(
@@ -316,3 +353,170 @@ async def get_key_spend_alias(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get Private AI Key spend: {str(exc)}",
         )
+
+
+@router.put("/{region_id}/team/{team_id}/budget", response_model=SpendBudgetUpdateResponse)
+async def update_team_budget(
+    region_id: int,
+    team_id: int,
+    body: SpendBudgetUpdateRequest,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    _: str = Depends(get_role_min_team_admin),
+    db: Session = Depends(get_db),
+):
+    team = db.query(DBTeam).filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None)).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    _assert_team_budget_write_access(current_user, team_id)
+    region = _get_region_or_404(db, region_id)
+    service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+    lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+
+    await service.update_team_budget(
+        team_id=lite_team_id,
+        max_budget=body.max_budget,
+        budget_duration=body.budget_duration,
+    )
+    info = await service.get_team_info(lite_team_id)
+    team_info = info.get("team_info", info)
+    return SpendBudgetUpdateResponse(
+        scope="team",
+        source_endpoint="/team/update",
+        region_id=region_id,
+        region_name=region.name,
+        team_id=team_id,
+        max_budget=team_info.get("max_budget"),
+        budget_duration=team_info.get("budget_duration"),
+        note="For team keys, team budget governs spend enforcement.",
+    )
+
+
+@router.put("/{region_id}/user/{user_id}/budget", response_model=SpendBudgetUpdateResponse)
+async def update_user_budget(
+    region_id: int,
+    user_id: int,
+    body: SpendBudgetUpdateRequest,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    _: str = Depends(get_role_min_team_admin),
+    db: Session = Depends(get_db),
+):
+    user = db.query(DBUser).filter(DBUser.id == user_id, DBUser.is_active.is_(True)).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    _assert_user_budget_write_access(current_user, user)
+    region = _get_region_or_404(db, region_id)
+    service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+
+    await service.update_user(
+        user_id=str(user_id),
+        updates={
+            "max_budget": body.max_budget,
+            "budget_duration": body.budget_duration,
+        },
+    )
+    user_info = await service.get_user_info(str(user_id))
+    data = user_info.get("user_info", user_info)
+    return SpendBudgetUpdateResponse(
+        scope="user",
+        source_endpoint="/user/update",
+        region_id=region_id,
+        region_name=region.name,
+        team_id=user.team_id,
+        user_id=user_id,
+        max_budget=data.get("max_budget"),
+        budget_duration=data.get("budget_duration"),
+        note="If key has team_id, team/team-member budget can override user-level enforcement.",
+    )
+
+
+@router.put(
+    "/{region_id}/team/{team_id}/member/{user_id}/budget",
+    response_model=SpendBudgetUpdateResponse,
+)
+async def update_team_member_budget(
+    region_id: int,
+    team_id: int,
+    user_id: int,
+    body: SpendBudgetUpdateRequest,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    _: str = Depends(get_role_min_team_admin),
+    db: Session = Depends(get_db),
+):
+    team = db.query(DBTeam).filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None)).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    user = db.query(DBUser).filter(DBUser.id == user_id, DBUser.is_active.is_(True)).first()
+    if not user or user.team_id != team_id:
+        raise HTTPException(status_code=404, detail="User not found in team")
+    _assert_team_budget_write_access(current_user, team_id)
+    region = _get_region_or_404(db, region_id)
+    service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+    lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+
+    if body.max_budget is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="max_budget is required for team-member budget updates",
+        )
+
+    await service.update_team_member(
+        team_id=lite_team_id,
+        user_id=str(user_id),
+        role="user",
+        max_budget_in_team=body.max_budget,
+    )
+    return SpendBudgetUpdateResponse(
+        scope="team_member",
+        source_endpoint="/team/member_update",
+        region_id=region_id,
+        region_name=region.name,
+        team_id=team_id,
+        user_id=user_id,
+        max_budget=body.max_budget,
+        budget_duration=body.budget_duration,
+        note="This budget is scoped to the user within the specified team.",
+    )
+
+
+@router.put("/{region_id}/key/{key_id}/budget", response_model=SpendBudgetUpdateResponse)
+async def update_key_budget(
+    region_id: int,
+    key_id: int,
+    body: SpendBudgetUpdateRequest,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    _: str = Depends(get_role_min_team_admin),
+    db: Session = Depends(get_db),
+):
+    key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
+    if not key or key.region_id != region_id:
+        raise HTTPException(status_code=404, detail="Private AI Key not found in region")
+    if key.team_id is not None:
+        _assert_team_budget_write_access(current_user, key.team_id)
+    else:
+        owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
+        if not owner:
+            raise HTTPException(status_code=404, detail="Key owner not found")
+        _assert_user_budget_write_access(current_user, owner)
+
+    region = _get_region_or_404(db, region_id)
+    service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+    await service.update_key_budget(
+        litellm_token=key.litellm_token,
+        budget_duration=body.budget_duration,
+        max_budget=body.max_budget,
+        clear_max_budget=body.max_budget is None,
+    )
+    key_info = await service.get_key_info(key.litellm_token)
+    info = key_info.get("info", {})
+    return SpendBudgetUpdateResponse(
+        scope="key",
+        source_endpoint="/key/update",
+        region_id=region_id,
+        region_name=region.name,
+        team_id=key.team_id,
+        user_id=key.owner_id,
+        key_id=key_id,
+        max_budget=info.get("max_budget"),
+        budget_duration=info.get("budget_duration"),
+        note="If key has team_id, team/team-member budgets may take precedence during enforcement.",
+    )
