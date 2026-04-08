@@ -25,7 +25,7 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres/postgres_service
       AMAZEEAI_JWT_SECRET: ${AMAZEEAI_JWT_SECRET}
       ENABLE_METRICS: "true"  # Enable Prometheus metrics
-      ENABLE_LITELLM_USER_SYNC: "true"
+      AI_TRIAL_REGION: ${AI_TRIAL_REGION:-eu-west}
     ports:
       - "8800:8800"
     volumes:
