@@ -374,8 +374,6 @@ async def associate_team_with_region(
             budget_duration=budget_duration,
         )
     except Exception as e:
-        db.delete(team_region)
-        db.commit()
         logger.error(
             "Failed to bootstrap LiteLLM team %s (db team_id=%s) in dedicated region %s: %s",
             lite_team_id,
@@ -383,6 +381,17 @@ async def associate_team_with_region(
             region.name,
             str(e),
         )
+        try:
+            db.delete(team_region)
+            db.commit()
+        except Exception as db_err:
+            db.rollback()
+            logger.error(
+                "Failed to remove DB association for team %s in region %s after LiteLLM bootstrap failure: %s",
+                team_id,
+                region.name,
+                str(db_err),
+            )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to bootstrap team in LiteLLM",
