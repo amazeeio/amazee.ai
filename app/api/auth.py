@@ -528,7 +528,7 @@ async def list_expiry_options(
     """List available API token expiry options"""
     return (
         db.query(DBAPITokenExpiryOption)
-        .filter(DBAPITokenExpiryOption.is_active == True)  # noqa: E712
+        .filter(DBAPITokenExpiryOption.is_active)
         .order_by(DBAPITokenExpiryOption.id)
         .all()
     )
@@ -573,7 +573,7 @@ async def create_token(
         db.query(DBAPITokenExpiryOption)
         .filter(
             DBAPITokenExpiryOption.slug == expiry_slug,
-            DBAPITokenExpiryOption.is_active == True,  # noqa: E712
+            DBAPITokenExpiryOption.is_active,
         )
         .first()
     )
