@@ -933,7 +933,9 @@ def test_associate_team_with_dedicated_region(
     assert response.json()["message"] == "Team associated with region successfully"
     mock_create_team.assert_called_once()
     call_kwargs = mock_create_team.call_args.kwargs
-    assert call_kwargs["team_id"] == f"dedicated-region-for-association_{test_team.id}"
+    assert call_kwargs["team_id"] == LiteLLMService.format_team_id(
+        "dedicated-region-for-association", test_team.id
+    )
     # PERIODIC team: max_budget should be DEFAULT_MAX_SPEND, no budget_duration
     assert call_kwargs["max_budget"] > 0
     assert call_kwargs["budget_duration"] is None
