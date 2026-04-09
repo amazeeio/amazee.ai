@@ -26,7 +26,14 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from app.core.limit_service import DEFAULT_MAX_SPEND
 from app.db.database import SessionLocal
-from app.db.models import DBLimitedResource, DBPrivateAIKey, DBRegion, DBTeam, DBTeamRegion, DBUser
+from app.db.models import (
+    DBLimitedResource,
+    DBPrivateAIKey,
+    DBRegion,
+    DBTeam,
+    DBTeamRegion,
+    DBUser,
+)
 from app.schemas.limits import OwnerType, ResourceType
 from app.schemas.models import BudgetType
 from app.services.litellm import LiteLLMService
@@ -126,12 +133,19 @@ class BackfillRunner:
         return out
 
     def _target_regions_for_team(
-        self, team_id: int, shared: list[DBRegion], dedicated_by_team: dict[int, list[DBRegion]]
+        self,
+        team_id: int,
+        shared: list[DBRegion],
+        dedicated_by_team: dict[int, list[DBRegion]],
     ) -> list[DBRegion]:
         return dedupe_regions([*shared, *dedicated_by_team.get(team_id, [])])
 
     async def _ensure_team_exists(
-        self, service: LiteLLMService, lite_team_id: str, max_budget: float | None, budget_duration: str | None
+        self,
+        service: LiteLLMService,
+        lite_team_id: str,
+        max_budget: float | None,
+        budget_duration: str | None,
     ) -> tuple[bool, str]:
         try:
             await service.get_team_info(lite_team_id)
@@ -164,9 +178,7 @@ class BackfillRunner:
 
         for team in teams:
             regions = self._target_regions_for_team(team.id, shared, dedicated_by_team)
-            budget_duration = (
-                "365d" if team.budget_type == BudgetType.POOL else None
-            )
+            budget_duration = "365d" if team.budget_type == BudgetType.POOL else None
             budget_limit = team_budget_limit(self.session, team.id)
             max_budget = (
                 0.0
@@ -208,9 +220,7 @@ class BackfillRunner:
                             "error": str(exc),
                         }
                     )
-                    print(
-                        f"[teams] team={team.id} region={region.name} FAILED: {exc}"
-                    )
+                    print(f"[teams] team={team.id} region={region.name} FAILED: {exc}")
 
                 if self.max_rows is not None and counters.processed >= self.max_rows:
                     return counters
@@ -236,16 +246,24 @@ class BackfillRunner:
             if user.team_id is None:
                 regions = shared
             else:
-                team = self.session.query(DBTeam).filter(DBTeam.id == user.team_id).first()
+                team = (
+                    self.session.query(DBTeam).filter(DBTeam.id == user.team_id).first()
+                )
                 if not team or team.deleted_at is not None or not team.is_active:
                     counters.skipped += 1
-                    print(f"[users] user={user.id} skipped inactive/deleted team={user.team_id}")
+                    print(
+                        f"[users] user={user.id} skipped inactive/deleted team={user.team_id}"
+                    )
                     continue
-                regions = self._target_regions_for_team(user.team_id, shared, dedicated_by_team)
+                regions = self._target_regions_for_team(
+                    user.team_id, shared, dedicated_by_team
+                )
 
             try:
                 for region in regions:
-                    service = LiteLLMService(region.litellm_api_url, region.litellm_api_key)
+                    service = LiteLLMService(
+                        region.litellm_api_url, region.litellm_api_key
+                    )
                     if not self.dry_run:
                         await service.create_user(
                             user_id=str(user.id),
@@ -253,7 +271,9 @@ class BackfillRunner:
                             auto_create_key=False,
                         )
                     if user.team_id is not None:
-                        lite_team_id = LiteLLMService.format_team_id(region.name, user.team_id)
+                        lite_team_id = LiteLLMService.format_team_id(
+                            region.name, user.team_id
+                        )
                         if not self.dry_run:
                             await service.add_team_member(
                                 team_id=lite_team_id, user_id=str(user.id), role="user"
@@ -273,7 +293,11 @@ class BackfillRunner:
         return counters
 
     async def _update_litellm_key_associations(
-        self, region: DBRegion, litellm_token: str, lite_team_id: str | None, user_id: int | None
+        self,
+        region: DBRegion,
+        litellm_token: str,
+        lite_team_id: str | None,
+        user_id: int | None,
     ) -> None:
         payload: dict = {"key": litellm_token}
         if lite_team_id is not None:
@@ -283,25 +307,39 @@ class BackfillRunner:
 
         headers = {"Authorization": f"Bearer {region.litellm_api_key}"}
         async with httpx.AsyncClient() as client:
-            resp = await client.post(f"{region.litellm_api_url}/key/update", json=payload, headers=headers)
+            resp = await client.post(
+                f"{region.litellm_api_url}/key/update", json=payload, headers=headers
+            )
             resp.raise_for_status()
 
     async def phase_keys(self) -> Counters:
         counters = Counters()
-        query = self.session.query(DBPrivateAIKey).filter(DBPrivateAIKey.litellm_token.isnot(None))
+        query = self.session.query(DBPrivateAIKey).filter(
+            DBPrivateAIKey.litellm_token.isnot(None)
+        )
         if self.only_key_id is not None:
             query = query.filter(DBPrivateAIKey.id == self.only_key_id)
         keys = query.order_by(DBPrivateAIKey.id.asc()).all()
 
         for key in keys:
             counters.processed += 1
-            region = self.session.query(DBRegion).filter(DBRegion.id == key.region_id).first()
+            region = (
+                self.session.query(DBRegion)
+                .filter(DBRegion.id == key.region_id)
+                .first()
+            )
             if not region or not region.is_active:
                 counters.skipped += 1
-                print(f"[keys] key={key.id} skipped inactive/missing region={key.region_id}")
+                print(
+                    f"[keys] key={key.id} skipped inactive/missing region={key.region_id}"
+                )
                 continue
 
-            owner = self.session.query(DBUser).filter(DBUser.id == key.owner_id).first() if key.owner_id else None
+            owner = (
+                self.session.query(DBUser).filter(DBUser.id == key.owner_id).first()
+                if key.owner_id
+                else None
+            )
             if owner and is_trial_user(owner.email):
                 counters.skipped += 1
                 print(f"[keys] key={key.id} skipped trial owner={owner.id}")
