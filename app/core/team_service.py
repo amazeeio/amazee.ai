@@ -211,13 +211,14 @@ async def propagate_team_budget_to_keys(
     budget_amount: float,
     budget_duration: str,
     region_id: Optional[int] = None,
+    apply_to_keys: bool = True,
 ) -> dict:
     """
     Propagate a team budget limit change to the LiteLLM team and all its keys.
 
-    This function updates the LiteLLM team max_budget (shared ceiling) and all
-    keys (both user-owned and team-owned) with the new budget amount when a
-    team's budget limit is changed.
+    This function updates the LiteLLM team max_budget (shared ceiling), and
+    optionally updates all keys (both user-owned and team-owned) with the new
+    budget amount when a team's budget limit is changed.
 
     Args:
         db: Database session
@@ -227,6 +228,8 @@ async def propagate_team_budget_to_keys(
         region_id: Optional region ID to restrict updates to a single region.
             When provided the LiteLLM team for that region is updated even if
             the team currently has no keys there.
+        apply_to_keys: Whether to propagate budget updates to keys in addition
+            to the team budget.
 
     Returns:
         dict with "teams_updated" (number of LiteLLM teams successfully updated)
@@ -303,6 +306,9 @@ async def propagate_team_budget_to_keys(
                 logger.error(
                     f"Failed to update team {team_id} budget in region {region_obj.name}: {str(team_error)}"
                 )
+
+            if not apply_to_keys:
+                continue
 
             # Update each key's budget via LiteLLM
             for key in keys:

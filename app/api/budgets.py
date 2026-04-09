@@ -41,6 +41,7 @@ async def purchase_pool_budget(
 
     Only works for teams with budget_type = POOL.
     Handles concurrent purchases by checking for duplicate stripe_payment_id.
+    POOL updates are team-budget only; per-key max_budget remains unset.
     """
     team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not team:
@@ -121,6 +122,7 @@ async def purchase_pool_budget(
             new_total_budget,
             f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
             region_id=region_id,
+            apply_to_keys=False,
         )
     except Exception as e:
         db.rollback()
@@ -274,6 +276,7 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                     0.0,
                     f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
                     region_id=rid,
+                    apply_to_keys=False,
                 )
                 errors.extend(result["errors"])
                 if result["teams_updated"] > 0:
@@ -293,6 +296,7 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                     0.0,
                     f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
                     region_id=rid,
+                    apply_to_keys=False,
                 )
                 errors.extend(result["errors"])
                 if result["teams_updated"] > 0:
