@@ -538,7 +538,11 @@ class LimitService:
                 try:
                     loop.run_until_complete(
                         propagate_team_budget_to_keys(
-                            db, team_id, budget_amount, budget_duration
+                            db,
+                            team_id,
+                            budget_amount,
+                            budget_duration,
+                            update_key_limits=team.budget_type != BudgetType.POOL,
                         )
                     )
                 finally:

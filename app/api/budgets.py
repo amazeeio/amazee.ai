@@ -9,6 +9,8 @@ from app.db.database import get_db
 from app.db.models import DBTeam, DBRegion, DBPoolPurchase
 from app.core.security import get_role_min_system_admin
 from app.core.config import settings
+from app.core.limit_service import LimitService
+from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
 from app.schemas.models import (
     PoolPurchaseRequest,
     PoolPurchaseResponse,
@@ -114,6 +116,21 @@ async def purchase_pool_budget(
     # cumulative total of all purchases — NOT "purchases minus spend".
     new_total_budget = total_purchased_dollars
 
+    # Persist team budget limit so later reconciliations do not recreate a
+    # default 0.0 POOL budget and overwrite LiteLLM team budget.
+    limit_service = LimitService(db)
+    limit_service.set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=team_id,
+        resource_type=ResourceType.BUDGET,
+        limit_type=LimitType.DATA_PLANE,
+        unit=UnitType.DOLLAR,
+        max_value=new_total_budget,
+        current_value=None,
+        limited_by=LimitSource.MANUAL,
+        set_by="pool_purchase",
+    )
+
     try:
         await propagate_team_budget_to_keys(
             db,
@@ -121,6 +138,7 @@ async def purchase_pool_budget(
             new_total_budget,
             f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
             region_id=region_id,
+            update_key_limits=False,
         )
     except Exception as e:
         db.rollback()
@@ -274,6 +292,7 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                     0.0,
                     f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
                     region_id=rid,
+                    update_key_limits=False,
                 )
                 errors.extend(result["errors"])
                 if result["teams_updated"] > 0:
@@ -293,6 +312,7 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                     0.0,
                     f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
                     region_id=rid,
+                    update_key_limits=False,
                 )
                 errors.extend(result["errors"])
                 if result["teams_updated"] > 0:
