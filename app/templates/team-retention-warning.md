@@ -13,7 +13,8 @@ We noticed you haven't used your amazee.ai account in about 90 days, and wanted 
 
 **Why we do this:** We take data privacy seriously. If you're not actively using amazee.ai, we don't want to hold onto your information indefinitely. This policy helps us keep your data safe and our systems clean.
 
-**Have questions?** Reach out to us at ai.support@amazee.io—we're here to help.
+**Have questions?** Reach out to us at ai.support@amazee.io — we're here to help.
 
 Thanks for trying amazee.ai. We'd love to see you back.
-—The amazee.ai team
+
+— The amazee.ai team
