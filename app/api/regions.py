@@ -341,34 +341,10 @@ async def associate_team_with_region(
             detail="Team is already associated with this region",
         )
 
-    team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
-    for team_user in team_users:
-        await sync_add_user_to_team(
-            db=db,
-            db_user=team_user,
-            team_id=team_id,
-            force_regions=[region],
-        )
-
-    # Create the association only after remote sync succeeds.
-    team_region = DBTeamRegion(team_id=team_id, region_id=region_id)
-    db.add(team_region)
-
-    try:
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to associate team with region: {str(e)}",
-        )
-
-    # Bootstrap the team in the dedicated region's LiteLLM instance.
+    # Bootstrap the team in the dedicated region's LiteLLM instance before
+    # syncing members. LiteLLM requires team existence for member_add.
     # POOL teams start at $0 (purchases raise the budget).
     # PERIODIC teams start at DEFAULT_MAX_SPEND.
-    # Must happen after commit so the association is durable before touching
-    # the external service. Roll back on failure to avoid a broken half-state
-    # where the DB association exists but LiteLLM has no team entry.
     max_budget = 0.0 if team.budget_type == BudgetType.POOL else DEFAULT_MAX_SPEND
     budget_duration = (
         f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
@@ -394,20 +370,31 @@ async def associate_team_with_region(
             region.name,
             str(e),
         )
-        try:
-            db.delete(team_region)
-            db.commit()
-        except Exception as db_err:
-            db.rollback()
-            logger.error(
-                "Failed to remove DB association for team %s in region %s after LiteLLM bootstrap failure: %s",
-                team_id,
-                region.name,
-                str(db_err),
-            )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to bootstrap team in LiteLLM",
+        )
+
+    team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
+    for team_user in team_users:
+        await sync_add_user_to_team(
+            db=db,
+            db_user=team_user,
+            team_id=team_id,
+            force_regions=[region],
+        )
+
+    # Create the association only after remote sync succeeds.
+    team_region = DBTeamRegion(team_id=team_id, region_id=region_id)
+    db.add(team_region)
+
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to associate team with region: {str(e)}",
         )
 
     return {"message": "Team associated with region successfully"}
