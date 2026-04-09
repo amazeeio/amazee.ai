@@ -856,20 +856,23 @@ async def delete_private_ai_key(
             status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
         )
 
-    # Delete LiteLLM token first
-    litellm_service = LiteLLMService(
-        api_url=region.litellm_api_url, api_key=region.litellm_api_key
-    )
-    try:
-        await litellm_service.delete_key(private_ai_key.litellm_token)
-    except HTTPException as e:
-        # Propagate the HTTP exception with its status code
-        raise e
+    # Delete LiteLLM token first when present (vector-db-only keys have no token)
+    if private_ai_key.litellm_token:
+        litellm_service = LiteLLMService(
+            api_url=region.litellm_api_url, api_key=region.litellm_api_key
+        )
+        try:
+            await litellm_service.delete_key(private_ai_key.litellm_token)
+        except HTTPException as e:
+            # Propagate the HTTP exception with its status code
+            raise e
 
     # Only delete the database if it exists
     if private_ai_key.database_name:
         postgres_manager = PostgresManager(region=region)
-        await postgres_manager.delete_database(private_ai_key.database_name)
+        await postgres_manager.delete_database(
+            private_ai_key.database_name, private_ai_key.database_username
+        )
 
     # Remove the private AI key record from the application database
     db.delete(private_ai_key)

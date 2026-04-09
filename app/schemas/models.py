@@ -196,8 +196,8 @@ class PublicModel(BaseModel):
 
 
 class PublicModelPricing(BaseModel):
-    input_cost_per_token: str = "n/a"
-    output_cost_per_token: str = "n/a"
+    input_cost_per_token: Optional[float] = None
+    output_cost_per_token: Optional[float] = None
 
 
 class PublicModelCapabilities(BaseModel):
@@ -665,3 +665,24 @@ class PoolRegionPurchaseHistoryResponse(BaseModel):
     region_id: int
     purchases: List[PoolRegionPurchaseHistoryItem]
     model_config = ConfigDict(from_attributes=True)
+
+
+class UserSpendRegion(BaseModel):
+    region_id: int
+    region_name: str
+    spend: float
+    status: str
+
+
+class UserSpendTeam(BaseModel):
+    team_id: int
+    team_name: str
+    spend: float
+    regions: List[UserSpendRegion]
+
+
+class UserSpendResponse(BaseModel):
+    email: str
+    total_spend: float
+    teams: List[UserSpendTeam]
+    cached_at: datetime
