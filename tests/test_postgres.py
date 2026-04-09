@@ -22,19 +22,21 @@ def test_validate_identifier_accepts_valid_names(name):
 @pytest.mark.parametrize(
     "name",
     [
-        "db-name",           # hyphen
-        "db name",           # space
-        "db'name",           # single quote (SQL injection vector)
-        'db"name',           # double quote
-        "db;DROP TABLE x",   # semicolon injection
-        "db\x00name",        # null byte
-        "",                  # empty string
-        "db/name",           # slash
-        "db.name",           # dot
+        "db-name",  # hyphen
+        "db name",  # space
+        "db'name",  # single quote (SQL injection vector)
+        'db"name',  # double quote
+        "db;DROP TABLE x",  # semicolon injection
+        "db\x00name",  # null byte
+        "",  # empty string
+        "db/name",  # slash
+        "db.name",  # dot
     ],
 )
 def test_validate_identifier_rejects_unsafe_names(name):
-    with pytest.raises(ValueError, match="only alphanumeric characters and underscores"):
+    with pytest.raises(
+        ValueError, match="only alphanumeric characters and underscores"
+    ):
         _validate_identifier(name)
 
 

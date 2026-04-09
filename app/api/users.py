@@ -26,7 +26,7 @@ from app.schemas.models import (
     TeamOperation,
     UserRoleUpdate,
     UserSpendRegion,
-    UserSpendResponse,
+    UserSpendByEmailResponse,
     UserSpendTeam,
 )
 from app.db.models import (
@@ -49,7 +49,6 @@ from datetime import datetime, UTC
 import logging
 import asyncio
 import httpx
-from app.services.litellm import LiteLLMService
 
 logger = logging.getLogger(__name__)
 _USER_SPEND_CACHE_TTL_SECONDS = 15 * 60
@@ -210,7 +209,7 @@ async def _fetch_region_spend(
 
 async def _compute_user_spend(
     normalized_email: str, db: Session
-) -> tuple[UserSpendResponse, bool]:
+) -> tuple[UserSpendByEmailResponse, bool]:
     users = (
         db.query(DBUser, DBTeam.name.label("team_name"))
         .join(DBTeam, DBUser.team_id == DBTeam.id)
@@ -319,7 +318,7 @@ async def _compute_user_spend(
             )
         )
 
-    response = UserSpendResponse(
+    response = UserSpendByEmailResponse(
         email=normalized_email,
         total_spend=total_spend,
         teams=sorted(teams, key=lambda t: t.team_id),
@@ -429,7 +428,7 @@ async def get_users_by_email(
 
 @router.get(
     "/spend",
-    response_model=UserSpendResponse,
+    response_model=UserSpendByEmailResponse,
     dependencies=[Depends(get_role_min_system_admin)],
 )
 async def get_user_spend(
@@ -451,7 +450,7 @@ async def get_user_spend(
     if cached:
         payload = dict(cached.response_data or {})
         payload["cached_at"] = cached.cached_at
-        return UserSpendResponse.model_validate(payload)
+        return UserSpendByEmailResponse.model_validate(payload)
 
     response, had_region_failures = await _compute_user_spend(normalized_email, db)
     if not had_region_failures:

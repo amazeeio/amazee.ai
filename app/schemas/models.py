@@ -681,7 +681,7 @@ class UserSpendTeam(BaseModel):
     regions: List[UserSpendRegion]
 
 
-class UserSpendResponse(BaseModel):
+class UserSpendByEmailResponse(BaseModel):
     email: str
     total_spend: float
     teams: List[UserSpendTeam]
