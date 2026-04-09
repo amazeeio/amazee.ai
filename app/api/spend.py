@@ -364,7 +364,7 @@ async def get_user_spend(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     items: list[SpendKeyItem] = []
-    total_spend = 0.0
+    total_spend = None
     total_prompt_tokens = None
     total_completion_tokens = None
     total_tokens = None
