@@ -242,11 +242,25 @@ class PrivateAIKeyBase(BaseModel):
 
 
 class PrivateAIKeyCreate(BaseModel):
-    region_id: int
-    name: str
+    region_id: int = Field(
+        description="Target region ID where the key and backing resources are created."
+    )
+    name: str = Field(description="Human-readable key name.")
     key_alias: Optional[str] = None
-    owner_id: Optional[int] = None
-    team_id: Optional[int] = None
+    owner_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "User-owned key mode. Set this to bind the key to a specific user. "
+            "If omitted together with team_id, owner_id defaults to the current user."
+        ),
+    )
+    team_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Team-owned key mode. Set this to create a shared team key. "
+            "Mutually exclusive with owner_id."
+        ),
+    )
 
 
 class VectorDBCreate(BaseModel):
