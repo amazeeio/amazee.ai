@@ -36,18 +36,23 @@ def get_pool_keys_grouped_by_region(session):
     if not pool_team_ids:
         return defaultdict(list)
 
-    keys = session.query(DBPrivateAIKey).all()
+    keys = (
+        session.query(DBPrivateAIKey)
+        .outerjoin(DBUser, DBUser.id == DBPrivateAIKey.owner_id)
+        .filter(DBPrivateAIKey.litellm_token.isnot(None))
+        .filter(DBPrivateAIKey.region_id.isnot(None))
+        .filter(
+            (DBPrivateAIKey.team_id.in_(pool_team_ids))
+            | (
+                DBPrivateAIKey.team_id.is_(None)
+                & DBUser.team_id.in_(pool_team_ids)
+            )
+        )
+        .all()
+    )
 
     keys_by_region = defaultdict(list)
     for key in keys:
-        if not key.litellm_token or not key.region_id:
-            continue
-        effective_team_id = key.team_id
-        if effective_team_id is None and key.owner_id:
-            owner = session.query(DBUser).filter(DBUser.id == key.owner_id).first()
-            effective_team_id = owner.team_id if owner else None
-        if effective_team_id not in pool_team_ids:
-            continue
         keys_by_region[key.region_id].append(key)
     return keys_by_region
 
