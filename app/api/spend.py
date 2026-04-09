@@ -478,26 +478,6 @@ async def get_key_spend_alias(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     try:
-        if key.owner_id is not None:
-            user_data = await service.get_user_info(str(key.owner_id))
-            for litellm_key in user_data.get("keys", []):
-                metadata = litellm_key.get("metadata") or {}
-                if metadata.get("amazeeai_private_ai_key_name") == key.name:
-                    return PrivateAIKeySpend.model_validate(
-                        {
-                            "spend": litellm_key.get("spend", 0.0),
-                            "expires": litellm_key.get("expires"),
-                            "created_at": litellm_key.get("created_at"),
-                            "updated_at": litellm_key.get("updated_at"),
-                            "max_budget": litellm_key.get("max_budget"),
-                            "budget_duration": litellm_key.get("budget_duration"),
-                            "budget_reset_at": litellm_key.get("budget_reset_at"),
-                            "prompt_tokens": litellm_key.get("prompt_tokens"),
-                            "completion_tokens": litellm_key.get("completion_tokens"),
-                            "total_tokens": litellm_key.get("total_tokens"),
-                        }
-                    )
-
         data = await service.get_key_info(key.litellm_token)
         info = data.get("info", {})
         return PrivateAIKeySpend.model_validate(

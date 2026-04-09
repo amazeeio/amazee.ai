@@ -341,23 +341,6 @@ async def associate_team_with_region(
             detail="Team is already associated with this region",
         )
 
-    litellm_service = LiteLLMService(
-        api_url=region.litellm_api_url, api_key=region.litellm_api_key
-    )
-    lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
-    max_budget = 0.0 if team.budget_type == BudgetType.POOL else DEFAULT_MAX_SPEND
-    budget_duration = (
-        f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
-        if team.budget_type == BudgetType.POOL
-        else None
-    )
-    await litellm_service.create_team(
-        team_id=lite_team_id,
-        team_alias=lite_team_id,
-        max_budget=max_budget,
-        budget_duration=budget_duration,
-    )
-
     team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
     for team_user in team_users:
         await sync_add_user_to_team(

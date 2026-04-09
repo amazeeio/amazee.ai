@@ -9,7 +9,7 @@ from app.core.dependencies import get_limit_service
 from app.schemas.models import (
     PrivateAIKey,
     PrivateAIKeyCreate,
-    PrivateAIKeySpend,
+    PrivateAIKeySpendBasic,
     BudgetPeriodUpdate,
     BudgetType,
     LiteLLMToken,
@@ -29,7 +29,6 @@ from app.core.security import (
 )
 from app.core.roles import UserRole
 from app.core.config import settings
-from app.core.litellm_user_sync import sync_create_user_across_regions
 from app.core.limit_service import (
     LimitService,
     DEFAULT_KEY_DURATION,
@@ -448,13 +447,6 @@ async def create_llm_token(
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
-        if owner_id is not None and owner is not None:
-            await sync_create_user_across_regions(
-                db=db,
-                db_user=owner,
-                team_id=owner.team_id,
-                force_regions=[region],
-            )
         litellm_token = await litellm_service.create_key(
             email=owner_email,
             name=private_ai_key.name,
@@ -881,7 +873,7 @@ async def delete_private_ai_key(
     return {"message": "Private AI Key deleted successfully"}
 
 
-@router.get("/{key_id}/spend", response_model=PrivateAIKeySpend)
+@router.get("/{key_id}/spend", response_model=PrivateAIKeySpendBasic)
 async def get_private_ai_key_spend(
     key_id: int,
     current_user=Depends(get_current_user_from_auth),
@@ -909,7 +901,7 @@ async def get_private_ai_key_spend(
         # Only set default for spend field
         spend_info = {"spend": info.get("spend", 0.0), **info}
 
-        return PrivateAIKeySpend.model_validate(spend_info)
+        return PrivateAIKeySpendBasic.model_validate(spend_info)
     except Exception as e:
         logger.error(f"Failed to get Private AI Key spend: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -967,7 +959,7 @@ async def update_budget_period(
         # Only set default for spend field
         spend_info = {"spend": info.get("spend", 0.0), **info}
 
-        return PrivateAIKeySpend.model_validate(spend_info)
+        return PrivateAIKeySpendBasic.model_validate(spend_info)
     except Exception as e:
         logger.error(f"Failed to update budget period: {str(e)}", exc_info=True)
         raise HTTPException(
