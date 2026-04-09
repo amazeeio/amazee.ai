@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, UTC
 from typing import Optional
-from jose import JWTError, jwt
+import jwt
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status, Cookie, Header, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -70,7 +70,7 @@ async def get_current_user(
         payload = jwt.decode(
             token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
         )
-    except JWTError:
+    except jwt.PyJWTError:
         raise credentials_exception
 
     email: str = payload.get("sub")
