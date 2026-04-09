@@ -241,7 +241,6 @@ async def get_team_spend(
     )
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
     items: list[SpendKeyItem] = []
-    total_spend = 0.0
     total_budget = 0.0
     total_prompt_tokens = None
     total_completion_tokens = None
