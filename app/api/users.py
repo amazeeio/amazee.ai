@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from typing import List, Optional
@@ -256,18 +256,21 @@ async def _compute_user_spend(
     key_pair_rows = (
         db.query(DBPrivateAIKey.team_id, DBPrivateAIKey.region_id)
         .filter(
-            DBPrivateAIKey.team_id.in_(team_ids),
-            DBPrivateAIKey.owner_id.in_(all_owner_ids),
+            or_(
+                DBPrivateAIKey.team_id.in_(team_ids),
+                DBPrivateAIKey.owner_id.in_(all_owner_ids),
+            )
         )
         .distinct()
         .all()
     )
-    key_exists_set = {(row.team_id, row.region_id) for row in key_pair_rows}
+    key_team_region_set = {(row.team_id, row.region_id) for row in key_pair_rows}
+    key_region_set = {row.region_id for row in key_pair_rows if row.team_id is None}
 
     for team_id in team_ids:
         team_name = team_names[team_id]
         for region in regions_by_team.get(team_id, {}).values():
-            if (team_id, region.id) not in key_exists_set:
+            if (team_id, region.id) not in key_team_region_set and region.id not in key_region_set:
                 continue
 
             tasks.append(
