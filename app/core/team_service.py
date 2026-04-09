@@ -259,27 +259,56 @@ async def propagate_team_budget_to_keys(
                     "teams_updated": 0,
                     "errors": [f"Region {region_id} not found"],
                 }
-            team_user_ids = (
-                db.execute(select(DBUser.id).filter(DBUser.team_id == team_id))
-                .scalars()
-                .all()
-            )
-            region_keys = [
-                key
-                for key in (
-                    db.query(DBPrivateAIKey)
-                    .filter(
-                        (DBPrivateAIKey.owner_id.in_(team_user_ids))
-                        | (DBPrivateAIKey.team_id == team_id),
-                        DBPrivateAIKey.region_id == region_id,
-                    )
+            if apply_to_keys:
+                team_user_ids = (
+                    db.execute(select(DBUser.id).filter(DBUser.team_id == team_id))
+                    .scalars()
                     .all()
                 )
-                if key.litellm_token
-            ]
+                region_keys = [
+                    key
+                    for key in (
+                        db.query(DBPrivateAIKey)
+                        .filter(
+                            (DBPrivateAIKey.owner_id.in_(team_user_ids))
+                            | (DBPrivateAIKey.team_id == team_id),
+                            DBPrivateAIKey.region_id == region_id,
+                        )
+                        .all()
+                    )
+                    if key.litellm_token
+                ]
+            else:
+                region_keys = []
             keys_by_region: Dict[DBRegion, List[DBPrivateAIKey]] = {region: region_keys}
         else:
-            keys_by_region = get_team_keys_by_region(db, team_id)
+            if apply_to_keys:
+                keys_by_region = get_team_keys_by_region(db, team_id)
+            else:
+                # Only need the distinct regions; skip loading all key objects.
+                team_user_ids = (
+                    db.execute(select(DBUser.id).filter(DBUser.team_id == team_id))
+                    .scalars()
+                    .all()
+                )
+                region_ids = (
+                    db.execute(
+                        select(DBPrivateAIKey.region_id)
+                        .filter(
+                            (DBPrivateAIKey.owner_id.in_(team_user_ids))
+                            | (DBPrivateAIKey.team_id == team_id),
+                            DBPrivateAIKey.litellm_token.isnot(None),
+                            DBPrivateAIKey.region_id.isnot(None),
+                        )
+                        .distinct()
+                    )
+                    .scalars()
+                    .all()
+                )
+                regions = (
+                    db.query(DBRegion).filter(DBRegion.id.in_(region_ids)).all()
+                )
+                keys_by_region = {r: [] for r in regions}
 
         # Update team budget and keys for each region
         for region_obj, keys in keys_by_region.items():

@@ -80,7 +80,7 @@ async def run(dry_run: bool) -> int:
                 total_scanned += 1
                 if dry_run:
                     print(
-                        f"[DRY-RUN] key_id={key.id} region={region.name} token={key.litellm_token[:12]}... -> max_budget=null"
+                        f"[DRY-RUN] key_id={key.id} region={region.name} -> max_budget=null"
                     )
                     continue
 
@@ -92,14 +92,10 @@ async def run(dry_run: bool) -> int:
                         include_max_budget=True,
                     )
                     total_updated += 1
-                    print(
-                        f"[OK] key_id={key.id} region={region.name} token={key.litellm_token[:12]}..."
-                    )
+                    print(f"[OK] key_id={key.id} region={region.name}")
                 except Exception as e:
                     total_failed += 1
-                    print(
-                        f"[FAIL] key_id={key.id} region={region.name} token={key.litellm_token[:12]}... error={e}"
-                    )
+                    print(f"[FAIL] key_id={key.id} region={region.name} error={e}")
 
         print(
             f"Done. scanned={total_scanned} updated={total_updated} failed={total_failed} dry_run={dry_run}"
