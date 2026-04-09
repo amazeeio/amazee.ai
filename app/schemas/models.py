@@ -389,7 +389,7 @@ class SpendBudgetUpdateRequest(BaseModel):
 
 
 class SpendBudgetUpdateResponse(BaseModel):
-    scope: Literal["team", "user", "key", "team_member"]
+    scope: Literal["team", "key", "team_member"]
     source_endpoint: str
     region_id: int
     region_name: str

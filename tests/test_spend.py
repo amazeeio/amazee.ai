@@ -178,33 +178,6 @@ def test_update_team_budget_endpoint(
     mock_update_team_budget.assert_awaited_once()
 
 
-@patch("app.api.spend.LiteLLMService.get_user_info", new_callable=AsyncMock)
-@patch("app.api.spend.LiteLLMService.update_user", new_callable=AsyncMock)
-def test_update_user_budget_endpoint(
-    mock_update_user,
-    mock_get_user_info,
-    client,
-    admin_token,
-    test_team_user,
-    test_region,
-):
-    mock_get_user_info.return_value = {
-        "user_info": {"max_budget": 9.0, "budget_duration": "45d"}
-    }
-    response = client.put(
-        f"/spend/{test_region.id}/user/{test_team_user.id}/budget",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={"max_budget": 9.0, "budget_duration": "45d"},
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["scope"] == "user"
-    assert data["user_id"] == test_team_user.id
-    assert data["max_budget"] == 9.0
-    assert data["budget_duration"] == "45d"
-    mock_update_user.assert_awaited_once()
-
-
 @patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
 def test_update_team_member_budget_endpoint(
     mock_update_team_member, client, admin_token, test_team, test_team_user, test_region

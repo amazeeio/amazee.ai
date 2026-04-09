@@ -536,54 +536,6 @@ async def update_team_budget(
 
 
 @router.put(
-    "/{region_id}/user/{user_id}/budget", response_model=SpendBudgetUpdateResponse
-)
-async def update_user_budget(
-    region_id: int,
-    user_id: int,
-    body: SpendBudgetUpdateRequest,
-    current_user: DBUser = Depends(get_current_user_from_auth),
-    _: str = Depends(get_role_min_team_admin),
-    db: Session = Depends(get_db),
-):
-    user = (
-        db.query(DBUser)
-        .filter(DBUser.id == user_id, DBUser.is_active.is_(True))
-        .first()
-    )
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    _assert_user_budget_write_access(current_user, user)
-    region = _get_region_or_404(db, region_id)
-    if user.team_id is not None:
-        _assert_team_region_association(db, region, user.team_id)
-    service = LiteLLMService(
-        api_url=region.litellm_api_url, api_key=region.litellm_api_key
-    )
-
-    await service.update_user(
-        user_id=str(user_id),
-        updates={
-            "max_budget": body.max_budget,
-            "budget_duration": body.budget_duration,
-        },
-    )
-    user_info = await service.get_user_info(str(user_id))
-    data = user_info.get("user_info", user_info)
-    return SpendBudgetUpdateResponse(
-        scope="user",
-        source_endpoint="/user/update",
-        region_id=region_id,
-        region_name=region.name,
-        team_id=user.team_id,
-        user_id=user_id,
-        max_budget=data.get("max_budget"),
-        budget_duration=data.get("budget_duration"),
-        note="If key has team_id, team/team-member budget can override user-level enforcement.",
-    )
-
-
-@router.put(
     "/{region_id}/team/{team_id}/member/{user_id}/budget",
     response_model=SpendBudgetUpdateResponse,
 )
