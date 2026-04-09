@@ -1083,7 +1083,13 @@ async def monitor_teams(db: Session):
                         ),
                         None,
                     )
-                    if budget_limit and str(team.budget_type).lower() != "pool":
+                    if (
+                        budget_limit
+                        and str(
+                            getattr(team.budget_type, "value", team.budget_type)
+                        ).lower()
+                        != "pool"
+                    ):
                         max_budget_amount = budget_limit.max_value
 
                     # Get the product with the longest renewal period (renewal period not stored in limits)
