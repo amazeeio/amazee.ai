@@ -21,6 +21,7 @@ from app.core.team_service import (
     restore_soft_deleted_team,
     soft_delete_team,
 )
+from app.core.litellm_user_sync import sync_add_user_to_team, sync_remove_user_from_team
 from app.core.worker import generate_pricing_url, get_team_admin_email
 from app.db.database import get_db
 from app.db.models import (
@@ -806,6 +807,10 @@ async def merge_teams(
         users_migrated = 0
         for user in source_users:
             if user.team_id != target_team.id:
+                await sync_remove_user_from_team(
+                    db=db, db_user=user, team_id=source_team.id
+                )
+                await sync_add_user_to_team(db=db, db_user=user, team_id=target_team.id)
                 user.team_id = target_team.id
                 users_migrated += 1
 

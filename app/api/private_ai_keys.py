@@ -29,6 +29,7 @@ from app.core.security import (
 )
 from app.core.roles import UserRole
 from app.core.config import settings
+from app.core.litellm_user_sync import sync_create_user_across_regions
 from app.core.limit_service import (
     LimitService,
     DEFAULT_KEY_DURATION,
@@ -447,6 +448,13 @@ async def create_llm_token(
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
+        if owner_id is not None and owner is not None:
+            await sync_create_user_across_regions(
+                db=db,
+                db_user=owner,
+                team_id=owner.team_id,
+                force_regions=[region],
+            )
         litellm_token = await litellm_service.create_key(
             email=owner_email,
             name=private_ai_key.name,

@@ -4,7 +4,15 @@ from app.db.models import DBPrivateAIKey
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
-def test_get_team_spend_by_region(mock_get_key_info, client, team_admin_token, test_team, test_team_user, test_region, db):
+def test_get_team_spend_by_region(
+    mock_get_key_info,
+    client,
+    team_admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
+):
     team_key = DBPrivateAIKey(
         name="team-key",
         litellm_token="team-token",
@@ -60,7 +68,9 @@ def test_get_team_spend_by_region(mock_get_key_info, client, team_admin_token, t
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
-def test_get_user_spend_by_region(mock_get_key_info, client, team_admin_token, test_team_user, test_region, db):
+def test_get_user_spend_by_region(
+    mock_get_key_info, client, team_admin_token, test_team_user, test_region, db
+):
     key = DBPrivateAIKey(
         name="user-only-key",
         litellm_token="user-token",
@@ -100,7 +110,9 @@ def test_get_user_spend_by_region(mock_get_key_info, client, team_admin_token, t
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
-def test_key_spend_alias(mock_get_key_info, client, team_admin_token, test_team_user, test_region, db):
+def test_key_spend_alias(
+    mock_get_key_info, client, team_admin_token, test_team_user, test_region, db
+):
     key = DBPrivateAIKey(
         name="alias-key",
         litellm_token="alias-token",
@@ -142,9 +154,16 @@ def test_key_spend_alias(mock_get_key_info, client, team_admin_token, test_team_
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
 def test_update_team_budget_endpoint(
-    mock_update_team_budget, mock_get_team_info, client, admin_token, test_team, test_region
+    mock_update_team_budget,
+    mock_get_team_info,
+    client,
+    admin_token,
+    test_team,
+    test_region,
 ):
-    mock_get_team_info.return_value = {"team_info": {"max_budget": 12.5, "budget_duration": "30d"}}
+    mock_get_team_info.return_value = {
+        "team_info": {"max_budget": 12.5, "budget_duration": "30d"}
+    }
     response = client.put(
         f"/spend/{test_region.id}/team/{test_team.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
@@ -162,9 +181,16 @@ def test_update_team_budget_endpoint(
 @patch("app.api.spend.LiteLLMService.get_user_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_user", new_callable=AsyncMock)
 def test_update_user_budget_endpoint(
-    mock_update_user, mock_get_user_info, client, admin_token, test_team_user, test_region
+    mock_update_user,
+    mock_get_user_info,
+    client,
+    admin_token,
+    test_team_user,
+    test_region,
 ):
-    mock_get_user_info.return_value = {"user_info": {"max_budget": 9.0, "budget_duration": "45d"}}
+    mock_get_user_info.return_value = {
+        "user_info": {"max_budget": 9.0, "budget_duration": "45d"}
+    }
     response = client.put(
         f"/spend/{test_region.id}/user/{test_team_user.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
@@ -200,7 +226,13 @@ def test_update_team_member_budget_endpoint(
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
 def test_update_key_budget_endpoint_clear_budget(
-    mock_update_key_budget, mock_get_key_info, client, admin_token, test_team_user, test_region, db
+    mock_update_key_budget,
+    mock_get_key_info,
+    client,
+    admin_token,
+    test_team_user,
+    test_region,
+    db,
 ):
     key = DBPrivateAIKey(
         name="clear-budget-key",

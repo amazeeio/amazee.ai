@@ -332,7 +332,7 @@ class PrivateAIKeySpend(BaseModel):
 
 
 class SpendKeyItem(BaseModel):
-    key_id: int
+    key_id: Optional[int] = None
     key_name: Optional[str] = None
     owner_id: Optional[int] = None
     team_id: Optional[int] = None

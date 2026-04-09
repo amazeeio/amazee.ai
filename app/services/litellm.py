@@ -690,7 +690,18 @@ class LiteLLMService:
                 )
                 response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            _, error_msg, _ = self._parse_http_error(e)
+            status_code, error_msg, response_text = self._parse_http_error(e)
+            if self._is_idempotent_litellm_error(
+                status_code,
+                response_text,
+                ["not found", "does not exist", "not a member", "already", "no change"],
+            ):
+                logger.info(
+                    "LiteLLM member update noop team=%s user=%s; continuing",
+                    team_id,
+                    user_id,
+                )
+                return
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to update LiteLLM team member: {error_msg}",

@@ -7,6 +7,7 @@ from typing import List, Optional
 
 from app.core.config import settings
 from app.core.litellm_user_sync import (
+    get_target_regions_for_user,
     sync_add_user_to_team,
     sync_create_user_across_regions,
     sync_delete_user_across_regions,
@@ -31,6 +32,7 @@ from app.core.security import (
     get_role_min_team_admin,
 )
 from app.core.roles import UserRole
+from app.services.litellm import LiteLLMService
 from datetime import datetime, UTC
 import logging
 
@@ -271,16 +273,18 @@ async def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
     )
 
     db.add(db_user)
-    db.flush()
-
-    try:
-        await sync_create_user_across_regions(db=db, db_user=db_user, team_id=user.team_id)
-    except Exception:
-        db.rollback()
-        raise
-
     db.commit()
     db.refresh(db_user)
+
+    try:
+        await sync_create_user_across_regions(
+            db=db, db_user=db_user, team_id=user.team_id
+        )
+    except Exception:
+        # Compensating action to preserve strong consistency semantics.
+        db.delete(db_user)
+        db.commit()
+        raise
 
     # Create default limits for the user
     _create_default_limits_for_user(db_user, db)
@@ -349,6 +353,17 @@ async def update_user(
 
     for key, value in user_update.model_dump(exclude_unset=True).items():
         setattr(db_user, key, value)
+
+    if user_update.email is not None:
+        regions = get_target_regions_for_user(db, db_user.team_id)
+        for region in regions:
+            service = LiteLLMService(
+                api_url=region.litellm_api_url, api_key=region.litellm_api_key
+            )
+            await service.update_user(
+                user_id=str(db_user.id),
+                updates={"user_email": db_user.email},
+            )
 
     db.commit()
     db.refresh(db_user)
@@ -428,7 +443,9 @@ async def remove_user_from_team(
     # Remove user from team
     previous_team_id = db_user.team_id
     try:
-        await sync_remove_user_from_team(db=db, db_user=db_user, team_id=previous_team_id)
+        await sync_remove_user_from_team(
+            db=db, db_user=db_user, team_id=previous_team_id
+        )
     except Exception:
         db.rollback()
         raise
@@ -455,7 +472,9 @@ async def delete_user(
         )
 
     try:
-        await sync_delete_user_across_regions(db=db, db_user=db_user, team_id=db_user.team_id)
+        await sync_delete_user_across_regions(
+            db=db, db_user=db_user, team_id=db_user.team_id
+        )
     except Exception:
         db.rollback()
         raise

@@ -1171,9 +1171,18 @@ def test_create_llm_token_with_expiration(
     assert data["region"] == test_region.name
     assert data["name"] == "Test LLM Token with Expiration"
 
-    # Verify that the LiteLLM API was called with the correct duration
-    mock_httpx_post_client.post.assert_called_once()
-    call_args = mock_httpx_post_client.post.call_args[1]
+    # Verify that key generation call was made with the correct duration
+    key_generate_calls = [
+        call
+        for call in mock_httpx_post_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/generate")
+        and call.kwargs.get("json", {})
+        .get("metadata", {})
+        .get("amazeeai_private_ai_key_name")
+        == "Test LLM Token with Expiration"
+    ]
+    assert len(key_generate_calls) == 1
+    call_args = key_generate_calls[0].kwargs
     assert call_args["json"]["duration"] == "365d"  # Updated default duration
     assert call_args["json"]["budget_duration"] == "30d"  # Verify 1 month
     assert call_args["json"]["max_budget"] == DEFAULT_MAX_SPEND
@@ -1209,8 +1218,17 @@ def test_create_llm_token_for_pool_team_skips_per_key_limits(
 
     assert response.status_code == 200
 
-    mock_httpx_post_client.post.assert_called_once()
-    call_args = mock_httpx_post_client.post.call_args[1]
+    key_generate_calls = [
+        call
+        for call in mock_httpx_post_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/generate")
+        and call.kwargs.get("json", {})
+        .get("metadata", {})
+        .get("amazeeai_private_ai_key_name")
+        == "Pool Team Key"
+    ]
+    assert len(key_generate_calls) == 1
+    call_args = key_generate_calls[0].kwargs
     assert call_args["json"]["duration"] == "365d"
     assert "budget_duration" not in call_args["json"]
     assert "max_budget" not in call_args["json"]

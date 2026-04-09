@@ -1,4 +1,6 @@
 import logging
+import os
+import asyncio
 from time import perf_counter
 from typing import Iterable, List
 
@@ -8,6 +10,10 @@ from app.services.litellm import LiteLLMService
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+SYNC_MAX_CONCURRENCY = int(os.getenv("LITELLM_SYNC_MAX_CONCURRENCY", "4"))
+SYNC_OPERATION_TIMEOUT_SECONDS = float(
+    os.getenv("LITELLM_SYNC_OPERATION_TIMEOUT_SECONDS", "15")
+)
 
 litellm_user_sync_operations_total = Counter(
     "litellm_user_sync_operations_total",
@@ -49,7 +55,7 @@ async def _run_sync_operation(
     region_name = _region_label(region)
     started = perf_counter()
     try:
-        await action()
+        await asyncio.wait_for(action(), timeout=SYNC_OPERATION_TIMEOUT_SECONDS)
         duration = perf_counter() - started
         litellm_user_sync_operations_total.labels(
             operation=operation, region=region_name, outcome="success"
@@ -88,6 +94,18 @@ async def _run_sync_operation(
             error_message=str(exc),
         )
         raise
+
+
+async def _run_per_region_with_bounded_concurrency(
+    regions: list[DBRegion], region_runner
+) -> None:
+    semaphore = asyncio.Semaphore(max(1, SYNC_MAX_CONCURRENCY))
+
+    async def _wrapped(region: DBRegion) -> None:
+        async with semaphore:
+            await region_runner(region)
+
+    await asyncio.gather(*(_wrapped(region) for region in regions))
 
 
 def _should_skip_litellm_sync(db_user: DBUser) -> bool:
@@ -164,7 +182,8 @@ async def sync_create_user_across_regions(
         team_id=team_id,
         region_count=len(regions),
     )
-    for region in regions:
+
+    async def _region_runner(region: DBRegion) -> None:
         service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
@@ -192,6 +211,8 @@ async def sync_create_user_across_regions(
                     role=_team_role_for_litellm(db_user),
                 ),
             )
+
+    await _run_per_region_with_bounded_concurrency(regions, _region_runner)
     _log_sync_event(
         "info",
         "litellm_sync_batch_complete",
@@ -232,7 +253,8 @@ async def sync_add_user_to_team(
         team_id=team_id,
         region_count=len(regions),
     )
-    for region in regions:
+
+    async def _region_runner(region: DBRegion) -> None:
         service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
@@ -259,6 +281,8 @@ async def sync_add_user_to_team(
                 role=_team_role_for_litellm(db_user),
             ),
         )
+
+    await _run_per_region_with_bounded_concurrency(regions, _region_runner)
     _log_sync_event(
         "info",
         "litellm_sync_batch_complete",
@@ -299,7 +323,8 @@ async def sync_remove_user_from_team(
         team_id=team_id,
         region_count=len(regions),
     )
-    for region in regions:
+
+    async def _region_runner(region: DBRegion) -> None:
         service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
@@ -313,6 +338,8 @@ async def sync_remove_user_from_team(
                 team_id=lite_team_id, user_id=str(db_user.id)
             ),
         )
+
+    await _run_per_region_with_bounded_concurrency(regions, _region_runner)
     _log_sync_event(
         "info",
         "litellm_sync_batch_complete",
@@ -344,8 +371,22 @@ async def sync_update_user_team_role(
         )
         return
 
-    regions = force_regions or get_target_regions_for_user(db, team_id)
     role = _team_role_for_litellm(db_user)
+    if role == "user":
+        # Current OSS role mapping is constant. Skip cross-region calls.
+        litellm_user_sync_skips_total.labels(
+            sync_action="sync_update_user_team_role", reason="no_role_change"
+        ).inc()
+        _log_sync_event(
+            "info",
+            "litellm_sync_skipped",
+            sync_action="sync_update_user_team_role",
+            reason="no_role_change",
+            user_id=db_user.id,
+            team_id=team_id,
+        )
+        return
+    regions = force_regions or get_target_regions_for_user(db, team_id)
     _log_sync_event(
         "info",
         "litellm_sync_batch_start",
@@ -354,7 +395,8 @@ async def sync_update_user_team_role(
         team_id=team_id,
         region_count=len(regions),
     )
-    for region in regions:
+
+    async def _region_runner(region: DBRegion) -> None:
         service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
@@ -368,6 +410,8 @@ async def sync_update_user_team_role(
                 team_id=lite_team_id, user_id=str(db_user.id), role=role
             ),
         )
+
+    await _run_per_region_with_bounded_concurrency(regions, _region_runner)
     _log_sync_event(
         "info",
         "litellm_sync_batch_complete",
@@ -379,7 +423,10 @@ async def sync_update_user_team_role(
 
 
 async def sync_delete_user_across_regions(
-    db: Session, db_user: DBUser, team_id: int | None = None
+    db: Session,
+    db_user: DBUser,
+    team_id: int | None = None,
+    force_regions: List[DBRegion] | None = None,
 ) -> None:
     if _should_skip_litellm_sync(db_user):
         litellm_user_sync_skips_total.labels(
@@ -396,7 +443,7 @@ async def sync_delete_user_across_regions(
         )
         return
 
-    regions = get_target_regions_for_user(db, team_id)
+    regions = force_regions or get_target_regions_for_user(db, team_id)
     _log_sync_event(
         "info",
         "litellm_sync_batch_start",
@@ -405,7 +452,8 @@ async def sync_delete_user_across_regions(
         team_id=team_id,
         region_count=len(regions),
     )
-    for region in regions:
+
+    async def _region_runner(region: DBRegion) -> None:
         service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
@@ -427,6 +475,8 @@ async def sync_delete_user_across_regions(
             team_id=team_id,
             action=lambda: service.delete_user(user_id=str(db_user.id)),
         )
+
+    await _run_per_region_with_bounded_concurrency(regions, _region_runner)
     _log_sync_event(
         "info",
         "litellm_sync_batch_complete",

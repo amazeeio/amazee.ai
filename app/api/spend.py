@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+import logging
 
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
 from app.core.roles import UserRole
@@ -9,7 +10,7 @@ from app.core.security import (
     get_role_min_team_admin,
 )
 from app.db.database import get_db
-from app.db.models import DBPrivateAIKey, DBRegion, DBTeam, DBUser
+from app.db.models import DBPrivateAIKey, DBRegion, DBTeam, DBTeamRegion, DBUser
 from app.schemas.limits import ResourceType
 from app.schemas.models import (
     PrivateAIKeySpend,
@@ -22,6 +23,7 @@ from app.schemas.models import (
 from app.services.litellm import LiteLLMService
 
 router = APIRouter(tags=["spend"])
+logger = logging.getLogger(__name__)
 
 
 def _to_int_or_none(value) -> int | None:
@@ -91,7 +93,10 @@ def _assert_user_access(current_user: DBUser, role: str, target_user: DBUser) ->
     if target_user.id == current_user.id:
         return
     if role in [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR, UserRole.READ_ONLY]:
-        if current_user.team_id is not None and current_user.team_id == target_user.team_id:
+        if (
+            current_user.team_id is not None
+            and current_user.team_id == target_user.team_id
+        ):
             return
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
@@ -109,9 +114,7 @@ def _assert_team_budget_write_access(current_user: DBUser, team_id: int) -> None
         )
 
 
-def _assert_user_budget_write_access(
-    current_user: DBUser, target_user: DBUser
-) -> None:
+def _assert_user_budget_write_access(current_user: DBUser, target_user: DBUser) -> None:
     if current_user.is_admin:
         return
     if (
@@ -125,10 +128,29 @@ def _assert_user_budget_write_access(
         )
 
 
+def _assert_team_region_association(
+    db: Session, region: DBRegion, team_id: int
+) -> None:
+    if not region.is_dedicated:
+        return
+    association = (
+        db.query(DBTeamRegion)
+        .filter(DBTeamRegion.region_id == region.id, DBTeamRegion.team_id == team_id)
+        .first()
+    )
+    if not association:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Team is not associated with this dedicated region",
+        )
+
+
 async def _get_key_spend_items(
     keys: list[DBPrivateAIKey], region: DBRegion
 ) -> tuple[list[SpendKeyItem], float, float]:
-    service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
     items: list[SpendKeyItem] = []
     total_spend = 0.0
     total_budget = 0.0
@@ -145,10 +167,17 @@ async def _get_key_spend_items(
                 info = key_data.get("info", {})
                 spend = float(info.get("spend", 0.0) or 0.0)
                 max_budget = info.get("max_budget")
-                prompt_tokens, completion_tokens, total_tokens = _extract_token_usage(info)
-            except Exception:
+                prompt_tokens, completion_tokens, total_tokens = _extract_token_usage(
+                    info
+                )
+            except Exception as exc:
                 # Keep fallback spend from cached_spend.
-                pass
+                logger.warning(
+                    "Falling back to cached spend for key_id=%s region_id=%s due to LiteLLM error: %s",
+                    key.id,
+                    region.id,
+                    str(exc),
+                )
 
         total_spend += spend
         if max_budget is not None:
@@ -197,13 +226,19 @@ async def get_team_spend(
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
 ):
-    team = db.query(DBTeam).filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None)).first()
+    team = (
+        db.query(DBTeam)
+        .filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None))
+        .first()
+    )
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
     _assert_team_access(current_user, user_role, team_id)
     region = _get_region_or_404(db, region_id)
 
-    service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
     items: list[SpendKeyItem] = []
     total_spend = 0.0
@@ -226,11 +261,14 @@ async def get_team_spend(
             total_budget = round(float(max_budget or 0.0), 4)
         for litellm_key in team_data.get("keys", []):
             db_key_id = _find_db_key_id_for_litellm_key(
-                db=db, region_id=region_id, litellm_key=litellm_key, fallback_team_id=team_id
+                db=db,
+                region_id=region_id,
+                litellm_key=litellm_key,
+                fallback_team_id=team_id,
             )
             items.append(
                 SpendKeyItem(
-                    key_id=db_key_id or -1,
+                    key_id=db_key_id,
                     key_name=(litellm_key.get("metadata") or {}).get(
                         "amazeeai_private_ai_key_name"
                     ),
@@ -248,11 +286,19 @@ async def get_team_spend(
                     ),
                     cached_spend=None,
                     prompt_tokens=_to_int_or_none(litellm_key.get("prompt_tokens")),
-                    completion_tokens=_to_int_or_none(litellm_key.get("completion_tokens")),
+                    completion_tokens=_to_int_or_none(
+                        litellm_key.get("completion_tokens")
+                    ),
                     total_tokens=_to_int_or_none(litellm_key.get("total_tokens")),
                 )
             )
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "Falling back to DB-derived team spend for team_id=%s region_id=%s due to LiteLLM error: %s",
+            team_id,
+            region_id,
+            str(exc),
+        )
         team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
         team_user_ids = [u.id for u in team_users]
         keys = (
@@ -276,8 +322,13 @@ async def get_team_spend(
                 default_budget = limit_service.get_default_team_limit_for_resource(
                     ResourceType.BUDGET
                 )
-            except Exception:
+            except Exception as exc:
                 default_budget = DEFAULT_MAX_SPEND
+                logger.warning(
+                    "Using default budget fallback for team_id=%s due to limit service error: %s",
+                    team_id,
+                    str(exc),
+                )
             total_budget = round(float(default_budget or 0.0) * len(keys), 4)
 
     return TeamSpendResponse(
@@ -309,7 +360,9 @@ async def get_user_spend(
     _assert_user_access(current_user, user_role, target_user)
     region = _get_region_or_404(db, region_id)
 
-    service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
     items: list[SpendKeyItem] = []
     total_spend = 0.0
     total_prompt_tokens = None
@@ -326,11 +379,14 @@ async def get_user_spend(
         ) = _extract_token_usage(user_info)
         for litellm_key in user_data.get("keys", []):
             db_key_id = _find_db_key_id_for_litellm_key(
-                db=db, region_id=region_id, litellm_key=litellm_key, fallback_team_id=target_user.team_id
+                db=db,
+                region_id=region_id,
+                litellm_key=litellm_key,
+                fallback_team_id=target_user.team_id,
             )
             items.append(
                 SpendKeyItem(
-                    key_id=db_key_id or -1,
+                    key_id=db_key_id,
                     key_name=(litellm_key.get("metadata") or {}).get(
                         "amazeeai_private_ai_key_name"
                     ),
@@ -344,14 +400,25 @@ async def get_user_spend(
                     ),
                     cached_spend=None,
                     prompt_tokens=_to_int_or_none(litellm_key.get("prompt_tokens")),
-                    completion_tokens=_to_int_or_none(litellm_key.get("completion_tokens")),
+                    completion_tokens=_to_int_or_none(
+                        litellm_key.get("completion_tokens")
+                    ),
                     total_tokens=_to_int_or_none(litellm_key.get("total_tokens")),
                 )
             )
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "Falling back to DB-derived user spend for user_id=%s region_id=%s due to LiteLLM error: %s",
+            user_id,
+            region_id,
+            str(exc),
+        )
         keys = (
             db.query(DBPrivateAIKey)
-            .filter(DBPrivateAIKey.region_id == region_id, DBPrivateAIKey.owner_id == user_id)
+            .filter(
+                DBPrivateAIKey.region_id == region_id,
+                DBPrivateAIKey.owner_id == user_id,
+            )
             .all()
         )
         items, total_spend, _ = await _get_key_spend_items(keys, region)
@@ -388,7 +455,9 @@ async def get_key_spend_alias(
     if not key:
         raise HTTPException(status_code=404, detail="Private AI Key not found")
     if key.region_id != region_id:
-        raise HTTPException(status_code=404, detail="Private AI Key not found in region")
+        raise HTTPException(
+            status_code=404, detail="Private AI Key not found in region"
+        )
 
     # Reuse authorization semantics from private-ai-keys endpoints.
     if current_user.is_admin:
@@ -406,7 +475,9 @@ async def get_key_spend_alias(
             raise HTTPException(status_code=404, detail="Private AI Key not found")
 
     region = _get_region_or_404(db, region_id)
-    service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
     try:
         if key.owner_id is not None:
             user_data = await service.get_user_info(str(key.owner_id))
@@ -430,7 +501,9 @@ async def get_key_spend_alias(
 
         data = await service.get_key_info(key.litellm_token)
         info = data.get("info", {})
-        return PrivateAIKeySpend.model_validate({"spend": info.get("spend", 0.0), **info})
+        return PrivateAIKeySpend.model_validate(
+            {"spend": info.get("spend", 0.0), **info}
+        )
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -438,7 +511,9 @@ async def get_key_spend_alias(
         )
 
 
-@router.put("/{region_id}/team/{team_id}/budget", response_model=SpendBudgetUpdateResponse)
+@router.put(
+    "/{region_id}/team/{team_id}/budget", response_model=SpendBudgetUpdateResponse
+)
 async def update_team_budget(
     region_id: int,
     team_id: int,
@@ -447,12 +522,19 @@ async def update_team_budget(
     _: str = Depends(get_role_min_team_admin),
     db: Session = Depends(get_db),
 ):
-    team = db.query(DBTeam).filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None)).first()
+    team = (
+        db.query(DBTeam)
+        .filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None))
+        .first()
+    )
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
     _assert_team_budget_write_access(current_user, team_id)
     region = _get_region_or_404(db, region_id)
-    service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+    _assert_team_region_association(db, region, team_id)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
 
     await service.update_team_budget(
@@ -474,7 +556,9 @@ async def update_team_budget(
     )
 
 
-@router.put("/{region_id}/user/{user_id}/budget", response_model=SpendBudgetUpdateResponse)
+@router.put(
+    "/{region_id}/user/{user_id}/budget", response_model=SpendBudgetUpdateResponse
+)
 async def update_user_budget(
     region_id: int,
     user_id: int,
@@ -483,12 +567,20 @@ async def update_user_budget(
     _: str = Depends(get_role_min_team_admin),
     db: Session = Depends(get_db),
 ):
-    user = db.query(DBUser).filter(DBUser.id == user_id, DBUser.is_active.is_(True)).first()
+    user = (
+        db.query(DBUser)
+        .filter(DBUser.id == user_id, DBUser.is_active.is_(True))
+        .first()
+    )
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     _assert_user_budget_write_access(current_user, user)
     region = _get_region_or_404(db, region_id)
-    service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+    if user.team_id is not None:
+        _assert_team_region_association(db, region, user.team_id)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
 
     await service.update_user(
         user_id=str(user_id),
@@ -525,15 +617,26 @@ async def update_team_member_budget(
     _: str = Depends(get_role_min_team_admin),
     db: Session = Depends(get_db),
 ):
-    team = db.query(DBTeam).filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None)).first()
+    team = (
+        db.query(DBTeam)
+        .filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None))
+        .first()
+    )
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
-    user = db.query(DBUser).filter(DBUser.id == user_id, DBUser.is_active.is_(True)).first()
+    user = (
+        db.query(DBUser)
+        .filter(DBUser.id == user_id, DBUser.is_active.is_(True))
+        .first()
+    )
     if not user or user.team_id != team_id:
         raise HTTPException(status_code=404, detail="User not found in team")
     _assert_team_budget_write_access(current_user, team_id)
     region = _get_region_or_404(db, region_id)
-    service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+    _assert_team_region_association(db, region, team_id)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
 
     if body.max_budget is None:
@@ -545,7 +648,7 @@ async def update_team_member_budget(
     await service.update_team_member(
         team_id=lite_team_id,
         user_id=str(user_id),
-        role="user",
+        role="admin" if user.role == UserRole.TEAM_ADMIN else "user",
         max_budget_in_team=body.max_budget,
     )
     return SpendBudgetUpdateResponse(
@@ -561,7 +664,9 @@ async def update_team_member_budget(
     )
 
 
-@router.put("/{region_id}/key/{key_id}/budget", response_model=SpendBudgetUpdateResponse)
+@router.put(
+    "/{region_id}/key/{key_id}/budget", response_model=SpendBudgetUpdateResponse
+)
 async def update_key_budget(
     region_id: int,
     key_id: int,
@@ -572,7 +677,9 @@ async def update_key_budget(
 ):
     key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
     if not key or key.region_id != region_id:
-        raise HTTPException(status_code=404, detail="Private AI Key not found in region")
+        raise HTTPException(
+            status_code=404, detail="Private AI Key not found in region"
+        )
     if key.team_id is not None:
         _assert_team_budget_write_access(current_user, key.team_id)
     else:
@@ -582,7 +689,9 @@ async def update_key_budget(
         _assert_user_budget_write_access(current_user, owner)
 
     region = _get_region_or_404(db, region_id)
-    service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
     await service.update_key_budget(
         litellm_token=key.litellm_token,
         budget_duration=body.budget_duration,

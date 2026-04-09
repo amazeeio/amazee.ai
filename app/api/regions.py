@@ -341,10 +341,6 @@ async def associate_team_with_region(
             detail="Team is already associated with this region",
         )
 
-    # Create the association
-    team_region = DBTeamRegion(team_id=team_id, region_id=region_id)
-    db.add(team_region)
-
     litellm_service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
@@ -370,6 +366,10 @@ async def associate_team_with_region(
             team_id=team_id,
             force_regions=[region],
         )
+
+    # Create the association only after remote sync succeeds.
+    team_region = DBTeamRegion(team_id=team_id, region_id=region_id)
+    db.add(team_region)
 
     try:
         db.commit()
