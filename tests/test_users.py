@@ -376,6 +376,78 @@ def test_get_user_spend_skips_regions_without_user_keys(
 
 
 @patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_user_spend_includes_user_owned_keys(
+    mock_get_team_info, client, admin_token, db
+):
+    """Keys with owner_id set but team_id=NULL should still contribute to user spend."""
+    team = DBTeam(
+        name="User Key Team",
+        admin_email="userkey-team@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    region = DBRegion(
+        name="region-userkey",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.userkey",
+        litellm_api_key="ku",
+        is_active=True,
+        is_dedicated=False,
+    )
+    user = DBUser(
+        email="carol+uk@example.com",
+        hashed_password=get_password_hash("pw"),
+        is_active=True,
+        is_admin=False,
+        team=team,
+    )
+    db.add_all([team, region, user])
+    db.commit()
+    db.refresh(team)
+    db.refresh(region)
+    db.refresh(user)
+
+    # Key with owner_id but NO team_id — this is the regression case.
+    db.add(
+        DBPrivateAIKey(
+            database_name="db-userkey",
+            database_username="u-uk",
+            owner_id=user.id,
+            team_id=None,
+            region_id=region.id,
+        )
+    )
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "keys": [
+            {
+                "metadata": {"amazeeai_user_id": str(user.id)},
+                "spend": 7.25,
+            }
+        ]
+    }
+
+    response = client.get(
+        "/users/spend?email=carol@example.com",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_spend"] == 7.25
+    assert len(data["teams"]) == 1
+    assert data["teams"][0]["team_id"] == team.id
+    assert len(data["teams"][0]["regions"]) == 1
+    assert data["teams"][0]["regions"][0]["region_name"] == "region-userkey"
+    assert data["teams"][0]["regions"][0]["spend"] == 7.25
+    assert mock_get_team_info.await_count == 1
+
+
+@patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
 def test_get_user_spend_unavailable_region_not_cached(
     mock_get_team_info, client, admin_token, db
 ):

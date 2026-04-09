@@ -254,7 +254,7 @@ async def _compute_user_spend(
         all_owner_ids.update(uid_set)
 
     key_pair_rows = (
-        db.query(DBPrivateAIKey.team_id, DBPrivateAIKey.region_id)
+        db.query(DBPrivateAIKey.team_id, DBPrivateAIKey.owner_id, DBPrivateAIKey.region_id)
         .filter(
             or_(
                 DBPrivateAIKey.team_id.in_(team_ids),
@@ -265,12 +265,18 @@ async def _compute_user_spend(
         .all()
     )
     key_team_region_set = {(row.team_id, row.region_id) for row in key_pair_rows}
-    key_region_set = {row.region_id for row in key_pair_rows if row.team_id is None}
+    # Per-team set of regions with user-owned keys (team_id=NULL, owner in that team).
+    user_key_regions_by_team: dict[int, set[int]] = defaultdict(set)
+    for row in key_pair_rows:
+        if row.team_id is None and row.owner_id is not None:
+            for tid, uids in user_ids_by_team.items():
+                if row.owner_id in uids:
+                    user_key_regions_by_team[tid].add(row.region_id)
 
     for team_id in team_ids:
         team_name = team_names[team_id]
         for region in regions_by_team.get(team_id, {}).values():
-            if (team_id, region.id) not in key_team_region_set and region.id not in key_region_set:
+            if (team_id, region.id) not in key_team_region_set and region.id not in user_key_regions_by_team.get(team_id, set()):
                 continue
 
             tasks.append(
