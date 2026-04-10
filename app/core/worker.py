@@ -18,6 +18,7 @@ from app.services.ses import SESService
 from app.core.team_service import get_team_keys_by_region, soft_delete_team
 from app.core.limit_service import LimitService
 from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitedResource
+from app.schemas.models import BudgetType
 import logging
 from collections import defaultdict
 
@@ -1083,13 +1084,7 @@ async def monitor_teams(db: Session):
                         ),
                         None,
                     )
-                    if (
-                        budget_limit
-                        and str(
-                            getattr(team.budget_type, "value", team.budget_type)
-                        ).lower()
-                        != "pool"
-                    ):
+                    if budget_limit and team.budget_type != BudgetType.POOL:
                         max_budget_amount = budget_limit.max_value
 
                     # Get the product with the longest renewal period (renewal period not stored in limits)

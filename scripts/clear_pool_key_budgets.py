@@ -43,10 +43,7 @@ def get_pool_keys_grouped_by_region(session):
         .filter(DBPrivateAIKey.region_id.isnot(None))
         .filter(
             (DBPrivateAIKey.team_id.in_(pool_team_ids))
-            | (
-                DBPrivateAIKey.team_id.is_(None)
-                & DBUser.team_id.in_(pool_team_ids)
-            )
+            | (DBPrivateAIKey.team_id.is_(None) & DBUser.team_id.in_(pool_team_ids))
         )
         .all()
     )

@@ -305,9 +305,7 @@ async def propagate_team_budget_to_keys(
                     .scalars()
                     .all()
                 )
-                regions = (
-                    db.query(DBRegion).filter(DBRegion.id.in_(region_ids)).all()
-                )
+                regions = db.query(DBRegion).filter(DBRegion.id.in_(region_ids)).all()
                 keys_by_region = {r: [] for r in regions}
 
         # Update team budget and keys for each region
