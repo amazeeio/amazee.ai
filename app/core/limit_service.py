@@ -513,9 +513,10 @@ class LimitService:
             logger.error(f"Team {team_id} not found, skipping budget propagation")
             return
 
-        # POOL budgets are purchase-driven and must always use the configured
-        # POOL expiration window for duration.
-        if team.budget_type == BudgetType.POOL:
+        # POOL budgets are purchase-driven and enforced at team level only.
+        # Periodic teams continue using key-level propagation.
+        apply_to_keys = team.budget_type != BudgetType.POOL
+        if not apply_to_keys:
             budget_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
         else:
             # For periodic teams, keep duration aligned with token restrictions.
@@ -538,7 +539,11 @@ class LimitService:
                 try:
                     loop.run_until_complete(
                         propagate_team_budget_to_keys(
-                            db, team_id, budget_amount, budget_duration
+                            db,
+                            team_id,
+                            budget_amount,
+                            budget_duration,
+                            apply_to_keys=apply_to_keys,
                         )
                     )
                 finally:

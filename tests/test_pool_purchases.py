@@ -195,6 +195,33 @@ def test_create_pool_purchase_region_not_found(client, admin_token, db, test_tea
     assert response.status_code == 404
 
 
+def test_pool_purchase_propagates_team_budget_only(
+    client, admin_token, db, test_team, test_region
+):
+    """POOL purchases should update team budget only (no per-key propagation)."""
+    test_team.budget_type = "pool"
+    db.commit()
+
+    with patch(
+        "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
+    ) as mock_propagate:
+        mock_propagate.return_value = {"teams_updated": 1, "errors": []}
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": f"pi_team_only_{int(time.time() * 1000000)}",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201
+    mock_propagate.assert_awaited_once()
+    assert mock_propagate.call_args.kwargs["apply_to_keys"] is False
+
+
 def test_get_purchase_history(client, admin_token, db, test_team, test_region):
     """Test getting purchase history for a team"""
     test_team.budget_type = "pool"
@@ -503,3 +530,34 @@ async def test_sync_pool_team_budgets_expires_all_team_regions(
         max_budget=0.0,
         budget_duration="365d",
     )
+
+
+@pytest.mark.asyncio
+@patch("app.core.config.settings.POOL_BUDGET_EXPIRATION_DAYS", 365)
+async def test_sync_pool_team_budgets_uses_team_only_propagation(
+    db, test_team, test_region
+):
+    """Pool budget expiry should propagate team budget only."""
+    test_team.budget_type = "pool"
+    db.add(
+        DBPoolPurchase(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            amount_cents=1000,
+            currency="usd",
+            purchased_at=datetime.now(UTC) - timedelta(days=400),
+            stripe_payment_id="pi_team_only_sync",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    with patch(
+        "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
+    ) as mock_propagate:
+        mock_propagate.return_value = {"teams_updated": 1, "errors": []}
+        result = await sync_pool_team_budgets(db)
+
+    assert result["teams_updated"] == 1
+    assert mock_propagate.await_count == 1
+    assert mock_propagate.call_args.kwargs["apply_to_keys"] is False
