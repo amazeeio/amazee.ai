@@ -96,6 +96,134 @@ def test_public_models_includes_unavailable_region(client, db):
         )
 
 
+def test_public_models_pricing_numeric_values(client, db):
+    """Pricing fields are correctly propagated when LiteLLM returns numeric values."""
+    _clear_public_models_cache()
+    region = DBRegion(
+        name="ap-southeast-1",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="user",
+        postgres_admin_password="pass",
+        litellm_api_url="https://litellm.example",
+        litellm_api_key="key",
+        is_active=True,
+        is_dedicated=False,
+    )
+    db.add(region)
+    db.commit()
+
+    with patch("app.api.public.LiteLLMService") as mock_service_cls:
+        mock_service = mock_service_cls.return_value
+        mock_service.get_model_info = AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        "model_name": "gpt-4o",
+                        "litellm_params": {},
+                        "model_info": {
+                            "mode": "chat",
+                            "input_cost_per_token": 0.000005,
+                            "output_cost_per_token": 0.000015,
+                        },
+                    }
+                ]
+            }
+        )
+
+        response = client.get("/public/models")
+        assert response.status_code == 200
+        data = response.json()
+        region_data = next(r for r in data if r["region"] == "ap-southeast-1")
+        pricing = region_data["models"][0]["pricing"]
+        assert pricing["input_cost_per_token"] == 0.000005
+        assert pricing["output_cost_per_token"] == 0.000015
+
+
+def test_public_models_pricing_missing_values(client, db):
+    """Pricing fields are null when LiteLLM does not return cost info."""
+    _clear_public_models_cache()
+    region = DBRegion(
+        name="ap-northeast-1",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="user",
+        postgres_admin_password="pass",
+        litellm_api_url="https://litellm.example",
+        litellm_api_key="key",
+        is_active=True,
+        is_dedicated=False,
+    )
+    db.add(region)
+    db.commit()
+
+    with patch("app.api.public.LiteLLMService") as mock_service_cls:
+        mock_service = mock_service_cls.return_value
+        mock_service.get_model_info = AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        "model_name": "gpt-4o",
+                        "litellm_params": {},
+                        "model_info": {"mode": "chat"},
+                    }
+                ]
+            }
+        )
+
+        response = client.get("/public/models")
+        assert response.status_code == 200
+        data = response.json()
+        region_data = next(r for r in data if r["region"] == "ap-northeast-1")
+        pricing = region_data["models"][0]["pricing"]
+        assert pricing["input_cost_per_token"] is None
+        assert pricing["output_cost_per_token"] is None
+
+
+def test_public_models_pricing_non_numeric_values(client, db):
+    """Non-numeric pricing values from LiteLLM are coerced to null without raising."""
+    _clear_public_models_cache()
+    region = DBRegion(
+        name="eu-west-1",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="user",
+        postgres_admin_password="pass",
+        litellm_api_url="https://litellm.example",
+        litellm_api_key="key",
+        is_active=True,
+        is_dedicated=False,
+    )
+    db.add(region)
+    db.commit()
+
+    with patch("app.api.public.LiteLLMService") as mock_service_cls:
+        mock_service = mock_service_cls.return_value
+        mock_service.get_model_info = AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        "model_name": "gpt-4o",
+                        "litellm_params": {},
+                        "model_info": {
+                            "mode": "chat",
+                            "input_cost_per_token": "n/a",
+                            "output_cost_per_token": "n/a",
+                        },
+                    }
+                ]
+            }
+        )
+
+        response = client.get("/public/models")
+        assert response.status_code == 200
+        data = response.json()
+        region_data = next(r for r in data if r["region"] == "eu-west-1")
+        pricing = region_data["models"][0]["pricing"]
+        assert pricing["input_cost_per_token"] is None
+        assert pricing["output_cost_per_token"] is None
+
+
 def test_public_models_uses_region_key_for_model_info(client, db):
     _clear_public_models_cache()
     region = DBRegion(

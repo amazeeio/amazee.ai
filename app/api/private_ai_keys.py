@@ -402,9 +402,9 @@ async def create_llm_token(
             owner_id = current_user.id
             owner = current_user
 
-    # Pool budget teams use purchase_pool_budget to set the team-level
-    # max_budget in LiteLLM. Per-key limits are also set to match the team
-    # budget so that LiteLLM's dual-gate enforcement applies consistently.
+    # Pool budget teams use purchase_pool_budget to set a team-level max_budget
+    # in LiteLLM. Per-key budgets are intentionally left unset (null) so POOL
+    # teams are enforced by the team gate only.
     # Reuse the already-fetched team when team_id was provided. Fall back to
     # owner's team only when no team_id was provided.
     effective_team = team
@@ -459,41 +459,6 @@ async def create_llm_token(
             rpm_limit=max_rpm_limit,
             apply_limits=not is_pool_team,
         )
-
-        # For POOL teams, fetch the team's current budget from LiteLLM and
-        # apply it to the newly created key so both gates have the same limit.
-        if is_pool_team:
-            try:
-                lite_team_id = LiteLLMService.format_team_id(region.name, litellm_team)
-                team_info_response = await litellm_service.get_team_info(lite_team_id)
-                # Normalize response: some variants return {"team_info": {...}}
-                if isinstance(team_info_response, dict):
-                    team_info = team_info_response.get("team_info", team_info_response)
-                else:
-                    team_info = {}
-                team_budget_raw = (
-                    team_info.get("max_budget") if isinstance(team_info, dict) else None
-                )
-                if team_budget_raw is not None:
-                    try:
-                        team_budget = float(team_budget_raw)
-                    except (TypeError, ValueError):
-                        logger.warning(
-                            f"Received non-numeric max_budget for team {lite_team_id}: {team_budget_raw}"
-                        )
-                    else:
-                        await litellm_service.update_budget(
-                            litellm_token=litellm_token,
-                            budget_duration=f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
-                            budget_amount=team_budget,
-                        )
-                        logger.info(
-                            f"Set pool key {litellm_token[:10]}... budget to ${team_budget}"
-                        )
-            except Exception as e:
-                logger.warning(
-                    f"Failed to set pool key budget (key will still work via team budget): {e}"
-                )
 
         # Create response object
         db_token = DBPrivateAIKey(
@@ -848,20 +813,23 @@ async def delete_private_ai_key(
             status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
         )
 
-    # Delete LiteLLM token first
-    litellm_service = LiteLLMService(
-        api_url=region.litellm_api_url, api_key=region.litellm_api_key
-    )
-    try:
-        await litellm_service.delete_key(private_ai_key.litellm_token)
-    except HTTPException as e:
-        # Propagate the HTTP exception with its status code
-        raise e
+    # Delete LiteLLM token first when present (vector-db-only keys have no token)
+    if private_ai_key.litellm_token:
+        litellm_service = LiteLLMService(
+            api_url=region.litellm_api_url, api_key=region.litellm_api_key
+        )
+        try:
+            await litellm_service.delete_key(private_ai_key.litellm_token)
+        except HTTPException as e:
+            # Propagate the HTTP exception with its status code
+            raise e
 
     # Only delete the database if it exists
     if private_ai_key.database_name:
         postgres_manager = PostgresManager(region=region)
-        await postgres_manager.delete_database(private_ai_key.database_name)
+        await postgres_manager.delete_database(
+            private_ai_key.database_name, private_ai_key.database_username
+        )
 
     # Remove the private AI key record from the application database
     db.delete(private_ai_key)

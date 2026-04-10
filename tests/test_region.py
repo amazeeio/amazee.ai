@@ -899,13 +899,15 @@ def test_create_dedicated_region_non_admin_fails(client, test_token):
     assert "Not authorized to perform this action" in response.json()["detail"]
 
 
-def test_associate_team_with_dedicated_region(client, admin_token, db, test_team):
+@patch("app.api.regions.LiteLLMService.create_team", new_callable=AsyncMock)
+def test_associate_team_with_dedicated_region(
+    mock_create_team, client, admin_token, db, test_team
+):
     """
     Given an admin user and a dedicated region
     When they associate a team with the region
-    Then the association should be created successfully
+    Then the association should be created and the team bootstrapped in LiteLLM
     """
-    # Create a dedicated region
     dedicated_region = DBRegion(
         name="dedicated-region-for-association",
         label="Dedicated Region for Association",
@@ -929,6 +931,111 @@ def test_associate_team_with_dedicated_region(client, admin_token, db, test_team
 
     assert response.status_code == 200
     assert response.json()["message"] == "Team associated with region successfully"
+    mock_create_team.assert_called_once()
+    call_kwargs = mock_create_team.call_args.kwargs
+    assert call_kwargs["team_id"] == LiteLLMService.format_team_id(
+        "dedicated-region-for-association", test_team.id
+    )
+    # PERIODIC team: max_budget should be DEFAULT_MAX_SPEND, no budget_duration
+    assert call_kwargs["max_budget"] > 0
+    assert call_kwargs["budget_duration"] is None
+
+
+@patch("app.api.regions.LiteLLMService.create_team", new_callable=AsyncMock)
+def test_associate_pool_team_with_dedicated_region(
+    mock_create_team, client, admin_token, db
+):
+    """
+    Given a POOL team and a dedicated region
+    When they are associated
+    Then LiteLLM team is created with max_budget=0 and a budget_duration
+    """
+    from app.db.models import DBTeam
+
+    pool_team = DBTeam(
+        name="pool-team-for-dedicated",
+        admin_email="pool-dedicated@test.com",
+        budget_type="pool",
+    )
+    db.add(pool_team)
+
+    dedicated_region = DBRegion(
+        name="dedicated-region-for-pool",
+        label="Dedicated for Pool",
+        postgres_host="h",
+        postgres_port=5432,
+        postgres_admin_user="a",
+        postgres_admin_password="p",
+        litellm_api_url="https://pool-dedicated-litellm.com",
+        litellm_api_key="key",
+        is_active=True,
+        is_dedicated=True,
+    )
+    db.add(dedicated_region)
+    db.commit()
+    db.refresh(pool_team)
+    db.refresh(dedicated_region)
+
+    response = client.post(
+        f"/regions/{dedicated_region.id}/teams/{pool_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    call_kwargs = mock_create_team.call_args.kwargs
+    assert call_kwargs["max_budget"] == 0.0
+    assert call_kwargs["budget_duration"] is not None
+
+
+@patch(
+    "app.api.regions.LiteLLMService.create_team",
+    new_callable=AsyncMock,
+    side_effect=Exception("LiteLLM unreachable"),
+)
+def test_associate_team_litellm_failure_rolls_back(
+    mock_create_team, client, admin_token, db, test_team
+):
+    """
+    Given a LiteLLM failure during association
+    When the endpoint is called
+    Then it returns 502 and the DB association is rolled back
+    """
+    from app.db.models import DBTeamRegion
+
+    dedicated_region = DBRegion(
+        name="dedicated-region-litellm-fail",
+        label="Dedicated LiteLLM Fail",
+        postgres_host="h",
+        postgres_port=5432,
+        postgres_admin_user="a",
+        postgres_admin_password="p",
+        litellm_api_url="https://fail-litellm.com",
+        litellm_api_key="key",
+        is_active=True,
+        is_dedicated=True,
+    )
+    db.add(dedicated_region)
+    db.commit()
+    db.refresh(dedicated_region)
+
+    response = client.post(
+        f"/regions/{dedicated_region.id}/teams/{test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 502
+    assert "Failed to bootstrap team in LiteLLM" in response.json()["detail"]
+
+    # DB association must not exist
+    association = (
+        db.query(DBTeamRegion)
+        .filter(
+            DBTeamRegion.team_id == test_team.id,
+            DBTeamRegion.region_id == dedicated_region.id,
+        )
+        .first()
+    )
+    assert association is None
 
 
 def test_associate_team_with_non_dedicated_region_fails(

@@ -211,13 +211,14 @@ async def propagate_team_budget_to_keys(
     budget_amount: float,
     budget_duration: str,
     region_id: Optional[int] = None,
+    apply_to_keys: bool = True,
 ) -> dict:
     """
     Propagate a team budget limit change to the LiteLLM team and all its keys.
 
-    This function updates the LiteLLM team max_budget (shared ceiling) and all
-    keys (both user-owned and team-owned) with the new budget amount when a
-    team's budget limit is changed.
+    This function updates the LiteLLM team max_budget (shared ceiling), and
+    optionally updates all keys (both user-owned and team-owned) with the new
+    budget amount when a team's budget limit is changed.
 
     Args:
         db: Database session
@@ -227,6 +228,8 @@ async def propagate_team_budget_to_keys(
         region_id: Optional region ID to restrict updates to a single region.
             When provided the LiteLLM team for that region is updated even if
             the team currently has no keys there.
+        apply_to_keys: Whether to propagate budget updates to keys in addition
+            to the team budget.
 
     Returns:
         dict with "teams_updated" (number of LiteLLM teams successfully updated)
@@ -256,27 +259,54 @@ async def propagate_team_budget_to_keys(
                     "teams_updated": 0,
                     "errors": [f"Region {region_id} not found"],
                 }
-            team_user_ids = (
-                db.execute(select(DBUser.id).filter(DBUser.team_id == team_id))
-                .scalars()
-                .all()
-            )
-            region_keys = [
-                key
-                for key in (
-                    db.query(DBPrivateAIKey)
-                    .filter(
-                        (DBPrivateAIKey.owner_id.in_(team_user_ids))
-                        | (DBPrivateAIKey.team_id == team_id),
-                        DBPrivateAIKey.region_id == region_id,
-                    )
+            if apply_to_keys:
+                team_user_ids = (
+                    db.execute(select(DBUser.id).filter(DBUser.team_id == team_id))
+                    .scalars()
                     .all()
                 )
-                if key.litellm_token
-            ]
+                region_keys = [
+                    key
+                    for key in (
+                        db.query(DBPrivateAIKey)
+                        .filter(
+                            (DBPrivateAIKey.owner_id.in_(team_user_ids))
+                            | (DBPrivateAIKey.team_id == team_id),
+                            DBPrivateAIKey.region_id == region_id,
+                        )
+                        .all()
+                    )
+                    if key.litellm_token
+                ]
+            else:
+                region_keys = []
             keys_by_region: Dict[DBRegion, List[DBPrivateAIKey]] = {region: region_keys}
         else:
-            keys_by_region = get_team_keys_by_region(db, team_id)
+            if apply_to_keys:
+                keys_by_region = get_team_keys_by_region(db, team_id)
+            else:
+                # Only need the distinct regions; skip loading all key objects.
+                team_user_ids = (
+                    db.execute(select(DBUser.id).filter(DBUser.team_id == team_id))
+                    .scalars()
+                    .all()
+                )
+                region_ids = (
+                    db.execute(
+                        select(DBPrivateAIKey.region_id)
+                        .filter(
+                            (DBPrivateAIKey.owner_id.in_(team_user_ids))
+                            | (DBPrivateAIKey.team_id == team_id),
+                            DBPrivateAIKey.litellm_token.isnot(None),
+                            DBPrivateAIKey.region_id.isnot(None),
+                        )
+                        .distinct()
+                    )
+                    .scalars()
+                    .all()
+                )
+                regions = db.query(DBRegion).filter(DBRegion.id.in_(region_ids)).all()
+                keys_by_region = {r: [] for r in regions}
 
         # Update team budget and keys for each region
         for region_obj, keys in keys_by_region.items():
@@ -303,6 +333,9 @@ async def propagate_team_budget_to_keys(
                 logger.error(
                     f"Failed to update team {team_id} budget in region {region_obj.name}: {str(team_error)}"
                 )
+
+            if not apply_to_keys:
+                continue
 
             # Update each key's budget via LiteLLM
             for key in keys:
