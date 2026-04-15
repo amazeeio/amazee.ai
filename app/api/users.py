@@ -696,6 +696,11 @@ async def update_user(
                 )
                 updated_regions.append(region)
             except Exception:
+                logger.exception(
+                    "Failed to sync LiteLLM user email update for user_id=%s region_id=%s",
+                    db_user.id,
+                    region.id,
+                )
                 db.rollback()
                 for updated_region in updated_regions:
                     try:

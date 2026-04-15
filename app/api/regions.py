@@ -375,6 +375,38 @@ async def associate_team_with_region(
             max_budget=max_budget,
             budget_duration=budget_duration,
         )
+    except Exception as e:
+        logger.error(
+            "Failed to bootstrap LiteLLM team %s (db team_id=%s) in dedicated region %s: %s",
+            lite_team_id,
+            team_id,
+            region.name,
+            str(e),
+        )
+        try:
+            persisted_association = (
+                db.query(DBTeamRegion)
+                .filter(
+                    DBTeamRegion.team_id == team_id, DBTeamRegion.region_id == region_id
+                )
+                .first()
+            )
+            if persisted_association is not None:
+                db.delete(persisted_association)
+                db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Failed to rollback team-region association after LiteLLM sync failure (team_id=%s, region_id=%s)",
+                team_id,
+                region_id,
+            )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to bootstrap team in LiteLLM",
+        )
+
+    try:
         team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
         for team_user in team_users:
             await sync_add_user_to_team(
@@ -385,7 +417,7 @@ async def associate_team_with_region(
             )
     except Exception as e:
         logger.error(
-            "Failed to bootstrap team or sync members in LiteLLM for team %s (db team_id=%s) in dedicated region %s: %s",
+            "Failed to sync LiteLLM members for team %s (db team_id=%s) in dedicated region %s: %s",
             lite_team_id,
             team_id,
             region.name,
