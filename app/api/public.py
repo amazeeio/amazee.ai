@@ -90,8 +90,8 @@ def _extract_model_summary(item: dict[str, Any]) -> PublicModelSummary:
         pricing=PublicModelPricing(
             input_cost_per_token=input_cost_per_token,
             output_cost_per_token=output_cost_per_token,
-            input_cost_per_million_token=_per_million(input_cost_per_token),
-            output_cost_per_million_token=_per_million(output_cost_per_token),
+            input_cost_per_million_tokens=_per_million(input_cost_per_token),
+            output_cost_per_million_tokens=_per_million(output_cost_per_token),
         ),
     )
 

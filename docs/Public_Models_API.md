@@ -104,8 +104,8 @@ Returns a JSON array of region objects, each containing its model catalog.
 |-------|------|-------------|
 | `input_cost_per_token` | `float \| null` | Cost per input token in USD |
 | `output_cost_per_token` | `float \| null` | Cost per output token in USD |
-| `input_cost_per_million_token` | `float \| null` | Cost per 1,000,000 input tokens in USD |
-| `output_cost_per_million_token` | `float \| null` | Cost per 1,000,000 output tokens in USD |
+| `input_cost_per_million_tokens` | `float \| null` | Cost per 1,000,000 input tokens in USD |
+| `output_cost_per_million_tokens` | `float \| null` | Cost per 1,000,000 output tokens in USD |
 
 ## Caching
 
