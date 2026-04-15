@@ -823,7 +823,7 @@ async def update_team_member_budget(
         team_id=team_id,
         user_id=user_id,
         max_budget=body.max_budget,
-        budget_duration=body.budget_duration,
+        budget_duration=effective_duration,
         note="This budget is scoped to the user within the specified team.",
     )
 
