@@ -390,3 +390,27 @@ class DBLimitedResource(Base):
             "owner_type", "owner_id", "resource", name="uq_owner_resource"
         ),
     )
+
+
+class DBSpendCap(Base):
+    """
+    Persisted spend cap configuration for spend endpoints.
+
+    These records mirror effective cap settings pushed to LiteLLM for:
+    - team caps
+    - team-member caps
+    - key caps
+    """
+
+    __tablename__ = "spend_caps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scope = Column(String, nullable=False, index=True)  # team, team_member, key
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=False, index=True)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    key_id = Column(Integer, ForeignKey("ai_tokens.id"), nullable=True, index=True)
+    max_budget = Column(Float, nullable=True)
+    budget_duration = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)

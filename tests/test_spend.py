@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 from app.core.roles import UserRole
 from datetime import UTC, datetime
 
-from app.db.models import DBPoolPurchase, DBPrivateAIKey
+from app.db.models import DBPoolPurchase, DBPrivateAIKey, DBSpendCap
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
@@ -163,6 +163,7 @@ def test_update_team_budget_endpoint(
     admin_token,
     test_team,
     test_region,
+    db,
 ):
     mock_get_team_info.return_value = {
         "team_info": {"max_budget": 12.5, "budget_duration": "30d"}
@@ -179,6 +180,18 @@ def test_update_team_budget_endpoint(
     assert data["max_budget"] == 12.5
     assert data["budget_duration"] == "30d"
     mock_update_team_budget.assert_awaited_once()
+    cap = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == "team",
+            DBSpendCap.region_id == test_region.id,
+            DBSpendCap.team_id == test_team.id,
+        )
+        .first()
+    )
+    assert cap is not None
+    assert cap.max_budget == 12.5
+    assert cap.budget_duration == "30d"
 
 
 @patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
@@ -217,7 +230,13 @@ def test_update_team_budget_rejects_cap_above_pool_purchases(
 
 @patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
 def test_update_team_member_budget_endpoint(
-    mock_update_team_member, client, admin_token, test_team, test_team_user, test_region
+    mock_update_team_member,
+    client,
+    admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
 ):
     test_team_user.role = UserRole.TEAM_ADMIN
     response = client.put(
@@ -233,6 +252,18 @@ def test_update_team_member_budget_endpoint(
     assert data["max_budget"] == 1.23
     mock_update_team_member.assert_awaited_once()
     assert mock_update_team_member.await_args.kwargs["role"] == "user"
+    cap = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == "team_member",
+            DBSpendCap.region_id == test_region.id,
+            DBSpendCap.team_id == test_team.id,
+            DBSpendCap.user_id == test_team_user.id,
+        )
+        .first()
+    )
+    assert cap is not None
+    assert cap.max_budget == 1.23
 
 
 @patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
@@ -343,6 +374,18 @@ def test_update_key_budget_endpoint_clear_budget(
     assert data["key_id"] == key.id
     assert data["max_budget"] is None
     mock_update_key_budget.assert_awaited_once()
+    cap = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == "key",
+            DBSpendCap.region_id == test_region.id,
+            DBSpendCap.key_id == key.id,
+        )
+        .first()
+    )
+    assert cap is not None
+    assert cap.max_budget is None
+    assert cap.budget_duration is None
 
 
 @patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
@@ -409,6 +452,17 @@ def test_clear_key_budget_endpoint(
         team_id=test_team_user.team_id,
     )
     db.add(key)
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team_user.team_id,
+            user_id=test_team_user.id,
+            key_id=key.id,
+            max_budget=10.0,
+            budget_duration="30d",
+        )
+    )
     db.commit()
     mock_get_key_info.return_value = {
         "info": {"max_budget": None, "budget_duration": "30d"}
@@ -425,6 +479,16 @@ def test_clear_key_budget_endpoint(
         max_budget=None,
         clear_max_budget=True,
     )
+    cap = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == "key",
+            DBSpendCap.region_id == test_region.id,
+            DBSpendCap.key_id == key.id,
+        )
+        .first()
+    )
+    assert cap is None
 
 
 @patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)

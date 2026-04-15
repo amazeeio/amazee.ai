@@ -18,6 +18,7 @@ from app.db.models import (
     DBPoolPurchase,
     DBPrivateAIKey,
     DBRegion,
+    DBSpendCap,
     DBTeam,
     DBTeamRegion,
     DBUser,
@@ -192,6 +193,65 @@ def _assert_pool_budget_cap_within_purchases(
                 f"({purchased_budget:.4f}) for this team/region"
             ),
         )
+
+
+def _upsert_spend_cap(
+    db: Session,
+    *,
+    scope: str,
+    region_id: int,
+    team_id: int | None = None,
+    user_id: int | None = None,
+    key_id: int | None = None,
+    max_budget: float | None = None,
+    budget_duration: str | None = None,
+) -> None:
+    cap = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == scope,
+            DBSpendCap.region_id == region_id,
+            DBSpendCap.team_id == team_id,
+            DBSpendCap.user_id == user_id,
+            DBSpendCap.key_id == key_id,
+        )
+        .first()
+    )
+    if cap is None:
+        cap = DBSpendCap(
+            scope=scope,
+            region_id=region_id,
+            team_id=team_id,
+            user_id=user_id,
+            key_id=key_id,
+        )
+    cap.max_budget = max_budget
+    cap.budget_duration = budget_duration
+    db.add(cap)
+    db.commit()
+
+
+def _delete_spend_cap(
+    db: Session,
+    *,
+    scope: str,
+    region_id: int,
+    team_id: int | None = None,
+    user_id: int | None = None,
+    key_id: int | None = None,
+) -> None:
+    (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == scope,
+            DBSpendCap.region_id == region_id,
+            DBSpendCap.team_id == team_id,
+            DBSpendCap.user_id == user_id,
+            DBSpendCap.key_id == key_id,
+        )
+        .delete()
+    )
+    db.commit()
 
 
 async def _get_key_spend_items(
@@ -579,6 +639,14 @@ async def update_team_budget(
         max_budget=body.max_budget,
         budget_duration=body.budget_duration,
     )
+    _upsert_spend_cap(
+        db,
+        scope="team",
+        region_id=region_id,
+        team_id=team_id,
+        max_budget=body.max_budget,
+        budget_duration=body.budget_duration,
+    )
     info = await service.get_team_info(lite_team_id)
     team_info = info.get("team_info", info)
     return SpendBudgetUpdateResponse(
@@ -640,6 +708,15 @@ async def update_team_member_budget(
         user_id=str(user_id),
         role=_team_role_for_litellm(user),
         max_budget_in_team=body.max_budget,
+    )
+    _upsert_spend_cap(
+        db,
+        scope="team_member",
+        region_id=region_id,
+        team_id=team_id,
+        user_id=user_id,
+        max_budget=body.max_budget,
+        budget_duration=body.budget_duration,
     )
     return SpendBudgetUpdateResponse(
         scope="team_member",
@@ -743,6 +820,7 @@ async def clear_team_budget(
         max_budget=max_budget_to_restore,
         budget_duration=budget_duration,
     )
+    _delete_spend_cap(db, scope="team", region_id=region_id, team_id=team_id)
     info = await service.get_team_info(lite_team_id)
     team_info = info.get("team_info", info)
     return SpendBudgetUpdateResponse(
@@ -826,6 +904,9 @@ async def clear_team_member_budget(
         role=_team_role_for_litellm(user),
         max_budget_in_team=None,
     )
+    _delete_spend_cap(
+        db, scope="team_member", region_id=region_id, team_id=team_id, user_id=user_id
+    )
     return SpendBudgetUpdateResponse(
         scope="team_member",
         source_endpoint="/team/member_clear",
@@ -888,6 +969,16 @@ async def update_key_budget(
         budget_duration=body.budget_duration,
         max_budget=body.max_budget,
         clear_max_budget=body.max_budget is None,
+    )
+    _upsert_spend_cap(
+        db,
+        scope="key",
+        region_id=region_id,
+        team_id=key.team_id,
+        user_id=key.owner_id,
+        key_id=key_id,
+        max_budget=body.max_budget,
+        budget_duration=body.budget_duration,
     )
     key_info = await service.get_key_info(key.litellm_token)
     info = key_info.get("info", {})
@@ -967,6 +1058,7 @@ async def clear_key_budget(
         max_budget=None,
         clear_max_budget=True,
     )
+    _delete_spend_cap(db, scope="key", region_id=region_id, key_id=key_id)
     key_info = await service.get_key_info(key.litellm_token)
     info = key_info.get("info", {})
     return SpendBudgetUpdateResponse(
