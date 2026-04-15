@@ -54,8 +54,8 @@ Returns a JSON array of region objects, each containing its model catalog.
         "pricing": {
           "input_cost_per_token": 0.000003,
           "output_cost_per_token": 0.000015,
-          "input_cost_per_million_token": 3.0,
-          "output_cost_per_million_token": 15.0
+          "input_cost_per_million_tokens": 3.0,
+          "output_cost_per_million_tokens": 15.0
         }
       }
     ]
