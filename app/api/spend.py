@@ -294,6 +294,7 @@ def _upsert_spend_cap(
     cap.month_anchor = month_anchor
     cap.month_start_spend = month_start_spend
     db.add(cap)
+    # Defer commit to the endpoint so DB changes and remote sync share one boundary.
     db.flush()
 
 
@@ -317,6 +318,7 @@ def _delete_spend_cap(
         )
         .delete()
     )
+    # Defer commit to the endpoint so DB changes and remote sync share one boundary.
     db.flush()
 
 
