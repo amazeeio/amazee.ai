@@ -82,6 +82,7 @@ async def get_user_limits(
     "/overwrite",
     response_model=LimitedResource,
     dependencies=[Depends(get_role_min_system_admin)],
+    deprecated=True,
 )
 async def overwrite_limit(
     request: OverwriteLimitRequest,
