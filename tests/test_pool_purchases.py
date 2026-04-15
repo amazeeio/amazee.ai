@@ -1,7 +1,8 @@
 import time
 
-from app.db.models import DBPoolPurchase
+from app.db.models import DBLimitedResource, DBPoolPurchase
 from app.db.models import DBTeamRegion
+from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
 from datetime import datetime, UTC, timedelta
 import pytest
 from unittest.mock import patch, AsyncMock
@@ -220,6 +221,112 @@ def test_pool_purchase_propagates_team_budget_only(
     assert response.status_code == 201
     mock_propagate.assert_awaited_once()
     assert mock_propagate.call_args.kwargs["apply_to_keys"] is False
+
+
+def test_pool_purchase_preserves_operator_manual_cap_below_purchased_total(
+    client, admin_token, db, test_team, test_region
+):
+    test_team.budget_type = "pool"
+    db.add(
+        DBLimitedResource(
+            limit_type=LimitType.DATA_PLANE,
+            resource=ResourceType.BUDGET,
+            unit=UnitType.DOLLAR,
+            max_value=10.0,
+            current_value=None,
+            owner_type=OwnerType.TEAM,
+            owner_id=test_team.id,
+            limited_by=LimitSource.MANUAL,
+            set_by="admin@example.com",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    with patch(
+        "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
+    ) as mock_propagate:
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": f"pi_manual_cap_low_{int(time.time() * 1000000)}",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["new_total_budget_cents"] == 5000
+    mock_propagate.assert_awaited_once()
+    assert mock_propagate.call_args.args[2] == 10.0
+
+    limit = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == test_team.id,
+            DBLimitedResource.resource == ResourceType.BUDGET,
+        )
+        .first()
+    )
+    assert limit is not None
+    assert float(limit.max_value) == 10.0
+    assert limit.set_by == "admin@example.com"
+
+
+def test_pool_purchase_uses_purchased_total_when_operator_cap_above_purchased(
+    client, admin_token, db, test_team, test_region
+):
+    test_team.budget_type = "pool"
+    db.add(
+        DBLimitedResource(
+            limit_type=LimitType.DATA_PLANE,
+            resource=ResourceType.BUDGET,
+            unit=UnitType.DOLLAR,
+            max_value=100.0,
+            current_value=None,
+            owner_type=OwnerType.TEAM,
+            owner_id=test_team.id,
+            limited_by=LimitSource.MANUAL,
+            set_by="admin@example.com",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    with patch(
+        "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
+    ) as mock_propagate:
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": f"pi_manual_cap_high_{int(time.time() * 1000000)}",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["new_total_budget_cents"] == 5000
+    mock_propagate.assert_awaited_once()
+    assert mock_propagate.call_args.args[2] == 50.0
+
+    limit = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == test_team.id,
+            DBLimitedResource.resource == ResourceType.BUDGET,
+        )
+        .first()
+    )
+    assert limit is not None
+    assert float(limit.max_value) == 100.0
+    assert limit.set_by == "admin@example.com"
 
 
 def test_get_purchase_history(client, admin_token, db, test_team, test_region):

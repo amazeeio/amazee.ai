@@ -6,7 +6,7 @@ from app.core.limit_service import LimitService
 from app.core.security import get_role_min_system_admin
 from app.core.team_service import propagate_team_budget_to_keys
 from app.db.database import get_db
-from app.db.models import DBPoolPurchase, DBRegion, DBTeam
+from app.db.models import DBLimitedResource, DBPoolPurchase, DBRegion, DBTeam
 from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
 from app.schemas.models import (
     BudgetType,
@@ -23,6 +23,27 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["budgets"])
+
+
+def _get_operator_manual_team_budget_limit(db: Session, team_id: int) -> float | None:
+    """Return manual team budget cap set by an operator (not purchase automation)."""
+    existing_limit = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == team_id,
+            DBLimitedResource.resource == ResourceType.BUDGET,
+            DBLimitedResource.limited_by == LimitSource.MANUAL,
+        )
+        .first()
+    )
+    if (
+        not existing_limit
+        or existing_limit.max_value is None
+        or existing_limit.set_by == "pool_purchase"
+    ):
+        return None
+    return float(existing_limit.max_value)
 
 
 @router.post(
@@ -115,27 +136,34 @@ async def purchase_pool_budget(
     # never subtracted from max_budget.  Therefore the correct value is the
     # cumulative total of all purchases — NOT "purchases minus spend".
     new_total_budget = total_purchased_dollars
-
-    # Persist team budget limit so later reconciliations do not recreate a
-    # default 0.0 POOL budget and overwrite LiteLLM team budget.
-    limit_service = LimitService(db)
-    limit_service.set_limit(
-        owner_type=OwnerType.TEAM,
-        owner_id=team_id,
-        resource_type=ResourceType.BUDGET,
-        limit_type=LimitType.DATA_PLANE,
-        unit=UnitType.DOLLAR,
-        max_value=new_total_budget,
-        current_value=None,
-        limited_by=LimitSource.MANUAL,
-        set_by="pool_purchase",
+    operator_manual_cap = _get_operator_manual_team_budget_limit(db, team_id)
+    effective_team_budget = (
+        min(operator_manual_cap, new_total_budget)
+        if operator_manual_cap is not None
+        else new_total_budget
     )
+
+    # Persist purchase-managed team budget only when there is no operator
+    # manual cap. Operator caps are intentionally preserved.
+    limit_service = LimitService(db)
+    if operator_manual_cap is None:
+        limit_service.set_limit(
+            owner_type=OwnerType.TEAM,
+            owner_id=team_id,
+            resource_type=ResourceType.BUDGET,
+            limit_type=LimitType.DATA_PLANE,
+            unit=UnitType.DOLLAR,
+            max_value=new_total_budget,
+            current_value=None,
+            limited_by=LimitSource.MANUAL,
+            set_by="pool_purchase",
+        )
 
     try:
         await propagate_team_budget_to_keys(
             db,
             team_id,
-            new_total_budget,
+            effective_team_budget,
             f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
             region_id=region_id,
             update_key_limits=False,
@@ -161,7 +189,10 @@ async def purchase_pool_budget(
 
     logger.info(
         f"Pool purchase recorded for team {team_id}: "
-        f"${amount_dollars:.2f} added, new total budget: ${new_total_budget:.2f}"
+        f"${amount_dollars:.2f} added, purchased total: ${new_total_budget:.2f}, "
+        f"effective team budget: ${effective_team_budget:.2f}, "
+        f"operator manual cap: "
+        f"{f'${operator_manual_cap:.2f}' if operator_manual_cap is not None else 'none'}"
     )
 
     return PoolPurchaseResponse(
