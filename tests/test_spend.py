@@ -1,5 +1,6 @@
 from unittest.mock import AsyncMock, patch
 
+from app.core.roles import UserRole
 from app.db.models import DBPrivateAIKey
 
 
@@ -182,6 +183,7 @@ def test_update_team_budget_endpoint(
 def test_update_team_member_budget_endpoint(
     mock_update_team_member, client, admin_token, test_team, test_team_user, test_region
 ):
+    test_team_user.role = UserRole.TEAM_ADMIN
     response = client.put(
         f"/spend/{test_region.id}/team/{test_team.id}/member/{test_team_user.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
@@ -194,6 +196,36 @@ def test_update_team_member_budget_endpoint(
     assert data["user_id"] == test_team_user.id
     assert data["max_budget"] == 1.23
     mock_update_team_member.assert_awaited_once()
+    assert mock_update_team_member.await_args.kwargs["role"] == "user"
+
+
+@patch("app.api.spend.logger.warning")
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_team_spend_logs_when_litellm_key_cannot_map_to_db_key(
+    mock_get_team_info,
+    mock_warning,
+    client,
+    team_admin_token,
+    test_team,
+    test_region,
+):
+    mock_get_team_info.return_value = {
+        "team_info": {"spend": 2.0, "max_budget": 10.0},
+        "keys": [
+            {
+                "metadata": {"amazeeai_private_ai_key_name": "missing-key"},
+                "user_id": "999999",
+                "spend": 2.0,
+            }
+        ],
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    assert mock_warning.called
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)

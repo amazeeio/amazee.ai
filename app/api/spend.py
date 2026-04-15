@@ -1,9 +1,11 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-import logging
 
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
 from app.core.roles import UserRole
+from app.core.litellm_user_sync import _team_role_for_litellm
 from app.core.security import (
     get_current_user_from_auth,
     get_private_ai_access,
@@ -104,21 +106,25 @@ def _assert_user_access(current_user: DBUser, role: str, target_user: DBUser) ->
     )
 
 
-def _assert_team_budget_write_access(current_user: DBUser, team_id: int) -> None:
+def _assert_team_budget_write_access(
+    current_user: DBUser, role: str, team_id: int
+) -> None:
     if current_user.is_admin:
         return
-    if current_user.role != UserRole.TEAM_ADMIN or current_user.team_id != team_id:
+    if role != UserRole.TEAM_ADMIN or current_user.team_id != team_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to perform this action",
         )
 
 
-def _assert_user_budget_write_access(current_user: DBUser, target_user: DBUser) -> None:
+def _assert_user_budget_write_access(
+    current_user: DBUser, role: str, target_user: DBUser
+) -> None:
     if current_user.is_admin:
         return
     if (
-        current_user.role != UserRole.TEAM_ADMIN
+        role != UserRole.TEAM_ADMIN
         or current_user.team_id is None
         or current_user.team_id != target_user.team_id
     ):
@@ -215,6 +221,14 @@ def _find_db_key_id_for_litellm_key(
     elif fallback_team_id is not None:
         query = query.filter(DBPrivateAIKey.team_id == fallback_team_id)
     db_key = query.order_by(DBPrivateAIKey.id.desc()).first()
+    if not db_key:
+        logger.warning(
+            "Unable to map LiteLLM key to DB key: region_id=%s key_name=%s owner_id=%s fallback_team_id=%s",
+            region_id,
+            key_name,
+            owner_id,
+            fallback_team_id,
+        )
     return db_key.id if db_key else None
 
 
@@ -498,7 +512,7 @@ async def update_team_budget(
     team_id: int,
     body: SpendBudgetUpdateRequest,
     current_user: DBUser = Depends(get_current_user_from_auth),
-    _: str = Depends(get_role_min_team_admin),
+    role: str = Depends(get_role_min_team_admin),
     db: Session = Depends(get_db),
 ):
     team = (
@@ -508,7 +522,7 @@ async def update_team_budget(
     )
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
-    _assert_team_budget_write_access(current_user, team_id)
+    _assert_team_budget_write_access(current_user, role, team_id)
     region = _get_region_or_404(db, region_id)
     _assert_team_region_association(db, region, team_id)
     service = LiteLLMService(
@@ -545,7 +559,7 @@ async def update_team_member_budget(
     user_id: int,
     body: SpendBudgetUpdateRequest,
     current_user: DBUser = Depends(get_current_user_from_auth),
-    _: str = Depends(get_role_min_team_admin),
+    role: str = Depends(get_role_min_team_admin),
     db: Session = Depends(get_db),
 ):
     team = (
@@ -562,7 +576,7 @@ async def update_team_member_budget(
     )
     if not user or user.team_id != team_id:
         raise HTTPException(status_code=404, detail="User not found in team")
-    _assert_team_budget_write_access(current_user, team_id)
+    _assert_team_budget_write_access(current_user, role, team_id)
     region = _get_region_or_404(db, region_id)
     _assert_team_region_association(db, region, team_id)
     service = LiteLLMService(
@@ -579,7 +593,7 @@ async def update_team_member_budget(
     await service.update_team_member(
         team_id=lite_team_id,
         user_id=str(user_id),
-        role="admin" if user.role == UserRole.TEAM_ADMIN else "user",
+        role=_team_role_for_litellm(user),
         max_budget_in_team=body.max_budget,
     )
     return SpendBudgetUpdateResponse(
@@ -603,7 +617,7 @@ async def update_key_budget(
     key_id: int,
     body: SpendBudgetUpdateRequest,
     current_user: DBUser = Depends(get_current_user_from_auth),
-    _: str = Depends(get_role_min_team_admin),
+    role: str = Depends(get_role_min_team_admin),
     db: Session = Depends(get_db),
 ):
     key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
@@ -612,12 +626,12 @@ async def update_key_budget(
             status_code=404, detail="Private AI Key not found in region"
         )
     if key.team_id is not None:
-        _assert_team_budget_write_access(current_user, key.team_id)
+        _assert_team_budget_write_access(current_user, role, key.team_id)
     else:
         owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
         if not owner:
             raise HTTPException(status_code=404, detail="Key owner not found")
-        _assert_user_budget_write_access(current_user, owner)
+        _assert_user_budget_write_access(current_user, role, owner)
 
     region = _get_region_or_404(db, region_id)
     service = LiteLLMService(

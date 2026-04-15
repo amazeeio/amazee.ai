@@ -677,12 +677,14 @@ async def update_user(
                 detail="Team members cannot be made administrators",
             )
 
+    previous_email = db_user.email
     for key, value in user_update.model_dump(exclude_unset=True).items():
         setattr(db_user, key, value)
 
+    synced_regions = []
     if user_update.email is not None:
-        regions = get_target_regions_for_user(db, db_user.team_id)
-        for region in regions:
+        synced_regions = get_target_regions_for_user(db, db_user.team_id)
+        for region in synced_regions:
             service = LiteLLMService(
                 api_url=region.litellm_api_url, api_key=region.litellm_api_key
             )
@@ -691,7 +693,30 @@ async def update_user(
                 updates={"user_email": db_user.email},
             )
 
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        # Best-effort rollback for remote side effects when DB commit fails.
+        if user_update.email is not None and previous_email != db_user.email:
+            for region in synced_regions:
+                try:
+                    service = LiteLLMService(
+                        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+                    )
+                    await service.update_user(
+                        user_id=str(db_user.id),
+                        updates={"user_email": previous_email},
+                    )
+                except Exception as rollback_exc:
+                    logger.error(
+                        "Failed to rollback LiteLLM user email for user_id=%s region_id=%s: %s",
+                        db_user.id,
+                        region.id,
+                        str(rollback_exc),
+                    )
+        raise
+
     db.refresh(db_user)
     return db_user
 
