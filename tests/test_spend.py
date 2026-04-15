@@ -1,7 +1,9 @@
 from unittest.mock import AsyncMock, patch
 
 from app.core.roles import UserRole
-from app.db.models import DBPrivateAIKey
+from datetime import UTC, datetime
+
+from app.db.models import DBPoolPurchase, DBPrivateAIKey
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
@@ -270,3 +272,114 @@ def test_update_key_budget_endpoint_clear_budget(
     assert data["key_id"] == key.id
     assert data["max_budget"] is None
     mock_update_key_budget.assert_awaited_once()
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_clear_key_budget_endpoint(
+    mock_update_key_budget,
+    mock_get_key_info,
+    client,
+    admin_token,
+    test_team_user,
+    test_region,
+    db,
+):
+    key = DBPrivateAIKey(
+        name="clear-key-endpoint",
+        litellm_token="clear-key-endpoint-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team_user.team_id,
+    )
+    db.add(key)
+    db.commit()
+    mock_get_key_info.return_value = {
+        "info": {"max_budget": None, "budget_duration": "30d"}
+    }
+
+    response = client.post(
+        f"/spend/{test_region.id}/key/{key.id}/budget/clear",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    mock_update_key_budget.assert_awaited_once_with(
+        litellm_token=key.litellm_token,
+        budget_duration=None,
+        max_budget=None,
+        clear_max_budget=True,
+    )
+
+
+@patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
+def test_clear_team_member_budget_endpoint(
+    mock_update_team_member, client, admin_token, test_team, test_team_user, test_region
+):
+    response = client.post(
+        f"/spend/{test_region.id}/team/{test_team.id}/member/{test_team_user.id}/budget/clear",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    mock_update_team_member.assert_awaited_once()
+    assert mock_update_team_member.await_args.kwargs["max_budget_in_team"] is None
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
+def test_clear_team_budget_endpoint_periodic(
+    mock_update_team_budget,
+    mock_get_team_info,
+    client,
+    admin_token,
+    test_team,
+    test_region,
+):
+    mock_get_team_info.return_value = {
+        "team_info": {"max_budget": 27.0, "budget_duration": "30d"}
+    }
+
+    response = client.post(
+        f"/spend/{test_region.id}/team/{test_team.id}/budget/clear",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    mock_update_team_budget.assert_awaited_once()
+    assert mock_update_team_budget.await_args.kwargs["budget_duration"] is None
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
+def test_clear_team_budget_endpoint_pool_restores_purchases(
+    mock_update_team_budget,
+    mock_get_team_info,
+    client,
+    admin_token,
+    test_team,
+    test_region,
+    db,
+):
+    test_team.budget_type = "pool"
+    db.add(test_team)
+    db.add(
+        DBPoolPurchase(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            amount_cents=5000,
+            currency="USD",
+            purchased_at=datetime.now(UTC),
+            stripe_payment_id=f"clear-pool-{test_team.id}-{test_region.id}",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+    mock_get_team_info.return_value = {
+        "team_info": {"max_budget": 50.0, "budget_duration": "365d"}
+    }
+
+    response = client.post(
+        f"/spend/{test_region.id}/team/{test_team.id}/budget/clear",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    mock_update_team_budget.assert_awaited_once()
+    assert mock_update_team_budget.await_args.kwargs["max_budget"] == 50.0

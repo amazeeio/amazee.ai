@@ -1,20 +1,30 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
-from app.core.roles import UserRole
 from app.core.litellm_user_sync import _team_role_for_litellm
+from app.core.roles import UserRole
 from app.core.security import (
     get_current_user_from_auth,
     get_private_ai_access,
     get_role_min_team_admin,
 )
 from app.db.database import get_db
-from app.db.models import DBPrivateAIKey, DBRegion, DBTeam, DBTeamRegion, DBUser
-from app.schemas.limits import ResourceType
+from app.db.models import (
+    DBPoolPurchase,
+    DBPrivateAIKey,
+    DBRegion,
+    DBTeam,
+    DBTeamRegion,
+    DBUser,
+)
+from app.schemas.limits import OwnerType, ResourceType
 from app.schemas.models import (
+    BudgetType,
     PrivateAIKeySpend,
     SpendBudgetUpdateRequest,
     SpendBudgetUpdateResponse,
@@ -609,6 +619,191 @@ async def update_team_member_budget(
     )
 
 
+@router.post(
+    "/{region_id}/team/{team_id}/budget/clear",
+    response_model=SpendBudgetUpdateResponse,
+    summary="Clear team budget override",
+    description=(
+        "Clears ad-hoc team budget overrides and restores canonical team budget. "
+        "For POOL teams this restores purchased total for the region. "
+        "For PERIODIC teams this restores effective policy budget (MANUAL -> PRODUCT -> DEFAULT)."
+    ),
+    response_description="Team budget clear result with restored max_budget.",
+    openapi_extra={
+        "responses": {
+            200: {
+                "content": {
+                    "application/json": {
+                        "example": {
+                            "scope": "team",
+                            "source_endpoint": "/team/clear",
+                            "region_id": 1,
+                            "region_name": "eu-central",
+                            "team_id": 42,
+                            "max_budget": 50.0,
+                            "budget_duration": "365d",
+                            "note": "POOL teams restore to purchased total for the region; PERIODIC teams restore to effective policy budget.",
+                        }
+                    }
+                }
+            }
+        }
+    },
+)
+async def clear_team_budget(
+    region_id: int,
+    team_id: int,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    role: str = Depends(get_role_min_team_admin),
+    db: Session = Depends(get_db),
+):
+    team = (
+        db.query(DBTeam)
+        .filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None))
+        .first()
+    )
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    _assert_team_budget_write_access(current_user, role, team_id)
+    region = _get_region_or_404(db, region_id)
+    _assert_team_region_association(db, region, team_id)
+
+    if team.budget_type == BudgetType.POOL:
+        total_purchased_cents = (
+            db.query(func.sum(DBPoolPurchase.amount_cents))
+            .filter(
+                DBPoolPurchase.team_id == team_id, DBPoolPurchase.region_id == region_id
+            )
+            .scalar()
+            or 0
+        )
+        max_budget_to_restore = round(float(total_purchased_cents) / 100.0, 4)
+    else:
+        limit_service = LimitService(db)
+        try:
+            limit_service.reset_limit(
+                owner_type=OwnerType.TEAM,
+                owner_id=team_id,
+                resource_type=ResourceType.BUDGET,
+            )
+        except Exception:
+            # No persisted team budget limit to reset; use effective fallback budget.
+            pass
+        _, max_budget_to_restore, _ = limit_service.get_token_restrictions(team_id)
+        max_budget_to_restore = round(
+            float(max_budget_to_restore or DEFAULT_MAX_SPEND), 4
+        )
+
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+    budget_duration = (
+        f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+        if team.budget_type == BudgetType.POOL
+        else None
+    )
+    await service.update_team_budget(
+        team_id=lite_team_id,
+        max_budget=max_budget_to_restore,
+        budget_duration=budget_duration,
+    )
+    info = await service.get_team_info(lite_team_id)
+    team_info = info.get("team_info", info)
+    return SpendBudgetUpdateResponse(
+        scope="team",
+        source_endpoint="/team/clear",
+        region_id=region_id,
+        region_name=region.name,
+        team_id=team_id,
+        max_budget=team_info.get("max_budget"),
+        budget_duration=team_info.get("budget_duration"),
+        note=(
+            "POOL teams restore to purchased total for the region; PERIODIC teams restore to effective policy budget."
+        ),
+    )
+
+
+@router.post(
+    "/{region_id}/team/{team_id}/member/{user_id}/budget/clear",
+    response_model=SpendBudgetUpdateResponse,
+    summary="Clear team-member budget override",
+    description=(
+        "Clears the user's team-scoped budget override (max_budget_in_team) in LiteLLM. "
+        "This makes the member fall back to team-level budget behavior."
+    ),
+    response_description="Team-member budget clear result.",
+    openapi_extra={
+        "responses": {
+            200: {
+                "content": {
+                    "application/json": {
+                        "example": {
+                            "scope": "team_member",
+                            "source_endpoint": "/team/member_clear",
+                            "region_id": 1,
+                            "region_name": "eu-central",
+                            "team_id": 42,
+                            "user_id": 7,
+                            "max_budget": None,
+                            "budget_duration": None,
+                            "note": "Cleared team-member budget override.",
+                        }
+                    }
+                }
+            }
+        }
+    },
+)
+async def clear_team_member_budget(
+    region_id: int,
+    team_id: int,
+    user_id: int,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    role: str = Depends(get_role_min_team_admin),
+    db: Session = Depends(get_db),
+):
+    team = (
+        db.query(DBTeam)
+        .filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None))
+        .first()
+    )
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    user = (
+        db.query(DBUser)
+        .filter(DBUser.id == user_id, DBUser.is_active.is_(True))
+        .first()
+    )
+    if not user or user.team_id != team_id:
+        raise HTTPException(status_code=404, detail="User not found in team")
+    _assert_team_budget_write_access(current_user, role, team_id)
+    region = _get_region_or_404(db, region_id)
+    _assert_team_region_association(db, region, team_id)
+
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+    await service.update_team_member(
+        team_id=lite_team_id,
+        user_id=str(user_id),
+        role=_team_role_for_litellm(user),
+        max_budget_in_team=None,
+    )
+    return SpendBudgetUpdateResponse(
+        scope="team_member",
+        source_endpoint="/team/member_clear",
+        region_id=region_id,
+        region_name=region.name,
+        team_id=team_id,
+        user_id=user_id,
+        max_budget=None,
+        budget_duration=None,
+        note="Cleared team-member budget override.",
+    )
+
+
 @router.put(
     "/{region_id}/key/{key_id}/budget", response_model=SpendBudgetUpdateResponse
 )
@@ -656,4 +851,82 @@ async def update_key_budget(
         max_budget=info.get("max_budget"),
         budget_duration=info.get("budget_duration"),
         note="If key has team_id, team/team-member budgets may take precedence during enforcement.",
+    )
+
+
+@router.post(
+    "/{region_id}/key/{key_id}/budget/clear",
+    response_model=SpendBudgetUpdateResponse,
+    summary="Clear key budget override",
+    description=(
+        "Clears key max_budget override by setting it to null in LiteLLM. "
+        "This endpoint does not intentionally modify budget_duration."
+    ),
+    response_description="Key budget clear result with max_budget=null.",
+    openapi_extra={
+        "responses": {
+            200: {
+                "content": {
+                    "application/json": {
+                        "example": {
+                            "scope": "key",
+                            "source_endpoint": "/key/clear",
+                            "region_id": 1,
+                            "region_name": "eu-central",
+                            "team_id": 42,
+                            "user_id": 7,
+                            "key_id": 99,
+                            "max_budget": None,
+                            "budget_duration": "30d",
+                            "note": "Cleared key max_budget override without changing budget duration.",
+                        }
+                    }
+                }
+            }
+        }
+    },
+)
+async def clear_key_budget(
+    region_id: int,
+    key_id: int,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    role: str = Depends(get_role_min_team_admin),
+    db: Session = Depends(get_db),
+):
+    key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
+    if not key or key.region_id != region_id:
+        raise HTTPException(
+            status_code=404, detail="Private AI Key not found in region"
+        )
+    if key.team_id is not None:
+        _assert_team_budget_write_access(current_user, role, key.team_id)
+    else:
+        owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
+        if not owner:
+            raise HTTPException(status_code=404, detail="Key owner not found")
+        _assert_user_budget_write_access(current_user, role, owner)
+
+    region = _get_region_or_404(db, region_id)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    await service.update_key_budget(
+        litellm_token=key.litellm_token,
+        budget_duration=None,
+        max_budget=None,
+        clear_max_budget=True,
+    )
+    key_info = await service.get_key_info(key.litellm_token)
+    info = key_info.get("info", {})
+    return SpendBudgetUpdateResponse(
+        scope="key",
+        source_endpoint="/key/clear",
+        region_id=region_id,
+        region_name=region.name,
+        team_id=key.team_id,
+        user_id=key.owner_id,
+        key_id=key_id,
+        max_budget=info.get("max_budget"),
+        budget_duration=info.get("budget_duration"),
+        note="Cleared key max_budget override without changing budget duration.",
     )
