@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 def init_api_token_expiry_options(db=None):
-    print("Initializing API token expiry options...")
+    logger.info("Initializing API token expiry options...")
     own_db = False
     if db is None:
         db = SessionLocal()
@@ -43,10 +43,11 @@ def init_api_token_expiry_options(db=None):
                 db.add(db_opt)
 
         db.commit()
-        print("API token expiry options initialized successfully!")
-    except Exception as e:
-        print(f"Error initializing API token expiry options: {e}")
+        logger.info("API token expiry options initialized successfully!")
+    except Exception:
+        logger.exception("Error initializing API token expiry options")
         db.rollback()
+        raise
     finally:
         if own_db:
             db.close()
