@@ -8,6 +8,7 @@ from sqlalchemy import (
     JSON,
     Float,
     Enum,
+    Date,
 )
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime, UTC
@@ -412,5 +413,7 @@ class DBSpendCap(Base):
     key_id = Column(Integer, ForeignKey("ai_tokens.id"), nullable=True, index=True)
     max_budget = Column(Float, nullable=True)
     budget_duration = Column(String, nullable=True)
+    month_anchor = Column(Date, nullable=True)
+    month_start_spend = Column(Float, nullable=True)
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)

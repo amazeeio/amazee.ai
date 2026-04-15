@@ -188,6 +188,46 @@ async def lifespan(app: FastAPI):
         replace_existing=True,
     )
 
+    # POOL monthly cap rollover job - re-anchor month_start_spend on month boundaries
+    async def sync_pool_monthly_caps_job():
+        db = next(get_db())
+        lock_name = "sync_pool_monthly_caps"
+
+        try:
+            if try_acquire_lock(lock_name, db, lock_timeout=10):
+                logger.info("Acquired sync_pool_monthly_caps lock, executing job")
+                try:
+                    result = await budgets.sync_pool_team_monthly_caps(db)
+                    logger.info(
+                        f"Pool monthly caps sync complete: {result['teams_updated']} teams updated"
+                    )
+                except Exception as e:
+                    logger.error(f"Error in sync_pool_team_monthly_caps: {str(e)}")
+                finally:
+                    release_lock(lock_name, db)
+            else:
+                logger.info(
+                    "Another process has the sync_pool_monthly_caps lock, skipping execution"
+                )
+        except Exception as e:
+            logger.error(f"Error in sync_pool_monthly_caps job: {str(e)}")
+            try:
+                release_lock(lock_name, db)
+            except Exception as release_error:
+                logger.error(f"Error releasing lock: {release_error}")
+        finally:
+            db.close()
+
+    monthly_caps_trigger = CronTrigger(
+        day=1, hour=0, minute=5, timezone=UTC
+    )  # Run monthly at 00:05 UTC
+    scheduler.add_job(
+        sync_pool_monthly_caps_job,
+        trigger=monthly_caps_trigger,
+        id="sync_pool_monthly_caps",
+        replace_existing=True,
+    )
+
     # Start the scheduler
     scheduler.start()
 

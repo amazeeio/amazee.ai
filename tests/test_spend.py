@@ -1,7 +1,7 @@
 from unittest.mock import AsyncMock, patch
 
 from app.core.roles import UserRole
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from app.db.models import DBPoolPurchase, DBPrivateAIKey, DBSpendCap
 
@@ -227,6 +227,97 @@ def test_update_team_budget_rejects_cap_above_pool_purchases(
     assert response.status_code == 400
     assert "cannot exceed purchased pool budget" in response.json()["detail"]
     mock_update_team_budget.assert_not_awaited()
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
+def test_update_pool_team_budget_uses_pool_duration(
+    mock_update_team_budget,
+    mock_get_team_info,
+    client,
+    admin_token,
+    test_team,
+    test_region,
+    db,
+):
+    test_team.budget_type = "pool"
+    db.add(test_team)
+    db.add(
+        DBPoolPurchase(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            amount_cents=5000,
+            currency="USD",
+            purchased_at=datetime.now(UTC),
+            stripe_payment_id=f"pool-team-duration-{test_team.id}-{test_region.id}",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+    mock_get_team_info.return_value = {
+        "team_info": {"max_budget": 12.5, "budget_duration": "365d"}
+    }
+    response = client.put(
+        f"/spend/{test_region.id}/team/{test_team.id}/budget",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"max_budget": 12.5, "budget_duration": "1mo"},
+    )
+    assert response.status_code == 200
+    mock_update_team_budget.assert_awaited_once()
+    assert mock_update_team_budget.await_args.kwargs["max_budget"] == 12.5
+    assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "365d"
+    cap = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == "team",
+            DBSpendCap.region_id == test_region.id,
+            DBSpendCap.team_id == test_team.id,
+        )
+        .first()
+    )
+    assert cap is not None
+    assert cap.budget_duration == "1mo"
+    assert cap.month_anchor == datetime.now(UTC).date().replace(day=1)
+    assert cap.month_start_spend == 0.0
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
+def test_clear_pool_team_budget_uses_remaining_duration_from_last_purchase(
+    mock_update_team_budget,
+    mock_get_team_info,
+    client,
+    admin_token,
+    test_team,
+    test_region,
+    db,
+):
+    test_team.budget_type = "pool"
+    db.add(test_team)
+    db.add(
+        DBPoolPurchase(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            amount_cents=5000,
+            currency="USD",
+            purchased_at=datetime.now(UTC) - timedelta(days=10),
+            stripe_payment_id=f"clear-pool-remaining-{test_team.id}-{test_region.id}",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+    mock_get_team_info.return_value = {
+        "team_info": {"max_budget": 50.0, "budget_duration": "355d"}
+    }
+
+    response = client.post(
+        f"/spend/{test_region.id}/team/{test_team.id}/budget/clear",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    mock_update_team_budget.assert_awaited_once()
+    assert mock_update_team_budget.await_args.kwargs["max_budget"] == 50.0
+    assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "355d"
 
 
 @patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
@@ -608,7 +699,7 @@ def test_clear_team_budget_endpoint_pool_restores_purchases(
     )
     db.commit()
     mock_get_team_info.return_value = {
-        "team_info": {"max_budget": 50.0, "budget_duration": "1mo"}
+        "team_info": {"max_budget": 50.0, "budget_duration": "365d"}
     }
 
     response = client.post(

@@ -1,9 +1,11 @@
 import logging
+from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
 from app.core.litellm_user_sync import _team_role_for_litellm
 from app.core.roles import UserRole
@@ -79,6 +81,34 @@ def _effective_monthly_budget_duration(max_budget: float | None) -> str | None:
     if max_budget is None:
         return None
     return MONTHLY_BUDGET_DURATION
+
+
+def _effective_team_budget_duration(team: DBTeam, max_budget: float | None) -> str | None:
+    """
+    Resolve team budget duration by budget model:
+    - POOL teams: preserve purchase-expiration window (use-it-or-lose-it lifecycle)
+    - PERIODIC teams: enforce calendar-month windows for caps
+    """
+    if max_budget is None:
+        return None
+    if team.budget_type == BudgetType.POOL:
+        return f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+    return MONTHLY_BUDGET_DURATION
+
+
+def _current_month_anchor() -> date:
+    now = datetime.now(UTC)
+    return date(year=now.year, month=now.month, day=1)
+
+
+def _compute_pool_monthly_effective_budget(
+    purchased_total: float,
+    month_start_spend: float,
+    monthly_cap: float,
+) -> float:
+    # LiteLLM max_budget is an absolute ceiling in the active 365d window.
+    # To allow exactly `monthly_cap` during this month, shift by month_start_spend.
+    return round(min(float(purchased_total), float(month_start_spend) + float(monthly_cap)), 4)
 
 
 def _get_region_or_404(db: Session, region_id: int) -> DBRegion:
@@ -183,6 +213,25 @@ def _pool_purchased_budget_for_team_region(
     return round(float(total_purchased_cents) / 100.0, 4)
 
 
+def _pool_budget_duration_from_last_purchase(
+    db: Session, team_id: int, region_id: int
+) -> str:
+    latest_purchase_at = (
+        db.query(func.max(DBPoolPurchase.purchased_at))
+        .filter(DBPoolPurchase.team_id == team_id, DBPoolPurchase.region_id == region_id)
+        .scalar()
+    )
+    if latest_purchase_at is None:
+        return f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+    if latest_purchase_at.tzinfo is None:
+        latest_purchase = latest_purchase_at.replace(tzinfo=UTC)
+    else:
+        latest_purchase = latest_purchase_at
+    days_since_last_purchase = (datetime.now(UTC) - latest_purchase).days
+    days_left = max(0, settings.POOL_BUDGET_EXPIRATION_DAYS - days_since_last_purchase)
+    return f"{days_left}d"
+
+
 def _assert_pool_budget_cap_within_purchases(
     db: Session,
     team: DBTeam | None,
@@ -212,6 +261,8 @@ def _upsert_spend_cap(
     key_id: int | None = None,
     max_budget: float | None = None,
     budget_duration: str | None = None,
+    month_anchor: date | None = None,
+    month_start_spend: float | None = None,
 ) -> None:
     cap = (
         db.query(DBSpendCap)
@@ -234,6 +285,8 @@ def _upsert_spend_cap(
         )
     cap.max_budget = max_budget
     cap.budget_duration = budget_duration
+    cap.month_anchor = month_anchor
+    cap.month_start_spend = month_start_spend
     db.add(cap)
     db.commit()
 
@@ -640,11 +693,30 @@ async def update_team_budget(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-    effective_duration = _effective_monthly_budget_duration(body.max_budget)
+    if team.budget_type == BudgetType.POOL and body.max_budget is not None:
+        effective_duration = _pool_budget_duration_from_last_purchase(
+            db=db, team_id=team_id, region_id=region_id
+        )
+    else:
+        effective_duration = _effective_team_budget_duration(team, body.max_budget)
+    effective_max_budget = body.max_budget
+    month_anchor = None
+    month_start_spend = None
+
+    if team.budget_type == BudgetType.POOL and body.max_budget is not None:
+        purchased_total = _pool_purchased_budget_for_team_region(db, team_id, region_id)
+        team_info = (await service.get_team_info(lite_team_id)).get("team_info", {})
+        month_start_spend = round(float(team_info.get("spend", 0.0) or 0.0), 4)
+        month_anchor = _current_month_anchor()
+        effective_max_budget = _compute_pool_monthly_effective_budget(
+            purchased_total=purchased_total,
+            month_start_spend=month_start_spend,
+            monthly_cap=body.max_budget,
+        )
 
     await service.update_team_budget(
         team_id=lite_team_id,
-        max_budget=body.max_budget,
+        max_budget=effective_max_budget,
         budget_duration=effective_duration,
     )
     _upsert_spend_cap(
@@ -653,7 +725,11 @@ async def update_team_budget(
         region_id=region_id,
         team_id=team_id,
         max_budget=body.max_budget,
-        budget_duration=effective_duration,
+        budget_duration=(
+            MONTHLY_BUDGET_DURATION if team.budget_type == BudgetType.POOL else effective_duration
+        ),
+        month_anchor=month_anchor,
+        month_start_spend=month_start_spend,
     )
     info = await service.get_team_info(lite_team_id)
     team_info = info.get("team_info", info)
@@ -665,7 +741,11 @@ async def update_team_budget(
         team_id=team_id,
         max_budget=team_info.get("max_budget"),
         budget_duration=team_info.get("budget_duration"),
-        note="For team keys, team budget governs spend enforcement.",
+        note=(
+            "For team keys, team budget governs spend enforcement."
+            if team.budget_type != BudgetType.POOL
+            else "POOL monthly cap stored as monthly delta; LiteLLM max_budget is set to month_start_spend + monthly_cap (bounded by purchased total)."
+        ),
     )
 
 
@@ -762,7 +842,7 @@ async def update_team_member_budget(
                             "region_name": "eu-central",
                             "team_id": 42,
                             "max_budget": 50.0,
-                            "budget_duration": "1mo",
+                            "budget_duration": "365d",
                             "note": "POOL teams restore to purchased total for the region; PERIODIC teams restore to effective policy budget.",
                         }
                     }
@@ -819,7 +899,12 @@ async def clear_team_budget(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-    budget_duration = _effective_monthly_budget_duration(max_budget_to_restore)
+    if team.budget_type == BudgetType.POOL and max_budget_to_restore is not None:
+        budget_duration = _pool_budget_duration_from_last_purchase(
+            db=db, team_id=team_id, region_id=region_id
+        )
+    else:
+        budget_duration = _effective_team_budget_duration(team, max_budget_to_restore)
     await service.update_team_budget(
         team_id=lite_team_id,
         max_budget=max_budget_to_restore,
