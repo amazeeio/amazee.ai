@@ -138,6 +138,8 @@ def test_public_models_pricing_numeric_values(client, db):
         pricing = region_data["models"][0]["pricing"]
         assert pricing["input_cost_per_token"] == 0.000005
         assert pricing["output_cost_per_token"] == 0.000015
+        assert pricing["input_cost_per_million_tokens"] == 5.0
+        assert pricing["output_cost_per_million_tokens"] == 15.0
 
 
 def test_public_models_pricing_missing_values(client, db):
@@ -178,6 +180,8 @@ def test_public_models_pricing_missing_values(client, db):
         pricing = region_data["models"][0]["pricing"]
         assert pricing["input_cost_per_token"] is None
         assert pricing["output_cost_per_token"] is None
+        assert pricing["input_cost_per_million_tokens"] is None
+        assert pricing["output_cost_per_million_tokens"] is None
 
 
 def test_public_models_pricing_non_numeric_values(client, db):
@@ -222,6 +226,8 @@ def test_public_models_pricing_non_numeric_values(client, db):
         pricing = region_data["models"][0]["pricing"]
         assert pricing["input_cost_per_token"] is None
         assert pricing["output_cost_per_token"] is None
+        assert pricing["input_cost_per_million_tokens"] is None
+        assert pricing["output_cost_per_million_tokens"] is None
 
 
 def test_public_models_uses_region_key_for_model_info(client, db):
