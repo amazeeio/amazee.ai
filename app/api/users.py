@@ -254,7 +254,9 @@ async def _compute_user_spend(
         all_owner_ids.update(uid_set)
 
     key_pair_rows = (
-        db.query(DBPrivateAIKey.team_id, DBPrivateAIKey.owner_id, DBPrivateAIKey.region_id)
+        db.query(
+            DBPrivateAIKey.team_id, DBPrivateAIKey.owner_id, DBPrivateAIKey.region_id
+        )
         .filter(
             or_(
                 DBPrivateAIKey.team_id.in_(team_ids),
@@ -276,7 +278,10 @@ async def _compute_user_spend(
     for team_id in team_ids:
         team_name = team_names[team_id]
         for region in regions_by_team.get(team_id, {}).values():
-            if (team_id, region.id) not in key_team_region_set and region.id not in user_key_regions_by_team.get(team_id, set()):
+            if (
+                (team_id, region.id) not in key_team_region_set
+                and region.id not in user_key_regions_by_team.get(team_id, set())
+            ):
                 continue
 
             tasks.append(

@@ -55,6 +55,12 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+def _per_million(cost_per_token: float | None) -> float | None:
+    if cost_per_token is None:
+        return None
+    return cost_per_token * 1_000_000
+
+
 def _to_display_name(model_id: str) -> str:
     words = re.split(r"[-_]+", model_id)
     return " ".join(
@@ -65,6 +71,8 @@ def _to_display_name(model_id: str) -> str:
 def _extract_model_summary(item: dict[str, Any]) -> PublicModelSummary:
     model_info = item.get("model_info", {})
     model_id = item.get("model_name") or model_info.get("key") or "unknown"
+    input_cost_per_token = _safe_float(model_info.get("input_cost_per_token"))
+    output_cost_per_token = _safe_float(model_info.get("output_cost_per_token"))
 
     return PublicModelSummary(
         model_id=model_id,
@@ -80,8 +88,10 @@ def _extract_model_summary(item: dict[str, Any]) -> PublicModelSummary:
             supports_prompt_caching=bool(model_info.get("supports_prompt_caching")),
         ),
         pricing=PublicModelPricing(
-            input_cost_per_token=_safe_float(model_info.get("input_cost_per_token")),
-            output_cost_per_token=_safe_float(model_info.get("output_cost_per_token")),
+            input_cost_per_token=input_cost_per_token,
+            output_cost_per_token=output_cost_per_token,
+            input_cost_per_million_token=_per_million(input_cost_per_token),
+            output_cost_per_million_token=_per_million(output_cost_per_token),
         ),
     )
 
