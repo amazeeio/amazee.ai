@@ -385,7 +385,7 @@ async def associate_team_with_region(
             )
     except Exception as e:
         logger.error(
-            "Failed to bootstrap/sync LiteLLM team %s (db team_id=%s) in dedicated region %s: %s",
+            "Failed to bootstrap team or sync members in LiteLLM for team %s (db team_id=%s) in dedicated region %s: %s",
             lite_team_id,
             team_id,
             region.name,
