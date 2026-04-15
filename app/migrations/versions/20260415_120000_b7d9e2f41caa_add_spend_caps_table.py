@@ -41,9 +41,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_spend_caps_id"), "spend_caps", ["id"], unique=False)
-    op.create_index(
-        op.f("ix_spend_caps_scope"), "spend_caps", ["scope"], unique=False
-    )
+    op.create_index(op.f("ix_spend_caps_scope"), "spend_caps", ["scope"], unique=False)
     op.create_index(
         op.f("ix_spend_caps_region_id"), "spend_caps", ["region_id"], unique=False
     )
@@ -53,7 +51,9 @@ def upgrade() -> None:
     op.create_index(
         op.f("ix_spend_caps_user_id"), "spend_caps", ["user_id"], unique=False
     )
-    op.create_index(op.f("ix_spend_caps_key_id"), "spend_caps", ["key_id"], unique=False)
+    op.create_index(
+        op.f("ix_spend_caps_key_id"), "spend_caps", ["key_id"], unique=False
+    )
 
 
 def downgrade() -> None:

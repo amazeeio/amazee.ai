@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
 from app.core.litellm_user_sync import _team_role_for_litellm
 from app.core.roles import UserRole
@@ -37,6 +36,7 @@ from app.services.litellm import LiteLLMService
 
 router = APIRouter(tags=["spend"])
 logger = logging.getLogger(__name__)
+MONTHLY_BUDGET_DURATION = "1mo"
 
 
 def _to_int_or_none(value) -> int | None:
@@ -72,6 +72,13 @@ def _sum_optional_token_values(
         completion_sum if has_completion else None,
         total_sum if has_total else None,
     )
+
+
+def _effective_monthly_budget_duration(max_budget: float | None) -> str | None:
+    """Use calendar-month windows whenever a budget cap is set."""
+    if max_budget is None:
+        return None
+    return MONTHLY_BUDGET_DURATION
 
 
 def _get_region_or_404(db: Session, region_id: int) -> DBRegion:
@@ -633,11 +640,12 @@ async def update_team_budget(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+    effective_duration = _effective_monthly_budget_duration(body.max_budget)
 
     await service.update_team_budget(
         team_id=lite_team_id,
         max_budget=body.max_budget,
-        budget_duration=body.budget_duration,
+        budget_duration=effective_duration,
     )
     _upsert_spend_cap(
         db,
@@ -645,7 +653,7 @@ async def update_team_budget(
         region_id=region_id,
         team_id=team_id,
         max_budget=body.max_budget,
-        budget_duration=body.budget_duration,
+        budget_duration=effective_duration,
     )
     info = await service.get_team_info(lite_team_id)
     team_info = info.get("team_info", info)
@@ -709,6 +717,7 @@ async def update_team_member_budget(
         role=_team_role_for_litellm(user),
         max_budget_in_team=body.max_budget,
     )
+    effective_duration = _effective_monthly_budget_duration(body.max_budget)
     _upsert_spend_cap(
         db,
         scope="team_member",
@@ -716,7 +725,7 @@ async def update_team_member_budget(
         team_id=team_id,
         user_id=user_id,
         max_budget=body.max_budget,
-        budget_duration=body.budget_duration,
+        budget_duration=effective_duration,
     )
     return SpendBudgetUpdateResponse(
         scope="team_member",
@@ -753,7 +762,7 @@ async def update_team_member_budget(
                             "region_name": "eu-central",
                             "team_id": 42,
                             "max_budget": 50.0,
-                            "budget_duration": "365d",
+                            "budget_duration": "1mo",
                             "note": "POOL teams restore to purchased total for the region; PERIODIC teams restore to effective policy budget.",
                         }
                     }
@@ -810,11 +819,7 @@ async def clear_team_budget(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-    budget_duration = (
-        f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
-        if team.budget_type == BudgetType.POOL
-        else None
-    )
+    budget_duration = _effective_monthly_budget_duration(max_budget_to_restore)
     await service.update_team_budget(
         team_id=lite_team_id,
         max_budget=max_budget_to_restore,
@@ -964,9 +969,10 @@ async def update_key_budget(
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
+    effective_duration = _effective_monthly_budget_duration(body.max_budget)
     await service.update_key_budget(
         litellm_token=key.litellm_token,
-        budget_duration=body.budget_duration,
+        budget_duration=effective_duration,
         max_budget=body.max_budget,
         clear_max_budget=body.max_budget is None,
     )
@@ -978,7 +984,7 @@ async def update_key_budget(
         user_id=key.owner_id,
         key_id=key_id,
         max_budget=body.max_budget,
-        budget_duration=body.budget_duration,
+        budget_duration=effective_duration,
     )
     key_info = await service.get_key_info(key.litellm_token)
     info = key_info.get("info", {})
@@ -1019,7 +1025,7 @@ async def update_key_budget(
                             "user_id": 7,
                             "key_id": 99,
                             "max_budget": None,
-                            "budget_duration": "30d",
+                            "budget_duration": "1mo",
                             "note": "Cleared key max_budget override without changing budget duration.",
                         }
                     }
