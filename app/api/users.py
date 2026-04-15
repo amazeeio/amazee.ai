@@ -701,7 +701,6 @@ async def update_user(
                     db_user.id,
                     region.id,
                 )
-                db.rollback()
                 for updated_region in updated_regions:
                     try:
                         rollback_service = LiteLLMService(
@@ -719,6 +718,7 @@ async def update_user(
                             updated_region.id,
                             str(rollback_exc),
                         )
+                db.rollback()
                 raise
 
     try:
