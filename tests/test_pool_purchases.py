@@ -744,11 +744,14 @@ async def test_sync_pool_team_monthly_caps_rollover_updates_effective_budget(
     db.add(cap)
     db.commit()
 
-    with patch(
-        "app.api.budgets.LiteLLMService.get_team_info", new_callable=AsyncMock
-    ) as mock_get_team_info, patch(
-        "app.api.budgets.LiteLLMService.update_team_budget", new_callable=AsyncMock
-    ) as mock_update_team_budget:
+    with (
+        patch(
+            "app.api.budgets.LiteLLMService.get_team_info", new_callable=AsyncMock
+        ) as mock_get_team_info,
+        patch(
+            "app.api.budgets.LiteLLMService.update_team_budget", new_callable=AsyncMock
+        ) as mock_update_team_budget,
+    ):
         mock_get_team_info.return_value = {"team_info": {"spend": 20.0}}
         result = await sync_pool_team_monthly_caps(db)
 

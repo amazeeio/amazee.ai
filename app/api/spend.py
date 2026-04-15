@@ -83,7 +83,9 @@ def _effective_monthly_budget_duration(max_budget: float | None) -> str | None:
     return MONTHLY_BUDGET_DURATION
 
 
-def _effective_team_budget_duration(team: DBTeam, max_budget: float | None) -> str | None:
+def _effective_team_budget_duration(
+    team: DBTeam, max_budget: float | None
+) -> str | None:
     """
     Resolve team budget duration by budget model:
     - POOL teams: preserve purchase-expiration window (use-it-or-lose-it lifecycle)
@@ -108,7 +110,9 @@ def _compute_pool_monthly_effective_budget(
 ) -> float:
     # LiteLLM max_budget is an absolute ceiling in the active 365d window.
     # To allow exactly `monthly_cap` during this month, shift by month_start_spend.
-    return round(min(float(purchased_total), float(month_start_spend) + float(monthly_cap)), 4)
+    return round(
+        min(float(purchased_total), float(month_start_spend) + float(monthly_cap)), 4
+    )
 
 
 def _get_region_or_404(db: Session, region_id: int) -> DBRegion:
@@ -218,7 +222,9 @@ def _pool_budget_duration_from_last_purchase(
 ) -> str:
     latest_purchase_at = (
         db.query(func.max(DBPoolPurchase.purchased_at))
-        .filter(DBPoolPurchase.team_id == team_id, DBPoolPurchase.region_id == region_id)
+        .filter(
+            DBPoolPurchase.team_id == team_id, DBPoolPurchase.region_id == region_id
+        )
         .scalar()
     )
     if latest_purchase_at is None:
@@ -726,7 +732,9 @@ async def update_team_budget(
         team_id=team_id,
         max_budget=body.max_budget,
         budget_duration=(
-            MONTHLY_BUDGET_DURATION if team.budget_type == BudgetType.POOL else effective_duration
+            MONTHLY_BUDGET_DURATION
+            if team.budget_type == BudgetType.POOL
+            else effective_duration
         ),
         month_anchor=month_anchor,
         month_start_spend=month_start_spend,

@@ -64,7 +64,9 @@ def _pool_budget_duration_from_last_purchase(
 ) -> str:
     latest_purchase_at = (
         db.query(func.max(DBPoolPurchase.purchased_at))
-        .filter(DBPoolPurchase.team_id == team_id, DBPoolPurchase.region_id == region_id)
+        .filter(
+            DBPoolPurchase.team_id == team_id, DBPoolPurchase.region_id == region_id
+        )
         .scalar()
     )
     if latest_purchase_at is None:
