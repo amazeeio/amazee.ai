@@ -1,25 +1,24 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy import func
-from datetime import datetime, UTC
 import logging
+from datetime import UTC, datetime
 
-from app.db.database import get_db
-from app.db.models import DBTeam, DBRegion, DBPoolPurchase
-from app.core.security import get_role_min_system_admin
 from app.core.config import settings
 from app.core.limit_service import LimitService
+from app.core.security import get_role_min_system_admin
+from app.core.team_service import propagate_team_budget_to_keys
+from app.db.database import get_db
+from app.db.models import DBPoolPurchase, DBRegion, DBTeam
 from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
 from app.schemas.models import (
+    BudgetType,
+    PoolPurchaseHistoryResponse,
     PoolPurchaseRequest,
     PoolPurchaseResponse,
-    PoolPurchaseHistoryResponse,
     PoolRegionPurchaseHistoryResponse,
-    BudgetType,
 )
-from app.core.team_service import propagate_team_budget_to_keys
-
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +42,7 @@ async def purchase_pool_budget(
 
     Only works for teams with budget_type = POOL.
     Handles concurrent purchases by checking for duplicate stripe_payment_id.
+    POOL updates are team-budget only; per-key max_budget remains unset.
     """
     team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not team:
@@ -139,6 +139,7 @@ async def purchase_pool_budget(
             f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
             region_id=region_id,
             update_key_limits=False,
+            apply_to_keys=False,
         )
     except Exception as e:
         db.rollback()
@@ -293,6 +294,7 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                     f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
                     region_id=rid,
                     update_key_limits=False,
+                    apply_to_keys=False,
                 )
                 errors.extend(result["errors"])
                 if result["teams_updated"] > 0:
@@ -313,6 +315,7 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                     f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
                     region_id=rid,
                     update_key_limits=False,
+                    apply_to_keys=False,
                 )
                 errors.extend(result["errors"])
                 if result["teams_updated"] > 0:

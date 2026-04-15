@@ -254,6 +254,7 @@ class LiteLLMService:
         litellm_token: str,
         budget_duration: str,
         budget_amount: Optional[float] = None,
+        include_max_budget: bool = False,
     ):
         """Update the budget for a LiteLLM API key"""
         try:
@@ -263,7 +264,7 @@ class LiteLLMService:
                 "budget_duration": budget_duration,
                 "duration": "365d",
             }
-            if budget_amount is not None:
+            if include_max_budget or budget_amount is not None:
                 request_data["max_budget"] = budget_amount
 
             async with httpx.AsyncClient() as client:

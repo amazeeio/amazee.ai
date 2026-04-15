@@ -52,8 +52,10 @@ Returns a JSON array of region objects, each containing its model catalog.
           "supports_prompt_caching": true
         },
         "pricing": {
-          "input_cost_per_token": 'n/a',
-          "output_cost_per_token": 'n/a'
+          "input_cost_per_token": 0.000003,
+          "output_cost_per_token": 0.000015,
+          "input_cost_per_million_tokens": 3.0,
+          "output_cost_per_million_tokens": 15.0
         }
       }
     ]
@@ -85,7 +87,7 @@ Returns a JSON array of region objects, each containing its model catalog.
 | `context_length` | `integer` | Maximum input context length in tokens |
 | `max_output_tokens` | `integer` | Maximum output tokens (null for embeddings) |
 | `capabilities` | `object` | Capability flags (see below) |
-| `pricing` | `object` | Per-token pricing (see below) NOTE: using `n/a` for now |
+| `pricing` | `object` | Pricing details per token and per million tokens (see below) |
 
 #### Capabilities
 
@@ -100,8 +102,10 @@ Returns a JSON array of region objects, each containing its model catalog.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `input_cost_per_token` | `float` | Cost per input token in USD (NOTE: using `n/a` for now) |
-| `output_cost_per_token` | `float` | Cost per output token in USD (NOTE: using `n/a` for now) |
+| `input_cost_per_token` | `float \| null` | Cost per input token in USD |
+| `output_cost_per_token` | `float \| null` | Cost per output token in USD |
+| `input_cost_per_million_tokens` | `float \| null` | Cost per 1,000,000 input tokens in USD |
+| `output_cost_per_million_tokens` | `float \| null` | Cost per 1,000,000 output tokens in USD |
 
 ## Caching
 

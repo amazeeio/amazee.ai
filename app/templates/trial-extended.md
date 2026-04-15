@@ -9,7 +9,7 @@ Whether you've been:
 - Haven't had time to fully explore yet
 
 You now have 30 more days to discover what private AI can do for your
-Drupal projects.
+projects.
 
 Everything stays the same:
 - No action required from you

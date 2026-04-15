@@ -1,30 +1,31 @@
-from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, select, func
-from fastapi import HTTPException, status
-from typing import Optional, List
-from datetime import datetime, UTC
+import asyncio
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
+from typing import List, Optional
+
 from app.db.models import (
     DBLimitedResource,
-    DBUser,
-    DBTeam,
-    DBTeamProduct,
     DBPrivateAIKey,
     DBProduct,
+    DBTeam,
+    DBTeamProduct,
+    DBUser,
 )
 from app.schemas.limits import (
     LimitedResource,
     LimitedResourceCreate,
-    OwnerType,
-    UnitType,
     LimitSource,
     LimitType,
+    OwnerType,
     ResourceType,
+    UnitType,
 )
 from app.schemas.models import BudgetType
-import logging
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
+from fastapi import HTTPException, status
 from prometheus_client import Counter
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.orm import Session
 
 # Shared executor for budget propagation to avoid creating too many threads
 _budget_propagation_executor = None
@@ -504,18 +505,19 @@ class LimitService:
             budget_amount: New budget amount to set for all keys
         """
         # Import here to avoid circular import
+        from app.core.config import settings
         from app.core.team_service import propagate_team_budget_to_keys
         from app.db.database import get_db
-        from app.core.config import settings
 
         team = self.db.query(DBTeam).filter(DBTeam.id == team_id).first()
         if not team:
             logger.error(f"Team {team_id} not found, skipping budget propagation")
             return
 
-        # POOL budgets are purchase-driven and must always use the configured
-        # POOL expiration window for duration.
-        if team.budget_type == BudgetType.POOL:
+        # POOL budgets are purchase-driven and enforced at team level only.
+        # Periodic teams continue using key-level propagation.
+        apply_to_keys = team.budget_type != BudgetType.POOL
+        if not apply_to_keys:
             budget_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
         else:
             # For periodic teams, keep duration aligned with token restrictions.
@@ -543,6 +545,7 @@ class LimitService:
                             budget_amount,
                             budget_duration,
                             update_key_limits=team.budget_type != BudgetType.POOL,
+                            apply_to_keys=apply_to_keys,
                         )
                     )
                 finally:
