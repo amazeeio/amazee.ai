@@ -234,10 +234,11 @@ async def purchase_pool_budget(
             current_value=None,
             limited_by=LimitSource.MANUAL,
             set_by="pool_purchase",
+            commit=False,
         )
 
     try:
-        await propagate_team_budget_to_keys(
+        propagation_result = await propagate_team_budget_to_keys(
             db,
             team_id,
             effective_team_budget,
@@ -248,6 +249,20 @@ async def purchase_pool_budget(
             update_key_limits=False,
             apply_to_keys=False,
         )
+        if (
+            isinstance(propagation_result, dict)
+            and propagation_result.get("errors")
+        ):
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Failed to update team budget in LiteLLM: "
+                    + "; ".join(propagation_result["errors"])
+                ),
+            )
+    except HTTPException:
+        raise
     except Exception as e:
         db.rollback()
         logger.error(f"Failed to propagate budget to keys: {e}")

@@ -39,6 +39,14 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["team_id"], ["teams.id"]),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"]),
         sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "scope",
+            "region_id",
+            "team_id",
+            "user_id",
+            "key_id",
+            name="uq_spend_caps_scope_region_team_user_key",
+        ),
     )
     op.create_index(op.f("ix_spend_caps_id"), "spend_caps", ["id"], unique=False)
     op.create_index(op.f("ix_spend_caps_scope"), "spend_caps", ["scope"], unique=False)

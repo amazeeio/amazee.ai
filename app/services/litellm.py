@@ -297,11 +297,11 @@ class LiteLLMService:
         """Update budget fields for a LiteLLM key.
 
         When clear_max_budget=True, max_budget is explicitly sent as null.
+        This method intentionally avoids updating key duration/expiry.
         """
         try:
             request_data = {
                 "key": litellm_token,
-                "duration": "365d",
             }
             if budget_duration is not None:
                 request_data["budget_duration"] = budget_duration

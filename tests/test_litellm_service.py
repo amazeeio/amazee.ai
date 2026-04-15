@@ -323,6 +323,64 @@ def test_update_budget_failure(
 
 
 @patch("httpx.AsyncClient")
+def test_update_key_budget_does_not_override_duration(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.update_key_budget(
+            litellm_token="test-token",
+            budget_duration="1mo",
+            max_budget=10.0,
+        )
+    )
+
+    mock_httpx_post_client.post.assert_called_once_with(
+        f"{test_region.litellm_api_url}/key/update",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={
+            "key": "test-token",
+            "budget_duration": "1mo",
+            "max_budget": 10.0,
+        },
+    )
+
+
+@patch("httpx.AsyncClient")
+def test_update_key_budget_clear_max_budget_keeps_existing_duration(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.update_key_budget(
+            litellm_token="test-token",
+            budget_duration=None,
+            max_budget=None,
+            clear_max_budget=True,
+        )
+    )
+
+    mock_httpx_post_client.post.assert_called_once_with(
+        f"{test_region.litellm_api_url}/key/update",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={
+            "key": "test-token",
+            "max_budget": None,
+        },
+    )
+
+
+@patch("httpx.AsyncClient")
 def test_update_key_duration_success(
     mock_client_class, test_region, mock_httpx_post_client
 ):

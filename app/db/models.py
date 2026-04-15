@@ -404,6 +404,16 @@ class DBSpendCap(Base):
     """
 
     __tablename__ = "spend_caps"
+    __table_args__ = (
+        UniqueConstraint(
+            "scope",
+            "region_id",
+            "team_id",
+            "user_id",
+            "key_id",
+            name="uq_spend_caps_scope_region_team_user_key",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     scope = Column(String, nullable=False, index=True)  # team, team_member, key

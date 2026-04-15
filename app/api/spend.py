@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
-from app.core.litellm_user_sync import _team_role_for_litellm
+from app.core.litellm_user_sync import team_role_for_litellm
 from app.core.roles import UserRole
 from app.core.security import (
     get_current_user_from_auth,
@@ -294,7 +294,7 @@ def _upsert_spend_cap(
     cap.month_anchor = month_anchor
     cap.month_start_spend = month_start_spend
     db.add(cap)
-    db.commit()
+    db.flush()
 
 
 def _delete_spend_cap(
@@ -317,7 +317,7 @@ def _delete_spend_cap(
         )
         .delete()
     )
-    db.commit()
+    db.flush()
 
 
 async def _get_key_spend_items(
@@ -740,6 +740,7 @@ async def update_team_budget(
         month_start_spend=month_start_spend,
     )
     info = await service.get_team_info(lite_team_id)
+    db.commit()
     team_info = info.get("team_info", info)
     return SpendBudgetUpdateResponse(
         scope="team",
@@ -802,7 +803,7 @@ async def update_team_member_budget(
     await service.update_team_member(
         team_id=lite_team_id,
         user_id=str(user_id),
-        role=_team_role_for_litellm(user),
+        role=team_role_for_litellm(user),
         max_budget_in_team=body.max_budget,
     )
     effective_duration = _effective_monthly_budget_duration(body.max_budget)
@@ -815,6 +816,7 @@ async def update_team_member_budget(
         max_budget=body.max_budget,
         budget_duration=effective_duration,
     )
+    db.commit()
     return SpendBudgetUpdateResponse(
         scope="team_member",
         source_endpoint="/team/member_update",
@@ -920,6 +922,7 @@ async def clear_team_budget(
     )
     _delete_spend_cap(db, scope="team", region_id=region_id, team_id=team_id)
     info = await service.get_team_info(lite_team_id)
+    db.commit()
     team_info = info.get("team_info", info)
     return SpendBudgetUpdateResponse(
         scope="team",
@@ -999,12 +1002,13 @@ async def clear_team_member_budget(
     await service.update_team_member(
         team_id=lite_team_id,
         user_id=str(user_id),
-        role=_team_role_for_litellm(user),
+        role=team_role_for_litellm(user),
         max_budget_in_team=None,
     )
     _delete_spend_cap(
         db, scope="team_member", region_id=region_id, team_id=team_id, user_id=user_id
     )
+    db.commit()
     return SpendBudgetUpdateResponse(
         scope="team_member",
         source_endpoint="/team/member_clear",
@@ -1080,6 +1084,7 @@ async def update_key_budget(
         budget_duration=effective_duration,
     )
     key_info = await service.get_key_info(key.litellm_token)
+    db.commit()
     info = key_info.get("info", {})
     return SpendBudgetUpdateResponse(
         scope="key",
@@ -1159,6 +1164,7 @@ async def clear_key_budget(
     )
     _delete_spend_cap(db, scope="key", region_id=region_id, key_id=key_id)
     key_info = await service.get_key_info(key.litellm_token)
+    db.commit()
     info = key_info.get("info", {})
     return SpendBudgetUpdateResponse(
         scope="key",

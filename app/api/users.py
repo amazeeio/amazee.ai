@@ -682,16 +682,39 @@ async def update_user(
         setattr(db_user, key, value)
 
     synced_regions = []
+    updated_regions = []
     if user_update.email is not None:
         synced_regions = get_target_regions_for_user(db, db_user.team_id)
         for region in synced_regions:
             service = LiteLLMService(
                 api_url=region.litellm_api_url, api_key=region.litellm_api_key
             )
-            await service.update_user(
-                user_id=str(db_user.id),
-                updates={"user_email": db_user.email},
-            )
+            try:
+                await service.update_user(
+                    user_id=str(db_user.id),
+                    updates={"user_email": db_user.email},
+                )
+                updated_regions.append(region)
+            except Exception:
+                db.rollback()
+                for updated_region in updated_regions:
+                    try:
+                        rollback_service = LiteLLMService(
+                            api_url=updated_region.litellm_api_url,
+                            api_key=updated_region.litellm_api_key,
+                        )
+                        await rollback_service.update_user(
+                            user_id=str(db_user.id),
+                            updates={"user_email": previous_email},
+                        )
+                    except Exception as rollback_exc:
+                        logger.error(
+                            "Failed to rollback LiteLLM user email for user_id=%s region_id=%s: %s",
+                            db_user.id,
+                            updated_region.id,
+                            str(rollback_exc),
+                        )
+                raise
 
     try:
         db.commit()
@@ -699,7 +722,7 @@ async def update_user(
         db.rollback()
         # Best-effort rollback for remote side effects when DB commit fails.
         if user_update.email is not None and previous_email != db_user.email:
-            for region in synced_regions:
+            for region in updated_regions:
                 try:
                     service = LiteLLMService(
                         api_url=region.litellm_api_url, api_key=region.litellm_api_key
@@ -758,12 +781,26 @@ async def add_user_to_team(
     # Add user to team
     db_user.team_id = team_operation.team_id
     try:
-        await sync_add_user_to_team(db=db, db_user=db_user, team_id=db_team.id)
+        db.commit()
+        db.refresh(db_user)
     except Exception:
         db.rollback()
         raise
-    db.commit()
-    db.refresh(db_user)
+
+    try:
+        await sync_add_user_to_team(db=db, db_user=db_user, team_id=db_team.id)
+    except Exception:
+        try:
+            db_user.team_id = None
+            db.commit()
+            db.refresh(db_user)
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Failed to revert team assignment for user %s after LiteLLM sync failure",
+                db_user.id,
+            )
+        raise
     return db_user
 
 
@@ -793,16 +830,30 @@ async def remove_user_from_team(
 
     # Remove user from team
     previous_team_id = db_user.team_id
+    db_user.team_id = None
+    try:
+        db.commit()
+        db.refresh(db_user)
+    except Exception:
+        db.rollback()
+        raise
+
     try:
         await sync_remove_user_from_team(
             db=db, db_user=db_user, team_id=previous_team_id
         )
     except Exception:
-        db.rollback()
+        try:
+            db_user.team_id = previous_team_id
+            db.commit()
+            db.refresh(db_user)
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Failed to revert team removal for user %s after LiteLLM sync failure",
+                db_user.id,
+            )
         raise
-    db_user.team_id = None
-    db.commit()
-    db.refresh(db_user)
     return db_user
 
 
@@ -822,16 +873,21 @@ async def delete_user(
             status_code=400, detail="Cannot delete user with associated AI keys"
         )
 
+    team_id = db_user.team_id
+    db.delete(db_user)
     try:
-        await sync_delete_user_across_regions(
-            db=db, db_user=db_user, team_id=db_user.team_id
-        )
+        db.commit()
     except Exception:
         db.rollback()
         raise
 
-    db.delete(db_user)
-    db.commit()
+    try:
+        await sync_delete_user_across_regions(db=db, db_user=db_user, team_id=team_id)
+    except Exception:
+        logger.exception(
+            "User %s deleted from DB but failed to sync deletion across LiteLLM regions",
+            user_id,
+        )
     return {"message": "User deleted successfully"}
 
 
@@ -878,18 +934,37 @@ async def update_user_role(
         )
 
     # Update the role
+    previous_role = db_user.role
     db_user.role = role_update.role
     db_user.updated_at = datetime.now(UTC)
+    remote_role_synced = False
 
     if db_user.team_id is not None:
         try:
             await sync_update_user_team_role(
                 db=db, db_user=db_user, team_id=db_user.team_id
             )
+            remote_role_synced = True
         except Exception:
             db.rollback()
             raise
 
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        if remote_role_synced and db_user.team_id is not None:
+            try:
+                db_user.role = previous_role
+                await sync_update_user_team_role(
+                    db=db, db_user=db_user, team_id=db_user.team_id
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to revert LiteLLM role sync after DB commit failure",
+                    extra={"user_id": user_id, "team_id": db_user.team_id},
+                )
+        raise
+
     db.refresh(db_user)
     return db_user

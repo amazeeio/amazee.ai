@@ -124,7 +124,7 @@ def _dedupe_regions(regions: Iterable[DBRegion]) -> List[DBRegion]:
     return deduped
 
 
-def _team_role_for_litellm(db_user: DBUser) -> str:
+def team_role_for_litellm(db_user: DBUser) -> str:
     # LiteLLM OSS rejects team admin assignment via API (enterprise-only feature).
     # Keep API writes stable by mapping all team roles to LiteLLM "user".
     return "user"
@@ -208,7 +208,7 @@ async def sync_create_user_across_regions(
                 action=lambda: service.add_team_member(
                     team_id=lite_team_id,
                     user_id=str(db_user.id),
-                    role=_team_role_for_litellm(db_user),
+                    role=team_role_for_litellm(db_user),
                 ),
             )
 
@@ -278,7 +278,7 @@ async def sync_add_user_to_team(
             action=lambda: service.add_team_member(
                 team_id=lite_team_id,
                 user_id=str(db_user.id),
-                role=_team_role_for_litellm(db_user),
+                role=team_role_for_litellm(db_user),
             ),
         )
 
@@ -371,7 +371,7 @@ async def sync_update_user_team_role(
         )
         return
 
-    role = _team_role_for_litellm(db_user)
+    role = team_role_for_litellm(db_user)
     if role == "user":
         # Current OSS role mapping is constant. Skip cross-region calls.
         litellm_user_sync_skips_total.labels(

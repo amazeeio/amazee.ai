@@ -341,6 +341,19 @@ async def associate_team_with_region(
             detail="Team is already associated with this region",
         )
 
+    # Create the association first so local state is durable.
+    team_region = DBTeamRegion(team_id=team_id, region_id=region_id)
+    db.add(team_region)
+
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to associate team with region: {str(e)}",
+        )
+
     # Bootstrap the team in the dedicated region's LiteLLM instance before
     # syncing members. LiteLLM requires team existence for member_add.
     # POOL teams start at $0 (purchases raise the budget).
@@ -362,39 +375,43 @@ async def associate_team_with_region(
             max_budget=max_budget,
             budget_duration=budget_duration,
         )
+        team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
+        for team_user in team_users:
+            await sync_add_user_to_team(
+                db=db,
+                db_user=team_user,
+                team_id=team_id,
+                force_regions=[region],
+            )
     except Exception as e:
         logger.error(
-            "Failed to bootstrap LiteLLM team %s (db team_id=%s) in dedicated region %s: %s",
+            "Failed to bootstrap/sync LiteLLM team %s (db team_id=%s) in dedicated region %s: %s",
             lite_team_id,
             team_id,
             region.name,
             str(e),
         )
+        try:
+            persisted_association = (
+                db.query(DBTeamRegion)
+                .filter(
+                    DBTeamRegion.team_id == team_id, DBTeamRegion.region_id == region_id
+                )
+                .first()
+            )
+            if persisted_association is not None:
+                db.delete(persisted_association)
+                db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Failed to rollback team-region association after LiteLLM sync failure (team_id=%s, region_id=%s)",
+                team_id,
+                region_id,
+            )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to bootstrap team in LiteLLM",
-        )
-
-    team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
-    for team_user in team_users:
-        await sync_add_user_to_team(
-            db=db,
-            db_user=team_user,
-            team_id=team_id,
-            force_regions=[region],
-        )
-
-    # Create the association only after remote sync succeeds.
-    team_region = DBTeamRegion(team_id=team_id, region_id=region_id)
-    db.add(team_region)
-
-    try:
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to associate team with region: {str(e)}",
         )
 
     return {"message": "Team associated with region successfully"}
@@ -421,16 +438,10 @@ async def disassociate_team_from_region(
             detail="Team-region association not found",
         )
 
+    region = association.region
     team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
-    for team_user in team_users:
-        await sync_remove_user_from_team(
-            db=db,
-            db_user=team_user,
-            team_id=team_id,
-            force_regions=[association.region],
-        )
 
-    # Remove the association
+    # Remove the association first so local state is durable.
     db.delete(association)
 
     try:
@@ -440,6 +451,30 @@ async def disassociate_team_from_region(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to disassociate team from region: {str(e)}",
+        )
+
+    try:
+        for team_user in team_users:
+            await sync_remove_user_from_team(
+                db=db,
+                db_user=team_user,
+                team_id=team_id,
+                force_regions=[region],
+            )
+    except Exception as e:
+        try:
+            db.add(DBTeamRegion(team_id=team_id, region_id=region_id))
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Failed to restore team-region association after LiteLLM disassociation failure (team_id=%s, region_id=%s)",
+                team_id,
+                region_id,
+            )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to disassociate team from LiteLLM: {str(e)}",
         )
 
     return {"message": "Team disassociated from region successfully"}
