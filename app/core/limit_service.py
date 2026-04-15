@@ -517,6 +517,7 @@ class LimitService:
         # POOL budgets are purchase-driven and enforced at team level only.
         # Periodic teams continue using key-level propagation.
         apply_to_keys = team.budget_type != BudgetType.POOL
+        update_key_limits = team.budget_type != BudgetType.POOL
         if not apply_to_keys:
             budget_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
         else:
@@ -544,7 +545,7 @@ class LimitService:
                             team_id,
                             budget_amount,
                             budget_duration,
-                            update_key_limits=team.budget_type != BudgetType.POOL,
+                            update_key_limits=update_key_limits,
                             apply_to_keys=apply_to_keys,
                         )
                     )

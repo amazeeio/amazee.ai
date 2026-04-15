@@ -337,7 +337,7 @@ async def propagate_team_budget_to_keys(
                     f"Failed to update team {team_id} budget in region {region_obj.name}: {str(team_error)}"
                 )
 
-            if update_key_limits:
+            if update_key_limits and apply_to_keys:
                 # Update each key's budget via LiteLLM.
                 for key in keys:
                     try:
@@ -354,25 +354,6 @@ async def propagate_team_budget_to_keys(
                         logger.error(
                             f"Failed to update key {key.id} budget in LiteLLM: {str(key_error)}"
                         )
-            if not apply_to_keys:
-                continue
-
-            # Update each key's budget via LiteLLM
-            for key in keys:
-                try:
-                    await litellm_service.update_budget(
-                        litellm_token=key.litellm_token,
-                        budget_duration=budget_duration,
-                        budget_amount=budget_amount,
-                    )
-                    logger.info(
-                        f"Updated key {key.id} budget to {budget_amount} in LiteLLM after team budget limit change"
-                    )
-                except Exception as key_error:
-                    errors.append(f"Key {key.id}: {str(key_error)}")
-                    logger.error(
-                        f"Failed to update key {key.id} budget in LiteLLM: {str(key_error)}"
-                    )
     except Exception as propagation_error:
         errors.append(str(propagation_error))
         logger.error(
