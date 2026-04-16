@@ -249,10 +249,7 @@ async def purchase_pool_budget(
             update_key_limits=False,
             apply_to_keys=False,
         )
-        if (
-            isinstance(propagation_result, dict)
-            and propagation_result.get("errors")
-        ):
+        if isinstance(propagation_result, dict) and propagation_result.get("errors"):
             db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,

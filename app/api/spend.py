@@ -676,7 +676,14 @@ async def get_key_spend_alias(
 
 
 @router.put(
-    "/{region_id}/team/{team_id}/budget", response_model=SpendBudgetUpdateResponse
+    "/{region_id}/team/{team_id}/budget",
+    response_model=SpendBudgetUpdateResponse,
+    summary="Update team budget (Experimental)",
+    description=(
+        "Experimental endpoint. Contract and behavior may change while team budget "
+        "controls are being finalized."
+    ),
+    openapi_extra={"x-experimental": True},
 )
 async def update_team_budget(
     region_id: int,
