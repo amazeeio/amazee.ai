@@ -403,7 +403,16 @@ def _find_db_key_id_for_litellm_key(
     return db_key.id if db_key else None
 
 
-@router.get("/{region_id}/team/{team_id}", response_model=TeamSpendResponse)
+@router.get(
+    "/{region_id}/team/{team_id}",
+    response_model=TeamSpendResponse,
+    summary="Get team spend by region",
+    description=(
+        "Returns aggregated spend for a team in a region, including per-key spend, "
+        "token usage fields, and effective budget totals."
+    ),
+    response_description="Team spend summary and per-key breakdown.",
+)
 async def get_team_spend(
     region_id: int,
     team_id: int,
@@ -530,7 +539,16 @@ async def get_team_spend(
     )
 
 
-@router.get("/{region_id}/user/{user_id}", response_model=UserSpendResponse)
+@router.get(
+    "/{region_id}/user/{user_id}",
+    response_model=UserSpendResponse,
+    summary="Get user spend by region",
+    description=(
+        "Returns aggregated spend for a user in a region, including per-key spend "
+        "and token usage fields."
+    ),
+    response_description="User spend summary and per-key breakdown.",
+)
 async def get_user_spend(
     region_id: int,
     user_id: int,
@@ -627,7 +645,15 @@ async def get_user_spend(
     )
 
 
-@router.get("/{region_id}/key/{key_id}", response_model=PrivateAIKeySpend)
+@router.get(
+    "/{region_id}/key/{key_id}",
+    response_model=PrivateAIKeySpend,
+    summary="Get key spend by region",
+    description=(
+        "Returns spend and budget metadata for a specific key in the specified region."
+    ),
+    response_description="Key spend record with budget metadata and token usage.",
+)
 async def get_key_spend_alias(
     region_id: int,
     key_id: int,
@@ -678,10 +704,19 @@ async def get_key_spend_alias(
 @router.put(
     "/{region_id}/team/{team_id}/budget",
     response_model=SpendBudgetUpdateResponse,
-    summary="Update team budget (Experimental)",
+    summary="Update team budget",
     description=(
-        "Experimental endpoint. Contract and behavior may change while team budget "
-        "controls are being finalized."
+        "**Experimental** endpoint. Contract and behavior may change while team "
+        "budget controls are being finalized.\n\n"
+        "Request body accepts only `max_budget`.\n"
+        "`budget_duration` is computed server-side and returned in the response:\n"
+        "- PERIODIC teams: monthly (`1mo`)\n"
+        "- POOL teams: purchase-window duration for enforcement while storing "
+        "monthly-cap semantics in local spend caps."
+    ),
+    response_description=(
+        "Updated team budget state including effective max_budget and server-derived "
+        "budget_duration."
     ),
     openapi_extra={"x-experimental": True},
 )
@@ -770,6 +805,15 @@ async def update_team_budget(
 @router.put(
     "/{region_id}/team/{team_id}/member/{user_id}/budget",
     response_model=SpendBudgetUpdateResponse,
+    summary="Update team-member budget",
+    description=(
+        "Updates a team-scoped per-member budget (`max_budget_in_team`) for the "
+        "specified user.\n\n"
+        "Request body accepts only `max_budget`.\n"
+        "`budget_duration` is derived server-side and returned in the response "
+        "(monthly `1mo` when set)."
+    ),
+    response_description="Updated team-member budget state.",
 )
 async def update_team_member_budget(
     region_id: int,
@@ -1032,7 +1076,16 @@ async def clear_team_member_budget(
 
 
 @router.put(
-    "/{region_id}/key/{key_id}/budget", response_model=SpendBudgetUpdateResponse
+    "/{region_id}/key/{key_id}/budget",
+    response_model=SpendBudgetUpdateResponse,
+    summary="Update key budget",
+    description=(
+        "Updates key-level budget override for the specified key.\n\n"
+        "Request body accepts only `max_budget`.\n"
+        "`budget_duration` is derived server-side and returned in the response "
+        "(monthly `1mo` when set, `null` when clearing max_budget)."
+    ),
+    response_description="Updated key budget state.",
 )
 async def update_key_budget(
     region_id: int,
