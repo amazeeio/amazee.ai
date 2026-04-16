@@ -627,17 +627,21 @@ start_test \
   "POOL cap rejection (team/member/key)" \
   "purchase 5.00 succeeds; setting 6.00 cap returns 400 on all three endpoints"
 step "Test 10: creating new POOL team"
+POOL_TEAM_TAG="$(date +%s | tr -d '\n' | tail -c 6)"
+POOL_ADMIN_EMAIL_BASE="spend-e2e-pool-owner-${SUFFIX}@example.com"
+POOL_TAGGED_ADMIN_EMAIL="${POOL_ADMIN_EMAIL_BASE/@/+team-${POOL_TEAM_TAG}@}"
 POOL_TEAM_CREATE_PAYLOAD=$(jq -n \
-  --arg n "spend-e2e-pool-team-${SUFFIX}" \
-  --arg e "spend-e2e-pool-team-${SUFFIX}@example.com" \
+  --arg n "spend-e2e-pool-team-${SUFFIX}-${POOL_TEAM_TAG}" \
+  --arg e "$POOL_TAGGED_ADMIN_EMAIL" \
   '{name:$n, admin_email:$e, budget_type:"pool"}')
 api_call "POST" "/teams" "$POOL_TEAM_CREATE_PAYLOAD"
 POOL_TEAM_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
 step "Test 10: creating user for POOL team ${POOL_TEAM_ID}"
+POOL_USER_EMAIL="${POOL_ADMIN_EMAIL_BASE/@/+${POOL_TEAM_ID}@}"
 POOL_USER_CREATE_PAYLOAD=$(jq -n \
-  --arg e "spend-e2e-pool-user-${SUFFIX}@example.com" \
+  --arg e "$POOL_USER_EMAIL" \
   --argjson tid "$POOL_TEAM_ID" \
-  '{email:$e, password:"password123", team_id:$tid, role:"read_only"}')
+  '{email:$e, team_id:$tid, role:"admin"}')
 api_call "POST" "/users" "$POOL_USER_CREATE_PAYLOAD"
 POOL_USER_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
 step "Test 10: creating POOL team key"
@@ -647,7 +651,11 @@ POOL_KEY_PAYLOAD=$(jq -n \
   '{region_id:$rid, name:"spend-e2e-pool-key", team_id:$tid}')
 api_call "POST" "/private-ai-keys" "$POOL_KEY_PAYLOAD"
 POOL_KEY_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
+POOL_KEY_TOKEN="$(echo "$HTTP_BODY" | jq -r '.litellm_token')"
+POOL_KEY_URL="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '.litellm_api_url')")"
 register_key "$POOL_KEY_ID"
+register_user "$POOL_USER_ID"
+register_team "$POOL_TEAM_ID"
 step "Test 10: purchasing \$5.00 pool budget for POOL team"
 PURCHASE_PAYLOAD=$(jq -n \
   --arg sid "spend-e2e-purchase-${SUFFIX}" \
@@ -803,6 +811,164 @@ finish_test \
   "set_status=${BASE_SET_STATUS}, unauth_status=${UNAUTH_STATUS}, before_budget=${BASE_BUDGET}, after_budget=${AFTER_BUDGET}" \
   "$PASS"
 
+# Test 15: POOL valid team cap + enforcement
+start_test \
+  "POOL team cap set + enforce" \
+  "setting team pool cap 4.0 succeeds and usage eventually blocks"
+step "Test 15: setting POOL team cap to 4.0 (below purchased 5.0)"
+api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":4.0}'
+POOL_TEAM_SET_OK="$HTTP_STATUS"
+step "Test 15: generating POOL team-key usage until blocked"
+POOL_BLOCK_STATUS="200"
+for _i in $(seq 1 1200); do
+  chat_usage "$POOL_KEY_URL" "$POOL_KEY_TOKEN" "$MODEL_ID" 100 14900
+  POOL_BLOCK_STATUS="$CHAT_STATUS"
+  if [[ "$POOL_BLOCK_STATUS" == "400" || "$POOL_BLOCK_STATUS" == "429" ]]; then
+    break
+  fi
+done
+POOL_BLOCKED=$([[ "$POOL_BLOCK_STATUS" == "400" || "$POOL_BLOCK_STATUS" == "429" ]] && echo 1 || echo 0)
+PASS=$([[ "$POOL_TEAM_SET_OK" == "200" && "$POOL_BLOCKED" == "1" ]] && echo 1 || echo 0)
+finish_test \
+  "set_status=${POOL_TEAM_SET_OK}, block_status=${POOL_BLOCK_STATUS}" \
+  "$PASS"
+
+# Test 16: POOL team clear restores purchased headroom
+start_test \
+  "POOL team clear restores purchased budget" \
+  "clear returns 200 and max_budget remains numeric (restored from purchases)"
+step "Test 16: clearing POOL team budget override"
+api_call "POST" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/budget/clear"
+POOL_CLEAR_STATUS="$HTTP_STATUS"
+POOL_CLEAR_MAX="$(echo "$HTTP_BODY" | jq -r '.max_budget // 0')"
+POOL_CLEAR_NUMERIC="$(python3 - "$POOL_CLEAR_MAX" <<'PY'
+import sys
+try:
+  print(1 if float(sys.argv[1]) >= 0 else 0)
+except Exception:
+  print(0)
+PY
+)"
+PASS=$([[ "$POOL_CLEAR_STATUS" == "200" && "$POOL_CLEAR_NUMERIC" == "1" ]] && echo 1 || echo 0)
+finish_test \
+  "clear_status=${POOL_CLEAR_STATUS}, restored_max_budget=${POOL_CLEAR_MAX}" \
+  "$PASS"
+
+# Test 17: POOL member cap set + clear + usage
+start_test \
+  "POOL member cap set/clear lifecycle" \
+  "member cap set blocks, clear re-allows usage"
+step "Test 17: creating user-owned key for POOL member ${POOL_USER_ID}"
+POOL_USER_KEY_PAYLOAD=$(jq -n \
+  --argjson rid "$REGION_ID" \
+  --argjson uid "$POOL_USER_ID" \
+  '{region_id:$rid, name:"spend-e2e-pool-user-key", owner_id:$uid}')
+api_call "POST" "/private-ai-keys" "$POOL_USER_KEY_PAYLOAD"
+POOL_USER_KEY_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
+POOL_USER_KEY_TOKEN="$(echo "$HTTP_BODY" | jq -r '.litellm_token')"
+POOL_USER_KEY_URL="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '.litellm_api_url')")"
+register_key "$POOL_USER_KEY_ID"
+step "Test 17: setting POOL member cap to 0.004"
+api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/member/${POOL_USER_ID}/budget" '{"max_budget":0.004}'
+POOL_MEMBER_SET="$HTTP_STATUS"
+step "Test 17: generating member key usage until blocked"
+POOL_MEMBER_BLOCK="200"
+for _i in $(seq 1 20); do
+  chat_usage "$POOL_USER_KEY_URL" "$POOL_USER_KEY_TOKEN" "$MODEL_ID" 100 14900
+  POOL_MEMBER_BLOCK="$CHAT_STATUS"
+  if [[ "$POOL_MEMBER_BLOCK" == "400" || "$POOL_MEMBER_BLOCK" == "429" ]]; then
+    break
+  fi
+done
+step "Test 17: clearing member cap and retrying usage"
+api_call "POST" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/member/${POOL_USER_ID}/budget/clear"
+POOL_MEMBER_CLEAR="$HTTP_STATUS"
+if wait_for_chat_success "$POOL_USER_KEY_URL" "$POOL_USER_KEY_TOKEN" "$MODEL_ID" 100 14900 20; then
+  POOL_MEMBER_AFTER_CLEAR="200"
+else
+  POOL_MEMBER_AFTER_CLEAR="$CHAT_STATUS"
+fi
+POOL_MEMBER_BLOCKED=$([[ "$POOL_MEMBER_BLOCK" == "400" || "$POOL_MEMBER_BLOCK" == "429" ]] && echo 1 || echo 0)
+PASS=$([[ "$POOL_MEMBER_SET" == "200" && "$POOL_MEMBER_BLOCKED" == "1" && "$POOL_MEMBER_CLEAR" == "200" && "$POOL_MEMBER_AFTER_CLEAR" == "200" ]] && echo 1 || echo 0)
+finish_test \
+  "set=${POOL_MEMBER_SET}, block=${POOL_MEMBER_BLOCK}, clear=${POOL_MEMBER_CLEAR}, after_clear=${POOL_MEMBER_AFTER_CLEAR}" \
+  "$PASS"
+
+# Test 18: POOL key cap set + clear + usage
+start_test \
+  "POOL key cap set/clear lifecycle" \
+  "key cap set blocks, clear re-allows usage"
+step "Test 18: setting POOL key cap to 0.004 on key ${POOL_KEY_ID}"
+api_call "PUT" "/spend/${REGION_ID}/key/${POOL_KEY_ID}/budget" '{"max_budget":0.004}'
+POOL_KEY_SET="$HTTP_STATUS"
+step "Test 18: generating key usage until blocked"
+POOL_KEY_BLOCK="200"
+for _i in $(seq 1 20); do
+  chat_usage "$POOL_KEY_URL" "$POOL_KEY_TOKEN" "$MODEL_ID" 100 14900
+  POOL_KEY_BLOCK="$CHAT_STATUS"
+  if [[ "$POOL_KEY_BLOCK" == "400" || "$POOL_KEY_BLOCK" == "429" ]]; then
+    break
+  fi
+done
+step "Test 18: clearing key cap and retrying usage"
+api_call "POST" "/spend/${REGION_ID}/key/${POOL_KEY_ID}/budget/clear"
+POOL_KEY_CLEAR="$HTTP_STATUS"
+if wait_for_chat_success "$POOL_KEY_URL" "$POOL_KEY_TOKEN" "$MODEL_ID" 100 14900 20; then
+  POOL_KEY_AFTER_CLEAR="200"
+else
+  POOL_KEY_AFTER_CLEAR="$CHAT_STATUS"
+fi
+POOL_KEY_BLOCKED=$([[ "$POOL_KEY_BLOCK" == "400" || "$POOL_KEY_BLOCK" == "429" ]] && echo 1 || echo 0)
+PASS=$([[ "$POOL_KEY_SET" == "200" && "$POOL_KEY_BLOCKED" == "1" && "$POOL_KEY_CLEAR" == "200" && "$POOL_KEY_AFTER_CLEAR" == "200" ]] && echo 1 || echo 0)
+finish_test \
+  "set=${POOL_KEY_SET}, block=${POOL_KEY_BLOCK}, clear=${POOL_KEY_CLEAR}, after_clear=${POOL_KEY_AFTER_CLEAR}" \
+  "$PASS"
+
+# Test 19: POOL dedicated-region association gate
+if [[ "$DEDICATED_REGION_ID" != "null" && -n "$DEDICATED_REGION_ID" ]]; then
+  start_test \
+    "POOL dedicated-region association gate" \
+    "POOL team budget update fails before association and succeeds after"
+  step "Test 19: trying POOL budget update on unassociated dedicated region"
+  api_call "PUT" "/spend/${DEDICATED_REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":1.0}'
+  POOL_DED_PRE="$HTTP_STATUS"
+  step "Test 19: associating POOL team with dedicated region"
+  api_call "POST" "/regions/${DEDICATED_REGION_ID}/teams/${POOL_TEAM_ID}"
+  POOL_DED_ASSOC="$HTTP_STATUS"
+  step "Test 19: retrying POOL budget update after association"
+  api_call "PUT" "/spend/${DEDICATED_REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":1.0}'
+  POOL_DED_POST="$HTTP_STATUS"
+  PASS=$([[ "$POOL_DED_PRE" == "400" && "$POOL_DED_ASSOC" == "200" && "$POOL_DED_POST" == "200" ]] && echo 1 || echo 0)
+  finish_test \
+    "before=${POOL_DED_PRE}, associate=${POOL_DED_ASSOC}, after=${POOL_DED_POST}" \
+    "$PASS"
+else
+  start_test \
+    "POOL dedicated-region association gate" \
+    "Dedicated region available for test"
+  finish_test \
+    "no dedicated region found in /regions" \
+    "0"
+fi
+
+# Test 20: POOL cap bounded by purchased total (numeric)
+start_test \
+  "POOL cap bounded by purchases" \
+  "setting cap 4.5 returns max_budget <= 5.0 purchased total"
+step "Test 20: setting POOL team cap to 4.5"
+api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":4.5}'
+POOL_BOUND_STATUS="$HTTP_STATUS"
+POOL_BOUND_MAX="$(echo "$HTTP_BODY" | jq -r '.max_budget // 0')"
+POOL_BOUND_OK=$(python3 - "$POOL_BOUND_MAX" <<'PY'
+import sys
+v=float(sys.argv[1]); print(1 if 0 <= v <= 5.0001 else 0)
+PY
+)
+PASS=$([[ "$POOL_BOUND_STATUS" == "200" && "$POOL_BOUND_OK" == "1" ]] && echo 1 || echo 0)
+finish_test \
+  "status=${POOL_BOUND_STATUS}, returned_max_budget=${POOL_BOUND_MAX}" \
+  "$PASS"
+
 echo
 echo "============================================================"
 echo "Summary: total=${TEST_NUM}, passed=${PASS_COUNT}, failed=${FAIL_COUNT}"
@@ -818,5 +984,3 @@ fi
 if [[ "$CLEANUP_CREATED" == "1" ]]; then
   cleanup_created_resources
 fi
-register_user "$POOL_USER_ID"
-register_team "$POOL_TEAM_ID"
