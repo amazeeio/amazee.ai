@@ -928,19 +928,25 @@ finish_test \
 if [[ "$DEDICATED_REGION_ID" != "null" && -n "$DEDICATED_REGION_ID" ]]; then
   start_test \
     "POOL dedicated-region association gate" \
-    "POOL team budget update fails before association and succeeds after"
+    "POOL budget update fails before association; after association + dedicated purchase it succeeds"
   step "Test 19: trying POOL budget update on unassociated dedicated region"
   api_call "PUT" "/spend/${DEDICATED_REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":1.0}'
   POOL_DED_PRE="$HTTP_STATUS"
   step "Test 19: associating POOL team with dedicated region"
   api_call "POST" "/regions/${DEDICATED_REGION_ID}/teams/${POOL_TEAM_ID}"
   POOL_DED_ASSOC="$HTTP_STATUS"
-  step "Test 19: retrying POOL budget update after association"
+  step "Test 19: purchasing \$5.00 pool budget in dedicated region for POOL team"
+  DED_POOL_PURCHASE_PAYLOAD=$(jq -n \
+    --arg sid "spend-e2e-dedicated-purchase-${SUFFIX}-${POOL_TEAM_ID}" \
+    '{amount_cents:500, currency:"USD", purchased_at:(now|todateiso8601), stripe_payment_id:$sid}')
+  api_call "POST" "/budgets/region/${DEDICATED_REGION_ID}/teams/${POOL_TEAM_ID}/purchase" "$DED_POOL_PURCHASE_PAYLOAD"
+  POOL_DED_PURCHASE="$HTTP_STATUS"
+  step "Test 19: retrying POOL budget update after association + dedicated purchase"
   api_call "PUT" "/spend/${DEDICATED_REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":1.0}'
   POOL_DED_POST="$HTTP_STATUS"
-  PASS=$([[ "$POOL_DED_PRE" == "400" && "$POOL_DED_ASSOC" == "200" && "$POOL_DED_POST" == "200" ]] && echo 1 || echo 0)
+  PASS=$([[ "$POOL_DED_PRE" == "400" && "$POOL_DED_ASSOC" == "200" && "$POOL_DED_PURCHASE" == "201" && "$POOL_DED_POST" == "200" ]] && echo 1 || echo 0)
   finish_test \
-    "before=${POOL_DED_PRE}, associate=${POOL_DED_ASSOC}, after=${POOL_DED_POST}" \
+    "before=${POOL_DED_PRE}, associate=${POOL_DED_ASSOC}, dedicated_purchase=${POOL_DED_PURCHASE}, after=${POOL_DED_POST}" \
     "$PASS"
 else
   start_test \
