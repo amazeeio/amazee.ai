@@ -13,9 +13,8 @@ It runs in three independent phases:
      - all active shared regions
      - plus active dedicated regions explicitly associated with that team
    - Ensures the LiteLLM team exists per target region.
-   - Reconciles LiteLLM team budget fields:
-     - PERIODIC teams -> DB team budget limit (or DEFAULT_MAX_SPEND fallback)
-     - POOL teams -> max_budget=0.0, budget_duration=365d bootstrap semantics
+   - Does NOT update team budgets. This phase is bootstrap-only for team presence
+     required by user membership synchronization.
 
 2) users
    - Finds active users in DB (skips trial users like trial-...@example.com).
@@ -59,18 +58,14 @@ from sqlalchemy.orm import Session
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.core.limit_service import DEFAULT_MAX_SPEND
 from app.db.database import SessionLocal
 from app.db.models import (
-    DBLimitedResource,
     DBPrivateAIKey,
     DBRegion,
     DBTeam,
     DBTeamRegion,
     DBUser,
 )
-from app.schemas.limits import OwnerType, ResourceType
-from app.schemas.models import BudgetType
 from app.services.litellm import LiteLLMService
 
 
@@ -88,19 +83,6 @@ def dedupe_regions(regions: Iterable[DBRegion]) -> list[DBRegion]:
         seen.add(region.id)
         out.append(region)
     return out
-
-
-def team_budget_limit(session: Session, team_id: int) -> float | None:
-    limit = (
-        session.query(DBLimitedResource)
-        .filter(
-            DBLimitedResource.owner_type == OwnerType.TEAM,
-            DBLimitedResource.owner_id == team_id,
-            DBLimitedResource.resource == ResourceType.BUDGET,
-        )
-        .first()
-    )
-    return limit.max_value if limit else None
 
 
 def parse_status_from_exc(exc: Exception) -> int | None:
@@ -179,8 +161,6 @@ class BackfillRunner:
         self,
         service: LiteLLMService,
         lite_team_id: str,
-        max_budget: float | None,
-        budget_duration: str | None,
     ) -> tuple[bool, str]:
         try:
             await service.get_team_info(lite_team_id)
@@ -194,8 +174,8 @@ class BackfillRunner:
         await service.create_team(
             team_id=lite_team_id,
             team_alias=lite_team_id,
-            max_budget=max_budget,
-            budget_duration=budget_duration,
+            max_budget=None,
+            budget_duration=None,
         )
         return True, "created"
 
@@ -213,13 +193,6 @@ class BackfillRunner:
 
         for team in teams:
             regions = self._target_regions_for_team(team.id, shared, dedicated_by_team)
-            budget_duration = "365d" if team.budget_type == BudgetType.POOL else None
-            budget_limit = team_budget_limit(self.session, team.id)
-            max_budget = (
-                0.0
-                if team.budget_type == BudgetType.POOL
-                else (budget_limit if budget_limit is not None else DEFAULT_MAX_SPEND)
-            )
 
             for region in regions:
                 counters.processed += 1
@@ -227,23 +200,11 @@ class BackfillRunner:
                 service = LiteLLMService(region.litellm_api_url, region.litellm_api_key)
                 try:
                     changed, action = await self._ensure_team_exists(
-                        service, lite_team_id, max_budget, budget_duration
+                        service, lite_team_id
                     )
-                    # Reconcile budget even for existing teams.
-                    if self.dry_run:
-                        budget_action = "would_update_budget"
-                        changed = True if changed else True
-                    else:
-                        await service.update_team_budget(
-                            team_id=lite_team_id,
-                            max_budget=max_budget,
-                            budget_duration=budget_duration,
-                        )
-                        budget_action = "updated_budget"
-                        changed = True
                     counters.changed += 1 if changed else 0
                     print(
-                        f"[teams] team={team.id} region={region.name} team_id={lite_team_id} {action}+{budget_action}"
+                        f"[teams] team={team.id} region={region.name} team_id={lite_team_id} {action}"
                     )
                 except Exception as exc:
                     counters.failed += 1
