@@ -235,6 +235,7 @@ async def purchase_pool_budget(
             limited_by=LimitSource.MANUAL,
             set_by="pool_purchase",
             commit=False,
+            trigger_propagation=False,
         )
 
     try:

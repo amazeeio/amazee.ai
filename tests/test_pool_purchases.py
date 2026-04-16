@@ -221,6 +221,33 @@ def test_pool_purchase_propagates_team_budget_only(
     assert response.status_code == 201
 
 
+def test_pool_purchase_does_not_trigger_limit_service_background_propagation(
+    client, admin_token, db, test_team, test_region
+):
+    test_team.budget_type = "pool"
+    db.commit()
+
+    with patch(
+        "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
+    ) as mock_propagate, patch(
+        "app.core.limit_service.LimitService._trigger_team_budget_propagation"
+    ) as mock_trigger:
+        mock_propagate.return_value = {"teams_updated": 1, "errors": []}
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": f"pi_no_bg_prop_{int(time.time() * 1000000)}",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201
+    mock_trigger.assert_not_called()
+
+
 def test_pool_purchase_honors_existing_monthly_cap(
     client, admin_token, db, test_team, test_region
 ):

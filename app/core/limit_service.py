@@ -357,6 +357,7 @@ class LimitService:
         limited_by: LimitSource = LimitSource.DEFAULT,
         set_by: Optional[str] = None,
         commit: bool = True,
+        trigger_propagation: bool = True,
     ) -> DBLimitedResource:
         logger.info(
             f"Overwriting {resource_type.value} limit for {owner_type.value} {owner_id}"
@@ -372,11 +373,18 @@ class LimitService:
             limited_by=limited_by,
             set_by=set_by,
         )
-        result = self._set_limit(limited_resource=limit, commit=commit)
+        result = self._set_limit(
+            limited_resource=limit,
+            commit=commit,
+            trigger_propagation=trigger_propagation,
+        )
         return result
 
     def _set_limit(
-        self, limited_resource: LimitedResourceCreate, commit: bool = True
+        self,
+        limited_resource: LimitedResourceCreate,
+        commit: bool = True,
+        trigger_propagation: bool = True,
     ) -> DBLimitedResource:
         """
         Create or update a limit following source hierarchy rules.
@@ -491,6 +499,7 @@ class LimitService:
         if (
             limited_resource.owner_type == OwnerType.TEAM
             and limited_resource.resource == ResourceType.BUDGET
+            and trigger_propagation
         ):
             self._trigger_team_budget_propagation(
                 limited_resource.owner_id, limited_resource.max_value
