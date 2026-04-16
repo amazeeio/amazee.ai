@@ -4,6 +4,41 @@ One-time backfill to reconcile amazee.ai DB state with LiteLLM across regions.
 
 Default mode is dry-run. Use --apply to execute changes.
 
+What this script does
+---------------------
+It runs in three independent phases:
+
+1) teams
+   - Finds active teams in DB and target regions for each team:
+     - all active shared regions
+     - plus active dedicated regions explicitly associated with that team
+   - Ensures the LiteLLM team exists per target region.
+   - Reconciles LiteLLM team budget fields:
+     - PERIODIC teams -> DB team budget limit (or DEFAULT_MAX_SPEND fallback)
+     - POOL teams -> max_budget=0.0, budget_duration=365d bootstrap semantics
+
+2) users
+   - Finds active users in DB (skips trial users like trial-...@example.com).
+   - Ensures users exist in LiteLLM across target regions.
+   - If user belongs to a team, ensures LiteLLM team membership is present.
+
+3) keys
+   - Finds DB keys with litellm_token.
+   - Repairs DB key.team_id when missing but inferable from owner.team_id.
+   - Reconciles LiteLLM key association fields (team_id/user_id) via /key/update.
+
+Dry-run vs apply
+----------------
+- Dry-run (default): no DB/LiteLLM writes are executed; logs show what would change.
+- Apply (--apply): performs writes against LiteLLM and local DB (for key team_id repair).
+
+Safety and scoping controls
+---------------------------
+- --phase {teams|users|keys|all} to run only selected phases.
+- --team-id / --user-id / --key-id to scope execution to one entity.
+- --limit to cap rows processed per phase.
+- Failures are always written to JSON (default: /tmp/litellm-backfill-failures.json).
+
 Usage examples:
   python scripts/backfill_litellm_sync.py
   python scripts/backfill_litellm_sync.py --apply
