@@ -1,5 +1,6 @@
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from app.core.roles import UserRole
 from datetime import UTC, datetime, timedelta
 from sqlalchemy.exc import IntegrityError
@@ -967,11 +968,33 @@ def test_spend_caps_unique_team_scope_enforced(db, test_region, test_team):
 
     duplicate = DBSpendCap(scope="team", region_id=test_region.id, team_id=test_team.id)
     db.add(duplicate)
-    try:
+    with pytest.raises(IntegrityError):
         db.commit()
-        assert False, "Expected IntegrityError for duplicate team scope spend cap"
-    except IntegrityError:
-        db.rollback()
+    db.rollback()
+
+
+def test_spend_caps_unique_team_member_scope_enforced(
+    db, test_region, test_team, test_team_user
+):
+    first = DBSpendCap(
+        scope="team_member",
+        region_id=test_region.id,
+        team_id=test_team.id,
+        user_id=test_team_user.id,
+    )
+    db.add(first)
+    db.commit()
+
+    duplicate = DBSpendCap(
+        scope="team_member",
+        region_id=test_region.id,
+        team_id=test_team.id,
+        user_id=test_team_user.id,
+    )
+    db.add(duplicate)
+    with pytest.raises(IntegrityError):
+        db.commit()
+    db.rollback()
 
 
 def test_spend_caps_unique_key_scope_enforced(db, test_region, test_team_user):
@@ -991,8 +1014,6 @@ def test_spend_caps_unique_key_scope_enforced(db, test_region, test_team_user):
 
     duplicate = DBSpendCap(scope="key", region_id=test_region.id, key_id=key.id)
     db.add(duplicate)
-    try:
+    with pytest.raises(IntegrityError):
         db.commit()
-        assert False, "Expected IntegrityError for duplicate key scope spend cap"
-    except IntegrityError:
-        db.rollback()
+    db.rollback()
