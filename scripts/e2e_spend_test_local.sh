@@ -11,6 +11,8 @@ ISOLATE_EACH_TEST=0
 TEST_NUM=0
 PASS_COUNT=0
 FAIL_COUNT=0
+CURRENT_TEST_NAME=""
+CURRENT_TEST_EXPECTED=""
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -144,6 +146,30 @@ emit_result() {
   echo
   echo "[TEST ${TEST_NUM}] ${name}"
   echo "Expected: ${expected}"
+  echo "Retrieved: ${retrieved}"
+  if [[ "$pass" == "1" ]]; then
+    echo "Result: ✅ PASS"
+    PASS_COUNT=$((PASS_COUNT + 1))
+  else
+    echo "Result: ❌ FAIL"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
+start_test() {
+  local name="$1"
+  local expected="$2"
+  CURRENT_TEST_NAME="$name"
+  CURRENT_TEST_EXPECTED="$expected"
+  TEST_NUM=$((TEST_NUM + 1))
+  echo
+  echo "[TEST ${TEST_NUM}] ${CURRENT_TEST_NAME}"
+}
+
+finish_test() {
+  local retrieved="$1"
+  local pass="$2"
+  echo "Expected: ${CURRENT_TEST_EXPECTED}"
   echo "Retrieved: ${retrieved}"
   if [[ "$pass" == "1" ]]; then
     echo "Result: ✅ PASS"
@@ -409,13 +435,14 @@ fi
 echo "Fixtures ready: region=${REGION_ID}, team=${TEAM_ID}, user=${USER_ID}, team_key=${TEAM_KEY_ID}, user_key=${USER_KEY_ID}, model=${MODEL_ID}"
 
 # Test 1: GET key spend baseline
+start_test \
+  "GET /spend/{region}/key/{key}" \
+  "HTTP 200 and numeric spend baseline"
 step "Test 1: reading baseline key spend for key ${TEAM_KEY_ID}"
 api_call "GET" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}"
 BASE_KEY_SPEND="$(echo "$HTTP_BODY" | jq -r '.spend // 0')"
 PASS=$([[ "$HTTP_STATUS" == "200" ]] && echo 1 || echo 0)
-emit_result \
-  "GET /spend/{region}/key/{key}" \
-  "HTTP 200 and numeric spend baseline" \
+finish_test \
   "status=${HTTP_STATUS}, spend=${BASE_KEY_SPEND}" \
   "$PASS"
 
@@ -424,6 +451,9 @@ if [[ "$ISOLATE_EACH_TEST" == "1" ]]; then
 fi
 
 # Test 2: PUT key budget + enforcement with real usage
+start_test \
+  "PUT /spend/{region}/key/{key}/budget" \
+  "HTTP 200 on set, then key blocked after exceeding 0.004 budget"
 step "Test 2: setting key budget to 0.004 for key ${TEAM_KEY_ID}"
 api_call "PUT" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}/budget" '{"max_budget":0.004}'
 SET_KEY_OK=$([[ "$HTTP_STATUS" == "200" ]] && echo 1 || echo 0)
@@ -434,13 +464,14 @@ chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
 BLOCK_STATUS="$CHAT_STATUS"
 BLOCKED=$([[ "$BLOCK_STATUS" == "400" || "$BLOCK_STATUS" == "429" ]] && echo 1 || echo 0)
 PASS=$([[ "$SET_KEY_OK" == "1" && "$BLOCKED" == "1" ]] && echo 1 || echo 0)
-emit_result \
-  "PUT /spend/{region}/key/{key}/budget" \
-  "HTTP 200 on set, then key blocked after exceeding 0.004 budget" \
+finish_test \
   "set_status=${HTTP_STATUS}, post-cap chat_status=${BLOCK_STATUS}" \
   "$PASS"
 
 # Test 3: POST key budget clear + spend increases
+start_test \
+  "POST /spend/{region}/key/{key}/budget/clear" \
+  "HTTP 200, new usage succeeds, key spend increases"
 step "Test 3: reading spend before key clear"
 api_call "GET" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}"
 SPEND_BEFORE_CLEAR="$(echo "$HTTP_BODY" | jq -r '.spend // 0')"
@@ -453,9 +484,7 @@ AFTER_CLEAR_CHAT="$CHAT_STATUS"
 SPEND_AFTER_CLEAR="$(wait_for_key_spend_gt "$REGION_ID" "$TEAM_KEY_ID" "$SPEND_BEFORE_CLEAR" 20 || true)"
 INC="$(float_gt "$SPEND_AFTER_CLEAR" "$SPEND_BEFORE_CLEAR")"
 PASS=$([[ "$CLEAR_STATUS" == "200" && "$AFTER_CLEAR_CHAT" == "200" && "$INC" == "1" ]] && echo 1 || echo 0)
-emit_result \
-  "POST /spend/{region}/key/{key}/budget/clear" \
-  "HTTP 200, new usage succeeds, key spend increases" \
+finish_test \
   "clear_status=${CLEAR_STATUS}, chat_status=${AFTER_CLEAR_CHAT}, spend_before=${SPEND_BEFORE_CLEAR}, spend_after=${SPEND_AFTER_CLEAR}" \
   "$PASS"
 
@@ -464,6 +493,9 @@ if [[ "$ISOLATE_EACH_TEST" == "1" ]]; then
 fi
 
 # Test 4: PUT team budget + team enforcement via team-owned key
+start_test \
+  "PUT /spend/{region}/team/{team}/budget (experimental)" \
+  "HTTP 200 on set, then team usage blocked after cap ~0.010"
 step "Test 4: setting team budget to 0.010 for team ${TEAM_ID}"
 api_call "PUT" "/spend/${REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.010}'
 TEAM_SET_STATUS="$HTTP_STATUS"
@@ -474,13 +506,14 @@ chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
 TEAM_BLOCK_STATUS="$CHAT_STATUS"
 TEAM_BLOCKED=$([[ "$TEAM_BLOCK_STATUS" == "400" || "$TEAM_BLOCK_STATUS" == "429" ]] && echo 1 || echo 0)
 PASS=$([[ "$TEAM_SET_STATUS" == "200" && "$TEAM_BLOCKED" == "1" ]] && echo 1 || echo 0)
-emit_result \
-  "PUT /spend/{region}/team/{team}/budget (experimental)" \
-  "HTTP 200 on set, then team usage blocked after cap ~0.010" \
+finish_test \
   "set_status=${TEAM_SET_STATUS}, post-cap chat_status=${TEAM_BLOCK_STATUS}" \
   "$PASS"
 
 # Test 5: POST team budget clear + usage resumes
+start_test \
+  "POST /spend/{region}/team/{team}/budget/clear" \
+  "HTTP 200 and usage succeeds again after clear"
 step "Test 5: clearing team budget override for team ${TEAM_ID}"
 api_call "POST" "/spend/${REGION_ID}/team/${TEAM_ID}/budget/clear"
 TEAM_CLEAR_STATUS="$HTTP_STATUS"
@@ -488,9 +521,7 @@ step "Test 5: confirming usage works after team clear"
 chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
 TEAM_CLEAR_CHAT="$CHAT_STATUS"
 PASS=$([[ "$TEAM_CLEAR_STATUS" == "200" && "$TEAM_CLEAR_CHAT" == "200" ]] && echo 1 || echo 0)
-emit_result \
-  "POST /spend/{region}/team/{team}/budget/clear" \
-  "HTTP 200 and usage succeeds again after clear" \
+finish_test \
   "clear_status=${TEAM_CLEAR_STATUS}, chat_status=${TEAM_CLEAR_CHAT}" \
   "$PASS"
 
@@ -499,6 +530,9 @@ if [[ "$ISOLATE_EACH_TEST" == "1" ]]; then
 fi
 
 # Test 6: PUT team member budget + enforcement on user key
+start_test \
+  "PUT /spend/{region}/team/{team}/member/{user}/budget" \
+  "HTTP 200 on set, then member key blocked after cap 0.004"
 step "Test 6: setting member budget to 0.004 for user ${USER_ID} in team ${TEAM_ID}"
 api_call "PUT" "/spend/${REGION_ID}/team/${TEAM_ID}/member/${USER_ID}/budget" '{"max_budget":0.004}'
 MEMBER_SET_STATUS="$HTTP_STATUS"
@@ -508,13 +542,14 @@ chat_usage "$USER_KEY_URL" "$USER_KEY_TOKEN" "$MODEL_ID" 100 14900
 MEMBER_BLOCK_STATUS="$CHAT_STATUS"
 MEMBER_BLOCKED=$([[ "$MEMBER_BLOCK_STATUS" == "400" || "$MEMBER_BLOCK_STATUS" == "429" ]] && echo 1 || echo 0)
 PASS=$([[ "$MEMBER_SET_STATUS" == "200" && "$MEMBER_BLOCKED" == "1" ]] && echo 1 || echo 0)
-emit_result \
-  "PUT /spend/{region}/team/{team}/member/{user}/budget" \
-  "HTTP 200 on set, then member key blocked after cap 0.004" \
+finish_test \
   "set_status=${MEMBER_SET_STATUS}, post-cap chat_status=${MEMBER_BLOCK_STATUS}" \
   "$PASS"
 
 # Test 7: POST team member clear + usage resumes
+start_test \
+  "POST /spend/{region}/team/{team}/member/{user}/budget/clear" \
+  "HTTP 200 and member usage succeeds after clear"
 step "Test 7: clearing member budget override for user ${USER_ID}"
 api_call "POST" "/spend/${REGION_ID}/team/${TEAM_ID}/member/${USER_ID}/budget/clear"
 MEMBER_CLEAR_STATUS="$HTTP_STATUS"
@@ -525,9 +560,7 @@ else
   MEMBER_CLEAR_CHAT="$CHAT_STATUS"
 fi
 PASS=$([[ "$MEMBER_CLEAR_STATUS" == "200" && "$MEMBER_CLEAR_CHAT" == "200" ]] && echo 1 || echo 0)
-emit_result \
-  "POST /spend/{region}/team/{team}/member/{user}/budget/clear" \
-  "HTTP 200 and member usage succeeds after clear" \
+finish_test \
   "clear_status=${MEMBER_CLEAR_STATUS}, chat_status=${MEMBER_CLEAR_CHAT}" \
   "$PASS"
 
@@ -536,6 +569,9 @@ if [[ "$ISOLATE_EACH_TEST" == "1" ]]; then
 fi
 
 # Test 8: GET user spend with actual numbers
+start_test \
+  "GET /spend/{region}/user/{user}" \
+  "HTTP 200, key_count>=1, and numeric total_spend/sum(keys.spend)"
 step "Test 8: reading user spend summary for user ${USER_ID}"
 api_call "GET" "/spend/${REGION_ID}/user/${USER_ID}"
 USER_STATUS="$HTTP_STATUS"
@@ -559,13 +595,14 @@ except Exception:
 PY
 )"
 PASS=$([[ "$USER_STATUS" == "200" && "$USER_KEY_COUNT" -ge 1 && "$USER_TOTAL_NUMERIC" == "1" && "$USER_KEYS_SUM_NUMERIC" == "1" ]] && echo 1 || echo 0)
-emit_result \
-  "GET /spend/{region}/user/{user}" \
-  "HTTP 200, key_count>=1, and numeric total_spend/sum(keys.spend)" \
+finish_test \
   "status=${USER_STATUS}, key_count=${USER_KEY_COUNT}, total_spend=${USER_TOTAL_SPEND}, keys_sum=${USER_KEYS_SUM}" \
   "$PASS"
 
 # Test 9: GET team spend with actual numbers
+start_test \
+  "GET /spend/{region}/team/{team}" \
+  "HTTP 200, key_count>=2, total_spend>0 after injected usage"
 step "Test 9: reading team spend summary for team ${TEAM_ID}"
 api_call "GET" "/spend/${REGION_ID}/team/${TEAM_ID}"
 TEAM_STATUS="$HTTP_STATUS"
@@ -581,13 +618,14 @@ if [[ "$TEAM_SPEND_POSITIVE" != "1" ]]; then
   TEAM_SPEND_POSITIVE="$(float_gt "$TEAM_TOTAL_SPEND" "0")"
 fi
 PASS=$([[ "$TEAM_STATUS" == "200" && "$TEAM_KEY_COUNT" -ge 2 && "$TEAM_SPEND_POSITIVE" == "1" ]] && echo 1 || echo 0)
-emit_result \
-  "GET /spend/{region}/team/{team}" \
-  "HTTP 200, key_count>=2, total_spend>0 after injected usage" \
+finish_test \
   "status=${TEAM_STATUS}, key_count=${TEAM_KEY_COUNT}, total_spend=${TEAM_TOTAL_SPEND}" \
   "$PASS"
 
 # Test 10: POOL rejection above purchased budget across team/member/key endpoints
+start_test \
+  "POOL cap rejection (team/member/key)" \
+  "purchase 5.00 succeeds; setting 6.00 cap returns 400 on all three endpoints"
 step "Test 10: creating new POOL team"
 POOL_TEAM_CREATE_PAYLOAD=$(jq -n \
   --arg n "spend-e2e-pool-team-${SUFFIX}" \
@@ -624,14 +662,15 @@ POOL_MEMBER_STATUS="$HTTP_STATUS"
 api_call "PUT" "/spend/${REGION_ID}/key/${POOL_KEY_ID}/budget" '{"max_budget":6.0}'
 POOL_KEY_STATUS="$HTTP_STATUS"
 PASS=$([[ "$PURCHASE_STATUS" == "201" && "$POOL_TEAM_STATUS" == "400" && "$POOL_MEMBER_STATUS" == "400" && "$POOL_KEY_STATUS" == "400" ]] && echo 1 || echo 0)
-emit_result \
-  "POOL cap rejection (team/member/key)" \
-  "purchase 5.00 succeeds; setting 6.00 cap returns 400 on all three endpoints" \
+finish_test \
   "purchase=${PURCHASE_STATUS}, team_put=${POOL_TEAM_STATUS}, member_put=${POOL_MEMBER_STATUS}, key_put=${POOL_KEY_STATUS}" \
   "$PASS"
 
 # Test 11: Dedicated region association gate
 if [[ "$DEDICATED_REGION_ID" != "null" && -n "$DEDICATED_REGION_ID" ]]; then
+  start_test \
+    "Dedicated region association gate" \
+    "PUT budget fails before association (400), then succeeds after association (200)"
   step "Test 11: attempting team budget update on unassociated dedicated region ${DEDICATED_REGION_ID}"
   api_call "PUT" "/spend/${DEDICATED_REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.01}'
   DEDICATED_PRE="$HTTP_STATUS"
@@ -642,21 +681,23 @@ if [[ "$DEDICATED_REGION_ID" != "null" && -n "$DEDICATED_REGION_ID" ]]; then
   api_call "PUT" "/spend/${DEDICATED_REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.01}'
   DEDICATED_POST="$HTTP_STATUS"
   PASS=$([[ "$DEDICATED_PRE" == "400" && "$DEDICATED_ASSOC" == "200" && "$DEDICATED_POST" == "200" ]] && echo 1 || echo 0)
-  emit_result \
-    "Dedicated region association gate" \
-    "PUT budget fails before association (400), then succeeds after association (200)" \
+  finish_test \
     "before=${DEDICATED_PRE}, associate=${DEDICATED_ASSOC}, after=${DEDICATED_POST}" \
     "$PASS"
 else
-  emit_result \
+  start_test \
     "Dedicated region association gate" \
-    "Dedicated region available for test" \
+    "Dedicated region available for test"
+  finish_test \
     "no dedicated region found in /regions" \
     "0"
 fi
 
 # Test 12: Cross-region spend isolation
 if [[ "$REGION2_ID" != "$REGION_ID" ]]; then
+  start_test \
+    "Cross-region spend isolation" \
+    "usage in region2 increases region2 key spend without changing region1 team spend"
   step "Test 12: creating fresh cross-region team"
   CROSS_TEAM_PAYLOAD=$(jq -n \
     --arg n "spend-e2e-cross-team-${SUFFIX}-${BLOCK_INDEX}" \
@@ -702,20 +743,22 @@ PY
 )
   R2_INCREASED="$(float_gt "$R2_KEY_AFTER" "$R2_KEY_BEFORE")"
   PASS=$([[ "$R1_UNCHANGED" == "1" && "$R2_INCREASED" == "1" ]] && echo 1 || echo 0)
-  emit_result \
-    "Cross-region spend isolation" \
-    "usage in region2 increases region2 key spend without changing region1 team spend" \
+  finish_test \
     "r1_before=${R1_BEFORE}, r1_after=${R1_AFTER}, r2_key_before=${R2_KEY_BEFORE}, r2_key_after=${R2_KEY_AFTER}" \
     "$PASS"
 else
-  emit_result \
+  start_test \
     "Cross-region spend isolation" \
-    "two non-dedicated regions available" \
+    "two non-dedicated regions available"
+  finish_test \
     "only one non-dedicated region available" \
     "0"
 fi
 
 # Test 13: Idempotent clears
+start_test \
+  "Idempotent clears (key/member/team)" \
+  "calling each clear endpoint twice returns 200 both times"
 step "Test 13: calling clear endpoints twice each (key/member/team)"
 api_call "POST" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}/budget/clear"
 KEY_CLEAR_1="$HTTP_STATUS"
@@ -730,13 +773,14 @@ TEAM_CLEAR_1="$HTTP_STATUS"
 api_call "POST" "/spend/${REGION_ID}/team/${TEAM_ID}/budget/clear"
 TEAM_CLEAR_2="$HTTP_STATUS"
 PASS=$([[ "$KEY_CLEAR_1" == "200" && "$KEY_CLEAR_2" == "200" && "$MEM_CLEAR_1" == "200" && "$MEM_CLEAR_2" == "200" && "$TEAM_CLEAR_1" == "200" && "$TEAM_CLEAR_2" == "200" ]] && echo 1 || echo 0)
-emit_result \
-  "Idempotent clears (key/member/team)" \
-  "calling each clear endpoint twice returns 200 both times" \
+finish_test \
   "key=(${KEY_CLEAR_1},${KEY_CLEAR_2}), member=(${MEM_CLEAR_1},${MEM_CLEAR_2}), team=(${TEAM_CLEAR_1},${TEAM_CLEAR_2})" \
   "$PASS"
 
 # Test 14: Unauthorized mutation rejected and value unchanged
+start_test \
+  "Unauthorized team budget mutation" \
+  "read_only user gets 403 and team budget remains unchanged"
 step "Test 14: setting baseline team budget as admin"
 api_call "PUT" "/spend/${REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.0123}'
 BASE_SET_STATUS="$HTTP_STATUS"
@@ -755,9 +799,7 @@ a=float(sys.argv[1]); b=float(sys.argv[2]); print(1 if abs(a-b) < 0.0002 else 0)
 PY
 )
 PASS=$([[ "$BASE_SET_STATUS" == "200" && "$UNAUTH_STATUS" == "403" && "$BUDGET_SAME" == "1" ]] && echo 1 || echo 0)
-emit_result \
-  "Unauthorized team budget mutation" \
-  "read_only user gets 403 and team budget remains unchanged" \
+finish_test \
   "set_status=${BASE_SET_STATUS}, unauth_status=${UNAUTH_STATUS}, before_budget=${BASE_BUDGET}, after_budget=${AFTER_BUDGET}" \
   "$PASS"
 
