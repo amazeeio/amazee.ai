@@ -66,6 +66,10 @@ print_header() {
   echo "============================================================"
 }
 
+step() {
+  echo "  - $1"
+}
+
 api_call() {
   local method="$1"
   local path="$2"
@@ -304,6 +308,7 @@ chat_usage() {
 print_header
 
 echo "Preparing fixtures (team, user, keys, model discovery)..."
+step "fetching regions"
 
 api_call "GET" "/regions"
 if [[ "$HTTP_STATUS" != "200" ]]; then
@@ -332,6 +337,7 @@ setup_periodic_fixture_block() {
   TEAM_EMAIL="spend-e2e-team-${block_suffix}@example.com"
   USER_EMAIL="spend-e2e-user-${block_suffix}@example.com"
 
+  step "creating periodic team: ${TEAM_NAME}"
   TEAM_CREATE_PAYLOAD=$(jq -n \
     --arg n "$TEAM_NAME" \
     --arg e "$TEAM_EMAIL" \
@@ -344,6 +350,7 @@ setup_periodic_fixture_block() {
   TEAM_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
   register_team "$TEAM_ID"
 
+  step "creating user in team ${TEAM_ID}: ${USER_EMAIL}"
   USER_CREATE_PAYLOAD=$(jq -n \
     --arg e "$USER_EMAIL" \
     --argjson tid "$TEAM_ID" \
@@ -356,6 +363,7 @@ setup_periodic_fixture_block() {
   USER_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
   register_user "$USER_ID"
 
+  step "creating team-owned key in region ${REGION_ID}"
   TEAM_KEY_PAYLOAD=$(jq -n \
     --argjson rid "$REGION_ID" \
     --argjson tid "$TEAM_ID" \
@@ -370,6 +378,7 @@ setup_periodic_fixture_block() {
   TEAM_KEY_URL="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '.litellm_api_url')")"
   register_key "$TEAM_KEY_ID"
 
+  step "creating user-owned key in region ${REGION_ID}"
   USER_KEY_PAYLOAD=$(jq -n \
     --argjson rid "$REGION_ID" \
     --argjson uid "$USER_ID" \
@@ -400,6 +409,7 @@ fi
 echo "Fixtures ready: region=${REGION_ID}, team=${TEAM_ID}, user=${USER_ID}, team_key=${TEAM_KEY_ID}, user_key=${USER_KEY_ID}, model=${MODEL_ID}"
 
 # Test 1: GET key spend baseline
+step "Test 1: reading baseline key spend for key ${TEAM_KEY_ID}"
 api_call "GET" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}"
 BASE_KEY_SPEND="$(echo "$HTTP_BODY" | jq -r '.spend // 0')"
 PASS=$([[ "$HTTP_STATUS" == "200" ]] && echo 1 || echo 0)
@@ -414,8 +424,10 @@ if [[ "$ISOLATE_EACH_TEST" == "1" ]]; then
 fi
 
 # Test 2: PUT key budget + enforcement with real usage
+step "Test 2: setting key budget to 0.004 for key ${TEAM_KEY_ID}"
 api_call "PUT" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}/budget" '{"max_budget":0.004}'
 SET_KEY_OK=$([[ "$HTTP_STATUS" == "200" ]] && echo 1 || echo 0)
+step "Test 2: generating usage calls until key is blocked"
 chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
 chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
 chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
@@ -429,10 +441,13 @@ emit_result \
   "$PASS"
 
 # Test 3: POST key budget clear + spend increases
+step "Test 3: reading spend before key clear"
 api_call "GET" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}"
 SPEND_BEFORE_CLEAR="$(echo "$HTTP_BODY" | jq -r '.spend // 0')"
+step "Test 3: clearing key budget override"
 api_call "POST" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}/budget/clear"
 CLEAR_STATUS="$HTTP_STATUS"
+step "Test 3: generating one usage call after clear and waiting for spend increase"
 chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
 AFTER_CLEAR_CHAT="$CHAT_STATUS"
 SPEND_AFTER_CLEAR="$(wait_for_key_spend_gt "$REGION_ID" "$TEAM_KEY_ID" "$SPEND_BEFORE_CLEAR" 20 || true)"
@@ -449,8 +464,10 @@ if [[ "$ISOLATE_EACH_TEST" == "1" ]]; then
 fi
 
 # Test 4: PUT team budget + team enforcement via team-owned key
+step "Test 4: setting team budget to 0.010 for team ${TEAM_ID}"
 api_call "PUT" "/spend/${REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.010}'
 TEAM_SET_STATUS="$HTTP_STATUS"
+step "Test 4: generating team-key usage until team budget blocks requests"
 chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
 chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
 chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
@@ -464,8 +481,10 @@ emit_result \
   "$PASS"
 
 # Test 5: POST team budget clear + usage resumes
+step "Test 5: clearing team budget override for team ${TEAM_ID}"
 api_call "POST" "/spend/${REGION_ID}/team/${TEAM_ID}/budget/clear"
 TEAM_CLEAR_STATUS="$HTTP_STATUS"
+step "Test 5: confirming usage works after team clear"
 chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
 TEAM_CLEAR_CHAT="$CHAT_STATUS"
 PASS=$([[ "$TEAM_CLEAR_STATUS" == "200" && "$TEAM_CLEAR_CHAT" == "200" ]] && echo 1 || echo 0)
@@ -480,8 +499,10 @@ if [[ "$ISOLATE_EACH_TEST" == "1" ]]; then
 fi
 
 # Test 6: PUT team member budget + enforcement on user key
+step "Test 6: setting member budget to 0.004 for user ${USER_ID} in team ${TEAM_ID}"
 api_call "PUT" "/spend/${REGION_ID}/team/${TEAM_ID}/member/${USER_ID}/budget" '{"max_budget":0.004}'
 MEMBER_SET_STATUS="$HTTP_STATUS"
+step "Test 6: generating user-key usage until member budget blocks requests"
 chat_usage "$USER_KEY_URL" "$USER_KEY_TOKEN" "$MODEL_ID" 100 14900
 chat_usage "$USER_KEY_URL" "$USER_KEY_TOKEN" "$MODEL_ID" 100 14900
 MEMBER_BLOCK_STATUS="$CHAT_STATUS"
@@ -494,8 +515,10 @@ emit_result \
   "$PASS"
 
 # Test 7: POST team member clear + usage resumes
+step "Test 7: clearing member budget override for user ${USER_ID}"
 api_call "POST" "/spend/${REGION_ID}/team/${TEAM_ID}/member/${USER_ID}/budget/clear"
 MEMBER_CLEAR_STATUS="$HTTP_STATUS"
+step "Test 7: confirming member usage succeeds after clear"
 if wait_for_chat_success "$USER_KEY_URL" "$USER_KEY_TOKEN" "$MODEL_ID" 100 14900 20; then
   MEMBER_CLEAR_CHAT="200"
 else
@@ -513,6 +536,7 @@ if [[ "$ISOLATE_EACH_TEST" == "1" ]]; then
 fi
 
 # Test 8: GET user spend with actual numbers
+step "Test 8: reading user spend summary for user ${USER_ID}"
 api_call "GET" "/spend/${REGION_ID}/user/${USER_ID}"
 USER_STATUS="$HTTP_STATUS"
 USER_TOTAL_SPEND="$(echo "$HTTP_BODY" | jq -r '.total_spend // 0')"
@@ -542,6 +566,7 @@ emit_result \
   "$PASS"
 
 # Test 9: GET team spend with actual numbers
+step "Test 9: reading team spend summary for team ${TEAM_ID}"
 api_call "GET" "/spend/${REGION_ID}/team/${TEAM_ID}"
 TEAM_STATUS="$HTTP_STATUS"
 TEAM_TOTAL_SPEND="$(echo "$HTTP_BODY" | jq -r '.total_spend // 0')"
@@ -563,18 +588,21 @@ emit_result \
   "$PASS"
 
 # Test 10: POOL rejection above purchased budget across team/member/key endpoints
+step "Test 10: creating new POOL team"
 POOL_TEAM_CREATE_PAYLOAD=$(jq -n \
   --arg n "spend-e2e-pool-team-${SUFFIX}" \
   --arg e "spend-e2e-pool-team-${SUFFIX}@example.com" \
   '{name:$n, admin_email:$e, budget_type:"pool"}')
 api_call "POST" "/teams" "$POOL_TEAM_CREATE_PAYLOAD"
 POOL_TEAM_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
+step "Test 10: creating user for POOL team ${POOL_TEAM_ID}"
 POOL_USER_CREATE_PAYLOAD=$(jq -n \
   --arg e "spend-e2e-pool-user-${SUFFIX}@example.com" \
   --argjson tid "$POOL_TEAM_ID" \
   '{email:$e, password:"password123", team_id:$tid, role:"read_only"}')
 api_call "POST" "/users" "$POOL_USER_CREATE_PAYLOAD"
 POOL_USER_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
+step "Test 10: creating POOL team key"
 POOL_KEY_PAYLOAD=$(jq -n \
   --argjson rid "$REGION_ID" \
   --argjson tid "$POOL_TEAM_ID" \
@@ -582,11 +610,13 @@ POOL_KEY_PAYLOAD=$(jq -n \
 api_call "POST" "/private-ai-keys" "$POOL_KEY_PAYLOAD"
 POOL_KEY_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
 register_key "$POOL_KEY_ID"
+step "Test 10: purchasing \$5.00 pool budget for POOL team"
 PURCHASE_PAYLOAD=$(jq -n \
   --arg sid "spend-e2e-purchase-${SUFFIX}" \
   '{amount_cents:500, currency:"USD", purchased_at:(now|todateiso8601), stripe_payment_id:$sid}')
 api_call "POST" "/budgets/region/${REGION_ID}/teams/${POOL_TEAM_ID}/purchase" "$PURCHASE_PAYLOAD"
 PURCHASE_STATUS="$HTTP_STATUS"
+step "Test 10: attempting invalid max_budget 6.0 on team/member/key endpoints"
 api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":6.0}'
 POOL_TEAM_STATUS="$HTTP_STATUS"
 api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/member/${POOL_USER_ID}/budget" '{"max_budget":6.0}'
@@ -602,10 +632,13 @@ emit_result \
 
 # Test 11: Dedicated region association gate
 if [[ "$DEDICATED_REGION_ID" != "null" && -n "$DEDICATED_REGION_ID" ]]; then
+  step "Test 11: attempting team budget update on unassociated dedicated region ${DEDICATED_REGION_ID}"
   api_call "PUT" "/spend/${DEDICATED_REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.01}'
   DEDICATED_PRE="$HTTP_STATUS"
+  step "Test 11: associating team ${TEAM_ID} with dedicated region ${DEDICATED_REGION_ID}"
   api_call "POST" "/regions/${DEDICATED_REGION_ID}/teams/${TEAM_ID}"
   DEDICATED_ASSOC="$HTTP_STATUS"
+  step "Test 11: retrying budget update after association"
   api_call "PUT" "/spend/${DEDICATED_REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.01}'
   DEDICATED_POST="$HTTP_STATUS"
   PASS=$([[ "$DEDICATED_PRE" == "400" && "$DEDICATED_ASSOC" == "200" && "$DEDICATED_POST" == "200" ]] && echo 1 || echo 0)
@@ -624,6 +657,7 @@ fi
 
 # Test 12: Cross-region spend isolation
 if [[ "$REGION2_ID" != "$REGION_ID" ]]; then
+  step "Test 12: creating fresh cross-region team"
   CROSS_TEAM_PAYLOAD=$(jq -n \
     --arg n "spend-e2e-cross-team-${SUFFIX}-${BLOCK_INDEX}" \
     --arg e "spend-e2e-cross-team-${SUFFIX}-${BLOCK_INDEX}@example.com" \
@@ -632,6 +666,7 @@ if [[ "$REGION2_ID" != "$REGION_ID" ]]; then
   CROSS_TEAM_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
   register_team "$CROSS_TEAM_ID"
 
+  step "Test 12: creating key in region ${REGION_ID}"
   TEAM_KEY_R1_PAYLOAD=$(jq -n \
     --argjson rid "$REGION_ID" \
     --argjson tid "$CROSS_TEAM_ID" \
@@ -640,6 +675,7 @@ if [[ "$REGION2_ID" != "$REGION_ID" ]]; then
   TEAM_KEY_R1_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
   register_key "$TEAM_KEY_R1_ID"
 
+  step "Test 12: creating key in region ${REGION2_ID}"
   TEAM_KEY_R2_PAYLOAD=$(jq -n \
     --argjson rid "$REGION2_ID" \
     --argjson tid "$CROSS_TEAM_ID" \
@@ -649,6 +685,7 @@ if [[ "$REGION2_ID" != "$REGION_ID" ]]; then
   TEAM_KEY_R2_TOKEN="$(echo "$HTTP_BODY" | jq -r '.litellm_token')"
   TEAM_KEY_R2_URL="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '.litellm_api_url')")"
   register_key "$TEAM_KEY_R2_ID"
+  step "Test 12: reading baseline spends and injecting usage only in region ${REGION2_ID}"
   R1_BEFORE="$(wait_for_team_spend_stable "$REGION_ID" "$CROSS_TEAM_ID" 20 || true)"
   api_call "GET" "/spend/${REGION2_ID}/key/${TEAM_KEY_R2_ID}"
   R2_KEY_BEFORE="$(echo "$HTTP_BODY" | jq -r '.spend // 0')"
@@ -679,6 +716,7 @@ else
 fi
 
 # Test 13: Idempotent clears
+step "Test 13: calling clear endpoints twice each (key/member/team)"
 api_call "POST" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}/budget/clear"
 KEY_CLEAR_1="$HTTP_STATUS"
 api_call "POST" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}/budget/clear"
@@ -699,11 +737,14 @@ emit_result \
   "$PASS"
 
 # Test 14: Unauthorized mutation rejected and value unchanged
+step "Test 14: setting baseline team budget as admin"
 api_call "PUT" "/spend/${REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.0123}'
 BASE_SET_STATUS="$HTTP_STATUS"
 api_call "GET" "/spend/${REGION_ID}/team/${TEAM_ID}"
 BASE_BUDGET="$(echo "$HTTP_BODY" | jq -r '.total_budget // 0')"
+step "Test 14: logging in as read_only user ${USER_EMAIL}"
 READONLY_TOKEN="$(auth_login_token "$USER_EMAIL" "password123")"
+step "Test 14: attempting unauthorized team budget update and verifying unchanged budget"
 api_call_as "$READONLY_TOKEN" "PUT" "/spend/${REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.0555}'
 UNAUTH_STATUS="$HTTP_STATUS"
 api_call "GET" "/spend/${REGION_ID}/team/${TEAM_ID}"
