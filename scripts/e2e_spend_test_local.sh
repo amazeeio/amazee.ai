@@ -262,6 +262,14 @@ wait_for_chat_success() {
   return 1
 }
 
+litellm_user_info_status() {
+  local url="$1"
+  local user_id="$2"
+  curl -sS -o "$TMP_DIR/litellm_user_${user_id}.json" -w "%{http_code}" \
+    -X GET "${url}/user/info?user_id=${user_id}" \
+    -H "Authorization: Bearer ${LITELLM_PASS}"
+}
+
 wait_for_team_spend_stable() {
   local region_id="$1"
   local team_id="$2"
@@ -974,6 +982,82 @@ PASS=$([[ "$POOL_BOUND_STATUS" == "200" && "$POOL_BOUND_OK" == "1" ]] && echo 1 
 finish_test \
   "status=${POOL_BOUND_STATUS}, returned_max_budget=${POOL_BOUND_MAX}" \
   "$PASS"
+
+# Test 21: No-team user sync only to shared LiteLLM instances
+start_test \
+  "LiteLLM user sync for no-team user" \
+  "user exists in shared LiteLLM instances and is absent from dedicated instance"
+step "Test 21: creating user without team"
+NO_TEAM_EMAIL="spend-e2e-no-team-${SUFFIX}@example.com"
+NO_TEAM_PAYLOAD=$(jq -n \
+  --arg e "$NO_TEAM_EMAIL" \
+  '{email:$e, password:"password123", role:"read_only"}')
+api_call "POST" "/users" "$NO_TEAM_PAYLOAD"
+NO_TEAM_CREATE_STATUS="$HTTP_STATUS"
+NO_TEAM_USER_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
+register_user "$NO_TEAM_USER_ID"
+step "Test 21: resolving LiteLLM public URLs from region config"
+api_call "GET" "/regions"
+R_SHARED_1_URL_RAW="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][0].litellm_api_url')"
+R_SHARED_2_URL_RAW="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][1].litellm_api_url')"
+R_DED_URL_RAW="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==true)][0].litellm_api_url')"
+R_SHARED_1_URL="$(to_public_litellm_url "$R_SHARED_1_URL_RAW")"
+R_SHARED_2_URL="$(to_public_litellm_url "$R_SHARED_2_URL_RAW")"
+R_DED_URL="$(to_public_litellm_url "$R_DED_URL_RAW")"
+if [[ -z "${R_SHARED_1_URL}" || "${R_SHARED_1_URL}" == "null" ]]; then R_SHARED_1_URL="http://localhost:4000"; fi
+if [[ -z "${R_SHARED_2_URL}" || "${R_SHARED_2_URL}" == "null" ]]; then R_SHARED_2_URL="http://localhost:4010"; fi
+if [[ -z "${R_DED_URL}" || "${R_DED_URL}" == "null" ]]; then R_DED_URL="http://localhost:4011"; fi
+step "Test 21: checking LiteLLM user presence by region type"
+NO_TEAM_R1="$(litellm_user_info_status "$R_SHARED_1_URL" "$NO_TEAM_USER_ID")"
+NO_TEAM_R2="$(litellm_user_info_status "$R_SHARED_2_URL" "$NO_TEAM_USER_ID")"
+NO_TEAM_RD="$(litellm_user_info_status "$R_DED_URL" "$NO_TEAM_USER_ID")"
+PASS=$([[ "$NO_TEAM_CREATE_STATUS" == "201" && "$NO_TEAM_R1" == "200" && "$NO_TEAM_R2" == "200" && "$NO_TEAM_RD" == "404" ]] && echo 1 || echo 0)
+finish_test \
+  "create=${NO_TEAM_CREATE_STATUS}, shared1=${NO_TEAM_R1}, shared2=${NO_TEAM_R2}, dedicated=${NO_TEAM_RD}" \
+  "$PASS"
+
+# Test 22: Dedicated-associated team user sync to shared + dedicated
+if [[ "$DEDICATED_REGION_ID" != "null" && -n "$DEDICATED_REGION_ID" ]]; then
+  start_test \
+    "LiteLLM user sync for dedicated-associated team user" \
+    "user exists in shared and dedicated LiteLLM instances"
+  step "Test 22: creating fresh POOL team for dedicated association"
+  DED_TEAM_PAYLOAD=$(jq -n \
+    --arg n "spend-e2e-ded-user-team-${SUFFIX}" \
+    --arg e "spend-e2e-ded-user-team-${SUFFIX}@example.com" \
+    '{name:$n, admin_email:$e, budget_type:"pool"}')
+  api_call "POST" "/teams" "$DED_TEAM_PAYLOAD"
+  DED_TEAM_CREATE="$HTTP_STATUS"
+  DED_TEAM_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_team "$DED_TEAM_ID"
+  step "Test 22: associating team ${DED_TEAM_ID} with dedicated region ${DEDICATED_REGION_ID}"
+  api_call "POST" "/regions/${DEDICATED_REGION_ID}/teams/${DED_TEAM_ID}"
+  DED_ASSOC_STATUS="$HTTP_STATUS"
+  step "Test 22: creating user in dedicated-associated team"
+  DED_USER_PAYLOAD=$(jq -n \
+    --arg e "spend-e2e-ded-user-${SUFFIX}@example.com" \
+    --argjson tid "$DED_TEAM_ID" \
+    '{email:$e, password:"password123", team_id:$tid, role:"read_only"}')
+  api_call "POST" "/users" "$DED_USER_PAYLOAD"
+  DED_USER_CREATE="$HTTP_STATUS"
+  DED_USER_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_user "$DED_USER_ID"
+  step "Test 22: checking LiteLLM user presence across instances"
+  DED_R1="$(litellm_user_info_status "http://localhost:4000" "$DED_USER_ID")"
+  DED_R2="$(litellm_user_info_status "http://localhost:4010" "$DED_USER_ID")"
+  DED_RD="$(litellm_user_info_status "http://localhost:4011" "$DED_USER_ID")"
+  PASS=$([[ "$DED_TEAM_CREATE" == "201" && "$DED_ASSOC_STATUS" == "200" && "$DED_USER_CREATE" == "201" && "$DED_R1" == "200" && "$DED_R2" == "200" && "$DED_RD" == "200" ]] && echo 1 || echo 0)
+  finish_test \
+    "team_create=${DED_TEAM_CREATE}, associate=${DED_ASSOC_STATUS}, user_create=${DED_USER_CREATE}, shared1=${DED_R1}, shared2=${DED_R2}, dedicated=${DED_RD}" \
+    "$PASS"
+else
+  start_test \
+    "LiteLLM user sync for dedicated-associated team user" \
+    "Dedicated region available for test"
+  finish_test \
+    "no dedicated region found in /regions" \
+    "0"
+fi
 
 echo
 echo "============================================================"
