@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, patch
 
 from app.core.roles import UserRole
 from datetime import UTC, datetime, timedelta
+from sqlalchemy.exc import IntegrityError
 
 from app.core.security import get_password_hash
 from app.db.models import (
@@ -957,3 +958,41 @@ def test_clear_team_budget_endpoint_pool_restores_purchases(
     assert response.status_code == 200
     mock_update_team_budget.assert_awaited_once()
     assert mock_update_team_budget.await_args.kwargs["max_budget"] == 50.0
+
+
+def test_spend_caps_unique_team_scope_enforced(db, test_region, test_team):
+    first = DBSpendCap(scope="team", region_id=test_region.id, team_id=test_team.id)
+    db.add(first)
+    db.commit()
+
+    duplicate = DBSpendCap(scope="team", region_id=test_region.id, team_id=test_team.id)
+    db.add(duplicate)
+    try:
+        db.commit()
+        assert False, "Expected IntegrityError for duplicate team scope spend cap"
+    except IntegrityError:
+        db.rollback()
+
+
+def test_spend_caps_unique_key_scope_enforced(db, test_region, test_team_user):
+    key = DBPrivateAIKey(
+        name="unique-key-cap",
+        litellm_token="unique-key-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+    )
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+
+    first = DBSpendCap(scope="key", region_id=test_region.id, key_id=key.id)
+    db.add(first)
+    db.commit()
+
+    duplicate = DBSpendCap(scope="key", region_id=test_region.id, key_id=key.id)
+    db.add(duplicate)
+    try:
+        db.commit()
+        assert False, "Expected IntegrityError for duplicate key scope spend cap"
+    except IntegrityError:
+        db.rollback()

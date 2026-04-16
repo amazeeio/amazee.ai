@@ -39,14 +39,6 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["team_id"], ["teams.id"]),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"]),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "scope",
-            "region_id",
-            "team_id",
-            "user_id",
-            "key_id",
-            name="uq_spend_caps_scope_region_team_user_key",
-        ),
     )
     op.create_index(op.f("ix_spend_caps_id"), "spend_caps", ["id"], unique=False)
     op.create_index(op.f("ix_spend_caps_scope"), "spend_caps", ["scope"], unique=False)
@@ -62,9 +54,37 @@ def upgrade() -> None:
     op.create_index(
         op.f("ix_spend_caps_key_id"), "spend_caps", ["key_id"], unique=False
     )
+    op.create_index(
+        "uq_spend_caps_team_scope",
+        "spend_caps",
+        ["region_id", "team_id"],
+        unique=True,
+        postgresql_where=sa.text(
+            "scope = 'team' AND team_id IS NOT NULL AND user_id IS NULL AND key_id IS NULL"
+        ),
+    )
+    op.create_index(
+        "uq_spend_caps_team_member_scope",
+        "spend_caps",
+        ["region_id", "team_id", "user_id"],
+        unique=True,
+        postgresql_where=sa.text(
+            "scope = 'team_member' AND team_id IS NOT NULL AND user_id IS NOT NULL AND key_id IS NULL"
+        ),
+    )
+    op.create_index(
+        "uq_spend_caps_key_scope",
+        "spend_caps",
+        ["region_id", "key_id"],
+        unique=True,
+        postgresql_where=sa.text("scope = 'key' AND key_id IS NOT NULL"),
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("uq_spend_caps_key_scope", table_name="spend_caps")
+    op.drop_index("uq_spend_caps_team_member_scope", table_name="spend_caps")
+    op.drop_index("uq_spend_caps_team_scope", table_name="spend_caps")
     op.drop_index(op.f("ix_spend_caps_key_id"), table_name="spend_caps")
     op.drop_index(op.f("ix_spend_caps_user_id"), table_name="spend_caps")
     op.drop_index(op.f("ix_spend_caps_team_id"), table_name="spend_caps")

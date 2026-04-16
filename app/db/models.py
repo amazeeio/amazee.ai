@@ -1,6 +1,7 @@
 from sqlalchemy import (
     Boolean,
     Column,
+    Index,
     ForeignKey,
     Integer,
     String,
@@ -9,6 +10,7 @@ from sqlalchemy import (
     Float,
     Enum,
     Date,
+    text,
 )
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime, UTC
@@ -404,16 +406,6 @@ class DBSpendCap(Base):
     """
 
     __tablename__ = "spend_caps"
-    __table_args__ = (
-        UniqueConstraint(
-            "scope",
-            "region_id",
-            "team_id",
-            "user_id",
-            "key_id",
-            name="uq_spend_caps_scope_region_team_user_key",
-        ),
-    )
 
     id = Column(Integer, primary_key=True, index=True)
     scope = Column(String, nullable=False, index=True)  # team, team_member, key
@@ -427,3 +419,39 @@ class DBSpendCap(Base):
     month_start_spend = Column(Float, nullable=True)
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "uq_spend_caps_team_scope",
+            "region_id",
+            "team_id",
+            unique=True,
+            postgresql_where=text(
+                "scope = 'team' AND team_id IS NOT NULL AND user_id IS NULL AND key_id IS NULL"
+            ),
+            sqlite_where=text(
+                "scope = 'team' AND team_id IS NOT NULL AND user_id IS NULL AND key_id IS NULL"
+            ),
+        ),
+        Index(
+            "uq_spend_caps_team_member_scope",
+            "region_id",
+            "team_id",
+            "user_id",
+            unique=True,
+            postgresql_where=text(
+                "scope = 'team_member' AND team_id IS NOT NULL AND user_id IS NOT NULL AND key_id IS NULL"
+            ),
+            sqlite_where=text(
+                "scope = 'team_member' AND team_id IS NOT NULL AND user_id IS NOT NULL AND key_id IS NULL"
+            ),
+        ),
+        Index(
+            "uq_spend_caps_key_scope",
+            "region_id",
+            "key_id",
+            unique=True,
+            postgresql_where=text("scope = 'key' AND key_id IS NOT NULL"),
+            sqlite_where=text("scope = 'key' AND key_id IS NOT NULL"),
+        ),
+    )
