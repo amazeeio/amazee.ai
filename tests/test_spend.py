@@ -182,7 +182,7 @@ def test_update_team_budget_endpoint(
     response = client.put(
         f"/spend/{test_region.id}/team/{test_team.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"max_budget": 12.5, "budget_duration": "30d"},
+        json={"max_budget": 12.5},
     )
     assert response.status_code == 200
     data = response.json()
@@ -233,7 +233,7 @@ def test_update_team_budget_rejects_cap_above_pool_purchases(
     response = client.put(
         f"/spend/{test_region.id}/team/{test_team.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"max_budget": 60.0, "budget_duration": "30d"},
+        json={"max_budget": 60.0},
     )
     assert response.status_code == 400
     assert "cannot exceed purchased pool budget" in response.json()["detail"]
@@ -271,7 +271,7 @@ def test_update_pool_team_budget_uses_pool_duration(
     response = client.put(
         f"/spend/{test_region.id}/team/{test_team.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"max_budget": 12.5, "budget_duration": "1mo"},
+        json={"max_budget": 12.5},
     )
     assert response.status_code == 200
     mock_update_team_budget.assert_awaited_once()
@@ -383,7 +383,7 @@ def test_update_team_member_budget_returns_effective_duration(
     response = client.put(
         f"/spend/{test_region.id}/team/{test_team.id}/member/{test_team_user.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"max_budget": 2.5, "budget_duration": "30d"},
+        json={"max_budget": 2.5},
     )
     assert response.status_code == 200
     data = response.json()
@@ -491,7 +491,7 @@ def test_update_key_budget_endpoint_forces_monthly_duration(
     response = client.put(
         f"/spend/{test_region.id}/key/{key.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"max_budget": 8.0, "budget_duration": "30d"},
+        json={"max_budget": 8.0},
     )
     assert response.status_code == 200
     mock_update_key_budget.assert_awaited_once()
@@ -544,7 +544,7 @@ def test_update_key_budget_endpoint_clear_budget(
     response = client.put(
         f"/spend/{test_region.id}/key/{key.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"max_budget": None, "budget_duration": None},
+        json={"max_budget": None},
     )
     assert response.status_code == 200
     data = response.json()
@@ -604,7 +604,7 @@ def test_update_key_budget_rejects_cap_above_pool_purchases(
     response = client.put(
         f"/spend/{test_region.id}/key/{key.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"max_budget": 60.0, "budget_duration": "30d"},
+        json={"max_budget": 60.0},
     )
     assert response.status_code == 400
     assert "cannot exceed purchased pool budget" in response.json()["detail"]
@@ -799,7 +799,7 @@ def test_update_team_budget_forbidden_for_key_creator(
     response = client.put(
         f"/spend/{test_region.id}/team/{test_team.id}/budget",
         headers={"Authorization": f"Bearer {team_key_creator_token}"},
-        json={"max_budget": 12.5, "budget_duration": "1mo"},
+        json={"max_budget": 12.5},
     )
     assert response.status_code == 403
     mock_update_team_budget.assert_not_awaited()
@@ -833,7 +833,7 @@ def test_update_team_budget_rejects_unassociated_dedicated_region(
     response = client.put(
         f"/spend/{dedicated.id}/team/{test_team.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"max_budget": 5.0, "budget_duration": "1mo"},
+        json={"max_budget": 5.0},
     )
     assert response.status_code == 400
     assert "not associated with this dedicated region" in response.json()["detail"]
@@ -867,7 +867,7 @@ def test_update_key_budget_owner_only_key_path(
     response = client.put(
         f"/spend/{test_region.id}/key/{key.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
-        json={"max_budget": 2.0, "budget_duration": "30d"},
+        json={"max_budget": 2.0},
     )
     assert response.status_code == 200
     mock_update_key_budget.assert_awaited_once()
@@ -917,7 +917,7 @@ def test_update_key_budget_forbidden_for_cross_team_admin(
     response = client.put(
         f"/spend/{test_region.id}/key/{key.id}/budget",
         headers={"Authorization": f"Bearer {team_admin_token}"},
-        json={"max_budget": 2.0, "budget_duration": "1mo"},
+        json={"max_budget": 2.0},
     )
     assert response.status_code == 403
     mock_update_key_budget.assert_not_awaited()

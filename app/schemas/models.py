@@ -401,7 +401,6 @@ class UserSpendResponse(BaseModel):
 
 class SpendBudgetUpdateRequest(BaseModel):
     max_budget: Optional[float] = Field(default=None, ge=0)
-    budget_duration: Optional[str] = None
 
 
 class SpendBudgetUpdateResponse(BaseModel):
