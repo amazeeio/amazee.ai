@@ -232,6 +232,37 @@ wait_for_chat_success() {
   return 1
 }
 
+wait_for_team_spend_stable() {
+  local region_id="$1"
+  local team_id="$2"
+  local timeout="${3:-20}"
+  local prev=""
+  local i=0
+  while (( i < timeout )); do
+    api_call "GET" "/spend/${region_id}/team/${team_id}"
+    local cur
+    cur="$(echo "$HTTP_BODY" | jq -r '.total_spend // 0')"
+    if [[ -n "$prev" ]]; then
+      local same
+      same=$(python3 - "$prev" "$cur" <<'PY'
+import sys
+a=float(sys.argv[1]); b=float(sys.argv[2]); print(1 if abs(a-b) < 0.0002 else 0)
+PY
+)
+      if [[ "$same" == "1" ]]; then
+        echo "$cur"
+        return 0
+      fi
+    fi
+    prev="$cur"
+    sleep 2
+    i=$((i + 2))
+  done
+  api_call "GET" "/spend/${region_id}/team/${team_id}"
+  echo "$(echo "$HTTP_BODY" | jq -r '.total_spend // 0')"
+  return 1
+}
+
 chat_usage() {
   local litellm_url="$1"
   local key_token="$2"
@@ -593,36 +624,51 @@ fi
 
 # Test 12: Cross-region spend isolation
 if [[ "$REGION2_ID" != "$REGION_ID" ]]; then
+  CROSS_TEAM_PAYLOAD=$(jq -n \
+    --arg n "spend-e2e-cross-team-${SUFFIX}-${BLOCK_INDEX}" \
+    --arg e "spend-e2e-cross-team-${SUFFIX}-${BLOCK_INDEX}@example.com" \
+    '{name:$n, admin_email:$e, budget_type:"periodic"}')
+  api_call "POST" "/teams" "$CROSS_TEAM_PAYLOAD"
+  CROSS_TEAM_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_team "$CROSS_TEAM_ID"
+
+  TEAM_KEY_R1_PAYLOAD=$(jq -n \
+    --argjson rid "$REGION_ID" \
+    --argjson tid "$CROSS_TEAM_ID" \
+    '{region_id:$rid, name:"spend-e2e-cross-key-r1", team_id:$tid}')
+  api_call "POST" "/private-ai-keys" "$TEAM_KEY_R1_PAYLOAD"
+  TEAM_KEY_R1_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_key "$TEAM_KEY_R1_ID"
+
   TEAM_KEY_R2_PAYLOAD=$(jq -n \
     --argjson rid "$REGION2_ID" \
-    --argjson tid "$TEAM_ID" \
-    '{region_id:$rid, name:"spend-e2e-team-key-r2", team_id:$tid}')
+    --argjson tid "$CROSS_TEAM_ID" \
+    '{region_id:$rid, name:"spend-e2e-cross-key-r2", team_id:$tid}')
   api_call "POST" "/private-ai-keys" "$TEAM_KEY_R2_PAYLOAD"
   TEAM_KEY_R2_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
   TEAM_KEY_R2_TOKEN="$(echo "$HTTP_BODY" | jq -r '.litellm_token')"
   TEAM_KEY_R2_URL="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '.litellm_api_url')")"
   register_key "$TEAM_KEY_R2_ID"
-  api_call "GET" "/spend/${REGION_ID}/team/${TEAM_ID}"
-  R1_BEFORE="$(echo "$HTTP_BODY" | jq -r '.total_spend // 0')"
-  api_call "GET" "/spend/${REGION2_ID}/team/${TEAM_ID}"
-  R2_BEFORE="$(echo "$HTTP_BODY" | jq -r '.total_spend // 0')"
+  R1_BEFORE="$(wait_for_team_spend_stable "$REGION_ID" "$CROSS_TEAM_ID" 20 || true)"
+  api_call "GET" "/spend/${REGION2_ID}/key/${TEAM_KEY_R2_ID}"
+  R2_KEY_BEFORE="$(echo "$HTTP_BODY" | jq -r '.spend // 0')"
   chat_usage "$TEAM_KEY_R2_URL" "$TEAM_KEY_R2_TOKEN" "$MODEL_ID" 100 14900
-  sleep 4
-  api_call "GET" "/spend/${REGION_ID}/team/${TEAM_ID}"
+  sleep 6
+  api_call "GET" "/spend/${REGION_ID}/team/${CROSS_TEAM_ID}"
   R1_AFTER="$(echo "$HTTP_BODY" | jq -r '.total_spend // 0')"
-  api_call "GET" "/spend/${REGION2_ID}/team/${TEAM_ID}"
-  R2_AFTER="$(echo "$HTTP_BODY" | jq -r '.total_spend // 0')"
+  api_call "GET" "/spend/${REGION2_ID}/key/${TEAM_KEY_R2_ID}"
+  R2_KEY_AFTER="$(echo "$HTTP_BODY" | jq -r '.spend // 0')"
   R1_UNCHANGED=$(python3 - "$R1_BEFORE" "$R1_AFTER" <<'PY'
 import sys
 a=float(sys.argv[1]); b=float(sys.argv[2]); print(1 if abs(a-b) < 0.0002 else 0)
 PY
 )
-  R2_INCREASED="$(float_gt "$R2_AFTER" "$R2_BEFORE")"
+  R2_INCREASED="$(float_gt "$R2_KEY_AFTER" "$R2_KEY_BEFORE")"
   PASS=$([[ "$R1_UNCHANGED" == "1" && "$R2_INCREASED" == "1" ]] && echo 1 || echo 0)
   emit_result \
     "Cross-region spend isolation" \
-    "usage in region2 increases region2 spend without changing region1 spend" \
-    "r1_before=${R1_BEFORE}, r1_after=${R1_AFTER}, r2_before=${R2_BEFORE}, r2_after=${R2_AFTER}" \
+    "usage in region2 increases region2 key spend without changing region1 team spend" \
+    "r1_before=${R1_BEFORE}, r1_after=${R1_AFTER}, r2_key_before=${R2_KEY_BEFORE}, r2_key_after=${R2_KEY_AFTER}" \
     "$PASS"
 else
   emit_result \

@@ -227,11 +227,14 @@ def test_pool_purchase_does_not_trigger_limit_service_background_propagation(
     test_team.budget_type = "pool"
     db.commit()
 
-    with patch(
-        "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
-    ) as mock_propagate, patch(
-        "app.core.limit_service.LimitService._trigger_team_budget_propagation"
-    ) as mock_trigger:
+    with (
+        patch(
+            "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
+        ) as mock_propagate,
+        patch(
+            "app.core.limit_service.LimitService._trigger_team_budget_propagation"
+        ) as mock_trigger,
+    ):
         mock_propagate.return_value = {"teams_updated": 1, "errors": []}
         response = client.post(
             f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
