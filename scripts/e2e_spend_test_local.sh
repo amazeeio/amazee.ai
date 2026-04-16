@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Local-only E2E script for spend and LiteLLM sync behavior.
+# Intended for developer machines with local docker services (amazee.ai + LiteLLM).
+# Not intended for CI/staging/production environments.
 set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:8800}"
