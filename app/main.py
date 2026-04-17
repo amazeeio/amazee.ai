@@ -1,40 +1,41 @@
+import logging
+import os
+from contextlib import asynccontextmanager
+from datetime import UTC
+
+from app.__version__ import __version__
+from app.api import (
+    audit,
+    auth,
+    billing,
+    budgets,
+    limits,
+    pricing_tables,
+    private_ai_keys,
+    products,
+    public,
+    regions,
+    spend,
+    teams,
+    users,
+)
+from app.core.config import settings
+from app.core.locking import release_lock, try_acquire_lock
+from app.core.worker import hard_delete_expired_teams, monitor_teams
+from app.db.database import get_db
+from app.middleware.audit import AuditLogMiddleware
+from app.middleware.auth import AuthMiddleware
+from app.middleware.caching import CacheControlMiddleware
+from app.middleware.prometheus import PrometheusMiddleware
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
-from app.api import (
-    auth,
-    private_ai_keys,
-    users,
-    regions,
-    public,
-    audit,
-    teams,
-    billing,
-    products,
-    pricing_tables,
-    limits,
-    budgets,
-    spend,
-)
-from app.core.config import settings
-from app.db.database import get_db
-from app.middleware.audit import AuditLogMiddleware
-from app.middleware.caching import CacheControlMiddleware
-from app.middleware.prometheus import PrometheusMiddleware
-from app.middleware.auth import AuthMiddleware
-from app.core.worker import monitor_teams, hard_delete_expired_teams
-from app.core.locking import try_acquire_lock, release_lock
-from app.__version__ import __version__
-from contextlib import asynccontextmanager
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
-import os
-import logging
-from datetime import UTC
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # Set timezone environment variable to prevent tzlocal warning
 if not os.environ.get("TZ"):
