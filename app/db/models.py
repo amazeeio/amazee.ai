@@ -1,6 +1,7 @@
 from sqlalchemy import (
     Boolean,
     Column,
+    Index,
     ForeignKey,
     Integer,
     String,
@@ -8,6 +9,8 @@ from sqlalchemy import (
     JSON,
     Float,
     Enum,
+    Date,
+    text,
 )
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime, UTC
@@ -388,5 +391,67 @@ class DBLimitedResource(Base):
     __table_args__ = (
         UniqueConstraint(
             "owner_type", "owner_id", "resource", name="uq_owner_resource"
+        ),
+    )
+
+
+class DBSpendCap(Base):
+    """
+    Persisted spend cap configuration for spend endpoints.
+
+    These records mirror effective cap settings pushed to LiteLLM for:
+    - team caps
+    - team-member caps
+    - key caps
+    """
+
+    __tablename__ = "spend_caps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scope = Column(String, nullable=False, index=True)  # team, team_member, key
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=False, index=True)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    key_id = Column(Integer, ForeignKey("ai_tokens.id"), nullable=True, index=True)
+    max_budget = Column(Float, nullable=True)
+    budget_duration = Column(String, nullable=True)
+    month_anchor = Column(Date, nullable=True)
+    month_start_spend = Column(Float, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "uq_spend_caps_team_scope",
+            "region_id",
+            "team_id",
+            unique=True,
+            postgresql_where=text(
+                "scope = 'team' AND team_id IS NOT NULL AND user_id IS NULL AND key_id IS NULL"
+            ),
+            sqlite_where=text(
+                "scope = 'team' AND team_id IS NOT NULL AND user_id IS NULL AND key_id IS NULL"
+            ),
+        ),
+        Index(
+            "uq_spend_caps_team_member_scope",
+            "region_id",
+            "team_id",
+            "user_id",
+            unique=True,
+            postgresql_where=text(
+                "scope = 'team_member' AND team_id IS NOT NULL AND user_id IS NOT NULL AND key_id IS NULL"
+            ),
+            sqlite_where=text(
+                "scope = 'team_member' AND team_id IS NOT NULL AND user_id IS NOT NULL AND key_id IS NULL"
+            ),
+        ),
+        Index(
+            "uq_spend_caps_key_scope",
+            "region_id",
+            "key_id",
+            unique=True,
+            postgresql_where=text("scope = 'key' AND key_id IS NOT NULL"),
+            sqlite_where=text("scope = 'key' AND key_id IS NOT NULL"),
         ),
     )

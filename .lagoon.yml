@@ -15,6 +15,10 @@ environments:
         schedule: "0 4 * * *"
         command: python scripts/trigger_sync_pool_budgets_job.py
         service: backend
+      - name: sync-pool-monthly-caps
+        schedule: "5 0 1 * *"
+        command: python scripts/trigger_sync_pool_monthly_caps_job.py
+        service: backend
     routes:
       - backend:
         - api.amazee.ai:
@@ -41,6 +45,10 @@ environments:
       - name: sync-pool-budgets
         schedule: "0 4 * * *"
         command: python scripts/trigger_sync_pool_budgets_job.py
+        service: backend
+      - name: sync-pool-monthly-caps
+        schedule: "5 0 1 * *"
+        command: python scripts/trigger_sync_pool_monthly_caps_job.py
         service: backend
 
 tasks:

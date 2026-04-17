@@ -149,6 +149,44 @@ Access the services at:
 - Frontend: http://localhost:3000
 - Backend API: http://localhost:8800
 
+## 💳 Limit Precedence and Key Ownership
+
+Private key creation supports two ownership modes:
+- `owner_id`: user-owned key.
+- `team_id`: team-owned shared key.
+- `owner_id` and `team_id` are mutually exclusive.
+- If both are omitted, key ownership defaults to the current user (`owner_id=current_user.id`).
+
+Limit controls and precedence:
+- Team cap: `PUT /spend/{region_id}/team/{team_id}/budget`
+- Team member cap (user within team): `PUT /spend/{region_id}/team/{team_id}/member/{user_id}/budget`
+- Key cap: `PUT /spend/{region_id}/key/{key_id}/budget`
+- Effective enforcement is the strictest applicable gate for the request context.
+
+### Scenario A: Team cap `$5` shared across users/keys
+
+- Use team-owned keys (`team_id`) for shared team usage.
+- Create keys via `POST /private-ai-keys` with `team_id`.
+- Set the team budget cap via `PUT /spend/{region_id}/team/{team_id}/budget`.
+- All team keys/users spend from the same team budget pool until the team cap is reached.
+
+### Scenario B: User cap `$2` within a team (across that user's keys)
+
+- Use user-owned keys (`owner_id`) for keys tied to a specific user.
+- Create keys via `POST /private-ai-keys` with `owner_id`.
+- For users inside a team, set user budget with the **team-member** endpoint (not user-only endpoint).
+- Use `PUT /spend/{region_id}/team/{team_id}/member/{user_id}/budget`.
+- The member cap applies across that user's keys in the specified team.
+
+### Scenario C: Per-key cap `$2` for each key
+
+- Set key budgets directly via the key spend endpoint.
+- Use `PUT /spend/{region_id}/key/{key_id}/budget`.
+- Each key is enforced independently.
+- Team and team-member limits can still apply as additional ceilings.
+
+Note: Spend enforcement in LiteLLM is evaluated on spend updates, so the blocking request is typically the first request after crossing a cap.
+
 
 ## 🗄️ How to Restore from a Database Dump
 

@@ -1,33 +1,35 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
-from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.openapi.utils import get_openapi
-from prometheus_fastapi_instrumentator import Instrumentator, metrics
+import logging
+import os
+from contextlib import asynccontextmanager
+
+from app.__version__ import __version__
 from app.api import (
-    auth,
-    private_ai_keys,
-    users,
-    regions,
-    public,
     audit,
-    teams,
+    auth,
     billing,
-    products,
-    pricing_tables,
-    limits,
     budgets,
+    limits,
+    pricing_tables,
+    private_ai_keys,
+    products,
+    public,
+    regions,
+    spend,
+    teams,
+    users,
 )
 from app.core.config import settings
 from app.middleware.audit import AuditLogMiddleware
+from app.middleware.auth import AuthMiddleware
 from app.middleware.caching import CacheControlMiddleware
 from app.middleware.prometheus import PrometheusMiddleware
-from app.middleware.auth import AuthMiddleware
-from app.__version__ import __version__
-from contextlib import asynccontextmanager
-import os
-import logging
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
+from prometheus_fastapi_instrumentator import Instrumentator, metrics
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # Set timezone environment variable to prevent tzlocal warning
 if not os.environ.get("TZ"):
@@ -179,6 +181,7 @@ app.include_router(
 )
 app.include_router(limits.router, prefix="/limits", tags=["limits"])
 app.include_router(budgets.router, prefix="/budgets", tags=["budgets"])
+app.include_router(spend.router, prefix="/spend", tags=["spend"])
 
 
 @app.get("/", include_in_schema=False)

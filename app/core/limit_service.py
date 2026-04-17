@@ -1,30 +1,31 @@
-from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_, select, func
-from fastapi import HTTPException, status
-from typing import Optional, List
-from datetime import datetime, UTC
+import asyncio
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
+from typing import List, Optional
+
 from app.db.models import (
     DBLimitedResource,
-    DBUser,
-    DBTeam,
-    DBTeamProduct,
     DBPrivateAIKey,
     DBProduct,
+    DBTeam,
+    DBTeamProduct,
+    DBUser,
 )
 from app.schemas.limits import (
     LimitedResource,
     LimitedResourceCreate,
-    OwnerType,
-    UnitType,
     LimitSource,
     LimitType,
+    OwnerType,
     ResourceType,
+    UnitType,
 )
 from app.schemas.models import BudgetType
-import logging
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
+from fastapi import HTTPException, status
 from prometheus_client import Counter
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.orm import Session
 
 # Shared executor for budget propagation to avoid creating too many threads
 _budget_propagation_executor = None
@@ -355,6 +356,8 @@ class LimitService:
         current_value: Optional[float] = None,
         limited_by: LimitSource = LimitSource.DEFAULT,
         set_by: Optional[str] = None,
+        commit: bool = True,
+        trigger_propagation: bool = True,
     ) -> DBLimitedResource:
         logger.info(
             f"Overwriting {resource_type.value} limit for {owner_type.value} {owner_id}"
@@ -370,10 +373,19 @@ class LimitService:
             limited_by=limited_by,
             set_by=set_by,
         )
-        result = self._set_limit(limited_resource=limit)
+        result = self._set_limit(
+            limited_resource=limit,
+            commit=commit,
+            trigger_propagation=trigger_propagation,
+        )
         return result
 
-    def _set_limit(self, limited_resource: LimitedResourceCreate) -> DBLimitedResource:
+    def _set_limit(
+        self,
+        limited_resource: LimitedResourceCreate,
+        commit: bool = True,
+        trigger_propagation: bool = True,
+    ) -> DBLimitedResource:
         """
         Create or update a limit following source hierarchy rules.
 
@@ -447,7 +459,10 @@ class LimitService:
             existing_limit.updated_at = datetime.now(UTC)
 
             self.db.add(existing_limit)
-            self.db.commit()
+            if commit:
+                self.db.commit()
+            else:
+                self.db.flush()
             result = existing_limit
 
         else:
@@ -468,7 +483,10 @@ class LimitService:
             )
 
             self.db.add(new_limit)
-            self.db.commit()
+            if commit:
+                self.db.commit()
+            else:
+                self.db.flush()
             result = new_limit
 
         # If this is a system limit change, update all default limits for the same resource
@@ -481,6 +499,7 @@ class LimitService:
         if (
             limited_resource.owner_type == OwnerType.TEAM
             and limited_resource.resource == ResourceType.BUDGET
+            and trigger_propagation
         ):
             self._trigger_team_budget_propagation(
                 limited_resource.owner_id, limited_resource.max_value
@@ -504,9 +523,9 @@ class LimitService:
             budget_amount: New budget amount to set for all keys
         """
         # Import here to avoid circular import
+        from app.core.config import settings
         from app.core.team_service import propagate_team_budget_to_keys
         from app.db.database import get_db
-        from app.core.config import settings
 
         team = self.db.query(DBTeam).filter(DBTeam.id == team_id).first()
         if not team:
@@ -516,6 +535,7 @@ class LimitService:
         # POOL budgets are purchase-driven and enforced at team level only.
         # Periodic teams continue using key-level propagation.
         apply_to_keys = team.budget_type != BudgetType.POOL
+        update_key_limits = team.budget_type != BudgetType.POOL
         if not apply_to_keys:
             budget_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
         else:
@@ -543,6 +563,7 @@ class LimitService:
                             team_id,
                             budget_amount,
                             budget_duration,
+                            update_key_limits=update_key_limits,
                             apply_to_keys=apply_to_keys,
                         )
                     )

@@ -4,6 +4,7 @@ from unittest.mock import patch, AsyncMock, Mock
 from fastapi import HTTPException
 from app.services.litellm import LiteLLMService
 from httpx import HTTPStatusError
+import httpx
 
 
 @pytest.fixture
@@ -322,6 +323,64 @@ def test_update_budget_failure(
 
 
 @patch("httpx.AsyncClient")
+def test_update_key_budget_does_not_override_duration(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.update_key_budget(
+            litellm_token="test-token",
+            budget_duration="1mo",
+            max_budget=10.0,
+        )
+    )
+
+    mock_httpx_post_client.post.assert_called_once_with(
+        f"{test_region.litellm_api_url}/key/update",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={
+            "key": "test-token",
+            "budget_duration": "1mo",
+            "max_budget": 10.0,
+        },
+    )
+
+
+@patch("httpx.AsyncClient")
+def test_update_key_budget_clear_max_budget_keeps_existing_duration(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.update_key_budget(
+            litellm_token="test-token",
+            budget_duration=None,
+            max_budget=None,
+            clear_max_budget=True,
+        )
+    )
+
+    mock_httpx_post_client.post.assert_called_once_with(
+        f"{test_region.litellm_api_url}/key/update",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={
+            "key": "test-token",
+            "max_budget": None,
+        },
+    )
+
+
+@patch("httpx.AsyncClient")
 def test_update_key_duration_success(
     mock_client_class, test_region, mock_httpx_post_client
 ):
@@ -454,3 +513,81 @@ def test_update_key_team_association_failure(
 
     assert exc_info.value.status_code == 500
     assert "Failed to update LiteLLM key team association" in exc_info.value.detail
+
+
+@patch("httpx.AsyncClient")
+def test_create_user_success(mock_client_class, test_region, mock_httpx_post_client):
+    mock_client_class.return_value = mock_httpx_post_client
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(service.create_user(user_id="123", user_email="user@example.com"))
+
+    mock_httpx_post_client.post.assert_called_once_with(
+        f"{test_region.litellm_api_url}/user/new",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={
+            "user_id": "123",
+            "user_email": "user@example.com",
+            "auto_create_key": False,
+        },
+    )
+
+
+@patch("httpx.AsyncClient")
+def test_create_user_idempotent_existing(mock_client_class, test_region):
+    mock_response = Mock(status_code=409)
+    mock_response.text = '{"error":"User already exists"}'
+    mock_response.json.return_value = {"error": "User already exists"}
+    mock_response.raise_for_status.side_effect = HTTPStatusError(
+        "Conflict",
+        request=httpx.Request("POST", "http://test/user/new"),
+        response=mock_response,
+    )
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+    asyncio.run(service.create_user(user_id="123", user_email="user@example.com"))
+
+
+@patch("httpx.AsyncClient")
+def test_add_team_member_success(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    mock_client_class.return_value = mock_httpx_post_client
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(service.add_team_member(team_id="team-1", user_id="123", role="admin"))
+
+    mock_httpx_post_client.post.assert_called_once_with(
+        f"{test_region.litellm_api_url}/team/member_add",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={"team_id": "team-1", "member": {"user_id": "123", "role": "admin"}},
+    )
+
+
+@patch("httpx.AsyncClient")
+def test_remove_team_member_success(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    mock_client_class.return_value = mock_httpx_post_client
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(service.remove_team_member(team_id="team-1", user_id="123"))
+
+    mock_httpx_post_client.post.assert_called_once_with(
+        f"{test_region.litellm_api_url}/team/member_delete",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={"team_id": "team-1", "user_id": "123"},
+    )

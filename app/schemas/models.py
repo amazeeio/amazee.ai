@@ -244,11 +244,25 @@ class PrivateAIKeyBase(BaseModel):
 
 
 class PrivateAIKeyCreate(BaseModel):
-    region_id: int
-    name: str
+    region_id: int = Field(
+        description="Target region ID where the key and backing resources are created."
+    )
+    name: str = Field(description="Human-readable key name.")
     key_alias: Optional[str] = None
-    owner_id: Optional[int] = None
-    team_id: Optional[int] = None
+    owner_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "User-owned key mode. Set this to bind the key to a specific user. "
+            "If omitted together with team_id, owner_id defaults to the current user."
+        ),
+    )
+    team_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Team-owned key mode. Set this to create a shared team key. "
+            "Mutually exclusive with owner_id."
+        ),
+    )
 
 
 class VectorDBCreate(BaseModel):
@@ -319,7 +333,7 @@ class TokenDurationUpdate(BaseModel):
     duration: str  # e.g. "30d" for 30 days, "1y" for 1 year
 
 
-class PrivateAIKeySpend(BaseModel):
+class PrivateAIKeySpendBasic(BaseModel):
     spend: float
     expires: datetime
     created_at: datetime
@@ -328,6 +342,78 @@ class PrivateAIKeySpend(BaseModel):
     budget_duration: Optional[str] = None
     budget_reset_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
+
+
+class PrivateAIKeySpend(BaseModel):
+    spend: float
+    expires: datetime
+    created_at: datetime
+    updated_at: datetime
+    max_budget: Optional[float] = None
+    budget_duration: Optional[str] = None
+    budget_reset_at: Optional[datetime] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SpendKeyItem(BaseModel):
+    key_id: Optional[int] = None
+    key_name: Optional[str] = None
+    owner_id: Optional[int] = None
+    team_id: Optional[int] = None
+    spend: float
+    max_budget: Optional[float] = None
+    cached_spend: Optional[float] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+
+
+class TeamSpendResponse(BaseModel):
+    region_id: int
+    region_name: str
+    team_id: int
+    team_name: str
+    total_spend: float
+    total_budget: float
+    total_prompt_tokens: Optional[int] = None
+    total_completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    key_count: int
+    keys: List[SpendKeyItem]
+
+
+class UserSpendResponse(BaseModel):
+    region_id: int
+    region_name: str
+    user_id: int
+    team_id: Optional[int] = None
+    team_name: Optional[str] = None
+    total_spend: float
+    total_prompt_tokens: Optional[int] = None
+    total_completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    key_count: int
+    keys: List[SpendKeyItem]
+
+
+class SpendBudgetUpdateRequest(BaseModel):
+    max_budget: Optional[float] = Field(default=None, ge=0)
+
+
+class SpendBudgetUpdateResponse(BaseModel):
+    scope: Literal["team", "key", "team_member"]
+    source_endpoint: str
+    region_id: int
+    region_name: str
+    team_id: Optional[int] = None
+    user_id: Optional[int] = None
+    key_id: Optional[int] = None
+    max_budget: Optional[float] = None
+    budget_duration: Optional[str] = None
+    note: Optional[str] = None
 
 
 class LiteLLMToken(BaseModel):
@@ -621,7 +707,7 @@ class UserSpendTeam(BaseModel):
     regions: List[UserSpendRegion]
 
 
-class UserSpendResponse(BaseModel):
+class UserSpendByEmailResponse(BaseModel):
     email: str
     total_spend: float
     teams: List[UserSpendTeam]

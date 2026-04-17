@@ -9,7 +9,7 @@ from app.core.dependencies import get_limit_service
 from app.schemas.models import (
     PrivateAIKey,
     PrivateAIKeyCreate,
-    PrivateAIKeySpend,
+    PrivateAIKeySpendBasic,
     BudgetPeriodUpdate,
     BudgetType,
     LiteLLMToken,
@@ -105,8 +105,10 @@ async def create_vector_db(
     - **name**: The name for the database
 
     Optional parameters:
-    - **owner_id**: The ID of the user who will own this database (admin only)
-    - **team_id**: The ID of the team that will own this database (admin only)
+    - **owner_id**: Create a user-owned resource. Use this when the key/token
+      should belong to a specific user.
+    - **team_id**: Create a team-owned resource. Use this for shared team usage.
+    - **owner_id** and **team_id** are mutually exclusive.
 
     The response will include:
     - Database connection details (host, database name, username, password)
@@ -115,6 +117,11 @@ async def create_vector_db(
 
     Note: You must be authenticated to use this endpoint.
     Only admins can create databases for other users or teams.
+    Limit behavior:
+    - User-owned mode (`owner_id`) keeps explicit user ownership while still
+      participating in team context when the owner belongs to a team.
+    - Team-owned mode (`team_id`) is the clean shared-team model and is
+      recommended for pooled team budget workflows.
     """
     # Get ownership information
     owner_id, team_id = _validate_permissions_and_get_ownership_info(
@@ -210,8 +217,9 @@ async def create_private_ai_key(
     - **name**: The name for the private AI key
 
     Optional parameters:
-    - **owner_id**: The ID of the user who will own this key (admin only)
-    - **team_id**: The ID of the team that will own this key (admin only)
+    - **owner_id**: Create a user-owned key.
+    - **team_id**: Create a team-owned shared key.
+    - **owner_id** and **team_id** are mutually exclusive.
 
     The response will include:
     - Database connection details (host, database name, username, password)
@@ -220,6 +228,14 @@ async def create_private_ai_key(
 
     Note: You must be authenticated to use this endpoint.
     Only admins can create keys for other users or teams.
+    Ownership and limits:
+    - If both `owner_id` and `team_id` are omitted, `owner_id` defaults to the
+      current user.
+    - Team budget limits apply at team scope.
+    - Team-member budgets apply per user inside a team.
+    - Key budgets apply per key.
+    - For team workflows with shared pool budget, prefer team-owned keys
+      (`team_id`).
     """
     llm_token = None
     db_info = None
@@ -343,8 +359,9 @@ async def create_llm_token(
     - **name**: The name for the token
 
     Optional parameters:
-    - **owner_id**: The ID of the user who will own this token (admin only)
-    - **team_id**: The ID of the team that will own this token (admin only)
+    - **owner_id**: Create a user-owned token.
+    - **team_id**: Create a team-owned token.
+    - **owner_id** and **team_id** are mutually exclusive.
 
     The response will include:
     - LiteLLM API token for authentication
@@ -352,6 +369,10 @@ async def create_llm_token(
 
     Note: You must be authenticated to use this endpoint.
     Only admins can create tokens for other users or teams.
+    Limit behavior follows ownership context:
+    - Team-owned tokens are governed by team-level limits.
+    - User-owned tokens can be governed by team-member limits when the owner is
+      part of a team.
     """
     # Get ownership information
     owner_id, team_id = _validate_permissions_and_get_ownership_info(
@@ -838,7 +859,7 @@ async def delete_private_ai_key(
     return {"message": "Private AI Key deleted successfully"}
 
 
-@router.get("/{key_id}/spend", response_model=PrivateAIKeySpend)
+@router.get("/{key_id}/spend", response_model=PrivateAIKeySpendBasic)
 async def get_private_ai_key_spend(
     key_id: int,
     current_user=Depends(get_current_user_from_auth),
@@ -866,7 +887,7 @@ async def get_private_ai_key_spend(
         # Only set default for spend field
         spend_info = {"spend": info.get("spend", 0.0), **info}
 
-        return PrivateAIKeySpend.model_validate(spend_info)
+        return PrivateAIKeySpendBasic.model_validate(spend_info)
     except Exception as e:
         logger.error(f"Failed to get Private AI Key spend: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -924,7 +945,7 @@ async def update_budget_period(
         # Only set default for spend field
         spend_info = {"spend": info.get("spend", 0.0), **info}
 
-        return PrivateAIKeySpend.model_validate(spend_info)
+        return PrivateAIKeySpendBasic.model_validate(spend_info)
     except Exception as e:
         logger.error(f"Failed to update budget period: {str(e)}", exc_info=True)
         raise HTTPException(
