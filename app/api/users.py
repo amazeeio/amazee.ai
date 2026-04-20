@@ -32,6 +32,7 @@ from app.schemas.models import (
 from app.db.models import (
     DBPrivateAIKey,
     DBRegion,
+    DBSpendCap,
     DBTeam,
     DBTeamRegion,
     DBUser,
@@ -148,6 +149,7 @@ async def _fetch_region_spend(
     region: DBRegion,
     user_ids: set[int],
     user_emails: set[str],
+    max_budget: float | None = None,
 ) -> Optional[UserSpendRegion]:
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
     service = LiteLLMService(
@@ -176,6 +178,7 @@ async def _fetch_region_spend(
                     region_name=region.name,
                     spend=0.0,
                     status="unavailable",
+                    max_budget=max_budget,
                 )
             raise
 
@@ -204,6 +207,7 @@ async def _fetch_region_spend(
         region_name=region.name,
         spend=spend,
         status="ok",
+        max_budget=max_budget,
     )
 
 
@@ -234,6 +238,40 @@ async def _compute_user_spend(
         team_names[user.team_id] = team_name
 
     team_ids = list(user_ids_by_team.keys())
+    all_owner_ids: set[int] = set()
+    for uid_set in user_ids_by_team.values():
+        all_owner_ids.update(uid_set)
+
+    team_member_spend_caps = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == "team_member",
+            DBSpendCap.team_id.in_(team_ids),
+            DBSpendCap.user_id.in_(all_owner_ids),
+            DBSpendCap.max_budget.isnot(None),
+        )
+        .all()
+    )
+    max_budget_by_team_region: dict[tuple[int, int], float] = {}
+    user_ids_by_team_frozen = {
+        team_id: frozenset(uids) for team_id, uids in user_ids_by_team.items()
+    }
+    for cap in team_member_spend_caps:
+        if cap.team_id is None or cap.region_id is None or cap.user_id is None:
+            continue
+        team_user_ids = user_ids_by_team_frozen.get(cap.team_id)
+        if team_user_ids is None or cap.user_id not in team_user_ids:
+            continue
+        try:
+            cap_budget = float(cap.max_budget)
+        except (TypeError, ValueError):
+            continue
+        key = (cap.team_id, cap.region_id)
+        previous = max_budget_by_team_region.get(key)
+        max_budget_by_team_region[key] = (
+            max(previous, cap_budget) if previous is not None else cap_budget
+        )
+
     public_regions = (
         db.query(DBRegion)
         .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
@@ -256,10 +294,6 @@ async def _compute_user_spend(
     tasks = []
     task_meta: list[tuple[int, str, int]] = []
     region_failures = False
-
-    all_owner_ids: set[int] = set()
-    for uid_set in user_ids_by_team.values():
-        all_owner_ids.update(uid_set)
 
     key_pair_rows = (
         db.query(
@@ -299,6 +333,7 @@ async def _compute_user_spend(
                     region=region,
                     user_ids=user_ids_by_team[team_id],
                     user_emails=user_emails_by_team[team_id],
+                    max_budget=max_budget_by_team_region.get((team_id, region.id)),
                 )
             )
             task_meta.append((team_id, team_name, region.id))

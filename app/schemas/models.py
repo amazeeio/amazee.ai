@@ -698,6 +698,7 @@ class UserSpendRegion(BaseModel):
     region_name: str
     spend: float
     status: str
+    max_budget: Optional[float] = None
 
 
 class UserSpendTeam(BaseModel):
