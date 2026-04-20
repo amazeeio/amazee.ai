@@ -32,6 +32,7 @@ from app.schemas.models import (
 from app.db.models import (
     DBPrivateAIKey,
     DBRegion,
+    DBSpendCap,
     DBTeam,
     DBTeamRegion,
     DBUser,
@@ -148,6 +149,7 @@ async def _fetch_region_spend(
     region: DBRegion,
     user_ids: set[int],
     user_emails: set[str],
+    max_budget: float | None = None,
 ) -> Optional[UserSpendRegion]:
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
     service = LiteLLMService(
@@ -176,6 +178,7 @@ async def _fetch_region_spend(
                     region_name=region.name,
                     spend=0.0,
                     status="unavailable",
+                    max_budget=max_budget,
                 )
             raise
 
@@ -204,6 +207,7 @@ async def _fetch_region_spend(
         region_name=region.name,
         spend=spend,
         status="ok",
+        max_budget=max_budget,
     )
 
 
@@ -234,6 +238,39 @@ async def _compute_user_spend(
         team_names[user.team_id] = team_name
 
     team_ids = list(user_ids_by_team.keys())
+    # /users/spend returns a team+region projection for the target member.
+    # Team-member caps are resolved strictly from spend_caps rows scoped to
+    # (team_id, user_id, region_id). If no row exists, max_budget stays null.
+    #
+    # Normalized email lookup may theoretically return multiple users in the same team;
+    # we pick one deterministic member id per team for cap lookup to keep response shape
+    # unchanged (one team aggregate entry).
+    member_id_by_team = {
+        team_id: min(uids) for team_id, uids in user_ids_by_team.items()
+    }
+    member_caps = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == "team_member",
+            DBSpendCap.team_id.in_(team_ids),
+            DBSpendCap.user_id.in_(list(member_id_by_team.values())),
+            DBSpendCap.max_budget.isnot(None),
+        )
+        .all()
+    )
+    max_budget_by_team_region: dict[tuple[int, int], float] = {}
+    for cap in member_caps:
+        if cap.team_id is None or cap.region_id is None or cap.user_id is None:
+            continue
+        if member_id_by_team.get(cap.team_id) != cap.user_id:
+            continue
+        try:
+            max_budget_by_team_region[(cap.team_id, cap.region_id)] = float(
+                cap.max_budget
+            )
+        except (TypeError, ValueError):
+            continue
+
     public_regions = (
         db.query(DBRegion)
         .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
@@ -257,10 +294,6 @@ async def _compute_user_spend(
     task_meta: list[tuple[int, str, int]] = []
     region_failures = False
 
-    all_owner_ids: set[int] = set()
-    for uid_set in user_ids_by_team.values():
-        all_owner_ids.update(uid_set)
-
     key_pair_rows = (
         db.query(
             DBPrivateAIKey.team_id, DBPrivateAIKey.owner_id, DBPrivateAIKey.region_id
@@ -268,7 +301,7 @@ async def _compute_user_spend(
         .filter(
             or_(
                 DBPrivateAIKey.team_id.in_(team_ids),
-                DBPrivateAIKey.owner_id.in_(all_owner_ids),
+                DBPrivateAIKey.owner_id.in_(set().union(*user_ids_by_team.values())),
             )
         )
         .distinct()
@@ -299,6 +332,7 @@ async def _compute_user_spend(
                     region=region,
                     user_ids=user_ids_by_team[team_id],
                     user_emails=user_emails_by_team[team_id],
+                    max_budget=max_budget_by_team_region.get((team_id, region.id)),
                 )
             )
             task_meta.append((team_id, team_name, region.id))
