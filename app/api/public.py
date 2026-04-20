@@ -5,11 +5,12 @@ from datetime import datetime, timedelta, UTC
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
+from app.core.security import get_current_user_from_auth
 from app.db.database import get_db
-from app.db.models import DBRegion
+from app.db.models import DBRegion, DBTeam, DBTeamRegion, DBUser
 from app.schemas.models import (
     PublicModelCapabilities,
     PublicModelManufacturer,
@@ -27,10 +28,33 @@ _CACHE_TTL = timedelta(hours=1)
 _REGION_TIMEOUT = 10.0  # seconds per-region request
 _REGION_SEMAPHORE = asyncio.Semaphore(10)  # max concurrent region requests
 _cache_lock = asyncio.Lock()
+_dedicated_cache_lock = asyncio.Lock()
 _models_cache: dict[str, Any] = {
     "expires_at": datetime.min.replace(tzinfo=UTC),
     "data": [],
 }
+_dedicated_cache: dict[str, Any] = {
+    # keyed by team_id (str) → list[PublicRegionModels]
+    "by_team": {},
+    "team_expires": {},  # team_id → expiry datetime
+}
+_ADMIN_CACHE_KEY = "__admin__"  # special key for admin all-dedicated-regions cache
+
+
+def _evict_stale_dedicated_entries() -> None:
+    """Remove expired entries from ``_dedicated_cache`` to prevent unbounded growth.
+
+    Must be called while ``_dedicated_cache_lock`` is held.
+    """
+    now = datetime.now(UTC)
+    expired_keys = [
+        key
+        for key, expires_at in _dedicated_cache["team_expires"].items()
+        if expires_at <= now
+    ]
+    for key in expired_keys:
+        _dedicated_cache["by_team"].pop(key, None)
+        _dedicated_cache["team_expires"].pop(key, None)
 
 
 def _infer_provider(item: dict[str, Any]) -> str:
@@ -255,6 +279,49 @@ def _filter_region_groups_by_alias(
     return filtered_region_groups
 
 
+async def _resolve_optional_user(request: Request, db: Session) -> DBUser | None:
+    """Optionally resolve the authenticated user from the request.
+
+    Reuses the existing ``get_current_user_from_auth`` helper (which handles
+    API tokens, JWTs, ``request.state.user`` from AuthMiddleware, and
+    ``last_used_at`` tracking).  Returns ``None`` when the request is
+    unauthenticated or the token is invalid — never raises.
+    """
+    access_token = request.cookies.get("access_token")
+    authorization = request.headers.get("authorization")
+
+    # Short-circuit immediately when no credentials are present at all.
+    if (
+        not access_token
+        and not authorization
+        and not getattr(request.state, "user", None)
+    ):
+        return None
+
+    try:
+        return await get_current_user_from_auth(
+            access_token=access_token,
+            authorization=authorization,
+            db=db,
+            request=request,
+        )
+    except asyncio.CancelledError:
+        raise
+    except HTTPException as exc:
+        # A 401 is the expected "unauthenticated" response; swallow silently.
+        if exc.status_code != 401:
+            logger.debug(
+                "Optional auth resolution failed for /public/models (HTTP %s)",
+                exc.status_code,
+            )
+        return None
+    except Exception:
+        logger.debug(
+            "Optional auth resolution failed for /public/models", exc_info=True
+        )
+        return None
+
+
 async def _fetch_region_model_group(
     service: LiteLLMService, region_name: str
 ) -> PublicRegionModels:
@@ -285,6 +352,7 @@ async def _fetch_region_model_group(
 
 @router.get("/models", response_model=list[PublicRegionModels])
 async def list_public_models(
+    request: Request,
     alias: list[str] | None = Query(
         default=None,
         description=(
@@ -297,33 +365,121 @@ async def list_public_models(
     now = datetime.now(UTC)
     alias_filters = _parse_alias_filters(alias)
 
+    # --- Public regions (cached globally) ---
     if _models_cache["expires_at"] > now:
-        return _filter_region_groups_by_alias(_models_cache["data"], alias_filters)
+        public_groups = _models_cache["data"]
+    else:
+        regions_to_fetch: list | None = None
+        async with _cache_lock:
+            now = datetime.now(UTC)
+            if _models_cache["expires_at"] > now:
+                public_groups = _models_cache["data"]
+            else:
+                regions_to_fetch = (
+                    db.query(DBRegion)
+                    .filter(
+                        DBRegion.is_active.is_(True),
+                        DBRegion.is_dedicated.is_(False),
+                    )
+                    .all()
+                )
+                # Serve stale data to concurrent requests while refresh is in flight.
+                public_groups = list(_models_cache["data"])
 
-    async with _cache_lock:
-        now = datetime.now(UTC)
-        if _models_cache["expires_at"] > now:
-            return _filter_region_groups_by_alias(_models_cache["data"], alias_filters)
+        if regions_to_fetch is not None:
+            tasks = [
+                _fetch_region_model_group(
+                    LiteLLMService(
+                        api_url=region.litellm_api_url,
+                        api_key=region.litellm_api_key,
+                    ),
+                    region.name,
+                )
+                for region in regions_to_fetch
+            ]
+            fetched_groups = list(await asyncio.gather(*tasks))
+            async with _cache_lock:
+                _models_cache["data"] = fetched_groups
+                _models_cache["expires_at"] = datetime.now(UTC) + _CACHE_TTL
+            public_groups = fetched_groups
 
-        regions = (
-            db.query(DBRegion)
-            .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
-            .all()
-        )
+    # --- Dedicated regions (optional, per-user) ---
+    user = await _resolve_optional_user(request, db)
+    dedicated_groups: list[PublicRegionModels] = []
 
-        tasks = [
-            _fetch_region_model_group(
-                LiteLLMService(
-                    api_url=region.litellm_api_url,
-                    api_key=region.litellm_api_key,
-                ),
-                region.name,
+    if user:
+        is_admin = bool(user.is_admin)
+        team_id = user.team_id
+
+        if is_admin:
+            # Admins see ALL dedicated regions across every team.
+            cache_key = _ADMIN_CACHE_KEY
+            query = db.query(DBRegion).filter(
+                DBRegion.is_active.is_(True),
+                DBRegion.is_dedicated.is_(True),
             )
-            for region in regions
-        ]
-        region_groups = await asyncio.gather(*tasks)
+        elif team_id:
+            # Regular team member sees only their team's dedicated regions.
+            cache_key = str(team_id)
+            query = (
+                db.query(DBRegion)
+                .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
+                .filter(
+                    DBTeamRegion.team_id == team_id,
+                    DBRegion.is_active.is_(True),
+                    DBRegion.is_dedicated.is_(True),
+                )
+            )
+        else:
+            # Authenticated user without a team — no dedicated regions.
+            cache_key = None
+            query = None
 
-        _models_cache["data"] = region_groups
-        _models_cache["expires_at"] = datetime.now(UTC) + _CACHE_TTL
+        if cache_key and query is not None:
+            dedicated_regions_to_fetch: list | None = None
+            async with _dedicated_cache_lock:
+                _evict_stale_dedicated_entries()
+                if _dedicated_cache["team_expires"].get(
+                    cache_key, datetime.min.replace(tzinfo=UTC)
+                ) > datetime.now(UTC):
+                    dedicated_groups = _dedicated_cache["by_team"].get(cache_key, [])
+                else:
+                    dedicated_regions_to_fetch = query.all()
+                    # Serve stale data to concurrent requests while refresh is in flight.
+                    dedicated_groups = list(
+                        _dedicated_cache["by_team"].get(cache_key, [])
+                    )
 
-    return _filter_region_groups_by_alias(_models_cache["data"], alias_filters)
+            if dedicated_regions_to_fetch is not None:
+                if dedicated_regions_to_fetch:
+                    fetch_tasks = [
+                        _fetch_region_model_group(
+                            LiteLLMService(
+                                api_url=region.litellm_api_url,
+                                api_key=region.litellm_api_key,
+                            ),
+                            region.name,
+                        )
+                        for region in dedicated_regions_to_fetch
+                    ]
+                    dedicated_groups = list(await asyncio.gather(*fetch_tasks))
+                else:
+                    dedicated_groups = []
+
+                async with _dedicated_cache_lock:
+                    _dedicated_cache["by_team"][cache_key] = dedicated_groups
+                    _dedicated_cache["team_expires"][cache_key] = (
+                        datetime.now(UTC) + _CACHE_TTL
+                    )
+
+        # Honour team-level hide_public_regions flag for non-admin users.
+        if not is_admin and team_id:
+            team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+            if team and team.hide_public_regions:
+                public_groups = []
+
+    # Signal to CacheControlMiddleware whether response contains user-specific data.
+    request.state._public_models_is_authenticated = user is not None
+
+    all_groups = list(public_groups) + dedicated_groups
+    return _filter_region_groups_by_alias(all_groups, alias_filters)

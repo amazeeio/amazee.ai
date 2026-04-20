@@ -7,9 +7,17 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
 
         # Public models endpoint is intentionally cacheable for 1 hour on success.
+        # When the response includes user-specific dedicated regions, use "private"
+        # to prevent CDNs/proxies from caching per-team data.
         if request.url.path in {"/public/models", "/public/models/"}:
             if response.status_code < 400:
-                response.headers["Cache-Control"] = "public, max-age=3600"
+                is_authenticated = getattr(
+                    request.state, "_public_models_is_authenticated", False
+                )
+                if is_authenticated:
+                    response.headers["Cache-Control"] = "private, max-age=3600"
+                else:
+                    response.headers["Cache-Control"] = "public, max-age=3600"
             else:
                 response.headers["Cache-Control"] = "no-store"
         else:
