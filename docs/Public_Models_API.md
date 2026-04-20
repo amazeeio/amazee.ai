@@ -16,7 +16,13 @@ GET /public/models
 
 ## Request
 
-No request body, query parameters, or headers are required.
+No request body or special headers are required.
+
+### Query Parameters
+
+| Parameter | Type | Description |
+|-------|------|-------------|
+| `alias` | `string` (repeatable) | Optional model alias filter. Matches any model whose `aliases` include the provided value. Supports repeated params (`?alias=gpt-4&alias=claude-3-5`) or comma-separated values (`?alias=gpt-4,claude-3-5`). |
 
 ### Example Request
 
@@ -41,10 +47,20 @@ Returns a JSON array of region objects, each containing its model catalog.
       {
         "model_id": "claude-4-5-sonnet",
         "display_name": "Claude 4 5 Sonnet",
+        "aliases": ["claude-4-5", "claude-4.5", "claude-4-5-sonnet"],
+        "metadata_raw": "Google's most capable model. High parameter count, excellent for complex reasoning and large context windows.",
         "provider": "aws",
         "type": "chat",
         "context_length": 1000000,
         "max_output_tokens": 64000,
+        "description": "Strengths: structured reasoning, tool/function calling, multimodal vision. Ideal for: chat assistants, summarisation. Limitations: output quality and latency vary by workload, context window capped at about 1000000 tokens.",
+        "manufacturer": {
+          "name": "Anthropic",
+          "website": "https://www.anthropic.com",
+          "version": "claude-4-5-sonnet",
+          "release_date": null,
+          "attribution": "Anthropic model routed through LiteLLM"
+        },
         "capabilities": {
           "supports_vision": true,
           "supports_function_calling": true,
@@ -82,12 +98,26 @@ Returns a JSON array of region objects, each containing its model catalog.
 |-------|------|-------------|
 | `model_id` | `string` | Unique model identifier |
 | `display_name` | `string` | Human-readable model name |
+| `aliases` | `string[]` | Alias set used for compatibility and filtering (for example family aliases such as `gpt-4`, `claude-3-5`) |
+| `metadata_raw` | `any \| null` | Raw passthrough of LiteLLM model-level `metadata` |
 | `provider` | `string` | Infrastructure provider: `aws`, `gcp`, `azure`, or `other` |
 | `type` | `string` | Model mode forwarded from LiteLLM's `model_info.mode`; commonly `chat`, `embedding`, or `image_generation`, with `other` used as a fallback when no mode is available |
 | `context_length` | `integer` | Maximum input context length in tokens |
 | `max_output_tokens` | `integer` | Maximum output tokens (null for embeddings) |
+| `description` | `string` | Human-readable summary of strengths, ideal use cases, and limitations |
+| `manufacturer` | `object` | Model provenance and attribution metadata (see below) |
 | `capabilities` | `object` | Capability flags (see below) |
 | `pricing` | `object` | Pricing details per token and per million tokens (see below) |
+
+#### Manufacturer
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `string` | Model manufacturer/developer name |
+| `website` | `string \| null` | Manufacturer website |
+| `version` | `string \| null` | Manufacturer/model version identifier |
+| `release_date` | `string \| null` | Release date if known (ISO-like format when available) |
+| `attribution` | `string \| null` | Clear attribution/provenance statement |
 
 #### Capabilities
 

@@ -5,13 +5,14 @@ from datetime import datetime, timedelta, UTC
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.db.models import DBRegion
 from app.schemas.models import (
     PublicModelCapabilities,
+    PublicModelManufacturer,
     PublicModelPricing,
     PublicModelSummary,
     PublicRegionModels,
@@ -68,25 +69,148 @@ def _to_display_name(model_id: str) -> str:
     )
 
 
+def _normalize_alias(alias: str) -> str:
+    return alias.strip().lower()
+
+
+def _extract_aliases(item: dict[str, Any], model_id: str) -> list[str]:
+    aliases: set[str] = {_normalize_alias(model_id)}
+    model_info = item.get("model_info", {})
+
+    for key in ("base_model", "key", "model"):
+        value = model_info.get(key)
+        if isinstance(value, str) and value.strip():
+            aliases.add(_normalize_alias(value))
+
+    if "/" in model_id:
+        aliases.add(_normalize_alias(model_id.split("/", 1)[-1]))
+
+    lower_id = model_id.lower()
+    if match := re.match(r"^(gpt-\d+(?:\.\d+)?)", lower_id):
+        aliases.add(match.group(1))
+    if match := re.match(r"^(claude-\d+(?:[-.]\d+)?)", lower_id):
+        claude_alias = match.group(1)
+        aliases.add(claude_alias)
+        if claude_alias.count("-") >= 2:
+            parts = claude_alias.split("-", 2)
+            aliases.add(f"{parts[0]}-{parts[1]}.{parts[2]}")
+    if match := re.match(r"^(gemini-\d+(?:\.\d+)?)", lower_id):
+        aliases.add(match.group(1))
+
+    return sorted(aliases)
+
+
+def _extract_release_date(model_id: str, model_info: dict[str, Any]) -> str | None:
+    for key in ("release_date", "released_at"):
+        value = model_info.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    if match := re.search(r"(20\d{2})(\d{2})(\d{2})$", model_id):
+        year, month, day = match.groups()
+        return f"{year}-{month}-{day}"
+    return None
+
+
+def _infer_manufacturer(model_id: str, item: dict[str, Any]) -> PublicModelManufacturer:
+    model_info = item.get("model_info", {})
+    provider = str(model_info.get("litellm_provider") or "").lower()
+    normalized_model_id = model_id.lower()
+
+    if normalized_model_id.startswith("gpt-") or "openai" in provider:
+        name = "OpenAI"
+        website = "https://openai.com"
+    elif normalized_model_id.startswith("claude-") or "anthropic" in provider:
+        name = "Anthropic"
+        website = "https://www.anthropic.com"
+    elif normalized_model_id.startswith("gemini-") or "google" in provider:
+        name = "Google"
+        website = "https://deepmind.google/models"
+    elif normalized_model_id.startswith("llama-") or "meta" in provider:
+        name = "Meta"
+        website = "https://ai.meta.com/llama"
+    else:
+        name = "Unknown"
+        website = None
+
+    version = (
+        model_info.get("version")
+        or model_info.get("model_version")
+        or model_info.get("api_version")
+    )
+    if not version:
+        version = model_id
+
+    release_date = _extract_release_date(model_id, model_info)
+    return PublicModelManufacturer(
+        name=name,
+        website=website,
+        version=str(version) if version else None,
+        release_date=release_date,
+        attribution=f"{name} model routed through LiteLLM",
+    )
+
+
+def _build_description(
+    model_type: str,
+    capabilities: PublicModelCapabilities,
+    context_length: int | None,
+) -> str:
+    strengths: list[str] = []
+    if capabilities.supports_reasoning:
+        strengths.append("structured reasoning")
+    if capabilities.supports_function_calling:
+        strengths.append("tool/function calling")
+    if capabilities.supports_vision:
+        strengths.append("multimodal vision")
+    if not strengths:
+        strengths.append("general-purpose text generation")
+
+    use_cases: list[str] = ["chat assistants", "summarisation"]
+    if model_type == "embedding":
+        use_cases = ["semantic search", "retrieval indexing"]
+    elif model_type == "image_generation":
+        use_cases = ["image creation", "creative ideation"]
+
+    limitations: list[str] = ["output quality and latency vary by workload"]
+    if context_length is None:
+        limitations.append("context window is provider-dependent")
+    else:
+        limitations.append(f"context window capped at about {context_length} tokens")
+
+    return (
+        f"Strengths: {', '.join(strengths)}. "
+        f"Ideal for: {', '.join(use_cases)}. "
+        f"Limitations: {', '.join(limitations)}."
+    )
+
+
 def _extract_model_summary(item: dict[str, Any]) -> PublicModelSummary:
     model_info = item.get("model_info", {})
     model_id = item.get("model_name") or model_info.get("key") or "unknown"
+    model_type = model_info.get("mode") or "other"
+    context_length = model_info.get("max_input_tokens")
     input_cost_per_token = _safe_float(model_info.get("input_cost_per_token"))
     output_cost_per_token = _safe_float(model_info.get("output_cost_per_token"))
+    capabilities = PublicModelCapabilities(
+        supports_vision=bool(model_info.get("supports_vision")),
+        supports_function_calling=bool(model_info.get("supports_function_calling")),
+        supports_reasoning=bool(model_info.get("supports_reasoning")),
+        supports_prompt_caching=bool(model_info.get("supports_prompt_caching")),
+    )
 
     return PublicModelSummary(
         model_id=model_id,
         display_name=_to_display_name(model_id),
+        aliases=_extract_aliases(item, model_id),
+        metadata_raw=item.get("metadata"),
         provider=_infer_provider(item),
-        type=model_info.get("mode") or "other",
-        context_length=model_info.get("max_input_tokens"),
+        type=model_type,
+        context_length=context_length,
         max_output_tokens=model_info.get("max_output_tokens"),
-        capabilities=PublicModelCapabilities(
-            supports_vision=bool(model_info.get("supports_vision")),
-            supports_function_calling=bool(model_info.get("supports_function_calling")),
-            supports_reasoning=bool(model_info.get("supports_reasoning")),
-            supports_prompt_caching=bool(model_info.get("supports_prompt_caching")),
-        ),
+        description=_build_description(model_type, capabilities, context_length),
+        manufacturer=_infer_manufacturer(model_id, item),
+        capabilities=capabilities,
         pricing=PublicModelPricing(
             input_cost_per_token=input_cost_per_token,
             output_cost_per_token=output_cost_per_token,
@@ -94,6 +218,41 @@ def _extract_model_summary(item: dict[str, Any]) -> PublicModelSummary:
             output_cost_per_million_tokens=_per_million(output_cost_per_token),
         ),
     )
+
+
+def _parse_alias_filters(alias: list[str] | None) -> set[str]:
+    if not alias:
+        return set()
+    parsed: set[str] = set()
+    for alias_entry in alias:
+        for part in alias_entry.split(","):
+            normalized = _normalize_alias(part)
+            if normalized:
+                parsed.add(normalized)
+    return parsed
+
+
+def _filter_region_groups_by_alias(
+    region_groups: list[PublicRegionModels], alias_filters: set[str]
+) -> list[PublicRegionModels]:
+    if not alias_filters:
+        return region_groups
+
+    filtered_region_groups: list[PublicRegionModels] = []
+    for region_group in region_groups:
+        filtered_models = [
+            model
+            for model in region_group.models
+            if alias_filters.intersection(set(model.aliases))
+        ]
+        filtered_region_groups.append(
+            PublicRegionModels(
+                region=region_group.region,
+                status=region_group.status,
+                models=filtered_models,
+            )
+        )
+    return filtered_region_groups
 
 
 async def _fetch_region_model_group(
@@ -125,16 +284,26 @@ async def _fetch_region_model_group(
 
 
 @router.get("/models", response_model=list[PublicRegionModels])
-async def list_public_models(db: Session = Depends(get_db)):
+async def list_public_models(
+    alias: list[str] | None = Query(
+        default=None,
+        description=(
+            "Optional model alias filters. Repeat query parameter or pass "
+            "comma-separated aliases, e.g. ?alias=gpt-4&alias=claude-3-5"
+        ),
+    ),
+    db: Session = Depends(get_db),
+):
     now = datetime.now(UTC)
+    alias_filters = _parse_alias_filters(alias)
 
     if _models_cache["expires_at"] > now:
-        return _models_cache["data"]
+        return _filter_region_groups_by_alias(_models_cache["data"], alias_filters)
 
     async with _cache_lock:
         now = datetime.now(UTC)
         if _models_cache["expires_at"] > now:
-            return _models_cache["data"]
+            return _filter_region_groups_by_alias(_models_cache["data"], alias_filters)
 
         regions = (
             db.query(DBRegion)
@@ -157,4 +326,4 @@ async def list_public_models(db: Session = Depends(get_db)):
         _models_cache["data"] = region_groups
         _models_cache["expires_at"] = datetime.now(UTC) + _CACHE_TTL
 
-    return _models_cache["data"]
+    return _filter_region_groups_by_alias(_models_cache["data"], alias_filters)

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, EmailStr, AfterValidator, Field
-from typing import Optional, List, ClassVar, Literal, Dict, Annotated
+from typing import Optional, List, ClassVar, Literal, Dict, Annotated, Any
 from datetime import datetime
 from sqlalchemy.orm import relationship
 from enum import Enum
@@ -209,13 +209,25 @@ class PublicModelCapabilities(BaseModel):
     supports_prompt_caching: bool = False
 
 
+class PublicModelManufacturer(BaseModel):
+    name: str
+    website: Optional[str] = None
+    version: Optional[str] = None
+    release_date: Optional[str] = None
+    attribution: Optional[str] = None
+
+
 class PublicModelSummary(BaseModel):
     model_id: str
     display_name: str
+    aliases: List[str] = Field(default_factory=list)
+    metadata_raw: Optional[Any] = None
     provider: str
     type: str
     context_length: Optional[int] = None
     max_output_tokens: Optional[int] = None
+    description: str
+    manufacturer: PublicModelManufacturer
     capabilities: PublicModelCapabilities
     pricing: PublicModelPricing
 

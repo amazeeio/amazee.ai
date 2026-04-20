@@ -34,6 +34,7 @@ def test_public_models_returns_aggregated_data(client, db):
                 "data": [
                     {
                         "model_name": "claude-3-5-sonnet-20241022",
+                        "metadata": "Google's most capable model. High parameter count, excellent for complex reasoning and large context windows.",
                         "litellm_params": {"aws_region_name": "eu-central-1"},
                         "model_info": {
                             "max_input_tokens": 200000,
@@ -60,6 +61,16 @@ def test_public_models_returns_aggregated_data(client, db):
         assert first_model["provider"] == "aws"
         assert first_model["type"] == "chat"
         assert first_model["context_length"] == 200000
+        assert (
+            first_model["metadata_raw"]
+            == "Google's most capable model. High parameter count, excellent for complex reasoning and large context windows."
+        )
+        assert "claude-3-5" in first_model["aliases"]
+        assert "description" in first_model
+        assert "Strengths:" in first_model["description"]
+        assert first_model["manufacturer"]["name"] == "Anthropic"
+        assert first_model["manufacturer"]["website"] == "https://www.anthropic.com"
+        assert first_model["manufacturer"]["release_date"] == "2024-10-22"
         assert "max_output_tokens" in first_model
         assert first_model["capabilities"]["supports_function_calling"] is False
         assert "pricing" in first_model
@@ -255,3 +266,81 @@ def test_public_models_uses_region_key_for_model_info(client, db):
         mock_service_cls.assert_called_once_with(
             api_url="https://litellm.example", api_key="sk-region"
         )
+
+
+def test_public_models_filters_by_alias(client, db):
+    _clear_public_models_cache()
+    region = DBRegion(
+        name="us-central-1",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="user",
+        postgres_admin_password="pass",
+        litellm_api_url="https://litellm.example",
+        litellm_api_key="key",
+        is_active=True,
+        is_dedicated=False,
+    )
+    db.add(region)
+    db.commit()
+
+    with patch("app.api.public.LiteLLMService") as mock_service_cls:
+        mock_service = mock_service_cls.return_value
+        mock_service.get_model_info = AsyncMock(
+            return_value={
+                "data": [
+                    {"model_name": "gpt-4o", "model_info": {"mode": "chat"}},
+                    {
+                        "model_name": "claude-3-5-sonnet-20241022",
+                        "model_info": {"mode": "chat"},
+                    },
+                ]
+            }
+        )
+
+        response = client.get("/public/models?alias=gpt-4")
+        assert response.status_code == 200
+        data = response.json()
+        region_data = next(r for r in data if r["region"] == "us-central-1")
+        assert len(region_data["models"]) == 1
+        assert region_data["models"][0]["model_id"] == "gpt-4o"
+
+
+def test_public_models_filters_by_comma_separated_aliases(client, db):
+    _clear_public_models_cache()
+    region = DBRegion(
+        name="us-central-2",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="user",
+        postgres_admin_password="pass",
+        litellm_api_url="https://litellm.example",
+        litellm_api_key="key",
+        is_active=True,
+        is_dedicated=False,
+    )
+    db.add(region)
+    db.commit()
+
+    with patch("app.api.public.LiteLLMService") as mock_service_cls:
+        mock_service = mock_service_cls.return_value
+        mock_service.get_model_info = AsyncMock(
+            return_value={
+                "data": [
+                    {"model_name": "gpt-4o", "model_info": {"mode": "chat"}},
+                    {
+                        "model_name": "claude-3-5-sonnet-20241022",
+                        "model_info": {"mode": "chat"},
+                    },
+                ]
+            }
+        )
+
+        response = client.get("/public/models?alias=gpt-4,claude-3-5")
+        assert response.status_code == 200
+        data = response.json()
+        region_data = next(r for r in data if r["region"] == "us-central-2")
+        returned_model_ids = sorted(
+            [model["model_id"] for model in region_data["models"]]
+        )
+        assert returned_model_ids == ["claude-3-5-sonnet-20241022", "gpt-4o"]
