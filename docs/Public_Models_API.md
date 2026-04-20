@@ -48,7 +48,7 @@ Returns a JSON array of region objects, each containing its model catalog.
         "model_id": "claude-4-5-sonnet",
         "display_name": "Claude 4 5 Sonnet",
         "aliases": ["claude-4-5", "claude-4.5", "claude-4-5-sonnet"],
-        "metadata_raw": "Google's most capable model. High parameter count, excellent for complex reasoning and large context windows.",
+        "metadata_raw": "Anthropic's Claude 4.5 Sonnet model. Strong for complex reasoning, tool use, and large context workloads.",
         "provider": "aws",
         "type": "chat",
         "context_length": 1000000,
