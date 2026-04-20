@@ -5,11 +5,11 @@ from datetime import datetime, timedelta, UTC
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.db.models import DBRegion
+from app.db.models import DBRegion, DBTeamRegion
 from app.schemas.models import (
     PublicModelCapabilities,
     PublicModelManufacturer,
@@ -30,6 +30,11 @@ _cache_lock = asyncio.Lock()
 _models_cache: dict[str, Any] = {
     "expires_at": datetime.min.replace(tzinfo=UTC),
     "data": [],
+}
+_dedicated_cache: dict[str, Any] = {
+    # keyed by team_id (str) → list[PublicRegionModels]
+    "by_team": {},
+    "team_expires": {},  # team_id → expiry datetime
 }
 
 
@@ -255,6 +260,56 @@ def _filter_region_groups_by_alias(
     return filtered_region_groups
 
 
+def _resolve_user_from_request(request: Request, db: Session) -> dict | None:
+    """Extract user identity from a Bearer token if one is present.
+
+    Supports both API tokens (stored in ``api_tokens``) and JWTs.
+    Returns ``{"id": int, "team_id": int | None}`` on success, or ``None``
+    when the request is unauthenticated or the token is invalid.
+    Never raises — all errors are swallowed so the endpoint works for
+    anonymous callers too.
+    """
+    from jose import JWTError, jwt
+    from app.core.config import settings
+    from sqlalchemy import func as sa_func
+    from app.db.models import DBAPIToken, DBUser
+
+    token: str | None = None
+    auth_header = request.headers.get("authorization")
+    if auth_header:
+        parts = auth_header.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            token = parts[1]
+    if not token:
+        token = request.cookies.get("access_token")
+    if not token:
+        return None
+
+    # --- API-token lookup (fast path) ---
+    db_token = db.query(DBAPIToken).filter(DBAPIToken.token == token).first()
+    if db_token and db_token.owner:
+        return {"id": db_token.owner.id, "team_id": db_token.owner.team_id}
+
+    # --- JWT fallback ---
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
+        email: str | None = payload.get("sub")
+        if not email:
+            return None
+        user = (
+            db.query(DBUser)
+            .filter(sa_func.lower(DBUser.email) == email.lower())
+            .first()
+        )
+        if not user:
+            return None
+        return {"id": user.id, "team_id": user.team_id}
+    except (JWTError, Exception):
+        return None
+
+
 async def _fetch_region_model_group(
     service: LiteLLMService, region_name: str
 ) -> PublicRegionModels:
@@ -285,6 +340,7 @@ async def _fetch_region_model_group(
 
 @router.get("/models", response_model=list[PublicRegionModels])
 async def list_public_models(
+    request: Request,
     alias: list[str] | None = Query(
         default=None,
         description=(
@@ -297,33 +353,83 @@ async def list_public_models(
     now = datetime.now(UTC)
     alias_filters = _parse_alias_filters(alias)
 
+    # --- Public regions (cached globally) ---
     if _models_cache["expires_at"] > now:
-        return _filter_region_groups_by_alias(_models_cache["data"], alias_filters)
+        public_groups = _models_cache["data"]
+    else:
+        async with _cache_lock:
+            now = datetime.now(UTC)
+            if _models_cache["expires_at"] > now:
+                public_groups = _models_cache["data"]
+            else:
+                regions = (
+                    db.query(DBRegion)
+                    .filter(
+                        DBRegion.is_active.is_(True),
+                        DBRegion.is_dedicated.is_(False),
+                    )
+                    .all()
+                )
 
-    async with _cache_lock:
-        now = datetime.now(UTC)
-        if _models_cache["expires_at"] > now:
-            return _filter_region_groups_by_alias(_models_cache["data"], alias_filters)
+                tasks = [
+                    _fetch_region_model_group(
+                        LiteLLMService(
+                            api_url=region.litellm_api_url,
+                            api_key=region.litellm_api_key,
+                        ),
+                        region.name,
+                    )
+                    for region in regions
+                ]
+                public_groups = await asyncio.gather(*tasks)
 
-        regions = (
-            db.query(DBRegion)
-            .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
-            .all()
-        )
+                _models_cache["data"] = public_groups
+                _models_cache["expires_at"] = datetime.now(UTC) + _CACHE_TTL
 
-        tasks = [
-            _fetch_region_model_group(
-                LiteLLMService(
-                    api_url=region.litellm_api_url,
-                    api_key=region.litellm_api_key,
-                ),
-                region.name,
+    # --- Dedicated regions (optional, per-team) ---
+    user = _resolve_user_from_request(request, db)
+    dedicated_groups: list[PublicRegionModels] = []
+
+    if user and user.get("team_id"):
+        team_id = user["team_id"]
+        team_key = str(team_id)
+
+        # Check per-team cache
+        if (
+            _dedicated_cache["team_expires"].get(
+                team_key, datetime.min.replace(tzinfo=UTC)
             )
-            for region in regions
-        ]
-        region_groups = await asyncio.gather(*tasks)
+            > now
+        ):
+            dedicated_groups = _dedicated_cache["by_team"].get(team_key, [])
+        else:
+            # Query only this team's dedicated regions
+            dedicated_regions = (
+                db.query(DBRegion)
+                .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
+                .filter(
+                    DBTeamRegion.team_id == team_id,
+                    DBRegion.is_active.is_(True),
+                    DBRegion.is_dedicated.is_(True),
+                )
+                .all()
+            )
 
-        _models_cache["data"] = region_groups
-        _models_cache["expires_at"] = datetime.now(UTC) + _CACHE_TTL
+            if dedicated_regions:
+                tasks = [
+                    _fetch_region_model_group(
+                        LiteLLMService(
+                            api_url=region.litellm_api_url,
+                            api_key=region.litellm_api_key,
+                        ),
+                        region.name,
+                    )
+                    for region in dedicated_regions
+                ]
+                dedicated_groups = list(await asyncio.gather(*tasks))
 
-    return _filter_region_groups_by_alias(_models_cache["data"], alias_filters)
+            _dedicated_cache["by_team"][team_key] = dedicated_groups
+            _dedicated_cache["team_expires"][team_key] = datetime.now(UTC) + _CACHE_TTL
+
+    all_groups = list(public_groups) + dedicated_groups
+    return _filter_region_groups_by_alias(all_groups, alias_filters)
