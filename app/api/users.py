@@ -238,39 +238,38 @@ async def _compute_user_spend(
         team_names[user.team_id] = team_name
 
     team_ids = list(user_ids_by_team.keys())
-    all_owner_ids: set[int] = set()
-    for uid_set in user_ids_by_team.values():
-        all_owner_ids.update(uid_set)
-
-    team_member_spend_caps = (
+    # /users/spend returns a team+region projection for the target member.
+    # Team-member caps are resolved strictly from spend_caps rows scoped to
+    # (team_id, user_id, region_id). If no row exists, max_budget stays null.
+    #
+    # Normalized email lookup may theoretically return multiple users in the same team;
+    # we pick one deterministic member id per team for cap lookup to keep response shape
+    # unchanged (one team aggregate entry).
+    member_id_by_team = {
+        team_id: min(uids) for team_id, uids in user_ids_by_team.items()
+    }
+    member_caps = (
         db.query(DBSpendCap)
         .filter(
             DBSpendCap.scope == "team_member",
             DBSpendCap.team_id.in_(team_ids),
-            DBSpendCap.user_id.in_(all_owner_ids),
+            DBSpendCap.user_id.in_(list(member_id_by_team.values())),
             DBSpendCap.max_budget.isnot(None),
         )
         .all()
     )
     max_budget_by_team_region: dict[tuple[int, int], float] = {}
-    user_ids_by_team_frozen = {
-        team_id: frozenset(uids) for team_id, uids in user_ids_by_team.items()
-    }
-    for cap in team_member_spend_caps:
+    for cap in member_caps:
         if cap.team_id is None or cap.region_id is None or cap.user_id is None:
             continue
-        team_user_ids = user_ids_by_team_frozen.get(cap.team_id)
-        if team_user_ids is None or cap.user_id not in team_user_ids:
+        if member_id_by_team.get(cap.team_id) != cap.user_id:
             continue
         try:
-            cap_budget = float(cap.max_budget)
+            max_budget_by_team_region[(cap.team_id, cap.region_id)] = float(
+                cap.max_budget
+            )
         except (TypeError, ValueError):
             continue
-        key = (cap.team_id, cap.region_id)
-        previous = max_budget_by_team_region.get(key)
-        max_budget_by_team_region[key] = (
-            max(previous, cap_budget) if previous is not None else cap_budget
-        )
 
     public_regions = (
         db.query(DBRegion)
@@ -302,7 +301,7 @@ async def _compute_user_spend(
         .filter(
             or_(
                 DBPrivateAIKey.team_id.in_(team_ids),
-                DBPrivateAIKey.owner_id.in_(all_owner_ids),
+                DBPrivateAIKey.owner_id.in_(set().union(*user_ids_by_team.values())),
             )
         )
         .distinct()
