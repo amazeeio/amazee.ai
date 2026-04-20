@@ -23,6 +23,7 @@ from app.db.models import (
     DBTeam,
     DBTeamRegion,
     DBUser,
+    DBUserSpendCache,
 )
 from app.schemas.limits import OwnerType, ResourceType
 from app.schemas.models import (
@@ -38,6 +39,25 @@ from app.services.litellm import LiteLLMService
 
 router = APIRouter(tags=["spend"])
 logger = logging.getLogger(__name__)
+
+
+def _invalidate_user_spend_cache(db: Session, email: str) -> None:
+    """Delete the cached spend response for *email* so the next read is fresh.
+
+    Called after any mutation that changes a user's ``max_budget`` or spend
+    cap, because the ``GET /users/spend`` endpoint caches responses for
+    ``_USER_SPEND_CACHE_TTL_SECONDS`` and does not auto-invalidate on writes.
+    """
+    parts = email.lower().rsplit("@", 1)
+    if len(parts) == 2:
+        normalized = f"{parts[0].split('+')[0]}@{parts[1]}"
+    else:
+        normalized = email.lower()
+    db.query(DBUserSpendCache).filter(
+        DBUserSpendCache.normalized_email == normalized
+    ).delete(synchronize_session=False)
+
+
 MONTHLY_BUDGET_DURATION = "1mo"
 
 
@@ -869,6 +889,7 @@ async def update_team_member_budget(
         max_budget=body.max_budget,
         budget_duration=effective_duration,
     )
+    _invalidate_user_spend_cache(db, user.email)
     db.commit()
     return SpendBudgetUpdateResponse(
         scope="team_member",
@@ -1061,6 +1082,7 @@ async def clear_team_member_budget(
     _delete_spend_cap(
         db, scope="team_member", region_id=region_id, team_id=team_id, user_id=user_id
     )
+    _invalidate_user_spend_cache(db, user.email)
     db.commit()
     return SpendBudgetUpdateResponse(
         scope="team_member",
