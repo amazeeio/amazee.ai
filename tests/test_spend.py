@@ -14,6 +14,7 @@ from app.db.models import (
     DBTeam,
     DBTeamRegion,
     DBUser,
+    DBUserSpendCache,
 )
 
 
@@ -428,6 +429,39 @@ def test_update_team_member_budget_rejects_cap_above_pool_purchases(
     mock_update_team_member.assert_not_awaited()
 
 
+@patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
+def test_update_team_member_budget_invalidates_spend_cache(
+    mock_update_team_member,
+    client,
+    admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
+):
+    cache_row = DBUserSpendCache(
+        normalized_email="teamuser@example.com",
+        response_data={"max_budget": 0.5},
+        expires_at=datetime.now(UTC) + timedelta(minutes=15),
+    )
+    db.add(cache_row)
+    db.commit()
+
+    response = client.put(
+        f"/spend/{test_region.id}/team/{test_team.id}/member/{test_team_user.id}/budget",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"max_budget": 1.0},
+    )
+    assert response.status_code == 200
+    db.expire_all()
+    remaining = (
+        db.query(DBUserSpendCache)
+        .filter(DBUserSpendCache.normalized_email == "teamuser@example.com")
+        .first()
+    )
+    assert remaining is None
+
+
 @patch("app.api.spend.logger.warning")
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
 def test_get_team_spend_logs_when_litellm_key_cannot_map_to_db_key(
@@ -717,6 +751,38 @@ def test_clear_team_member_budget_endpoint_deletes_spend_cap(
             DBSpendCap.team_id == test_team.id,
             DBSpendCap.user_id == test_team_user.id,
         )
+        .first()
+    )
+    assert remaining is None
+
+
+@patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
+def test_clear_team_member_budget_invalidates_spend_cache(
+    mock_update_team_member,
+    client,
+    admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
+):
+    cache_row = DBUserSpendCache(
+        normalized_email="teamuser@example.com",
+        response_data={"max_budget": 1.0},
+        expires_at=datetime.now(UTC) + timedelta(minutes=15),
+    )
+    db.add(cache_row)
+    db.commit()
+
+    response = client.post(
+        f"/spend/{test_region.id}/team/{test_team.id}/member/{test_team_user.id}/budget/clear",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    db.expire_all()
+    remaining = (
+        db.query(DBUserSpendCache)
+        .filter(DBUserSpendCache.normalized_email == "teamuser@example.com")
         .first()
     )
     assert remaining is None

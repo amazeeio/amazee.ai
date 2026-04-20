@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
+from app.api.users import _normalize_email_for_lookup
 from app.core.litellm_user_sync import team_role_for_litellm
 from app.core.roles import UserRole
 from app.core.security import (
@@ -46,13 +47,10 @@ def _invalidate_user_spend_cache(db: Session, email: str) -> None:
 
     Called after any mutation that changes a user's ``max_budget`` or spend
     cap, because the ``GET /users/spend`` endpoint caches responses for
-    ``_USER_SPEND_CACHE_TTL_SECONDS`` and does not auto-invalidate on writes.
+    15 minutes (``_USER_SPEND_CACHE_TTL_SECONDS`` in ``app/api/users.py``)
+    and does not auto-invalidate on writes.
     """
-    parts = email.lower().rsplit("@", 1)
-    if len(parts) == 2:
-        normalized = f"{parts[0].split('+')[0]}@{parts[1]}"
-    else:
-        normalized = email.lower()
+    normalized = _normalize_email_for_lookup(email)
     db.query(DBUserSpendCache).filter(
         DBUserSpendCache.normalized_email == normalized
     ).delete(synchronize_session=False)
