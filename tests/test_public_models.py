@@ -37,12 +37,12 @@ def test_public_models_returns_aggregated_data(client, db):
                 "data": [
                     {
                         "model_name": "claude-3-5-sonnet-20241022",
-                        "metadata": "Google's most capable model. High parameter count, excellent for complex reasoning and large context windows.",
                         "litellm_params": {"aws_region_name": "eu-central-1"},
                         "model_info": {
                             "max_input_tokens": 200000,
                             "litellm_provider": "bedrock_converse",
                             "mode": "chat",
+                            "metadata": "Google's most capable model. High parameter count, excellent for complex reasoning and large context windows.",
                         },
                     }
                 ]
@@ -352,6 +352,7 @@ def test_public_models_filters_by_comma_separated_aliases(client, db):
 # ---------------------------------------------------------------------------
 # Authenticated /public/models tests
 # ---------------------------------------------------------------------------
+
 
 def _make_team_user(db, team, email="teamuser_auth@example.com"):
     """Create a team user and return (user, password)."""

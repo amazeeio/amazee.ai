@@ -227,7 +227,7 @@ def _extract_model_summary(item: dict[str, Any]) -> PublicModelSummary:
         model_id=model_id,
         display_name=_to_display_name(model_id),
         aliases=_extract_aliases(item, model_id),
-        metadata_raw=item.get("metadata"),
+        metadata_raw=model_info.get("metadata"),
         provider=_infer_provider(item),
         type=model_type,
         context_length=context_length,
