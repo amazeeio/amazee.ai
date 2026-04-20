@@ -60,3 +60,4 @@ CLAUDE.md
 .review
 
 tests/test_limits_e2e_local.py
+.pi
