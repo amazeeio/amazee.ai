@@ -8,8 +8,9 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
+from app.core.security import get_current_user_from_auth
 from app.db.database import get_db
-from app.db.models import DBRegion, DBTeamRegion
+from app.db.models import DBRegion, DBTeam, DBTeamRegion, DBUser
 from app.schemas.models import (
     PublicModelCapabilities,
     PublicModelManufacturer,
@@ -36,6 +37,23 @@ _dedicated_cache: dict[str, Any] = {
     "by_team": {},
     "team_expires": {},  # team_id → expiry datetime
 }
+_ADMIN_CACHE_KEY = "__admin__"  # special key for admin all-dedicated-regions cache
+
+
+def _evict_stale_dedicated_entries() -> None:
+    """Remove expired entries from ``_dedicated_cache`` to prevent unbounded growth.
+
+    Must be called while ``_cache_lock`` is held.
+    """
+    now = datetime.now(UTC)
+    expired_keys = [
+        key
+        for key, expires_at in _dedicated_cache["team_expires"].items()
+        if expires_at <= now
+    ]
+    for key in expired_keys:
+        _dedicated_cache["by_team"].pop(key, None)
+        _dedicated_cache["team_expires"].pop(key, None)
 
 
 def _infer_provider(item: dict[str, Any]) -> str:
@@ -260,53 +278,27 @@ def _filter_region_groups_by_alias(
     return filtered_region_groups
 
 
-def _resolve_user_from_request(request: Request, db: Session) -> dict | None:
-    """Extract user identity from a Bearer token if one is present.
+async def _resolve_optional_user(request: Request, db: Session) -> DBUser | None:
+    """Optionally resolve the authenticated user from the request.
 
-    Supports both API tokens (stored in ``api_tokens``) and JWTs.
-    Returns ``{"id": int, "team_id": int | None}`` on success, or ``None``
-    when the request is unauthenticated or the token is invalid.
-    Never raises — all errors are swallowed so the endpoint works for
-    anonymous callers too.
+    Reuses the existing ``get_current_user_from_auth`` helper (which handles
+    API tokens, JWTs, ``request.state.user`` from AuthMiddleware, and
+    ``last_used_at`` tracking).  Returns ``None`` when the request is
+    unauthenticated or the token is invalid — never raises.
     """
-    from jose import JWTError, jwt
-    from app.core.config import settings
-    from sqlalchemy import func as sa_func
-    from app.db.models import DBAPIToken, DBUser
-
-    token: str | None = None
-    auth_header = request.headers.get("authorization")
-    if auth_header:
-        parts = auth_header.split()
-        if len(parts) == 2 and parts[0].lower() == "bearer":
-            token = parts[1]
-    if not token:
-        token = request.cookies.get("access_token")
-    if not token:
-        return None
-
-    # --- API-token lookup (fast path) ---
-    db_token = db.query(DBAPIToken).filter(DBAPIToken.token == token).first()
-    if db_token and db_token.owner:
-        return {"id": db_token.owner.id, "team_id": db_token.owner.team_id}
-
-    # --- JWT fallback ---
     try:
-        payload = jwt.decode(
-            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        access_token = request.cookies.get("access_token")
+        authorization = request.headers.get("authorization")
+        return await get_current_user_from_auth(
+            access_token=access_token,
+            authorization=authorization,
+            db=db,
+            request=request,
         )
-        email: str | None = payload.get("sub")
-        if not email:
-            return None
-        user = (
-            db.query(DBUser)
-            .filter(sa_func.lower(DBUser.email) == email.lower())
-            .first()
+    except Exception:
+        logger.debug(
+            "Optional auth resolution failed for /public/models", exc_info=True
         )
-        if not user:
-            return None
-        return {"id": user.id, "team_id": user.team_id}
-    except (JWTError, Exception):
         return None
 
 
@@ -386,25 +378,25 @@ async def list_public_models(
                 _models_cache["data"] = public_groups
                 _models_cache["expires_at"] = datetime.now(UTC) + _CACHE_TTL
 
-    # --- Dedicated regions (optional, per-team) ---
-    user = _resolve_user_from_request(request, db)
+    # --- Dedicated regions (optional, per-user) ---
+    user = await _resolve_optional_user(request, db)
     dedicated_groups: list[PublicRegionModels] = []
 
-    if user and user.get("team_id"):
-        team_id = user["team_id"]
-        team_key = str(team_id)
+    if user:
+        is_admin = bool(user.is_admin)
+        team_id = user.team_id
 
-        # Check per-team cache
-        if (
-            _dedicated_cache["team_expires"].get(
-                team_key, datetime.min.replace(tzinfo=UTC)
+        if is_admin:
+            # Admins see ALL dedicated regions across every team.
+            cache_key = _ADMIN_CACHE_KEY
+            query = db.query(DBRegion).filter(
+                DBRegion.is_active.is_(True),
+                DBRegion.is_dedicated.is_(True),
             )
-            > now
-        ):
-            dedicated_groups = _dedicated_cache["by_team"].get(team_key, [])
-        else:
-            # Query only this team's dedicated regions
-            dedicated_regions = (
+        elif team_id:
+            # Regular team member sees only their team's dedicated regions.
+            cache_key = str(team_id)
+            query = (
                 db.query(DBRegion)
                 .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
                 .filter(
@@ -412,24 +404,48 @@ async def list_public_models(
                     DBRegion.is_active.is_(True),
                     DBRegion.is_dedicated.is_(True),
                 )
-                .all()
             )
+        else:
+            # Authenticated user without a team — no dedicated regions.
+            cache_key = None
+            query = None
 
-            if dedicated_regions:
-                tasks = [
-                    _fetch_region_model_group(
-                        LiteLLMService(
-                            api_url=region.litellm_api_url,
-                            api_key=region.litellm_api_key,
-                        ),
-                        region.name,
+        if cache_key and query is not None:
+            async with _cache_lock:
+                _evict_stale_dedicated_entries()
+                if _dedicated_cache["team_expires"].get(
+                    cache_key, datetime.min.replace(tzinfo=UTC)
+                ) > datetime.now(UTC):
+                    dedicated_groups = _dedicated_cache["by_team"].get(cache_key, [])
+                else:
+                    dedicated_regions = query.all()
+
+                    if dedicated_regions:
+                        fetch_tasks = [
+                            _fetch_region_model_group(
+                                LiteLLMService(
+                                    api_url=region.litellm_api_url,
+                                    api_key=region.litellm_api_key,
+                                ),
+                                region.name,
+                            )
+                            for region in dedicated_regions
+                        ]
+                        dedicated_groups = list(await asyncio.gather(*fetch_tasks))
+
+                    _dedicated_cache["by_team"][cache_key] = dedicated_groups
+                    _dedicated_cache["team_expires"][cache_key] = (
+                        datetime.now(UTC) + _CACHE_TTL
                     )
-                    for region in dedicated_regions
-                ]
-                dedicated_groups = list(await asyncio.gather(*tasks))
 
-            _dedicated_cache["by_team"][team_key] = dedicated_groups
-            _dedicated_cache["team_expires"][team_key] = datetime.now(UTC) + _CACHE_TTL
+        # Honour team-level hide_public_regions flag for non-admin users.
+        if not is_admin and team_id:
+            team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+            if team and team.hide_public_regions:
+                public_groups = []
+
+    # Signal to CacheControlMiddleware whether response contains user-specific data.
+    request.state._public_models_is_authenticated = user is not None
 
     all_groups = list(public_groups) + dedicated_groups
     return _filter_region_groups_by_alias(all_groups, alias_filters)
