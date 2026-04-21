@@ -42,7 +42,7 @@ def test_public_models_returns_aggregated_data(client, db):
                             "max_input_tokens": 200000,
                             "litellm_provider": "bedrock_converse",
                             "mode": "chat",
-                            "metadata": "Google's most capable model. High parameter count, excellent for complex reasoning and large context windows.",
+                            "metadata": "Anthropic's most capable model. Excellent for complex reasoning, analysis, and large context windows.",
                         },
                     }
                 ]
@@ -66,7 +66,7 @@ def test_public_models_returns_aggregated_data(client, db):
         assert first_model["context_length"] == 200000
         assert (
             first_model["metadata_raw"]
-            == "Google's most capable model. High parameter count, excellent for complex reasoning and large context windows."
+            == "Anthropic's most capable model. Excellent for complex reasoning, analysis, and large context windows."
         )
         assert "claude-3-5" in first_model["aliases"]
         assert "description" in first_model
