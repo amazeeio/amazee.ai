@@ -385,6 +385,78 @@ def test_set_team_limits_uses_dedicated_region_default_overrides(db, test_team):
     assert team_limits[ResourceType.RPM].max_value == 2500.0
 
 
+def test_system_default_update_skips_dedicated_team_override_resources(db, test_team):
+    """
+    GIVEN: A dedicated team with DEFAULT resource limits and dedicated override configured
+    WHEN: System default for that resource is updated
+    THEN: Dedicated team limit is not bulk-updated, while non-dedicated team is updated
+    """
+    from app.db.models import DBTeam
+    from app.core.limit_service import settings
+
+    dedicated_team = test_team
+    dedicated_team.hide_public_regions = True
+    db.add(dedicated_team)
+
+    shared_team = DBTeam(
+        name="shared-default-update-team",
+        admin_email="shared-default-update-team@example.com",
+        budget_type="periodic",
+        hide_public_regions=False,
+    )
+    db.add(shared_team)
+    db.commit()
+    db.refresh(shared_team)
+
+    limit_service = LimitService(db)
+    limit_service.set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=dedicated_team.id,
+        resource_type=ResourceType.USER,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=9.0,
+        current_value=0.0,
+        limited_by=LimitSource.DEFAULT,
+    )
+    limit_service.set_limit(
+        owner_type=OwnerType.TEAM,
+        owner_id=shared_team.id,
+        resource_type=ResourceType.USER,
+        limit_type=LimitType.CONTROL_PLANE,
+        unit=UnitType.COUNT,
+        max_value=1.0,
+        current_value=0.0,
+        limited_by=LimitSource.DEFAULT,
+    )
+
+    with patch.object(settings, "DEDICATED_DEFAULT_USER_COUNT", 9.0):
+        limit_service.set_limit(
+            owner_type=OwnerType.SYSTEM,
+            owner_id=0,
+            resource_type=ResourceType.USER,
+            limit_type=LimitType.CONTROL_PLANE,
+            unit=UnitType.COUNT,
+            max_value=3.0,
+            current_value=0.0,
+            limited_by=LimitSource.DEFAULT,
+        )
+
+    dedicated_user_limit = next(
+        limit
+        for limit in limit_service.get_team_limits(dedicated_team)
+        if limit.resource == ResourceType.USER
+    )
+    shared_user_limit = next(
+        limit
+        for limit in limit_service.get_team_limits(shared_team)
+        if limit.resource == ResourceType.USER
+    )
+
+    assert dedicated_user_limit.max_value == 9.0
+    assert shared_user_limit.max_value == 3.0
+
+
 @patch("app.core.team_service.propagate_team_budget_to_keys")
 def test_trigger_budget_propagation_uses_pool_duration(
     mock_propagate, db, test_team, test_region

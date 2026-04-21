@@ -633,9 +633,7 @@ class LimitService:
         }
         team_map: dict[int, DBTeam] = {}
         if team_ids:
-            teams = (
-                self.db.query(DBTeam).filter(DBTeam.id.in_(team_ids)).all()
-            )
+            teams = self.db.query(DBTeam).filter(DBTeam.id.in_(team_ids)).all()
             team_map = {t.id: t for t in teams}
 
         # Update each default limit to reflect the new system default
@@ -707,7 +705,9 @@ class LimitService:
             team_id = limit.owner_id
             team = self.db.query(DBTeam).filter(DBTeam.id == team_id).first()
             if not team:
-                raise LimitNotFoundError(f"Team not found for limit reset {limit.owner_id}")
+                raise LimitNotFoundError(
+                    f"Team not found for limit reset {limit.owner_id}"
+                )
         elif limit.owner_type == OwnerType.USER:
             logger.info(
                 f"Trying to reset {limit.resource} limits for user {limit.owner_id}"
