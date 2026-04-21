@@ -4,6 +4,13 @@ import os
 
 
 class Settings(BaseSettings):
+    @staticmethod
+    def _optional_float_env(name: str) -> float | None:
+        raw = os.getenv(name)
+        if raw is None or raw == "":
+            return None
+        return float(raw)
+
     # Database settings
     DATABASE_URL: str = "postgresql://postgres:postgres@postgres/postgres_service"
     DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "50"))
@@ -51,6 +58,18 @@ class Settings(BaseSettings):
     PROMETHEUS_API_KEY: str = os.getenv("PROMETHEUS_API_KEY", "")
     POOL_BUDGET_EXPIRATION_DAYS: int = int(
         os.getenv("POOL_BUDGET_EXPIRATION_DAYS", "365")
+    )
+    DEDICATED_DEFAULT_USER_COUNT: float | None = _optional_float_env(
+        "DEDICATED_DEFAULT_USER_COUNT"
+    )
+    DEDICATED_DEFAULT_SERVICE_KEYS: float | None = _optional_float_env(
+        "DEDICATED_DEFAULT_SERVICE_KEYS"
+    )
+    DEDICATED_DEFAULT_VECTOR_DB_COUNT: float | None = _optional_float_env(
+        "DEDICATED_DEFAULT_VECTOR_DB_COUNT"
+    )
+    DEDICATED_DEFAULT_RPM_PER_KEY: float | None = _optional_float_env(
+        "DEDICATED_DEFAULT_RPM_PER_KEY"
     )
 
     model_config = ConfigDict(env_file=".env", extra="ignore")

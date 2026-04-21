@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import List, Optional
 
+from app.core.config import settings
 from app.db.models import (
     DBLimitedResource,
     DBPrivateAIKey,
@@ -523,7 +524,6 @@ class LimitService:
             budget_amount: New budget amount to set for all keys
         """
         # Import here to avoid circular import
-        from app.core.config import settings
         from app.core.team_service import propagate_team_budget_to_keys
         from app.db.database import get_db
 
@@ -615,6 +615,15 @@ class LimitService:
 
         # Update each default limit to reflect the new system default
         for limit in default_limits:
+            # POOL team budget defaults are purchase-driven and should remain at 0.
+            if (
+                limit.owner_type == OwnerType.TEAM
+                and self._should_skip_system_default_update_for_team_limit(
+                    limit.owner_id, resource_type
+                )
+            ):
+                continue
+
             limit.max_value = new_max_value
             limit.updated_at = datetime.now(UTC)
             self.db.add(limit)
@@ -670,6 +679,9 @@ class LimitService:
                 f"Setting resource {limit.resource} to product max for team {limit.owner_id}"
             )
             team_id = limit.owner_id
+            team = self.db.query(DBTeam).filter(DBTeam.id == team_id).first()
+            if not team:
+                raise ValueError(f"Team not found for limit reset {limit.owner_id}")
         elif limit.owner_type == OwnerType.USER:
             logger.info(
                 f"Trying to reset {limit.resource} limits for user {limit.owner_id}"
@@ -686,6 +698,11 @@ class LimitService:
                     .first()
                 )
             team_id = user.team_id
+            team = self.db.query(DBTeam).filter(DBTeam.id == team_id).first()
+            if not team:
+                raise ValueError(
+                    f"Team not found for user limit reset {limit.owner_id}"
+                )
         else:
             raise ValueError(f"Unknown owner type, cannot reset limit {limit}")
 
@@ -707,7 +724,9 @@ class LimitService:
                 team_id, limit.resource
             )
             if max_value is None:
-                max_value = self.get_default_team_limit_for_resource(limit.resource)
+                max_value = self._get_team_default_limit_for_resource(
+                    team, limit.resource
+                )
                 new_limited_by = LimitSource.DEFAULT
             else:
                 new_limited_by = LimitSource.PRODUCT
@@ -793,14 +812,9 @@ class LimitService:
             if max_value is not None:
                 limit_source = LimitSource.PRODUCT
             else:
-                # POOL teams start with $0 budget, PERIODIC teams get default
-                if (
-                    resource_type == ResourceType.BUDGET
-                    and team.budget_type == BudgetType.POOL
-                ):
-                    max_value = 0.0
-                else:
-                    max_value = self.get_default_team_limit_for_resource(resource_type)
+                max_value = self._get_team_default_limit_for_resource(
+                    team, resource_type
+                )
                 limit_source = LimitSource.DEFAULT
 
             # Set the limit (this will update existing or create new)
@@ -814,6 +828,67 @@ class LimitService:
                 current_value=current_value,
                 limited_by=limit_source,
             )
+
+    def _get_team_default_limit_for_resource(
+        self, team: DBTeam, resource_type: ResourceType
+    ) -> float:
+        """Resolve default team limit with team-specific overrides."""
+        team_budget_type = (
+            team.budget_type.value
+            if isinstance(team.budget_type, BudgetType)
+            else str(team.budget_type)
+        )
+
+        # POOL team budgets are purchase-driven and start from $0.
+        if (
+            resource_type == ResourceType.BUDGET
+            and team_budget_type == BudgetType.POOL.value
+        ):
+            return 0.0
+
+        # Dedicated teams can use distinct defaults for selected resources.
+        if team.hide_public_regions:
+            dedicated_defaults = {
+                ResourceType.USER: settings.DEDICATED_DEFAULT_USER_COUNT,
+                ResourceType.SERVICE_KEY: settings.DEDICATED_DEFAULT_SERVICE_KEYS,
+                ResourceType.VECTOR_DB: settings.DEDICATED_DEFAULT_VECTOR_DB_COUNT,
+                ResourceType.RPM: settings.DEDICATED_DEFAULT_RPM_PER_KEY,
+            }
+            dedicated_value = dedicated_defaults.get(resource_type)
+            if dedicated_value is not None:
+                return float(dedicated_value)
+
+        return self.get_default_team_limit_for_resource(resource_type)
+
+    def _should_skip_system_default_update_for_team_limit(
+        self, team_id: int, resource_type: ResourceType
+    ) -> bool:
+        team = self.db.query(DBTeam).filter(DBTeam.id == team_id).first()
+        if not team:
+            return False
+
+        team_budget_type = (
+            team.budget_type.value
+            if isinstance(team.budget_type, BudgetType)
+            else str(team.budget_type)
+        )
+
+        if (
+            resource_type == ResourceType.BUDGET
+            and team_budget_type == BudgetType.POOL.value
+        ):
+            return True
+
+        if not team.hide_public_regions:
+            return False
+
+        dedicated_defaults = {
+            ResourceType.USER: settings.DEDICATED_DEFAULT_USER_COUNT,
+            ResourceType.SERVICE_KEY: settings.DEDICATED_DEFAULT_SERVICE_KEYS,
+            ResourceType.VECTOR_DB: settings.DEDICATED_DEFAULT_VECTOR_DB_COUNT,
+            ResourceType.RPM: settings.DEDICATED_DEFAULT_RPM_PER_KEY,
+        }
+        return dedicated_defaults.get(resource_type) is not None
 
     def set_user_limits(self, user: DBUser):
         """
