@@ -1,16 +1,9 @@
 from pydantic_settings import BaseSettings
-from pydantic import ConfigDict
+from pydantic import ConfigDict, field_validator
 import os
 
 
 class Settings(BaseSettings):
-    @staticmethod
-    def _optional_float_env(name: str) -> float | None:
-        raw = os.getenv(name)
-        if raw is None or raw == "":
-            return None
-        return float(raw)
-
     # Database settings
     DATABASE_URL: str = "postgresql://postgres:postgres@postgres/postgres_service"
     DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "50"))
@@ -59,22 +52,32 @@ class Settings(BaseSettings):
     POOL_BUDGET_EXPIRATION_DAYS: int = int(
         os.getenv("POOL_BUDGET_EXPIRATION_DAYS", "365")
     )
-    DEDICATED_DEFAULT_USER_COUNT: float | None = _optional_float_env(
-        "DEDICATED_DEFAULT_USER_COUNT"
-    )
-    DEDICATED_DEFAULT_SERVICE_KEYS: float | None = _optional_float_env(
-        "DEDICATED_DEFAULT_SERVICE_KEYS"
-    )
-    DEDICATED_DEFAULT_VECTOR_DB_COUNT: float | None = _optional_float_env(
-        "DEDICATED_DEFAULT_VECTOR_DB_COUNT"
-    )
-    DEDICATED_DEFAULT_RPM_PER_KEY: float | None = _optional_float_env(
-        "DEDICATED_DEFAULT_RPM_PER_KEY"
-    )
+    DEDICATED_DEFAULT_USER_COUNT: float | None = None
+    DEDICATED_DEFAULT_SERVICE_KEYS: float | None = None
+    DEDICATED_DEFAULT_VECTOR_DB_COUNT: float | None = None
+    DEDICATED_DEFAULT_RPM_PER_KEY: float | None = None
 
     model_config = ConfigDict(env_file=".env", extra="ignore")
     main_route: str = os.getenv("LAGOON_ROUTE", "http://localhost:8800")
     frontend_route: str = os.getenv("FRONTEND_ROUTE", "http://localhost:3000")
+
+    @field_validator(
+        "DEDICATED_DEFAULT_USER_COUNT",
+        "DEDICATED_DEFAULT_SERVICE_KEYS",
+        "DEDICATED_DEFAULT_VECTOR_DB_COUNT",
+        "DEDICATED_DEFAULT_RPM_PER_KEY",
+        mode="before",
+    )
+    @classmethod
+    def validate_optional_dedicated_float(cls, value):
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "Dedicated default limit values must be numeric when set."
+            ) from exc
 
     def model_post_init(self, values):
         # Add Lagoon routes to CORS origins if available
