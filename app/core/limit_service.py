@@ -92,8 +92,7 @@ def _dedicated_default_for(resource_type: ResourceType) -> Optional[float]:
         ResourceType.VECTOR_DB: settings.DEDICATED_DEFAULT_VECTOR_DB_COUNT,
         ResourceType.RPM: settings.DEDICATED_DEFAULT_RPM_PER_KEY,
     }
-    value = mapping.get(resource_type)
-    return float(value) if value is not None else None
+    return mapping.get(resource_type)
 
 
 class LimitService:
