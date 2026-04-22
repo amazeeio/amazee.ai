@@ -591,3 +591,56 @@ def test_remove_team_member_success(
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
         json={"team_id": "team-1", "user_id": "123"},
     )
+
+
+@patch("httpx.AsyncClient")
+def test_update_team_budget_includes_model_aliases(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    mock_client_class.return_value = mock_httpx_post_client
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.update_team_budget(
+            team_id="team-1",
+            max_budget=10.0,
+            budget_duration="1mo",
+            model_aliases={"gpt-4": "azure/gpt-4-turbo-2024-04-09"},
+        )
+    )
+
+    mock_httpx_post_client.post.assert_called_once_with(
+        f"{test_region.litellm_api_url}/team/update",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={
+            "team_id": "team-1",
+            "max_budget": 10.0,
+            "budget_duration": "1mo",
+            "model_aliases": {"gpt-4": "azure/gpt-4-turbo-2024-04-09"},
+        },
+    )
+
+
+def test_get_team_model_aliases_reads_team_info(test_region):
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+    service.get_team_info = AsyncMock(
+        return_value={
+            "team_info": {
+                "model_aliases": {
+                    "gpt-4": "azure/gpt-4-turbo-2024-04-09",
+                    "claude": "anthropic/claude-3-5-sonnet",
+                }
+            }
+        }
+    )
+
+    aliases = asyncio.run(service.get_team_model_aliases("team-1"))
+
+    assert aliases == {
+        "gpt-4": "azure/gpt-4-turbo-2024-04-09",
+        "claude": "anthropic/claude-3-5-sonnet",
+    }

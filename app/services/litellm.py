@@ -533,6 +533,7 @@ class LiteLLMService:
         team_id: str,
         max_budget: Optional[float],
         budget_duration: Optional[str] = None,
+        model_aliases: Optional[dict[str, str]] = None,
     ):
         """Update the budget for a LiteLLM team.
 
@@ -549,6 +550,8 @@ class LiteLLMService:
             request_data["max_budget"] = max_budget
             if budget_duration:
                 request_data["budget_duration"] = budget_duration
+            if model_aliases is not None:
+                request_data["model_aliases"] = model_aliases
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -564,6 +567,19 @@ class LiteLLMService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to update LiteLLM team budget: {error_msg}",
             )
+
+    async def get_team_model_aliases(self, team_id: str) -> dict[str, str]:
+        """Get a team's model_aliases map from LiteLLM."""
+        team_info_response = await self.get_team_info(team_id)
+        team_info = team_info_response.get("team_info", team_info_response)
+        raw_aliases = team_info.get("model_aliases", {})
+        if not isinstance(raw_aliases, dict):
+            return {}
+        return {
+            str(alias): str(model)
+            for alias, model in raw_aliases.items()
+            if alias is not None and model is not None
+        }
 
     async def create_user(
         self,

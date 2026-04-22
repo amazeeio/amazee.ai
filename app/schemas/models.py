@@ -650,6 +650,17 @@ class TeamRegionBudget(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class TeamRegionModelAliasesUpdateRequest(BaseModel):
+    model_aliases: Dict[str, str] = Field(default_factory=dict)
+
+
+class TeamRegionModelAliasesResponse(BaseModel):
+    region_id: int
+    team_id: int
+    model_aliases: Dict[str, str] = Field(default_factory=dict)
+    model_config = ConfigDict(from_attributes=True)
+
+
 class PoolPurchaseRequest(BaseModel):
     amount_cents: int = Field(gt=0)
     currency: str

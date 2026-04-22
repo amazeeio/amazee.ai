@@ -1,5 +1,5 @@
 from fastapi import HTTPException
-from app.db.models import DBTeam, DBRegion
+from app.db.models import DBTeam, DBRegion, DBTeamRegion
 from unittest.mock import patch, AsyncMock
 from app.services.litellm import LiteLLMService
 
@@ -1483,3 +1483,210 @@ def test_get_team_region_budget_pool_requires_litellm(
     assert (
         response.json()["detail"] == "Failed to retrieve POOL team budget from LiteLLM"
     )
+
+
+def test_get_team_model_aliases_allows_team_member_read(
+    client, team_key_creator_token, db, test_team
+):
+    dedicated_region = DBRegion(
+        name="dedicated-region-model-aliases-read",
+        label="Dedicated Model Aliases Read",
+        postgres_host="dedicated-host",
+        postgres_port=5432,
+        postgres_admin_user="dedicated-admin",
+        postgres_admin_password="dedicated-password",
+        litellm_api_url="https://dedicated-litellm.com",
+        litellm_api_key="dedicated-litellm-key",
+        is_active=True,
+        is_dedicated=True,
+    )
+    db.add(dedicated_region)
+    db.commit()
+    db.refresh(dedicated_region)
+    db.add(DBTeamRegion(team_id=test_team.id, region_id=dedicated_region.id))
+    db.commit()
+
+    with patch(
+        "app.api.regions.LiteLLMService.get_team_model_aliases",
+        new_callable=AsyncMock,
+    ) as mock_get_aliases:
+        mock_get_aliases.return_value = {"gpt-4": "azure/gpt-4-turbo-2024-04-09"}
+        response = client.get(
+            f"/regions/{dedicated_region.id}/teams/{test_team.id}/model-aliases",
+            headers={"Authorization": f"Bearer {team_key_creator_token}"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["model_aliases"] == {"gpt-4": "azure/gpt-4-turbo-2024-04-09"}
+    mock_get_aliases.assert_awaited_once_with(
+        LiteLLMService.format_team_id(dedicated_region.name, test_team.id)
+    )
+
+
+def test_get_team_model_aliases_forbidden_for_non_team_member(
+    client, test_token, db, test_team
+):
+    dedicated_region = DBRegion(
+        name="dedicated-region-model-aliases-forbidden",
+        label="Dedicated Model Aliases Forbidden",
+        postgres_host="dedicated-host",
+        postgres_port=5432,
+        postgres_admin_user="dedicated-admin",
+        postgres_admin_password="dedicated-password",
+        litellm_api_url="https://dedicated-litellm.com",
+        litellm_api_key="dedicated-litellm-key",
+        is_active=True,
+        is_dedicated=True,
+    )
+    db.add(dedicated_region)
+    db.commit()
+    db.refresh(dedicated_region)
+    db.add(DBTeamRegion(team_id=test_team.id, region_id=dedicated_region.id))
+    db.commit()
+
+    response = client.get(
+        f"/regions/{dedicated_region.id}/teams/{test_team.id}/model-aliases",
+        headers={"Authorization": f"Bearer {test_token}"},
+    )
+
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
+
+
+def test_update_team_model_aliases_succeeds_for_team_admin(
+    client, team_admin_token, db, test_team
+):
+    dedicated_region = DBRegion(
+        name="dedicated-region-model-aliases-write",
+        label="Dedicated Model Aliases Write",
+        postgres_host="dedicated-host",
+        postgres_port=5432,
+        postgres_admin_user="dedicated-admin",
+        postgres_admin_password="dedicated-password",
+        litellm_api_url="https://dedicated-litellm.com",
+        litellm_api_key="dedicated-litellm-key",
+        is_active=True,
+        is_dedicated=True,
+    )
+    db.add(dedicated_region)
+    db.commit()
+    db.refresh(dedicated_region)
+    db.add(DBTeamRegion(team_id=test_team.id, region_id=dedicated_region.id))
+    db.commit()
+
+    with (
+        patch(
+            "app.api.regions.LiteLLMService.get_model_info",
+            new_callable=AsyncMock,
+        ) as mock_get_model_info,
+        patch(
+            "app.api.regions.LiteLLMService.get_team_info",
+            new_callable=AsyncMock,
+        ) as mock_get_team_info,
+        patch(
+            "app.api.regions.LiteLLMService.update_team_budget",
+            new_callable=AsyncMock,
+        ) as mock_update_team_budget,
+    ):
+        mock_get_model_info.return_value = {
+            "data": [{"model_name": "azure/gpt-4-turbo-2024-04-09"}]
+        }
+        mock_get_team_info.return_value = {
+            "team_info": {"max_budget": 20.0, "budget_duration": "1mo"}
+        }
+        response = client.put(
+            f"/regions/{dedicated_region.id}/teams/{test_team.id}/model-aliases",
+            headers={"Authorization": f"Bearer {team_admin_token}"},
+            json={"model_aliases": {"gpt-4": "azure/gpt-4-turbo-2024-04-09"}},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["model_aliases"] == {"gpt-4": "azure/gpt-4-turbo-2024-04-09"}
+    mock_update_team_budget.assert_awaited_once_with(
+        team_id=LiteLLMService.format_team_id(dedicated_region.name, test_team.id),
+        max_budget=20.0,
+        budget_duration="1mo",
+        model_aliases={"gpt-4": "azure/gpt-4-turbo-2024-04-09"},
+    )
+
+
+def test_update_team_model_aliases_rejects_unknown_target_model(
+    client, team_admin_token, db, test_team
+):
+    dedicated_region = DBRegion(
+        name="dedicated-region-model-aliases-invalid-target",
+        label="Dedicated Model Aliases Invalid Target",
+        postgres_host="dedicated-host",
+        postgres_port=5432,
+        postgres_admin_user="dedicated-admin",
+        postgres_admin_password="dedicated-password",
+        litellm_api_url="https://dedicated-litellm.com",
+        litellm_api_key="dedicated-litellm-key",
+        is_active=True,
+        is_dedicated=True,
+    )
+    db.add(dedicated_region)
+    db.commit()
+    db.refresh(dedicated_region)
+    db.add(DBTeamRegion(team_id=test_team.id, region_id=dedicated_region.id))
+    db.commit()
+
+    with (
+        patch(
+            "app.api.regions.LiteLLMService.get_model_info",
+            new_callable=AsyncMock,
+        ) as mock_get_model_info,
+        patch(
+            "app.api.regions.LiteLLMService.get_team_info",
+            new_callable=AsyncMock,
+        ) as mock_get_team_info,
+        patch(
+            "app.api.regions.LiteLLMService.update_team_budget",
+            new_callable=AsyncMock,
+        ) as mock_update_team_budget,
+    ):
+        mock_get_model_info.return_value = {"data": [{"model_name": "gpt-4o-mini"}]}
+        mock_get_team_info.return_value = {"team_info": {"max_budget": 5.0}}
+        response = client.put(
+            f"/regions/{dedicated_region.id}/teams/{test_team.id}/model-aliases",
+            headers={"Authorization": f"Bearer {team_admin_token}"},
+            json={"model_aliases": {"gpt-4": "azure/gpt-4-turbo-2024-04-09"}},
+        )
+
+    assert response.status_code == 400
+    assert (
+        "Alias target model not available in region catalog"
+        in response.json()["detail"]
+    )
+    mock_update_team_budget.assert_not_awaited()
+
+
+def test_update_team_model_aliases_forbidden_for_key_creator(
+    client, team_key_creator_token, db, test_team
+):
+    dedicated_region = DBRegion(
+        name="dedicated-region-model-aliases-write-forbidden",
+        label="Dedicated Model Aliases Write Forbidden",
+        postgres_host="dedicated-host",
+        postgres_port=5432,
+        postgres_admin_user="dedicated-admin",
+        postgres_admin_password="dedicated-password",
+        litellm_api_url="https://dedicated-litellm.com",
+        litellm_api_key="dedicated-litellm-key",
+        is_active=True,
+        is_dedicated=True,
+    )
+    db.add(dedicated_region)
+    db.commit()
+    db.refresh(dedicated_region)
+    db.add(DBTeamRegion(team_id=test_team.id, region_id=dedicated_region.id))
+    db.commit()
+
+    response = client.put(
+        f"/regions/{dedicated_region.id}/teams/{test_team.id}/model-aliases",
+        headers={"Authorization": f"Bearer {team_key_creator_token}"},
+        json={"model_aliases": {"gpt-4": "azure/gpt-4-turbo-2024-04-09"}},
+    )
+
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
