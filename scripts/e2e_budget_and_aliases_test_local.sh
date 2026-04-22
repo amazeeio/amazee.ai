@@ -386,6 +386,7 @@ run_aliases_test() {
 
     ALIAS_NAME="e2e_alias_${SUFFIX}"
     ALIAS_VALUE="dummy-gpt-5-4"
+    step "Test 23: creating alias mapping ${ALIAS_NAME} => ${ALIAS_VALUE}"
     ALIAS_PUT_PAYLOAD="$(jq -n --arg k "$ALIAS_NAME" --arg v "$ALIAS_VALUE" '{model_aliases:{($k):$v}}')"
     api_call "PUT" "/regions/${DEDICATED_REGION_ID}/teams/${ALIAS_TEAM_ID}/model-aliases" "$ALIAS_PUT_PAYLOAD"
     ALIAS_PUT_STATUS="$HTTP_STATUS"
@@ -398,16 +399,20 @@ run_aliases_test() {
     LITE_TEAM_ID="${DED_REGION_NAME// /_}_${ALIAS_TEAM_ID}"
     LITE_INFO="$(curl -sS "${DED_LITELLM_URL}/team/info?team_id=${LITE_TEAM_ID}" -H "Authorization: Bearer ${LITELLM_PASS}")"
     LITE_ALIAS_VAL="$(echo "$LITE_INFO" | jq -r --arg k "$ALIAS_NAME" '.team_info.model_aliases[$k] // ""')"
+    EXPECTED_ALIAS_VALUE="$ALIAS_VALUE"
+    RECEIVED_ALIAS_VALUE="${ALIAS_GET_VAL:-<empty>}"
+    if [[ -z "$RECEIVED_ALIAS_VALUE" ]]; then
+      RECEIVED_ALIAS_VALUE="<empty>"
+    fi
+    step "Test 23: alias created ${ALIAS_NAME} => ${ALIAS_VALUE}"
+    step "Test 23: API expected=${EXPECTED_ALIAS_VALUE}, received=${RECEIVED_ALIAS_VALUE}"
 
     if [[ "$ALIAS_PUT_STATUS" == "200" && "$ALIAS_GET_STATUS" == "200" && "$ALIAS_GET_VAL" == "$ALIAS_VALUE" ]]; then
       PASS=1
-      RETR="put=${ALIAS_PUT_STATUS}, get=${ALIAS_GET_STATUS}, alias=${ALIAS_GET_VAL}"
-    elif [[ "$ALIAS_PUT_STATUS" == "200" && "$ALIAS_GET_STATUS" == "200" && -z "$ALIAS_GET_VAL" && -z "$LITE_ALIAS_VAL" ]]; then
-      PASS=1
-      RETR="put=${ALIAS_PUT_STATUS}, get=${ALIAS_GET_STATUS}, alias_missing_in_local_litellm_team_info"
+      RETR="alias_key=${ALIAS_NAME}, expected=${EXPECTED_ALIAS_VALUE}, received=${RECEIVED_ALIAS_VALUE}, put=${ALIAS_PUT_STATUS}, get=${ALIAS_GET_STATUS}, put_return=${ALIAS_PUT_VAL}, lite_return=${LITE_ALIAS_VAL:-<empty>}"
     else
       PASS=0
-      RETR="team_create=${ALIAS_TEAM_CREATE}, assoc=${ALIAS_ASSOC}, put=${ALIAS_PUT_STATUS}, put_val=${ALIAS_PUT_VAL}, get=${ALIAS_GET_STATUS}, get_val=${ALIAS_GET_VAL}, lite_val=${LITE_ALIAS_VAL}"
+      RETR="alias_key=${ALIAS_NAME}, expected=${EXPECTED_ALIAS_VALUE}, received=${RECEIVED_ALIAS_VALUE}, team_create=${ALIAS_TEAM_CREATE}, assoc=${ALIAS_ASSOC}, put=${ALIAS_PUT_STATUS}, put_return=${ALIAS_PUT_VAL}, get=${ALIAS_GET_STATUS}, get_return=${ALIAS_GET_VAL:-<empty>}, lite_return=${LITE_ALIAS_VAL:-<empty>}"
     fi
     finish_test "$RETR" "$PASS"
   fi

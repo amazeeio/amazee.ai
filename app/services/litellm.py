@@ -572,7 +572,18 @@ class LiteLLMService:
         """Get a team's model_aliases map from LiteLLM."""
         team_info_response = await self.get_team_info(team_id)
         team_info = team_info_response.get("team_info", team_info_response)
-        raw_aliases = team_info.get("model_aliases", {})
+
+        # LiteLLM can expose aliases either directly on team_info.model_aliases
+        # or nested under team_info.litellm_model_table.model_aliases.
+        raw_aliases = team_info.get("model_aliases")
+        if not raw_aliases:
+            raw_aliases = (
+                team_info.get("litellm_model_table", {}) or {}
+            ).get("model_aliases")
+        if not raw_aliases:
+            raw_aliases = await self._get_team_model_aliases_from_team_list(team_id)
+        if not raw_aliases:
+            raw_aliases = {}
         if not isinstance(raw_aliases, dict):
             return {}
         return {
@@ -580,6 +591,38 @@ class LiteLLMService:
             for alias, model in raw_aliases.items()
             if alias is not None and model is not None
         }
+
+    async def _get_team_model_aliases_from_team_list(
+        self, team_id: str
+    ) -> dict[str, str] | None:
+        """Fallback for LiteLLM versions where /team/info omits model aliases."""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.api_url}/team/list",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                )
+                response.raise_for_status()
+                teams = response.json()
+                if not isinstance(teams, list):
+                    return None
+                for team in teams:
+                    if not isinstance(team, dict):
+                        continue
+                    if str(team.get("team_id", "")) != team_id:
+                        continue
+                    aliases = (
+                        (team.get("litellm_model_table", {}) or {}).get(
+                            "model_aliases"
+                        )
+                        or team.get("model_aliases")
+                    )
+                    if isinstance(aliases, dict):
+                        return aliases
+                    return None
+                return None
+        except Exception:
+            return None
 
     async def create_user(
         self,
