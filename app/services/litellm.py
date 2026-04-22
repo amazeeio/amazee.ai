@@ -577,9 +577,9 @@ class LiteLLMService:
         # or nested under team_info.litellm_model_table.model_aliases.
         raw_aliases = team_info.get("model_aliases")
         if not raw_aliases:
-            raw_aliases = (
-                team_info.get("litellm_model_table", {}) or {}
-            ).get("model_aliases")
+            raw_aliases = (team_info.get("litellm_model_table", {}) or {}).get(
+                "model_aliases"
+            )
         if not raw_aliases:
             raw_aliases = await self._get_team_model_aliases_from_team_list(team_id)
         if not raw_aliases:
@@ -611,12 +611,9 @@ class LiteLLMService:
                         continue
                     if str(team.get("team_id", "")) != team_id:
                         continue
-                    aliases = (
-                        (team.get("litellm_model_table", {}) or {}).get(
-                            "model_aliases"
-                        )
-                        or team.get("model_aliases")
-                    )
+                    aliases = (team.get("litellm_model_table", {}) or {}).get(
+                        "model_aliases"
+                    ) or team.get("model_aliases")
                     if isinstance(aliases, dict):
                         return aliases
                     return None
