@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import List, Optional
 
+from app.core.config import settings
 from app.db.models import (
     DBLimitedResource,
     DBPrivateAIKey,
@@ -81,6 +82,17 @@ class LimitNotFoundError(Exception):
     """Raised when a requested limit is not found."""
 
     pass
+
+
+def _dedicated_default_for(resource_type: ResourceType) -> Optional[float]:
+    """Return the config-driven dedicated-region default for *resource_type*, or None."""
+    mapping = {
+        ResourceType.USER: settings.DEDICATED_DEFAULT_USER_COUNT,
+        ResourceType.SERVICE_KEY: settings.DEDICATED_DEFAULT_SERVICE_KEYS,
+        ResourceType.VECTOR_DB: settings.DEDICATED_DEFAULT_VECTOR_DB_COUNT,
+        ResourceType.RPM: settings.DEDICATED_DEFAULT_RPM_PER_KEY,
+    }
+    return mapping.get(resource_type)
 
 
 class LimitService:
@@ -523,7 +535,6 @@ class LimitService:
             budget_amount: New budget amount to set for all keys
         """
         # Import here to avoid circular import
-        from app.core.config import settings
         from app.core.team_service import propagate_team_budget_to_keys
         from app.db.database import get_db
 
@@ -613,16 +624,37 @@ class LimitService:
             .all()
         )
 
+        # Preload all teams referenced by TEAM-owned limits in one query to avoid N+1.
+        team_ids = {
+            limit.owner_id
+            for limit in default_limits
+            if limit.owner_type == OwnerType.TEAM
+        }
+        team_map: dict[int, DBTeam] = {}
+        if team_ids:
+            teams = self.db.query(DBTeam).filter(DBTeam.id.in_(team_ids)).all()
+            team_map = {t.id: t for t in teams}
+
         # Update each default limit to reflect the new system default
+        updated_count = 0
         for limit in default_limits:
+            # POOL team budget defaults are purchase-driven and should remain at 0.
+            if limit.owner_type == OwnerType.TEAM:
+                team = team_map.get(limit.owner_id)
+                if team and self._should_skip_system_default_update_for_team(
+                    team, resource_type
+                ):
+                    continue
+
             limit.max_value = new_max_value
             limit.updated_at = datetime.now(UTC)
             self.db.add(limit)
+            updated_count += 1
 
-        if default_limits:
+        if updated_count:
             self.db.commit()
             logger.info(
-                f"Updated {len(default_limits)} default limits for resource {resource_type.value} to new system default {new_max_value}"
+                f"Updated {updated_count} default limits for resource {resource_type.value} to new system default {new_max_value}"
             )
 
     def reset_team_limits(self, team: DBTeam) -> List[LimitedResource]:
@@ -670,6 +702,11 @@ class LimitService:
                 f"Setting resource {limit.resource} to product max for team {limit.owner_id}"
             )
             team_id = limit.owner_id
+            team = self.db.query(DBTeam).filter(DBTeam.id == team_id).first()
+            if not team:
+                raise LimitNotFoundError(
+                    f"Team not found for limit reset {limit.owner_id}"
+                )
         elif limit.owner_type == OwnerType.USER:
             logger.info(
                 f"Trying to reset {limit.resource} limits for user {limit.owner_id}"
@@ -686,6 +723,11 @@ class LimitService:
                     .first()
                 )
             team_id = user.team_id
+            team = self.db.query(DBTeam).filter(DBTeam.id == team_id).first()
+            if not team:
+                raise LimitNotFoundError(
+                    f"Team not found for user limit reset {limit.owner_id}"
+                )
         else:
             raise ValueError(f"Unknown owner type, cannot reset limit {limit}")
 
@@ -707,7 +749,9 @@ class LimitService:
                 team_id, limit.resource
             )
             if max_value is None:
-                max_value = self.get_default_team_limit_for_resource(limit.resource)
+                max_value = self._get_team_default_limit_for_resource(
+                    team, limit.resource
+                )
                 new_limited_by = LimitSource.DEFAULT
             else:
                 new_limited_by = LimitSource.PRODUCT
@@ -793,14 +837,9 @@ class LimitService:
             if max_value is not None:
                 limit_source = LimitSource.PRODUCT
             else:
-                # POOL teams start with $0 budget, PERIODIC teams get default
-                if (
-                    resource_type == ResourceType.BUDGET
-                    and team.budget_type == BudgetType.POOL
-                ):
-                    max_value = 0.0
-                else:
-                    max_value = self.get_default_team_limit_for_resource(resource_type)
+                max_value = self._get_team_default_limit_for_resource(
+                    team, resource_type
+                )
                 limit_source = LimitSource.DEFAULT
 
             # Set the limit (this will update existing or create new)
@@ -814,6 +853,51 @@ class LimitService:
                 current_value=current_value,
                 limited_by=limit_source,
             )
+
+    def _get_team_default_limit_for_resource(
+        self, team: DBTeam, resource_type: ResourceType
+    ) -> float:
+        """Resolve default team limit with team-specific overrides."""
+        team_budget_type = (
+            team.budget_type.value
+            if isinstance(team.budget_type, BudgetType)
+            else str(team.budget_type)
+        )
+
+        # POOL team budgets are purchase-driven and start from $0.
+        if (
+            resource_type == ResourceType.BUDGET
+            and team_budget_type == BudgetType.POOL.value
+        ):
+            return 0.0
+
+        # Dedicated teams can use distinct defaults for selected resources.
+        if team.hide_public_regions:
+            dedicated_value = _dedicated_default_for(resource_type)
+            if dedicated_value is not None:
+                return dedicated_value
+
+        return self.get_default_team_limit_for_resource(resource_type)
+
+    def _should_skip_system_default_update_for_team(
+        self, team: DBTeam, resource_type: ResourceType
+    ) -> bool:
+        team_budget_type = (
+            team.budget_type.value
+            if isinstance(team.budget_type, BudgetType)
+            else str(team.budget_type)
+        )
+
+        if (
+            resource_type == ResourceType.BUDGET
+            and team_budget_type == BudgetType.POOL.value
+        ):
+            return True
+
+        if not team.hide_public_regions:
+            return False
+
+        return _dedicated_default_for(resource_type) is not None
 
     def set_user_limits(self, user: DBUser):
         """

@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from pydantic import ConfigDict
+from pydantic import ConfigDict, field_validator
 import os
 
 
@@ -52,10 +52,32 @@ class Settings(BaseSettings):
     POOL_BUDGET_EXPIRATION_DAYS: int = int(
         os.getenv("POOL_BUDGET_EXPIRATION_DAYS", "365")
     )
+    DEDICATED_DEFAULT_USER_COUNT: float | None = None
+    DEDICATED_DEFAULT_SERVICE_KEYS: float | None = None
+    DEDICATED_DEFAULT_VECTOR_DB_COUNT: float | None = None
+    DEDICATED_DEFAULT_RPM_PER_KEY: float | None = None
 
     model_config = ConfigDict(env_file=".env", extra="ignore")
     main_route: str = os.getenv("LAGOON_ROUTE", "http://localhost:8800")
     frontend_route: str = os.getenv("FRONTEND_ROUTE", "http://localhost:3000")
+
+    @field_validator(
+        "DEDICATED_DEFAULT_USER_COUNT",
+        "DEDICATED_DEFAULT_SERVICE_KEYS",
+        "DEDICATED_DEFAULT_VECTOR_DB_COUNT",
+        "DEDICATED_DEFAULT_RPM_PER_KEY",
+        mode="before",
+    )
+    @classmethod
+    def validate_optional_dedicated_float(cls, value):
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "Dedicated default limit values must be numeric when set."
+            ) from exc
 
     def model_post_init(self, values):
         # Add Lagoon routes to CORS origins if available
