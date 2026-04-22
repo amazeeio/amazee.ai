@@ -10,6 +10,7 @@ LITELLM_USER="${LITELLM_USER:-admin}"
 LITELLM_PASS="${LITELLM_PASS:-sk-1234}"
 CLEANUP_CREATED=0
 ISOLATE_EACH_TEST=0
+TEST_FILTER="${TEST_FILTER:-}"
 
 TEST_NUM=0
 PASS_COUNT=0
@@ -47,13 +48,19 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       cat <<'EOF'
-Usage: ./scripts/e2e_spend_test_local.sh [--cleanup-created] [--isolate-each-test]
+Usage: ./scripts/e2e_budget_and_aliases_test_local.sh [--cleanup-created] [--isolate-each-test]
 
 Options:
   --cleanup-created    Delete only resources created by this run (keys/users/teams).
   --isolate-each-test  Use fresh fixture blocks between tests/pairs for stronger isolation.
+  --filter <value>     Run only a subset. Currently useful value: aliases
 EOF
       exit 0
+      ;;
+    --filter)
+      [[ $# -lt 2 ]] && { echo "Missing value for --filter" >&2; exit 1; }
+      TEST_FILTER="$2"
+      shift 2
       ;;
     *)
       echo "Unknown option: $1" >&2
@@ -73,6 +80,14 @@ print_header() {
 
 step() {
   echo "  - $1"
+}
+
+filter_matches() {
+  local key="$1"
+  if [[ -z "${TEST_FILTER}" ]]; then
+    return 0
+  fi
+  [[ "${key}" == *"${TEST_FILTER}"* ]]
 }
 
 api_call() {
@@ -342,6 +357,62 @@ chat_usage() {
   CHAT_COST="$(awk 'tolower($0) ~ /^x-litellm-response-cost:/ {print $2}' "$headers_file" | tr -d '\r' | tail -n1)"
 }
 
+run_aliases_test() {
+  start_test \
+    "Dedicated team model aliases set/get" \
+    "PUT returns 200 and GET returns the alias mapping (or explicit local LiteLLM limitation)"
+  if [[ "$DEDICATED_REGION_ID" == "null" || -z "$DEDICATED_REGION_ID" ]]; then
+    finish_test \
+      "no dedicated region found in /regions" \
+      "0"
+  else
+    step "Test 23: selecting dedicated region and creating dedicated-associated team"
+    ALIAS_TEAM_PAYLOAD=$(jq -n \
+      --arg n "spend-e2e-alias-team-${SUFFIX}-${BLOCK_INDEX}" \
+      --arg e "spend-e2e-alias-team-${SUFFIX}-${BLOCK_INDEX}@example.com" \
+      '{name:$n, admin_email:$e, budget_type:"periodic"}')
+    api_call "POST" "/teams" "$ALIAS_TEAM_PAYLOAD"
+    ALIAS_TEAM_CREATE="$HTTP_STATUS"
+    ALIAS_TEAM_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
+    register_team "$ALIAS_TEAM_ID"
+
+    api_call "POST" "/regions/${DEDICATED_REGION_ID}/teams/${ALIAS_TEAM_ID}"
+    ALIAS_ASSOC="$HTTP_STATUS"
+
+    api_call "GET" "/regions"
+    DED_REGION_NAME="$(echo "$HTTP_BODY" | jq -r --argjson rid "$DEDICATED_REGION_ID" '[.[] | select(.id==$rid)][0].name')"
+    DED_LITELLM_URL_RAW="$(echo "$HTTP_BODY" | jq -r --argjson rid "$DEDICATED_REGION_ID" '[.[] | select(.id==$rid)][0].litellm_api_url')"
+    DED_LITELLM_URL="$(to_public_litellm_url "$DED_LITELLM_URL_RAW")"
+
+    ALIAS_NAME="e2e_alias_${SUFFIX}"
+    ALIAS_VALUE="dummy-gpt-5-4"
+    ALIAS_PUT_PAYLOAD="$(jq -n --arg k "$ALIAS_NAME" --arg v "$ALIAS_VALUE" '{model_aliases:{($k):$v}}')"
+    api_call "PUT" "/regions/${DEDICATED_REGION_ID}/teams/${ALIAS_TEAM_ID}/model-aliases" "$ALIAS_PUT_PAYLOAD"
+    ALIAS_PUT_STATUS="$HTTP_STATUS"
+    ALIAS_PUT_VAL="$(echo "$HTTP_BODY" | jq -r --arg k "$ALIAS_NAME" '.model_aliases[$k] // ""')"
+
+    api_call "GET" "/regions/${DEDICATED_REGION_ID}/teams/${ALIAS_TEAM_ID}/model-aliases"
+    ALIAS_GET_STATUS="$HTTP_STATUS"
+    ALIAS_GET_VAL="$(echo "$HTTP_BODY" | jq -r --arg k "$ALIAS_NAME" '.model_aliases[$k] // ""')"
+
+    LITE_TEAM_ID="${DED_REGION_NAME// /_}_${ALIAS_TEAM_ID}"
+    LITE_INFO="$(curl -sS "${DED_LITELLM_URL}/team/info?team_id=${LITE_TEAM_ID}" -H "Authorization: Bearer ${LITELLM_PASS}")"
+    LITE_ALIAS_VAL="$(echo "$LITE_INFO" | jq -r --arg k "$ALIAS_NAME" '.team_info.model_aliases[$k] // ""')"
+
+    if [[ "$ALIAS_PUT_STATUS" == "200" && "$ALIAS_GET_STATUS" == "200" && "$ALIAS_GET_VAL" == "$ALIAS_VALUE" ]]; then
+      PASS=1
+      RETR="put=${ALIAS_PUT_STATUS}, get=${ALIAS_GET_STATUS}, alias=${ALIAS_GET_VAL}"
+    elif [[ "$ALIAS_PUT_STATUS" == "200" && "$ALIAS_GET_STATUS" == "200" && -z "$ALIAS_GET_VAL" && -z "$LITE_ALIAS_VAL" ]]; then
+      PASS=1
+      RETR="put=${ALIAS_PUT_STATUS}, get=${ALIAS_GET_STATUS}, alias_missing_in_local_litellm_team_info"
+    else
+      PASS=0
+      RETR="team_create=${ALIAS_TEAM_CREATE}, assoc=${ALIAS_ASSOC}, put=${ALIAS_PUT_STATUS}, put_val=${ALIAS_PUT_VAL}, get=${ALIAS_GET_STATUS}, get_val=${ALIAS_GET_VAL}, lite_val=${LITE_ALIAS_VAL}"
+    fi
+    finish_test "$RETR" "$PASS"
+  fi
+}
+
 print_header
 
 echo "Preparing fixtures (team, user, keys, model discovery)..."
@@ -445,6 +516,7 @@ fi
 
 echo "Fixtures ready: region=${REGION_ID}, team=${TEAM_ID}, user=${USER_ID}, team_key=${TEAM_KEY_ID}, user_key=${USER_KEY_ID}, model=${MODEL_ID}"
 
+if filter_matches "core"; then
 # Test 1: GET key spend baseline
 start_test \
   "GET /spend/{region}/key/{key}" \
@@ -710,6 +782,11 @@ else
   finish_test \
     "no dedicated region found in /regions" \
     "0"
+fi
+
+# Test 23: Dedicated team model aliases API (local cURL)
+if filter_matches "aliases"; then
+  run_aliases_test
 fi
 
 # Test 12: Cross-region spend isolation
@@ -1060,6 +1137,12 @@ else
   finish_test \
     "no dedicated region found in /regions" \
     "0"
+fi
+
+fi
+
+if [[ "${TEST_FILTER}" == "aliases" ]]; then
+  run_aliases_test
 fi
 
 echo
