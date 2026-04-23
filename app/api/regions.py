@@ -7,6 +7,7 @@ import logging
 
 from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
+from app.core.roles import UserRole
 from app.schemas.models import (
     Region,
     RegionCreate,
@@ -15,6 +16,8 @@ from app.schemas.models import (
     RegionUpdate,
     TeamSummary,
     TeamRegionBudget,
+    TeamRegionModelAliasesResponse,
+    TeamRegionModelAliasesUpdateRequest,
     BudgetType,
 )
 from app.db.models import (
@@ -542,6 +545,162 @@ async def list_teams_for_region(region_id: int, db: Session = Depends(get_db)):
     )
 
     return teams
+
+
+def _extract_region_model_names(model_info_response: dict) -> set[str]:
+    data = model_info_response.get("data", model_info_response)
+    if not isinstance(data, list):
+        return set()
+    model_names: set[str] = set()
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        model_name = item.get("model_name")
+        if isinstance(model_name, str) and model_name:
+            model_names.add(model_name)
+    return model_names
+
+
+def _get_dedicated_region_with_team_association_or_error(
+    db: Session, region_id: int, team_id: int
+) -> DBRegion:
+    region = (
+        db.query(DBRegion)
+        .filter(DBRegion.id == region_id, DBRegion.is_active.is_(True))
+        .first()
+    )
+    if not region:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
+        )
+    if not region.is_dedicated:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Model aliases are only supported for dedicated regions",
+        )
+
+    team = (
+        db.query(DBTeam)
+        .filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None))
+        .first()
+    )
+    if not team:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
+        )
+
+    association = (
+        db.query(DBTeamRegion)
+        .filter(DBTeamRegion.region_id == region_id, DBTeamRegion.team_id == team_id)
+        .first()
+    )
+    if not association:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Team is not associated with this dedicated region",
+        )
+    return region
+
+
+def _assert_team_member_read_or_admin(current_user: User, team_id: int) -> None:
+    if current_user.is_admin:
+        return
+    if current_user.team_id != team_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action",
+        )
+    if current_user.role not in UserRole.READ_ACCESS_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action",
+        )
+
+
+@router.get(
+    "/{region_id}/teams/{team_id}/model-aliases",
+    response_model=TeamRegionModelAliasesResponse,
+)
+async def get_team_region_model_aliases(
+    region_id: int,
+    team_id: int,
+    current_user: User = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db),
+):
+    _assert_team_member_read_or_admin(current_user, team_id)
+    region = _get_dedicated_region_with_team_association_or_error(
+        db, region_id, team_id
+    )
+
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+    model_aliases = await service.get_team_model_aliases(lite_team_id)
+    return TeamRegionModelAliasesResponse(
+        region_id=region_id, team_id=team_id, model_aliases=model_aliases
+    )
+
+
+@router.put(
+    "/{region_id}/teams/{team_id}/model-aliases",
+    response_model=TeamRegionModelAliasesResponse,
+    dependencies=[Depends(get_role_min_specific_team_admin)],
+)
+async def update_team_region_model_aliases(
+    region_id: int,
+    team_id: int,
+    payload: TeamRegionModelAliasesUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    region = _get_dedicated_region_with_team_association_or_error(
+        db, region_id, team_id
+    )
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+
+    region_model_info = await service.get_model_info()
+    available_models = _extract_region_model_names(region_model_info)
+    unknown_targets = sorted(
+        {
+            target
+            for target in payload.model_aliases.values()
+            if target not in available_models
+        }
+    )
+    if unknown_targets:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Alias target model not available in region catalog: "
+                + ", ".join(unknown_targets)
+            ),
+        )
+
+    lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+    team_info_response = await service.get_team_info(lite_team_id)
+    team_info = team_info_response.get("team_info", team_info_response)
+    current_max_budget = team_info.get("max_budget")
+    current_budget_duration = team_info.get("budget_duration")
+    try:
+        await service.update_team_budget(
+            team_id=lite_team_id,
+            max_budget=current_max_budget,
+            budget_duration=current_budget_duration,
+            model_aliases=payload.model_aliases,
+        )
+    except HTTPException as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=f"Failed to update team model aliases: {exc.detail}",
+        ) from exc
+
+    return TeamRegionModelAliasesResponse(
+        region_id=region_id,
+        team_id=team_id,
+        model_aliases=payload.model_aliases,
+    )
 
 
 @router.get(
