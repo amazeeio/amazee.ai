@@ -870,8 +870,8 @@ async def update_team_member_budget(
         max_budget=body.max_budget,
         budget_duration=effective_duration,
     )
-    db.commit()
     invalidate_user_spend_cache(db, user.email)
+    db.commit()
     return SpendBudgetUpdateResponse(
         scope="team_member",
         source_endpoint="/team/member_update",
