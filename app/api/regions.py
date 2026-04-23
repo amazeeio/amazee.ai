@@ -561,7 +561,7 @@ def _extract_region_model_names(model_info_response: dict) -> set[str]:
     return model_names
 
 
-def _get_dedicated_region_with_team_association_or_404(
+def _get_dedicated_region_with_team_association_or_error(
     db: Session, region_id: int, team_id: int
 ) -> DBRegion:
     region = (
@@ -610,11 +610,7 @@ def _assert_team_member_read_or_admin(current_user: User, team_id: int) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to perform this action",
         )
-    if current_user.role not in [
-        UserRole.TEAM_ADMIN,
-        UserRole.KEY_CREATOR,
-        UserRole.READ_ONLY,
-    ]:
+    if current_user.role not in UserRole.READ_ACCESS_ROLES:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not authorized to perform this action",
@@ -632,7 +628,7 @@ async def get_team_region_model_aliases(
     db: Session = Depends(get_db),
 ):
     _assert_team_member_read_or_admin(current_user, team_id)
-    region = _get_dedicated_region_with_team_association_or_404(db, region_id, team_id)
+    region = _get_dedicated_region_with_team_association_or_error(db, region_id, team_id)
 
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
@@ -655,7 +651,7 @@ async def update_team_region_model_aliases(
     payload: TeamRegionModelAliasesUpdateRequest,
     db: Session = Depends(get_db),
 ):
-    region = _get_dedicated_region_with_team_association_or_404(db, region_id, team_id)
+    region = _get_dedicated_region_with_team_association_or_error(db, region_id, team_id)
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
@@ -692,7 +688,7 @@ async def update_team_region_model_aliases(
         )
     except HTTPException as exc:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=exc.status_code,
             detail=f"Failed to update team model aliases: {exc.detail}",
         ) from exc
 
