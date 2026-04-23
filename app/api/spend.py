@@ -1063,7 +1063,6 @@ async def clear_team_member_budget(
     _delete_spend_cap(
         db, scope="team_member", region_id=region_id, team_id=team_id, user_id=user_id
     )
-    db.commit()
     invalidate_user_spend_cache(db, user.email)
     return SpendBudgetUpdateResponse(
         scope="team_member",
