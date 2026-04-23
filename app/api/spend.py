@@ -25,6 +25,7 @@ from app.db.models import (
     DBUser,
 )
 from app.schemas.limits import OwnerType, ResourceType
+from app.api.users import invalidate_user_spend_cache
 from app.schemas.models import (
     BudgetType,
     PrivateAIKeySpend,
@@ -869,6 +870,7 @@ async def update_team_member_budget(
         max_budget=body.max_budget,
         budget_duration=effective_duration,
     )
+    invalidate_user_spend_cache(db, user.email)
     db.commit()
     return SpendBudgetUpdateResponse(
         scope="team_member",
@@ -1061,6 +1063,7 @@ async def clear_team_member_budget(
     _delete_spend_cap(
         db, scope="team_member", region_id=region_id, team_id=team_id, user_id=user_id
     )
+    invalidate_user_spend_cache(db, user.email)
     db.commit()
     return SpendBudgetUpdateResponse(
         scope="team_member",
