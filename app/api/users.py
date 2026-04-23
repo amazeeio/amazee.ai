@@ -75,6 +75,20 @@ def _normalize_email_for_lookup(email: str) -> str:
     return email.lower()
 
 
+def invalidate_user_spend_cache(db: Session, email: str) -> None:
+    """Delete the cached /users/spend response for *email*.
+
+    Call this whenever a write operation (budget set/clear) changes data that
+    the cache stores, so the next GET returns fresh values instead of the
+    15-minute stale snapshot.
+    """
+    normalized = _normalize_email_for_lookup(email)
+    db.query(DBUserSpendCache).filter(
+        DBUserSpendCache.normalized_email == normalized
+    ).delete()
+    db.commit()
+
+
 def _is_valid_email_input(email: str) -> bool:
     at_idx = email.find("@")
     if at_idx <= 0:
