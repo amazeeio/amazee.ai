@@ -247,6 +247,11 @@ def _assert_pool_budget_cap_within_purchases(
 ) -> None:
     if team is None or team.budget_type != BudgetType.POOL or max_budget is None:
         return
+    # Dedicated teams (hide_public_regions=True) operate on an infinite budget
+    # represented as $0 in LiteLLM. They don't go through the purchase flow so
+    # the pool-purchase cap does not apply to them.
+    if team.hide_public_regions:
+        return
     purchased_budget = _pool_purchased_budget_for_team_region(db, team.id, region_id)
     if float(max_budget) > purchased_budget:
         raise HTTPException(
