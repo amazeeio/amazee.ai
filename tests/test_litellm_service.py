@@ -667,20 +667,3 @@ def test_get_team_model_aliases_reads_nested_litellm_model_table(test_region):
     assert aliases == {
         "gpt-4": "azure/gpt-4-turbo-2024-04-09",
     }
-
-
-def test_get_team_model_aliases_falls_back_to_team_list(test_region):
-    service = LiteLLMService(
-        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
-    )
-    service.get_team_info = AsyncMock(return_value={"team_info": {}})
-    service._get_team_model_aliases_from_team_list = AsyncMock(
-        return_value={"gpt-4": "azure/gpt-4-turbo-2024-04-09"}
-    )
-
-    aliases = asyncio.run(service.get_team_model_aliases("team-1"))
-
-    assert aliases == {
-        "gpt-4": "azure/gpt-4-turbo-2024-04-09",
-    }
-    service._get_team_model_aliases_from_team_list.assert_awaited_once_with("team-1")

@@ -628,7 +628,9 @@ async def get_team_region_model_aliases(
     db: Session = Depends(get_db),
 ):
     _assert_team_member_read_or_admin(current_user, team_id)
-    region = _get_dedicated_region_with_team_association_or_error(db, region_id, team_id)
+    region = _get_dedicated_region_with_team_association_or_error(
+        db, region_id, team_id
+    )
 
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
@@ -651,7 +653,9 @@ async def update_team_region_model_aliases(
     payload: TeamRegionModelAliasesUpdateRequest,
     db: Session = Depends(get_db),
 ):
-    region = _get_dedicated_region_with_team_association_or_error(db, region_id, team_id)
+    region = _get_dedicated_region_with_team_association_or_error(
+        db, region_id, team_id
+    )
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
