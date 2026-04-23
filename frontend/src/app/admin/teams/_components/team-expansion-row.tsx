@@ -625,8 +625,8 @@ export function TeamExpansionRow({
                       limits={teamLimits}
                       isLoading={isLoadingTeamLimits}
                       ownerType="team"
-                      ownerId={expandedTeam.id}
-                      queryKey={["team-limits", expandedTeam.id]}
+                      ownerId={teamId}
+                      queryKey={["team-limits", teamId]}
                       showResetAll={true}
                       onResetAll={() => resetLimits(expandedTeam.id)}
                       isResettingAll={isResettingLimits}
