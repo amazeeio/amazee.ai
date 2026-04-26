@@ -144,16 +144,113 @@ def test_public_models_pricing_numeric_values(client, db):
                 ]
             }
         )
+        mock_service.get_cost_margin_config = AsyncMock(
+            return_value={"values": {"global": 0.2}}
+        )
 
         response = client.get("/public/models")
         assert response.status_code == 200
         data = response.json()
         region_data = next(r for r in data if r["region"] == "ap-southeast-1")
         pricing = region_data["models"][0]["pricing"]
-        assert pricing["input_cost_per_token"] == 0.000005
-        assert pricing["output_cost_per_token"] == 0.000015
-        assert pricing["input_cost_per_million_tokens"] == 5.0
-        assert pricing["output_cost_per_million_tokens"] == 15.0
+        assert pricing["input_cost_per_token"] == 0.000006
+        assert pricing["output_cost_per_token"] == 0.000018
+        assert pricing["input_cost_per_million_tokens"] == 6.0
+        assert pricing["output_cost_per_million_tokens"] == 18.0
+
+
+def test_public_models_pricing_uses_litellm_global_margin(client, db):
+    _clear_public_models_cache()
+    region = DBRegion(
+        name="sa-east-1",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="user",
+        postgres_admin_password="pass",
+        litellm_api_url="https://litellm.example",
+        litellm_api_key="key",
+        is_active=True,
+        is_dedicated=False,
+    )
+    db.add(region)
+    db.commit()
+
+    with patch("app.api.public.LiteLLMService") as mock_service_cls:
+        mock_service = mock_service_cls.return_value
+        mock_service.get_model_info = AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        "model_name": "gpt-4o",
+                        "litellm_params": {},
+                        "model_info": {
+                            "mode": "chat",
+                            "input_cost_per_token": 0.000005,
+                            "output_cost_per_token": 0.000015,
+                        },
+                    }
+                ]
+            }
+        )
+        mock_service.get_cost_margin_config = AsyncMock(
+            return_value={"values": {"global": 0.5}}
+        )
+
+        response = client.get("/public/models")
+        assert response.status_code == 200
+        data = response.json()
+        region_data = next(r for r in data if r["region"] == "sa-east-1")
+        pricing = region_data["models"][0]["pricing"]
+        assert pricing["input_cost_per_token"] == 0.0000075
+        assert pricing["output_cost_per_token"] == 0.0000225
+        assert pricing["input_cost_per_million_tokens"] == 7.5
+        assert pricing["output_cost_per_million_tokens"] == 22.5
+
+
+def test_public_models_pricing_falls_back_to_default_margin(client, db):
+    _clear_public_models_cache()
+    region = DBRegion(
+        name="ca-central-1",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="user",
+        postgres_admin_password="pass",
+        litellm_api_url="https://litellm.example",
+        litellm_api_key="key",
+        is_active=True,
+        is_dedicated=False,
+    )
+    db.add(region)
+    db.commit()
+
+    with patch("app.api.public.LiteLLMService") as mock_service_cls:
+        mock_service = mock_service_cls.return_value
+        mock_service.get_model_info = AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        "model_name": "gpt-4o",
+                        "litellm_params": {},
+                        "model_info": {
+                            "mode": "chat",
+                            "input_cost_per_token": 0.000005,
+                            "output_cost_per_token": 0.000015,
+                        },
+                    }
+                ]
+            }
+        )
+        mock_service.get_cost_margin_config = AsyncMock(return_value={"values": {}})
+
+        response = client.get("/public/models")
+        assert response.status_code == 200
+        data = response.json()
+        region_data = next(r for r in data if r["region"] == "ca-central-1")
+        pricing = region_data["models"][0]["pricing"]
+        assert pricing["input_cost_per_token"] == 0.000006
+        assert pricing["output_cost_per_token"] == 0.000018
+        assert pricing["input_cost_per_million_tokens"] == 6.0
+        assert pricing["output_cost_per_million_tokens"] == 18.0
 
 
 def test_public_models_pricing_missing_values(client, db):

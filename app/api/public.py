@@ -27,6 +27,7 @@ router = APIRouter(tags=["public"])
 _CACHE_TTL = timedelta(hours=1)
 _REGION_TIMEOUT = 10.0  # seconds per-region request
 _REGION_SEMAPHORE = asyncio.Semaphore(10)  # max concurrent region requests
+_DEFAULT_PUBLIC_MODEL_PROFIT_MARGIN = 0.2
 _cache_lock = asyncio.Lock()
 _dedicated_cache_lock = asyncio.Lock()
 _models_cache: dict[str, Any] = {
@@ -84,6 +85,12 @@ def _per_million(cost_per_token: float | None) -> float | None:
     if cost_per_token is None:
         return None
     return cost_per_token * 1_000_000
+
+
+def _apply_profit_margin(price: float | None, margin: float) -> float | None:
+    if price is None:
+        return None
+    return price * (1 + margin)
 
 
 def _to_display_name(model_id: str) -> str:
@@ -209,13 +216,59 @@ def _build_description(
     )
 
 
-def _extract_model_summary(item: dict[str, Any]) -> PublicModelSummary:
+def _extract_global_margin(config: Any) -> float | None:
+    if not isinstance(config, dict):
+        return None
+    values = config.get("values")
+    if isinstance(values, dict):
+        margin = _safe_float(values.get("global"))
+        if margin is not None:
+            return margin
+    return _safe_float(config.get("global"))
+
+
+async def _resolve_profit_margin(service: LiteLLMService, region_name: str) -> float:
+    try:
+        margin_config_result: Any = service.get_cost_margin_config()
+    except AttributeError:
+        return _DEFAULT_PUBLIC_MODEL_PROFIT_MARGIN
+    if asyncio.iscoroutine(margin_config_result):
+        try:
+            margin_config_result = await margin_config_result
+        except (
+            httpx.RequestError,
+            HTTPException,
+            asyncio.TimeoutError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            logger.warning(
+                "Region %s margin lookup failed for /public/models: %s. Falling back to %.2f",
+                region_name,
+                str(exc),
+                _DEFAULT_PUBLIC_MODEL_PROFIT_MARGIN,
+            )
+            return _DEFAULT_PUBLIC_MODEL_PROFIT_MARGIN
+
+    margin = _extract_global_margin(margin_config_result)
+    if margin is None:
+        return _DEFAULT_PUBLIC_MODEL_PROFIT_MARGIN
+    return margin
+
+
+def _extract_model_summary(
+    item: dict[str, Any], profit_margin: float
+) -> PublicModelSummary:
     model_info = item.get("model_info", {})
     model_id = item.get("model_name") or model_info.get("key") or "unknown"
     model_type = model_info.get("mode") or "other"
     context_length = model_info.get("max_input_tokens")
-    input_cost_per_token = _safe_float(model_info.get("input_cost_per_token"))
-    output_cost_per_token = _safe_float(model_info.get("output_cost_per_token"))
+    input_cost_per_token = _apply_profit_margin(
+        _safe_float(model_info.get("input_cost_per_token")), profit_margin
+    )
+    output_cost_per_token = _apply_profit_margin(
+        _safe_float(model_info.get("output_cost_per_token")), profit_margin
+    )
     capabilities = PublicModelCapabilities(
         supports_vision=bool(model_info.get("supports_vision")),
         supports_function_calling=bool(model_info.get("supports_function_calling")),
@@ -330,11 +383,13 @@ async def _fetch_region_model_group(
             model_info = await asyncio.wait_for(
                 service.get_model_info(), timeout=_REGION_TIMEOUT
             )
+            profit_margin = await _resolve_profit_margin(service, region_name)
             return PublicRegionModels(
                 region=region_name,
                 status="ga",
                 models=[
-                    _extract_model_summary(item) for item in model_info.get("data", [])
+                    _extract_model_summary(item, profit_margin)
+                    for item in model_info.get("data", [])
                 ],
             )
         except (httpx.RequestError, HTTPException, asyncio.TimeoutError) as exc:

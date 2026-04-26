@@ -132,10 +132,14 @@ Returns a JSON array of region objects, each containing its model catalog.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `input_cost_per_token` | `float \| null` | Cost per input token in USD |
-| `output_cost_per_token` | `float \| null` | Cost per output token in USD |
-| `input_cost_per_million_tokens` | `float \| null` | Cost per 1,000,000 input tokens in USD |
-| `output_cost_per_million_tokens` | `float \| null` | Cost per 1,000,000 output tokens in USD |
+| `input_cost_per_token` | `float \| null` | Cost per input token in USD including the configured LiteLLM global margin |
+| `output_cost_per_token` | `float \| null` | Cost per output token in USD including the configured LiteLLM global margin |
+| `input_cost_per_million_tokens` | `float \| null` | Cost per 1,000,000 input tokens in USD including the configured LiteLLM global margin |
+| `output_cost_per_million_tokens` | `float \| null` | Cost per 1,000,000 output tokens in USD including the configured LiteLLM global margin |
+
+Margin source:
+- The endpoint reads each region's LiteLLM `GET /config/cost_margin_config` and uses `values.global`.
+- If `values.global` is missing or cannot be fetched, it falls back to `0.2` (20%).
 
 ## Caching
 
