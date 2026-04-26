@@ -1,3 +1,4 @@
+import pytest
 import httpx
 from unittest.mock import AsyncMock, patch
 
@@ -156,13 +157,13 @@ def test_public_models_pricing_numeric_values(client, db):
         data = response.json()
         region_data = next(r for r in data if r["region"] == "ap-southeast-1")
         pricing = region_data["models"][0]["pricing"]
-        assert pricing["input_cost_per_token"] == 0.000006
-        assert pricing["output_cost_per_token"] == 0.000018
-        assert pricing["input_cost_per_million_tokens"] == 6.0
-        assert pricing["output_cost_per_million_tokens"] == 18.0
-        assert pricing["cache_creation_input_cost_per_million_tokens"] == 7.5
-        assert pricing["cache_creation_input_cost_above_1hr_per_million_tokens"] == 12.0
-        assert pricing["cache_read_input_cost_per_million_tokens"] == 0.6
+        assert pricing["input_cost_per_token"] == pytest.approx(0.000006)
+        assert pricing["output_cost_per_token"] == pytest.approx(0.000018)
+        assert pricing["input_cost_per_million_tokens"] == pytest.approx(6.0)
+        assert pricing["output_cost_per_million_tokens"] == pytest.approx(18.0)
+        assert pricing["cache_creation_input_cost_per_million_tokens"] == pytest.approx(7.5)
+        assert pricing["cache_creation_input_cost_above_1hr_per_million_tokens"] == pytest.approx(12.0)
+        assert pricing["cache_read_input_cost_per_million_tokens"] == pytest.approx(0.6)
 
 
 def test_public_models_pricing_uses_litellm_global_margin(client, db):
@@ -210,13 +211,13 @@ def test_public_models_pricing_uses_litellm_global_margin(client, db):
         data = response.json()
         region_data = next(r for r in data if r["region"] == "sa-east-1")
         pricing = region_data["models"][0]["pricing"]
-        assert pricing["input_cost_per_token"] == 0.0000075
-        assert pricing["output_cost_per_token"] == 0.0000225
-        assert pricing["input_cost_per_million_tokens"] == 7.5
-        assert pricing["output_cost_per_million_tokens"] == 22.5
-        assert pricing["cache_creation_input_cost_per_million_tokens"] == 9.375
-        assert pricing["cache_creation_input_cost_above_1hr_per_million_tokens"] == 15.0
-        assert pricing["cache_read_input_cost_per_million_tokens"] == 0.75
+        assert pricing["input_cost_per_token"] == pytest.approx(0.0000075)
+        assert pricing["output_cost_per_token"] == pytest.approx(0.0000225)
+        assert pricing["input_cost_per_million_tokens"] == pytest.approx(7.5)
+        assert pricing["output_cost_per_million_tokens"] == pytest.approx(22.5)
+        assert pricing["cache_creation_input_cost_per_million_tokens"] == pytest.approx(9.375)
+        assert pricing["cache_creation_input_cost_above_1hr_per_million_tokens"] == pytest.approx(15.0)
+        assert pricing["cache_read_input_cost_per_million_tokens"] == pytest.approx(0.75)
 
 
 def test_public_models_pricing_falls_back_to_default_margin(client, db):
@@ -262,13 +263,13 @@ def test_public_models_pricing_falls_back_to_default_margin(client, db):
         data = response.json()
         region_data = next(r for r in data if r["region"] == "ca-central-1")
         pricing = region_data["models"][0]["pricing"]
-        assert pricing["input_cost_per_token"] == 0.000006
-        assert pricing["output_cost_per_token"] == 0.000018
-        assert pricing["input_cost_per_million_tokens"] == 6.0
-        assert pricing["output_cost_per_million_tokens"] == 18.0
-        assert pricing["cache_creation_input_cost_per_million_tokens"] == 7.5
-        assert pricing["cache_creation_input_cost_above_1hr_per_million_tokens"] == 12.0
-        assert pricing["cache_read_input_cost_per_million_tokens"] == 0.6
+        assert pricing["input_cost_per_token"] == pytest.approx(0.000006)
+        assert pricing["output_cost_per_token"] == pytest.approx(0.000018)
+        assert pricing["input_cost_per_million_tokens"] == pytest.approx(6.0)
+        assert pricing["output_cost_per_million_tokens"] == pytest.approx(18.0)
+        assert pricing["cache_creation_input_cost_per_million_tokens"] == pytest.approx(7.5)
+        assert pricing["cache_creation_input_cost_above_1hr_per_million_tokens"] == pytest.approx(12.0)
+        assert pricing["cache_read_input_cost_per_million_tokens"] == pytest.approx(0.6)
 
 
 def test_public_models_pricing_missing_values(client, db):

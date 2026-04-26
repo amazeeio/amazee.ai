@@ -402,7 +402,10 @@ async def _fetch_region_model_group(
             model_info = await asyncio.wait_for(
                 service.get_model_info(), timeout=_REGION_TIMEOUT
             )
-            profit_margin = await _resolve_profit_margin(service, region_name)
+            profit_margin = await asyncio.wait_for(
+                _resolve_profit_margin(service, region_name),
+                timeout=_REGION_TIMEOUT,
+            )
             return PublicRegionModels(
                 region=region_name,
                 status="ga",
