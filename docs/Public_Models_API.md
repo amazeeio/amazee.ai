@@ -71,7 +71,10 @@ Returns a JSON array of region objects, each containing its model catalog.
           "input_cost_per_token": 0.000003,
           "output_cost_per_token": 0.000015,
           "input_cost_per_million_tokens": 3.0,
-          "output_cost_per_million_tokens": 15.0
+          "output_cost_per_million_tokens": 15.0,
+          "cache_creation_input_cost_per_million_tokens": 3.75,
+          "cache_creation_input_cost_above_1hr_per_million_tokens": 6.0,
+          "cache_read_input_cost_per_million_tokens": 0.3
         }
       }
     ]
@@ -136,6 +139,9 @@ Returns a JSON array of region objects, each containing its model catalog.
 | `output_cost_per_token` | `float \| null` | Cost per output token in USD including the configured LiteLLM global margin |
 | `input_cost_per_million_tokens` | `float \| null` | Cost per 1,000,000 input tokens in USD including the configured LiteLLM global margin |
 | `output_cost_per_million_tokens` | `float \| null` | Cost per 1,000,000 output tokens in USD including the configured LiteLLM global margin |
+| `cache_creation_input_cost_per_million_tokens` | `float \| null` | Cache write (5m) input cost per 1,000,000 tokens in USD including the configured LiteLLM global margin |
+| `cache_creation_input_cost_above_1hr_per_million_tokens` | `float \| null` | Cache write (1h) input cost per 1,000,000 tokens in USD including the configured LiteLLM global margin |
+| `cache_read_input_cost_per_million_tokens` | `float \| null` | Cache read input cost per 1,000,000 tokens in USD including the configured LiteLLM global margin |
 
 Margin source:
 - The endpoint reads each region's LiteLLM `GET /config/cost_margin_config` and uses `values.global`.

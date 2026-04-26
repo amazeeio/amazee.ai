@@ -200,6 +200,9 @@ class PublicModelPricing(BaseModel):
     output_cost_per_token: Optional[float] = None
     input_cost_per_million_tokens: Optional[float] = None
     output_cost_per_million_tokens: Optional[float] = None
+    cache_creation_input_cost_per_million_tokens: Optional[float] = None
+    cache_creation_input_cost_above_1hr_per_million_tokens: Optional[float] = None
+    cache_read_input_cost_per_million_tokens: Optional[float] = None
 
 
 class PublicModelCapabilities(BaseModel):

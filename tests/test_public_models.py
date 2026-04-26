@@ -139,6 +139,9 @@ def test_public_models_pricing_numeric_values(client, db):
                             "mode": "chat",
                             "input_cost_per_token": 0.000005,
                             "output_cost_per_token": 0.000015,
+                            "cache_creation_input_token_cost": 0.00000625,
+                            "cache_creation_input_token_cost_above_1hr": 0.00001,
+                            "cache_read_input_token_cost": 0.0000005,
                         },
                     }
                 ]
@@ -157,6 +160,9 @@ def test_public_models_pricing_numeric_values(client, db):
         assert pricing["output_cost_per_token"] == 0.000018
         assert pricing["input_cost_per_million_tokens"] == 6.0
         assert pricing["output_cost_per_million_tokens"] == 18.0
+        assert pricing["cache_creation_input_cost_per_million_tokens"] == 7.5
+        assert pricing["cache_creation_input_cost_above_1hr_per_million_tokens"] == 12.0
+        assert pricing["cache_read_input_cost_per_million_tokens"] == 0.6
 
 
 def test_public_models_pricing_uses_litellm_global_margin(client, db):
@@ -187,6 +193,9 @@ def test_public_models_pricing_uses_litellm_global_margin(client, db):
                             "mode": "chat",
                             "input_cost_per_token": 0.000005,
                             "output_cost_per_token": 0.000015,
+                            "cache_creation_input_token_cost": 0.00000625,
+                            "cache_creation_input_token_cost_above_1hr": 0.00001,
+                            "cache_read_input_token_cost": 0.0000005,
                         },
                     }
                 ]
@@ -205,6 +214,9 @@ def test_public_models_pricing_uses_litellm_global_margin(client, db):
         assert pricing["output_cost_per_token"] == 0.0000225
         assert pricing["input_cost_per_million_tokens"] == 7.5
         assert pricing["output_cost_per_million_tokens"] == 22.5
+        assert pricing["cache_creation_input_cost_per_million_tokens"] == 9.375
+        assert pricing["cache_creation_input_cost_above_1hr_per_million_tokens"] == 15.0
+        assert pricing["cache_read_input_cost_per_million_tokens"] == 0.75
 
 
 def test_public_models_pricing_falls_back_to_default_margin(client, db):
@@ -235,6 +247,9 @@ def test_public_models_pricing_falls_back_to_default_margin(client, db):
                             "mode": "chat",
                             "input_cost_per_token": 0.000005,
                             "output_cost_per_token": 0.000015,
+                            "cache_creation_input_token_cost": 0.00000625,
+                            "cache_creation_input_token_cost_above_1hr": 0.00001,
+                            "cache_read_input_token_cost": 0.0000005,
                         },
                     }
                 ]
@@ -251,6 +266,9 @@ def test_public_models_pricing_falls_back_to_default_margin(client, db):
         assert pricing["output_cost_per_token"] == 0.000018
         assert pricing["input_cost_per_million_tokens"] == 6.0
         assert pricing["output_cost_per_million_tokens"] == 18.0
+        assert pricing["cache_creation_input_cost_per_million_tokens"] == 7.5
+        assert pricing["cache_creation_input_cost_above_1hr_per_million_tokens"] == 12.0
+        assert pricing["cache_read_input_cost_per_million_tokens"] == 0.6
 
 
 def test_public_models_pricing_missing_values(client, db):
@@ -293,6 +311,9 @@ def test_public_models_pricing_missing_values(client, db):
         assert pricing["output_cost_per_token"] is None
         assert pricing["input_cost_per_million_tokens"] is None
         assert pricing["output_cost_per_million_tokens"] is None
+        assert pricing["cache_creation_input_cost_per_million_tokens"] is None
+        assert pricing["cache_creation_input_cost_above_1hr_per_million_tokens"] is None
+        assert pricing["cache_read_input_cost_per_million_tokens"] is None
 
 
 def test_public_models_pricing_non_numeric_values(client, db):
@@ -324,6 +345,9 @@ def test_public_models_pricing_non_numeric_values(client, db):
                             "mode": "chat",
                             "input_cost_per_token": "n/a",
                             "output_cost_per_token": "n/a",
+                            "cache_creation_input_token_cost": "n/a",
+                            "cache_creation_input_token_cost_above_1hr": "n/a",
+                            "cache_read_input_token_cost": "n/a",
                         },
                     }
                 ]
@@ -339,6 +363,9 @@ def test_public_models_pricing_non_numeric_values(client, db):
         assert pricing["output_cost_per_token"] is None
         assert pricing["input_cost_per_million_tokens"] is None
         assert pricing["output_cost_per_million_tokens"] is None
+        assert pricing["cache_creation_input_cost_per_million_tokens"] is None
+        assert pricing["cache_creation_input_cost_above_1hr_per_million_tokens"] is None
+        assert pricing["cache_read_input_cost_per_million_tokens"] is None
 
 
 def test_public_models_uses_region_key_for_model_info(client, db):

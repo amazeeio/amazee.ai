@@ -269,6 +269,16 @@ def _extract_model_summary(
     output_cost_per_token = _apply_profit_margin(
         _safe_float(model_info.get("output_cost_per_token")), profit_margin
     )
+    cache_creation_input_cost_per_token = _apply_profit_margin(
+        _safe_float(model_info.get("cache_creation_input_token_cost")), profit_margin
+    )
+    cache_creation_input_cost_above_1hr_per_token = _apply_profit_margin(
+        _safe_float(model_info.get("cache_creation_input_token_cost_above_1hr")),
+        profit_margin,
+    )
+    cache_read_input_cost_per_token = _apply_profit_margin(
+        _safe_float(model_info.get("cache_read_input_token_cost")), profit_margin
+    )
     capabilities = PublicModelCapabilities(
         supports_vision=bool(model_info.get("supports_vision")),
         supports_function_calling=bool(model_info.get("supports_function_calling")),
@@ -293,6 +303,15 @@ def _extract_model_summary(
             output_cost_per_token=output_cost_per_token,
             input_cost_per_million_tokens=_per_million(input_cost_per_token),
             output_cost_per_million_tokens=_per_million(output_cost_per_token),
+            cache_creation_input_cost_per_million_tokens=_per_million(
+                cache_creation_input_cost_per_token
+            ),
+            cache_creation_input_cost_above_1hr_per_million_tokens=_per_million(
+                cache_creation_input_cost_above_1hr_per_token
+            ),
+            cache_read_input_cost_per_million_tokens=_per_million(
+                cache_read_input_cost_per_token
+            ),
         ),
     )
 
