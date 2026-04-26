@@ -221,6 +221,31 @@ def test_register_periodic_team_excludes_dedicated_regions_from_litellm_bootstra
     )
 
 
+def test_register_team_seeds_public_region_associations(
+    client, admin_token, test_region, db
+):
+    response = client.post(
+        "/teams/",
+        json={
+            "name": "Seed Regions Team",
+            "admin_email": "seed-regions@example.com",
+            "budget_type": "periodic",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 201
+    team_id = response.json()["id"]
+
+    association = (
+        db.query(DBTeamRegion)
+        .filter(
+            DBTeamRegion.team_id == team_id, DBTeamRegion.region_id == test_region.id
+        )
+        .first()
+    )
+    assert association is not None
+
+
 def test_register_team_unauthenticated(client):
     """Test that unauthenticated requests are rejected"""
     response = client.post(

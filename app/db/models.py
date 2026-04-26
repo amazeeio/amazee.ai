@@ -56,10 +56,10 @@ class DBTeamProduct(Base):
 class DBTeamRegion(Base):
     """
     Association table for team-region relationship.
-    This model is required to implement a many-to-many relationship between teams and dedicated regions.
+    This model is required to implement a many-to-many relationship between teams and allowed regions.
     It allows:
-    - Teams to access multiple dedicated regions
-    - Dedicated regions to be used by multiple teams
+    - Teams to access multiple regions
+    - Regions to be used by multiple teams
     - Tracking when regions were associated with teams
     - Maintaining referential integrity between teams and regions
     """
@@ -76,8 +76,24 @@ class DBTeamRegion(Base):
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 
-    team = relationship("DBTeam", back_populates="dedicated_regions")
+    team = relationship("DBTeam", back_populates="allowed_region_associations")
     region = relationship("DBRegion", back_populates="teams")
+
+
+class DBUserAdminRegion(Base):
+    __tablename__ = "user_admin_regions"
+
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True, nullable=False)
+    region_id = Column(
+        Integer,
+        ForeignKey("regions.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    user = relationship("DBUser", back_populates="admin_regions")
+    region = relationship("DBRegion", back_populates="admin_users")
 
 
 class DBRegion(Base):
@@ -99,6 +115,7 @@ class DBRegion(Base):
 
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="region")
     teams = relationship("DBTeamRegion", back_populates="region")
+    admin_users = relationship("DBUserAdminRegion", back_populates="region")
 
 
 class DBAPIToken(Base):
@@ -131,6 +148,7 @@ class DBUser(Base):
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="owner")
     api_tokens = relationship("DBAPIToken", back_populates="owner")
     audit_logs = relationship("DBAuditLog", back_populates="user")
+    admin_regions = relationship("DBUserAdminRegion", back_populates="user")
 
 
 class DBTeam(Base):
@@ -167,7 +185,7 @@ class DBTeam(Base):
     users = relationship("DBUser", back_populates="team")
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="team")
     active_products = relationship("DBTeamProduct", back_populates="team")
-    dedicated_regions = relationship("DBTeamRegion", back_populates="team")
+    allowed_region_associations = relationship("DBTeamRegion", back_populates="team")
     metrics = relationship(
         "DBTeamMetrics", back_populates="team", uselist=False, cascade="all, delete"
     )
@@ -175,6 +193,15 @@ class DBTeam(Base):
     @property
     def products(self):
         return [tp.product for tp in self.active_products if tp.product]
+
+    @property
+    def dedicated_regions(self):
+        # Backward-compatible alias while team_regions semantics are now generic.
+        return self.allowed_region_associations
+
+    @property
+    def allowed_regions(self):
+        return [tr.region for tr in self.allowed_region_associations if tr.region]
 
 
 class DBTeamMetrics(Base):

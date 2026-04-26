@@ -836,7 +836,7 @@ def test_update_team_budget_rejects_unassociated_dedicated_region(
         json={"max_budget": 5.0},
     )
     assert response.status_code == 400
-    assert "not associated with this dedicated region" in response.json()["detail"]
+    assert "not associated with this region" in response.json()["detail"]
     mock_update_team_budget.assert_not_awaited()
 
 

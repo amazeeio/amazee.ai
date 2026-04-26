@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user_from_auth
 from app.db.database import get_db
-from app.db.models import DBRegion, DBTeam, DBTeamRegion, DBUser
+from app.db.models import DBRegion, DBTeamRegion, DBUser
 from app.schemas.models import (
     PublicModelCapabilities,
     PublicModelManufacturer,
@@ -403,23 +403,22 @@ async def list_public_models(
                 _models_cache["expires_at"] = datetime.now(UTC) + _CACHE_TTL
             public_groups = fetched_groups
 
-    # --- Dedicated regions (optional, per-user) ---
+    # --- User-scoped visibility ---
     user = await _resolve_optional_user(request, db)
-    dedicated_groups: list[PublicRegionModels] = []
+    visible_groups = list(public_groups)
 
     if user:
         is_admin = bool(user.is_admin)
         team_id = user.team_id
 
         if is_admin:
-            # Admins see ALL dedicated regions across every team.
+            # Admins see all active regions.
             cache_key = _ADMIN_CACHE_KEY
             query = db.query(DBRegion).filter(
                 DBRegion.is_active.is_(True),
-                DBRegion.is_dedicated.is_(True),
             )
         elif team_id:
-            # Regular team member sees only their team's dedicated regions.
+            # Team members see only their team's explicitly assigned regions.
             cache_key = str(team_id)
             query = (
                 db.query(DBRegion)
@@ -427,31 +426,30 @@ async def list_public_models(
                 .filter(
                     DBTeamRegion.team_id == team_id,
                     DBRegion.is_active.is_(True),
-                    DBRegion.is_dedicated.is_(True),
                 )
             )
         else:
-            # Authenticated user without a team — no dedicated regions.
+            # Authenticated user without a team: same visibility as unauthenticated.
             cache_key = None
             query = None
 
         if cache_key and query is not None:
-            dedicated_regions_to_fetch: list | None = None
+            regions_to_fetch: list | None = None
             async with _dedicated_cache_lock:
                 _evict_stale_dedicated_entries()
                 if _dedicated_cache["team_expires"].get(
                     cache_key, datetime.min.replace(tzinfo=UTC)
                 ) > datetime.now(UTC):
-                    dedicated_groups = _dedicated_cache["by_team"].get(cache_key, [])
+                    visible_groups = _dedicated_cache["by_team"].get(cache_key, [])
                 else:
-                    dedicated_regions_to_fetch = query.all()
+                    regions_to_fetch = query.all()
                     # Serve stale data to concurrent requests while refresh is in flight.
-                    dedicated_groups = list(
+                    visible_groups = list(
                         _dedicated_cache["by_team"].get(cache_key, [])
                     )
 
-            if dedicated_regions_to_fetch is not None:
-                if dedicated_regions_to_fetch:
+            if regions_to_fetch is not None:
+                if regions_to_fetch:
                     fetch_tasks = [
                         _fetch_region_model_group(
                             LiteLLMService(
@@ -460,26 +458,19 @@ async def list_public_models(
                             ),
                             region.name,
                         )
-                        for region in dedicated_regions_to_fetch
+                        for region in regions_to_fetch
                     ]
-                    dedicated_groups = list(await asyncio.gather(*fetch_tasks))
+                    visible_groups = list(await asyncio.gather(*fetch_tasks))
                 else:
-                    dedicated_groups = []
+                    visible_groups = []
 
                 async with _dedicated_cache_lock:
-                    _dedicated_cache["by_team"][cache_key] = dedicated_groups
+                    _dedicated_cache["by_team"][cache_key] = visible_groups
                     _dedicated_cache["team_expires"][cache_key] = (
                         datetime.now(UTC) + _CACHE_TTL
                     )
 
-        # Honour team-level hide_public_regions flag for non-admin users.
-        if not is_admin and team_id:
-            team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
-            if team and team.hide_public_regions:
-                public_groups = []
-
     # Signal to CacheControlMiddleware whether response contains user-specific data.
     request.state._public_models_is_authenticated = user is not None
 
-    all_groups = list(public_groups) + dedicated_groups
-    return _filter_region_groups_by_alias(all_groups, alias_filters)
+    return _filter_region_groups_by_alias(visible_groups, alias_filters)

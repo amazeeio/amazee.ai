@@ -179,6 +179,15 @@ class RegionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class RegionSummaryResponse(BaseModel):
+    id: int
+    name: str
+    label: Optional[str] = None
+    is_active: bool
+    is_dedicated: bool
+    model_config = ConfigDict(from_attributes=True)
+
+
 class Region(RegionBase):
     id: int
     created_at: datetime
@@ -523,11 +532,24 @@ class Team(TeamBase):
     deleted_at: Optional[datetime] = None
     retention_warning_sent_at: Optional[datetime] = None
     products: List[Product] = []
+    allowed_regions: List[RegionSummaryResponse] = []
     model_config = ConfigDict(from_attributes=True)
 
 
 class TeamWithUsers(Team):
     users: List[User] = []
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserAdminRegionCreate(BaseModel):
+    region_id: int
+
+
+class UserAdminRegionResponse(BaseModel):
+    user_id: int
+    region_id: int
+    region: RegionSummaryResponse
+    created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
 
