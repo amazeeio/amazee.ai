@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, contains_eager
 
 from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -542,6 +542,7 @@ async def list_user_admin_regions(
         db.query(DBUserAdminRegion)
         .join(DBRegion, DBUserAdminRegion.region_id == DBRegion.id)
         .filter(DBUserAdminRegion.user_id == user_id, DBRegion.is_dedicated.is_(True))
+        .options(contains_eager(DBUserAdminRegion.region))
         .all()
     )
 

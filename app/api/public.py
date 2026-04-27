@@ -412,44 +412,68 @@ async def list_public_models(
         team_id = user.team_id
 
         if is_admin:
-            # Admins see all active regions.
+            # Admins see all public regions (already in public_groups) plus all
+            # active dedicated regions.  Only fetch the dedicated ones from LiteLLM;
+            # public regions are reused from the global public_groups cache.
             cache_key = _ADMIN_CACHE_KEY
-            query = db.query(DBRegion).filter(
-                DBRegion.is_active.is_(True),
-            )
         elif team_id:
             # Team members see only their team's explicitly assigned regions.
+            # Dedicated assigned regions are fetched from LiteLLM and cached;
+            # public assigned regions are filtered from the global public_groups cache.
             cache_key = str(team_id)
-            query = (
-                db.query(DBRegion)
-                .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
-                .filter(
-                    DBTeamRegion.team_id == team_id,
-                    DBRegion.is_active.is_(True),
-                )
-            )
         else:
             # Authenticated user without a team: same visibility as unauthenticated.
             cache_key = None
-            query = None
 
-        if cache_key and query is not None:
-            regions_to_fetch: list | None = None
+        if cache_key is not None:
+            dedicated_to_fetch: list | None = None
+            public_names_to_cache: frozenset[str] | None = None
             async with _dedicated_cache_lock:
                 _evict_stale_dedicated_entries()
-                if _dedicated_cache["team_expires"].get(
-                    cache_key, datetime.min.replace(tzinfo=UTC)
-                ) > datetime.now(UTC):
-                    visible_groups = _dedicated_cache["by_team"].get(cache_key, [])
-                else:
-                    regions_to_fetch = query.all()
-                    # Serve stale data to concurrent requests while refresh is in flight.
-                    visible_groups = list(
-                        _dedicated_cache["by_team"].get(cache_key, [])
+                entry = _dedicated_cache["by_team"].get(cache_key)
+                if (
+                    entry is not None
+                    and _dedicated_cache["team_expires"].get(
+                        cache_key, datetime.min.replace(tzinfo=UTC)
                     )
+                    > datetime.now(UTC)
+                ):
+                    dedicated_groups = entry["dedicated"]
+                    public_names = entry["public_names"]
+                else:
+                    # Query only dedicated regions for LiteLLM fetching; also
+                    # collect assigned public region names to filter public_groups.
+                    if is_admin:
+                        dedicated_to_fetch = (
+                            db.query(DBRegion)
+                            .filter(
+                                DBRegion.is_active.is_(True),
+                                DBRegion.is_dedicated.is_(True),
+                            )
+                            .all()
+                        )
+                        public_names_to_cache = None  # admins see all public groups
+                    else:
+                        assigned = (
+                            db.query(DBRegion)
+                            .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
+                            .filter(
+                                DBTeamRegion.team_id == team_id,
+                                DBRegion.is_active.is_(True),
+                            )
+                            .all()
+                        )
+                        dedicated_to_fetch = [r for r in assigned if r.is_dedicated]
+                        public_names_to_cache = frozenset(
+                            r.name for r in assigned if not r.is_dedicated
+                        )
+                    # Serve stale data to concurrent requests while refresh is in flight.
+                    stale_entry = _dedicated_cache["by_team"].get(cache_key, {})
+                    dedicated_groups = stale_entry.get("dedicated", []) if isinstance(stale_entry, dict) else []
+                    public_names = stale_entry.get("public_names") if isinstance(stale_entry, dict) else None
 
-            if regions_to_fetch is not None:
-                if regions_to_fetch:
+            if dedicated_to_fetch is not None:
+                if dedicated_to_fetch:
                     fetch_tasks = [
                         _fetch_region_model_group(
                             LiteLLMService(
@@ -458,17 +482,29 @@ async def list_public_models(
                             ),
                             region.name,
                         )
-                        for region in regions_to_fetch
+                        for region in dedicated_to_fetch
                     ]
-                    visible_groups = list(await asyncio.gather(*fetch_tasks))
+                    dedicated_groups = list(await asyncio.gather(*fetch_tasks))
                 else:
-                    visible_groups = []
+                    dedicated_groups = []
 
                 async with _dedicated_cache_lock:
-                    _dedicated_cache["by_team"][cache_key] = visible_groups
+                    _dedicated_cache["by_team"][cache_key] = {
+                        "dedicated": dedicated_groups,
+                        "public_names": public_names_to_cache,
+                    }
                     _dedicated_cache["team_expires"][cache_key] = (
                         datetime.now(UTC) + _CACHE_TTL
                     )
+                public_names = public_names_to_cache
+
+            # Combine public groups (filtered by visibility) with dedicated groups.
+            if is_admin:
+                visible_groups = list(public_groups) + dedicated_groups
+            else:
+                visible_groups = [
+                    g for g in public_groups if public_names is None or g.region in public_names
+                ] + dedicated_groups
 
     # Signal to CacheControlMiddleware whether response contains user-specific data.
     request.state._public_models_is_authenticated = user is not None

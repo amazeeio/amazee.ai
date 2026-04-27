@@ -57,46 +57,43 @@ def upgrade() -> None:
         sa.column("created_at", sa.DateTime(timezone=True)),
     )
 
-    team_ids = [
-        row.id
-        for row in bind.execute(
-            sa.select(teams.c.id).where(
-                teams.c.deleted_at.is_(None),
-                sa.or_(
-                    teams.c.hide_public_regions.is_(False),
-                    teams.c.hide_public_regions.is_(None),
-                ),
-            )
+    eligible_teams = (
+        sa.select(teams.c.id.label("team_id"))
+        .where(
+            teams.c.deleted_at.is_(None),
+            sa.or_(
+                teams.c.hide_public_regions.is_(False),
+                teams.c.hide_public_regions.is_(None),
+            ),
         )
-    ]
-    region_ids = [
-        row.id
-        for row in bind.execute(
-            sa.select(regions.c.id).where(
-                regions.c.is_active.is_(True), regions.c.is_dedicated.is_(False)
-            )
-        )
-    ]
-
-    if not team_ids or not region_ids:
-        return
+        .subquery()
+    )
+    eligible_regions = (
+        sa.select(regions.c.id.label("region_id"))
+        .where(regions.c.is_active.is_(True), regions.c.is_dedicated.is_(False))
+        .subquery()
+    )
 
     now = datetime.now(UTC)
-    values = [
-        {"team_id": team_id, "region_id": region_id, "created_at": now}
-        for team_id in team_ids
-        for region_id in region_ids
-    ]
+    select_values = sa.select(
+        eligible_teams.c.team_id,
+        eligible_regions.c.region_id,
+        sa.literal(now, type_=sa.DateTime(timezone=True)).label("created_at"),
+    ).select_from(eligible_teams.join(eligible_regions, sa.true()))
+
     if bind.dialect.name == "postgresql":
         stmt = (
             postgresql.insert(team_regions)
-            .values(values)
+            .from_select(["team_id", "region_id", "created_at"], select_values)
             .on_conflict_do_nothing(index_elements=["team_id", "region_id"])
         )
         bind.execute(stmt)
     else:
-        for value in values:
-            bind.execute(sa.insert(team_regions).prefix_with("OR IGNORE").values(value))
+        bind.execute(
+            sa.insert(team_regions)
+            .from_select(["team_id", "region_id", "created_at"], select_values)
+            .prefix_with("OR IGNORE")
+        )
 
 
 def downgrade() -> None:

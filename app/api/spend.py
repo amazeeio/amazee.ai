@@ -205,14 +205,6 @@ def _assert_team_region_association(
 def _pool_purchased_budget_for_team_region(
     db: Session, team_id: int, region_id: int
 ) -> float:
-    association_exists = (
-        db.query(DBTeamRegion)
-        .filter(DBTeamRegion.team_id == team_id, DBTeamRegion.region_id == region_id)
-        .first()
-    )
-    if not association_exists:
-        return 0.0
-
     total_purchased_cents = (
         db.query(func.sum(DBPoolPurchase.amount_cents))
         .filter(

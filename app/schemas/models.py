@@ -541,10 +541,6 @@ class TeamWithUsers(Team):
     model_config = ConfigDict(from_attributes=True)
 
 
-class UserAdminRegionCreate(BaseModel):
-    region_id: int
-
-
 class UserAdminRegionResponse(BaseModel):
     user_id: int
     region_id: int

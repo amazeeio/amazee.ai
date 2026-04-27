@@ -50,7 +50,7 @@ from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +185,7 @@ async def register_team(
     try:
         db.flush()
         _seed_default_allowed_regions_for_team(db_team, db)
+        db.flush()
         await _create_litellm_teams_for_new_team(db_team, db)
         db.commit()
         db.refresh(db_team)
@@ -218,7 +219,8 @@ async def list_teams(include_deleted: bool = False, db: Session = Depends(get_db
         include_deleted: If True, include soft-deleted teams in the results. Defaults to False.
     """
     query = db.query(DBTeam).options(
-        joinedload(DBTeam.active_products).joinedload(DBTeamProduct.product)
+        joinedload(DBTeam.active_products).joinedload(DBTeamProduct.product),
+        selectinload(DBTeam.allowed_region_associations).joinedload(DBTeamRegion.region),
     )
 
     if not include_deleted:
@@ -248,7 +250,12 @@ async def get_team(
     # Build query based on include_deleted flag
     query = (
         db.query(DBTeam)
-        .options(joinedload(DBTeam.active_products).joinedload(DBTeamProduct.product))
+        .options(
+            joinedload(DBTeam.active_products).joinedload(DBTeamProduct.product),
+            selectinload(DBTeam.allowed_region_associations).joinedload(
+                DBTeamRegion.region
+            ),
+        )
         .filter(DBTeam.id == team_id)
     )
 
