@@ -590,13 +590,22 @@ async def test_sync_pool_team_budgets_expires_stale_pool_team(
     """Pool teams with 365+ days since last purchase should be set to $0 budget."""
     test_team.budget_type = "pool"
     test_team.last_pool_purchase = datetime.now(UTC) - timedelta(days=366)
-    db.add(
-        DBTeamRegion(
-            team_id=test_team.id,
-            region_id=test_region.id,
-            created_at=datetime.now(UTC),
+    if (
+        db.query(DBTeamRegion)
+        .filter(
+            DBTeamRegion.team_id == test_team.id,
+            DBTeamRegion.region_id == test_region.id,
         )
-    )
+        .first()
+        is None
+    ):
+        db.add(
+            DBTeamRegion(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                created_at=datetime.now(UTC),
+            )
+        )
     db.add(
         DBPoolPurchase(
             team_id=test_team.id,
@@ -653,20 +662,38 @@ async def test_sync_pool_team_budgets_expires_all_team_regions(
 
     test_team.budget_type = "pool"
     test_team.last_pool_purchase = datetime.now(UTC) - timedelta(days=1)
-    db.add(
-        DBTeamRegion(
-            team_id=test_team.id,
-            region_id=test_region.id,
-            created_at=datetime.now(UTC),
+    if (
+        db.query(DBTeamRegion)
+        .filter(
+            DBTeamRegion.team_id == test_team.id,
+            DBTeamRegion.region_id == test_region.id,
         )
-    )
-    db.add(
-        DBTeamRegion(
-            team_id=test_team.id,
-            region_id=second_region.id,
-            created_at=datetime.now(UTC),
+        .first()
+        is None
+    ):
+        db.add(
+            DBTeamRegion(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                created_at=datetime.now(UTC),
+            )
         )
-    )
+    if (
+        db.query(DBTeamRegion)
+        .filter(
+            DBTeamRegion.team_id == test_team.id,
+            DBTeamRegion.region_id == second_region.id,
+        )
+        .first()
+        is None
+    ):
+        db.add(
+            DBTeamRegion(
+                team_id=test_team.id,
+                region_id=second_region.id,
+                created_at=datetime.now(UTC),
+            )
+        )
     db.add(
         DBPoolPurchase(
             team_id=test_team.id,

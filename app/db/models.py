@@ -66,7 +66,12 @@ class DBTeamRegion(Base):
 
     __tablename__ = "team_regions"
 
-    team_id = Column(Integer, ForeignKey("teams.id"), primary_key=True, nullable=False)
+    team_id = Column(
+        Integer,
+        ForeignKey("teams.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
     region_id = Column(
         Integer,
         ForeignKey("regions.id", ondelete="CASCADE"),
@@ -185,7 +190,12 @@ class DBTeam(Base):
     users = relationship("DBUser", back_populates="team")
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="team")
     active_products = relationship("DBTeamProduct", back_populates="team")
-    allowed_region_associations = relationship("DBTeamRegion", back_populates="team")
+    allowed_region_associations = relationship(
+        "DBTeamRegion",
+        back_populates="team",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
     metrics = relationship(
         "DBTeamMetrics", back_populates="team", uselist=False, cascade="all, delete"
     )
