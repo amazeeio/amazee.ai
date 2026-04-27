@@ -186,7 +186,6 @@ async def register_team(
         db.flush()
         _seed_default_allowed_regions_for_team(db_team, db)
         db.flush()
-        db.flush()
         await _create_litellm_teams_for_new_team(db_team, db)
         db.commit()
         db.refresh(db_team)
