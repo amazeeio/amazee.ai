@@ -469,8 +469,8 @@ async def list_public_models(
                         )
                     # Serve stale data to concurrent requests while refresh is in flight.
                     stale_entry = _dedicated_cache["by_team"].get(cache_key, {})
-                    dedicated_groups = stale_entry.get("dedicated", []) if isinstance(stale_entry, dict) else []
-                    public_names = stale_entry.get("public_names") if isinstance(stale_entry, dict) else None
+                    dedicated_groups = stale_entry.get("dedicated", [])
+                    public_names = stale_entry.get("public_names")
 
             if dedicated_to_fetch is not None:
                 if dedicated_to_fetch:
