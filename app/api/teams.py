@@ -220,7 +220,9 @@ async def list_teams(include_deleted: bool = False, db: Session = Depends(get_db
     """
     query = db.query(DBTeam).options(
         joinedload(DBTeam.active_products).joinedload(DBTeamProduct.product),
-        selectinload(DBTeam.allowed_region_associations).joinedload(DBTeamRegion.region),
+        selectinload(DBTeam.allowed_region_associations).joinedload(
+            DBTeamRegion.region
+        ),
     )
 
     if not include_deleted:

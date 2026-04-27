@@ -431,13 +431,9 @@ async def list_public_models(
             async with _dedicated_cache_lock:
                 _evict_stale_dedicated_entries()
                 entry = _dedicated_cache["by_team"].get(cache_key)
-                if (
-                    entry is not None
-                    and _dedicated_cache["team_expires"].get(
-                        cache_key, datetime.min.replace(tzinfo=UTC)
-                    )
-                    > datetime.now(UTC)
-                ):
+                if entry is not None and _dedicated_cache["team_expires"].get(
+                    cache_key, datetime.min.replace(tzinfo=UTC)
+                ) > datetime.now(UTC):
                     dedicated_groups = entry["dedicated"]
                     public_names = entry["public_names"]
                 else:
@@ -503,7 +499,9 @@ async def list_public_models(
                 visible_groups = list(public_groups) + dedicated_groups
             else:
                 visible_groups = [
-                    g for g in public_groups if public_names is None or g.region in public_names
+                    g
+                    for g in public_groups
+                    if public_names is None or g.region in public_names
                 ] + dedicated_groups
 
     # Signal to CacheControlMiddleware whether response contains user-specific data.

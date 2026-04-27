@@ -48,7 +48,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       cat <<'EOF'
-Usage: ./scripts/e2e_budget_and_aliases_test_local.sh [--cleanup-created] [--isolate-each-test]
+Usage: ./scripts/local-only/e2e_budget_and_aliases_test_local.sh [--cleanup-created] [--isolate-each-test]
 
 Options:
   --cleanup-created    Delete only resources created by this run (keys/users/teams).
