@@ -15,7 +15,7 @@ from app.db.models import (
 )
 from app.main import app
 from app.schemas.limits import LimitSource, OwnerType, ResourceType
-from app.schemas.models import BudgetType
+from app.schemas.models import BudgetType, FundingMode
 from fastapi.testclient import TestClient
 from tests.conftest import soft_delete_team_for_test
 
@@ -35,6 +35,7 @@ def test_dbteam_budget_type_defaults_to_periodic(db):
     db.refresh(team)
 
     assert team.budget_type == BudgetType.PERIODIC
+    assert team.funding_mode == FundingMode.INVOICE_USAGE
 
 
 def test_register_team(client, admin_token):
@@ -57,6 +58,7 @@ def test_register_team(client, admin_token):
     assert team_data["phone"] == "1234567890"
     assert team_data["billing_address"] == "123 Test St, Test City, 12345"
     assert team_data["is_active"] is True
+    assert team_data["funding_mode"] == "prepaid_pool"
     assert "id" in team_data
     assert "created_at" in team_data
     assert "updated_at" in team_data
@@ -213,12 +215,29 @@ def test_register_periodic_team_excludes_dedicated_regions_from_litellm_bootstra
 
     assert response.status_code == 201
     team_data = response.json()
+    assert team_data["funding_mode"] == "invoice_usage"
     mock_create_team.assert_awaited_once_with(
         team_id=f"{test_region.name}_{team_data['id']}",
         team_alias=f"{test_region.name}_{team_data['id']}",
         max_budget=27.0,
         budget_duration=None,
     )
+
+
+def test_register_team_rejects_invalid_budget_funding_combination(client, admin_token):
+    response = client.post(
+        "/teams/",
+        json={
+            "name": "Invalid Funding Team",
+            "admin_email": "invalid-funding@example.com",
+            "budget_type": "pool",
+            "funding_mode": "invoice_usage",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 400
+    assert "requires funding_mode=prepaid_pool" in response.json()["detail"]
 
 
 def test_register_team_unauthenticated(client):

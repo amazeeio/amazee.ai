@@ -10,6 +10,11 @@ class BudgetType(str, Enum):
     POOL = "pool"
 
 
+class FundingMode(str, Enum):
+    INVOICE_USAGE = "invoice_usage"
+    PREPAID_POOL = "prepaid_pool"
+
+
 def lowercase_email(v: str) -> str:
     """Validator to lowercase email addresses."""
     if v is None:
@@ -498,6 +503,7 @@ class TeamCreate(TeamBase):
     force_user_keys: bool = False
     hide_public_regions: bool = False
     budget_type: BudgetType = BudgetType.PERIODIC
+    funding_mode: Optional[FundingMode] = None
 
 
 class TeamUpdate(BaseModel):
@@ -510,6 +516,7 @@ class TeamUpdate(BaseModel):
     force_user_keys: Optional[bool] = False
     hide_public_regions: Optional[bool] = None
     budget_type: Optional[BudgetType] = None
+    funding_mode: Optional[FundingMode] = None
 
 
 class Team(TeamBase):
@@ -519,6 +526,7 @@ class Team(TeamBase):
     force_user_keys: Optional[bool] = False
     hide_public_regions: bool = False
     budget_type: BudgetType
+    funding_mode: FundingMode
     last_pool_purchase: Optional[datetime] = None
     created_at: datetime
     updated_at: Optional[datetime] = None

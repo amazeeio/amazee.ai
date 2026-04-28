@@ -17,7 +17,6 @@ from app.db.models import (
 )
 from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
 from app.schemas.models import (
-    BudgetType,
     PoolPurchaseHistoryResponse,
     PoolPurchaseRequest,
     PoolPurchaseResponse,
@@ -177,7 +176,7 @@ async def purchase_pool_budget(
     """
     Record a pool budget purchase for a team and update their LiteLLM team budget.
 
-    Only works for teams with budget_type = POOL.
+    Only works for teams with prepaid_pool funding mode.
     Handles concurrent purchases by checking for duplicate stripe_payment_id.
     POOL updates are team-budget only; per-key max_budget remains unset.
     """
@@ -187,10 +186,13 @@ async def purchase_pool_budget(
             status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
         )
 
-    if team.budget_type != BudgetType.POOL:
+    if not team.uses_prepaid_pool:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This endpoint only works for teams with pool budget type",
+            detail=(
+                "This endpoint only works for teams with prepaid_pool funding mode "
+                "(pool budget type)"
+            ),
         )
 
     region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
@@ -456,7 +458,7 @@ async def sync_pool_team_budgets(db: Session) -> dict:
 
     Returns summary of updates made.
     """
-    pool_teams = db.query(DBTeam).filter(DBTeam.budget_type == BudgetType.POOL).all()
+    pool_teams = [team for team in db.query(DBTeam).all() if team.uses_prepaid_pool]
 
     total_updated = 0
     errors = []
@@ -565,7 +567,7 @@ async def sync_pool_team_monthly_caps(db: Session) -> dict:
         if cap.team_id is None or cap.region_id is None:
             continue
         team = db.query(DBTeam).filter(DBTeam.id == cap.team_id).first()
-        if team is None or team.budget_type != BudgetType.POOL:
+        if team is None or not team.uses_prepaid_pool:
             continue
         if cap.month_anchor == current_anchor:
             continue

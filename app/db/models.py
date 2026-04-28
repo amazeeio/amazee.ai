@@ -17,7 +17,7 @@ from datetime import datetime, UTC
 from sqlalchemy.sql import func
 from sqlalchemy import UniqueConstraint
 from app.schemas.limits import LimitType, ResourceType, UnitType, OwnerType, LimitSource
-from app.schemas.models import BudgetType
+from app.schemas.models import BudgetType, FundingMode
 
 Base = declarative_base()
 
@@ -155,6 +155,16 @@ class DBTeam(Base):
         default=BudgetType.PERIODIC,
         nullable=False,
     )
+    funding_mode = Column(
+        Enum(
+            FundingMode,
+            name="funding_mode_enum",
+            create_constraint=True,
+            values_callable=enum_values,
+        ),
+        default=FundingMode.INVOICE_USAGE,
+        nullable=False,
+    )
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     stripe_customer_id = Column(String, nullable=True, unique=True, index=True)
@@ -178,14 +188,21 @@ class DBTeam(Base):
 
     @property
     def is_dedicated(self) -> bool:
-        """True for dedicated teams that operate on a direct, infinite budget.
+        """True for dedicated teams that use private infrastructure.
 
         Dedicated teams hide public regions (``hide_public_regions=True``) and are
-        provisioned with private infrastructure — their budget is not driven by the
-        purchase flow. In LiteLLM, ``$0`` represents "no limit" for these teams, so
-        the normal pool-purchase cap does not apply.
+        provisioned with private infrastructure. This flag is infrastructure-scoped
+        and independent of funding behavior.
         """
         return bool(self.hide_public_regions)
+
+    @property
+    def uses_prepaid_pool(self) -> bool:
+        """Whether this team should follow purchase-driven enforcement."""
+        return (
+            self.funding_mode == FundingMode.PREPAID_POOL
+            or self.budget_type == BudgetType.POOL
+        )
 
 
 class DBTeamMetrics(Base):

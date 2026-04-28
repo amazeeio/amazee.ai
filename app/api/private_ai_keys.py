@@ -12,7 +12,6 @@ from app.schemas.models import (
     PrivateAIKeyCreate,
     PrivateAIKeySpendBasic,
     BudgetPeriodUpdate,
-    BudgetType,
     LiteLLMToken,
     VectorDBCreate,
     VectorDB,
@@ -432,11 +431,9 @@ async def create_llm_token(
     effective_team = team
     if effective_team is None and owner is not None and owner.team_id:
         effective_team = db.query(DBTeam).filter(DBTeam.id == owner.team_id).first()
-    is_pool_team = (
-        effective_team is not None and effective_team.budget_type == BudgetType.POOL
-    )
+    is_pool_team = effective_team is not None and effective_team.uses_prepaid_pool
     pool_purchased_total = None
-    if is_pool_team and effective_team is not None and not effective_team.is_dedicated:
+    if is_pool_team and effective_team is not None:
         total_cents = (
             db.query(func.sum(DBPoolPurchase.amount_cents))
             .filter(

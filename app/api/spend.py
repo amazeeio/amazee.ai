@@ -27,7 +27,6 @@ from app.db.models import (
 from app.schemas.limits import OwnerType, ResourceType
 from app.api.users import invalidate_user_spend_cache
 from app.schemas.models import (
-    BudgetType,
     PrivateAIKeySpend,
     SpendBudgetUpdateRequest,
     SpendBudgetUpdateResponse,
@@ -94,7 +93,7 @@ def _effective_team_budget_duration(
     """
     if max_budget is None:
         return None
-    if team.budget_type == BudgetType.POOL:
+    if team.uses_prepaid_pool:
         return f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
     return MONTHLY_BUDGET_DURATION
 
@@ -245,11 +244,7 @@ def _assert_pool_budget_cap_within_purchases(
     region_id: int,
     max_budget: float | None,
 ) -> None:
-    if team is None or team.budget_type != BudgetType.POOL or max_budget is None:
-        return
-    # Dedicated teams operate on a direct budget and do not use the purchase flow,
-    # so the pool-purchase cap does not apply to them.
-    if team.is_dedicated:
+    if team is None or not team.uses_prepaid_pool or max_budget is None:
         return
     purchased_budget = _pool_purchased_budget_for_team_region(db, team.id, region_id)
     # Allow operators to preconfigure caps before the first purchase exists.
@@ -273,10 +268,10 @@ async def _enforce_pool_no_purchase_key_lock(
     service: LiteLLMService,
 ) -> bool:
     """
-    For non-dedicated POOL teams with no purchased budget in a region, hard-lock
+    For prepaid-pool teams with no purchased budget in a region, hard-lock
     keys by setting max_budget=0 in LiteLLM to avoid the team budget zero-edge.
     """
-    if team is None or team.budget_type != BudgetType.POOL or team.is_dedicated:
+    if team is None or not team.uses_prepaid_pool:
         return False
     purchased_budget = _pool_purchased_budget_for_team_region(db, team.id, region.id)
     if purchased_budget > 0:
@@ -814,7 +809,7 @@ async def update_team_budget(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-    if team.budget_type == BudgetType.POOL and body.max_budget is not None:
+    if team.uses_prepaid_pool and body.max_budget is not None:
         effective_duration = _pool_budget_duration_from_last_purchase(
             db=db, team_id=team_id, region_id=region_id
         )
@@ -824,24 +819,17 @@ async def update_team_budget(
     month_anchor = None
     month_start_spend = None
 
-    if team.budget_type == BudgetType.POOL and body.max_budget is not None:
-        if team.is_dedicated:
-            # Dedicated teams have no purchase-driven ceiling; the requested
-            # max_budget is used directly without clamping.
-            effective_max_budget = body.max_budget
-        else:
-            purchased_total = _pool_purchased_budget_for_team_region(
-                db, team_id, region_id
-            )
-            team_info_resp = await service.get_team_info(lite_team_id)
-            team_info = team_info_resp.get("team_info", team_info_resp)
-            month_start_spend = round(float(team_info.get("spend", 0.0) or 0.0), 4)
-            month_anchor = _current_month_anchor()
-            effective_max_budget = _compute_pool_monthly_effective_budget(
-                purchased_total=purchased_total,
-                month_start_spend=month_start_spend,
-                monthly_cap=body.max_budget,
-            )
+    if team.uses_prepaid_pool and body.max_budget is not None:
+        purchased_total = _pool_purchased_budget_for_team_region(db, team_id, region_id)
+        team_info_resp = await service.get_team_info(lite_team_id)
+        team_info = team_info_resp.get("team_info", team_info_resp)
+        month_start_spend = round(float(team_info.get("spend", 0.0) or 0.0), 4)
+        month_anchor = _current_month_anchor()
+        effective_max_budget = _compute_pool_monthly_effective_budget(
+            purchased_total=purchased_total,
+            month_start_spend=month_start_spend,
+            monthly_cap=body.max_budget,
+        )
 
     await service.update_team_budget(
         team_id=lite_team_id,
@@ -857,9 +845,7 @@ async def update_team_budget(
         team_id=team_id,
         max_budget=body.max_budget,
         budget_duration=(
-            MONTHLY_BUDGET_DURATION
-            if team.budget_type == BudgetType.POOL
-            else effective_duration
+            MONTHLY_BUDGET_DURATION if team.uses_prepaid_pool else effective_duration
         ),
         month_anchor=month_anchor,
         month_start_spend=month_start_spend,
@@ -877,7 +863,7 @@ async def update_team_budget(
         budget_duration=team_info.get("budget_duration"),
         note=(
             "For team keys, team budget governs spend enforcement."
-            if team.budget_type != BudgetType.POOL
+            if not team.uses_prepaid_pool
             else "POOL monthly cap stored as monthly delta; LiteLLM max_budget is set to month_start_spend + monthly_cap (bounded by purchased total)."
         ),
     )
@@ -1015,7 +1001,7 @@ async def clear_team_budget(
     region = _get_region_or_404(db, region_id)
     _assert_team_region_association(db, region, team_id)
 
-    if team.budget_type == BudgetType.POOL:
+    if team.uses_prepaid_pool:
         total_purchased_cents = (
             db.query(func.sum(DBPoolPurchase.amount_cents))
             .filter(
@@ -1045,7 +1031,7 @@ async def clear_team_budget(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-    if team.budget_type == BudgetType.POOL and max_budget_to_restore is not None:
+    if team.uses_prepaid_pool and max_budget_to_restore is not None:
         budget_duration = _pool_budget_duration_from_last_purchase(
             db=db, team_id=team_id, region_id=region_id
         )

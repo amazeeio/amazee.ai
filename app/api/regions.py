@@ -18,7 +18,6 @@ from app.schemas.models import (
     TeamRegionBudget,
     TeamRegionModelAliasesResponse,
     TeamRegionModelAliasesUpdateRequest,
-    BudgetType,
 )
 from app.db.models import (
     DBRegion,
@@ -361,11 +360,9 @@ async def associate_team_with_region(
     # syncing members. LiteLLM requires team existence for member_add.
     # POOL teams start at $0 (purchases raise the budget).
     # PERIODIC teams start at DEFAULT_MAX_SPEND.
-    max_budget = 0.0 if team.budget_type == BudgetType.POOL else DEFAULT_MAX_SPEND
+    max_budget = 0.0 if team.uses_prepaid_pool else DEFAULT_MAX_SPEND
     budget_duration = (
-        f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
-        if team.budget_type == BudgetType.POOL
-        else None
+        f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d" if team.uses_prepaid_pool else None
     )
     litellm_service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
@@ -745,7 +742,7 @@ async def get_team_region_budget(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
 
-    if team.budget_type == BudgetType.POOL:
+    if team.uses_prepaid_pool:
         lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
 
         try:

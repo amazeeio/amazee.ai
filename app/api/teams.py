@@ -36,6 +36,7 @@ from app.db.models import (
 )
 from app.schemas.models import (
     BudgetType,
+    FundingMode,
     SalesProduct,
     SalesTeam,
     SalesTeamsResponse,
@@ -55,6 +56,44 @@ from sqlalchemy.orm import Session, joinedload
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["teams"])
+
+
+def _funding_mode_from_budget_type(budget_type: BudgetType) -> FundingMode:
+    return (
+        FundingMode.PREPAID_POOL
+        if budget_type == BudgetType.POOL
+        else FundingMode.INVOICE_USAGE
+    )
+
+
+def _budget_type_from_funding_mode(funding_mode: FundingMode) -> BudgetType:
+    return (
+        BudgetType.POOL
+        if funding_mode == FundingMode.PREPAID_POOL
+        else BudgetType.PERIODIC
+    )
+
+
+def _resolve_team_budget_and_funding_modes(
+    budget_type: BudgetType | None, funding_mode: FundingMode | None
+) -> tuple[BudgetType, FundingMode]:
+    if budget_type is None and funding_mode is None:
+        return BudgetType.PERIODIC, FundingMode.INVOICE_USAGE
+    if budget_type is None and funding_mode is not None:
+        return _budget_type_from_funding_mode(funding_mode), funding_mode
+    if budget_type is not None and funding_mode is None:
+        return budget_type, _funding_mode_from_budget_type(budget_type)
+    if budget_type == BudgetType.POOL and funding_mode != FundingMode.PREPAID_POOL:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="budget_type=pool requires funding_mode=prepaid_pool",
+        )
+    if budget_type == BudgetType.PERIODIC and funding_mode != FundingMode.INVOICE_USAGE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="budget_type=periodic requires funding_mode=invoice_usage",
+        )
+    return budget_type, funding_mode
 
 
 def _create_default_limits_for_team(team: DBTeam, db: Session) -> None:
@@ -87,11 +126,9 @@ async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
     POOL teams start with $0 budget and a configurable duration (purchases raise budget).
     PERIODIC teams start with the default budget (DEFAULT_MAX_SPEND).
     """
-    max_budget = 0.0 if team.budget_type == BudgetType.POOL else DEFAULT_MAX_SPEND
+    max_budget = 0.0 if team.uses_prepaid_pool else DEFAULT_MAX_SPEND
     budget_duration = (
-        f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
-        if team.budget_type == BudgetType.POOL
-        else None
+        f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d" if team.uses_prepaid_pool else None
     )
 
     regions_query = db.query(DBRegion).filter(
@@ -144,6 +181,10 @@ async def register_team(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Team name already exists"
         )
 
+    budget_type, funding_mode = _resolve_team_budget_and_funding_modes(
+        team.budget_type, team.funding_mode
+    )
+
     # Create the team
     db_team = DBTeam(
         name=team.name,
@@ -154,7 +195,8 @@ async def register_team(
         created_at=datetime.now(UTC),
         force_user_keys=team.force_user_keys,
         hide_public_regions=team.hide_public_regions,
-        budget_type=team.budget_type,
+        budget_type=budget_type,
+        funding_mode=funding_mode,
     )
 
     db.add(db_team)
@@ -273,8 +315,19 @@ async def update_team(
             detail="Only system administrators can toggle always-free status",
         )
 
+    update_data = team_update.model_dump(exclude_unset=True)
+    if "budget_type" in update_data or "funding_mode" in update_data:
+        resolved_budget_type, resolved_funding_mode = (
+            _resolve_team_budget_and_funding_modes(
+                update_data.get("budget_type", db_team.budget_type),
+                update_data.get("funding_mode", db_team.funding_mode),
+            )
+        )
+        update_data["budget_type"] = resolved_budget_type
+        update_data["funding_mode"] = resolved_funding_mode
+
     # Update team fields
-    for key, value in team_update.model_dump(exclude_unset=True).items():
+    for key, value in update_data.items():
         setattr(db_team, key, value)
 
     db_team.updated_at = datetime.now(UTC)
