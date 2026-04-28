@@ -277,6 +277,46 @@ def test_update_pool_budget_allows_any_value_for_dedicated_team(
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
+def test_update_pool_budget_allows_setting_cap_before_first_purchase(
+    mock_update_team_budget,
+    mock_get_team_info,
+    client,
+    admin_token,
+    test_team,
+    test_region,
+    db,
+):
+    test_team.budget_type = "pool"
+    db.add(test_team)
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "team_info": {"max_budget": 0.0, "budget_duration": "365d"}
+    }
+    mock_update_team_budget.return_value = None
+
+    response = client.put(
+        f"/spend/{test_region.id}/team/{test_team.id}/budget",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"max_budget": 60.0},
+    )
+    assert response.status_code == 200, response.json()
+    mock_update_team_budget.assert_awaited_once()
+    cap = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == "team",
+            DBSpendCap.region_id == test_region.id,
+            DBSpendCap.team_id == test_team.id,
+        )
+        .first()
+    )
+    assert cap is not None
+    assert cap.max_budget == 60.0
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
 def test_update_pool_team_budget_uses_pool_duration(
     mock_update_team_budget,
     mock_get_team_info,
@@ -491,6 +531,45 @@ def test_update_pool_member_budget_allows_any_value_for_dedicated_team(
     assert response.status_code == 200, response.json()
     mock_update_team_member.assert_awaited_once()
     assert mock_update_team_member.await_args.kwargs["max_budget_in_team"] == 60.0
+
+
+@patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
+def test_update_pool_member_budget_allows_setting_cap_before_first_purchase(
+    mock_update_team_member,
+    client,
+    admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
+):
+    test_team.budget_type = "pool"
+    test_team_user.team_id = test_team.id
+    db.add(test_team)
+    db.add(test_team_user)
+    db.commit()
+
+    mock_update_team_member.return_value = None
+
+    response = client.put(
+        f"/spend/{test_region.id}/team/{test_team.id}/member/{test_team_user.id}/budget",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"max_budget": 60.0},
+    )
+    assert response.status_code == 200, response.json()
+    mock_update_team_member.assert_awaited_once()
+    cap = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == "team_member",
+            DBSpendCap.region_id == test_region.id,
+            DBSpendCap.team_id == test_team.id,
+            DBSpendCap.user_id == test_team_user.id,
+        )
+        .first()
+    )
+    assert cap is not None
+    assert cap.max_budget == 60.0
 
 
 @patch("app.api.spend.logger.warning")
@@ -715,6 +794,59 @@ def test_update_pool_key_budget_allows_any_value_for_dedicated_team(
     assert response.status_code == 200, response.json()
     mock_update_key_budget.assert_awaited_once()
     assert mock_update_key_budget.await_args.kwargs["max_budget"] == 50.0
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_update_pool_key_budget_allows_setting_cap_before_first_purchase(
+    mock_update_key_budget,
+    mock_get_key_info,
+    client,
+    admin_token,
+    test_team_user,
+    test_team,
+    test_region,
+    db,
+):
+    test_team.budget_type = "pool"
+    test_team_user.team_id = test_team.id
+    db.add(test_team)
+    db.add(test_team_user)
+    db.commit()
+
+    key = DBPrivateAIKey(
+        name="pool-key-prepurchase-cap",
+        litellm_token="pool-key-prepurchase-cap-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+
+    mock_get_key_info.return_value = {
+        "info": {"max_budget": 60.0, "budget_duration": "1mo"}
+    }
+    mock_update_key_budget.return_value = None
+
+    response = client.put(
+        f"/spend/{test_region.id}/key/{key.id}/budget",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"max_budget": 60.0},
+    )
+    assert response.status_code == 200, response.json()
+    mock_update_key_budget.assert_awaited_once()
+    cap = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == "key",
+            DBSpendCap.region_id == test_region.id,
+            DBSpendCap.key_id == key.id,
+        )
+        .first()
+    )
+    assert cap is not None
+    assert cap.max_budget == 60.0
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
