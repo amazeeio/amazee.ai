@@ -711,9 +711,6 @@ finish_test \
   "$PASS"
 
 # Test 10: POOL rejection above purchased budget across team/member/key endpoints
-start_test \
-  "POOL cap rejection (team/member/key)" \
-  "purchase 5.00 succeeds; setting 6.00 cap returns 400 on all three endpoints"
 step "Test 10: creating new POOL team"
 POOL_TEAM_TAG="$(date +%s | tr -d '\n' | tail -c 6)"
 POOL_ADMIN_EMAIL_BASE="spend-e2e-pool-owner-${SUFFIX}@example.com"
@@ -744,6 +741,23 @@ POOL_KEY_URL="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '.litellm_api
 register_key "$POOL_KEY_ID"
 register_user "$POOL_USER_ID"
 register_team "$POOL_TEAM_ID"
+start_test \
+  "POOL pre-purchase cap set (team/member/key)" \
+  "without any purchase yet, setting 6.00 cap succeeds (200) on team/member/key endpoints"
+step "Test 10a: setting max_budget 6.0 before any POOL purchase"
+api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":6.0}'
+POOL_PRE_TEAM_STATUS="$HTTP_STATUS"
+api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/member/${POOL_USER_ID}/budget" '{"max_budget":6.0}'
+POOL_PRE_MEMBER_STATUS="$HTTP_STATUS"
+api_call "PUT" "/spend/${REGION_ID}/key/${POOL_KEY_ID}/budget" '{"max_budget":6.0}'
+POOL_PRE_KEY_STATUS="$HTTP_STATUS"
+PASS=$([[ "$POOL_PRE_TEAM_STATUS" == "200" && "$POOL_PRE_MEMBER_STATUS" == "200" && "$POOL_PRE_KEY_STATUS" == "200" ]] && echo 1 || echo 0)
+finish_test \
+  "team_put=${POOL_PRE_TEAM_STATUS}, member_put=${POOL_PRE_MEMBER_STATUS}, key_put=${POOL_PRE_KEY_STATUS}" \
+  "$PASS"
+start_test \
+  "POOL cap rejection (team/member/key)" \
+  "purchase 5.00 succeeds; setting 6.00 cap returns 400 on all three endpoints"
 step "Test 10: purchasing \$5.00 pool budget for POOL team"
 PURCHASE_PAYLOAD=$(jq -n \
   --arg sid "spend-e2e-purchase-${SUFFIX}" \
