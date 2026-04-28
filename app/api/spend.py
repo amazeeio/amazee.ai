@@ -771,7 +771,8 @@ async def update_team_budget(
             purchased_total = _pool_purchased_budget_for_team_region(
                 db, team_id, region_id
             )
-            team_info = (await service.get_team_info(lite_team_id)).get("team_info", {})
+            team_info_resp = await service.get_team_info(lite_team_id)
+            team_info = team_info_resp.get("team_info", team_info_resp)
             month_start_spend = round(float(team_info.get("spend", 0.0) or 0.0), 4)
             month_anchor = _current_month_anchor()
             effective_max_budget = _compute_pool_monthly_effective_budget(
