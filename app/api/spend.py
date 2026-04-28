@@ -247,10 +247,9 @@ def _assert_pool_budget_cap_within_purchases(
 ) -> None:
     if team is None or team.budget_type != BudgetType.POOL or max_budget is None:
         return
-    # Dedicated teams (hide_public_regions=True) operate on an infinite budget
-    # represented as $0 in LiteLLM. They don't go through the purchase flow so
-    # the pool-purchase cap does not apply to them.
-    if team.hide_public_regions:
+    # Dedicated teams operate on a direct budget and do not use the purchase flow,
+    # so the pool-purchase cap does not apply to them.
+    if team.is_dedicated:
         return
     purchased_budget = _pool_purchased_budget_for_team_region(db, team.id, region_id)
     if float(max_budget) > purchased_budget:
@@ -760,15 +759,20 @@ async def update_team_budget(
     month_start_spend = None
 
     if team.budget_type == BudgetType.POOL and body.max_budget is not None:
-        purchased_total = _pool_purchased_budget_for_team_region(db, team_id, region_id)
-        team_info = (await service.get_team_info(lite_team_id)).get("team_info", {})
-        month_start_spend = round(float(team_info.get("spend", 0.0) or 0.0), 4)
-        month_anchor = _current_month_anchor()
-        effective_max_budget = _compute_pool_monthly_effective_budget(
-            purchased_total=purchased_total,
-            month_start_spend=month_start_spend,
-            monthly_cap=body.max_budget,
-        )
+        if team.is_dedicated:
+            # Dedicated teams have no purchase-driven ceiling; the requested
+            # max_budget is used directly without clamping.
+            effective_max_budget = body.max_budget
+        else:
+            purchased_total = _pool_purchased_budget_for_team_region(db, team_id, region_id)
+            team_info = (await service.get_team_info(lite_team_id)).get("team_info", {})
+            month_start_spend = round(float(team_info.get("spend", 0.0) or 0.0), 4)
+            month_anchor = _current_month_anchor()
+            effective_max_budget = _compute_pool_monthly_effective_budget(
+                purchased_total=purchased_total,
+                month_start_spend=month_start_spend,
+                monthly_cap=body.max_budget,
+            )
 
     await service.update_team_budget(
         team_id=lite_team_id,

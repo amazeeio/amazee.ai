@@ -271,6 +271,8 @@ def test_update_pool_budget_allows_any_value_for_dedicated_team(
     )
     assert response.status_code == 200, response.json()
     mock_update_team_budget.assert_awaited_once()
+    assert mock_update_team_budget.await_args.kwargs["max_budget"] == 100.0
+    assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "365d"
 
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
@@ -488,6 +490,7 @@ def test_update_pool_member_budget_allows_any_value_for_dedicated_team(
     )
     assert response.status_code == 200, response.json()
     mock_update_team_member.assert_awaited_once()
+    assert mock_update_team_member.await_args.kwargs["max_budget_in_team"] == 60.0
 
 
 @patch("app.api.spend.logger.warning")
@@ -711,6 +714,7 @@ def test_update_pool_key_budget_allows_any_value_for_dedicated_team(
     )
     assert response.status_code == 200, response.json()
     mock_update_key_budget.assert_awaited_once()
+    assert mock_update_key_budget.await_args.kwargs["max_budget"] == 50.0
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)

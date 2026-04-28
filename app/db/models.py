@@ -176,6 +176,17 @@ class DBTeam(Base):
     def products(self):
         return [tp.product for tp in self.active_products if tp.product]
 
+    @property
+    def is_dedicated(self) -> bool:
+        """True for dedicated teams that operate on a direct, infinite budget.
+
+        Dedicated teams hide public regions (``hide_public_regions=True``) and are
+        provisioned with private infrastructure — their budget is not driven by the
+        purchase flow. In LiteLLM, ``$0`` represents "no limit" for these teams, so
+        the normal pool-purchase cap does not apply.
+        """
+        return bool(self.hide_public_regions)
+
 
 class DBTeamMetrics(Base):
     """
