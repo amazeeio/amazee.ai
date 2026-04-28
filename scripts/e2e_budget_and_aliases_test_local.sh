@@ -454,7 +454,7 @@ run_pool_key_caps_purchase_transition_test() {
   pre_blocked_1=$([[ "$pre_req_1" == "400" || "$pre_req_1" == "429" ]] && echo 1 || echo 0)
   pre_blocked_2=$([[ "$pre_req_2" == "400" || "$pre_req_2" == "429" ]] && echo 1 || echo 0)
 
-  step "Purchasing $8.00 team budget"
+  step "Purchasing \$8.00 team budget"
   local purchase_payload
   purchase_payload=$(jq -n \
     --arg sid "spend-e2e-pool-keys-purchase-${SUFFIX}-${team_id}" \
@@ -584,7 +584,7 @@ run_pool_member_caps_purchase_transition_test() {
   pre_blocked_1=$([[ "$pre_req_1" == "400" || "$pre_req_1" == "429" ]] && echo 1 || echo 0)
   pre_blocked_2=$([[ "$pre_req_2" == "400" || "$pre_req_2" == "429" ]] && echo 1 || echo 0)
 
-  step "Purchasing $8.00 team budget"
+  step "Purchasing \$8.00 team budget"
   local purchase_payload
   purchase_payload=$(jq -n \
     --arg sid "spend-e2e-pool-members-purchase-${SUFFIX}-${team_id}" \
