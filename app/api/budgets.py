@@ -9,9 +9,11 @@ from app.db.database import get_db
 from app.db.models import (
     DBLimitedResource,
     DBPoolPurchase,
+    DBPrivateAIKey,
     DBRegion,
     DBSpendCap,
     DBTeam,
+    DBUser,
 )
 from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
 from app.schemas.models import (
@@ -88,6 +90,76 @@ def _compute_pool_monthly_effective_budget(
     return round(
         min(float(purchased_total), float(month_start_spend) + float(monthly_cap)), 4
     )
+
+
+async def _sync_pool_key_effective_budgets(
+    db: Session, *, team_id: int, region: DBRegion, purchased_total: float
+) -> list[str]:
+    """
+    Keep key-level effective limits coherent for POOL teams.
+
+    - purchased_total <= 0: hard-lock all team keys (max_budget=0)
+    - purchased_total > 0: restore key max_budget from spend_caps (or clear)
+    """
+    team_user_ids = db.query(DBUser.id).filter(DBUser.team_id == team_id).all()
+    team_user_ids = [row[0] for row in team_user_ids]
+    keys = (
+        db.query(DBPrivateAIKey)
+        .filter(
+            DBPrivateAIKey.region_id == region.id,
+            DBPrivateAIKey.litellm_token.isnot(None),
+            (DBPrivateAIKey.team_id == team_id)
+            | (DBPrivateAIKey.owner_id.in_(team_user_ids)),
+        )
+        .all()
+    )
+    if not keys:
+        return []
+
+    key_caps = (
+        db.query(DBSpendCap.key_id, DBSpendCap.max_budget)
+        .filter(
+            DBSpendCap.scope == "key",
+            DBSpendCap.region_id == region.id,
+            DBSpendCap.key_id.isnot(None),
+            DBSpendCap.max_budget.isnot(None),
+            DBSpendCap.key_id.in_([k.id for k in keys]),
+        )
+        .all()
+    )
+    cap_map = {int(key_id): float(max_budget) for key_id, max_budget in key_caps}
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    errors: list[str] = []
+    for key in keys:
+        try:
+            if purchased_total <= 0:
+                await service.update_key_budget(
+                    litellm_token=key.litellm_token,
+                    budget_duration=MONTHLY_BUDGET_DURATION,
+                    max_budget=0.0,
+                    clear_max_budget=False,
+                )
+            else:
+                configured_cap = cap_map.get(key.id)
+                if configured_cap is None:
+                    await service.update_key_budget(
+                        litellm_token=key.litellm_token,
+                        budget_duration=None,
+                        max_budget=None,
+                        clear_max_budget=True,
+                    )
+                else:
+                    await service.update_key_budget(
+                        litellm_token=key.litellm_token,
+                        budget_duration=MONTHLY_BUDGET_DURATION,
+                        max_budget=configured_cap,
+                        clear_max_budget=False,
+                    )
+        except Exception as exc:
+            errors.append(f"Key {key.id}: {str(exc)}")
+    return errors
 
 
 @router.post(
@@ -257,6 +329,21 @@ async def purchase_pool_budget(
                 detail=(
                     "Failed to update team budget in LiteLLM: "
                     + "; ".join(propagation_result["errors"])
+                ),
+            )
+        key_sync_errors = await _sync_pool_key_effective_budgets(
+            db,
+            team_id=team_id,
+            region=region,
+            purchased_total=new_total_budget,
+        )
+        if key_sync_errors:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Failed to update key budgets in LiteLLM after purchase: "
+                    + "; ".join(key_sync_errors)
                 ),
             )
     except HTTPException:

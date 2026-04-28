@@ -756,6 +756,17 @@ finish_test \
   "team_put=${POOL_PRE_TEAM_STATUS}, member_put=${POOL_PRE_MEMBER_STATUS}, key_put=${POOL_PRE_KEY_STATUS}" \
   "$PASS"
 start_test \
+  "POOL pre-purchase request gate (team budget zero)" \
+  "before first purchase, key calls are blocked even if key cap is configured"
+step "Test 10b: attempting key usage before any POOL purchase"
+chat_usage "$POOL_KEY_URL" "$POOL_KEY_TOKEN" "$MODEL_ID" 100 14900
+POOL_PREPURCHASE_CHAT_STATUS="$CHAT_STATUS"
+POOL_PREPURCHASE_BLOCKED=$([[ "$POOL_PREPURCHASE_CHAT_STATUS" == "400" || "$POOL_PREPURCHASE_CHAT_STATUS" == "429" ]] && echo 1 || echo 0)
+PASS=$([[ "$POOL_PREPURCHASE_BLOCKED" == "1" ]] && echo 1 || echo 0)
+finish_test \
+  "chat_status=${POOL_PREPURCHASE_CHAT_STATUS}" \
+  "$PASS"
+start_test \
   "POOL cap rejection (team/member/key)" \
   "purchase 5.00 succeeds; setting 6.00 cap returns 400 on all three endpoints"
 step "Test 10: purchasing \$5.00 pool budget for POOL team"

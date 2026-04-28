@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from fastapi import status
@@ -19,7 +20,7 @@ from app.schemas.models import (
     PrivateAIKeyDetail,
 )
 from app.db.postgres import PostgresManager
-from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
+from app.db.models import DBPoolPurchase, DBPrivateAIKey, DBRegion, DBUser, DBTeam
 from app.services.litellm import LiteLLMService
 from app.core.security import (
     get_current_user_from_auth,
@@ -434,6 +435,18 @@ async def create_llm_token(
     is_pool_team = (
         effective_team is not None and effective_team.budget_type == BudgetType.POOL
     )
+    pool_purchased_total = None
+    if is_pool_team and effective_team is not None and not effective_team.is_dedicated:
+        total_cents = (
+            db.query(func.sum(DBPoolPurchase.amount_cents))
+            .filter(
+                DBPoolPurchase.team_id == effective_team.id,
+                DBPoolPurchase.region_id == region.id,
+            )
+            .scalar()
+            or 0
+        )
+        pool_purchased_total = float(total_cents) / 100.0
 
     if (owner is not None and owner.team_id) or team_id:
         if settings.ENABLE_LIMITS and not is_pool_team:
@@ -480,6 +493,17 @@ async def create_llm_token(
             rpm_limit=max_rpm_limit,
             apply_limits=not is_pool_team,
         )
+        if (
+            is_pool_team
+            and pool_purchased_total is not None
+            and pool_purchased_total <= 0
+        ):
+            await litellm_service.update_key_budget(
+                litellm_token=litellm_token,
+                budget_duration="1mo",
+                max_budget=0.0,
+                clear_max_budget=False,
+            )
 
         # Create response object
         db_token = DBPrivateAIKey(

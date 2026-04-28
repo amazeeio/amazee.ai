@@ -835,7 +835,11 @@ def test_update_pool_key_budget_allows_setting_cap_before_first_purchase(
         json={"max_budget": 60.0},
     )
     assert response.status_code == 200, response.json()
-    mock_update_key_budget.assert_awaited_once()
+    assert mock_update_key_budget.await_count == 2
+    assert any(
+        call.kwargs.get("max_budget") == 0.0
+        for call in mock_update_key_budget.await_args_list
+    )
     cap = (
         db.query(DBSpendCap)
         .filter(

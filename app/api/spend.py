@@ -266,6 +266,68 @@ def _assert_pool_budget_cap_within_purchases(
         )
 
 
+async def _enforce_pool_no_purchase_key_lock(
+    db: Session,
+    team: DBTeam | None,
+    region: DBRegion,
+    service: LiteLLMService,
+) -> bool:
+    """
+    For non-dedicated POOL teams with no purchased budget in a region, hard-lock
+    keys by setting max_budget=0 in LiteLLM to avoid the team budget zero-edge.
+    """
+    if team is None or team.budget_type != BudgetType.POOL or team.is_dedicated:
+        return False
+    purchased_budget = _pool_purchased_budget_for_team_region(db, team.id, region.id)
+    if purchased_budget > 0:
+        return False
+    team_user_ids = db.query(DBUser.id).filter(DBUser.team_id == team.id).all()
+    team_user_ids = [row[0] for row in team_user_ids]
+    has_region_keys = (
+        db.query(DBPrivateAIKey.id)
+        .filter(
+            DBPrivateAIKey.region_id == region.id,
+            DBPrivateAIKey.litellm_token.isnot(None),
+            (DBPrivateAIKey.team_id == team.id)
+            | (DBPrivateAIKey.owner_id.in_(team_user_ids)),
+        )
+        .first()
+        is not None
+    )
+    if not has_region_keys:
+        return False
+    region_keys = (
+        db.query(DBPrivateAIKey)
+        .filter(
+            DBPrivateAIKey.region_id == region.id,
+            DBPrivateAIKey.litellm_token.isnot(None),
+            (DBPrivateAIKey.team_id == team.id)
+            | (DBPrivateAIKey.owner_id.in_(team_user_ids)),
+        )
+        .all()
+    )
+    errors: list[str] = []
+    for key in region_keys:
+        try:
+            await service.update_key_budget(
+                litellm_token=key.litellm_token,
+                budget_duration=MONTHLY_BUDGET_DURATION,
+                max_budget=0.0,
+                clear_max_budget=False,
+            )
+        except Exception as exc:
+            errors.append(f"Key {key.id}: {str(exc)}")
+    if errors:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Failed to enforce no-purchase key lock in LiteLLM: "
+                + "; ".join(errors)
+            ),
+        )
+    return True
+
+
 def _upsert_spend_cap(
     db: Session,
     *,
@@ -786,6 +848,8 @@ async def update_team_budget(
         max_budget=effective_max_budget,
         budget_duration=effective_duration,
     )
+    if body.max_budget is not None:
+        await _enforce_pool_no_purchase_key_lock(db, team, region, service)
     _upsert_spend_cap(
         db,
         scope="team",
@@ -876,6 +940,7 @@ async def update_team_member_budget(
         role=team_role_for_litellm(user),
         max_budget_in_team=body.max_budget,
     )
+    await _enforce_pool_no_purchase_key_lock(db, team, region, service)
     effective_duration = _effective_monthly_budget_duration(body.max_budget)
     _upsert_spend_cap(
         db,
@@ -1154,6 +1219,7 @@ async def update_key_budget(
         max_budget=body.max_budget,
         clear_max_budget=body.max_budget is None,
     )
+    await _enforce_pool_no_purchase_key_lock(db, team_for_budget_check, region, service)
     _upsert_spend_cap(
         db,
         scope="key",
