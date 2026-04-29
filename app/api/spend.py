@@ -27,7 +27,7 @@ from app.db.models import (
     DBUser,
 )
 from app.schemas.limits import OwnerType, ResourceType
-from app.api.users import invalidate_user_spend_cache
+from app.api.users import invalidate_user_spend_cache, invalidate_users_spend_cache_bulk
 from app.schemas.models import (
     PrivateAIKeySpend,
     SpendBudgetUpdateRequest,
@@ -211,9 +211,8 @@ def _invalidate_team_user_spend_cache(db: Session, team_id: int) -> None:
         .filter(DBUser.team_id == team_id, DBUser.is_active.is_(True))
         .all()
     )
-    for (email,) in team_user_emails:
-        if email:
-            invalidate_user_spend_cache(db, email)
+    emails = [email for (email,) in team_user_emails if email]
+    invalidate_users_spend_cache_bulk(db, emails)
 
 
 def _invalidate_key_related_user_spend_cache(db: Session, key: DBPrivateAIKey) -> None:
@@ -307,20 +306,6 @@ def _pool_budget_duration_from_last_purchase(
     days_since_last_purchase = (datetime.now(UTC) - latest_purchase).days
     days_left = max(0, settings.POOL_BUDGET_EXPIRATION_DAYS - days_since_last_purchase)
     return f"{days_left}d"
-
-
-def _assert_pool_budget_cap_within_purchases(
-    db: Session,
-    team: DBTeam | None,
-    region_id: int,
-    max_budget: float | None,
-) -> None:
-    if team is None or not team.requires_pool_purchase_gate or max_budget is None:
-        return
-    # Purchase-gated POOL teams may configure caps above purchased total.
-    # Effective enforcement remains bounded by team budget in LiteLLM.
-    return
-
 
 async def _enforce_pool_no_purchase_key_lock(
     db: Session,
@@ -928,7 +913,6 @@ async def update_team_budget(
     _assert_team_budget_write_access(current_user, role, team_id)
     region = _get_region_or_404(db, region_id)
     _assert_team_region_association(db, region, team_id)
-    _assert_pool_budget_cap_within_purchases(db, team, region_id, body.max_budget)
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
@@ -1059,7 +1043,6 @@ async def update_team_member_budget(
     _assert_team_budget_write_access(current_user, role, team_id)
     region = _get_region_or_404(db, region_id)
     _assert_team_region_association(db, region, team_id)
-    _assert_pool_budget_cap_within_purchases(db, team, region_id, body.max_budget)
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
@@ -1360,9 +1343,6 @@ async def update_key_budget(
             )
 
     region = _get_region_or_404(db, region_id)
-    _assert_pool_budget_cap_within_purchases(
-        db, team_for_budget_check, region_id, body.max_budget
-    )
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
