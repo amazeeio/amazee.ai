@@ -37,19 +37,20 @@ jobs:
             "^README.md"
           )
 
-          MATCHES=""
+          HAS_MATCHES=false
+          : > /tmp/matched_files.txt
           while IFS= read -r file; do
             for pattern in "${PATTERNS[@]}"; do
               if echo "$file" | grep -qE "$pattern"; then
-                MATCHES="${MATCHES}${file}\n"
+                printf '%s\n' "$file" >> /tmp/matched_files.txt
+                HAS_MATCHES=true
                 break
               fi
             done
           done < /tmp/all_changed.txt
 
-          if [ -n "$MATCHES" ]; then
+          if [ "$HAS_MATCHES" = true ]; then
             echo "has_matches=true" >> "$GITHUB_OUTPUT"
-            echo -e "$MATCHES" > /tmp/matched_files.txt
           else
             echo "has_matches=false" >> "$GITHUB_OUTPUT"
           fi
