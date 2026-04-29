@@ -6,7 +6,7 @@ Default mode is dry-run. Use --apply to execute changes.
 
 What this script does
 ---------------------
-It runs in three independent phases:
+It runs in four independent phases:
 
 1) teams
    - Finds active teams in DB and target regions for each team:
@@ -27,6 +27,14 @@ It runs in three independent phases:
    - Finds DB keys with litellm_token.
    - Repairs DB key.team_id when missing but inferable from owner.team_id.
    - Reconciles LiteLLM key association fields (team_id/user_id) via /key/update.
+
+4) ungate
+   - Requires --region-id to target a single region.
+   - Finds all active teams associated with that region (dedicated or shared).
+   - Updates existing LiteLLM teams to remove purchase gating:
+     - Sets max_budget=null and budget_duration=null.
+   - Only targets teams where requires_pool_purchase_gate is False in DB.
+   - Does NOT create teams that don't exist (that's phase 1's job).
 
 Dry-run vs apply
 ----------------
@@ -302,6 +310,128 @@ class BackfillRunner:
                 return counters
         return counters
 
+    async def _update_litellm_team_budget(
+        self,
+        region: DBRegion,
+        lite_team_id: str,
+    ) -> None:
+        """Remove purchase gate from a LiteLLM team by clearing budget constraints."""
+        payload: dict = {
+            "team_id": lite_team_id,
+            "max_budget": None,
+            "budget_duration": None,
+        }
+        headers = {"Authorization": f"Bearer {region.litellm_api_key}"}
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{region.litellm_api_url}/team/update",
+                json=payload,
+                headers=headers,
+            )
+            resp.raise_for_status()
+
+    async def phase_ungate(self, region_id: int) -> Counters:
+        counters = Counters()
+
+        region = self.session.query(DBRegion).filter(DBRegion.id == region_id).first()
+        if not region or not region.is_active:
+            print(f"[ungate] region_id={region_id} not found or inactive, aborting")
+            return counters
+
+        # Find all active teams associated with this region
+        team_ids_in_region: set[int] = set()
+
+        # If region is shared, all active teams are in scope
+        if not region.is_dedicated:
+            active_teams = (
+                self.session.query(DBTeam)
+                .filter(DBTeam.deleted_at.is_(None), DBTeam.is_active.is_(True))
+                .all()
+            )
+            team_ids_in_region = {t.id for t in active_teams}
+        else:
+            # Dedicated: only teams explicitly associated via DBTeamRegion
+            assocs = (
+                self.session.query(DBTeamRegion)
+                .filter(DBTeamRegion.region_id == region_id)
+                .all()
+            )
+            team_ids_in_region = {a.team_id for a in assocs}
+
+        if not team_ids_in_region:
+            print(f"[ungate] no teams found for region={region.name}")
+            return counters
+
+        teams = (
+            self.session.query(DBTeam)
+            .filter(
+                DBTeam.id.in_(team_ids_in_region),
+                DBTeam.deleted_at.is_(None),
+                DBTeam.is_active.is_(True),
+            )
+            .order_by(DBTeam.id.asc())
+            .all()
+        )
+
+        service = LiteLLMService(region.litellm_api_url, region.litellm_api_key)
+
+        for team in teams:
+            if self.only_team_id is not None and team.id != self.only_team_id:
+                continue
+
+            counters.processed += 1
+
+            if team.requires_pool_purchase_gate:
+                counters.skipped += 1
+                print(
+                    f"[ungate] team={team.id} skipped (requires_pool_purchase_gate=True)"
+                )
+                continue
+
+            lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+
+            # Verify team exists in LiteLLM before attempting update
+            try:
+                await service.get_team_info(lite_team_id)
+            except Exception as exc:
+                if parse_status_from_exc(exc) == 404:
+                    counters.skipped += 1
+                    print(
+                        f"[ungate] team={team.id} lite_team_id={lite_team_id} skipped (not found in LiteLLM)"
+                    )
+                    continue
+                raise
+
+            try:
+                if self.dry_run:
+                    print(
+                        f"[ungate] team={team.id} lite_team_id={lite_team_id} would_ungate (clear max_budget & budget_duration)"
+                    )
+                else:
+                    await self._update_litellm_team_budget(region, lite_team_id)
+                    print(
+                        f"[ungate] team={team.id} lite_team_id={lite_team_id} ungated (cleared max_budget & budget_duration)"
+                    )
+                counters.changed += 1
+            except Exception as exc:
+                counters.failed += 1
+                self.failures.append(
+                    {
+                        "phase": "ungate",
+                        "team_id": team.id,
+                        "region_id": region.id,
+                        "error": str(exc),
+                    }
+                )
+                print(
+                    f"[ungate] team={team.id} lite_team_id={lite_team_id} FAILED: {exc}"
+                )
+
+            if self.max_rows is not None and counters.processed >= self.max_rows:
+                break
+
+        return counters
+
     async def _update_litellm_key_associations(
         self,
         region: DBRegion,
@@ -411,9 +541,15 @@ async def main() -> int:
     parser = argparse.ArgumentParser(description="One-time LiteLLM backfill script")
     parser.add_argument(
         "--phase",
-        choices=["teams", "users", "keys", "all"],
+        choices=["teams", "users", "keys", "ungate", "all"],
         default="all",
         help="Which phase to run",
+    )
+    parser.add_argument(
+        "--region-id",
+        type=int,
+        default=None,
+        help="Region ID for ungate phase (required when --phase=ungate)",
     )
     parser.add_argument(
         "--apply",
@@ -453,6 +589,10 @@ async def main() -> int:
             summary["users"] = (await runner.phase_users()).as_dict()
         if args.phase in ("keys", "all"):
             summary["keys"] = (await runner.phase_keys()).as_dict()
+        if args.phase == "ungate":
+            if not args.region_id:
+                parser.error("--region-id is required when --phase=ungate")
+            summary["ungate"] = (await runner.phase_ungate(args.region_id)).as_dict()
 
         if dry_run:
             session.rollback()
