@@ -239,13 +239,30 @@ class AuditRunner:
                         team_id=team.id,
                         region_id=region.id,
                     )
-                    for key in keys:
-                        await service.update_key_budget(
-                            litellm_token=key.litellm_token,
-                            budget_duration="1mo",
-                            max_budget=0.0,
-                            clear_max_budget=False,
+                    semaphore = asyncio.Semaphore(10)
+
+                    async def _lock_key(key):
+                        try:
+                            async with semaphore:
+                                await service.update_key_budget(
+                                    litellm_token=key.litellm_token,
+                                    budget_duration="1mo",
+                                    max_budget=0.0,
+                                    clear_max_budget=False,
+                                )
+                            return None
+                        except Exception as exc:
+                            return f"Key {key.id}: {str(exc)}"
+
+                    lock_errors = [
+                        error
+                        for error in await asyncio.gather(
+                            *[_lock_key(key) for key in keys]
                         )
+                        if error is not None
+                    ]
+                    if lock_errors:
+                        raise RuntimeError("; ".join(lock_errors))
                     counters.fixed += 1
                     print(
                         f"[audit] team={team.id} region={region.name} FIXED team_budget=0 keys_locked={len(keys)}"
