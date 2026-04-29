@@ -292,6 +292,60 @@ def test_pool_purchase_honors_existing_monthly_cap(
     assert mock_propagate.call_args.kwargs["apply_to_keys"] is False
 
 
+def test_pool_purchase_restores_team_budget_when_key_sync_fails(
+    client, admin_token, db, test_team, test_region
+):
+    test_team.budget_type = "pool"
+    db.commit()
+    payment_id = f"pi_key_sync_failure_{int(time.time() * 1000000)}"
+
+    with (
+        patch(
+            "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
+        ) as mock_propagate,
+        patch(
+            "app.api.budgets._sync_pool_key_effective_budgets", new_callable=AsyncMock
+        ) as mock_sync_keys,
+        patch(
+            "app.api.budgets.LiteLLMService.get_team_info", new_callable=AsyncMock
+        ) as mock_get_team_info,
+        patch(
+            "app.api.budgets.LiteLLMService.update_team_budget", new_callable=AsyncMock
+        ) as mock_restore_team_budget,
+    ):
+        mock_propagate.return_value = {"teams_updated": 1, "errors": []}
+        mock_sync_keys.return_value = ["Key 1: lock failed"]
+        mock_get_team_info.return_value = {
+            "team_info": {"max_budget": 0.0, "budget_duration": "365d", "spend": 0.0}
+        }
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": payment_id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 502
+    assert "Failed to update key budgets in LiteLLM after purchase" in response.json()[
+        "detail"
+    ]
+    mock_restore_team_budget.assert_awaited_once_with(
+        team_id=f"{test_region.name}_{test_team.id}",
+        max_budget=0.0,
+        budget_duration="365d",
+    )
+    purchase = (
+        db.query(DBPoolPurchase)
+        .filter(DBPoolPurchase.stripe_payment_id == payment_id)
+        .first()
+    )
+    assert purchase is None
+
+
 def test_pool_purchase_preserves_operator_manual_cap_below_purchased_total(
     client, admin_token, db, test_team, test_region
 ):

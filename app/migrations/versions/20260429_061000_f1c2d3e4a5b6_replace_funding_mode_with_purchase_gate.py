@@ -61,7 +61,7 @@ def downgrade() -> None:
                 create_constraint=True,
             ),
             nullable=False,
-            server_default="prepaid_pool",
+            server_default="invoice_usage",
         ),
     )
     op.execute(

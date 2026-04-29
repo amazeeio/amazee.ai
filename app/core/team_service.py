@@ -16,6 +16,26 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 
+def get_team_region_litellm_keys(
+    db: Session,
+    *,
+    team_id: int,
+    region_id: int,
+    key_id: int | None = None,
+) -> List[DBPrivateAIKey]:
+    """Return team keys in a region that have LiteLLM tokens."""
+    team_user_ids_subq = select(DBUser.id).filter(DBUser.team_id == team_id)
+    query = db.query(DBPrivateAIKey).filter(
+        DBPrivateAIKey.region_id == region_id,
+        DBPrivateAIKey.litellm_token.isnot(None),
+        (DBPrivateAIKey.team_id == team_id)
+        | (DBPrivateAIKey.owner_id.in_(team_user_ids_subq)),
+    )
+    if key_id is not None:
+        query = query.filter(DBPrivateAIKey.id == key_id)
+    return query.all()
+
+
 def get_team_keys_by_region(
     db: Session, team_id: int
 ) -> Dict[DBRegion, List[DBPrivateAIKey]]:

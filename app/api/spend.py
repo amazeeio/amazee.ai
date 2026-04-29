@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -9,6 +10,7 @@ from app.core.config import settings
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
 from app.core.litellm_user_sync import team_role_for_litellm
 from app.core.roles import UserRole
+from app.core.team_service import get_team_region_litellm_keys
 from app.core.security import (
     get_current_user_from_auth,
     get_private_ai_access,
@@ -267,6 +269,7 @@ async def _enforce_pool_no_purchase_key_lock(
     region: DBRegion,
     service: LiteLLMService,
     key_id: int | None = None,
+    purchased_budget: float | None = None,
 ) -> bool:
     """
     For prepaid-pool teams with no purchased budget in a region, hard-lock
@@ -274,33 +277,39 @@ async def _enforce_pool_no_purchase_key_lock(
     """
     if team is None or not team.requires_pool_purchase_gate:
         return False
-    purchased_budget = _pool_purchased_budget_for_team_region(db, team.id, region.id)
+    if purchased_budget is None:
+        purchased_budget = _pool_purchased_budget_for_team_region(db, team.id, region.id)
     if purchased_budget > 0:
         return False
-    team_user_ids = db.query(DBUser.id).filter(DBUser.team_id == team.id).all()
-    team_user_ids = [row[0] for row in team_user_ids]
-    region_keys_query = db.query(DBPrivateAIKey).filter(
-        DBPrivateAIKey.region_id == region.id,
-        DBPrivateAIKey.litellm_token.isnot(None),
-        (DBPrivateAIKey.team_id == team.id)
-        | (DBPrivateAIKey.owner_id.in_(team_user_ids)),
+    region_keys = get_team_region_litellm_keys(
+        db,
+        team_id=team.id,
+        region_id=region.id,
+        key_id=key_id,
     )
-    if key_id is not None:
-        region_keys_query = region_keys_query.filter(DBPrivateAIKey.id == key_id)
-    region_keys = region_keys_query.all()
     if not region_keys:
         return False
-    errors: list[str] = []
-    for key in region_keys:
+
+    semaphore = asyncio.Semaphore(10)
+
+    async def _lock_key(key: DBPrivateAIKey) -> str | None:
         try:
-            await service.update_key_budget(
-                litellm_token=key.litellm_token,
-                budget_duration=MONTHLY_BUDGET_DURATION,
-                max_budget=0.0,
-                clear_max_budget=False,
-            )
+            async with semaphore:
+                await service.update_key_budget(
+                    litellm_token=key.litellm_token,
+                    budget_duration=MONTHLY_BUDGET_DURATION,
+                    max_budget=0.0,
+                    clear_max_budget=False,
+                )
+            return None
         except Exception as exc:
-            errors.append(f"Key {key.id}: {str(exc)}")
+            return f"Key {key.id}: {str(exc)}"
+
+    errors = [
+        error
+        for error in await asyncio.gather(*[_lock_key(key) for key in region_keys])
+        if error is not None
+    ]
     if errors:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -807,6 +816,7 @@ async def update_team_budget(
     effective_max_budget = body.max_budget
     month_anchor = None
     month_start_spend = None
+    purchased_total: float | None = None
 
     if team.requires_pool_purchase_gate and body.max_budget is not None:
         purchased_total = _pool_purchased_budget_for_team_region(db, team_id, region_id)
@@ -825,8 +835,19 @@ async def update_team_budget(
         max_budget=effective_max_budget,
         budget_duration=effective_duration,
     )
-    if body.max_budget is not None:
-        await _enforce_pool_no_purchase_key_lock(db, team, region, service)
+    if (
+        body.max_budget is not None
+        and team.requires_pool_purchase_gate
+        and purchased_total is not None
+        and purchased_total <= 0
+    ):
+        await _enforce_pool_no_purchase_key_lock(
+            db,
+            team,
+            region,
+            service,
+            purchased_budget=purchased_total,
+        )
     _upsert_spend_cap(
         db,
         scope="team",
