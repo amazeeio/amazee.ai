@@ -152,7 +152,6 @@ jobs:
             exit 0
           fi
 
-          gh issue create \
           cat > /tmp/docs_issue_body.md <<EOF
           ### Source PR
           ${PR_URL}
