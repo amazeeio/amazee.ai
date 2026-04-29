@@ -155,6 +155,7 @@ jobs:
           ${FILES}
           ```
 
+          ${DRAFT_SECTION}
           ### Action needed
           Review whether [docs.amazee.ai](https://docs.amazee.ai) needs updating based on this change.
 
