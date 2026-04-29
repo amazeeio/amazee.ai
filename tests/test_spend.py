@@ -842,6 +842,7 @@ def test_update_pool_key_budget_allows_setting_cap_before_first_purchase(
     db,
 ):
     test_team.budget_type = "pool"
+    test_team.funding_mode = "prepaid_pool"
     test_team_user.team_id = test_team.id
     db.add(test_team)
     db.add(test_team_user)
@@ -858,7 +859,7 @@ def test_update_pool_key_budget_allows_setting_cap_before_first_purchase(
     db.commit()
 
     mock_get_key_info.return_value = {
-        "info": {"max_budget": 60.0, "budget_duration": "1mo"}
+        "info": {"max_budget": 0.0, "budget_duration": "1mo"}
     }
     mock_update_key_budget.return_value = None
 
@@ -873,6 +874,7 @@ def test_update_pool_key_budget_allows_setting_cap_before_first_purchase(
         call.kwargs.get("max_budget") == 0.0
         for call in mock_update_key_budget.await_args_list
     )
+    assert response.json()["max_budget"] == 0.0
     cap = (
         db.query(DBSpendCap)
         .filter(
@@ -929,6 +931,61 @@ def test_update_prepaid_pool_key_budget_locks_dedicated_team_before_purchase(
     assert first_call["max_budget"] == 50.0
     assert second_call["max_budget"] == 0.0
     assert second_call["clear_max_budget"] is False
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_update_pool_key_budget_prepurchase_locks_only_target_key(
+    mock_update_key_budget,
+    mock_get_key_info,
+    client,
+    admin_token,
+    test_team_user,
+    test_team,
+    test_region,
+    db,
+):
+    test_team.budget_type = "pool"
+    test_team.funding_mode = "prepaid_pool"
+    test_team_user.team_id = test_team.id
+    db.add(test_team)
+    db.add(test_team_user)
+    db.commit()
+
+    key1 = DBPrivateAIKey(
+        name="pool-key-target",
+        litellm_token="pool-key-target-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team.id,
+    )
+    key2 = DBPrivateAIKey(
+        name="pool-key-other",
+        litellm_token="pool-key-other-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team.id,
+    )
+    db.add(key1)
+    db.add(key2)
+    db.commit()
+
+    mock_get_key_info.return_value = {
+        "info": {"max_budget": 0.0, "budget_duration": "1mo"}
+    }
+    mock_update_key_budget.return_value = None
+
+    response = client.put(
+        f"/spend/{test_region.id}/key/{key1.id}/budget",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"max_budget": 60.0},
+    )
+    assert response.status_code == 200, response.json()
+    assert mock_update_key_budget.await_count == 2
+    called_tokens = [
+        call.kwargs["litellm_token"] for call in mock_update_key_budget.await_args_list
+    ]
+    assert called_tokens == [key1.litellm_token, key1.litellm_token]
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)

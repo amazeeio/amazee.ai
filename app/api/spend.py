@@ -266,6 +266,7 @@ async def _enforce_pool_no_purchase_key_lock(
     team: DBTeam | None,
     region: DBRegion,
     service: LiteLLMService,
+    key_id: int | None = None,
 ) -> bool:
     """
     For prepaid-pool teams with no purchased budget in a region, hard-lock
@@ -278,29 +279,17 @@ async def _enforce_pool_no_purchase_key_lock(
         return False
     team_user_ids = db.query(DBUser.id).filter(DBUser.team_id == team.id).all()
     team_user_ids = [row[0] for row in team_user_ids]
-    has_region_keys = (
-        db.query(DBPrivateAIKey.id)
-        .filter(
-            DBPrivateAIKey.region_id == region.id,
-            DBPrivateAIKey.litellm_token.isnot(None),
-            (DBPrivateAIKey.team_id == team.id)
-            | (DBPrivateAIKey.owner_id.in_(team_user_ids)),
-        )
-        .first()
-        is not None
+    region_keys_query = db.query(DBPrivateAIKey).filter(
+        DBPrivateAIKey.region_id == region.id,
+        DBPrivateAIKey.litellm_token.isnot(None),
+        (DBPrivateAIKey.team_id == team.id)
+        | (DBPrivateAIKey.owner_id.in_(team_user_ids)),
     )
-    if not has_region_keys:
+    if key_id is not None:
+        region_keys_query = region_keys_query.filter(DBPrivateAIKey.id == key_id)
+    region_keys = region_keys_query.all()
+    if not region_keys:
         return False
-    region_keys = (
-        db.query(DBPrivateAIKey)
-        .filter(
-            DBPrivateAIKey.region_id == region.id,
-            DBPrivateAIKey.litellm_token.isnot(None),
-            (DBPrivateAIKey.team_id == team.id)
-            | (DBPrivateAIKey.owner_id.in_(team_user_ids)),
-        )
-        .all()
-    )
     errors: list[str] = []
     for key in region_keys:
         try:
@@ -1205,7 +1194,9 @@ async def update_key_budget(
         max_budget=body.max_budget,
         clear_max_budget=body.max_budget is None,
     )
-    await _enforce_pool_no_purchase_key_lock(db, team_for_budget_check, region, service)
+    lock_applied = await _enforce_pool_no_purchase_key_lock(
+        db, team_for_budget_check, region, service, key_id=key.id
+    )
     _upsert_spend_cap(
         db,
         scope="key",
@@ -1229,7 +1220,12 @@ async def update_key_budget(
         key_id=key_id,
         max_budget=info.get("max_budget"),
         budget_duration=info.get("budget_duration"),
-        note="If key has team_id, team/team-member budgets may take precedence during enforcement.",
+        note=(
+            "If key has team_id, team/team-member budgets may take precedence during enforcement. "
+            "No-purchase prepaid-pool teams keep keys hard-locked at max_budget=0 while preserving configured caps for post-purchase restore."
+            if lock_applied
+            else "If key has team_id, team/team-member budgets may take precedence during enforcement."
+        ),
     )
 
 
