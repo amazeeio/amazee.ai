@@ -1237,7 +1237,11 @@ async def update_key_budget(
             clear_max_budget=body.max_budget is None,
         )
     lock_applied = await _enforce_pool_no_purchase_key_lock(
-        db, team_for_budget_check, region, service, key_id=key.id,
+        db,
+        team_for_budget_check,
+        region,
+        service,
+        key_id=key.id,
         purchased_budget=purchased_budget,
     )
     _upsert_spend_cap(

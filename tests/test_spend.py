@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.security import get_password_hash
 from app.db.models import (
+    BudgetType,
     DBPoolPurchase,
     DBPrivateAIKey,
     DBRegion,
@@ -215,7 +216,7 @@ def test_update_team_budget_rejects_cap_above_pool_purchases(
     test_region,
     db,
 ):
-    test_team.budget_type = "pool"
+    test_team.budget_type = BudgetType.POOL
     db.add(test_team)
     db.add(
         DBPoolPurchase(
@@ -285,7 +286,7 @@ def test_update_pool_budget_allows_setting_cap_before_first_purchase(
     test_region,
     db,
 ):
-    test_team.budget_type = "pool"
+    test_team.budget_type = BudgetType.POOL
     db.add(test_team)
     db.commit()
 
@@ -325,7 +326,7 @@ def test_update_prepaid_pool_budget_for_dedicated_team_clamps_before_purchase(
     test_region,
     db,
 ):
-    test_team.budget_type = "pool"
+    test_team.budget_type = BudgetType.POOL
     test_team.require_purchase_for_requests = True
     test_team.hide_public_regions = True
     db.add(test_team)
@@ -358,7 +359,7 @@ def test_update_pool_team_budget_uses_pool_duration(
     test_region,
     db,
 ):
-    test_team.budget_type = "pool"
+    test_team.budget_type = BudgetType.POOL
     db.add(test_team)
     db.add(
         DBPoolPurchase(
@@ -410,7 +411,7 @@ def test_clear_pool_team_budget_uses_remaining_duration_from_last_purchase(
     test_region,
     db,
 ):
-    test_team.budget_type = "pool"
+    test_team.budget_type = BudgetType.POOL
     db.add(test_team)
     db.add(
         DBPoolPurchase(
@@ -508,7 +509,7 @@ def test_update_team_member_budget_rejects_cap_above_pool_purchases(
     test_region,
     db,
 ):
-    test_team.budget_type = "pool"
+    test_team.budget_type = BudgetType.POOL
     test_team_user.team_id = test_team.id
     db.add(test_team)
     db.add(test_team_user)
@@ -847,6 +848,15 @@ def test_update_pool_key_budget_allows_setting_cap_before_first_purchase(
     db.add(test_team)
     db.add(test_team_user)
     db.commit()
+    (
+        db.query(DBPoolPurchase)
+        .filter(
+            DBPoolPurchase.team_id == test_team.id,
+            DBPoolPurchase.region_id == test_region.id,
+        )
+        .delete()
+    )
+    db.commit()
 
     key = DBPrivateAIKey(
         name="pool-key-prepurchase-cap",
@@ -904,6 +914,15 @@ def test_update_prepaid_pool_key_budget_locks_dedicated_team_before_purchase(
     test_team.hide_public_regions = True
     db.add(test_team)
     db.commit()
+    (
+        db.query(DBPoolPurchase)
+        .filter(
+            DBPoolPurchase.team_id == test_team.id,
+            DBPoolPurchase.region_id == test_region.id,
+        )
+        .delete()
+    )
+    db.commit()
 
     key = DBPrivateAIKey(
         name="dedicated-prepaid-key",
@@ -950,6 +969,15 @@ def test_update_pool_key_budget_prepurchase_locks_only_target_key(
     test_team_user.team_id = test_team.id
     db.add(test_team)
     db.add(test_team_user)
+    db.commit()
+    (
+        db.query(DBPoolPurchase)
+        .filter(
+            DBPoolPurchase.team_id == test_team.id,
+            DBPoolPurchase.region_id == test_region.id,
+        )
+        .delete()
+    )
     db.commit()
 
     key1 = DBPrivateAIKey(
