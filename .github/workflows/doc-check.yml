@@ -100,7 +100,7 @@ jobs:
               }')" 2>/dev/null) || true
 
           if [ -n "$RESPONSE" ]; then
-            DRAFT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty')
+            DRAFT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty' 2>/dev/null) || DRAFT=""
             if [ -n "$DRAFT" ]; then
               echo "$DRAFT" > /tmp/doc_draft.txt
               echo "has_draft=true" >> "$GITHUB_OUTPUT"
