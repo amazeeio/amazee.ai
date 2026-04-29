@@ -239,6 +239,55 @@ def _pool_purchased_budget_for_team_region(
     return round(float(total_purchased_cents) / 100.0, 4)
 
 
+def _is_no_purchase_pool_team(team: DBTeam | None, db: Session, region_id: int) -> bool:
+    if team is None or not team.requires_pool_purchase_gate:
+        return False
+    return _pool_purchased_budget_for_team_region(db, team.id, region_id) <= 0
+
+
+def _get_spend_cap_max_budget(
+    db: Session,
+    *,
+    scope: str,
+    region_id: int,
+    team_id: int | None = None,
+    user_id: int | None = None,
+    key_id: int | None = None,
+) -> float | None:
+    cap = (
+        db.query(DBSpendCap.max_budget)
+        .filter(
+            DBSpendCap.scope == scope,
+            DBSpendCap.region_id == region_id,
+            DBSpendCap.team_id == team_id,
+            DBSpendCap.user_id == user_id,
+            DBSpendCap.key_id == key_id,
+        )
+        .first()
+    )
+    if cap is None or cap[0] is None:
+        return None
+    return float(cap[0])
+
+
+def _get_key_spend_cap_map(
+    db: Session, *, region_id: int, key_ids: list[int]
+) -> dict[int, float]:
+    if not key_ids:
+        return {}
+    rows = (
+        db.query(DBSpendCap.key_id, DBSpendCap.max_budget)
+        .filter(
+            DBSpendCap.scope == "key",
+            DBSpendCap.region_id == region_id,
+            DBSpendCap.key_id.in_(key_ids),
+            DBSpendCap.max_budget.isnot(None),
+        )
+        .all()
+    )
+    return {int(key_id): float(max_budget) for key_id, max_budget in rows}
+
+
 def _pool_budget_duration_from_last_purchase(
     db: Session, team_id: int, region_id: int
 ) -> str:
@@ -612,6 +661,21 @@ async def get_team_spend(
                 )
             total_budget = round(float(default_budget or 0.0) * len(keys), 4)
 
+    if _is_no_purchase_pool_team(team, db, region_id):
+        configured_team_cap = _get_spend_cap_max_budget(
+            db, scope="team", region_id=region_id, team_id=team_id
+        )
+        if configured_team_cap is not None:
+            total_budget = round(configured_team_cap, 4)
+        key_cap_map = _get_key_spend_cap_map(
+            db,
+            region_id=region_id,
+            key_ids=[item.key_id for item in items if item.key_id is not None],
+        )
+        for item in items:
+            if item.key_id is not None and item.key_id in key_cap_map:
+                item.max_budget = round(key_cap_map[item.key_id], 4)
+
     return TeamSpendResponse(
         region_id=region_id,
         region_name=region.name,
@@ -718,6 +782,26 @@ async def get_user_spend(
             total_tokens,
         ) = _sum_optional_token_values(items)
 
+    user_team = target_user.team
+    if _is_no_purchase_pool_team(user_team, db, region_id):
+        member_cap = _get_spend_cap_max_budget(
+            db,
+            scope="team_member",
+            region_id=region_id,
+            team_id=target_user.team_id,
+            user_id=user_id,
+        )
+        key_cap_map = _get_key_spend_cap_map(
+            db,
+            region_id=region_id,
+            key_ids=[item.key_id for item in items if item.key_id is not None],
+        )
+        for item in items:
+            if item.key_id is not None and item.key_id in key_cap_map:
+                item.max_budget = round(key_cap_map[item.key_id], 4)
+            elif member_cap is not None:
+                item.max_budget = round(member_cap, 4)
+
     return UserSpendResponse(
         region_id=region_id,
         region_name=region.name,
@@ -776,9 +860,37 @@ async def get_key_spend_alias(
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
+    team_for_budget_check = None
+    if key.team_id is not None:
+        team_for_budget_check = (
+            db.query(DBTeam)
+            .filter(DBTeam.id == key.team_id, DBTeam.deleted_at.is_(None))
+            .first()
+        )
+    elif key.owner_id is not None:
+        owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
+        if owner and owner.team_id is not None:
+            team_for_budget_check = (
+                db.query(DBTeam)
+                .filter(DBTeam.id == owner.team_id, DBTeam.deleted_at.is_(None))
+                .first()
+            )
+
     try:
         data = await service.get_key_info(key.litellm_token)
         info = data.get("info", {})
+        if _is_no_purchase_pool_team(team_for_budget_check, db, region_id):
+            configured_key_cap = _get_spend_cap_max_budget(
+                db,
+                scope="key",
+                region_id=region_id,
+                team_id=key.team_id,
+                user_id=key.owner_id,
+                key_id=key.id,
+            )
+            if configured_key_cap is not None:
+                info = dict(info)
+                info["max_budget"] = round(configured_key_cap, 4)
         return PrivateAIKeySpend.model_validate(
             {"spend": info.get("spend", 0.0), **info}
         )
