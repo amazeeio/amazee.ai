@@ -317,19 +317,9 @@ def _assert_pool_budget_cap_within_purchases(
 ) -> None:
     if team is None or not team.requires_pool_purchase_gate or max_budget is None:
         return
-    purchased_budget = _pool_purchased_budget_for_team_region(db, team.id, region_id)
-    # Allow operators to preconfigure caps before the first purchase exists.
-    # The cap is persisted locally and takes effect once budget is purchased.
-    if purchased_budget <= 0:
-        return
-    if float(max_budget) > purchased_budget:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                f"max_budget cannot exceed purchased pool budget "
-                f"({purchased_budget:.4f}) for this team/region"
-            ),
-        )
+    # Purchase-gated POOL teams may configure caps above purchased total.
+    # Effective enforcement remains bounded by team budget in LiteLLM.
+    return
 
 
 async def _enforce_pool_no_purchase_key_lock(

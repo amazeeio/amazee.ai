@@ -470,9 +470,11 @@ def test_update_team_budget_invalidates_user_spend_cache_for_team_members(
     assert "cache-team-user@example.com" in invalidated_emails
 
 
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
-def test_update_team_budget_rejects_cap_above_pool_purchases(
+def test_update_team_budget_allows_cap_above_pool_purchases(
     mock_update_team_budget,
+    mock_get_team_info,
     client,
     admin_token,
     test_team,
@@ -493,15 +495,17 @@ def test_update_team_budget_rejects_cap_above_pool_purchases(
         )
     )
     db.commit()
+    mock_get_team_info.return_value = {
+        "team_info": {"max_budget": 50.0, "budget_duration": "365d"}
+    }
 
     response = client.put(
         f"/spend/{test_region.id}/team/{test_team.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={"max_budget": 60.0},
     )
-    assert response.status_code == 400
-    assert "cannot exceed purchased pool budget" in response.json()["detail"]
-    mock_update_team_budget.assert_not_awaited()
+    assert response.status_code == 200
+    mock_update_team_budget.assert_awaited_once()
 
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
@@ -802,7 +806,7 @@ def test_update_team_member_budget_returns_effective_duration(
 
 
 @patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
-def test_update_team_member_budget_rejects_cap_above_pool_purchases(
+def test_update_team_member_budget_allows_cap_above_pool_purchases(
     mock_update_team_member,
     client,
     admin_token,
@@ -833,9 +837,8 @@ def test_update_team_member_budget_rejects_cap_above_pool_purchases(
         headers={"Authorization": f"Bearer {admin_token}"},
         json={"max_budget": 60.0},
     )
-    assert response.status_code == 400
-    assert "cannot exceed purchased pool budget" in response.json()["detail"]
-    mock_update_team_member.assert_not_awaited()
+    assert response.status_code == 200
+    mock_update_team_member.assert_awaited_once()
 
 
 @patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
@@ -1131,9 +1134,11 @@ def test_update_key_budget_endpoint_clear_budget(
     assert cap.budget_duration is None
 
 
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
-def test_update_key_budget_rejects_cap_above_pool_purchases(
+def test_update_key_budget_allows_cap_above_pool_purchases(
     mock_update_key_budget,
+    mock_get_key_info,
     client,
     admin_token,
     test_team_user,
@@ -1165,15 +1170,17 @@ def test_update_key_budget_rejects_cap_above_pool_purchases(
         )
     )
     db.commit()
+    mock_get_key_info.return_value = {
+        "info": {"max_budget": 60.0, "budget_duration": "1mo"}
+    }
 
     response = client.put(
         f"/spend/{test_region.id}/key/{key.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={"max_budget": 60.0},
     )
-    assert response.status_code == 400
-    assert "cannot exceed purchased pool budget" in response.json()["detail"]
-    mock_update_key_budget.assert_not_awaited()
+    assert response.status_code == 200
+    mock_update_key_budget.assert_awaited_once()
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)

@@ -1125,22 +1125,22 @@ finish_test \
   "chat_status=${POOL_PREPURCHASE_CHAT_STATUS}" \
   "$PASS"
 start_test \
-  "POOL cap rejection (team/member/key)" \
-  "purchase 5.00 succeeds; setting 6.00 cap returns 400 on all three endpoints"
+  "POOL cap above purchase is configurable (team/member/key)" \
+  "purchase 5.00 succeeds; setting 6.00 cap returns 200 on all three endpoints"
 step "Test 10: purchasing \$5.00 pool budget for POOL team"
 PURCHASE_PAYLOAD=$(jq -n \
   --arg sid "spend-e2e-purchase-${SUFFIX}" \
   '{amount_cents:500, currency:"USD", purchased_at:(now|todateiso8601), stripe_payment_id:$sid}')
 api_call "POST" "/budgets/region/${REGION_ID}/teams/${POOL_TEAM_ID}/purchase" "$PURCHASE_PAYLOAD"
 PURCHASE_STATUS="$HTTP_STATUS"
-step "Test 10: attempting invalid max_budget 6.0 on team/member/key endpoints"
+step "Test 10: attempting max_budget 6.0 on team/member/key endpoints"
 api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":6.0}'
 POOL_TEAM_STATUS="$HTTP_STATUS"
 api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/member/${POOL_USER_ID}/budget" '{"max_budget":6.0}'
 POOL_MEMBER_STATUS="$HTTP_STATUS"
 api_call "PUT" "/spend/${REGION_ID}/key/${POOL_KEY_ID}/budget" '{"max_budget":6.0}'
 POOL_KEY_STATUS="$HTTP_STATUS"
-PASS=$([[ "$PURCHASE_STATUS" == "201" && "$POOL_TEAM_STATUS" == "400" && "$POOL_MEMBER_STATUS" == "400" && "$POOL_KEY_STATUS" == "400" ]] && echo 1 || echo 0)
+PASS=$([[ "$PURCHASE_STATUS" == "201" && "$POOL_TEAM_STATUS" == "200" && "$POOL_MEMBER_STATUS" == "200" && "$POOL_KEY_STATUS" == "200" ]] && echo 1 || echo 0)
 finish_test \
   "purchase=${PURCHASE_STATUS}, team_put=${POOL_TEAM_STATUS}, member_put=${POOL_MEMBER_STATUS}, key_put=${POOL_KEY_STATUS}" \
   "$PASS"
