@@ -27,7 +27,7 @@ from app.db.models import (
     DBUser,
 )
 from app.schemas.limits import OwnerType, ResourceType
-from app.api.users import invalidate_user_spend_cache, invalidate_users_spend_cache_bulk
+from app.api.users import invalidate_user_spend_cache
 from app.schemas.models import (
     PrivateAIKeySpend,
     SpendBudgetUpdateRequest,
@@ -211,8 +211,9 @@ def _invalidate_team_user_spend_cache(db: Session, team_id: int) -> None:
         .filter(DBUser.team_id == team_id, DBUser.is_active.is_(True))
         .all()
     )
-    emails = [email for (email,) in team_user_emails if email]
-    invalidate_users_spend_cache_bulk(db, emails)
+    for (email,) in team_user_emails:
+        if email:
+            invalidate_user_spend_cache(db, email)
 
 
 def _invalidate_key_related_user_spend_cache(db: Session, key: DBPrivateAIKey) -> None:
@@ -306,6 +307,7 @@ def _pool_budget_duration_from_last_purchase(
     days_since_last_purchase = (datetime.now(UTC) - latest_purchase).days
     days_left = max(0, settings.POOL_BUDGET_EXPIRATION_DAYS - days_since_last_purchase)
     return f"{days_left}d"
+
 
 async def _enforce_pool_no_purchase_key_lock(
     db: Session,
