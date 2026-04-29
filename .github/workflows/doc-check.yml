@@ -114,7 +114,7 @@ jobs:
           fi
         env:
           AMAZEEAI_API_KEY: ${{ secrets.AMAZEEAI_API_KEY }}
-          AMAZEEAI_ENDPOINT: ${{ vars.AMAZEEAI_ENDPOINT || 'https://llm.ch103.amazee.ai' }}
+          AMAZEEAI_ENDPOINT: ${{ vars.AMAZEEAI_ENDPOINT || 'https://llm.us104.amazee.ai' }}
 
       - name: Open docs issue
         if: steps.check.outputs.has_matches == 'true'
