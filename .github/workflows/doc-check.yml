@@ -153,20 +153,24 @@ jobs:
           fi
 
           gh issue create \
-            --repo amazeeio/docs.amazee.ai \
-            --title "[auto] amazee.ai #${PR_NUM}: ${PR_TITLE}" \
-            --body "### Source PR
+          cat > /tmp/docs_issue_body.md <<EOF
+          ### Source PR
           ${PR_URL}
 
           ### Changed files with doc implications
-          \`\`\`
+          ```
           ${FILES}
-          \`\`\`
+          ```
 
-          ${DRAFT_SECTION}
           ### Action needed
           Review whether [docs.amazee.ai](https://docs.amazee.ai) needs updating based on this change.
 
           - If **yes** → open a PR against [docs.amazee.ai](https://github.com/amazeeio/docs.amazee.ai)
-          - If **no** → close this issue" \
+          - If **no** → close this issue
+          EOF
+
+          gh issue create \
+            --repo amazeeio/docs.amazee.ai \
+            --title "[auto] amazee.ai #${PR_NUM}: ${PR_TITLE}" \
+            --body-file /tmp/docs_issue_body.md \
             --label "auto-triage,amazee.ai"
