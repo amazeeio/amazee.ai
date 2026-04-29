@@ -51,6 +51,71 @@ jobs:
             echo "has_matches=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Get PR diff for LLM context
+        if: steps.check.outputs.has_matches == 'true'
+        run: |
+          gh pr diff ${{ github.event.pull_request.number }} > /tmp/full_diff.txt 2>/dev/null || true
+          head -c 8000 /tmp/full_diff.txt > /tmp/diff_truncated.txt
+          gh pr view ${{ github.event.pull_request.number }} --json body --jq '.body' > /tmp/pr_body.txt 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Draft doc update via amazee.ai
+        if: steps.check.outputs.has_matches == 'true'
+        id: draft
+        run: |
+          FILES=$(cat /tmp/matched_files.txt)
+          DIFF=$(cat /tmp/diff_truncated.txt)
+          PR_BODY=$(cat /tmp/pr_body.txt)
+          PR_TITLE="${{ github.event.pull_request.title }}"
+
+          PROMPT=$(cat <<'PROMPT_END'
+          You are a technical writer for amazee.ai documentation (docs.amazee.ai).
+          Given a PR title, description, changed files, and diff from an internal repo,
+          draft a short, customer-facing doc update. Write in plain language — no jargon,
+          no internal details, no implementation specifics customers don't need.
+
+          If this is a bug fix with no user-facing impact, just say "No customer-facing doc update needed — internal fix only."
+
+          If it IS user-facing, write 1-3 paragraphs that could be dropped into a doc page.
+          Include what changed, why it matters to users, and any action they need to take.
+          PROMPT_END
+          )
+
+          RESPONSE=$(curl -sf --max-time 30 \
+            "${AMAZEEAI_ENDPOINT}/v1/chat/completions" \
+            -H "Authorization: Bearer ${AMAZEEAI_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n \
+              --arg prompt "$PROMPT" \
+              --arg title "$PR_TITLE" \
+              --arg body "$PR_BODY" \
+              --arg files "$FILES" \
+              --arg diff "$DIFF" \
+              '{
+                model: "claude-haiku-4-5",
+                max_tokens: 1024,
+                messages: [
+                  {role: "system", content: $prompt},
+                  {role: "user", content: ("PR: " + $title + "\n\nDescription:\n" + $body + "\n\nChanged files:\n" + $files + "\n\nDiff (truncated):\n" + $diff)}
+                ]
+              }')" 2>/dev/null) || true
+
+          if [ -n "$RESPONSE" ]; then
+            DRAFT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty')
+            if [ -n "$DRAFT" ]; then
+              echo "$DRAFT" > /tmp/doc_draft.txt
+              echo "has_draft=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "has_draft=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "has_draft=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          AMAZEEAI_API_KEY: ${{ secrets.AMAZEEAI_API_KEY }}
+          AMAZEEAI_ENDPOINT: ${{ vars.AMAZEEAI_ENDPOINT || 'https://llm.ch103.amazee.ai' }}
+
       - name: Open docs issue
         if: steps.check.outputs.has_matches == 'true'
         env:
@@ -60,6 +125,17 @@ jobs:
           PR_URL="${{ github.event.pull_request.html_url }}"
           PR_NUM="${{ github.event.pull_request.number }}"
           FILES=$(cat /tmp/matched_files.txt)
+
+          DRAFT_SECTION=""
+          if [ "${{ steps.draft.outputs.has_draft }}" = "true" ]; then
+            DRAFT=$(cat /tmp/doc_draft.txt)
+            DRAFT_SECTION="### Draft doc update (AI-generated — review before using)
+
+          ${DRAFT}
+
+          ---
+          "
+          fi
 
           EXISTING=$(gh issue list \
             --repo amazeeio/docs.amazee.ai \
@@ -83,6 +159,7 @@ jobs:
           ${FILES}
           \`\`\`
 
+          ${DRAFT_SECTION}
           ### Action needed
           Review whether [docs.amazee.ai](https://docs.amazee.ai) needs updating based on this change.
 
