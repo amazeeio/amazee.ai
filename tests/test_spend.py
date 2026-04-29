@@ -547,7 +547,7 @@ def test_update_pool_member_budget_allows_any_value_for_dedicated_team(
     db,
 ):
     """Dedicated POOL teams must allow setting a member budget above $0 purchases."""
-    test_team.budget_type = "pool"
+    test_team.budget_type = BudgetType.POOL
     test_team.hide_public_regions = True
     test_team_user.team_id = test_team.id
     db.add(test_team)
@@ -576,7 +576,7 @@ def test_update_pool_member_budget_allows_setting_cap_before_first_purchase(
     test_region,
     db,
 ):
-    test_team.budget_type = "pool"
+    test_team.budget_type = BudgetType.POOL
     test_team_user.team_id = test_team.id
     db.add(test_team)
     db.add(test_team_user)
@@ -753,7 +753,7 @@ def test_update_key_budget_rejects_cap_above_pool_purchases(
     test_region,
     db,
 ):
-    test_team.budget_type = "pool"
+    test_team.budget_type = BudgetType.POOL
     test_team_user.team_id = test_team.id
     key = DBPrivateAIKey(
         name="pool-key-cap-check",
@@ -842,7 +842,7 @@ def test_update_pool_key_budget_allows_setting_cap_before_first_purchase(
     test_region,
     db,
 ):
-    test_team.budget_type = "pool"
+    test_team.budget_type = BudgetType.POOL
     test_team.require_purchase_for_requests = True
     test_team_user.team_id = test_team.id
     db.add(test_team)
@@ -879,11 +879,9 @@ def test_update_pool_key_budget_allows_setting_cap_before_first_purchase(
         json={"max_budget": 60.0},
     )
     assert response.status_code == 200, response.json()
-    assert mock_update_key_budget.await_count == 2
-    assert any(
-        call.kwargs.get("max_budget") == 0.0
-        for call in mock_update_key_budget.await_args_list
-    )
+    mock_update_key_budget.assert_awaited_once()
+    assert mock_update_key_budget.await_args.kwargs["max_budget"] == 0.0
+    assert mock_update_key_budget.await_args.kwargs["clear_max_budget"] is False
     assert response.json()["max_budget"] == 0.0
     cap = (
         db.query(DBSpendCap)
@@ -909,7 +907,7 @@ def test_update_prepaid_pool_key_budget_locks_dedicated_team_before_purchase(
     test_region,
     db,
 ):
-    test_team.budget_type = "pool"
+    test_team.budget_type = BudgetType.POOL
     test_team.require_purchase_for_requests = True
     test_team.hide_public_regions = True
     db.add(test_team)
@@ -944,12 +942,9 @@ def test_update_prepaid_pool_key_budget_locks_dedicated_team_before_purchase(
         json={"max_budget": 50.0},
     )
     assert response.status_code == 200, response.json()
-    assert mock_update_key_budget.await_count == 2
-    first_call = mock_update_key_budget.await_args_list[0].kwargs
-    second_call = mock_update_key_budget.await_args_list[1].kwargs
-    assert first_call["max_budget"] == 50.0
-    assert second_call["max_budget"] == 0.0
-    assert second_call["clear_max_budget"] is False
+    mock_update_key_budget.assert_awaited_once()
+    assert mock_update_key_budget.await_args.kwargs["max_budget"] == 0.0
+    assert mock_update_key_budget.await_args.kwargs["clear_max_budget"] is False
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
@@ -964,7 +959,7 @@ def test_update_pool_key_budget_prepurchase_locks_only_target_key(
     test_region,
     db,
 ):
-    test_team.budget_type = "pool"
+    test_team.budget_type = BudgetType.POOL
     test_team.require_purchase_for_requests = True
     test_team_user.team_id = test_team.id
     db.add(test_team)
@@ -1009,11 +1004,11 @@ def test_update_pool_key_budget_prepurchase_locks_only_target_key(
         json={"max_budget": 60.0},
     )
     assert response.status_code == 200, response.json()
-    assert mock_update_key_budget.await_count == 2
+    mock_update_key_budget.assert_awaited_once()
     called_tokens = [
         call.kwargs["litellm_token"] for call in mock_update_key_budget.await_args_list
     ]
-    assert called_tokens == [key1.litellm_token, key1.litellm_token]
+    assert called_tokens == [key1.litellm_token]
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)

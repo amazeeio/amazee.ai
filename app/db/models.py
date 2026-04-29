@@ -190,7 +190,12 @@ class DBTeam(Base):
     @property
     def requires_pool_purchase_gate(self) -> bool:
         """Whether no-purchase traffic should be blocked for this team."""
-        return self.budget_type == BudgetType.POOL and bool(
+        budget_type_value = (
+            self.budget_type.value
+            if isinstance(self.budget_type, BudgetType)
+            else str(self.budget_type).lower()
+        )
+        return budget_type_value == BudgetType.POOL.value and bool(
             self.require_purchase_for_requests
         )
 

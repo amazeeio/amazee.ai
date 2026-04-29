@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 from app.core.limit_service import DEFAULT_KEY_DURATION
 from app.db.models import DBPrivateAIKey, DBRegion, DBTeam, DBUser
 from app.services.litellm import LiteLLMService
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -25,12 +25,19 @@ def get_team_region_litellm_keys(
     user_id: int | None = None,
 ) -> List[DBPrivateAIKey]:
     """Return team keys in a region that have LiteLLM tokens."""
-    team_user_ids_subq = select(DBUser.id).filter(DBUser.team_id == team_id)
+    team_user_ids = (
+        db.execute(select(DBUser.id).filter(DBUser.team_id == team_id)).scalars().all()
+    )
+    ownership_filter = DBPrivateAIKey.team_id == team_id
+    if team_user_ids:
+        ownership_filter = or_(
+            DBPrivateAIKey.team_id == team_id,
+            DBPrivateAIKey.owner_id.in_(team_user_ids),
+        )
     query = db.query(DBPrivateAIKey).filter(
         DBPrivateAIKey.region_id == region_id,
         DBPrivateAIKey.litellm_token.isnot(None),
-        (DBPrivateAIKey.team_id == team_id)
-        | (DBPrivateAIKey.owner_id.in_(team_user_ids_subq)),
+        ownership_filter,
     )
     if key_id is not None:
         query = query.filter(DBPrivateAIKey.id == key_id)
