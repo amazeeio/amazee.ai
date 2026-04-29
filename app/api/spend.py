@@ -205,6 +205,26 @@ def _assert_team_region_association(
         )
 
 
+def _invalidate_team_user_spend_cache(db: Session, team_id: int) -> None:
+    team_user_emails = (
+        db.query(DBUser.email)
+        .filter(DBUser.team_id == team_id, DBUser.is_active.is_(True))
+        .all()
+    )
+    for (email,) in team_user_emails:
+        if email:
+            invalidate_user_spend_cache(db, email)
+
+
+def _invalidate_key_related_user_spend_cache(db: Session, key: DBPrivateAIKey) -> None:
+    if key.owner_id is not None:
+        owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
+        if owner and owner.email:
+            invalidate_user_spend_cache(db, owner.email)
+    elif key.team_id is not None:
+        _invalidate_team_user_spend_cache(db, key.team_id)
+
+
 def _pool_purchased_budget_for_team_region(
     db: Session, team_id: int, region_id: int
 ) -> float:
@@ -866,6 +886,7 @@ async def update_team_budget(
         month_anchor=month_anchor,
         month_start_spend=month_start_spend,
     )
+    _invalidate_team_user_spend_cache(db, team_id)
     info = await service.get_team_info(lite_team_id)
     db.commit()
     team_info = info.get("team_info", info)
@@ -1059,6 +1080,7 @@ async def clear_team_budget(
         budget_duration=budget_duration,
     )
     _delete_spend_cap(db, scope="team", region_id=region_id, team_id=team_id)
+    _invalidate_team_user_spend_cache(db, team_id)
     info = await service.get_team_info(lite_team_id)
     db.commit()
     team_info = info.get("team_info", info)
@@ -1254,6 +1276,7 @@ async def update_key_budget(
         max_budget=body.max_budget,
         budget_duration=effective_duration,
     )
+    _invalidate_key_related_user_spend_cache(db, key)
     key_info = await service.get_key_info(key.litellm_token)
     db.commit()
     info = key_info.get("info", {})
@@ -1339,6 +1362,7 @@ async def clear_key_budget(
         clear_max_budget=True,
     )
     _delete_spend_cap(db, scope="key", region_id=region_id, key_id=key_id)
+    _invalidate_key_related_user_spend_cache(db, key)
     key_info = await service.get_key_info(key.litellm_token)
     db.commit()
     info = key_info.get("info", {})

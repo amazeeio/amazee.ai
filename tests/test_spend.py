@@ -207,6 +207,43 @@ def test_update_team_budget_endpoint(
     assert cap.budget_duration == "1mo"
 
 
+@patch("app.api.spend.invalidate_user_spend_cache")
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
+def test_update_team_budget_invalidates_user_spend_cache_for_team_members(
+    mock_update_team_budget,
+    mock_get_team_info,
+    mock_invalidate_user_spend_cache,
+    client,
+    admin_token,
+    test_team,
+    test_region,
+    db,
+):
+    team_user = DBUser(
+        email="cache-team-user@example.com",
+        hashed_password=get_password_hash("password"),
+        is_active=True,
+        team_id=test_team.id,
+    )
+    db.add(team_user)
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "team_info": {"max_budget": 12.5, "budget_duration": "1mo"}
+    }
+    response = client.put(
+        f"/spend/{test_region.id}/team/{test_team.id}/budget",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"max_budget": 12.5},
+    )
+    assert response.status_code == 200
+    invalidated_emails = {
+        call.args[1] for call in mock_invalidate_user_spend_cache.call_args_list
+    }
+    assert "cache-team-user@example.com" in invalidated_emails
+
+
 @patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
 def test_update_team_budget_rejects_cap_above_pool_purchases(
     mock_update_team_budget,
@@ -685,6 +722,56 @@ def test_update_key_budget_endpoint_forces_monthly_duration(
     assert cap is not None
     assert cap.max_budget == 8.0
     assert cap.budget_duration == "1mo"
+
+
+@patch("app.api.spend.invalidate_user_spend_cache")
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_update_key_budget_invalidates_user_spend_cache_for_team_keys(
+    mock_update_key_budget,
+    mock_get_key_info,
+    mock_invalidate_user_spend_cache,
+    client,
+    admin_token,
+    test_team,
+    test_region,
+    db,
+):
+    member_one = DBUser(
+        email="cache-member-one@example.com",
+        hashed_password=get_password_hash("password"),
+        is_active=True,
+        team_id=test_team.id,
+    )
+    member_two = DBUser(
+        email="cache-member-two@example.com",
+        hashed_password=get_password_hash("password"),
+        is_active=True,
+        team_id=test_team.id,
+    )
+    key = DBPrivateAIKey(
+        name="team-cache-key",
+        litellm_token="team-cache-key-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add_all([member_one, member_two, key])
+    db.commit()
+    mock_get_key_info.return_value = {
+        "info": {"max_budget": 8.0, "budget_duration": "1mo"}
+    }
+
+    response = client.put(
+        f"/spend/{test_region.id}/key/{key.id}/budget",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"max_budget": 8.0},
+    )
+    assert response.status_code == 200
+    invalidated_emails = {
+        call.args[1] for call in mock_invalidate_user_spend_cache.call_args_list
+    }
+    assert "cache-member-one@example.com" in invalidated_emails
+    assert "cache-member-two@example.com" in invalidated_emails
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
