@@ -186,7 +186,7 @@ async def purchase_pool_budget(
             status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
         )
 
-    if not team.uses_prepaid_pool:
+    if not team.requires_pool_purchase_gate:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
@@ -458,7 +458,9 @@ async def sync_pool_team_budgets(db: Session) -> dict:
 
     Returns summary of updates made.
     """
-    pool_teams = [team for team in db.query(DBTeam).all() if team.uses_prepaid_pool]
+    pool_teams = [
+        team for team in db.query(DBTeam).all() if team.requires_pool_purchase_gate
+    ]
 
     total_updated = 0
     errors = []
@@ -567,7 +569,7 @@ async def sync_pool_team_monthly_caps(db: Session) -> dict:
         if cap.team_id is None or cap.region_id is None:
             continue
         team = db.query(DBTeam).filter(DBTeam.id == cap.team_id).first()
-        if team is None or not team.uses_prepaid_pool:
+        if team is None or not team.requires_pool_purchase_gate:
             continue
         if cap.month_anchor == current_anchor:
             continue

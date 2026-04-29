@@ -17,7 +17,7 @@ from datetime import datetime, UTC
 from sqlalchemy.sql import func
 from sqlalchemy import UniqueConstraint
 from app.schemas.limits import LimitType, ResourceType, UnitType, OwnerType, LimitSource
-from app.schemas.models import BudgetType, FundingMode
+from app.schemas.models import BudgetType
 
 Base = declarative_base()
 
@@ -155,16 +155,7 @@ class DBTeam(Base):
         default=BudgetType.PERIODIC,
         nullable=False,
     )
-    funding_mode = Column(
-        Enum(
-            FundingMode,
-            name="funding_mode_enum",
-            create_constraint=True,
-            values_callable=enum_values,
-        ),
-        default=FundingMode.INVOICE_USAGE,
-        nullable=False,
-    )
+    require_purchase_for_requests = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     stripe_customer_id = Column(String, nullable=True, unique=True, index=True)
@@ -197,11 +188,11 @@ class DBTeam(Base):
         return bool(self.hide_public_regions)
 
     @property
-    def uses_prepaid_pool(self) -> bool:
-        """Whether this team should follow purchase-driven enforcement."""
+    def requires_pool_purchase_gate(self) -> bool:
+        """Whether no-purchase traffic should be blocked for this team."""
         return (
-            self.funding_mode == FundingMode.PREPAID_POOL
-            or self.budget_type == BudgetType.POOL
+            self.budget_type == BudgetType.POOL
+            and bool(self.require_purchase_for_requests)
         )
 
 

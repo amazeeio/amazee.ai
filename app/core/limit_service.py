@@ -544,8 +544,8 @@ class LimitService:
 
         # POOL budgets are purchase-driven and enforced at team level only.
         # Periodic teams continue using key-level propagation.
-        apply_to_keys = not team.uses_prepaid_pool
-        update_key_limits = not team.uses_prepaid_pool
+        apply_to_keys = not team.requires_pool_purchase_gate
+        update_key_limits = not team.requires_pool_purchase_gate
         if not apply_to_keys:
             budget_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
         else:
@@ -822,7 +822,7 @@ class LimitService:
             # periodic limit reconciliation once it has been set.
             if (
                 resource_type == ResourceType.BUDGET
-                and team.uses_prepaid_pool
+                and team.requires_pool_purchase_gate
                 and existing_limit is not None
             ):
                 continue
@@ -858,7 +858,7 @@ class LimitService:
     ) -> float:
         """Resolve default team limit with team-specific overrides."""
         # POOL team budgets are purchase-driven and start from $0.
-        if resource_type == ResourceType.BUDGET and team.uses_prepaid_pool:
+        if resource_type == ResourceType.BUDGET and team.requires_pool_purchase_gate:
             return 0.0
 
         # Dedicated teams can use distinct defaults for selected resources.
@@ -872,7 +872,7 @@ class LimitService:
     def _should_skip_system_default_update_for_team(
         self, team: DBTeam, resource_type: ResourceType
     ) -> bool:
-        if resource_type == ResourceType.BUDGET and team.uses_prepaid_pool:
+        if resource_type == ResourceType.BUDGET and team.requires_pool_purchase_gate:
             return True
 
         if not team.hide_public_regions:
@@ -985,7 +985,7 @@ class LimitService:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
             )
-        if team.uses_prepaid_pool:
+        if team.requires_pool_purchase_gate:
             return
 
         # First try the new service, and short circuit if it works

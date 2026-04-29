@@ -13,9 +13,9 @@ It runs in three independent phases:
      - all active shared regions
      - plus active dedicated regions explicitly associated with that team
    - Ensures the LiteLLM team exists per target region.
-   - Bootstrap creation respects funding behavior:
-     - prepaid_pool teams: create with max_budget=0 and pool duration
-     - invoice_usage teams: create without a team budget (legacy bootstrap behavior)
+   - Bootstrap creation respects purchase-gating behavior:
+     - require_purchase_for_requests=true (POOL): create with max_budget=0 and pool duration
+     - otherwise: create without a team budget (legacy bootstrap behavior)
    - Does NOT reconcile existing team budgets. This phase is presence/bootstrap-only.
 
 2) users
@@ -173,15 +173,15 @@ class BackfillRunner:
             if parse_status_from_exc(exc) != 404:
                 raise
 
-        if team.uses_prepaid_pool:
+        if team.requires_pool_purchase_gate:
             max_budget = 0.0
             budget_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
-            mode = "prepaid_pool"
+            mode = "purchase_required"
         else:
-            # Keep invoice_usage bootstrap behavior unchanged.
+            # Keep purchase-optional bootstrap behavior unchanged.
             max_budget = None
             budget_duration = None
-            mode = "invoice_usage"
+            mode = "purchase_optional"
 
         if self.dry_run:
             return True, f"would_create({mode})"

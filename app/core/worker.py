@@ -1083,7 +1083,7 @@ async def monitor_teams(db: Session):
                         ),
                         None,
                     )
-                    if budget_limit and not team.uses_prepaid_pool:
+                    if budget_limit and not team.requires_pool_purchase_gate:
                         max_budget_amount = budget_limit.max_value
 
                     # Get the product with the longest renewal period (renewal period not stored in limits)

@@ -386,7 +386,7 @@ run_pool_key_caps_purchase_transition_test() {
   team_payload=$(jq -n \
     --arg n "spend-e2e-pool-keys-team-${SUFFIX}-${tag}" \
     --arg e "spend-e2e-pool-keys-team-${SUFFIX}-${tag}@example.com" \
-    '{name:$n, admin_email:$e, budget_type:"pool"}')
+    '{name:$n, admin_email:$e, budget_type:"pool", require_purchase_for_requests:true}')
   api_call "POST" "/teams" "$team_payload"
   local team_status="$HTTP_STATUS"
   local team_id
@@ -516,7 +516,7 @@ run_pool_member_caps_purchase_transition_test() {
   team_payload=$(jq -n \
     --arg n "spend-e2e-pool-members-team-${SUFFIX}-${tag}" \
     --arg e "spend-e2e-pool-members-team-${SUFFIX}-${tag}@example.com" \
-    '{name:$n, admin_email:$e, budget_type:"pool"}')
+    '{name:$n, admin_email:$e, budget_type:"pool", require_purchase_for_requests:true}')
   api_call "POST" "/teams" "$team_payload"
   local team_status="$HTTP_STATUS"
   local team_id
@@ -991,7 +991,7 @@ POOL_TAGGED_ADMIN_EMAIL="${POOL_ADMIN_EMAIL_BASE/@/+team-${POOL_TEAM_TAG}@}"
 POOL_TEAM_CREATE_PAYLOAD=$(jq -n \
   --arg n "spend-e2e-pool-team-${SUFFIX}-${POOL_TEAM_TAG}" \
   --arg e "$POOL_TAGGED_ADMIN_EMAIL" \
-  '{name:$n, admin_email:$e, budget_type:"pool"}')
+  '{name:$n, admin_email:$e, budget_type:"pool", require_purchase_for_requests:true}')
 api_call "POST" "/teams" "$POOL_TEAM_CREATE_PAYLOAD"
 POOL_TEAM_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
 step "Test 10: creating user for POOL team ${POOL_TEAM_ID}"
@@ -1408,7 +1408,7 @@ if [[ "$DEDICATED_REGION_ID" != "null" && -n "$DEDICATED_REGION_ID" ]]; then
   DED_TEAM_PAYLOAD=$(jq -n \
     --arg n "spend-e2e-ded-user-team-${SUFFIX}" \
     --arg e "spend-e2e-ded-user-team-${SUFFIX}@example.com" \
-    '{name:$n, admin_email:$e, budget_type:"pool"}')
+    '{name:$n, admin_email:$e, budget_type:"pool", require_purchase_for_requests:true}')
   api_call "POST" "/teams" "$DED_TEAM_PAYLOAD"
   DED_TEAM_CREATE="$HTTP_STATUS"
   DED_TEAM_ID="$(echo "$HTTP_BODY" | jq -r '.id')"

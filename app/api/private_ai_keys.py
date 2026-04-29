@@ -431,7 +431,9 @@ async def create_llm_token(
     effective_team = team
     if effective_team is None and owner is not None and owner.team_id:
         effective_team = db.query(DBTeam).filter(DBTeam.id == owner.team_id).first()
-    is_pool_team = effective_team is not None and effective_team.uses_prepaid_pool
+    is_pool_team = (
+        effective_team is not None and effective_team.requires_pool_purchase_gate
+    )
     pool_purchased_total = None
     if is_pool_team and effective_team is not None:
         total_cents = (

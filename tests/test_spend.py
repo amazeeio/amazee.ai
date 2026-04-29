@@ -253,7 +253,7 @@ def test_update_invoice_budget_allows_any_value_for_dedicated_team(
 ):
     """Dedicated invoice teams must not be blocked by pool purchase caps."""
     test_team.budget_type = "periodic"
-    test_team.funding_mode = "invoice_usage"
+    test_team.require_purchase_for_requests = False
     test_team.hide_public_regions = True
     db.add(test_team)
     db.commit()
@@ -326,7 +326,7 @@ def test_update_prepaid_pool_budget_for_dedicated_team_clamps_before_purchase(
     db,
 ):
     test_team.budget_type = "pool"
-    test_team.funding_mode = "prepaid_pool"
+    test_team.require_purchase_for_requests = True
     test_team.hide_public_regions = True
     db.add(test_team)
     db.commit()
@@ -800,7 +800,7 @@ def test_update_invoice_key_budget_allows_any_value_for_dedicated_team(
 ):
     """Dedicated invoice teams allow setting key budgets without purchase gating."""
     test_team.budget_type = "periodic"
-    test_team.funding_mode = "invoice_usage"
+    test_team.require_purchase_for_requests = False
     test_team.hide_public_regions = True
     db.add(test_team)
     db.commit()
@@ -842,7 +842,7 @@ def test_update_pool_key_budget_allows_setting_cap_before_first_purchase(
     db,
 ):
     test_team.budget_type = "pool"
-    test_team.funding_mode = "prepaid_pool"
+    test_team.require_purchase_for_requests = True
     test_team_user.team_id = test_team.id
     db.add(test_team)
     db.add(test_team_user)
@@ -900,7 +900,7 @@ def test_update_prepaid_pool_key_budget_locks_dedicated_team_before_purchase(
     db,
 ):
     test_team.budget_type = "pool"
-    test_team.funding_mode = "prepaid_pool"
+    test_team.require_purchase_for_requests = True
     test_team.hide_public_regions = True
     db.add(test_team)
     db.commit()
@@ -946,7 +946,7 @@ def test_update_pool_key_budget_prepurchase_locks_only_target_key(
     db,
 ):
     test_team.budget_type = "pool"
-    test_team.funding_mode = "prepaid_pool"
+    test_team.require_purchase_for_requests = True
     test_team_user.team_id = test_team.id
     db.add(test_team)
     db.add(test_team_user)
