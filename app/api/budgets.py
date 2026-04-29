@@ -20,6 +20,7 @@ from app.db.models import (
 )
 from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
 from app.schemas.models import (
+    BudgetType,
     PoolPurchaseHistoryResponse,
     PoolPurchaseRequest,
     PoolPurchaseResponse,
@@ -506,9 +507,14 @@ async def sync_pool_team_budgets(db: Session) -> dict:
 
     Returns summary of updates made.
     """
-    pool_teams = [
-        team for team in db.query(DBTeam).all() if team.requires_pool_purchase_gate
-    ]
+    pool_teams = (
+        db.query(DBTeam)
+        .filter(
+            DBTeam.budget_type == BudgetType.POOL,
+            DBTeam.require_purchase_for_requests.is_(True),
+        )
+        .all()
+    )
 
     total_updated = 0
     errors = []

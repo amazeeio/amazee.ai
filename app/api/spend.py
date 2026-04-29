@@ -269,6 +269,7 @@ async def _enforce_pool_no_purchase_key_lock(
     region: DBRegion,
     service: LiteLLMService,
     key_id: int | None = None,
+    user_id: int | None = None,
     purchased_budget: float | None = None,
 ) -> bool:
     """
@@ -288,6 +289,7 @@ async def _enforce_pool_no_purchase_key_lock(
         team_id=team.id,
         region_id=region.id,
         key_id=key_id,
+        user_id=user_id,
     )
     if not region_keys:
         return False
@@ -940,7 +942,7 @@ async def update_team_member_budget(
         role=team_role_for_litellm(user),
         max_budget_in_team=body.max_budget,
     )
-    await _enforce_pool_no_purchase_key_lock(db, team, region, service)
+    await _enforce_pool_no_purchase_key_lock(db, team, region, service, user_id=user_id)
     effective_duration = _effective_monthly_budget_duration(body.max_budget)
     _upsert_spend_cap(
         db,
@@ -1213,14 +1215,30 @@ async def update_key_budget(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     effective_duration = _effective_monthly_budget_duration(body.max_budget)
-    await service.update_key_budget(
-        litellm_token=key.litellm_token,
-        budget_duration=effective_duration,
-        max_budget=body.max_budget,
-        clear_max_budget=body.max_budget is None,
-    )
+    # For purchase-gated POOL teams with no purchases, skip the initial key
+    # budget update (which would be immediately overridden) to avoid a brief
+    # unlocked window. The lock call below will hard-set max_budget=0 directly.
+    purchased_budget: float | None = None
+    skip_initial_update = False
+    if (
+        team_for_budget_check is not None
+        and team_for_budget_check.requires_pool_purchase_gate
+        and body.max_budget is not None
+    ):
+        purchased_budget = _pool_purchased_budget_for_team_region(
+            db, team_for_budget_check.id, region_id
+        )
+        skip_initial_update = purchased_budget <= 0
+    if not skip_initial_update:
+        await service.update_key_budget(
+            litellm_token=key.litellm_token,
+            budget_duration=effective_duration,
+            max_budget=body.max_budget,
+            clear_max_budget=body.max_budget is None,
+        )
     lock_applied = await _enforce_pool_no_purchase_key_lock(
-        db, team_for_budget_check, region, service, key_id=key.id
+        db, team_for_budget_check, region, service, key_id=key.id,
+        purchased_budget=purchased_budget,
     )
     _upsert_spend_cap(
         db,

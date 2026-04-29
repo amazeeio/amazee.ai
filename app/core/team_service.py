@@ -22,6 +22,7 @@ def get_team_region_litellm_keys(
     team_id: int,
     region_id: int,
     key_id: int | None = None,
+    user_id: int | None = None,
 ) -> List[DBPrivateAIKey]:
     """Return team keys in a region that have LiteLLM tokens."""
     team_user_ids_subq = select(DBUser.id).filter(DBUser.team_id == team_id)
@@ -33,6 +34,8 @@ def get_team_region_litellm_keys(
     )
     if key_id is not None:
         query = query.filter(DBPrivateAIKey.id == key_id)
+    if user_id is not None:
+        query = query.filter(DBPrivateAIKey.owner_id == user_id)
     return query.all()
 
 
