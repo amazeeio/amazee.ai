@@ -13,8 +13,10 @@ It runs in three independent phases:
      - all active shared regions
      - plus active dedicated regions explicitly associated with that team
    - Ensures the LiteLLM team exists per target region.
-   - Does NOT update team budgets. This phase is bootstrap-only for team presence
-     required by user membership synchronization.
+   - Bootstrap creation respects funding behavior:
+     - prepaid_pool teams: create with max_budget=0 and pool duration
+     - invoice_usage teams: create without a team budget (legacy bootstrap behavior)
+   - Does NOT reconcile existing team budgets. This phase is presence/bootstrap-only.
 
 2) users
    - Finds active users in DB (skips trial users like trial-...@example.com).
@@ -66,6 +68,7 @@ from app.db.models import (
     DBTeamRegion,
     DBUser,
 )
+from app.core.config import settings
 from app.services.litellm import LiteLLMService
 
 
@@ -161,6 +164,7 @@ class BackfillRunner:
         self,
         service: LiteLLMService,
         lite_team_id: str,
+        team: DBTeam,
     ) -> tuple[bool, str]:
         try:
             await service.get_team_info(lite_team_id)
@@ -169,15 +173,25 @@ class BackfillRunner:
             if parse_status_from_exc(exc) != 404:
                 raise
 
+        if team.uses_prepaid_pool:
+            max_budget = 0.0
+            budget_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+            mode = "prepaid_pool"
+        else:
+            # Keep invoice_usage bootstrap behavior unchanged.
+            max_budget = None
+            budget_duration = None
+            mode = "invoice_usage"
+
         if self.dry_run:
-            return True, "would_create"
+            return True, f"would_create({mode})"
         await service.create_team(
             team_id=lite_team_id,
             team_alias=lite_team_id,
-            max_budget=None,
-            budget_duration=None,
+            max_budget=max_budget,
+            budget_duration=budget_duration,
         )
-        return True, "created"
+        return True, f"created({mode})"
 
     async def phase_teams(self) -> Counters:
         counters = Counters()
@@ -200,7 +214,7 @@ class BackfillRunner:
                 service = LiteLLMService(region.litellm_api_url, region.litellm_api_key)
                 try:
                     changed, action = await self._ensure_team_exists(
-                        service, lite_team_id
+                        service, lite_team_id, team
                     )
                     counters.changed += 1 if changed else 0
                     print(
