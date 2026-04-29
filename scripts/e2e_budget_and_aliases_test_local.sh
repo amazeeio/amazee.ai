@@ -54,7 +54,7 @@ Usage: ./scripts/e2e_budget_and_aliases_test_local.sh [--cleanup-created] [--iso
 Options:
   --cleanup-created    Delete only resources created by this run (keys/users/teams).
   --isolate-each-test  Use fresh fixture blocks between tests/pairs for stronger isolation.
-  --filter <value>     Run only a subset. Currently useful value: aliases
+  --filter <value>     Run only a subset. Useful values: aliases, key-limit-no-purchase
 EOF
       exit 0
       ;;
@@ -630,6 +630,91 @@ run_pool_member_caps_purchase_transition_test() {
     "$pass"
 }
 
+run_pool_key_limit_readback_without_purchase_test() {
+  local test_name="POOL key-limit-no-purchase set/get"
+  if ! test_name_matches_filter "$test_name" && [[ "$RUN_INDIVIDUAL_MODE" == "1" ]]; then
+    return
+  fi
+  start_test \
+    "$test_name" \
+    "create POOL team/user/key, set key max_budget=11 via /spend, then GET /spend key returns max_budget=11"
+
+  step "Creating purchase-gated POOL team for key limit readback"
+  local tag team_payload
+  tag="$(date +%s)-kread"
+  team_payload=$(jq -n \
+    --arg n "spend-e2e-pool-key-limit-team-${SUFFIX}-${tag}" \
+    --arg e "spend-e2e-pool-key-limit-team-${SUFFIX}-${tag}@example.com" \
+    '{name:$n, admin_email:$e, budget_type:"pool", require_purchase_for_requests:true}')
+  api_call "POST" "/teams" "$team_payload"
+  local team_status="$HTTP_STATUS"
+  local team_id
+  team_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_team "$team_id"
+
+  step "Creating POOL team user"
+  local user_payload
+  user_payload=$(jq -n \
+    --arg e "spend-e2e-pool-key-limit-user-${SUFFIX}-${tag}@example.com" \
+    --argjson tid "$team_id" \
+    '{email:$e, team_id:$tid, role:"admin"}')
+  api_call "POST" "/users" "$user_payload"
+  local user_status="$HTTP_STATUS"
+  local user_id
+  user_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_user "$user_id"
+
+  step "Creating user-owned key"
+  local key_payload
+  key_payload=$(jq -n \
+    --argjson rid "$REGION_ID" \
+    --argjson uid "$user_id" \
+    '{region_id:$rid, name:"spend-e2e-pool-key-limit-key", owner_id:$uid}')
+  api_call "POST" "/private-ai-keys" "$key_payload"
+  local key_status="$HTTP_STATUS"
+  local key_id
+  key_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_key "$key_id"
+
+  step "Setting key limit to 11 without any purchase"
+  api_call "PUT" "/spend/${REGION_ID}/key/${key_id}/budget" '{"max_budget":11.0}'
+  local set_status="$HTTP_STATUS"
+  local set_max_budget
+  set_max_budget="$(echo "$HTTP_BODY" | jq -r '.max_budget // "null"')"
+
+  step "Reading key spend/limit and validating max_budget"
+  api_call "GET" "/spend/${REGION_ID}/key/${key_id}"
+  local get_status="$HTTP_STATUS"
+  local get_max_budget
+  get_max_budget="$(echo "$HTTP_BODY" | jq -r '.max_budget // "null"')"
+  local max_budget_ok
+  max_budget_ok="$(python3 - "$get_max_budget" <<'PY'
+import sys
+try:
+  print(1 if abs(float(sys.argv[1]) - 11.0) < 0.0001 else 0)
+except Exception:
+  print(0)
+PY
+)"
+  local set_max_budget_ok
+  set_max_budget_ok="$(python3 - "$set_max_budget" <<'PY'
+import sys
+try:
+  print(1 if abs(float(sys.argv[1]) - 11.0) < 0.0001 else 0)
+except Exception:
+  print(0)
+PY
+)"
+
+  local pass=0
+  if [[ "$team_status" == "201" && "$user_status" == "201" && "$key_status" == "200" && "$set_status" == "200" && "$set_max_budget_ok" == "1" && "$get_status" == "200" && "$max_budget_ok" == "1" ]]; then
+    pass=1
+  fi
+  finish_test \
+    "team=${team_status}, user=${user_status}, key=${key_status}, set=${set_status}, set_max_budget=${set_max_budget}, get=${get_status}, get_max_budget=${get_max_budget}" \
+    "$pass"
+}
+
 run_aliases_test() {
   start_test \
     "Dedicated team model aliases set/get" \
@@ -1040,22 +1125,22 @@ finish_test \
   "chat_status=${POOL_PREPURCHASE_CHAT_STATUS}" \
   "$PASS"
 start_test \
-  "POOL cap rejection (team/member/key)" \
-  "purchase 5.00 succeeds; setting 6.00 cap returns 400 on all three endpoints"
+  "POOL cap above purchase is configurable (team/member/key)" \
+  "purchase 5.00 succeeds; setting 6.00 cap returns 200 on all three endpoints"
 step "Test 10: purchasing \$5.00 pool budget for POOL team"
 PURCHASE_PAYLOAD=$(jq -n \
   --arg sid "spend-e2e-purchase-${SUFFIX}" \
   '{amount_cents:500, currency:"USD", purchased_at:(now|todateiso8601), stripe_payment_id:$sid}')
 api_call "POST" "/budgets/region/${REGION_ID}/teams/${POOL_TEAM_ID}/purchase" "$PURCHASE_PAYLOAD"
 PURCHASE_STATUS="$HTTP_STATUS"
-step "Test 10: attempting invalid max_budget 6.0 on team/member/key endpoints"
+step "Test 10: attempting max_budget 6.0 on team/member/key endpoints"
 api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":6.0}'
 POOL_TEAM_STATUS="$HTTP_STATUS"
 api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/member/${POOL_USER_ID}/budget" '{"max_budget":6.0}'
 POOL_MEMBER_STATUS="$HTTP_STATUS"
 api_call "PUT" "/spend/${REGION_ID}/key/${POOL_KEY_ID}/budget" '{"max_budget":6.0}'
 POOL_KEY_STATUS="$HTTP_STATUS"
-PASS=$([[ "$PURCHASE_STATUS" == "201" && "$POOL_TEAM_STATUS" == "400" && "$POOL_MEMBER_STATUS" == "400" && "$POOL_KEY_STATUS" == "400" ]] && echo 1 || echo 0)
+PASS=$([[ "$PURCHASE_STATUS" == "201" && "$POOL_TEAM_STATUS" == "200" && "$POOL_MEMBER_STATUS" == "200" && "$POOL_KEY_STATUS" == "200" ]] && echo 1 || echo 0)
 finish_test \
   "purchase=${PURCHASE_STATUS}, team_put=${POOL_TEAM_STATUS}, member_put=${POOL_MEMBER_STATUS}, key_put=${POOL_KEY_STATUS}" \
   "$PASS"
@@ -1444,12 +1529,14 @@ fi
 
 run_pool_key_caps_purchase_transition_test
 run_pool_member_caps_purchase_transition_test
+run_pool_key_limit_readback_without_purchase_test
 
 fi
 
 if [[ "$RUN_INDIVIDUAL_MODE" == "1" ]]; then
   run_pool_key_caps_purchase_transition_test
   run_pool_member_caps_purchase_transition_test
+  run_pool_key_limit_readback_without_purchase_test
 fi
 
 if [[ "${TEST_FILTER}" == "aliases" ]]; then

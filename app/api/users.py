@@ -92,6 +92,24 @@ def invalidate_user_spend_cache(db: Session, email: str) -> None:
     db.flush()
 
 
+def invalidate_users_spend_cache_bulk(db: Session, emails: list[str]) -> None:
+    """Delete cached /users/spend entries for all *emails* in a single query.
+
+    Prefer this over calling invalidate_user_spend_cache in a loop when
+    invalidating many users at once (e.g. all members of a team).
+
+    This helper intentionally does not commit; callers control the transaction
+    boundary so cache invalidation remains atomic with the related write.
+    """
+    if not emails:
+        return
+    normalized_emails = [_normalize_email_for_lookup(e) for e in emails]
+    db.query(DBUserSpendCache).filter(
+        DBUserSpendCache.normalized_email.in_(normalized_emails)
+    ).delete(synchronize_session=False)
+    db.flush()
+
+
 def _is_valid_email_input(email: str) -> bool:
     at_idx = email.find("@")
     if at_idx <= 0:

@@ -166,6 +166,232 @@ def test_key_spend_alias(
     assert data["total_tokens"] == 1500
 
 
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_key_spend_alias_uses_configured_cap_for_no_purchase_pool_team(
+    mock_get_key_info, client, admin_token, test_team, test_region, db
+):
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.add(test_team)
+    db.commit()
+    (
+        db.query(DBPoolPurchase)
+        .filter(
+            DBPoolPurchase.team_id == test_team.id,
+            DBPoolPurchase.region_id == test_region.id,
+        )
+        .delete()
+    )
+    db.commit()
+
+    key = DBPrivateAIKey(
+        name="pool-no-purchase-key",
+        litellm_token="pool-no-purchase-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            key_id=key.id,
+            max_budget=11.0,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+
+    mock_get_key_info.return_value = {
+        "info": {
+            "spend": 0.1,
+            "expires": "2026-12-31T23:59:59Z",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-02T00:00:00Z",
+            "max_budget": 0.0,
+            "budget_duration": "1mo",
+            "budget_reset_at": "2026-02-01T00:00:00Z",
+        }
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["max_budget"] == 11.0
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_team_spend_uses_configured_caps_for_no_purchase_pool_team(
+    mock_get_team_info, client, admin_token, test_team, test_region, db
+):
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.add(test_team)
+    db.commit()
+    (
+        db.query(DBPoolPurchase)
+        .filter(
+            DBPoolPurchase.team_id == test_team.id,
+            DBPoolPurchase.region_id == test_region.id,
+        )
+        .delete()
+    )
+    db.commit()
+
+    key = DBPrivateAIKey(
+        name="team-no-purchase-key",
+        litellm_token="team-no-purchase-key-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+    db.add_all(
+        [
+            DBSpendCap(
+                scope="team",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                max_budget=5.0,
+                budget_duration="1mo",
+            ),
+            DBSpendCap(
+                scope="key",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                key_id=key.id,
+                max_budget=11.0,
+                budget_duration="1mo",
+            ),
+        ]
+    )
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "team_info": {"spend": 0.0, "max_budget": 0.0},
+        "keys": [
+            {
+                "metadata": {"amazeeai_private_ai_key_name": key.name},
+                "spend": 0.0,
+                "max_budget": 0.0,
+                "user_id": None,
+            }
+        ],
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_budget"] == 5.0
+    assert data["keys"][0]["max_budget"] == 11.0
+
+
+@patch("app.api.spend.LiteLLMService.get_user_info", new_callable=AsyncMock)
+def test_get_user_spend_uses_member_or_key_cap_for_no_purchase_pool_team(
+    mock_get_user_info, client, admin_token, test_team, test_region, db
+):
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.add(test_team)
+    db.commit()
+    (
+        db.query(DBPoolPurchase)
+        .filter(
+            DBPoolPurchase.team_id == test_team.id,
+            DBPoolPurchase.region_id == test_region.id,
+        )
+        .delete()
+    )
+    db.commit()
+
+    user = DBUser(
+        email="pool-no-purchase-user@example.com",
+        hashed_password=get_password_hash("password"),
+        is_active=True,
+        team_id=test_team.id,
+        role=UserRole.TEAM_ADMIN,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    key_with_key_cap = DBPrivateAIKey(
+        name="pool-user-key-cap",
+        litellm_token="pool-user-key-cap-token",
+        region_id=test_region.id,
+        owner_id=user.id,
+        team_id=test_team.id,
+    )
+    key_with_member_cap = DBPrivateAIKey(
+        name="pool-user-member-cap",
+        litellm_token="pool-user-member-cap-token",
+        region_id=test_region.id,
+        owner_id=user.id,
+        team_id=test_team.id,
+    )
+    db.add_all([key_with_key_cap, key_with_member_cap])
+    db.commit()
+
+    db.add_all(
+        [
+            DBSpendCap(
+                scope="team_member",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                user_id=user.id,
+                max_budget=7.0,
+                budget_duration="1mo",
+            ),
+            DBSpendCap(
+                scope="key",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                user_id=user.id,
+                key_id=key_with_key_cap.id,
+                max_budget=11.0,
+                budget_duration="1mo",
+            ),
+        ]
+    )
+    db.commit()
+
+    mock_get_user_info.return_value = {
+        "user_info": {"spend": 0.0},
+        "keys": [
+            {
+                "metadata": {"amazeeai_private_ai_key_name": key_with_key_cap.name},
+                "user_id": str(user.id),
+                "spend": 0.0,
+                "max_budget": 0.0,
+            },
+            {
+                "metadata": {"amazeeai_private_ai_key_name": key_with_member_cap.name},
+                "user_id": str(user.id),
+                "spend": 0.0,
+                "max_budget": 0.0,
+            },
+        ],
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/user/{user.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    max_budget_by_name = {k["key_name"]: k["max_budget"] for k in data["keys"]}
+    assert max_budget_by_name[key_with_key_cap.name] == 11.0
+    assert max_budget_by_name[key_with_member_cap.name] == 7.0
+
+
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
 def test_update_team_budget_endpoint(
@@ -207,9 +433,48 @@ def test_update_team_budget_endpoint(
     assert cap.budget_duration == "1mo"
 
 
+@patch("app.api.spend.invalidate_user_spend_cache")
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
-def test_update_team_budget_rejects_cap_above_pool_purchases(
+def test_update_team_budget_invalidates_user_spend_cache_for_team_members(
     mock_update_team_budget,
+    mock_get_team_info,
+    mock_invalidate_user_spend_cache,
+    client,
+    admin_token,
+    test_team,
+    test_region,
+    db,
+):
+    team_user = DBUser(
+        email="cache-team-user@example.com",
+        hashed_password=get_password_hash("password"),
+        is_active=True,
+        team_id=test_team.id,
+    )
+    db.add(team_user)
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "team_info": {"max_budget": 12.5, "budget_duration": "1mo"}
+    }
+    response = client.put(
+        f"/spend/{test_region.id}/team/{test_team.id}/budget",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"max_budget": 12.5},
+    )
+    assert response.status_code == 200
+    invalidated_emails = {
+        call.args[1] for call in mock_invalidate_user_spend_cache.call_args_list
+    }
+    assert "cache-team-user@example.com" in invalidated_emails
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
+def test_update_team_budget_allows_cap_above_pool_purchases(
+    mock_update_team_budget,
+    mock_get_team_info,
     client,
     admin_token,
     test_team,
@@ -230,15 +495,17 @@ def test_update_team_budget_rejects_cap_above_pool_purchases(
         )
     )
     db.commit()
+    mock_get_team_info.return_value = {
+        "team_info": {"max_budget": 50.0, "budget_duration": "365d"}
+    }
 
     response = client.put(
         f"/spend/{test_region.id}/team/{test_team.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={"max_budget": 60.0},
     )
-    assert response.status_code == 400
-    assert "cannot exceed purchased pool budget" in response.json()["detail"]
-    mock_update_team_budget.assert_not_awaited()
+    assert response.status_code == 200
+    mock_update_team_budget.assert_awaited_once()
 
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
@@ -313,6 +580,45 @@ def test_update_pool_budget_allows_setting_cap_before_first_purchase(
     )
     assert cap is not None
     assert cap.max_budget == 60.0
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
+def test_update_pool_budget_returns_configured_cap_before_first_purchase(
+    mock_update_team_budget,
+    mock_get_team_info,
+    client,
+    admin_token,
+    test_team,
+    test_region,
+    db,
+):
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.add(test_team)
+    db.commit()
+    (
+        db.query(DBPoolPurchase)
+        .filter(
+            DBPoolPurchase.team_id == test_team.id,
+            DBPoolPurchase.region_id == test_region.id,
+        )
+        .delete()
+    )
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "team_info": {"max_budget": 0.0, "budget_duration": "365d"}
+    }
+    mock_update_team_budget.return_value = None
+
+    response = client.put(
+        f"/spend/{test_region.id}/team/{test_team.id}/budget",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"max_budget": 11.0},
+    )
+    assert response.status_code == 200, response.json()
+    assert response.json()["max_budget"] == 11.0
 
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
@@ -500,7 +806,7 @@ def test_update_team_member_budget_returns_effective_duration(
 
 
 @patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
-def test_update_team_member_budget_rejects_cap_above_pool_purchases(
+def test_update_team_member_budget_allows_cap_above_pool_purchases(
     mock_update_team_member,
     client,
     admin_token,
@@ -531,9 +837,8 @@ def test_update_team_member_budget_rejects_cap_above_pool_purchases(
         headers={"Authorization": f"Bearer {admin_token}"},
         json={"max_budget": 60.0},
     )
-    assert response.status_code == 400
-    assert "cannot exceed purchased pool budget" in response.json()["detail"]
-    mock_update_team_member.assert_not_awaited()
+    assert response.status_code == 200
+    mock_update_team_member.assert_awaited_once()
 
 
 @patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
@@ -603,6 +908,42 @@ def test_update_pool_member_budget_allows_setting_cap_before_first_purchase(
     )
     assert cap is not None
     assert cap.max_budget == 60.0
+
+
+@patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)
+def test_update_pool_member_budget_returns_configured_cap_before_first_purchase(
+    mock_update_team_member,
+    client,
+    admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
+):
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    test_team_user.team_id = test_team.id
+    db.add(test_team)
+    db.add(test_team_user)
+    db.commit()
+    (
+        db.query(DBPoolPurchase)
+        .filter(
+            DBPoolPurchase.team_id == test_team.id,
+            DBPoolPurchase.region_id == test_region.id,
+        )
+        .delete()
+    )
+    db.commit()
+
+    response = client.put(
+        f"/spend/{test_region.id}/team/{test_team.id}/member/{test_team_user.id}/budget",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"max_budget": 11.0},
+    )
+    assert response.status_code == 200, response.json()
+    assert response.json()["max_budget"] == 11.0
+    mock_update_team_member.assert_awaited_once()
 
 
 @patch("app.api.spend.logger.warning")
@@ -687,6 +1028,56 @@ def test_update_key_budget_endpoint_forces_monthly_duration(
     assert cap.budget_duration == "1mo"
 
 
+@patch("app.api.spend.invalidate_user_spend_cache")
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_update_key_budget_invalidates_user_spend_cache_for_team_keys(
+    mock_update_key_budget,
+    mock_get_key_info,
+    mock_invalidate_user_spend_cache,
+    client,
+    admin_token,
+    test_team,
+    test_region,
+    db,
+):
+    member_one = DBUser(
+        email="cache-member-one@example.com",
+        hashed_password=get_password_hash("password"),
+        is_active=True,
+        team_id=test_team.id,
+    )
+    member_two = DBUser(
+        email="cache-member-two@example.com",
+        hashed_password=get_password_hash("password"),
+        is_active=True,
+        team_id=test_team.id,
+    )
+    key = DBPrivateAIKey(
+        name="team-cache-key",
+        litellm_token="team-cache-key-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add_all([member_one, member_two, key])
+    db.commit()
+    mock_get_key_info.return_value = {
+        "info": {"max_budget": 8.0, "budget_duration": "1mo"}
+    }
+
+    response = client.put(
+        f"/spend/{test_region.id}/key/{key.id}/budget",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"max_budget": 8.0},
+    )
+    assert response.status_code == 200
+    invalidated_emails = {
+        call.args[1] for call in mock_invalidate_user_spend_cache.call_args_list
+    }
+    assert "cache-member-one@example.com" in invalidated_emails
+    assert "cache-member-two@example.com" in invalidated_emails
+
+
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
 def test_update_key_budget_endpoint_clear_budget(
@@ -743,9 +1134,11 @@ def test_update_key_budget_endpoint_clear_budget(
     assert cap.budget_duration is None
 
 
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
-def test_update_key_budget_rejects_cap_above_pool_purchases(
+def test_update_key_budget_allows_cap_above_pool_purchases(
     mock_update_key_budget,
+    mock_get_key_info,
     client,
     admin_token,
     test_team_user,
@@ -777,15 +1170,17 @@ def test_update_key_budget_rejects_cap_above_pool_purchases(
         )
     )
     db.commit()
+    mock_get_key_info.return_value = {
+        "info": {"max_budget": 60.0, "budget_duration": "1mo"}
+    }
 
     response = client.put(
         f"/spend/{test_region.id}/key/{key.id}/budget",
         headers={"Authorization": f"Bearer {admin_token}"},
         json={"max_budget": 60.0},
     )
-    assert response.status_code == 400
-    assert "cannot exceed purchased pool budget" in response.json()["detail"]
-    mock_update_key_budget.assert_not_awaited()
+    assert response.status_code == 200
+    mock_update_key_budget.assert_awaited_once()
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
@@ -882,7 +1277,7 @@ def test_update_pool_key_budget_allows_setting_cap_before_first_purchase(
     mock_update_key_budget.assert_awaited_once()
     assert mock_update_key_budget.await_args.kwargs["max_budget"] == 0.0
     assert mock_update_key_budget.await_args.kwargs["clear_max_budget"] is False
-    assert response.json()["max_budget"] == 0.0
+    assert response.json()["max_budget"] == 60.0
     cap = (
         db.query(DBSpendCap)
         .filter(
