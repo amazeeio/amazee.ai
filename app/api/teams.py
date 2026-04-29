@@ -35,7 +35,6 @@ from app.db.models import (
     DBUser,
 )
 from app.schemas.models import (
-    BudgetType,
     SalesProduct,
     SalesTeam,
     SalesTeamsResponse,
@@ -87,10 +86,10 @@ async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
     POOL teams start with $0 budget and a configurable duration (purchases raise budget).
     PERIODIC teams start with the default budget (DEFAULT_MAX_SPEND).
     """
-    max_budget = 0.0 if team.budget_type == BudgetType.POOL else DEFAULT_MAX_SPEND
+    max_budget = 0.0 if team.requires_pool_purchase_gate else DEFAULT_MAX_SPEND
     budget_duration = (
         f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
-        if team.budget_type == BudgetType.POOL
+        if team.requires_pool_purchase_gate
         else None
     )
 
@@ -155,6 +154,7 @@ async def register_team(
         force_user_keys=team.force_user_keys,
         hide_public_regions=team.hide_public_regions,
         budget_type=team.budget_type,
+        require_purchase_for_requests=team.require_purchase_for_requests,
     )
 
     db.add(db_team)
@@ -273,8 +273,10 @@ async def update_team(
             detail="Only system administrators can toggle always-free status",
         )
 
+    update_data = team_update.model_dump(exclude_unset=True)
+
     # Update team fields
-    for key, value in team_update.model_dump(exclude_unset=True).items():
+    for key, value in update_data.items():
         setattr(db_team, key, value)
 
     db_team.updated_at = datetime.now(UTC)

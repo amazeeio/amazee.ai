@@ -22,7 +22,6 @@ from app.schemas.limits import (
     ResourceType,
     UnitType,
 )
-from app.schemas.models import BudgetType
 from fastapi import HTTPException, status
 from prometheus_client import Counter
 from sqlalchemy import and_, func, or_, select
@@ -545,8 +544,8 @@ class LimitService:
 
         # POOL budgets are purchase-driven and enforced at team level only.
         # Periodic teams continue using key-level propagation.
-        apply_to_keys = team.budget_type != BudgetType.POOL
-        update_key_limits = team.budget_type != BudgetType.POOL
+        apply_to_keys = not team.requires_pool_purchase_gate
+        update_key_limits = not team.requires_pool_purchase_gate
         if not apply_to_keys:
             budget_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
         else:
@@ -823,7 +822,7 @@ class LimitService:
             # periodic limit reconciliation once it has been set.
             if (
                 resource_type == ResourceType.BUDGET
-                and team.budget_type == BudgetType.POOL
+                and team.requires_pool_purchase_gate
                 and existing_limit is not None
             ):
                 continue
@@ -858,17 +857,8 @@ class LimitService:
         self, team: DBTeam, resource_type: ResourceType
     ) -> float:
         """Resolve default team limit with team-specific overrides."""
-        team_budget_type = (
-            team.budget_type.value
-            if isinstance(team.budget_type, BudgetType)
-            else str(team.budget_type)
-        )
-
         # POOL team budgets are purchase-driven and start from $0.
-        if (
-            resource_type == ResourceType.BUDGET
-            and team_budget_type == BudgetType.POOL.value
-        ):
+        if resource_type == ResourceType.BUDGET and team.requires_pool_purchase_gate:
             return 0.0
 
         # Dedicated teams can use distinct defaults for selected resources.
@@ -882,16 +872,7 @@ class LimitService:
     def _should_skip_system_default_update_for_team(
         self, team: DBTeam, resource_type: ResourceType
     ) -> bool:
-        team_budget_type = (
-            team.budget_type.value
-            if isinstance(team.budget_type, BudgetType)
-            else str(team.budget_type)
-        )
-
-        if (
-            resource_type == ResourceType.BUDGET
-            and team_budget_type == BudgetType.POOL.value
-        ):
+        if resource_type == ResourceType.BUDGET and team.requires_pool_purchase_gate:
             return True
 
         if not team.hide_public_regions:
@@ -999,14 +980,12 @@ class LimitService:
             team_id: ID of the team to check
         """
         # POOL teams do not have a user-count cap.
-        team_budget_type = (
-            self.db.query(DBTeam.budget_type).filter(DBTeam.id == team_id).scalar()
-        )
-        if team_budget_type is None:
+        team = self.db.query(DBTeam).filter(DBTeam.id == team_id).first()
+        if team is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
             )
-        if team_budget_type == BudgetType.POOL:
+        if team.requires_pool_purchase_gate:
             return
 
         # First try the new service, and short circuit if it works

@@ -17,6 +17,7 @@ PASS_COUNT=0
 FAIL_COUNT=0
 CURRENT_TEST_NAME=""
 CURRENT_TEST_EXPECTED=""
+RUN_INDIVIDUAL_MODE=0
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -69,6 +70,10 @@ EOF
   esac
 done
 
+if [[ -n "${TEST_FILTER}" && "${TEST_FILTER}" != "core" && "${TEST_FILTER}" != "aliases" ]]; then
+  RUN_INDIVIDUAL_MODE=1
+fi
+
 print_header() {
   echo
   echo "============================================================"
@@ -87,7 +92,15 @@ filter_matches() {
   if [[ -z "${TEST_FILTER}" ]]; then
     return 0
   fi
-  [[ "${key}" == *"${TEST_FILTER}"* ]]
+  local key_lc filter_lc
+  key_lc="$(printf '%s' "${key}" | tr '[:upper:]' '[:lower:]')"
+  filter_lc="$(printf '%s' "${TEST_FILTER}" | tr '[:upper:]' '[:lower:]')"
+  [[ "${key_lc}" == *"${filter_lc}"* ]]
+}
+
+test_name_matches_filter() {
+  local test_name="$1"
+  filter_matches "$test_name"
 }
 
 api_call() {
@@ -357,6 +370,266 @@ chat_usage() {
   CHAT_COST="$(awk 'tolower($0) ~ /^x-litellm-response-cost:/ {print $2}' "$headers_file" | tr -d '\r' | tail -n1)"
 }
 
+run_pool_key_caps_purchase_transition_test() {
+  local test_name="POOL key caps before purchase then unlock after purchase"
+  if ! test_name_matches_filter "$test_name" && [[ "$RUN_INDIVIDUAL_MODE" == "1" ]]; then
+    return
+  fi
+  start_test \
+    "$test_name" \
+    "before purchase both key requests fail; after purchase both succeed; combined usage eventually blocks at team budget"
+
+  step "Creating POOL team, 2 users, 2 keys"
+  local tag
+  tag="$(date +%s)"
+  local team_payload
+  team_payload=$(jq -n \
+    --arg n "spend-e2e-pool-keys-team-${SUFFIX}-${tag}" \
+    --arg e "spend-e2e-pool-keys-team-${SUFFIX}-${tag}@example.com" \
+    '{name:$n, admin_email:$e, budget_type:"pool", require_purchase_for_requests:true}')
+  api_call "POST" "/teams" "$team_payload"
+  local team_status="$HTTP_STATUS"
+  local team_id
+  team_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_team "$team_id"
+
+  local user1_payload user2_payload
+  user1_payload=$(jq -n \
+    --arg e "spend-e2e-pool-keys-u1-${SUFFIX}-${tag}@example.com" \
+    --argjson tid "$team_id" \
+    '{email:$e, team_id:$tid, role:"admin"}')
+  api_call "POST" "/users" "$user1_payload"
+  local user1_status="$HTTP_STATUS"
+  local user1_id
+  user1_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_user "$user1_id"
+
+  user2_payload=$(jq -n \
+    --arg e "spend-e2e-pool-keys-u2-${SUFFIX}-${tag}@example.com" \
+    --argjson tid "$team_id" \
+    '{email:$e, team_id:$tid, role:"admin"}')
+  api_call "POST" "/users" "$user2_payload"
+  local user2_status="$HTTP_STATUS"
+  local user2_id
+  user2_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_user "$user2_id"
+
+  local key1_payload key2_payload
+  key1_payload=$(jq -n \
+    --argjson rid "$REGION_ID" \
+    --argjson uid "$user1_id" \
+    '{region_id:$rid, name:"spend-e2e-pool-keys-k1", owner_id:$uid}')
+  api_call "POST" "/private-ai-keys" "$key1_payload"
+  local key1_status="$HTTP_STATUS"
+  local key1_id key1_token key1_url
+  key1_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  key1_token="$(echo "$HTTP_BODY" | jq -r '.litellm_token')"
+  key1_url="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '.litellm_api_url')")"
+  register_key "$key1_id"
+
+  key2_payload=$(jq -n \
+    --argjson rid "$REGION_ID" \
+    --argjson uid "$user2_id" \
+    '{region_id:$rid, name:"spend-e2e-pool-keys-k2", owner_id:$uid}')
+  api_call "POST" "/private-ai-keys" "$key2_payload"
+  local key2_status="$HTTP_STATUS"
+  local key2_id key2_token key2_url
+  key2_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  key2_token="$(echo "$HTTP_BODY" | jq -r '.litellm_token')"
+  key2_url="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '.litellm_api_url')")"
+  register_key "$key2_id"
+
+  step "Setting key caps to 5.0 before purchase"
+  api_call "PUT" "/spend/${REGION_ID}/key/${key1_id}/budget" '{"max_budget":5.0}'
+  local key1_cap_status="$HTTP_STATUS"
+  api_call "PUT" "/spend/${REGION_ID}/key/${key2_id}/budget" '{"max_budget":5.0}'
+  local key2_cap_status="$HTTP_STATUS"
+
+  step "Verifying key requests are blocked before purchase"
+  chat_usage "$key1_url" "$key1_token" "$MODEL_ID" 100 14900
+  local pre_req_1="$CHAT_STATUS"
+  chat_usage "$key2_url" "$key2_token" "$MODEL_ID" 100 14900
+  local pre_req_2="$CHAT_STATUS"
+  local pre_blocked_1 pre_blocked_2
+  pre_blocked_1=$([[ "$pre_req_1" == "400" || "$pre_req_1" == "429" ]] && echo 1 || echo 0)
+  pre_blocked_2=$([[ "$pre_req_2" == "400" || "$pre_req_2" == "429" ]] && echo 1 || echo 0)
+
+  step "Purchasing \$8.00 team budget"
+  local purchase_payload
+  purchase_payload=$(jq -n \
+    --arg sid "spend-e2e-pool-keys-purchase-${SUFFIX}-${team_id}" \
+    '{amount_cents:800, currency:"USD", purchased_at:(now|todateiso8601), stripe_payment_id:$sid}')
+  api_call "POST" "/budgets/region/${REGION_ID}/teams/${team_id}/purchase" "$purchase_payload"
+  local purchase_status="$HTTP_STATUS"
+
+  step "Verifying both keys can request after purchase"
+  local post_req_1 post_req_2
+  if wait_for_chat_success "$key1_url" "$key1_token" "$MODEL_ID" 100 14900 20; then
+    post_req_1="200"
+  else
+    post_req_1="$CHAT_STATUS"
+  fi
+  if wait_for_chat_success "$key2_url" "$key2_token" "$MODEL_ID" 100 14900 20; then
+    post_req_2="200"
+  else
+    post_req_2="$CHAT_STATUS"
+  fi
+
+  step "Driving combined usage until team budget blocks"
+  local exhausted_status="200"
+  local exhausted=0
+  for _i in $(seq 1 200); do
+    if (( _i % 2 == 0 )); then
+      chat_usage "$key1_url" "$key1_token" "$MODEL_ID" 100 149000
+    else
+      chat_usage "$key2_url" "$key2_token" "$MODEL_ID" 100 149000
+    fi
+    exhausted_status="$CHAT_STATUS"
+    if [[ "$exhausted_status" == "400" || "$exhausted_status" == "429" ]]; then
+      exhausted=1
+      break
+    fi
+  done
+
+  local pass=0
+  if [[ "$team_status" == "201" && "$user1_status" == "201" && "$user2_status" == "201" && "$key1_status" == "200" && "$key2_status" == "200" && "$key1_cap_status" == "200" && "$key2_cap_status" == "200" && "$pre_blocked_1" == "1" && "$pre_blocked_2" == "1" && "$purchase_status" == "201" && "$post_req_1" == "200" && "$post_req_2" == "200" && "$exhausted" == "1" ]]; then
+    pass=1
+  fi
+  finish_test \
+    "create_team=${team_status}, users=(${user1_status},${user2_status}), keys=(${key1_status},${key2_status}), key_caps=(${key1_cap_status},${key2_cap_status}), pre_req=(${pre_req_1},${pre_req_2}), purchase=${purchase_status}, post_req=(${post_req_1},${post_req_2}), exhaustion_status=${exhausted_status}" \
+    "$pass"
+}
+
+run_pool_member_caps_purchase_transition_test() {
+  local test_name="POOL member caps before purchase then unlock after purchase"
+  if ! test_name_matches_filter "$test_name" && [[ "$RUN_INDIVIDUAL_MODE" == "1" ]]; then
+    return
+  fi
+  start_test \
+    "$test_name" \
+    "before purchase both member-key requests fail; after purchase both succeed; combined usage eventually blocks at team budget"
+
+  step "Creating POOL team, 2 users, 2 keys"
+  local tag
+  tag="$(date +%s)-m"
+  local team_payload
+  team_payload=$(jq -n \
+    --arg n "spend-e2e-pool-members-team-${SUFFIX}-${tag}" \
+    --arg e "spend-e2e-pool-members-team-${SUFFIX}-${tag}@example.com" \
+    '{name:$n, admin_email:$e, budget_type:"pool", require_purchase_for_requests:true}')
+  api_call "POST" "/teams" "$team_payload"
+  local team_status="$HTTP_STATUS"
+  local team_id
+  team_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_team "$team_id"
+
+  local user1_payload user2_payload
+  user1_payload=$(jq -n \
+    --arg e "spend-e2e-pool-members-u1-${SUFFIX}-${tag}@example.com" \
+    --argjson tid "$team_id" \
+    '{email:$e, team_id:$tid, role:"admin"}')
+  api_call "POST" "/users" "$user1_payload"
+  local user1_status="$HTTP_STATUS"
+  local user1_id
+  user1_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_user "$user1_id"
+
+  user2_payload=$(jq -n \
+    --arg e "spend-e2e-pool-members-u2-${SUFFIX}-${tag}@example.com" \
+    --argjson tid "$team_id" \
+    '{email:$e, team_id:$tid, role:"admin"}')
+  api_call "POST" "/users" "$user2_payload"
+  local user2_status="$HTTP_STATUS"
+  local user2_id
+  user2_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_user "$user2_id"
+
+  local key1_payload key2_payload
+  key1_payload=$(jq -n \
+    --argjson rid "$REGION_ID" \
+    --argjson uid "$user1_id" \
+    '{region_id:$rid, name:"spend-e2e-pool-members-k1", owner_id:$uid}')
+  api_call "POST" "/private-ai-keys" "$key1_payload"
+  local key1_status="$HTTP_STATUS"
+  local key1_id key1_token key1_url
+  key1_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  key1_token="$(echo "$HTTP_BODY" | jq -r '.litellm_token')"
+  key1_url="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '.litellm_api_url')")"
+  register_key "$key1_id"
+
+  key2_payload=$(jq -n \
+    --argjson rid "$REGION_ID" \
+    --argjson uid "$user2_id" \
+    '{region_id:$rid, name:"spend-e2e-pool-members-k2", owner_id:$uid}')
+  api_call "POST" "/private-ai-keys" "$key2_payload"
+  local key2_status="$HTTP_STATUS"
+  local key2_id key2_token key2_url
+  key2_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  key2_token="$(echo "$HTTP_BODY" | jq -r '.litellm_token')"
+  key2_url="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '.litellm_api_url')")"
+  register_key "$key2_id"
+
+  step "Setting member caps to 5.0 before purchase"
+  api_call "PUT" "/spend/${REGION_ID}/team/${team_id}/member/${user1_id}/budget" '{"max_budget":5.0}'
+  local member1_cap_status="$HTTP_STATUS"
+  api_call "PUT" "/spend/${REGION_ID}/team/${team_id}/member/${user2_id}/budget" '{"max_budget":5.0}'
+  local member2_cap_status="$HTTP_STATUS"
+
+  step "Verifying member-key requests are blocked before purchase"
+  chat_usage "$key1_url" "$key1_token" "$MODEL_ID" 100 14900
+  local pre_req_1="$CHAT_STATUS"
+  chat_usage "$key2_url" "$key2_token" "$MODEL_ID" 100 14900
+  local pre_req_2="$CHAT_STATUS"
+  local pre_blocked_1 pre_blocked_2
+  pre_blocked_1=$([[ "$pre_req_1" == "400" || "$pre_req_1" == "429" ]] && echo 1 || echo 0)
+  pre_blocked_2=$([[ "$pre_req_2" == "400" || "$pre_req_2" == "429" ]] && echo 1 || echo 0)
+
+  step "Purchasing \$8.00 team budget"
+  local purchase_payload
+  purchase_payload=$(jq -n \
+    --arg sid "spend-e2e-pool-members-purchase-${SUFFIX}-${team_id}" \
+    '{amount_cents:800, currency:"USD", purchased_at:(now|todateiso8601), stripe_payment_id:$sid}')
+  api_call "POST" "/budgets/region/${REGION_ID}/teams/${team_id}/purchase" "$purchase_payload"
+  local purchase_status="$HTTP_STATUS"
+
+  step "Verifying both member keys can request after purchase"
+  local post_req_1 post_req_2
+  if wait_for_chat_success "$key1_url" "$key1_token" "$MODEL_ID" 100 14900 20; then
+    post_req_1="200"
+  else
+    post_req_1="$CHAT_STATUS"
+  fi
+  if wait_for_chat_success "$key2_url" "$key2_token" "$MODEL_ID" 100 14900 20; then
+    post_req_2="200"
+  else
+    post_req_2="$CHAT_STATUS"
+  fi
+
+  step "Driving combined usage until team budget blocks"
+  local exhausted_status="200"
+  local exhausted=0
+  for _i in $(seq 1 200); do
+    if (( _i % 2 == 0 )); then
+      chat_usage "$key1_url" "$key1_token" "$MODEL_ID" 100 149000
+    else
+      chat_usage "$key2_url" "$key2_token" "$MODEL_ID" 100 149000
+    fi
+    exhausted_status="$CHAT_STATUS"
+    if [[ "$exhausted_status" == "400" || "$exhausted_status" == "429" ]]; then
+      exhausted=1
+      break
+    fi
+  done
+
+  local pass=0
+  if [[ "$team_status" == "201" && "$user1_status" == "201" && "$user2_status" == "201" && "$key1_status" == "200" && "$key2_status" == "200" && "$member1_cap_status" == "200" && "$member2_cap_status" == "200" && "$pre_blocked_1" == "1" && "$pre_blocked_2" == "1" && "$purchase_status" == "201" && "$post_req_1" == "200" && "$post_req_2" == "200" && "$exhausted" == "1" ]]; then
+    pass=1
+  fi
+  finish_test \
+    "create_team=${team_status}, users=(${user1_status},${user2_status}), keys=(${key1_status},${key2_status}), member_caps=(${member1_cap_status},${member2_cap_status}), pre_req=(${pre_req_1},${pre_req_2}), purchase=${purchase_status}, post_req=(${post_req_1},${post_req_2}), exhaustion_status=${exhausted_status}" \
+    "$pass"
+}
+
 run_aliases_test() {
   start_test \
     "Dedicated team model aliases set/get" \
@@ -521,7 +794,7 @@ fi
 
 echo "Fixtures ready: region=${REGION_ID}, team=${TEAM_ID}, user=${USER_ID}, team_key=${TEAM_KEY_ID}, user_key=${USER_KEY_ID}, model=${MODEL_ID}"
 
-if filter_matches "core"; then
+if [[ "$RUN_INDIVIDUAL_MODE" != "1" ]] && filter_matches "core"; then
 # Test 1: GET key spend baseline
 start_test \
   "GET /spend/{region}/key/{key}" \
@@ -711,9 +984,6 @@ finish_test \
   "$PASS"
 
 # Test 10: POOL rejection above purchased budget across team/member/key endpoints
-start_test \
-  "POOL cap rejection (team/member/key)" \
-  "purchase 5.00 succeeds; setting 6.00 cap returns 400 on all three endpoints"
 step "Test 10: creating new POOL team"
 POOL_TEAM_TAG="$(date +%s | tr -d '\n' | tail -c 6)"
 POOL_ADMIN_EMAIL_BASE="spend-e2e-pool-owner-${SUFFIX}@example.com"
@@ -721,7 +991,7 @@ POOL_TAGGED_ADMIN_EMAIL="${POOL_ADMIN_EMAIL_BASE/@/+team-${POOL_TEAM_TAG}@}"
 POOL_TEAM_CREATE_PAYLOAD=$(jq -n \
   --arg n "spend-e2e-pool-team-${SUFFIX}-${POOL_TEAM_TAG}" \
   --arg e "$POOL_TAGGED_ADMIN_EMAIL" \
-  '{name:$n, admin_email:$e, budget_type:"pool"}')
+  '{name:$n, admin_email:$e, budget_type:"pool", require_purchase_for_requests:true}')
 api_call "POST" "/teams" "$POOL_TEAM_CREATE_PAYLOAD"
 POOL_TEAM_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
 step "Test 10: creating user for POOL team ${POOL_TEAM_ID}"
@@ -744,6 +1014,34 @@ POOL_KEY_URL="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '.litellm_api
 register_key "$POOL_KEY_ID"
 register_user "$POOL_USER_ID"
 register_team "$POOL_TEAM_ID"
+start_test \
+  "POOL pre-purchase cap set (team/member/key)" \
+  "without any purchase yet, setting 6.00 cap succeeds (200) on team/member/key endpoints"
+step "Test 10a: setting max_budget 6.0 before any POOL purchase"
+api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":6.0}'
+POOL_PRE_TEAM_STATUS="$HTTP_STATUS"
+api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/member/${POOL_USER_ID}/budget" '{"max_budget":6.0}'
+POOL_PRE_MEMBER_STATUS="$HTTP_STATUS"
+api_call "PUT" "/spend/${REGION_ID}/key/${POOL_KEY_ID}/budget" '{"max_budget":6.0}'
+POOL_PRE_KEY_STATUS="$HTTP_STATUS"
+PASS=$([[ "$POOL_PRE_TEAM_STATUS" == "200" && "$POOL_PRE_MEMBER_STATUS" == "200" && "$POOL_PRE_KEY_STATUS" == "200" ]] && echo 1 || echo 0)
+finish_test \
+  "team_put=${POOL_PRE_TEAM_STATUS}, member_put=${POOL_PRE_MEMBER_STATUS}, key_put=${POOL_PRE_KEY_STATUS}" \
+  "$PASS"
+start_test \
+  "POOL pre-purchase request gate (team budget zero)" \
+  "before first purchase, key calls are blocked even if key cap is configured"
+step "Test 10b: attempting key usage before any POOL purchase"
+chat_usage "$POOL_KEY_URL" "$POOL_KEY_TOKEN" "$MODEL_ID" 100 14900
+POOL_PREPURCHASE_CHAT_STATUS="$CHAT_STATUS"
+POOL_PREPURCHASE_BLOCKED=$([[ "$POOL_PREPURCHASE_CHAT_STATUS" == "400" || "$POOL_PREPURCHASE_CHAT_STATUS" == "429" ]] && echo 1 || echo 0)
+PASS=$([[ "$POOL_PREPURCHASE_BLOCKED" == "1" ]] && echo 1 || echo 0)
+finish_test \
+  "chat_status=${POOL_PREPURCHASE_CHAT_STATUS}" \
+  "$PASS"
+start_test \
+  "POOL cap rejection (team/member/key)" \
+  "purchase 5.00 succeeds; setting 6.00 cap returns 400 on all three endpoints"
 step "Test 10: purchasing \$5.00 pool budget for POOL team"
 PURCHASE_PAYLOAD=$(jq -n \
   --arg sid "spend-e2e-purchase-${SUFFIX}" \
@@ -1110,7 +1408,7 @@ if [[ "$DEDICATED_REGION_ID" != "null" && -n "$DEDICATED_REGION_ID" ]]; then
   DED_TEAM_PAYLOAD=$(jq -n \
     --arg n "spend-e2e-ded-user-team-${SUFFIX}" \
     --arg e "spend-e2e-ded-user-team-${SUFFIX}@example.com" \
-    '{name:$n, admin_email:$e, budget_type:"pool"}')
+    '{name:$n, admin_email:$e, budget_type:"pool", require_purchase_for_requests:true}')
   api_call "POST" "/teams" "$DED_TEAM_PAYLOAD"
   DED_TEAM_CREATE="$HTTP_STATUS"
   DED_TEAM_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
@@ -1144,6 +1442,14 @@ else
     "0"
 fi
 
+run_pool_key_caps_purchase_transition_test
+run_pool_member_caps_purchase_transition_test
+
+fi
+
+if [[ "$RUN_INDIVIDUAL_MODE" == "1" ]]; then
+  run_pool_key_caps_purchase_transition_test
+  run_pool_member_caps_purchase_transition_test
 fi
 
 if [[ "${TEST_FILTER}" == "aliases" ]]; then

@@ -155,6 +155,7 @@ class DBTeam(Base):
         default=BudgetType.PERIODIC,
         nullable=False,
     )
+    require_purchase_for_requests = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     stripe_customer_id = Column(String, nullable=True, unique=True, index=True)
@@ -178,14 +179,25 @@ class DBTeam(Base):
 
     @property
     def is_dedicated(self) -> bool:
-        """True for dedicated teams that operate on a direct, infinite budget.
+        """True for dedicated teams that use private infrastructure.
 
         Dedicated teams hide public regions (``hide_public_regions=True``) and are
-        provisioned with private infrastructure — their budget is not driven by the
-        purchase flow. In LiteLLM, ``$0`` represents "no limit" for these teams, so
-        the normal pool-purchase cap does not apply.
+        provisioned with private infrastructure. This flag is infrastructure-scoped
+        and independent of funding behavior.
         """
         return bool(self.hide_public_regions)
+
+    @property
+    def requires_pool_purchase_gate(self) -> bool:
+        """Whether no-purchase traffic should be blocked for this team."""
+        budget_type_value = (
+            self.budget_type.value
+            if isinstance(self.budget_type, BudgetType)
+            else str(self.budget_type).lower()
+        )
+        return budget_type_value == BudgetType.POOL.value and bool(
+            self.require_purchase_for_requests
+        )
 
 
 class DBTeamMetrics(Base):
