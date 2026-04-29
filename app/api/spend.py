@@ -999,6 +999,14 @@ async def update_team_budget(
         month_start_spend=month_start_spend,
     )
     _invalidate_team_user_spend_cache(db, team_id)
+    no_purchase_pool_team = _is_no_purchase_pool_team(team, db, region_id)
+    configured_team_cap = (
+        _get_spend_cap_max_budget(
+            db, scope="team", region_id=region_id, team_id=team_id
+        )
+        if no_purchase_pool_team
+        else None
+    )
     info = await service.get_team_info(lite_team_id)
     db.commit()
     team_info = info.get("team_info", info)
@@ -1008,7 +1016,11 @@ async def update_team_budget(
         region_id=region_id,
         region_name=region.name,
         team_id=team_id,
-        max_budget=team_info.get("max_budget"),
+        max_budget=(
+            round(configured_team_cap, 4)
+            if configured_team_cap is not None
+            else team_info.get("max_budget")
+        ),
         budget_duration=team_info.get("budget_duration"),
         note=(
             "For team keys, team budget governs spend enforcement."
@@ -1086,6 +1098,18 @@ async def update_team_member_budget(
         max_budget=body.max_budget,
         budget_duration=effective_duration,
     )
+    no_purchase_pool_team = _is_no_purchase_pool_team(team, db, region_id)
+    configured_member_cap = (
+        _get_spend_cap_max_budget(
+            db,
+            scope="team_member",
+            region_id=region_id,
+            team_id=team_id,
+            user_id=user_id,
+        )
+        if no_purchase_pool_team
+        else None
+    )
     invalidate_user_spend_cache(db, user.email)
     db.commit()
     return SpendBudgetUpdateResponse(
@@ -1095,7 +1119,11 @@ async def update_team_member_budget(
         region_name=region.name,
         team_id=team_id,
         user_id=user_id,
-        max_budget=body.max_budget,
+        max_budget=(
+            round(configured_member_cap, 4)
+            if configured_member_cap is not None
+            else body.max_budget
+        ),
         budget_duration=effective_duration,
         note="This budget is scoped to the user within the specified team.",
     )
@@ -1389,6 +1417,21 @@ async def update_key_budget(
         budget_duration=effective_duration,
     )
     _invalidate_key_related_user_spend_cache(db, key)
+    no_purchase_pool_team = _is_no_purchase_pool_team(
+        team_for_budget_check, db, region_id
+    )
+    configured_key_cap = (
+        _get_spend_cap_max_budget(
+            db,
+            scope="key",
+            region_id=region_id,
+            team_id=key.team_id,
+            user_id=key.owner_id,
+            key_id=key_id,
+        )
+        if no_purchase_pool_team
+        else None
+    )
     key_info = await service.get_key_info(key.litellm_token)
     db.commit()
     info = key_info.get("info", {})
@@ -1400,7 +1443,11 @@ async def update_key_budget(
         team_id=key.team_id,
         user_id=key.owner_id,
         key_id=key_id,
-        max_budget=info.get("max_budget"),
+        max_budget=(
+            round(configured_key_cap, 4)
+            if configured_key_cap is not None
+            else info.get("max_budget")
+        ),
         budget_duration=info.get("budget_duration"),
         note=(
             "If key has team_id, team/team-member budgets may take precedence during enforcement. "

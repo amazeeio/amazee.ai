@@ -696,9 +696,18 @@ except Exception:
   print(0)
 PY
 )"
+  local set_max_budget_ok
+  set_max_budget_ok="$(python3 - "$set_max_budget" <<'PY'
+import sys
+try:
+  print(1 if abs(float(sys.argv[1]) - 11.0) < 0.0001 else 0)
+except Exception:
+  print(0)
+PY
+)"
 
   local pass=0
-  if [[ "$team_status" == "201" && "$user_status" == "201" && "$key_status" == "200" && "$set_status" == "200" && "$get_status" == "200" && "$max_budget_ok" == "1" ]]; then
+  if [[ "$team_status" == "201" && "$user_status" == "201" && "$key_status" == "200" && "$set_status" == "200" && "$set_max_budget_ok" == "1" && "$get_status" == "200" && "$max_budget_ok" == "1" ]]; then
     pass=1
   fi
   finish_test \
