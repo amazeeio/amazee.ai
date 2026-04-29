@@ -103,9 +103,7 @@ def invalidate_users_spend_cache_bulk(db: Session, emails: list[str]) -> None:
     """
     if not emails:
         return
-    normalized_emails = [_normalize_email_for_lookup(e) for e in emails if e]
-    if not normalized_emails:
-        return
+    normalized_emails = [_normalize_email_for_lookup(e) for e in emails]
     db.query(DBUserSpendCache).filter(
         DBUserSpendCache.normalized_email.in_(normalized_emails)
     ).delete(synchronize_session=False)
