@@ -13,11 +13,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Get changed files
-        id: changed
         run: |
           FILES=$(gh pr diff ${{ github.event.pull_request.number }} --name-only)
           echo "$FILES" > /tmp/all_changed.txt
-          echo "count=$(echo "$FILES" | wc -l)" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ github.token }}
 
