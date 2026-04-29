@@ -330,9 +330,10 @@ def test_pool_purchase_restores_team_budget_when_key_sync_fails(
         )
 
     assert response.status_code == 502
-    assert "Failed to update key budgets in LiteLLM after purchase" in response.json()[
-        "detail"
-    ]
+    assert (
+        "Failed to update key budgets in LiteLLM after purchase"
+        in response.json()["detail"]
+    )
     mock_restore_team_budget.assert_awaited_once_with(
         team_id=f"{test_region.name}_{test_team.id}",
         max_budget=0.0,

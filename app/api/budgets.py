@@ -231,7 +231,9 @@ async def purchase_pool_budget(
     team.last_pool_purchase = purchase.purchased_at
 
     amount_dollars = purchase.amount_cents / 100.0
-    service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
     previous_team_info: dict | None = None
     previous_max_budget = None
@@ -382,8 +384,7 @@ async def purchase_pool_budget(
                     + (
                         (
                             ". Also failed to restore previous LiteLLM team budget; "
-                            "manual reconciliation is required: "
-                            + rollback_error
+                            "manual reconciliation is required: " + rollback_error
                         )
                         if rollback_error
                         else ""

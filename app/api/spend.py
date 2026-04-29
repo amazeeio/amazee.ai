@@ -278,7 +278,9 @@ async def _enforce_pool_no_purchase_key_lock(
     if team is None or not team.requires_pool_purchase_gate:
         return False
     if purchased_budget is None:
-        purchased_budget = _pool_purchased_budget_for_team_region(db, team.id, region.id)
+        purchased_budget = _pool_purchased_budget_for_team_region(
+            db, team.id, region.id
+        )
     if purchased_budget > 0:
         return False
     region_keys = get_team_region_litellm_keys(
