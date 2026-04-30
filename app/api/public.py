@@ -699,7 +699,9 @@ def _build_available_aws_models_by_group(
         if status and status != "ACTIVE":
             continue
 
-        regions_raw = model.get("regions") or []
+        regions_raw = model.get("regions")
+        if not isinstance(regions_raw, (list, tuple)):
+            regions_raw = []
         regions = {r for r in regions_raw if isinstance(r, str)}
 
         for group, details in _AWS_REGION_GROUPS.items():
