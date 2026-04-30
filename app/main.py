@@ -262,6 +262,8 @@ def custom_openapi():
                 "/auth/generate-trial-access",
                 "/public/models",
                 "/public/models/",
+                "/public/models/missing",
+                "/public/models/missing/",
             ]:
                 if "security" in operation:
                     del operation["security"]

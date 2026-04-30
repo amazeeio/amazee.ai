@@ -250,6 +250,48 @@ class PublicRegionModels(BaseModel):
     models: List[PublicModelSummary]
 
 
+class BedrockMissingModel(BaseModel):
+    """A Bedrock model that exists upstream but isn't deployed to one of our LiteLLM regions."""
+
+    model_id: str = Field(
+        ...,
+        description="Upstream Bedrock modelId, e.g. 'anthropic.claude-opus-4-1-20250805-v1:0'.",
+    )
+    model_name: str
+    provider_name: str
+
+    model_config = ConfigDict(populate_by_name=True, protected_namespaces=())
+
+
+class BedrockMarketMissingModels(BaseModel):
+    """Per-market summary of Bedrock models we haven't deployed yet."""
+
+    market: str = Field(..., description="Market code: 'US', 'EU', or 'AU'.")
+    aws_region: str = Field(
+        ..., description="AWS region used for upstream availability lookup, e.g. 'us-east-1'."
+    )
+    regions: List[str] = Field(
+        default_factory=list,
+        description="DBRegion names whose deployed bedrock models contributed to the 'configured' set.",
+    )
+    available_model_count: int
+    configured_model_count: int
+    missing_model_count: int
+    missing_models: List[BedrockMissingModel]
+
+
+class BedrockMissingModelsReport(BaseModel):
+    """Full report returned by /public/models/missing."""
+
+    generated_at: datetime
+    models_url: str
+    is_authenticated: bool = Field(
+        ...,
+        description="Whether the caller authenticated. Authenticated admins also include private regions in 'configured'.",
+    )
+    markets: List[BedrockMarketMissingModels]
+
+
 class PrivateAIKeyBase(BaseModel):
     id: int
     database_name: Optional[str] = None
