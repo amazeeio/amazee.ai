@@ -721,7 +721,7 @@ def test_get_team_model_aliases_empty_dict_means_no_aliases(
 def test_get_team_model_aliases_team_list_fallback_returns_none_when_not_found(
     mock_client_class, test_region
 ):
-    """Fallback /team/list returns None when team_id is not present in the list."""
+    """Fallback /team/list returns empty aliases when team_id is not present."""
     service = LiteLLMService(
         api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
     )
@@ -741,4 +741,4 @@ def test_get_team_model_aliases_team_list_fallback_returns_none_when_not_found(
 
     aliases = asyncio.run(service.get_team_model_aliases("team-1"))
 
-    assert aliases is None
+    assert aliases == {}

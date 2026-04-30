@@ -967,7 +967,7 @@ async def update_team_budget(
     )
     info = await service.get_team_info(lite_team_id)
     db.commit()
-    team_info = info.get("team_info", team_info)
+    team_info = info.get("team_info", info)
     return SpendBudgetUpdateResponse(
         scope="team",
         source_endpoint="/team/update",
