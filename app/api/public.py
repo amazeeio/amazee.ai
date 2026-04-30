@@ -658,7 +658,15 @@ async def _fetch_bedrock_catalog(url: str) -> list[dict[str, Any]]:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.get(url)
             response.raise_for_status()
-            data = response.json()
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        f"Upstream Bedrock catalog at {url} returned non-JSON response: {exc}"
+                    ),
+                ) from exc
 
         if not isinstance(data, list):
             raise HTTPException(
