@@ -780,7 +780,8 @@ async def get_user_spend(
                 item.max_budget = round(member_cap, 4)
     elif member_cap is not None:
         for item in items:
-            item.max_budget = round(member_cap, 4)
+            if item.max_budget is None:
+                item.max_budget = round(member_cap, 4)
 
     return UserSpendResponse(
         region_id=region_id,
