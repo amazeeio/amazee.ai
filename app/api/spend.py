@@ -758,7 +758,6 @@ async def get_user_spend(
             total_tokens,
         ) = _sum_optional_token_values(items)
 
-    user_team = target_user.team
     member_cap = _get_spend_cap_max_budget(
         db,
         scope="team_member",
