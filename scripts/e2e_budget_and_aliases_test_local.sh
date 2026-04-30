@@ -38,6 +38,7 @@ need_cmd() {
 need_cmd curl
 need_cmd jq
 need_cmd python3
+need_cmd rg
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -1132,6 +1133,7 @@ fetch_regions() {
   fi
   REGION_ID="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][0].id')"
   REGION_NAME="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][0].name')"
+  LITELLM_URL_RAW="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][0].litellm_api_url')"
   REGION2_ID="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][1].id')"
   DEDICATED_REGION_ID="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==true)][0].id')"
   if [[ "$REGION_ID" == "null" || -z "$REGION_ID" ]]; then
