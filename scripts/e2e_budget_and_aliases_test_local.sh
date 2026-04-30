@@ -8,8 +8,7 @@ BASE_URL="${BASE_URL:-http://localhost:8800}"
 AUTH_TOKEN="${AUTH_TOKEN:-LOCALBT}"
 LITELLM_USER="${LITELLM_USER:-admin}"
 LITELLM_PASS="${LITELLM_PASS:-sk-1234}"
-CLEANUP_CREATED=0
-ISOLATE_EACH_TEST=0
+CLEANUP_CREATED=1
 TEST_FILTER="${TEST_FILTER:-}"
 
 TEST_NUM=0
@@ -39,22 +38,12 @@ need_cmd python3
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --cleanup-created)
-      CLEANUP_CREATED=1
-      shift
-      ;;
-    --isolate-each-test)
-      ISOLATE_EACH_TEST=1
-      shift
-      ;;
     -h|--help)
       cat <<'EOF'
-Usage: ./scripts/e2e_budget_and_aliases_test_local.sh [--cleanup-created] [--isolate-each-test]
+Usage: ./scripts/e2e_budget_and_aliases_test_local.sh [--filter <value>]
 
 Options:
-  --cleanup-created    Delete only resources created by this run (keys/users/teams).
-  --isolate-each-test  Use fresh fixture blocks between tests/pairs for stronger isolation.
-  --filter <value>     Run only a subset. Useful values: aliases, key-limit-no-purchase, member-budget-duration
+  --filter <value>     Run only tests partially matching value (case-insensitive).
 EOF
       exit 0
       ;;
@@ -70,7 +59,7 @@ EOF
   esac
 done
 
-if [[ -n "${TEST_FILTER}" && "${TEST_FILTER}" != "core" && "${TEST_FILTER}" != "aliases" ]]; then
+if [[ -n "${TEST_FILTER}" ]]; then
   RUN_INDIVIDUAL_MODE=1
 fi
 
@@ -1178,7 +1167,7 @@ fi
 
 echo "Fixtures ready: region=${REGION_ID}, team=${TEAM_ID}, user=${USER_ID}, team_key=${TEAM_KEY_ID}, user_key=${USER_KEY_ID}, model=${MODEL_ID}"
 
-if [[ "$RUN_INDIVIDUAL_MODE" != "1" ]] && filter_matches "core"; then
+if [[ -z "${TEST_FILTER}" ]] || filter_matches "core"; then
 # Test 1: GET key spend baseline
 start_test \
   "GET /spend/{region}/key/{key}" \
@@ -1190,10 +1179,6 @@ PASS=$([[ "$HTTP_STATUS" == "200" ]] && echo 1 || echo 0)
 finish_test \
   "status=${HTTP_STATUS}, spend=${BASE_KEY_SPEND}" \
   "$PASS"
-
-if [[ "$ISOLATE_EACH_TEST" == "1" ]]; then
-  setup_periodic_fixture_block
-fi
 
 # Test 2: PUT key budget + enforcement with real usage
 start_test \
@@ -1233,10 +1218,6 @@ finish_test \
   "clear_status=${CLEAR_STATUS}, chat_status=${AFTER_CLEAR_CHAT}, spend_before=${SPEND_BEFORE_CLEAR}, spend_after=${SPEND_AFTER_CLEAR}" \
   "$PASS"
 
-if [[ "$ISOLATE_EACH_TEST" == "1" ]]; then
-  setup_periodic_fixture_block
-fi
-
 # Test 4: PUT team budget + team enforcement via team-owned key
 start_test \
   "PUT /spend/{region}/team/{team}/budget (experimental)" \
@@ -1269,10 +1250,6 @@ PASS=$([[ "$TEAM_CLEAR_STATUS" == "200" && "$TEAM_CLEAR_CHAT" == "200" ]] && ech
 finish_test \
   "clear_status=${TEAM_CLEAR_STATUS}, chat_status=${TEAM_CLEAR_CHAT}" \
   "$PASS"
-
-if [[ "$ISOLATE_EACH_TEST" == "1" ]]; then
-  setup_periodic_fixture_block
-fi
 
 # Test 6: PUT team member budget + enforcement on user key
 start_test \
@@ -1308,10 +1285,6 @@ PASS=$([[ "$MEMBER_CLEAR_STATUS" == "200" && "$MEMBER_CLEAR_CHAT" == "200" ]] &&
 finish_test \
   "clear_status=${MEMBER_CLEAR_STATUS}, chat_status=${MEMBER_CLEAR_CHAT}" \
   "$PASS"
-
-if [[ "$ISOLATE_EACH_TEST" == "1" ]]; then
-  setup_periodic_fixture_block
-fi
 
 # Test 8: GET user spend with actual numbers
 start_test \
