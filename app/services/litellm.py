@@ -757,6 +757,13 @@ class LiteLLMService:
                     team_id,
                     user_id,
                 )
+                if budget_duration is not None and max_budget_in_team is not None:
+                    await self._update_membership_budget_duration(
+                        team_id=team_id,
+                        user_id=user_id,
+                        max_budget=max_budget_in_team,
+                        budget_duration=budget_duration,
+                    )
                 return
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -782,7 +789,7 @@ class LiteLLMService:
 
         Workaround for LiteLLM issue #25509 where /team/member_update
         ignores budget_duration. We look up the membership budget_id
-        via /user/info, then PATCH it via /budget/update.
+        via /user/info, then POST it via /budget/update.
         """
         try:
             async with httpx.AsyncClient() as client:
@@ -796,9 +803,12 @@ class LiteLLMService:
 
             budget_id = None
             for team in user_data.get("teams", []):
+                if team.get("team_id") != team_id:
+                    continue
                 for membership in team.get("team_memberships", []):
-                    if membership.get("team_id") == team_id:
-                        budget_id = membership.get("budget_id")
+                    budget_table = membership.get("litellm_budget_table") or {}
+                    budget_id = budget_table.get("budget_id") or membership.get("budget_id")
+                    if budget_id:
                         break
                 if budget_id:
                     break
