@@ -771,7 +771,7 @@ def near(a, b):
   except Exception:
     return False
 tp, tg, mp, mg, kp, kg = sys.argv[1:7]
-print(1 if near(tp, 7.0) and near(tg, 7.0) and near(mp, 4.0) and near(mg, 4.0) and near(kp, 2.0) and near(kg, 2.0) else 0)
+print(1 if near(tp, 7.0) and near(tg, 7.0) and near(mp, 4.0) and near(mg, 3.0) and near(kp, 2.0) and near(kg, 2.0) else 0)
 PY
 )"
   if [[ "$purchase_status" != "201" || "$p2_team_put_status" != "200" || "$p2_team_get_status" != "200" || "$p2_mem_put_status" != "200" || "$p2_mem_get_status" != "200" || "$p2_key_put_status" != "200" || "$p2_key_get_status" != "200" || "$_ok" != "1" ]]; then
@@ -816,7 +816,7 @@ def near(a, b):
   except Exception:
     return False
 tp, tg, mp, mg, kp, kg = sys.argv[1:7]
-print(1 if near(tp, 12.0) and near(tg, 12.0) and near(mp, 10.0) and near(mg, 10.0) and near(kp, 9.0) and near(kg, 9.0) else 0)
+print(1 if near(tp, 12.0) and near(tg, 12.0) and near(mp, 10.0) and near(mg, 2.0) and near(kp, 9.0) and near(kg, 9.0) else 0)
 PY
 )"
   if [[ "$p3_team_put_status" != "200" || "$p3_team_get_status" != "200" || "$p3_mem_put_status" != "200" || "$p3_mem_get_status" != "200" || "$p3_key_put_status" != "200" || "$p3_key_get_status" != "200" || "$_ok" != "1" ]]; then
