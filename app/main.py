@@ -255,16 +255,18 @@ def custom_openapi():
                     del operation["parameters"]
 
             # Remove security from non-protected endpoints
-            if path_name in [
-                "/auth/login",
-                "/auth/register",
-                "/health",
-                "/auth/generate-trial-access",
-                "/public/models",
-                "/public/models/",
-                "/public/models/missing",
-                "/public/models/missing/",
-            ]:
+            if (
+                path_name
+                in [
+                    "/auth/login",
+                    "/auth/register",
+                    "/health",
+                    "/auth/generate-trial-access",
+                    "/public/models",
+                    "/public/models/",
+                ]
+                or path_name.startswith("/public/models/missing/")
+            ):
                 if "security" in operation:
                     del operation["security"]
 

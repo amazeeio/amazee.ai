@@ -29,8 +29,15 @@ class Settings(BaseSettings):
         "/openapi.json",
         "/public/models",
         "/public/models/",
-        "/public/models/missing",
-        "/public/models/missing/",
+        # /public/models/missing/{provider} — enumerated rather than prefix-matched
+        # so the middleware contract (exact-path membership) stays untouched.
+        # Add new entries here when wiring up new providers (google, azure, ...).
+        "/public/models/missing/aws",
+        "/public/models/missing/aws/",
+        "/public/models/missing/google",
+        "/public/models/missing/google/",
+        "/public/models/missing/azure",
+        "/public/models/missing/azure/",
     ]
 
     AWS_ACCESS_KEY_ID: str = "AKIATEST"

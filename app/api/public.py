@@ -13,9 +13,9 @@ from app.core.security import get_current_user_from_auth
 from app.db.database import get_db
 from app.db.models import DBRegion, DBTeamRegion, DBUser
 from app.schemas.models import (
-    BedrockMarketMissingModels,
     BedrockMissingModel,
-    BedrockMissingModelsReport,
+    ProviderMissingModelsReport,
+    ProviderRegionMissingModels,
     PublicModelCapabilities,
     PublicModelManufacturer,
     PublicModelPricing,
@@ -592,24 +592,33 @@ async def list_public_models(
 
 
 # ---------------------------------------------------------------------------
-# /public/models/missing
+# /public/models/missing/{provider}
 # ---------------------------------------------------------------------------
 #
-# Reports Bedrock models that are available in the upstream catalog for a given
-# AWS region but are NOT yet deployed to any of the LiteLLM regions known to
-# this backend.  This is the "we should add this model" feed; the original
-# implementation lived in amazeeai-k0rdent-clusters and parsed the raw
-# ClusterDeployment YAML.  Here we infer the deployed set live from
-# `LiteLLMService.get_model_info()` for each region, which gives us the same
-# `litellm_params.model` strings (e.g. ``bedrock/us.anthropic.claude-...``).
+# Reports models available in an upstream hyperscaler catalog that are NOT
+# yet deployed to any of the LiteLLM regions known to this backend.  This is
+# the "we should add this model" feed.  The original implementation lived in
+# amazeeai-k0rdent-clusters and parsed the raw ClusterDeployment YAML; here
+# we infer the deployed set live from `LiteLLMService.get_model_info()` for
+# each region, which gives us the same `litellm_params.model` strings (e.g.
+# ``bedrock/us.anthropic.claude-...``).
+#
+# Per-provider extension:
+#   /public/models/missing/aws     - implemented (Amazon Bedrock)
+#   /public/models/missing/google  - 501, planned (Google Vertex)
+#   /public/models/missing/azure   - 501, planned (Azure Foundry)
+#
+# Adding a new provider means writing one ``_build_<provider>_missing_report``
+# helper and wiring it into ``_PROVIDER_BUILDERS``; the dispatcher and
+# response shape stay the same.
 
-# Markets we care about, mirroring the k0rdent script.  Each market maps a
-# provider ID prefix (``bedrock/<prefix>.modelId``) back to its upstream AWS
-# region used by the Bedrock catalog.
-_BEDROCK_MARKETS: dict[str, dict[str, str]] = {
-    "US": {"aws_region": "us-east-1", "provider_prefix": "us."},
-    "EU": {"aws_region": "eu-central-1", "provider_prefix": "eu."},
-    "AU": {"aws_region": "ap-southeast-2", "provider_prefix": "au."},
+# AWS Bedrock region groups, mirroring the k0rdent script.  Each "region
+# group" is a market code that maps a provider ID prefix
+# (``bedrock/<prefix>.modelId``) back to its upstream AWS region.
+_AWS_REGION_GROUPS: dict[str, dict[str, str]] = {
+    "US": {"upstream_region": "us-east-1", "provider_prefix": "us."},
+    "EU": {"upstream_region": "eu-central-1", "provider_prefix": "eu."},
+    "AU": {"upstream_region": "ap-southeast-2", "provider_prefix": "au."},
 }
 
 _BEDROCK_CATALOG_TTL = timedelta(hours=1)
@@ -665,17 +674,17 @@ async def _fetch_bedrock_catalog(url: str) -> list[dict[str, Any]]:
         return data
 
 
-def _build_available_by_market(
+def _build_available_aws_models_by_group(
     upstream_models: list[dict[str, Any]],
 ) -> dict[str, dict[str, dict[str, str]]]:
-    """Group upstream Bedrock models by market, keyed by ``modelId``.
+    """Group upstream Bedrock models by AWS region group, keyed by ``modelId``.
 
     Mirrors the k0rdent script: only ACTIVE models (or models that don't
     declare a lifecycle status) are considered, and a model is "available"
-    in a market if its ``regions`` list contains the market's AWS region.
+    in a group if its ``regions`` list contains the group's AWS region.
     """
     available: dict[str, dict[str, dict[str, str]]] = {
-        market: {} for market in _BEDROCK_MARKETS
+        group: {} for group in _AWS_REGION_GROUPS
     }
 
     for model in upstream_models:
@@ -693,9 +702,9 @@ def _build_available_by_market(
         regions_raw = model.get("regions") or []
         regions = {r for r in regions_raw if isinstance(r, str)}
 
-        for market, details in _BEDROCK_MARKETS.items():
-            if details["aws_region"] in regions:
-                available[market][model_id] = {
+        for group, details in _AWS_REGION_GROUPS.items():
+            if details["upstream_region"] in regions:
+                available[group][model_id] = {
                     "model_id": model_id,
                     "model_name": str(model.get("modelName") or model_id),
                     "provider_name": str(model.get("providerName") or "Unknown"),
@@ -726,13 +735,13 @@ def _normalize_bedrock_provider_id(
 async def _collect_region_bedrock_models(
     region: DBRegion,
 ) -> tuple[str, dict[str, set[str]]]:
-    """Return ``(region_name, {market: {normalized_model_id, ...}})`` for one region.
+    """Return ``(region_name, {region_group: {normalized_model_id, ...}})``.
 
     Failures are logged and produce empty sets so a single broken region can't
     take down the whole report.  We deliberately do NOT short-circuit when a
     region returns zero models — that's a legitimate state.
     """
-    configured: dict[str, set[str]] = {market: set() for market in _BEDROCK_MARKETS}
+    configured: dict[str, set[str]] = {group: set() for group in _AWS_REGION_GROUPS}
 
     service = LiteLLMService(
         api_url=region.litellm_api_url,
@@ -746,7 +755,9 @@ async def _collect_region_bedrock_models(
             )
     except (httpx.RequestError, HTTPException, asyncio.TimeoutError) as exc:
         logger.warning(
-            "Region %s unavailable for /public/models/missing: %s", region.name, exc
+            "Region %s unavailable for /public/models/missing/aws: %s",
+            region.name,
+            exc,
         )
         return region.name, configured
 
@@ -760,61 +771,49 @@ async def _collect_region_bedrock_models(
         if not isinstance(provider_model_id, str) or not provider_model_id:
             continue
 
-        for market, details in _BEDROCK_MARKETS.items():
+        for group, details in _AWS_REGION_GROUPS.items():
             normalized = _normalize_bedrock_provider_id(
                 provider_model_id, details["provider_prefix"]
             )
             if normalized is None:
                 continue
-            # Only count a deployed bedrock model toward a market when its
-            # provider id explicitly carries that market's prefix
+            # Only count a deployed bedrock model toward a group when its
+            # provider id explicitly carries that group's prefix
             # (e.g. ``bedrock/us.anthropic...`` -> US).  Unprefixed bedrock
             # ids can't be safely attributed without per-region AWS-region
-            # metadata, so we leave them out of every market rather than
+            # metadata, so we leave them out of every group rather than
             # double-count and hide real gaps.
             if provider_model_id.startswith(f"bedrock/{details['provider_prefix']}"):
-                configured[market].add(normalized)
+                configured[group].add(normalized)
 
     return region.name, configured
 
 
-@router.get(
-    "/models/missing",
-    response_model=BedrockMissingModelsReport,
-    summary="Bedrock models available upstream but not yet deployed",
-)
-async def list_missing_bedrock_models(
-    request: Request,
-    db: Session = Depends(get_db),
-) -> BedrockMissingModelsReport:
-    """Compare the upstream Amazon Bedrock catalog against models deployed to
-    the LiteLLM regions known to this backend.
+async def _build_aws_missing_report(
+    db: Session, user: DBUser | None
+) -> ProviderMissingModelsReport:
+    """Build the AWS Bedrock missing-models report.
 
-    Anonymous callers see only **public** regions in the "configured" set
-    (which makes the missing list larger).  Authenticated **system admins**
+    Anonymous callers see only public regions in the "configured" set (which
+    makes the missing list larger).  Authenticated **system admins**
     additionally include private/dedicated regions so the report reflects the
     true deployed surface area.
     """
-    user = await _resolve_optional_user(request, db)
     include_private = bool(user and user.is_admin)
 
-    # Cache-Control: this report depends on auth (admin gets more data) so we
-    # mark it private when authenticated, mirroring /public/models behavior.
-    request.state._public_models_is_authenticated = user is not None
-
     upstream_models = await _fetch_bedrock_catalog(settings.BEDROCK_MODELS_URL)
-    available_by_market = _build_available_by_market(upstream_models)
+    available_by_group = _build_available_aws_models_by_group(upstream_models)
 
     region_query = db.query(DBRegion).filter(DBRegion.is_active.is_(True))
     if not include_private:
         region_query = region_query.filter(DBRegion.is_dedicated.is_(False))
     regions = region_query.all()
 
-    configured_by_market: dict[str, set[str]] = {
-        market: set() for market in _BEDROCK_MARKETS
+    configured_by_group: dict[str, set[str]] = {
+        group: set() for group in _AWS_REGION_GROUPS
     }
-    contributing_regions_by_market: dict[str, set[str]] = {
-        market: set() for market in _BEDROCK_MARKETS
+    contributing_regions_by_group: dict[str, set[str]] = {
+        group: set() for group in _AWS_REGION_GROUPS
     }
 
     if regions:
@@ -822,24 +821,24 @@ async def list_missing_bedrock_models(
             *(_collect_region_bedrock_models(region) for region in regions)
         )
         for region_name, region_configured in per_region:
-            for market, ids in region_configured.items():
+            for group, ids in region_configured.items():
                 if ids:
-                    configured_by_market[market].update(ids)
-                    contributing_regions_by_market[market].add(region_name)
+                    configured_by_group[group].update(ids)
+                    contributing_regions_by_group[group].add(region_name)
 
-    markets: list[BedrockMarketMissingModels] = []
-    for market, details in _BEDROCK_MARKETS.items():
-        available = available_by_market[market]
-        configured_ids = configured_by_market[market]
+    region_groups: list[ProviderRegionMissingModels] = []
+    for group, details in _AWS_REGION_GROUPS.items():
+        available = available_by_group[group]
+        configured_ids = configured_by_group[group]
         missing_ids = sorted(set(available) - configured_ids)
         missing_models = [
             BedrockMissingModel(**available[model_id]) for model_id in missing_ids
         ]
-        markets.append(
-            BedrockMarketMissingModels(
-                market=market,
-                aws_region=details["aws_region"],
-                regions=sorted(contributing_regions_by_market[market]),
+        region_groups.append(
+            ProviderRegionMissingModels(
+                region_group=group,
+                upstream_region=details["upstream_region"],
+                regions=sorted(contributing_regions_by_group[group]),
                 available_model_count=len(available),
                 configured_model_count=len(configured_ids),
                 missing_model_count=len(missing_models),
@@ -847,9 +846,65 @@ async def list_missing_bedrock_models(
             )
         )
 
-    return BedrockMissingModelsReport(
+    return ProviderMissingModelsReport(
+        provider="aws",
         generated_at=datetime.now(UTC),
         models_url=settings.BEDROCK_MODELS_URL,
         is_authenticated=user is not None,
-        markets=markets,
+        region_groups=region_groups,
     )
+
+
+# Provider dispatcher.  Adding a new provider is a single line here plus a
+# helper above; the endpoint shape and response schema are shared.
+_PROVIDER_BUILDERS: dict[str, Any] = {
+    "aws": _build_aws_missing_report,
+    # "google": _build_google_missing_report,   # planned
+    # "azure": _build_azure_missing_report,     # planned
+}
+_KNOWN_PROVIDERS: set[str] = {"aws", "google", "azure"}
+
+
+@router.get(
+    "/models/missing/{provider}",
+    response_model=ProviderMissingModelsReport,
+    summary="Models available upstream at a hyperscaler but not yet deployed",
+)
+async def list_missing_provider_models(
+    provider: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> ProviderMissingModelsReport:
+    """Compare an upstream hyperscaler model catalog against models deployed
+    to the LiteLLM regions known to this backend.
+
+    ``provider`` is the hyperscaler to inspect: ``aws`` (implemented),
+    ``google`` (planned), ``azure`` (planned).  Unknown providers return
+    404; known-but-unimplemented providers return 501.
+    """
+    provider_key = provider.lower()
+    if provider_key not in _KNOWN_PROVIDERS:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Unknown provider '{provider}'. "
+                f"Supported: {sorted(_KNOWN_PROVIDERS)}"
+            ),
+        )
+
+    builder = _PROVIDER_BUILDERS.get(provider_key)
+    if builder is None:
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                f"Provider '{provider_key}' is recognised but not yet "
+                "implemented on this backend."
+            ),
+        )
+
+    user = await _resolve_optional_user(request, db)
+    # Cache-Control: this report depends on auth (admin gets more data) so we
+    # mark it private when authenticated, mirroring /public/models behavior.
+    request.state._public_models_is_authenticated = user is not None
+
+    return await builder(db, user)

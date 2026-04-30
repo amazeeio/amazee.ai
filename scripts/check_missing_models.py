@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 
-"""Notify Slack about new Bedrock models that are not yet deployed.
+"""Notify Slack about new hyperscaler models that are not yet deployed.
 
-Queries ``GET /public/models/missing`` on the configured backend (defaults to
-https://api.amazee.ai), diffs the response against
-``scripts/bedrock-missing-models-state.json`` checked into the repo, and emits
-machine-readable outputs the surrounding workflow uses to:
+Queries ``GET /public/models/missing/{provider}`` on the configured backend
+(defaults to https://api.amazee.ai), diffs the response against
+``scripts/missing-models-state-{provider}.json`` checked into the repo, and
+emits machine-readable outputs the surrounding workflow uses to:
 
-* post a Slack message listing only the *newly* missing models per market;
+* post a Slack message listing only the *newly* missing models per region group;
 * commit the refreshed state file so the next run only flags new gaps.
 
 The script is intentionally stdlib-only so the workflow doesn't need to
@@ -27,14 +27,22 @@ from urllib.error import HTTPError, URLError
 
 
 DEFAULT_API_URL = "https://api.amazee.ai"
-DEFAULT_STATE_FILE = (
-    Path(__file__).resolve().parent / "bedrock-missing-models-state.json"
-)
-DEFAULT_REPORT_FILE = Path("bedrock-model-report.json")
+DEFAULT_PROVIDER = "aws"
+SCRIPTS_DIR = Path(__file__).resolve().parent
 
 
-def fetch_report(api_url: str, token: str | None, timeout: int = 60) -> dict[str, Any]:
-    url = api_url.rstrip("/") + "/public/models/missing"
+def _default_state_file(provider: str) -> Path:
+    return SCRIPTS_DIR / f"missing-models-state-{provider}.json"
+
+
+def _default_report_file(provider: str) -> Path:
+    return Path(f"missing-models-report-{provider}.json")
+
+
+def fetch_report(
+    api_url: str, provider: str, token: str | None, timeout: int = 60
+) -> dict[str, Any]:
+    url = api_url.rstrip("/") + f"/public/models/missing/{provider}"
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
     if token:
         request.add_header("Authorization", f"Bearer {token}")
@@ -43,8 +51,9 @@ def fetch_report(api_url: str, token: str | None, timeout: int = 60) -> dict[str
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.load(response)
     except HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")[:500]
         raise RuntimeError(
-            f"Backend returned HTTP {exc.code} for {url}: {exc.read().decode('utf-8', 'replace')[:500]}"
+            f"Backend returned HTTP {exc.code} for {url}: {body}"
         ) from exc
     except URLError as exc:
         raise RuntimeError(f"Failed to reach {url}: {exc}") from exc
@@ -52,7 +61,7 @@ def fetch_report(api_url: str, token: str | None, timeout: int = 60) -> dict[str
 
 def load_state(state_file: Path) -> dict[str, Any]:
     if not state_file.exists():
-        return {"markets": {}}
+        return {"region_groups": {}}
     try:
         return json.loads(state_file.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -67,37 +76,35 @@ def save_state(state_file: Path, state: dict[str, Any]) -> None:
 
 
 def build_diff(report: dict[str, Any], previous_state: dict[str, Any]) -> dict[str, Any]:
-    """Compute ``new_missing`` per market vs. ``previous_state`` and the next
-    state to persist.
+    """Compute per-region-group ``new_missing`` vs. ``previous_state`` plus
+    the next state to persist.
 
     A model counts as "new" only when it appears in the current report and
-    *did not* appear in the previous state for the same market.
+    *did not* appear in the previous state for the same region group.
     """
     summary_sections: list[str] = []
     has_new = False
 
     next_state: dict[str, Any] = {
+        "provider": report.get("provider"),
         "generated_at": report.get("generated_at"),
         "models_url": report.get("models_url"),
-        "markets": {},
+        "region_groups": {},
     }
 
-    diff_markets: list[dict[str, Any]] = []
+    diff_groups: list[dict[str, Any]] = []
+    prev_groups = previous_state.get("region_groups", {})
 
-    for market_entry in report.get("markets", []):
-        market = market_entry["market"]
-        current_missing = market_entry.get("missing_models", [])
+    for entry in report.get("region_groups", []):
+        group = entry["region_group"]
+        current_missing = entry.get("missing_models", [])
         current_ids = [m["model_id"] for m in current_missing]
-        prev_ids = set(
-            previous_state.get("markets", {})
-            .get(market, {})
-            .get("missing_model_ids", [])
-        )
+        prev_ids = set(prev_groups.get(group, {}).get("missing_model_ids", []))
         new_missing = [m for m in current_missing if m["model_id"] not in prev_ids]
         if new_missing:
             has_new = True
             section_lines = [
-                f"*{market}* ({market_entry['aws_region']}) — {len(new_missing)} new missing model(s)"
+                f"*{group}* ({entry['upstream_region']}) — {len(new_missing)} new missing model(s)"
             ]
             for model in new_missing:
                 section_lines.append(
@@ -105,39 +112,40 @@ def build_diff(report: dict[str, Any], previous_state: dict[str, Any]) -> dict[s
                 )
             summary_sections.append("\n".join(section_lines))
 
-        diff_markets.append(
+        diff_groups.append(
             {
-                "market": market,
-                "aws_region": market_entry["aws_region"],
-                "available_model_count": market_entry["available_model_count"],
-                "configured_model_count": market_entry["configured_model_count"],
-                "missing_model_count": market_entry["missing_model_count"],
+                "region_group": group,
+                "upstream_region": entry["upstream_region"],
+                "available_model_count": entry["available_model_count"],
+                "configured_model_count": entry["configured_model_count"],
+                "missing_model_count": entry["missing_model_count"],
                 "new_missing_model_count": len(new_missing),
                 "new_missing_models": new_missing,
             }
         )
-        next_state["markets"][market] = {
-            "aws_region": market_entry["aws_region"],
-            "regions": market_entry.get("regions", []),
+        next_state["region_groups"][group] = {
+            "upstream_region": entry["upstream_region"],
+            "regions": entry.get("regions", []),
             "missing_model_ids": sorted(current_ids),
         }
 
     comparable_prev = {
         "models_url": previous_state.get("models_url"),
-        "markets": previous_state.get("markets", {}),
+        "region_groups": previous_state.get("region_groups", {}),
     }
     comparable_next = {
         "models_url": next_state.get("models_url"),
-        "markets": next_state.get("markets", {}),
+        "region_groups": next_state.get("region_groups", {}),
     }
 
     return {
+        "provider": report.get("provider"),
         "generated_at": report.get("generated_at"),
         "models_url": report.get("models_url"),
         "is_authenticated": report.get("is_authenticated", False),
         "has_new_missing": has_new,
         "state_changed": comparable_next != comparable_prev,
-        "markets": diff_markets,
+        "region_groups": diff_groups,
         "slack_summary": "\n\n".join(summary_sections),
         "next_state": next_state,
     }
@@ -152,12 +160,19 @@ def write_github_outputs(diff: dict[str, Any]) -> None:
     with open(output_path, "a", encoding="utf-8") as handle:
         handle.write(f"has_new_missing={'true' if diff['has_new_missing'] else 'false'}\n")
         handle.write(f"state_changed={'true' if diff['state_changed'] else 'false'}\n")
-        # JSON-encode so newlines/quotes are safe to interpolate into a Slack payload.
+        handle.write(f"provider={diff.get('provider', '')}\n")
+        # JSON-encoded so newlines/quotes are safe to interpolate into a Slack payload.
         handle.write(f"summary_json={json.dumps(summary)}\n")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--provider",
+        default=os.environ.get("MISSING_MODELS_PROVIDER", DEFAULT_PROVIDER),
+        choices=["aws", "google", "azure"],
+        help="Hyperscaler to query (default: %(default)s).",
+    )
     parser.add_argument(
         "--api-url",
         default=os.environ.get("AMAZEEAI_API_URL", DEFAULT_API_URL),
@@ -174,28 +189,29 @@ def main() -> int:
     parser.add_argument(
         "--state-file",
         type=Path,
-        default=DEFAULT_STATE_FILE,
-        help="Path to persisted state JSON (default: %(default)s).",
+        help="Path to persisted state JSON (default: scripts/missing-models-state-{provider}.json).",
     )
     parser.add_argument(
         "--report-file",
         type=Path,
-        default=DEFAULT_REPORT_FILE,
-        help="Path to write the full diff report (default: %(default)s).",
+        help="Path to write the full diff report (default: missing-models-report-{provider}.json).",
     )
     args = parser.parse_args()
 
+    state_file = args.state_file or _default_state_file(args.provider)
+    report_file = args.report_file or _default_report_file(args.provider)
+
     try:
-        report = fetch_report(args.api_url, args.token)
+        report = fetch_report(args.api_url, args.provider, args.token)
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    previous_state = load_state(args.state_file)
+    previous_state = load_state(state_file)
     diff = build_diff(report, previous_state)
-    save_state(args.state_file, diff["next_state"])
+    save_state(state_file, diff["next_state"])
 
-    args.report_file.write_text(json.dumps(diff, indent=2) + "\n", encoding="utf-8")
+    report_file.write_text(json.dumps(diff, indent=2) + "\n", encoding="utf-8")
 
     write_github_outputs(diff)
 
@@ -203,11 +219,13 @@ def main() -> int:
         json.dumps(
             {
                 "api_url": args.api_url,
+                "provider": args.provider,
                 "is_authenticated": diff["is_authenticated"],
                 "has_new_missing": diff["has_new_missing"],
                 "state_changed": diff["state_changed"],
-                "markets": {
-                    m["market"]: m["new_missing_model_count"] for m in diff["markets"]
+                "region_groups": {
+                    g["region_group"]: g["new_missing_model_count"]
+                    for g in diff["region_groups"]
                 },
             },
             indent=2,
