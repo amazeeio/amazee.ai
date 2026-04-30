@@ -763,7 +763,9 @@ async def _collect_region_bedrock_models(
                 service.get_model_info(),
                 timeout=settings.BEDROCK_MISSING_MODELS_TIMEOUT_SECONDS,
             )
-    except (httpx.RequestError, HTTPException, asyncio.TimeoutError) as exc:
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
         logger.warning(
             "Region %s unavailable for /public/models/missing/aws: %s",
             region.name,
