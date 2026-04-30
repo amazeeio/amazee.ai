@@ -725,8 +725,15 @@ class LiteLLMService:
         user_id: str,
         role: str,
         max_budget_in_team: Optional[float] = None,
+        budget_duration: Optional[str] = None,
     ) -> None:
-        """Update a user's role within a LiteLLM team."""
+        """Update a user's role/budget within a LiteLLM team.
+
+        LiteLLM's /team/member_update ignores budget_duration (issue #25509).
+        When budget_duration is provided, this method performs a two-step write:
+        1. /team/member_update  -> sets max_budget_in_team
+        2. /budget/update       -> sets budget_duration on the membership budget
+        """
         payload = {"team_id": team_id, "user_id": user_id, "role": role}
         if max_budget_in_team is not None:
             payload["max_budget_in_team"] = max_budget_in_team
@@ -750,10 +757,99 @@ class LiteLLMService:
                     team_id,
                     user_id,
                 )
+                if budget_duration is not None and max_budget_in_team is not None:
+                    await self._update_membership_budget_duration(
+                        team_id=team_id,
+                        user_id=user_id,
+                        max_budget=max_budget_in_team,
+                        budget_duration=budget_duration,
+                    )
                 return
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to update LiteLLM team member: {error_msg}",
+            )
+
+        if budget_duration is not None and max_budget_in_team is not None:
+            await self._update_membership_budget_duration(
+                team_id=team_id,
+                user_id=user_id,
+                max_budget=max_budget_in_team,
+                budget_duration=budget_duration,
+            )
+
+    async def _update_membership_budget_duration(
+        self,
+        team_id: str,
+        user_id: str,
+        max_budget: float,
+        budget_duration: str,
+    ) -> None:
+        """Set budget_duration on a team membership's budget table.
+
+        Workaround for LiteLLM issue #25509 where /team/member_update
+        ignores budget_duration. We look up the membership budget_id
+        via /user/info, then POST it via /budget/update.
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                user_resp = await client.get(
+                    f"{self.api_url}/user/info",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    params={"user_id": user_id},
+                )
+                user_resp.raise_for_status()
+                user_data = user_resp.json()
+
+            budget_id = None
+            for team in user_data.get("teams", []):
+                if team.get("team_id") != team_id:
+                    continue
+                for membership in team.get("team_memberships", []):
+                    budget_table = membership.get("litellm_budget_table") or {}
+                    budget_id = budget_table.get("budget_id") or membership.get("budget_id")
+                    if budget_id:
+                        break
+                if budget_id:
+                    break
+
+            if not budget_id:
+                logger.warning(
+                    "No membership budget_id found for team=%s user=%s; "
+                    "skipping budget_duration update",
+                    team_id,
+                    user_id,
+                )
+                return
+
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{self.api_url}/budget/update",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json={
+                        "budget_id": budget_id,
+                        "max_budget": max_budget,
+                        "budget_duration": budget_duration,
+                    },
+                )
+                resp.raise_for_status()
+                logger.info(
+                    "Updated membership budget_duration=%s for team=%s user=%s",
+                    budget_duration,
+                    team_id,
+                    user_id,
+                )
+        except httpx.HTTPStatusError as e:
+            _, error_msg, _ = self._parse_http_error(e)
+            logger.error(
+                "Failed to update membership budget_duration for team=%s user=%s: %s",
+                team_id,
+                user_id,
+                error_msg,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update membership budget duration: {error_msg}",
             )
 
     async def remove_team_member(self, team_id: str, user_id: str) -> None:

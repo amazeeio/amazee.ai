@@ -54,7 +54,7 @@ Usage: ./scripts/e2e_budget_and_aliases_test_local.sh [--cleanup-created] [--iso
 Options:
   --cleanup-created    Delete only resources created by this run (keys/users/teams).
   --isolate-each-test  Use fresh fixture blocks between tests/pairs for stronger isolation.
-  --filter <value>     Run only a subset. Useful values: aliases, key-limit-no-purchase
+  --filter <value>     Run only a subset. Useful values: aliases, key-limit-no-purchase, member-budget-duration
 EOF
       exit 0
       ;;
@@ -630,6 +630,103 @@ run_pool_member_caps_purchase_transition_test() {
     "$pass"
 }
 
+run_member_budget_duration_test() {
+  local test_name="member-budget-duration set via member_update then verified in LiteLLM"
+  if ! test_name_matches_filter "$test_name" && [[ "$RUN_INDIVIDUAL_MODE" == "1" ]]; then
+    return
+  fi
+  start_test \
+    "$test_name" \
+    "member max_budget_in_team is set and budget_duration=1mo is persisted on the LiteLLM membership budget table"
+
+  step "Creating POOL team, user, key"
+  local tag
+  tag="$(date +%s)-mbd"
+  local team_payload
+  team_payload=$(jq -n \
+    --arg n "spend-e2e-member-dur-team-${SUFFIX}-${tag}" \
+    --arg e "spend-e2e-member-dur-team-${SUFFIX}-${tag}@example.com" \
+    '{name:$n, admin_email:$e, budget_type:"pool", require_purchase_for_requests:true}')
+  api_call "POST" "/teams" "$team_payload"
+  local team_status="$HTTP_STATUS"
+  local team_id
+  team_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_team "$team_id"
+
+  local user_payload
+  user_payload=$(jq -n \
+    --arg e "spend-e2e-member-dur-user-${SUFFIX}-${tag}@example.com" \
+    --argjson tid "$team_id" \
+    '{email:$e, team_id:$tid, role:"admin"}')
+  api_call "POST" "/users" "$user_payload"
+  local user_status="$HTTP_STATUS"
+  local user_id
+  user_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_user "$user_id"
+
+  local key_payload
+  key_payload=$(jq -n \
+    --argjson rid "$REGION_ID" \
+    --argjson uid "$user_id" \
+    '{region_id:$rid, name:"spend-e2e-member-dur-key", owner_id:$uid}')
+  api_call "POST" "/private-ai-keys" "$key_payload"
+  local key_status="$HTTP_STATUS"
+  local key_id key_token key_url
+  key_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  key_token="$(echo "$HTTP_BODY" | jq -r '.litellm_token')"
+  key_url="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '.litellm_api_url')")"
+  register_key "$key_id"
+
+  step "Purchasing \$5.00 team budget"
+  local purchase_payload
+  purchase_payload=$(jq -n \
+    --arg sid "spend-e2e-member-dur-purchase-${SUFFIX}-${team_id}" \
+    '{amount_cents:500, currency:"USD", purchased_at:(now|todateiso8601), stripe_payment_id:$sid}')
+  api_call "POST" "/budgets/region/${REGION_ID}/teams/${team_id}/purchase" "$purchase_payload"
+  local purchase_status="$HTTP_STATUS"
+
+  step "Setting member budget to \$1.00 (should set budget_duration=1mo)"
+  api_call "PUT" "/spend/${REGION_ID}/team/${team_id}/member/${user_id}/budget" '{"max_budget":1.0}'
+  local member_set_status="$HTTP_STATUS"
+  local member_set_duration
+  member_set_duration="$(echo "$HTTP_BODY" | jq -r '.budget_duration // "null"')"
+
+  step "Verifying budget_duration directly in LiteLLM"
+  local lite_team_id="${REGION_NAME// /_}_${team_id}"
+  local litellm_url
+  litellm_url="$(to_public_litellm_url "$LITELLM_URL_RAW")"
+  local lite_user_info
+  lite_user_info="$(curl -sS "${litellm_url}/user/info?user_id=${user_id}" \
+    -H "Authorization: Bearer ${LITELLM_PASS}")"
+  local lite_member_budget
+  lite_member_budget="$(echo "$lite_user_info" | jq -r '[.teams[] | select(.team_id=="'"$lite_team_id"'")] | .[0].team_memberships[0].litellm_budget_table.max_budget // "null"')"
+  local lite_member_duration
+  lite_member_duration="$(echo "$lite_user_info" | jq -r '[.teams[] | select(.team_id=="'"$lite_team_id"'")] | .[0].team_memberships[0].litellm_budget_table.budget_duration // "null"')"
+
+  local member_budget_ok
+  member_budget_ok="$(python3 - "$lite_member_budget" <<'PY'
+import sys
+try:
+  print(1 if abs(float(sys.argv[1]) - 1.0) < 0.0001 else 0)
+except Exception:
+  print(0)
+PY
+)"
+
+  local member_duration_ok=0
+  if [[ "$lite_member_duration" == "1mo" ]]; then
+    member_duration_ok=1
+  fi
+
+  local pass=0
+  if [[ "$team_status" == "201" && "$user_status" == "201" && "$key_status" == "200" && "$purchase_status" == "201" && "$member_set_status" == "200" && "$member_budget_ok" == "1" && "$member_duration_ok" == "1" ]]; then
+    pass=1
+  fi
+  finish_test \
+    "team=${team_status}, user=${user_status}, key=${key_status}, purchase=${purchase_status}, member_set=${member_set_status}, api_duration=${member_set_duration}, lite_max_budget=${lite_member_budget}, lite_budget_duration=${lite_member_duration}" \
+    "$pass"
+}
+
 run_pool_key_limit_readback_without_purchase_test() {
   local test_name="POOL key-limit-no-purchase set/get"
   if ! test_name_matches_filter "$test_name" && [[ "$RUN_INDIVIDUAL_MODE" == "1" ]]; then
@@ -788,6 +885,8 @@ if [[ "$HTTP_STATUS" != "200" ]]; then
 fi
 
 REGION_ID="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][0].id')"
+REGION_NAME="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][0].name')"
+LITELLM_URL_RAW="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][0].litellm_api_url')"
 REGION2_ID="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][1].id')"
 DEDICATED_REGION_ID="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==true)][0].id')"
 if [[ "$REGION_ID" == "null" || -z "$REGION_ID" ]]; then
@@ -1530,6 +1629,7 @@ fi
 run_pool_key_caps_purchase_transition_test
 run_pool_member_caps_purchase_transition_test
 run_pool_key_limit_readback_without_purchase_test
+run_member_budget_duration_test
 
 fi
 
@@ -1537,6 +1637,7 @@ if [[ "$RUN_INDIVIDUAL_MODE" == "1" ]]; then
   run_pool_key_caps_purchase_transition_test
   run_pool_member_caps_purchase_transition_test
   run_pool_key_limit_readback_without_purchase_test
+  run_member_budget_duration_test
 fi
 
 if [[ "${TEST_FILTER}" == "aliases" ]]; then
