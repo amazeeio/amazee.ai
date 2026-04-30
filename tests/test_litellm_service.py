@@ -670,9 +670,7 @@ def test_get_team_model_aliases_reads_nested_litellm_model_table(test_region):
 
 
 @patch("httpx.AsyncClient")
-def test_get_team_model_aliases_falls_back_to_team_list(
-    mock_client_class, test_region
-):
+def test_get_team_model_aliases_falls_back_to_team_list(mock_client_class, test_region):
     """When team_info has no aliases, fallback to /team/list to find them."""
     service = LiteLLMService(
         api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
@@ -710,9 +708,7 @@ def test_get_team_model_aliases_empty_dict_means_no_aliases(
     service = LiteLLMService(
         api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
     )
-    service.get_team_info = AsyncMock(
-        return_value={"team_info": {"model_aliases": {}}}
-    )
+    service.get_team_info = AsyncMock(return_value={"team_info": {"model_aliases": {}}})
 
     aliases = asyncio.run(service.get_team_model_aliases("team-1"))
 

@@ -630,6 +630,206 @@ run_pool_member_caps_purchase_transition_test() {
     "$pass"
 }
 
+run_budget_readback_test() {
+  local test_name="budget-set-readback team/member/key"
+  if ! test_name_matches_filter "$test_name" && [[ "$RUN_INDIVIDUAL_MODE" == "1" ]]; then
+    return
+  fi
+  start_test \
+    "$test_name" \
+    "pool team: set/get limits before purchase, after purchase, and above purchased total"
+
+  step "Creating POOL team for budget readback test"
+  local tag
+  tag="$(date +%s)-rb"
+  local team_payload
+  team_payload=$(jq -n \
+    --arg n "spend-e2e-readback-team-${SUFFIX}-${tag}" \
+    --arg e "spend-e2e-readback-team-${SUFFIX}-${tag}@example.com" \
+    '{name:$n, admin_email:$e, budget_type:"pool", require_purchase_for_requests:true}')
+  api_call "POST" "/teams" "$team_payload"
+  local team_status="$HTTP_STATUS"
+  local team_id
+  team_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_team "$team_id"
+
+  step "Creating user in team ${team_id}"
+  local user_payload
+  user_payload=$(jq -n \
+    --arg e "spend-e2e-readback-user-${SUFFIX}-${tag}@example.com" \
+    --argjson tid "$team_id" \
+    '{email:$e, team_id:$tid, role:"admin"}')
+  api_call "POST" "/users" "$user_payload"
+  local user_status="$HTTP_STATUS"
+  local user_id
+  user_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_user "$user_id"
+
+  step "Creating user-owned key in region ${REGION_ID}"
+  local key_payload
+  key_payload=$(jq -n \
+    --argjson rid "$REGION_ID" \
+    --argjson uid "$user_id" \
+    '{region_id:$rid, name:"spend-e2e-readback-key", owner_id:$uid}')
+  api_call "POST" "/private-ai-keys" "$key_payload"
+  local key_status="$HTTP_STATUS"
+  local key_id
+  key_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_key "$key_id"
+
+  local pass=1
+  local retr=""
+  local _ok
+
+  # --- Phase 1: Set limits BEFORE purchase ---
+  step "Phase 1: setting limits before any purchase"
+
+  api_call "PUT" "/spend/${REGION_ID}/team/${team_id}/budget" '{"max_budget":10.0}'
+  local p1_team_put_status="$HTTP_STATUS"
+  local p1_team_put_budget
+  p1_team_put_budget="$(echo "$HTTP_BODY" | jq -r '.max_budget // "null"')"
+  api_call "GET" "/spend/${REGION_ID}/team/${team_id}"
+  local p1_team_get_status="$HTTP_STATUS"
+  local p1_team_get_budget
+  p1_team_get_budget="$(echo "$HTTP_BODY" | jq -r '.total_budget // "null"')"
+
+  api_call "PUT" "/spend/${REGION_ID}/team/${team_id}/member/${user_id}/budget" '{"max_budget":5.0}'
+  local p1_mem_put_status="$HTTP_STATUS"
+  local p1_mem_put_budget
+  p1_mem_put_budget="$(echo "$HTTP_BODY" | jq -r '.max_budget // "null"')"
+  api_call "GET" "/spend/${REGION_ID}/user/${user_id}"
+  local p1_mem_get_status="$HTTP_STATUS"
+  local p1_mem_get_budget
+  p1_mem_get_budget="$(echo "$HTTP_BODY" | jq -r '.keys[0].max_budget // "null"')"
+
+  api_call "PUT" "/spend/${REGION_ID}/key/${key_id}/budget" '{"max_budget":3.0}'
+  local p1_key_put_status="$HTTP_STATUS"
+  local p1_key_put_budget
+  p1_key_put_budget="$(echo "$HTTP_BODY" | jq -r '.max_budget // "null"')"
+  api_call "GET" "/spend/${REGION_ID}/key/${key_id}"
+  local p1_key_get_status="$HTTP_STATUS"
+  local p1_key_get_budget
+  p1_key_get_budget="$(echo "$HTTP_BODY" | jq -r '.max_budget // "null"')"
+
+  _ok="$(python3 - "$p1_team_put_budget" "$p1_team_get_budget" "$p1_mem_put_budget" "$p1_mem_get_budget" "$p1_key_put_budget" "$p1_key_get_budget" <<'PY'
+import sys
+def near(a, b):
+  try:
+    return abs(float(a) - float(b)) < 0.01
+  except Exception:
+    return False
+tp, tg, mp, mg, kp, kg = sys.argv[1:7]
+print(1 if near(tp, 10.0) and near(tg, 10.0) and near(mp, 5.0) and near(mg, 5.0) and near(kp, 3.0) and near(kg, 3.0) else 0)
+PY
+)"
+  if [[ "$p1_team_put_status" != "200" || "$p1_team_get_status" != "200" || "$p1_mem_put_status" != "200" || "$p1_mem_get_status" != "200" || "$p1_key_put_status" != "200" || "$p1_key_get_status" != "200" || "$_ok" != "1" ]]; then
+    pass=0
+  fi
+  retr+="phase1(pre-purchase): team_put=${p1_team_put_status}(${p1_team_put_budget}) team_get=${p1_team_get_status}(${p1_team_get_budget}) mem_put=${p1_mem_put_status}(${p1_mem_put_budget}) mem_get=${p1_mem_get_status}(${p1_mem_get_budget}) key_put=${p1_key_put_status}(${p1_key_put_budget}) key_get=${p1_key_get_status}(${p1_key_get_budget})"
+
+  # --- Phase 2: Purchase $8, set DIFFERENT limits, check readback ---
+  step "Phase 2: purchasing \$8.00 then setting new limits"
+  local purchase_payload
+  purchase_payload=$(jq -n \
+    --arg sid "spend-e2e-readback-purchase-${SUFFIX}-${team_id}" \
+    '{amount_cents:800, currency:"USD", purchased_at:(now|todateiso8601), stripe_payment_id:$sid}')
+  api_call "POST" "/budgets/region/${REGION_ID}/teams/${team_id}/purchase" "$purchase_payload"
+  local purchase_status="$HTTP_STATUS"
+
+  api_call "PUT" "/spend/${REGION_ID}/team/${team_id}/budget" '{"max_budget":7.0}'
+  local p2_team_put_status="$HTTP_STATUS"
+  local p2_team_put_budget
+  p2_team_put_budget="$(echo "$HTTP_BODY" | jq -r '.max_budget // "null"')"
+  api_call "GET" "/spend/${REGION_ID}/team/${team_id}"
+  local p2_team_get_status="$HTTP_STATUS"
+  local p2_team_get_budget
+  p2_team_get_budget="$(echo "$HTTP_BODY" | jq -r '.total_budget // "null"')"
+
+  api_call "PUT" "/spend/${REGION_ID}/team/${team_id}/member/${user_id}/budget" '{"max_budget":4.0}'
+  local p2_mem_put_status="$HTTP_STATUS"
+  local p2_mem_put_budget
+  p2_mem_put_budget="$(echo "$HTTP_BODY" | jq -r '.max_budget // "null"')"
+  api_call "GET" "/spend/${REGION_ID}/user/${user_id}"
+  local p2_mem_get_status="$HTTP_STATUS"
+  local p2_mem_get_budget
+  p2_mem_get_budget="$(echo "$HTTP_BODY" | jq -r '.keys[0].max_budget // "null"')"
+
+  api_call "PUT" "/spend/${REGION_ID}/key/${key_id}/budget" '{"max_budget":2.0}'
+  local p2_key_put_status="$HTTP_STATUS"
+  local p2_key_put_budget
+  p2_key_put_budget="$(echo "$HTTP_BODY" | jq -r '.max_budget // "null"')"
+  api_call "GET" "/spend/${REGION_ID}/key/${key_id}"
+  local p2_key_get_status="$HTTP_STATUS"
+  local p2_key_get_budget
+  p2_key_get_budget="$(echo "$HTTP_BODY" | jq -r '.max_budget // "null"')"
+
+  _ok="$(python3 - "$p2_team_put_budget" "$p2_team_get_budget" "$p2_mem_put_budget" "$p2_mem_get_budget" "$p2_key_put_budget" "$p2_key_get_budget" <<'PY'
+import sys
+def near(a, b):
+  try:
+    return abs(float(a) - float(b)) < 0.01
+  except Exception:
+    return False
+tp, tg, mp, mg, kp, kg = sys.argv[1:7]
+print(1 if near(tp, 7.0) and near(tg, 7.0) and near(mp, 4.0) and near(mg, 4.0) and near(kp, 2.0) and near(kg, 2.0) else 0)
+PY
+)"
+  if [[ "$purchase_status" != "201" || "$p2_team_put_status" != "200" || "$p2_team_get_status" != "200" || "$p2_mem_put_status" != "200" || "$p2_mem_get_status" != "200" || "$p2_key_put_status" != "200" || "$p2_key_get_status" != "200" || "$_ok" != "1" ]]; then
+    pass=0
+  fi
+  retr+=" phase2(post-purchase): purchase=${purchase_status} team_put=${p2_team_put_status}(${p2_team_put_budget}) team_get=${p2_team_get_status}(${p2_team_get_budget}) mem_put=${p2_mem_put_status}(${p2_mem_put_budget}) mem_get=${p2_mem_get_status}(${p2_mem_get_budget}) key_put=${p2_key_put_status}(${p2_key_put_budget}) key_get=${p2_key_get_status}(${p2_key_get_budget})"
+
+  # --- Phase 3: Set limits ABOVE purchased total ($8) ---
+  step "Phase 3: setting limits above purchased total (\$8)"
+  api_call "PUT" "/spend/${REGION_ID}/team/${team_id}/budget" '{"max_budget":12.0}'
+  local p3_team_put_status="$HTTP_STATUS"
+  local p3_team_put_budget
+  p3_team_put_budget="$(echo "$HTTP_BODY" | jq -r '.max_budget // "null"')"
+  api_call "GET" "/spend/${REGION_ID}/team/${team_id}"
+  local p3_team_get_status="$HTTP_STATUS"
+  local p3_team_get_budget
+  p3_team_get_budget="$(echo "$HTTP_BODY" | jq -r '.total_budget // "null"')"
+
+  api_call "PUT" "/spend/${REGION_ID}/team/${team_id}/member/${user_id}/budget" '{"max_budget":10.0}'
+  local p3_mem_put_status="$HTTP_STATUS"
+  local p3_mem_put_budget
+  p3_mem_put_budget="$(echo "$HTTP_BODY" | jq -r '.max_budget // "null"')"
+  api_call "GET" "/spend/${REGION_ID}/user/${user_id}"
+  local p3_mem_get_status="$HTTP_STATUS"
+  local p3_mem_get_budget
+  p3_mem_get_budget="$(echo "$HTTP_BODY" | jq -r '.keys[0].max_budget // "null"')"
+
+  api_call "PUT" "/spend/${REGION_ID}/key/${key_id}/budget" '{"max_budget":9.0}'
+  local p3_key_put_status="$HTTP_STATUS"
+  local p3_key_put_budget
+  p3_key_put_budget="$(echo "$HTTP_BODY" | jq -r '.max_budget // "null"')"
+  api_call "GET" "/spend/${REGION_ID}/key/${key_id}"
+  local p3_key_get_status="$HTTP_STATUS"
+  local p3_key_get_budget
+  p3_key_get_budget="$(echo "$HTTP_BODY" | jq -r '.max_budget // "null"')"
+
+  _ok="$(python3 - "$p3_team_put_budget" "$p3_team_get_budget" "$p3_mem_put_budget" "$p3_mem_get_budget" "$p3_key_put_budget" "$p3_key_get_budget" <<'PY'
+import sys
+def near(a, b):
+  try:
+    return abs(float(a) - float(b)) < 0.01
+  except Exception:
+    return False
+tp, tg, mp, mg, kp, kg = sys.argv[1:7]
+print(1 if near(tp, 12.0) and near(tg, 12.0) and near(mp, 10.0) and near(mg, 10.0) and near(kp, 9.0) and near(kg, 9.0) else 0)
+PY
+)"
+  if [[ "$p3_team_put_status" != "200" || "$p3_team_get_status" != "200" || "$p3_mem_put_status" != "200" || "$p3_mem_get_status" != "200" || "$p3_key_put_status" != "200" || "$p3_key_get_status" != "200" || "$_ok" != "1" ]]; then
+    pass=0
+  fi
+  retr+=" phase3(above-purchase): team_put=${p3_team_put_status}(${p3_team_put_budget}) team_get=${p3_team_get_status}(${p3_team_get_budget}) mem_put=${p3_mem_put_status}(${p3_mem_put_budget}) mem_get=${p3_mem_get_status}(${p3_mem_get_budget}) key_put=${p3_key_put_status}(${p3_key_put_budget}) key_get=${p3_key_get_status}(${p3_key_get_budget})"
+
+  if [[ "$team_status" != "201" || "$user_status" != "201" || "$key_status" != "200" ]]; then
+    pass=0
+  fi
+  finish_test "$retr" "$pass"
+}
+
 run_member_budget_duration_test() {
   local test_name="member-budget-duration set via member_update then verified in LiteLLM"
   if ! test_name_matches_filter "$test_name" && [[ "$RUN_INDIVIDUAL_MODE" == "1" ]]; then
@@ -1630,6 +1830,7 @@ run_pool_key_caps_purchase_transition_test
 run_pool_member_caps_purchase_transition_test
 run_pool_key_limit_readback_without_purchase_test
 run_member_budget_duration_test
+run_budget_readback_test
 
 fi
 
@@ -1638,6 +1839,7 @@ if [[ "$RUN_INDIVIDUAL_MODE" == "1" ]]; then
   run_pool_member_caps_purchase_transition_test
   run_pool_key_limit_readback_without_purchase_test
   run_member_budget_duration_test
+  run_budget_readback_test
 fi
 
 if [[ "${TEST_FILTER}" == "aliases" ]]; then
