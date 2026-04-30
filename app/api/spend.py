@@ -1056,14 +1056,15 @@ async def update_team_member_budget(
             detail="max_budget is required for team-member budget updates",
         )
 
+    effective_duration = _effective_monthly_budget_duration(body.max_budget)
     await service.update_team_member(
         team_id=lite_team_id,
         user_id=str(user_id),
         role=team_role_for_litellm(user),
         max_budget_in_team=body.max_budget,
+        budget_duration=effective_duration,
     )
     await _enforce_pool_no_purchase_key_lock(db, team, region, service, user_id=user_id)
-    effective_duration = _effective_monthly_budget_duration(body.max_budget)
     _upsert_spend_cap(
         db,
         scope="team_member",
