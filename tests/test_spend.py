@@ -1812,3 +1812,335 @@ def test_spend_caps_unique_key_scope_enforced(db, test_region, test_team_user):
     with pytest.raises(IntegrityError):
         db.commit()
     db.rollback()
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_team_spend_uses_db_key_cap_regardless_of_team_type(
+    mock_get_team_info, client, admin_token, test_team, test_region, db
+):
+    """DB key caps must override LiteLLM per-key max_budget for any team type/purchase state."""
+    # Use a periodic (non-POOL) team — no purchase needed
+    test_team.budget_type = "periodic"
+    test_team.require_purchase_for_requests = False
+    db.add(test_team)
+    db.commit()
+
+    key = DBPrivateAIKey(
+        name="periodic-team-key",
+        litellm_token="periodic-team-key-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            key_id=key.id,
+            max_budget=15.0,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+
+    # LiteLLM reports a different max_budget — the DB cap must win
+    mock_get_team_info.return_value = {
+        "team_info": {"spend": 1.0, "max_budget": 100.0},
+        "keys": [
+            {
+                "metadata": {"amazeeai_private_ai_key_name": key.name},
+                "spend": 1.0,
+                "max_budget": 99.0,
+                "user_id": None,
+            }
+        ],
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["keys"][0]["max_budget"] == 15.0
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_team_spend_uses_db_key_cap_for_pool_team_after_purchase(
+    mock_get_team_info, client, admin_token, test_team, test_region, db
+):
+    """DB key caps must override LiteLLM per-key max_budget for POOL teams that have made a purchase."""
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.add(test_team)
+    db.add(
+        DBPoolPurchase(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            amount_cents=5000,
+            currency="USD",
+            purchased_at=datetime.now(UTC),
+            stripe_payment_id=f"pool-post-purchase-key-cap-{test_team.id}-{test_region.id}",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    key = DBPrivateAIKey(
+        name="pool-post-purchase-key",
+        litellm_token="pool-post-purchase-key-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            key_id=key.id,
+            max_budget=20.0,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+
+    # LiteLLM reports a different value — DB cap must still win after purchase
+    mock_get_team_info.return_value = {
+        "team_info": {"spend": 2.0, "max_budget": 50.0},
+        "keys": [
+            {
+                "metadata": {"amazeeai_private_ai_key_name": key.name},
+                "spend": 2.0,
+                "max_budget": 50.0,
+                "user_id": None,
+            }
+        ],
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["keys"][0]["max_budget"] == 20.0
+
+
+@patch("app.api.spend.LiteLLMService.get_user_info", new_callable=AsyncMock)
+def test_get_user_spend_db_key_cap_beats_member_cap_beats_litellm_for_periodic_team(
+    mock_get_user_info, client, admin_token, test_team, test_region, db
+):
+    """For a periodic team, DB key cap > DB member cap > LiteLLM-reported value."""
+    test_team.budget_type = "periodic"
+    test_team.require_purchase_for_requests = False
+    db.add(test_team)
+    db.commit()
+
+    user = DBUser(
+        email="periodic-cap-user@example.com",
+        hashed_password=get_password_hash("password"),
+        is_active=True,
+        team_id=test_team.id,
+        role=UserRole.TEAM_ADMIN,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    key_with_key_cap = DBPrivateAIKey(
+        name="periodic-user-key-cap",
+        litellm_token="periodic-user-key-cap-token",
+        region_id=test_region.id,
+        owner_id=user.id,
+        team_id=test_team.id,
+    )
+    key_with_member_cap = DBPrivateAIKey(
+        name="periodic-user-member-cap",
+        litellm_token="periodic-user-member-cap-token",
+        region_id=test_region.id,
+        owner_id=user.id,
+        team_id=test_team.id,
+    )
+    key_with_litellm_only = DBPrivateAIKey(
+        name="periodic-user-litellm-only",
+        litellm_token="periodic-user-litellm-only-token",
+        region_id=test_region.id,
+        owner_id=user.id,
+        team_id=test_team.id,
+    )
+    db.add_all([key_with_key_cap, key_with_member_cap, key_with_litellm_only])
+    db.commit()
+
+    db.add_all(
+        [
+            DBSpendCap(
+                scope="team_member",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                user_id=user.id,
+                max_budget=5.0,
+                budget_duration="1mo",
+            ),
+            DBSpendCap(
+                scope="key",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                user_id=user.id,
+                key_id=key_with_key_cap.id,
+                max_budget=9.0,
+                budget_duration="1mo",
+            ),
+        ]
+    )
+    db.commit()
+
+    # LiteLLM reports values that should all be overridden by DB caps
+    mock_get_user_info.return_value = {
+        "user_info": {"spend": 0.5},
+        "keys": [
+            {
+                "metadata": {"amazeeai_private_ai_key_name": key_with_key_cap.name},
+                "user_id": str(user.id),
+                "spend": 0.1,
+                "max_budget": 99.0,
+            },
+            {
+                "metadata": {"amazeeai_private_ai_key_name": key_with_member_cap.name},
+                "user_id": str(user.id),
+                "spend": 0.2,
+                "max_budget": 99.0,
+            },
+            {
+                "metadata": {
+                    "amazeeai_private_ai_key_name": key_with_litellm_only.name
+                },
+                "user_id": str(user.id),
+                "spend": 0.2,
+                "max_budget": 99.0,
+            },
+        ],
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/user/{user.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    max_budget_by_name = {k["key_name"]: k["max_budget"] for k in data["keys"]}
+    # DB key cap wins over member cap and LiteLLM
+    assert max_budget_by_name[key_with_key_cap.name] == 9.0
+    # DB member cap wins over LiteLLM when no key cap is present
+    assert max_budget_by_name[key_with_member_cap.name] == 5.0
+    # DB member cap also applied to key that has no explicit key cap
+    assert max_budget_by_name[key_with_litellm_only.name] == 5.0
+
+
+@patch("app.api.spend.LiteLLMService.get_user_info", new_callable=AsyncMock)
+def test_get_user_spend_db_key_cap_beats_member_cap_beats_litellm_for_purchased_pool_team(
+    mock_get_user_info, client, admin_token, test_team, test_region, db
+):
+    """For a POOL team with a purchase, DB key cap > DB member cap > LiteLLM-reported value."""
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.add(test_team)
+    db.add(
+        DBPoolPurchase(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            amount_cents=10000,
+            currency="USD",
+            purchased_at=datetime.now(UTC),
+            stripe_payment_id=f"user-spend-pool-cap-{test_team.id}-{test_region.id}",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    user = DBUser(
+        email="pool-purchased-cap-user@example.com",
+        hashed_password=get_password_hash("password"),
+        is_active=True,
+        team_id=test_team.id,
+        role=UserRole.TEAM_ADMIN,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    key_with_key_cap = DBPrivateAIKey(
+        name="pool-purchased-key-cap",
+        litellm_token="pool-purchased-key-cap-token",
+        region_id=test_region.id,
+        owner_id=user.id,
+        team_id=test_team.id,
+    )
+    key_with_member_cap = DBPrivateAIKey(
+        name="pool-purchased-member-cap",
+        litellm_token="pool-purchased-member-cap-token",
+        region_id=test_region.id,
+        owner_id=user.id,
+        team_id=test_team.id,
+    )
+    db.add_all([key_with_key_cap, key_with_member_cap])
+    db.commit()
+
+    db.add_all(
+        [
+            DBSpendCap(
+                scope="team_member",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                user_id=user.id,
+                max_budget=8.0,
+                budget_duration="1mo",
+            ),
+            DBSpendCap(
+                scope="key",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                user_id=user.id,
+                key_id=key_with_key_cap.id,
+                max_budget=12.0,
+                budget_duration="1mo",
+            ),
+        ]
+    )
+    db.commit()
+
+    # LiteLLM reports values that should be overridden by DB caps
+    mock_get_user_info.return_value = {
+        "user_info": {"spend": 1.0},
+        "keys": [
+            {
+                "metadata": {"amazeeai_private_ai_key_name": key_with_key_cap.name},
+                "user_id": str(user.id),
+                "spend": 0.5,
+                "max_budget": 50.0,
+            },
+            {
+                "metadata": {"amazeeai_private_ai_key_name": key_with_member_cap.name},
+                "user_id": str(user.id),
+                "spend": 0.5,
+                "max_budget": 50.0,
+            },
+        ],
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/user/{user.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    max_budget_by_name = {k["key_name"]: k["max_budget"] for k in data["keys"]}
+    # DB key cap wins over both member cap and LiteLLM after purchase
+    assert max_budget_by_name[key_with_key_cap.name] == 12.0
+    # DB member cap wins over LiteLLM after purchase
+    assert max_budget_by_name[key_with_member_cap.name] == 8.0

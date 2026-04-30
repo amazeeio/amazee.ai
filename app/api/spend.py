@@ -643,15 +643,14 @@ async def get_team_spend(
     )
     if configured_team_cap is not None:
         total_budget = round(configured_team_cap, 4)
-    if _is_no_purchase_pool_team(team, db, region_id):
-        key_cap_map = _get_key_spend_cap_map(
-            db,
-            region_id=region_id,
-            key_ids=[item.key_id for item in items if item.key_id is not None],
-        )
-        for item in items:
-            if item.key_id is not None and item.key_id in key_cap_map:
-                item.max_budget = round(key_cap_map[item.key_id], 4)
+    key_cap_map = _get_key_spend_cap_map(
+        db,
+        region_id=region_id,
+        key_ids=[item.key_id for item in items if item.key_id is not None],
+    )
+    for item in items:
+        if item.key_id is not None and item.key_id in key_cap_map:
+            item.max_budget = round(key_cap_map[item.key_id], 4)
 
     return TeamSpendResponse(
         region_id=region_id,
@@ -759,7 +758,6 @@ async def get_user_spend(
             total_tokens,
         ) = _sum_optional_token_values(items)
 
-    user_team = target_user.team
     member_cap = _get_spend_cap_max_budget(
         db,
         scope="team_member",
@@ -767,21 +765,16 @@ async def get_user_spend(
         team_id=target_user.team_id,
         user_id=user_id,
     )
-    if _is_no_purchase_pool_team(user_team, db, region_id):
-        key_cap_map = _get_key_spend_cap_map(
-            db,
-            region_id=region_id,
-            key_ids=[item.key_id for item in items if item.key_id is not None],
-        )
-        for item in items:
-            if item.key_id is not None and item.key_id in key_cap_map:
-                item.max_budget = round(key_cap_map[item.key_id], 4)
-            elif member_cap is not None:
-                item.max_budget = round(member_cap, 4)
-    elif member_cap is not None:
-        for item in items:
-            if item.max_budget is None:
-                item.max_budget = round(member_cap, 4)
+    key_cap_map = _get_key_spend_cap_map(
+        db,
+        region_id=region_id,
+        key_ids=[item.key_id for item in items if item.key_id is not None],
+    )
+    for item in items:
+        if item.key_id is not None and item.key_id in key_cap_map:
+            item.max_budget = round(key_cap_map[item.key_id], 4)
+        elif member_cap is not None:
+            item.max_budget = round(member_cap, 4)
 
     return UserSpendResponse(
         region_id=region_id,

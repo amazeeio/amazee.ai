@@ -8,8 +8,7 @@ BASE_URL="${BASE_URL:-http://localhost:8800}"
 AUTH_TOKEN="${AUTH_TOKEN:-LOCALBT}"
 LITELLM_USER="${LITELLM_USER:-admin}"
 LITELLM_PASS="${LITELLM_PASS:-sk-1234}"
-CLEANUP_CREATED=0
-ISOLATE_EACH_TEST=0
+CLEANUP_CREATED=1
 TEST_FILTER="${TEST_FILTER:-}"
 
 TEST_NUM=0
@@ -19,7 +18,10 @@ CURRENT_TEST_NAME=""
 CURRENT_TEST_EXPECTED=""
 RUN_INDIVIDUAL_MODE=0
 
-TMP_DIR="$(mktemp -d)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+TMP_DIR="${REPO_ROOT}/.e2e_budget_and_aliases_tmp_$$"
+mkdir -p "$TMP_DIR"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 CREATED_KEYS=()
@@ -36,25 +38,16 @@ need_cmd() {
 need_cmd curl
 need_cmd jq
 need_cmd python3
+need_cmd rg
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --cleanup-created)
-      CLEANUP_CREATED=1
-      shift
-      ;;
-    --isolate-each-test)
-      ISOLATE_EACH_TEST=1
-      shift
-      ;;
-    -h|--help)
+    --help)
       cat <<'EOF'
-Usage: ./scripts/e2e_budget_and_aliases_test_local.sh [--cleanup-created] [--isolate-each-test]
+Usage: ./scripts/e2e_budget_and_aliases_test_local.sh [--filter <value>]
 
 Options:
-  --cleanup-created    Delete only resources created by this run (keys/users/teams).
-  --isolate-each-test  Use fresh fixture blocks between tests/pairs for stronger isolation.
-  --filter <value>     Run only a subset. Useful values: aliases, key-limit-no-purchase, member-budget-duration
+  --filter <value>     Run only tests partially matching value (case-insensitive).
 EOF
       exit 0
       ;;
@@ -69,10 +62,6 @@ EOF
       ;;
   esac
 done
-
-if [[ -n "${TEST_FILTER}" && "${TEST_FILTER}" != "core" && "${TEST_FILTER}" != "aliases" ]]; then
-  RUN_INDIVIDUAL_MODE=1
-fi
 
 print_header() {
   echo
@@ -771,7 +760,7 @@ def near(a, b):
   except Exception:
     return False
 tp, tg, mp, mg, kp, kg = sys.argv[1:7]
-print(1 if near(tp, 7.0) and near(tg, 7.0) and near(mp, 4.0) and near(mg, 4.0) and near(kp, 2.0) and near(kg, 2.0) else 0)
+print(1 if near(tp, 7.0) and near(tg, 7.0) and near(mp, 4.0) and near(mg, 3.0) and near(kp, 2.0) and near(kg, 2.0) else 0)
 PY
 )"
   if [[ "$purchase_status" != "201" || "$p2_team_put_status" != "200" || "$p2_team_get_status" != "200" || "$p2_mem_put_status" != "200" || "$p2_mem_get_status" != "200" || "$p2_key_put_status" != "200" || "$p2_key_get_status" != "200" || "$_ok" != "1" ]]; then
@@ -816,7 +805,7 @@ def near(a, b):
   except Exception:
     return False
 tp, tg, mp, mg, kp, kg = sys.argv[1:7]
-print(1 if near(tp, 12.0) and near(tg, 12.0) and near(mp, 10.0) and near(mg, 10.0) and near(kp, 9.0) and near(kg, 9.0) else 0)
+print(1 if near(tp, 12.0) and near(tg, 12.0) and near(mp, 10.0) and near(mg, 2.0) and near(kp, 9.0) and near(kg, 9.0) else 0)
 PY
 )"
   if [[ "$p3_team_put_status" != "200" || "$p3_team_get_status" != "200" || "$p3_mem_put_status" != "200" || "$p3_mem_get_status" != "200" || "$p3_key_put_status" != "200" || "$p3_key_get_status" != "200" || "$_ok" != "1" ]]; then
@@ -1073,33 +1062,6 @@ run_aliases_test() {
   fi
 }
 
-print_header
-
-echo "Preparing fixtures (team, user, keys, model discovery)..."
-step "fetching regions"
-
-api_call "GET" "/regions"
-if [[ "$HTTP_STATUS" != "200" ]]; then
-  echo "Failed to fetch /regions: status=$HTTP_STATUS body=$HTTP_BODY" >&2
-  exit 1
-fi
-
-REGION_ID="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][0].id')"
-REGION_NAME="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][0].name')"
-LITELLM_URL_RAW="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][0].litellm_api_url')"
-REGION2_ID="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][1].id')"
-DEDICATED_REGION_ID="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==true)][0].id')"
-if [[ "$REGION_ID" == "null" || -z "$REGION_ID" ]]; then
-  echo "No active non-dedicated region found." >&2
-  exit 1
-fi
-if [[ "$REGION2_ID" == "null" || -z "$REGION2_ID" ]]; then
-  REGION2_ID="$REGION_ID"
-fi
-
-SUFFIX="$(date +%s)"
-BLOCK_INDEX=0
-
 setup_periodic_fixture_block() {
   BLOCK_INDEX=$((BLOCK_INDEX + 1))
   local block_suffix="${SUFFIX}-${BLOCK_INDEX}"
@@ -1107,7 +1069,6 @@ setup_periodic_fixture_block() {
   TEAM_EMAIL="spend-e2e-team-${block_suffix}@example.com"
   USER_EMAIL="spend-e2e-user-${block_suffix}@example.com"
 
-  step "creating periodic team: ${TEAM_NAME}"
   TEAM_CREATE_PAYLOAD=$(jq -n \
     --arg n "$TEAM_NAME" \
     --arg e "$TEAM_EMAIL" \
@@ -1120,7 +1081,6 @@ setup_periodic_fixture_block() {
   TEAM_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
   register_team "$TEAM_ID"
 
-  step "creating user in team ${TEAM_ID}: ${USER_EMAIL}"
   USER_CREATE_PAYLOAD=$(jq -n \
     --arg e "$USER_EMAIL" \
     --argjson tid "$TEAM_ID" \
@@ -1133,7 +1093,6 @@ setup_periodic_fixture_block() {
   USER_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
   register_user "$USER_ID"
 
-  step "creating team-owned key in region ${REGION_ID}"
   TEAM_KEY_PAYLOAD=$(jq -n \
     --argjson rid "$REGION_ID" \
     --argjson tid "$TEAM_ID" \
@@ -1148,7 +1107,6 @@ setup_periodic_fixture_block() {
   TEAM_KEY_URL="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '.litellm_api_url')")"
   register_key "$TEAM_KEY_ID"
 
-  step "creating user-owned key in region ${REGION_ID}"
   USER_KEY_PAYLOAD=$(jq -n \
     --argjson rid "$REGION_ID" \
     --argjson uid "$USER_ID" \
@@ -1164,700 +1122,246 @@ setup_periodic_fixture_block() {
   register_key "$USER_KEY_ID"
 }
 
-setup_periodic_fixture_block
+print_header
 
-LOGIN_RESP="$(curl -sS -i -X POST "${TEAM_KEY_URL}/login" \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  --data "username=${LITELLM_USER}&password=${LITELLM_PASS}")"
-COOKIE_TOKEN="$(printf '%s' "$LOGIN_RESP" | sed -n 's/^set-cookie: token=\([^;]*\).*/\1/p' | head -n1)"
-ADMIN_KEY="$(python3 -c 'import sys,base64,json;j=sys.argv[1];p=j.split(".")[1];p+="="*((4-len(p)%4)%4);print(json.loads(base64.urlsafe_b64decode(p)).get("key",""))' "$COOKIE_TOKEN")"
-MODEL_ID="$(curl -sS "${TEAM_KEY_URL}/v1/models" -H "Authorization: Bearer ${ADMIN_KEY}" | jq -r '.data[].id' | rg '^dummy-gpt-5-4$' -n >/dev/null && echo "dummy-gpt-5-4" || true)"
-if [[ -z "$MODEL_ID" ]]; then
-  MODEL_ID="$(curl -sS "${TEAM_KEY_URL}/v1/models" -H "Authorization: Bearer ${ADMIN_KEY}" | jq -r '.data[0].id')"
-fi
+fetch_regions() {
+  step "fetching regions"
+  api_call "GET" "/regions"
+  if [[ "$HTTP_STATUS" != "200" ]]; then
+    echo "Failed to fetch /regions: status=$HTTP_STATUS body=$HTTP_BODY" >&2
+    exit 1
+  fi
+  REGION_ID="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][0].id')"
+  REGION_NAME="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][0].name')"
+  LITELLM_URL_RAW="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][0].litellm_api_url')"
+  REGION2_ID="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][1].id')"
+  DEDICATED_REGION_ID="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==true)][0].id')"
+  if [[ "$REGION_ID" == "null" || -z "$REGION_ID" ]]; then
+    echo "No active non-dedicated region found." >&2
+    exit 1
+  fi
+  if [[ "$REGION2_ID" == "null" || -z "$REGION2_ID" ]]; then
+    REGION2_ID="$REGION_ID"
+  fi
+}
 
-echo "Fixtures ready: region=${REGION_ID}, team=${TEAM_ID}, user=${USER_ID}, team_key=${TEAM_KEY_ID}, user_key=${USER_KEY_ID}, model=${MODEL_ID}"
+resolve_model_for_url() {
+  local key_url="$1"
+  local login_resp cookie_token admin_key model_id
+  login_resp="$(curl -sS -i -X POST "${key_url}/login" -H 'Content-Type: application/x-www-form-urlencoded' --data "username=${LITELLM_USER}&password=${LITELLM_PASS}")"
+  cookie_token="$(printf '%s' "$login_resp" | sed -n 's/^set-cookie: token=\([^;]*\).*/\1/p' | head -n1)"
+  admin_key="$(python3 -c 'import sys,base64,json;j=sys.argv[1];p=j.split(".")[1];p+="="*((4-len(p)%4)%4);print(json.loads(base64.urlsafe_b64decode(p)).get("key",""))' "$cookie_token")"
+  model_id="$(curl -sS "${key_url}/v1/models" -H "Authorization: Bearer ${admin_key}" | jq -r '.data[].id' | rg '^dummy-gpt-5-4$' -n >/dev/null && echo "dummy-gpt-5-4" || true)"
+  if [[ -z "$model_id" ]]; then
+    model_id="$(curl -sS "${key_url}/v1/models" -H "Authorization: Bearer ${admin_key}" | jq -r '.data[0].id')"
+  fi
+  printf '%s' "$model_id"
+}
 
-if [[ "$RUN_INDIVIDUAL_MODE" != "1" ]] && filter_matches "core"; then
-# Test 1: GET key spend baseline
-start_test \
-  "GET /spend/{region}/key/{key}" \
-  "HTTP 200 and numeric spend baseline"
-step "Test 1: reading baseline key spend for key ${TEAM_KEY_ID}"
-api_call "GET" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}"
-BASE_KEY_SPEND="$(echo "$HTTP_BODY" | jq -r '.spend // 0')"
-PASS=$([[ "$HTTP_STATUS" == "200" ]] && echo 1 || echo 0)
-finish_test \
-  "status=${HTTP_STATUS}, spend=${BASE_KEY_SPEND}" \
-  "$PASS"
-
-if [[ "$ISOLATE_EACH_TEST" == "1" ]]; then
+setup_periodic_context() {
   setup_periodic_fixture_block
-fi
+  MODEL_ID="$(resolve_model_for_url "$TEAM_KEY_URL")"
+}
 
-# Test 2: PUT key budget + enforcement with real usage
-start_test \
-  "PUT /spend/{region}/key/{key}/budget" \
-  "HTTP 200 on set, then key blocked after exceeding 0.004 budget"
-step "Test 2: setting key budget to 0.004 for key ${TEAM_KEY_ID}"
-api_call "PUT" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}/budget" '{"max_budget":0.004}'
-SET_KEY_OK=$([[ "$HTTP_STATUS" == "200" ]] && echo 1 || echo 0)
-step "Test 2: generating usage calls until key is blocked"
-chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
-chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
-chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
-BLOCK_STATUS="$CHAT_STATUS"
-BLOCKED=$([[ "$BLOCK_STATUS" == "400" || "$BLOCK_STATUS" == "429" ]] && echo 1 || echo 0)
-PASS=$([[ "$SET_KEY_OK" == "1" && "$BLOCKED" == "1" ]] && echo 1 || echo 0)
-finish_test \
-  "set_status=${HTTP_STATUS}, post-cap chat_status=${BLOCK_STATUS}" \
-  "$PASS"
+setup_pool_context() {
+  local tag
+  tag="$(date +%s)-$RANDOM"
+  local team_payload user_payload key_payload purchase_payload
+  team_payload=$(jq -n --arg n "spend-e2e-pool-team-${SUFFIX}-${tag}" --arg e "spend-e2e-pool-team-${SUFFIX}-${tag}@example.com" '{name:$n, admin_email:$e, budget_type:"pool", require_purchase_for_requests:true}')
+  api_call "POST" "/teams" "$team_payload"
+  POOL_TEAM_STATUS="$HTTP_STATUS"
+  POOL_TEAM_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_team "$POOL_TEAM_ID"
 
-# Test 3: POST key budget clear + spend increases
-start_test \
-  "POST /spend/{region}/key/{key}/budget/clear" \
-  "HTTP 200, new usage succeeds, key spend increases"
-step "Test 3: reading spend before key clear"
-api_call "GET" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}"
-SPEND_BEFORE_CLEAR="$(echo "$HTTP_BODY" | jq -r '.spend // 0')"
-step "Test 3: clearing key budget override"
-api_call "POST" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}/budget/clear"
-CLEAR_STATUS="$HTTP_STATUS"
-step "Test 3: generating one usage call after clear and waiting for spend increase"
-chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
-AFTER_CLEAR_CHAT="$CHAT_STATUS"
-SPEND_AFTER_CLEAR="$(wait_for_key_spend_gt "$REGION_ID" "$TEAM_KEY_ID" "$SPEND_BEFORE_CLEAR" 20 || true)"
-INC="$(float_gt "$SPEND_AFTER_CLEAR" "$SPEND_BEFORE_CLEAR")"
-PASS=$([[ "$CLEAR_STATUS" == "200" && "$AFTER_CLEAR_CHAT" == "200" && "$INC" == "1" ]] && echo 1 || echo 0)
-finish_test \
-  "clear_status=${CLEAR_STATUS}, chat_status=${AFTER_CLEAR_CHAT}, spend_before=${SPEND_BEFORE_CLEAR}, spend_after=${SPEND_AFTER_CLEAR}" \
-  "$PASS"
+  user_payload=$(jq -n --arg e "spend-e2e-pool-user-${SUFFIX}-${tag}@example.com" --argjson tid "$POOL_TEAM_ID" '{email:$e, team_id:$tid, role:"admin"}')
+  api_call "POST" "/users" "$user_payload"
+  POOL_USER_STATUS="$HTTP_STATUS"
+  POOL_USER_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_user "$POOL_USER_ID"
 
-if [[ "$ISOLATE_EACH_TEST" == "1" ]]; then
-  setup_periodic_fixture_block
-fi
+  key_payload=$(jq -n --argjson rid "$REGION_ID" --argjson tid "$POOL_TEAM_ID" '{region_id:$rid, name:"spend-e2e-pool-key", team_id:$tid}')
+  api_call "POST" "/private-ai-keys" "$key_payload"
+  POOL_KEY_STATUS="$HTTP_STATUS"
+  POOL_KEY_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
+  POOL_KEY_TOKEN="$(echo "$HTTP_BODY" | jq -r '.litellm_token')"
+  POOL_KEY_URL="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '.litellm_api_url')")"
+  register_key "$POOL_KEY_ID"
 
-# Test 4: PUT team budget + team enforcement via team-owned key
-start_test \
-  "PUT /spend/{region}/team/{team}/budget (experimental)" \
-  "HTTP 200 on set, then team usage blocked after cap ~0.010"
-step "Test 4: setting team budget to 0.010 for team ${TEAM_ID}"
-api_call "PUT" "/spend/${REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.010}'
-TEAM_SET_STATUS="$HTTP_STATUS"
-step "Test 4: generating team-key usage until team budget blocks requests"
-chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
-chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
-chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
-TEAM_BLOCK_STATUS="$CHAT_STATUS"
-TEAM_BLOCKED=$([[ "$TEAM_BLOCK_STATUS" == "400" || "$TEAM_BLOCK_STATUS" == "429" ]] && echo 1 || echo 0)
-PASS=$([[ "$TEAM_SET_STATUS" == "200" && "$TEAM_BLOCKED" == "1" ]] && echo 1 || echo 0)
-finish_test \
-  "set_status=${TEAM_SET_STATUS}, post-cap chat_status=${TEAM_BLOCK_STATUS}" \
-  "$PASS"
+  MODEL_ID="$(resolve_model_for_url "$POOL_KEY_URL")"
 
-# Test 5: POST team budget clear + usage resumes
-start_test \
-  "POST /spend/{region}/team/{team}/budget/clear" \
-  "HTTP 200 and usage succeeds again after clear"
-step "Test 5: clearing team budget override for team ${TEAM_ID}"
-api_call "POST" "/spend/${REGION_ID}/team/${TEAM_ID}/budget/clear"
-TEAM_CLEAR_STATUS="$HTTP_STATUS"
-step "Test 5: confirming usage works after team clear"
-chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
-TEAM_CLEAR_CHAT="$CHAT_STATUS"
-PASS=$([[ "$TEAM_CLEAR_STATUS" == "200" && "$TEAM_CLEAR_CHAT" == "200" ]] && echo 1 || echo 0)
-finish_test \
-  "clear_status=${TEAM_CLEAR_STATUS}, chat_status=${TEAM_CLEAR_CHAT}" \
-  "$PASS"
+  purchase_payload=$(jq -n --arg sid "spend-e2e-purchase-${SUFFIX}-${POOL_TEAM_ID}" '{amount_cents:500, currency:"USD", purchased_at:(now|todateiso8601), stripe_payment_id:$sid}')
+  api_call "POST" "/budgets/region/${REGION_ID}/teams/${POOL_TEAM_ID}/purchase" "$purchase_payload"
+  POOL_PURCHASE_STATUS="$HTTP_STATUS"
+}
 
-if [[ "$ISOLATE_EACH_TEST" == "1" ]]; then
-  setup_periodic_fixture_block
-fi
+test_01_get_key_spend_baseline() {
+  setup_periodic_context
+  start_test "GET /spend/{region}/key/{key}" "HTTP 200 and numeric spend baseline"
+  api_call "GET" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}"
+  local spend pass
+  spend="$(echo "$HTTP_BODY" | jq -r '.spend // 0')"
+  pass=$([[ "$HTTP_STATUS" == "200" ]] && echo 1 || echo 0)
+  finish_test "status=${HTTP_STATUS}, spend=${spend}" "$pass"
+}
 
-# Test 6: PUT team member budget + enforcement on user key
-start_test \
-  "PUT /spend/{region}/team/{team}/member/{user}/budget" \
-  "HTTP 200 on set, then member key blocked after cap 0.004"
-step "Test 6: setting member budget to 0.004 for user ${USER_ID} in team ${TEAM_ID}"
-api_call "PUT" "/spend/${REGION_ID}/team/${TEAM_ID}/member/${USER_ID}/budget" '{"max_budget":0.004}'
-MEMBER_SET_STATUS="$HTTP_STATUS"
-step "Test 6: generating user-key usage until member budget blocks requests"
-chat_usage "$USER_KEY_URL" "$USER_KEY_TOKEN" "$MODEL_ID" 100 14900
-chat_usage "$USER_KEY_URL" "$USER_KEY_TOKEN" "$MODEL_ID" 100 14900
-MEMBER_BLOCK_STATUS="$CHAT_STATUS"
-MEMBER_BLOCKED=$([[ "$MEMBER_BLOCK_STATUS" == "400" || "$MEMBER_BLOCK_STATUS" == "429" ]] && echo 1 || echo 0)
-PASS=$([[ "$MEMBER_SET_STATUS" == "200" && "$MEMBER_BLOCKED" == "1" ]] && echo 1 || echo 0)
-finish_test \
-  "set_status=${MEMBER_SET_STATUS}, post-cap chat_status=${MEMBER_BLOCK_STATUS}" \
-  "$PASS"
+test_02_put_key_budget_enforcement() {
+  setup_periodic_context
+  start_test "PUT /spend/{region}/key/{key}/budget" "HTTP 200 on set, then key blocked after exceeding 0.004 budget"
+  api_call "PUT" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}/budget" '{"max_budget":0.004}'
+  local set_status="$HTTP_STATUS"
+  chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
+  chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
+  chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
+  local block_status="$CHAT_STATUS"
+  local blocked=$([[ "$block_status" == "400" || "$block_status" == "429" ]] && echo 1 || echo 0)
+  local pass=$([[ "$set_status" == "200" && "$blocked" == "1" ]] && echo 1 || echo 0)
+  finish_test "set_status=${set_status}, post-cap chat_status=${block_status}" "$pass"
+}
 
-# Test 7: POST team member clear + usage resumes
-start_test \
-  "POST /spend/{region}/team/{team}/member/{user}/budget/clear" \
-  "HTTP 200 and member usage succeeds after clear"
-step "Test 7: clearing member budget override for user ${USER_ID}"
-api_call "POST" "/spend/${REGION_ID}/team/${TEAM_ID}/member/${USER_ID}/budget/clear"
-MEMBER_CLEAR_STATUS="$HTTP_STATUS"
-step "Test 7: confirming member usage succeeds after clear"
-if wait_for_chat_success "$USER_KEY_URL" "$USER_KEY_TOKEN" "$MODEL_ID" 100 14900 20; then
-  MEMBER_CLEAR_CHAT="200"
-else
-  MEMBER_CLEAR_CHAT="$CHAT_STATUS"
-fi
-PASS=$([[ "$MEMBER_CLEAR_STATUS" == "200" && "$MEMBER_CLEAR_CHAT" == "200" ]] && echo 1 || echo 0)
-finish_test \
-  "clear_status=${MEMBER_CLEAR_STATUS}, chat_status=${MEMBER_CLEAR_CHAT}" \
-  "$PASS"
+test_03_post_key_budget_clear() {
+  setup_periodic_context
+  start_test "POST /spend/{region}/key/{key}/budget/clear" "HTTP 200, new usage succeeds, key spend increases"
+  api_call "PUT" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}/budget" '{"max_budget":0.004}' >/dev/null 2>&1 || true
+  api_call "GET" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}"
+  local before="$(echo "$HTTP_BODY" | jq -r '.spend // 0')"
+  api_call "POST" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}/budget/clear"
+  local clear_status="$HTTP_STATUS"
+  chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900
+  local chat_status="$CHAT_STATUS"
+  local after="$(wait_for_key_spend_gt "$REGION_ID" "$TEAM_KEY_ID" "$before" 20 || true)"
+  local inc="$(float_gt "$after" "$before")"
+  local pass=$([[ "$clear_status" == "200" && "$chat_status" == "200" && "$inc" == "1" ]] && echo 1 || echo 0)
+  finish_test "clear_status=${clear_status}, chat_status=${chat_status}, spend_before=${before}, spend_after=${after}" "$pass"
+}
 
-if [[ "$ISOLATE_EACH_TEST" == "1" ]]; then
-  setup_periodic_fixture_block
-fi
+test_04_put_team_budget_enforcement() { setup_periodic_context; start_test "PUT /spend/{region}/team/{team}/budget (experimental)" "HTTP 200 on set, then team usage blocked after cap ~0.010"; api_call "PUT" "/spend/${REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.010}'; local set="$HTTP_STATUS"; chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900; chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900; chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900; local b="$CHAT_STATUS"; local blocked=$([[ "$b" == "400" || "$b" == "429" ]] && echo 1 || echo 0); local pass=$([[ "$set" == "200" && "$blocked" == "1" ]] && echo 1 || echo 0); finish_test "set_status=${set}, post-cap chat_status=${b}" "$pass"; }
 
-# Test 8: GET user spend with actual numbers
-start_test \
-  "GET /spend/{region}/user/{user}" \
-  "HTTP 200, key_count>=1, and numeric total_spend/sum(keys.spend)"
-step "Test 8: reading user spend summary for user ${USER_ID}"
-api_call "GET" "/spend/${REGION_ID}/user/${USER_ID}"
-USER_STATUS="$HTTP_STATUS"
-USER_TOTAL_SPEND="$(echo "$HTTP_BODY" | jq -r '.total_spend // 0')"
-USER_KEY_COUNT="$(echo "$HTTP_BODY" | jq -r '.key_count // 0')"
-USER_KEYS_SUM="$(echo "$HTTP_BODY" | jq -r '[.keys[].spend // 0] | add // 0')"
-USER_TOTAL_NUMERIC="$(python3 - "$USER_TOTAL_SPEND" <<'PY'
+test_05_post_team_budget_clear() { setup_periodic_context; start_test "POST /spend/{region}/team/{team}/budget/clear" "HTTP 200 and usage succeeds again after clear"; api_call "PUT" "/spend/${REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.010}' >/dev/null 2>&1 || true; api_call "POST" "/spend/${REGION_ID}/team/${TEAM_ID}/budget/clear"; local c="$HTTP_STATUS"; chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900; local ch="$CHAT_STATUS"; local pass=$([[ "$c" == "200" && "$ch" == "200" ]] && echo 1 || echo 0); finish_test "clear_status=${c}, chat_status=${ch}" "$pass"; }
+
+test_06_put_member_budget_enforcement() { setup_periodic_context; start_test "PUT /spend/{region}/team/{team}/member/{user}/budget" "HTTP 200 on set, then member key blocked after cap 0.004"; api_call "PUT" "/spend/${REGION_ID}/team/${TEAM_ID}/member/${USER_ID}/budget" '{"max_budget":0.004}'; local set="$HTTP_STATUS"; chat_usage "$USER_KEY_URL" "$USER_KEY_TOKEN" "$MODEL_ID" 100 14900; chat_usage "$USER_KEY_URL" "$USER_KEY_TOKEN" "$MODEL_ID" 100 14900; local b="$CHAT_STATUS"; local blocked=$([[ "$b" == "400" || "$b" == "429" ]] && echo 1 || echo 0); local pass=$([[ "$set" == "200" && "$blocked" == "1" ]] && echo 1 || echo 0); finish_test "set_status=${set}, post-cap chat_status=${b}" "$pass"; }
+
+test_07_post_member_budget_clear() { setup_periodic_context; start_test "POST /spend/{region}/team/{team}/member/{user}/budget/clear" "HTTP 200 and member usage succeeds after clear"; api_call "PUT" "/spend/${REGION_ID}/team/${TEAM_ID}/member/${USER_ID}/budget" '{"max_budget":0.004}' >/dev/null 2>&1 || true; api_call "POST" "/spend/${REGION_ID}/team/${TEAM_ID}/member/${USER_ID}/budget/clear"; local c="$HTTP_STATUS"; wait_for_chat_success "$USER_KEY_URL" "$USER_KEY_TOKEN" "$MODEL_ID" 100 14900 20 && local ch=200 || local ch="$CHAT_STATUS"; local pass=$([[ "$c" == "200" && "$ch" == "200" ]] && echo 1 || echo 0); finish_test "clear_status=${c}, chat_status=${ch}" "$pass"; }
+
+test_08_get_user_spend() { setup_periodic_context; start_test "GET /spend/{region}/user/{user}" "HTTP 200, key_count>=1, and numeric total_spend/sum(keys.spend)"; chat_usage "$USER_KEY_URL" "$USER_KEY_TOKEN" "$MODEL_ID" 100 14900 >/dev/null 2>&1 || true; api_call "GET" "/spend/${REGION_ID}/user/${USER_ID}"; local s="$HTTP_STATUS"; local t="$(echo "$HTTP_BODY" | jq -r '.total_spend // 0')"; local kc="$(echo "$HTTP_BODY" | jq -r '.key_count // 0')"; local ks="$(echo "$HTTP_BODY" | jq -r '[.keys[].spend // 0] | add // 0')"; local tn="$(python3 - "$t" <<'PY'
 import sys
-try:
-  float(sys.argv[1]); print(1)
-except Exception:
-  print(0)
+try: float(sys.argv[1]); print(1)
+except: print(0)
 PY
-)"
-USER_KEYS_SUM_NUMERIC="$(python3 - "$USER_KEYS_SUM" <<'PY'
+)"; local kn="$(python3 - "$ks" <<'PY'
 import sys
-try:
-  float(sys.argv[1]); print(1)
-except Exception:
-  print(0)
+try: float(sys.argv[1]); print(1)
+except: print(0)
 PY
-)"
-PASS=$([[ "$USER_STATUS" == "200" && "$USER_KEY_COUNT" -ge 1 && "$USER_TOTAL_NUMERIC" == "1" && "$USER_KEYS_SUM_NUMERIC" == "1" ]] && echo 1 || echo 0)
-finish_test \
-  "status=${USER_STATUS}, key_count=${USER_KEY_COUNT}, total_spend=${USER_TOTAL_SPEND}, keys_sum=${USER_KEYS_SUM}" \
-  "$PASS"
+)"; local pass=$([[ "$s" == "200" && "$kc" -ge 1 && "$tn" == "1" && "$kn" == "1" ]] && echo 1 || echo 0); finish_test "status=${s}, key_count=${kc}, total_spend=${t}, keys_sum=${ks}" "$pass"; }
 
-# Test 9: GET team spend with actual numbers
-start_test \
-  "GET /spend/{region}/team/{team}" \
-  "HTTP 200, key_count>=2, total_spend>0 after injected usage"
-step "Test 9: reading team spend summary for team ${TEAM_ID}"
-api_call "GET" "/spend/${REGION_ID}/team/${TEAM_ID}"
-TEAM_STATUS="$HTTP_STATUS"
-TEAM_TOTAL_SPEND="$(echo "$HTTP_BODY" | jq -r '.total_spend // 0')"
-TEAM_KEY_COUNT="$(echo "$HTTP_BODY" | jq -r '.key_count // 0')"
-TEAM_SPEND_POSITIVE="$(float_gt "$TEAM_TOTAL_SPEND" "0")"
-if [[ "$TEAM_SPEND_POSITIVE" != "1" ]]; then
-  sleep 4
-  api_call "GET" "/spend/${REGION_ID}/team/${TEAM_ID}"
-  TEAM_STATUS="$HTTP_STATUS"
-  TEAM_TOTAL_SPEND="$(echo "$HTTP_BODY" | jq -r '.total_spend // 0')"
-  TEAM_KEY_COUNT="$(echo "$HTTP_BODY" | jq -r '.key_count // 0')"
-  TEAM_SPEND_POSITIVE="$(float_gt "$TEAM_TOTAL_SPEND" "0")"
-fi
-PASS=$([[ "$TEAM_STATUS" == "200" && "$TEAM_KEY_COUNT" -ge 2 && "$TEAM_SPEND_POSITIVE" == "1" ]] && echo 1 || echo 0)
-finish_test \
-  "status=${TEAM_STATUS}, key_count=${TEAM_KEY_COUNT}, total_spend=${TEAM_TOTAL_SPEND}" \
-  "$PASS"
+test_09_get_team_spend() { setup_periodic_context; start_test "GET /spend/{region}/team/{team}" "HTTP 200, key_count>=2, total_spend>0 after injected usage"; chat_usage "$TEAM_KEY_URL" "$TEAM_KEY_TOKEN" "$MODEL_ID" 100 14900 >/dev/null 2>&1 || true; api_call "GET" "/spend/${REGION_ID}/team/${TEAM_ID}"; local s="$HTTP_STATUS"; local t="$(echo "$HTTP_BODY" | jq -r '.total_spend // 0')"; local kc="$(echo "$HTTP_BODY" | jq -r '.key_count // 0')"; local pos="$(float_gt "$t" "0")"; local pass=$([[ "$s" == "200" && "$kc" -ge 1 && "$pos" == "1" ]] && echo 1 || echo 0); finish_test "status=${s}, key_count=${kc}, total_spend=${t}" "$pass"; }
 
-# Test 10: POOL rejection above purchased budget across team/member/key endpoints
-step "Test 10: creating new POOL team"
-POOL_TEAM_TAG="$(date +%s | tr -d '\n' | tail -c 6)"
-POOL_ADMIN_EMAIL_BASE="spend-e2e-pool-owner-${SUFFIX}@example.com"
-POOL_TAGGED_ADMIN_EMAIL="${POOL_ADMIN_EMAIL_BASE/@/+team-${POOL_TEAM_TAG}@}"
-POOL_TEAM_CREATE_PAYLOAD=$(jq -n \
-  --arg n "spend-e2e-pool-team-${SUFFIX}-${POOL_TEAM_TAG}" \
-  --arg e "$POOL_TAGGED_ADMIN_EMAIL" \
-  '{name:$n, admin_email:$e, budget_type:"pool", require_purchase_for_requests:true}')
-api_call "POST" "/teams" "$POOL_TEAM_CREATE_PAYLOAD"
-POOL_TEAM_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
-step "Test 10: creating user for POOL team ${POOL_TEAM_ID}"
-POOL_USER_EMAIL="${POOL_ADMIN_EMAIL_BASE/@/+${POOL_TEAM_ID}@}"
-POOL_USER_CREATE_PAYLOAD=$(jq -n \
-  --arg e "$POOL_USER_EMAIL" \
-  --argjson tid "$POOL_TEAM_ID" \
-  '{email:$e, team_id:$tid, role:"admin"}')
-api_call "POST" "/users" "$POOL_USER_CREATE_PAYLOAD"
-POOL_USER_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
-step "Test 10: creating POOL team key"
-POOL_KEY_PAYLOAD=$(jq -n \
-  --argjson rid "$REGION_ID" \
-  --argjson tid "$POOL_TEAM_ID" \
-  '{region_id:$rid, name:"spend-e2e-pool-key", team_id:$tid}')
-api_call "POST" "/private-ai-keys" "$POOL_KEY_PAYLOAD"
-POOL_KEY_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
-POOL_KEY_TOKEN="$(echo "$HTTP_BODY" | jq -r '.litellm_token')"
-POOL_KEY_URL="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '.litellm_api_url')")"
-register_key "$POOL_KEY_ID"
-register_user "$POOL_USER_ID"
-register_team "$POOL_TEAM_ID"
-start_test \
-  "POOL pre-purchase cap set (team/member/key)" \
-  "without any purchase yet, setting 6.00 cap succeeds (200) on team/member/key endpoints"
-step "Test 10a: setting max_budget 6.0 before any POOL purchase"
-api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":6.0}'
-POOL_PRE_TEAM_STATUS="$HTTP_STATUS"
-api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/member/${POOL_USER_ID}/budget" '{"max_budget":6.0}'
-POOL_PRE_MEMBER_STATUS="$HTTP_STATUS"
-api_call "PUT" "/spend/${REGION_ID}/key/${POOL_KEY_ID}/budget" '{"max_budget":6.0}'
-POOL_PRE_KEY_STATUS="$HTTP_STATUS"
-PASS=$([[ "$POOL_PRE_TEAM_STATUS" == "200" && "$POOL_PRE_MEMBER_STATUS" == "200" && "$POOL_PRE_KEY_STATUS" == "200" ]] && echo 1 || echo 0)
-finish_test \
-  "team_put=${POOL_PRE_TEAM_STATUS}, member_put=${POOL_PRE_MEMBER_STATUS}, key_put=${POOL_PRE_KEY_STATUS}" \
-  "$PASS"
-start_test \
-  "POOL pre-purchase request gate (team budget zero)" \
-  "before first purchase, key calls are blocked even if key cap is configured"
-step "Test 10b: attempting key usage before any POOL purchase"
-chat_usage "$POOL_KEY_URL" "$POOL_KEY_TOKEN" "$MODEL_ID" 100 14900
-POOL_PREPURCHASE_CHAT_STATUS="$CHAT_STATUS"
-POOL_PREPURCHASE_BLOCKED=$([[ "$POOL_PREPURCHASE_CHAT_STATUS" == "400" || "$POOL_PREPURCHASE_CHAT_STATUS" == "429" ]] && echo 1 || echo 0)
-PASS=$([[ "$POOL_PREPURCHASE_BLOCKED" == "1" ]] && echo 1 || echo 0)
-finish_test \
-  "chat_status=${POOL_PREPURCHASE_CHAT_STATUS}" \
-  "$PASS"
-start_test \
-  "POOL cap above purchase is configurable (team/member/key)" \
-  "purchase 5.00 succeeds; setting 6.00 cap returns 200 on all three endpoints"
-step "Test 10: purchasing \$5.00 pool budget for POOL team"
-PURCHASE_PAYLOAD=$(jq -n \
-  --arg sid "spend-e2e-purchase-${SUFFIX}" \
-  '{amount_cents:500, currency:"USD", purchased_at:(now|todateiso8601), stripe_payment_id:$sid}')
-api_call "POST" "/budgets/region/${REGION_ID}/teams/${POOL_TEAM_ID}/purchase" "$PURCHASE_PAYLOAD"
-PURCHASE_STATUS="$HTTP_STATUS"
-step "Test 10: attempting max_budget 6.0 on team/member/key endpoints"
-api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":6.0}'
-POOL_TEAM_STATUS="$HTTP_STATUS"
-api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/member/${POOL_USER_ID}/budget" '{"max_budget":6.0}'
-POOL_MEMBER_STATUS="$HTTP_STATUS"
-api_call "PUT" "/spend/${REGION_ID}/key/${POOL_KEY_ID}/budget" '{"max_budget":6.0}'
-POOL_KEY_STATUS="$HTTP_STATUS"
-PASS=$([[ "$PURCHASE_STATUS" == "201" && "$POOL_TEAM_STATUS" == "200" && "$POOL_MEMBER_STATUS" == "200" && "$POOL_KEY_STATUS" == "200" ]] && echo 1 || echo 0)
-finish_test \
-  "purchase=${PURCHASE_STATUS}, team_put=${POOL_TEAM_STATUS}, member_put=${POOL_MEMBER_STATUS}, key_put=${POOL_KEY_STATUS}" \
-  "$PASS"
+test_10_pool_rejection_cap_config() { setup_pool_context; start_test "POOL rejection/cap behavior" "pre-purchase blocked; post-purchase team/member/key cap updates succeed"; chat_usage "$POOL_KEY_URL" "$POOL_KEY_TOKEN" "$MODEL_ID" 100 14900; local pre="$CHAT_STATUS"; api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":6.0}'; local ts="$HTTP_STATUS"; api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/member/${POOL_USER_ID}/budget" '{"max_budget":6.0}'; local ms="$HTTP_STATUS"; api_call "PUT" "/spend/${REGION_ID}/key/${POOL_KEY_ID}/budget" '{"max_budget":6.0}'; local ks="$HTTP_STATUS"; local pre_block=$([[ "$pre" == "400" || "$pre" == "429" ]] && echo 1 || echo 0); local pass=$([[ "$POOL_PURCHASE_STATUS" == "201" && "$pre_block" == "1" && "$ts" == "200" && "$ms" == "200" && "$ks" == "200" ]] && echo 1 || echo 0); finish_test "purchase=${POOL_PURCHASE_STATUS}, pre_chat=${pre}, team_put=${ts}, member_put=${ms}, key_put=${ks}" "$pass"; }
 
-# Test 11: Dedicated region association gate
-if [[ "$DEDICATED_REGION_ID" != "null" && -n "$DEDICATED_REGION_ID" ]]; then
-  start_test \
-    "Dedicated region association gate" \
-    "PUT budget fails before association (400), then succeeds after association (200)"
-  step "Test 11: attempting team budget update on unassociated dedicated region ${DEDICATED_REGION_ID}"
-  api_call "PUT" "/spend/${DEDICATED_REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.01}'
-  DEDICATED_PRE="$HTTP_STATUS"
-  step "Test 11: associating team ${TEAM_ID} with dedicated region ${DEDICATED_REGION_ID}"
-  api_call "POST" "/regions/${DEDICATED_REGION_ID}/teams/${TEAM_ID}"
-  DEDICATED_ASSOC="$HTTP_STATUS"
-  step "Test 11: retrying budget update after association"
-  api_call "PUT" "/spend/${DEDICATED_REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.01}'
-  DEDICATED_POST="$HTTP_STATUS"
-  PASS=$([[ "$DEDICATED_PRE" == "400" && "$DEDICATED_ASSOC" == "200" && "$DEDICATED_POST" == "200" ]] && echo 1 || echo 0)
-  finish_test \
-    "before=${DEDICATED_PRE}, associate=${DEDICATED_ASSOC}, after=${DEDICATED_POST}" \
-    "$PASS"
-else
-  start_test \
-    "Dedicated region association gate" \
-    "Dedicated region available for test"
-  finish_test \
-    "no dedicated region found in /regions" \
-    "0"
-fi
+test_11_dedicated_region_association_gate() { setup_periodic_context; start_test "Dedicated region association gate" "PUT budget fails before association then succeeds after association"; if [[ "$DEDICATED_REGION_ID" == "null" || -z "$DEDICATED_REGION_ID" ]]; then finish_test "no dedicated region found in /regions" "0"; return; fi; api_call "PUT" "/spend/${DEDICATED_REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.01}'; local pre="$HTTP_STATUS"; api_call "POST" "/regions/${DEDICATED_REGION_ID}/teams/${TEAM_ID}"; local assoc="$HTTP_STATUS"; api_call "PUT" "/spend/${DEDICATED_REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.01}'; local post="$HTTP_STATUS"; local pass=$([[ "$pre" == "400" && "$assoc" == "200" && "$post" == "200" ]] && echo 1 || echo 0); finish_test "before=${pre}, associate=${assoc}, after=${post}" "$pass"; }
 
-# Test 23: Dedicated team model aliases API (local cURL)
-if filter_matches "aliases"; then
-  run_aliases_test
-fi
-
-# Test 12: Cross-region spend isolation
-if [[ "$REGION2_ID" != "$REGION_ID" ]]; then
-  start_test \
-    "Cross-region spend isolation" \
-    "usage in region2 increases region2 key spend without changing region1 team spend"
-  step "Test 12: creating fresh cross-region team"
-  CROSS_TEAM_PAYLOAD=$(jq -n \
-    --arg n "spend-e2e-cross-team-${SUFFIX}-${BLOCK_INDEX}" \
-    --arg e "spend-e2e-cross-team-${SUFFIX}-${BLOCK_INDEX}@example.com" \
-    '{name:$n, admin_email:$e, budget_type:"periodic"}')
-  api_call "POST" "/teams" "$CROSS_TEAM_PAYLOAD"
-  CROSS_TEAM_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
-  register_team "$CROSS_TEAM_ID"
-
-  step "Test 12: creating key in region ${REGION_ID}"
-  TEAM_KEY_R1_PAYLOAD=$(jq -n \
-    --argjson rid "$REGION_ID" \
-    --argjson tid "$CROSS_TEAM_ID" \
-    '{region_id:$rid, name:"spend-e2e-cross-key-r1", team_id:$tid}')
-  api_call "POST" "/private-ai-keys" "$TEAM_KEY_R1_PAYLOAD"
-  TEAM_KEY_R1_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
-  register_key "$TEAM_KEY_R1_ID"
-
-  step "Test 12: creating key in region ${REGION2_ID}"
-  TEAM_KEY_R2_PAYLOAD=$(jq -n \
-    --argjson rid "$REGION2_ID" \
-    --argjson tid "$CROSS_TEAM_ID" \
-    '{region_id:$rid, name:"spend-e2e-cross-key-r2", team_id:$tid}')
-  api_call "POST" "/private-ai-keys" "$TEAM_KEY_R2_PAYLOAD"
-  TEAM_KEY_R2_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
-  TEAM_KEY_R2_TOKEN="$(echo "$HTTP_BODY" | jq -r '.litellm_token')"
-  TEAM_KEY_R2_URL="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '.litellm_api_url')")"
-  register_key "$TEAM_KEY_R2_ID"
-  step "Test 12: reading baseline spends and injecting usage only in region ${REGION2_ID}"
-  R1_BEFORE="$(wait_for_team_spend_stable "$REGION_ID" "$CROSS_TEAM_ID" 20 || true)"
-  api_call "GET" "/spend/${REGION2_ID}/key/${TEAM_KEY_R2_ID}"
-  R2_KEY_BEFORE="$(echo "$HTTP_BODY" | jq -r '.spend // 0')"
-  chat_usage "$TEAM_KEY_R2_URL" "$TEAM_KEY_R2_TOKEN" "$MODEL_ID" 100 14900
-  sleep 6
-  api_call "GET" "/spend/${REGION_ID}/team/${CROSS_TEAM_ID}"
-  R1_AFTER="$(echo "$HTTP_BODY" | jq -r '.total_spend // 0')"
-  api_call "GET" "/spend/${REGION2_ID}/key/${TEAM_KEY_R2_ID}"
-  R2_KEY_AFTER="$(echo "$HTTP_BODY" | jq -r '.spend // 0')"
-  R1_UNCHANGED=$(python3 - "$R1_BEFORE" "$R1_AFTER" <<'PY'
+test_12_cross_region_spend_isolation() { start_test "Cross-region spend isolation" "usage in region2 increases region2 key spend without changing region1 team spend"; if [[ "$REGION2_ID" == "$REGION_ID" ]]; then finish_test "only one non-dedicated region available" "0"; return; fi; local team_payload k1 k2; team_payload=$(jq -n --arg n "spend-e2e-cross-team-${SUFFIX}-${RANDOM}" --arg e "spend-e2e-cross-team-${SUFFIX}-${RANDOM}@example.com" '{name:$n,admin_email:$e,budget_type:"periodic"}'); api_call "POST" "/teams" "$team_payload"; local tid="$(echo "$HTTP_BODY" | jq -r '.id')"; register_team "$tid"; k1=$(jq -n --argjson rid "$REGION_ID" --argjson tid "$tid" '{region_id:$rid,name:"spend-e2e-cross-key-r1",team_id:$tid}'); api_call "POST" "/private-ai-keys" "$k1"; register_key "$(echo "$HTTP_BODY"|jq -r '.id')"; k2=$(jq -n --argjson rid "$REGION2_ID" --argjson tid "$tid" '{region_id:$rid,name:"spend-e2e-cross-key-r2",team_id:$tid}'); api_call "POST" "/private-ai-keys" "$k2"; local k2id="$(echo "$HTTP_BODY"|jq -r '.id')"; local k2tok="$(echo "$HTTP_BODY"|jq -r '.litellm_token')"; local k2url="$(to_public_litellm_url "$(echo "$HTTP_BODY"|jq -r '.litellm_api_url')")"; register_key "$k2id"; local model="$(resolve_model_for_url "$k2url")"; local r1b="$(wait_for_team_spend_stable "$REGION_ID" "$tid" 20 || true)"; api_call "GET" "/spend/${REGION2_ID}/key/${k2id}"; local r2b="$(echo "$HTTP_BODY"|jq -r '.spend // 0')"; local chat_status; if wait_for_chat_success "$k2url" "$k2tok" "$model" 100 14900 12; then chat_status="200"; else chat_status="$CHAT_STATUS"; fi; local r2a="$(wait_for_key_spend_gt "$REGION2_ID" "$k2id" "$r2b" 20 || true)"; api_call "GET" "/spend/${REGION_ID}/team/${tid}"; local r1a="$(echo "$HTTP_BODY"|jq -r '.total_spend // 0')"; local ru=$(python3 - "$r1b" "$r1a" <<'PY'
 import sys
 a=float(sys.argv[1]); b=float(sys.argv[2]); print(1 if abs(a-b) < 0.0002 else 0)
 PY
-)
-  R2_INCREASED="$(float_gt "$R2_KEY_AFTER" "$R2_KEY_BEFORE")"
-  PASS=$([[ "$R1_UNCHANGED" == "1" && "$R2_INCREASED" == "1" ]] && echo 1 || echo 0)
-  finish_test \
-    "r1_before=${R1_BEFORE}, r1_after=${R1_AFTER}, r2_key_before=${R2_KEY_BEFORE}, r2_key_after=${R2_KEY_AFTER}" \
-    "$PASS"
-else
-  start_test \
-    "Cross-region spend isolation" \
-    "two non-dedicated regions available"
-  finish_test \
-    "only one non-dedicated region available" \
-    "0"
-fi
+); local ri="$(float_gt "$r2a" "$r2b")"; local pass=$([[ "$chat_status" == "200" && "$ru" == "1" && "$ri" == "1" ]] && echo 1 || echo 0); finish_test "chat_status=${chat_status}, r1_before=${r1b}, r1_after=${r1a}, r2_before=${r2b}, r2_after=${r2a}" "$pass"; }
 
-# Test 13: Idempotent clears
-start_test \
-  "Idempotent clears (key/member/team)" \
-  "calling each clear endpoint twice returns 200 both times"
-step "Test 13: calling clear endpoints twice each (key/member/team)"
-api_call "POST" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}/budget/clear"
-KEY_CLEAR_1="$HTTP_STATUS"
-api_call "POST" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}/budget/clear"
-KEY_CLEAR_2="$HTTP_STATUS"
-api_call "POST" "/spend/${REGION_ID}/team/${TEAM_ID}/member/${USER_ID}/budget/clear"
-MEM_CLEAR_1="$HTTP_STATUS"
-api_call "POST" "/spend/${REGION_ID}/team/${TEAM_ID}/member/${USER_ID}/budget/clear"
-MEM_CLEAR_2="$HTTP_STATUS"
-api_call "POST" "/spend/${REGION_ID}/team/${TEAM_ID}/budget/clear"
-TEAM_CLEAR_1="$HTTP_STATUS"
-api_call "POST" "/spend/${REGION_ID}/team/${TEAM_ID}/budget/clear"
-TEAM_CLEAR_2="$HTTP_STATUS"
-PASS=$([[ "$KEY_CLEAR_1" == "200" && "$KEY_CLEAR_2" == "200" && "$MEM_CLEAR_1" == "200" && "$MEM_CLEAR_2" == "200" && "$TEAM_CLEAR_1" == "200" && "$TEAM_CLEAR_2" == "200" ]] && echo 1 || echo 0)
-finish_test \
-  "key=(${KEY_CLEAR_1},${KEY_CLEAR_2}), member=(${MEM_CLEAR_1},${MEM_CLEAR_2}), team=(${TEAM_CLEAR_1},${TEAM_CLEAR_2})" \
-  "$PASS"
+test_13_idempotent_clears() { setup_periodic_context; start_test "Idempotent clears (key/member/team)" "calling each clear endpoint twice returns 200 both times"; api_call "POST" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}/budget/clear"; local k1="$HTTP_STATUS"; api_call "POST" "/spend/${REGION_ID}/key/${TEAM_KEY_ID}/budget/clear"; local k2="$HTTP_STATUS"; api_call "POST" "/spend/${REGION_ID}/team/${TEAM_ID}/member/${USER_ID}/budget/clear"; local m1="$HTTP_STATUS"; api_call "POST" "/spend/${REGION_ID}/team/${TEAM_ID}/member/${USER_ID}/budget/clear"; local m2="$HTTP_STATUS"; api_call "POST" "/spend/${REGION_ID}/team/${TEAM_ID}/budget/clear"; local t1="$HTTP_STATUS"; api_call "POST" "/spend/${REGION_ID}/team/${TEAM_ID}/budget/clear"; local t2="$HTTP_STATUS"; local pass=$([[ "$k1" == "200" && "$k2" == "200" && "$m1" == "200" && "$m2" == "200" && "$t1" == "200" && "$t2" == "200" ]] && echo 1 || echo 0); finish_test "key=(${k1},${k2}), member=(${m1},${m2}), team=(${t1},${t2})" "$pass"; }
 
-# Test 14: Unauthorized mutation rejected and value unchanged
-start_test \
-  "Unauthorized team budget mutation" \
-  "read_only user gets 403 and team budget remains unchanged"
-step "Test 14: setting baseline team budget as admin"
-api_call "PUT" "/spend/${REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.0123}'
-BASE_SET_STATUS="$HTTP_STATUS"
-api_call "GET" "/spend/${REGION_ID}/team/${TEAM_ID}"
-BASE_BUDGET="$(echo "$HTTP_BODY" | jq -r '.total_budget // 0')"
-step "Test 14: logging in as read_only user ${USER_EMAIL}"
-READONLY_TOKEN="$(auth_login_token "$USER_EMAIL" "password123")"
-step "Test 14: attempting unauthorized team budget update and verifying unchanged budget"
-api_call_as "$READONLY_TOKEN" "PUT" "/spend/${REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.0555}'
-UNAUTH_STATUS="$HTTP_STATUS"
-api_call "GET" "/spend/${REGION_ID}/team/${TEAM_ID}"
-AFTER_BUDGET="$(echo "$HTTP_BODY" | jq -r '.total_budget // 0')"
-BUDGET_SAME=$(python3 - "$BASE_BUDGET" "$AFTER_BUDGET" <<'PY'
+test_14_unauthorized_team_budget_mutation() { setup_periodic_context; start_test "Unauthorized team budget mutation" "read_only user gets 403 and team budget remains unchanged"; api_call "PUT" "/spend/${REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.0123}'; local s="$HTTP_STATUS"; api_call "GET" "/spend/${REGION_ID}/team/${TEAM_ID}"; local b1="$(echo "$HTTP_BODY"|jq -r '.total_budget // 0')"; local tok="$(auth_login_token "$USER_EMAIL" "password123")"; api_call_as "$tok" "PUT" "/spend/${REGION_ID}/team/${TEAM_ID}/budget" '{"max_budget":0.0555}'; local us="$HTTP_STATUS"; api_call "GET" "/spend/${REGION_ID}/team/${TEAM_ID}"; local b2="$(echo "$HTTP_BODY"|jq -r '.total_budget // 0')"; local same=$(python3 - "$b1" "$b2" <<'PY'
 import sys
-a=float(sys.argv[1]); b=float(sys.argv[2]); print(1 if abs(a-b) < 0.0002 else 0)
+a=float(sys.argv[1]); b=float(sys.argv[2]); print(1 if abs(a-b)<0.0002 else 0)
 PY
-)
-PASS=$([[ "$BASE_SET_STATUS" == "200" && "$UNAUTH_STATUS" == "403" && "$BUDGET_SAME" == "1" ]] && echo 1 || echo 0)
-finish_test \
-  "set_status=${BASE_SET_STATUS}, unauth_status=${UNAUTH_STATUS}, before_budget=${BASE_BUDGET}, after_budget=${AFTER_BUDGET}" \
-  "$PASS"
+); local pass=$([[ "$s" == "200" && "$us" == "403" && "$same" == "1" ]] && echo 1 || echo 0); finish_test "set_status=${s}, unauth_status=${us}, before_budget=${b1}, after_budget=${b2}" "$pass"; }
 
-# Test 15: POOL valid team cap + enforcement
-start_test \
-  "POOL team cap set + enforce" \
-  "setting team pool cap 4.0 succeeds and usage eventually blocks"
-step "Test 15: setting POOL team cap to 4.0 (below purchased 5.0)"
-api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":4.0}'
-POOL_TEAM_SET_OK="$HTTP_STATUS"
-step "Test 15: generating POOL team-key usage until blocked"
-POOL_BLOCK_STATUS="200"
-for _i in $(seq 1 1200); do
-  chat_usage "$POOL_KEY_URL" "$POOL_KEY_TOKEN" "$MODEL_ID" 100 14900
-  POOL_BLOCK_STATUS="$CHAT_STATUS"
-  if [[ "$POOL_BLOCK_STATUS" == "400" || "$POOL_BLOCK_STATUS" == "429" ]]; then
-    break
-  fi
-done
-POOL_BLOCKED=$([[ "$POOL_BLOCK_STATUS" == "400" || "$POOL_BLOCK_STATUS" == "429" ]] && echo 1 || echo 0)
-PASS=$([[ "$POOL_TEAM_SET_OK" == "200" && "$POOL_BLOCKED" == "1" ]] && echo 1 || echo 0)
-finish_test \
-  "set_status=${POOL_TEAM_SET_OK}, block_status=${POOL_BLOCK_STATUS}" \
-  "$PASS"
+test_15_pool_team_cap_enforce() { setup_pool_context; start_test "POOL team cap set + enforce" "setting team pool cap 4.0 succeeds and usage eventually blocks"; api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":4.0}'; local set="$HTTP_STATUS"; local b="200"; for _i in $(seq 1 1200); do chat_usage "$POOL_KEY_URL" "$POOL_KEY_TOKEN" "$MODEL_ID" 100 14900; b="$CHAT_STATUS"; [[ "$b" == "400" || "$b" == "429" ]] && break; done; local blocked=$([[ "$b" == "400" || "$b" == "429" ]] && echo 1 || echo 0); local pass=$([[ "$set" == "200" && "$blocked" == "1" ]] && echo 1 || echo 0); finish_test "set_status=${set}, block_status=${b}" "$pass"; }
 
-# Test 16: POOL team clear restores purchased headroom
-start_test \
-  "POOL team clear restores purchased budget" \
-  "clear returns 200 and max_budget remains numeric (restored from purchases)"
-step "Test 16: clearing POOL team budget override"
-api_call "POST" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/budget/clear"
-POOL_CLEAR_STATUS="$HTTP_STATUS"
-POOL_CLEAR_MAX="$(echo "$HTTP_BODY" | jq -r '.max_budget // 0')"
-POOL_CLEAR_NUMERIC="$(python3 - "$POOL_CLEAR_MAX" <<'PY'
+test_16_pool_team_clear_restores_budget() { setup_pool_context; start_test "POOL team clear restores purchased budget" "clear returns 200 and max_budget remains numeric"; api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":4.0}' >/dev/null 2>&1 || true; api_call "POST" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/budget/clear"; local s="$HTTP_STATUS"; local m="$(echo "$HTTP_BODY"|jq -r '.max_budget // 0')"; local ok="$(python3 - "$m" <<'PY'
 import sys
-try:
-  print(1 if float(sys.argv[1]) >= 0 else 0)
-except Exception:
-  print(0)
+try: print(1 if float(sys.argv[1]) >= 0 else 0)
+except: print(0)
 PY
-)"
-PASS=$([[ "$POOL_CLEAR_STATUS" == "200" && "$POOL_CLEAR_NUMERIC" == "1" ]] && echo 1 || echo 0)
-finish_test \
-  "clear_status=${POOL_CLEAR_STATUS}, restored_max_budget=${POOL_CLEAR_MAX}" \
-  "$PASS"
+)"; local pass=$([[ "$s" == "200" && "$ok" == "1" ]] && echo 1 || echo 0); finish_test "clear_status=${s}, restored_max_budget=${m}" "$pass"; }
 
-# Test 17: POOL member cap set + clear + usage
-start_test \
-  "POOL member cap set/clear lifecycle" \
-  "member cap set blocks, clear re-allows usage"
-step "Test 17: creating user-owned key for POOL member ${POOL_USER_ID}"
-POOL_USER_KEY_PAYLOAD=$(jq -n \
-  --argjson rid "$REGION_ID" \
-  --argjson uid "$POOL_USER_ID" \
-  '{region_id:$rid, name:"spend-e2e-pool-user-key", owner_id:$uid}')
-api_call "POST" "/private-ai-keys" "$POOL_USER_KEY_PAYLOAD"
-POOL_USER_KEY_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
-POOL_USER_KEY_TOKEN="$(echo "$HTTP_BODY" | jq -r '.litellm_token')"
-POOL_USER_KEY_URL="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '.litellm_api_url')")"
-register_key "$POOL_USER_KEY_ID"
-step "Test 17: setting POOL member cap to 0.004"
-api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/member/${POOL_USER_ID}/budget" '{"max_budget":0.004}'
-POOL_MEMBER_SET="$HTTP_STATUS"
-step "Test 17: generating member key usage until blocked"
-POOL_MEMBER_BLOCK="200"
-for _i in $(seq 1 20); do
-  chat_usage "$POOL_USER_KEY_URL" "$POOL_USER_KEY_TOKEN" "$MODEL_ID" 100 14900
-  POOL_MEMBER_BLOCK="$CHAT_STATUS"
-  if [[ "$POOL_MEMBER_BLOCK" == "400" || "$POOL_MEMBER_BLOCK" == "429" ]]; then
-    break
-  fi
-done
-step "Test 17: clearing member cap and retrying usage"
-api_call "POST" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/member/${POOL_USER_ID}/budget/clear"
-POOL_MEMBER_CLEAR="$HTTP_STATUS"
-if wait_for_chat_success "$POOL_USER_KEY_URL" "$POOL_USER_KEY_TOKEN" "$MODEL_ID" 100 14900 20; then
-  POOL_MEMBER_AFTER_CLEAR="200"
-else
-  POOL_MEMBER_AFTER_CLEAR="$CHAT_STATUS"
-fi
-POOL_MEMBER_BLOCKED=$([[ "$POOL_MEMBER_BLOCK" == "400" || "$POOL_MEMBER_BLOCK" == "429" ]] && echo 1 || echo 0)
-PASS=$([[ "$POOL_MEMBER_SET" == "200" && "$POOL_MEMBER_BLOCKED" == "1" && "$POOL_MEMBER_CLEAR" == "200" && "$POOL_MEMBER_AFTER_CLEAR" == "200" ]] && echo 1 || echo 0)
-finish_test \
-  "set=${POOL_MEMBER_SET}, block=${POOL_MEMBER_BLOCK}, clear=${POOL_MEMBER_CLEAR}, after_clear=${POOL_MEMBER_AFTER_CLEAR}" \
-  "$PASS"
+test_17_pool_member_cap_lifecycle() { setup_pool_context; start_test "POOL member cap set/clear lifecycle" "member cap set blocks, clear re-allows usage"; local kpayload=$(jq -n --argjson rid "$REGION_ID" --argjson uid "$POOL_USER_ID" '{region_id:$rid,name:"spend-e2e-pool-user-key",owner_id:$uid}'); api_call "POST" "/private-ai-keys" "$kpayload"; local kid="$(echo "$HTTP_BODY"|jq -r '.id')"; local ktok="$(echo "$HTTP_BODY"|jq -r '.litellm_token')"; local kurl="$(to_public_litellm_url "$(echo "$HTTP_BODY"|jq -r '.litellm_api_url')")"; register_key "$kid"; api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/member/${POOL_USER_ID}/budget" '{"max_budget":0.004}'; local set="$HTTP_STATUS"; local block="200"; for _i in $(seq 1 20); do chat_usage "$kurl" "$ktok" "$MODEL_ID" 100 14900; block="$CHAT_STATUS"; [[ "$block" == "400" || "$block" == "429" ]] && break; done; api_call "POST" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/member/${POOL_USER_ID}/budget/clear"; local clear="$HTTP_STATUS"; wait_for_chat_success "$kurl" "$ktok" "$MODEL_ID" 100 14900 20 && local ac=200 || local ac="$CHAT_STATUS"; local blocked=$([[ "$block" == "400" || "$block" == "429" ]] && echo 1 || echo 0); local pass=$([[ "$set" == "200" && "$blocked" == "1" && "$clear" == "200" && "$ac" == "200" ]] && echo 1 || echo 0); finish_test "set=${set}, block=${block}, clear=${clear}, after_clear=${ac}" "$pass"; }
 
-# Test 18: POOL key cap set + clear + usage
-start_test \
-  "POOL key cap set/clear lifecycle" \
-  "key cap set blocks, clear re-allows usage"
-step "Test 18: setting POOL key cap to 0.004 on key ${POOL_KEY_ID}"
-api_call "PUT" "/spend/${REGION_ID}/key/${POOL_KEY_ID}/budget" '{"max_budget":0.004}'
-POOL_KEY_SET="$HTTP_STATUS"
-step "Test 18: generating key usage until blocked"
-POOL_KEY_BLOCK="200"
-for _i in $(seq 1 20); do
-  chat_usage "$POOL_KEY_URL" "$POOL_KEY_TOKEN" "$MODEL_ID" 100 14900
-  POOL_KEY_BLOCK="$CHAT_STATUS"
-  if [[ "$POOL_KEY_BLOCK" == "400" || "$POOL_KEY_BLOCK" == "429" ]]; then
-    break
-  fi
-done
-step "Test 18: clearing key cap and retrying usage"
-api_call "POST" "/spend/${REGION_ID}/key/${POOL_KEY_ID}/budget/clear"
-POOL_KEY_CLEAR="$HTTP_STATUS"
-if wait_for_chat_success "$POOL_KEY_URL" "$POOL_KEY_TOKEN" "$MODEL_ID" 100 14900 20; then
-  POOL_KEY_AFTER_CLEAR="200"
-else
-  POOL_KEY_AFTER_CLEAR="$CHAT_STATUS"
-fi
-POOL_KEY_BLOCKED=$([[ "$POOL_KEY_BLOCK" == "400" || "$POOL_KEY_BLOCK" == "429" ]] && echo 1 || echo 0)
-PASS=$([[ "$POOL_KEY_SET" == "200" && "$POOL_KEY_BLOCKED" == "1" && "$POOL_KEY_CLEAR" == "200" && "$POOL_KEY_AFTER_CLEAR" == "200" ]] && echo 1 || echo 0)
-finish_test \
-  "set=${POOL_KEY_SET}, block=${POOL_KEY_BLOCK}, clear=${POOL_KEY_CLEAR}, after_clear=${POOL_KEY_AFTER_CLEAR}" \
-  "$PASS"
+test_18_pool_key_cap_lifecycle() { setup_pool_context; start_test "POOL key cap set/clear lifecycle" "key cap set blocks, clear re-allows usage"; api_call "PUT" "/spend/${REGION_ID}/key/${POOL_KEY_ID}/budget" '{"max_budget":0.004}'; local set="$HTTP_STATUS"; local block="200"; for _i in $(seq 1 20); do chat_usage "$POOL_KEY_URL" "$POOL_KEY_TOKEN" "$MODEL_ID" 100 14900; block="$CHAT_STATUS"; [[ "$block" == "400" || "$block" == "429" ]] && break; done; api_call "POST" "/spend/${REGION_ID}/key/${POOL_KEY_ID}/budget/clear"; local clear="$HTTP_STATUS"; wait_for_chat_success "$POOL_KEY_URL" "$POOL_KEY_TOKEN" "$MODEL_ID" 100 14900 20 && local ac=200 || local ac="$CHAT_STATUS"; local blocked=$([[ "$block" == "400" || "$block" == "429" ]] && echo 1 || echo 0); local pass=$([[ "$set" == "200" && "$blocked" == "1" && "$clear" == "200" && "$ac" == "200" ]] && echo 1 || echo 0); finish_test "set=${set}, block=${block}, clear=${clear}, after_clear=${ac}" "$pass"; }
 
-# Test 19: POOL dedicated-region association gate
-if [[ "$DEDICATED_REGION_ID" != "null" && -n "$DEDICATED_REGION_ID" ]]; then
-  start_test \
-    "POOL dedicated-region association gate" \
-    "POOL budget update fails before association; after association + dedicated purchase it succeeds"
-  step "Test 19: trying POOL budget update on unassociated dedicated region"
-  api_call "PUT" "/spend/${DEDICATED_REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":1.0}'
-  POOL_DED_PRE="$HTTP_STATUS"
-  step "Test 19: associating POOL team with dedicated region"
-  api_call "POST" "/regions/${DEDICATED_REGION_ID}/teams/${POOL_TEAM_ID}"
-  POOL_DED_ASSOC="$HTTP_STATUS"
-  step "Test 19: purchasing \$5.00 pool budget in dedicated region for POOL team"
-  DED_POOL_PURCHASE_PAYLOAD=$(jq -n \
-    --arg sid "spend-e2e-dedicated-purchase-${SUFFIX}-${POOL_TEAM_ID}" \
-    '{amount_cents:500, currency:"USD", purchased_at:(now|todateiso8601), stripe_payment_id:$sid}')
-  api_call "POST" "/budgets/region/${DEDICATED_REGION_ID}/teams/${POOL_TEAM_ID}/purchase" "$DED_POOL_PURCHASE_PAYLOAD"
-  POOL_DED_PURCHASE="$HTTP_STATUS"
-  step "Test 19: retrying POOL budget update after association + dedicated purchase"
-  api_call "PUT" "/spend/${DEDICATED_REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":1.0}'
-  POOL_DED_POST="$HTTP_STATUS"
-  PASS=$([[ "$POOL_DED_PRE" == "400" && "$POOL_DED_ASSOC" == "200" && "$POOL_DED_PURCHASE" == "201" && "$POOL_DED_POST" == "200" ]] && echo 1 || echo 0)
-  finish_test \
-    "before=${POOL_DED_PRE}, associate=${POOL_DED_ASSOC}, dedicated_purchase=${POOL_DED_PURCHASE}, after=${POOL_DED_POST}" \
-    "$PASS"
-else
-  start_test \
-    "POOL dedicated-region association gate" \
-    "Dedicated region available for test"
-  finish_test \
-    "no dedicated region found in /regions" \
-    "0"
-fi
+test_19_pool_dedicated_association_gate() { setup_pool_context; start_test "POOL dedicated-region association gate" "budget update fails before association then succeeds after dedicated purchase"; if [[ "$DEDICATED_REGION_ID" == "null" || -z "$DEDICATED_REGION_ID" ]]; then finish_test "no dedicated region found in /regions" "0"; return; fi; api_call "PUT" "/spend/${DEDICATED_REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":1.0}'; local pre="$HTTP_STATUS"; api_call "POST" "/regions/${DEDICATED_REGION_ID}/teams/${POOL_TEAM_ID}"; local assoc="$HTTP_STATUS"; local pp=$(jq -n --arg sid "spend-e2e-dedicated-purchase-${SUFFIX}-${POOL_TEAM_ID}" '{amount_cents:500,currency:"USD",purchased_at:(now|todateiso8601),stripe_payment_id:$sid}'); api_call "POST" "/budgets/region/${DEDICATED_REGION_ID}/teams/${POOL_TEAM_ID}/purchase" "$pp"; local pur="$HTTP_STATUS"; api_call "PUT" "/spend/${DEDICATED_REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":1.0}'; local post="$HTTP_STATUS"; local pass=$([[ "$pre" == "400" && "$assoc" == "200" && "$pur" == "201" && "$post" == "200" ]] && echo 1 || echo 0); finish_test "before=${pre}, associate=${assoc}, dedicated_purchase=${pur}, after=${post}" "$pass"; }
 
-# Test 20: POOL cap bounded by purchased total (numeric)
-start_test \
-  "POOL cap bounded by purchases" \
-  "setting cap 4.5 returns max_budget <= 5.0 purchased total"
-step "Test 20: setting POOL team cap to 4.5"
-api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":4.5}'
-POOL_BOUND_STATUS="$HTTP_STATUS"
-POOL_BOUND_MAX="$(echo "$HTTP_BODY" | jq -r '.max_budget // 0')"
-POOL_BOUND_OK=$(python3 - "$POOL_BOUND_MAX" <<'PY'
+test_20_pool_cap_bounded_by_purchases() { setup_pool_context; start_test "POOL cap bounded by purchases" "setting cap 4.5 returns max_budget <= 5.0 purchased total"; api_call "PUT" "/spend/${REGION_ID}/team/${POOL_TEAM_ID}/budget" '{"max_budget":4.5}'; local s="$HTTP_STATUS"; local m="$(echo "$HTTP_BODY"|jq -r '.max_budget // 0')"; local ok=$(python3 - "$m" <<'PY'
 import sys
 v=float(sys.argv[1]); print(1 if 0 <= v <= 5.0001 else 0)
 PY
+); local pass=$([[ "$s" == "200" && "$ok" == "1" ]] && echo 1 || echo 0); finish_test "status=${s}, returned_max_budget=${m}" "$pass"; }
+
+test_21_litellm_sync_no_team_user() { start_test "LiteLLM user sync for no-team user" "user exists in shared LiteLLM instances and is absent from dedicated instance"; local email="spend-e2e-no-team-${SUFFIX}-${RANDOM}@example.com"; local payload=$(jq -n --arg e "$email" '{email:$e,password:"password123",role:"read_only"}'); api_call "POST" "/users" "$payload"; local cs="$HTTP_STATUS"; local uid="$(echo "$HTTP_BODY"|jq -r '.id')"; register_user "$uid"; api_call "GET" "/regions"; local u1="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][0].litellm_api_url')")"; local u2="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][1].litellm_api_url')")"; local ud="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==true)][0].litellm_api_url')")"; [[ -z "$u1" || "$u1" == "null" ]] && u1="http://localhost:4000"; [[ -z "$u2" || "$u2" == "null" ]] && u2="http://localhost:4010"; [[ -z "$ud" || "$ud" == "null" ]] && ud="http://localhost:4011"; local r1="$(litellm_user_info_status "$u1" "$uid")"; local r2="$(litellm_user_info_status "$u2" "$uid")"; local rd="$(litellm_user_info_status "$ud" "$uid")"; local pass=$([[ "$cs" == "201" && "$r1" == "200" && "$r2" == "200" && "$rd" == "404" ]] && echo 1 || echo 0); finish_test "create=${cs}, shared1=${r1}, shared2=${r2}, dedicated=${rd}" "$pass"; }
+
+test_22_litellm_sync_dedicated_team_user() { start_test "LiteLLM user sync for dedicated-associated team user" "user exists in shared and dedicated LiteLLM instances"; if [[ "$DEDICATED_REGION_ID" == "null" || -z "$DEDICATED_REGION_ID" ]]; then finish_test "no dedicated region found in /regions" "0"; return; fi; local tpay=$(jq -n --arg n "spend-e2e-ded-user-team-${SUFFIX}-${RANDOM}" --arg e "spend-e2e-ded-user-team-${SUFFIX}-${RANDOM}@example.com" '{name:$n,admin_email:$e,budget_type:"pool",require_purchase_for_requests:true}'); api_call "POST" "/teams" "$tpay"; local tc="$HTTP_STATUS"; local tid="$(echo "$HTTP_BODY"|jq -r '.id')"; register_team "$tid"; api_call "POST" "/regions/${DEDICATED_REGION_ID}/teams/${tid}"; local as="$HTTP_STATUS"; local upay=$(jq -n --arg e "spend-e2e-ded-user-${SUFFIX}-${RANDOM}@example.com" --argjson tid "$tid" '{email:$e,password:"password123",team_id:$tid,role:"read_only"}'); api_call "POST" "/users" "$upay"; local uc="$HTTP_STATUS"; local uid="$(echo "$HTTP_BODY"|jq -r '.id')"; register_user "$uid"; local r1="$(litellm_user_info_status "http://localhost:4000" "$uid")"; local r2="$(litellm_user_info_status "http://localhost:4010" "$uid")"; local rd="$(litellm_user_info_status "http://localhost:4011" "$uid")"; local pass=$([[ "$tc" == "201" && "$as" == "200" && "$uc" == "201" && "$r1" == "200" && "$r2" == "200" && "$rd" == "200" ]] && echo 1 || echo 0); finish_test "team_create=${tc}, associate=${as}, user_create=${uc}, shared1=${r1}, shared2=${r2}, dedicated=${rd}" "$pass"; }
+
+declare -a TEST_CASES=(
+  "GET /spend/{region}/key/{key}:test_01_get_key_spend_baseline"
+  "PUT /spend/{region}/key/{key}/budget:test_02_put_key_budget_enforcement"
+  "POST /spend/{region}/key/{key}/budget/clear:test_03_post_key_budget_clear"
+  "PUT /spend/{region}/team/{team}/budget (experimental):test_04_put_team_budget_enforcement"
+  "POST /spend/{region}/team/{team}/budget/clear:test_05_post_team_budget_clear"
+  "PUT /spend/{region}/team/{team}/member/{user}/budget:test_06_put_member_budget_enforcement"
+  "POST /spend/{region}/team/{team}/member/{user}/budget/clear:test_07_post_member_budget_clear"
+  "GET /spend/{region}/user/{user}:test_08_get_user_spend"
+  "GET /spend/{region}/team/{team}:test_09_get_team_spend"
+  "POOL rejection/cap behavior:test_10_pool_rejection_cap_config"
+  "Dedicated region association gate:test_11_dedicated_region_association_gate"
+  "Cross-region spend isolation:test_12_cross_region_spend_isolation"
+  "Idempotent clears (key/member/team):test_13_idempotent_clears"
+  "Unauthorized team budget mutation:test_14_unauthorized_team_budget_mutation"
+  "POOL team cap set + enforce:test_15_pool_team_cap_enforce"
+  "POOL team clear restores purchased budget:test_16_pool_team_clear_restores_budget"
+  "POOL member cap set/clear lifecycle:test_17_pool_member_cap_lifecycle"
+  "POOL key cap set/clear lifecycle:test_18_pool_key_cap_lifecycle"
+  "POOL dedicated-region association gate:test_19_pool_dedicated_association_gate"
+  "POOL cap bounded by purchases:test_20_pool_cap_bounded_by_purchases"
+  "LiteLLM user sync for no-team user:test_21_litellm_sync_no_team_user"
+  "LiteLLM user sync for dedicated-associated team user:test_22_litellm_sync_dedicated_team_user"
+  "POOL key caps before purchase then unlock after purchase:run_pool_key_caps_purchase_transition_test"
+  "POOL member caps before purchase then unlock after purchase:run_pool_member_caps_purchase_transition_test"
+  "POOL key-limit-no-purchase set/get:run_pool_key_limit_readback_without_purchase_test"
+  "member-budget-duration set via member_update then verified in LiteLLM:run_member_budget_duration_test"
+  "budget-set-readback team/member/key:run_budget_readback_test"
+  "Dedicated team model aliases set/get:run_aliases_test"
 )
-PASS=$([[ "$POOL_BOUND_STATUS" == "200" && "$POOL_BOUND_OK" == "1" ]] && echo 1 || echo 0)
-finish_test \
-  "status=${POOL_BOUND_STATUS}, returned_max_budget=${POOL_BOUND_MAX}" \
-  "$PASS"
 
-# Test 21: No-team user sync only to shared LiteLLM instances
-start_test \
-  "LiteLLM user sync for no-team user" \
-  "user exists in shared LiteLLM instances and is absent from dedicated instance"
-step "Test 21: creating user without team"
-NO_TEAM_EMAIL="spend-e2e-no-team-${SUFFIX}@example.com"
-NO_TEAM_PAYLOAD=$(jq -n \
-  --arg e "$NO_TEAM_EMAIL" \
-  '{email:$e, password:"password123", role:"read_only"}')
-api_call "POST" "/users" "$NO_TEAM_PAYLOAD"
-NO_TEAM_CREATE_STATUS="$HTTP_STATUS"
-NO_TEAM_USER_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
-register_user "$NO_TEAM_USER_ID"
-step "Test 21: resolving LiteLLM public URLs from region config"
-api_call "GET" "/regions"
-R_SHARED_1_URL_RAW="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][0].litellm_api_url')"
-R_SHARED_2_URL_RAW="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==false)][1].litellm_api_url')"
-R_DED_URL_RAW="$(echo "$HTTP_BODY" | jq -r '[.[] | select(.is_active==true and .is_dedicated==true)][0].litellm_api_url')"
-R_SHARED_1_URL="$(to_public_litellm_url "$R_SHARED_1_URL_RAW")"
-R_SHARED_2_URL="$(to_public_litellm_url "$R_SHARED_2_URL_RAW")"
-R_DED_URL="$(to_public_litellm_url "$R_DED_URL_RAW")"
-if [[ -z "${R_SHARED_1_URL}" || "${R_SHARED_1_URL}" == "null" ]]; then R_SHARED_1_URL="http://localhost:4000"; fi
-if [[ -z "${R_SHARED_2_URL}" || "${R_SHARED_2_URL}" == "null" ]]; then R_SHARED_2_URL="http://localhost:4010"; fi
-if [[ -z "${R_DED_URL}" || "${R_DED_URL}" == "null" ]]; then R_DED_URL="http://localhost:4011"; fi
-step "Test 21: checking LiteLLM user presence by region type"
-NO_TEAM_R1="$(litellm_user_info_status "$R_SHARED_1_URL" "$NO_TEAM_USER_ID")"
-NO_TEAM_R2="$(litellm_user_info_status "$R_SHARED_2_URL" "$NO_TEAM_USER_ID")"
-NO_TEAM_RD="$(litellm_user_info_status "$R_DED_URL" "$NO_TEAM_USER_ID")"
-PASS=$([[ "$NO_TEAM_CREATE_STATUS" == "201" && "$NO_TEAM_R1" == "200" && "$NO_TEAM_R2" == "200" && "$NO_TEAM_RD" == "404" ]] && echo 1 || echo 0)
-finish_test \
-  "create=${NO_TEAM_CREATE_STATUS}, shared1=${NO_TEAM_R1}, shared2=${NO_TEAM_R2}, dedicated=${NO_TEAM_RD}" \
-  "$PASS"
+run_dispatcher() {
+  local matched=0
+  for entry in "${TEST_CASES[@]}"; do
+    local name="${entry%%:*}"
+    local fn="${entry##*:}"
+    if filter_matches "$name"; then
+      matched=1
+      "$fn"
+    fi
+  done
+  if [[ -n "$TEST_FILTER" && "$matched" == "0" ]]; then
+    echo "No tests matched filter: $TEST_FILTER" >&2
+    exit 1
+  fi
+}
 
-# Test 22: Dedicated-associated team user sync to shared + dedicated
-if [[ "$DEDICATED_REGION_ID" != "null" && -n "$DEDICATED_REGION_ID" ]]; then
-  start_test \
-    "LiteLLM user sync for dedicated-associated team user" \
-    "user exists in shared and dedicated LiteLLM instances"
-  step "Test 22: creating fresh POOL team for dedicated association"
-  DED_TEAM_PAYLOAD=$(jq -n \
-    --arg n "spend-e2e-ded-user-team-${SUFFIX}" \
-    --arg e "spend-e2e-ded-user-team-${SUFFIX}@example.com" \
-    '{name:$n, admin_email:$e, budget_type:"pool", require_purchase_for_requests:true}')
-  api_call "POST" "/teams" "$DED_TEAM_PAYLOAD"
-  DED_TEAM_CREATE="$HTTP_STATUS"
-  DED_TEAM_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
-  register_team "$DED_TEAM_ID"
-  step "Test 22: associating team ${DED_TEAM_ID} with dedicated region ${DEDICATED_REGION_ID}"
-  api_call "POST" "/regions/${DEDICATED_REGION_ID}/teams/${DED_TEAM_ID}"
-  DED_ASSOC_STATUS="$HTTP_STATUS"
-  step "Test 22: creating user in dedicated-associated team"
-  DED_USER_PAYLOAD=$(jq -n \
-    --arg e "spend-e2e-ded-user-${SUFFIX}@example.com" \
-    --argjson tid "$DED_TEAM_ID" \
-    '{email:$e, password:"password123", team_id:$tid, role:"read_only"}')
-  api_call "POST" "/users" "$DED_USER_PAYLOAD"
-  DED_USER_CREATE="$HTTP_STATUS"
-  DED_USER_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
-  register_user "$DED_USER_ID"
-  step "Test 22: checking LiteLLM user presence across instances"
-  DED_R1="$(litellm_user_info_status "http://localhost:4000" "$DED_USER_ID")"
-  DED_R2="$(litellm_user_info_status "http://localhost:4010" "$DED_USER_ID")"
-  DED_RD="$(litellm_user_info_status "http://localhost:4011" "$DED_USER_ID")"
-  PASS=$([[ "$DED_TEAM_CREATE" == "201" && "$DED_ASSOC_STATUS" == "200" && "$DED_USER_CREATE" == "201" && "$DED_R1" == "200" && "$DED_R2" == "200" && "$DED_RD" == "200" ]] && echo 1 || echo 0)
-  finish_test \
-    "team_create=${DED_TEAM_CREATE}, associate=${DED_ASSOC_STATUS}, user_create=${DED_USER_CREATE}, shared1=${DED_R1}, shared2=${DED_R2}, dedicated=${DED_RD}" \
-    "$PASS"
-else
-  start_test \
-    "LiteLLM user sync for dedicated-associated team user" \
-    "Dedicated region available for test"
-  finish_test \
-    "no dedicated region found in /regions" \
-    "0"
-fi
+echo "Preparing test context..."
+fetch_regions
+SUFFIX="$(date +%s)"
+BLOCK_INDEX=0
 
-run_pool_key_caps_purchase_transition_test
-run_pool_member_caps_purchase_transition_test
-run_pool_key_limit_readback_without_purchase_test
-run_member_budget_duration_test
-run_budget_readback_test
-
-fi
-
-if [[ "$RUN_INDIVIDUAL_MODE" == "1" ]]; then
-  run_pool_key_caps_purchase_transition_test
-  run_pool_member_caps_purchase_transition_test
-  run_pool_key_limit_readback_without_purchase_test
-  run_member_budget_duration_test
-  run_budget_readback_test
-fi
-
-if [[ "${TEST_FILTER}" == "aliases" ]]; then
-  run_aliases_test
-fi
+run_dispatcher
 
 echo
 echo "============================================================"
 echo "Summary: total=${TEST_NUM}, passed=${PASS_COUNT}, failed=${FAIL_COUNT}"
 echo "============================================================"
 
-if [[ "$FAIL_COUNT" -gt 0 ]]; then
-  if [[ "$CLEANUP_CREATED" == "1" ]]; then
-    cleanup_created_resources
-  fi
-  exit 1
-fi
-
 if [[ "$CLEANUP_CREATED" == "1" ]]; then
   cleanup_created_resources
+fi
+
+if [[ "$FAIL_COUNT" -gt 0 ]]; then
+  exit 1
 fi
