@@ -667,3 +667,82 @@ def test_get_team_model_aliases_reads_nested_litellm_model_table(test_region):
     assert aliases == {
         "gpt-4": "azure/gpt-4-turbo-2024-04-09",
     }
+
+
+@patch("httpx.AsyncClient")
+def test_get_team_model_aliases_falls_back_to_team_list(
+    mock_client_class, test_region
+):
+    """When team_info has no aliases, fallback to /team/list to find them."""
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+    service.get_team_info = AsyncMock(return_value={"team_info": {}})
+
+    mock_response = Mock()
+    mock_response.raise_for_status = Mock()
+    mock_response.json.return_value = [
+        {"team_id": "other-team", "litellm_model_table": {"model_aliases": {"x": "y"}}},
+        {
+            "team_id": "team-1",
+            "litellm_model_table": {
+                "model_aliases": {"gpt-4": "azure/gpt-4-turbo-2024-04-09"}
+            },
+        },
+    ]
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    aliases = asyncio.run(service.get_team_model_aliases("team-1"))
+
+    assert aliases == {"gpt-4": "azure/gpt-4-turbo-2024-04-09"}
+
+
+@patch("httpx.AsyncClient")
+def test_get_team_model_aliases_empty_dict_means_no_aliases(
+    mock_client_class, test_region
+):
+    """An empty model_aliases dict ({}) should be returned as-is, not treated as missing."""
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+    service.get_team_info = AsyncMock(
+        return_value={"team_info": {"model_aliases": {}}}
+    )
+
+    aliases = asyncio.run(service.get_team_model_aliases("team-1"))
+
+    assert aliases == {}
+    # /team/list should NOT have been called — no httpx client instantiated
+    mock_client_class.assert_not_called()
+
+
+@patch("httpx.AsyncClient")
+def test_get_team_model_aliases_team_list_fallback_returns_none_when_not_found(
+    mock_client_class, test_region
+):
+    """Fallback /team/list returns None when team_id is not present in the list."""
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+    service.get_team_info = AsyncMock(return_value={"team_info": {}})
+
+    mock_response = Mock()
+    mock_response.raise_for_status = Mock()
+    mock_response.json.return_value = [
+        {"team_id": "other-team", "litellm_model_table": {"model_aliases": {"x": "y"}}}
+    ]
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    aliases = asyncio.run(service.get_team_model_aliases("team-1"))
+
+    assert aliases is None

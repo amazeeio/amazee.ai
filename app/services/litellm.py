@@ -607,13 +607,13 @@ class LiteLLMService:
         team_info = team_info_response.get("team_info", team_info_response)
 
         raw_aliases = team_info.get("model_aliases")
-        if raw_aliases:
+        if isinstance(raw_aliases, dict):
             return raw_aliases
 
         model_table = team_info.get("litellm_model_table")
         if model_table and isinstance(model_table, dict):
             raw_aliases = model_table.get("model_aliases")
-            if raw_aliases:
+            if isinstance(raw_aliases, dict):
                 return raw_aliases
 
         return await self._fetch_team_model_aliases_from_list(team_id)
@@ -634,13 +634,7 @@ class LiteLLMService:
                             return model_table.get("model_aliases")
                 return None
         except httpx.HTTPStatusError as e:
-            error_msg = str(e)
-            if hasattr(e, "response") and e.response is not None:
-                try:
-                    error_details = e.response.json()
-                    error_msg = f"Status {e.response.status_code}: {error_details}"
-                except ValueError:
-                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            _, error_msg, _ = self._parse_http_error(e)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to list LiteLLM teams: {error_msg}",
