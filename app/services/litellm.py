@@ -593,18 +593,7 @@ class LiteLLMService:
 
     async def get_team_model_aliases(self, team_id: str) -> dict[str, str]:
         """Get a team's model_aliases map from LiteLLM."""
-        team_info_response = await self.get_team_info(team_id)
-        team_info = team_info_response.get("team_info", team_info_response)
-
-        # LiteLLM can expose aliases either directly on team_info.model_aliases
-        # or nested under team_info.litellm_model_table.model_aliases.
-        raw_aliases = team_info.get("model_aliases")
-        if not raw_aliases:
-            raw_aliases = (team_info.get("litellm_model_table", {}) or {}).get(
-                "model_aliases"
-            )
-        if not raw_aliases:
-            raw_aliases = {}
+        raw_aliases = await self._fetch_team_model_aliases(team_id)
         if not isinstance(raw_aliases, dict):
             return {}
         return {
@@ -612,6 +601,44 @@ class LiteLLMService:
             for alias, model in raw_aliases.items()
             if alias is not None and model is not None
         }
+
+    async def _fetch_team_model_aliases(self, team_id: str) -> dict | None:
+        team_info_response = await self.get_team_info(team_id)
+        team_info = team_info_response.get("team_info", team_info_response)
+
+        raw_aliases = team_info.get("model_aliases")
+        if isinstance(raw_aliases, dict):
+            return raw_aliases
+
+        model_table = team_info.get("litellm_model_table")
+        if model_table and isinstance(model_table, dict):
+            raw_aliases = model_table.get("model_aliases")
+            if isinstance(raw_aliases, dict):
+                return raw_aliases
+
+        return await self._fetch_team_model_aliases_from_list(team_id)
+
+    async def _fetch_team_model_aliases_from_list(self, team_id: str) -> dict | None:
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.api_url}/team/list",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                )
+                response.raise_for_status()
+                teams = response.json()
+                for team in teams:
+                    if team.get("team_id") == team_id:
+                        model_table = team.get("litellm_model_table")
+                        if model_table and isinstance(model_table, dict):
+                            return model_table.get("model_aliases")
+                return None
+        except httpx.HTTPStatusError as e:
+            _, error_msg, _ = self._parse_http_error(e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to list LiteLLM teams: {error_msg}",
+            )
 
     async def create_user(
         self,
@@ -807,7 +834,9 @@ class LiteLLMService:
                     continue
                 for membership in team.get("team_memberships", []):
                     budget_table = membership.get("litellm_budget_table") or {}
-                    budget_id = budget_table.get("budget_id") or membership.get("budget_id")
+                    budget_id = budget_table.get("budget_id") or membership.get(
+                        "budget_id"
+                    )
                     if budget_id:
                         break
                 if budget_id:
