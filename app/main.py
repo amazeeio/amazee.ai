@@ -121,34 +121,41 @@ async def lifespan(app: FastAPI):
 
     # Hard delete job for teams that have been soft-deleted for 60+ days
     async def hard_delete_teams_job():
-        db = next(get_db())
         lock_name = "hard_delete_teams"
         lock_acquired = False
 
         try:
-            # Try to acquire the lock
-            if try_acquire_lock(lock_name, db, lock_timeout=10):
-                lock_acquired = True
+            # Try to acquire the lock using a dedicated short-lived session
+            lock_db = next(get_db())
+            try:
+                lock_acquired = try_acquire_lock(lock_name, lock_db, lock_timeout=10)
+            finally:
+                lock_db.close()
+
+            if lock_acquired:
                 logger.info("Acquired hard_delete_teams lock, executing job")
+                job_db = next(get_db())
                 try:
-                    await hard_delete_expired_teams(db)
+                    await hard_delete_expired_teams(job_db)
                 except Exception as e:
+                    job_db.rollback()
                     logger.error(f"Error in hard_delete_expired_teams background task: {str(e)}")
                 finally:
-                    # Always release the lock when done
-                    release_lock(lock_name, db)
+                    job_db.close()
             else:
                 logger.info("Another process has the hard_delete_teams lock, skipping execution")
         except Exception as e:
             logger.error(f"Error in hard_delete_teams job: {str(e)}")
-            # Only release lock if it was acquired by this process
+        finally:
+            # Always release the lock when it was acquired, using a separate session
             if lock_acquired:
+                release_db = next(get_db())
                 try:
-                    release_lock(lock_name, db)
+                    release_lock(lock_name, release_db)
                 except Exception as release_error:
                     logger.error(f"Error releasing lock: {str(release_error)}")
-        finally:
-            db.close()
+                finally:
+                    release_db.close()
 
     # Set schedule based on environment for hard delete job
     if settings.ENV_SUFFIX == "local":
