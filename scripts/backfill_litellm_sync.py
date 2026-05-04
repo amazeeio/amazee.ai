@@ -314,8 +314,11 @@ class BackfillRunner:
                                     str(m.get("user_id", "")) == str(user.id)
                                     for m in members
                                 )
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                print(
+                                    f"[users] user={user.id} region={region.id} team={lite_team_id} "
+                                    f"failed_membership_check={exc}"
+                                )
 
                         if not is_member or self.dry_run:
                             user_had_changes = True
