@@ -35,8 +35,8 @@ def mock_rate_limiting(request):
             _rate_limit_counts[key] = 0
         _rate_limit_counts[key] += 1
 
-        # For rate limit tests, actually enforce the limit after 5 requests
-        if is_rate_limit_test and _rate_limit_counts[key] > 5:
+        # For rate limit tests, actually enforce the limit based on the configured 'times' value
+        if is_rate_limit_test and _rate_limit_counts[key] > times:
             # Return a value that indicates rate limiting (simulating Redis response)
             return 1000  # Return positive value indicating wait time in ms
 

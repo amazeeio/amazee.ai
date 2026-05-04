@@ -71,10 +71,12 @@ async def lifespan(app: FastAPI):
     async def monitor_teams_job():
         db = next(get_db())
         lock_name = "monitor_teams"
+        lock_acquired = False
 
         try:
             # Try to acquire the lock
             if try_acquire_lock(lock_name, db, lock_timeout=10):
+                lock_acquired = True
                 logger.info("Acquired monitor_teams lock, executing job")
                 try:
                     await monitor_teams(db)
@@ -87,11 +89,12 @@ async def lifespan(app: FastAPI):
                 logger.info("Another process has the monitor_teams lock, skipping execution")
         except Exception as e:
             logger.error(f"Error in monitor_teams job: {str(e)}")
-            # Try to release lock in case of error
-            try:
-                release_lock(lock_name, db)
-            except Exception as release_error:
-                logger.error(f"Error releasing lock: {str(release_error)}")
+            # Only release lock if it was acquired by this process
+            if lock_acquired:
+                try:
+                    release_lock(lock_name, db)
+                except Exception as release_error:
+                    logger.error(f"Error releasing lock: {str(release_error)}")
         finally:
             db.close()
 
@@ -113,10 +116,12 @@ async def lifespan(app: FastAPI):
     async def hard_delete_teams_job():
         db = next(get_db())
         lock_name = "hard_delete_teams"
+        lock_acquired = False
 
         try:
             # Try to acquire the lock
             if try_acquire_lock(lock_name, db, lock_timeout=10):
+                lock_acquired = True
                 logger.info("Acquired hard_delete_teams lock, executing job")
                 try:
                     await hard_delete_expired_teams(db)
@@ -129,11 +134,12 @@ async def lifespan(app: FastAPI):
                 logger.info("Another process has the hard_delete_teams lock, skipping execution")
         except Exception as e:
             logger.error(f"Error in hard_delete_teams job: {str(e)}")
-            # Try to release lock in case of error
-            try:
-                release_lock(lock_name, db)
-            except Exception as release_error:
-                logger.error(f"Error releasing lock: {str(release_error)}")
+            # Only release lock if it was acquired by this process
+            if lock_acquired:
+                try:
+                    release_lock(lock_name, db)
+                except Exception as release_error:
+                    logger.error(f"Error releasing lock: {str(release_error)}")
         finally:
             db.close()
 
