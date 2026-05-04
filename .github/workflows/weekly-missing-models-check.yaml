@@ -29,7 +29,7 @@ jobs:
       fail-fast: false
       matrix:
         # Add 'google' and 'azure' here once the corresponding endpoints are
-        # implemented in app/api/public.py.  No other workflow changes needed.
+        # implemented in app/api/public.py. No other workflow changes needed.
         provider: [aws]
     steps:
       - name: Checkout
@@ -59,8 +59,8 @@ jobs:
         env:
           # Repository variable; set AMAZEEAI_API_URL in repo Settings → Variables.
           AMAZEEAI_API_URL: ${{ github.event.inputs.api_url || vars.AMAZEEAI_API_URL || 'https://api.amazee.ai' }}
-          # Optional system-admin Bearer token. When configured the report
-          # additionally covers private/dedicated regions.
+          # Required Bearer token for /models/missing/{provider}. A system-admin
+          # token additionally covers private/dedicated regions.
           AMAZEEAI_ADMIN_TOKEN: ${{ secrets.AMAZEEAI_ADMIN_TOKEN }}
           MISSING_MODELS_PROVIDER: ${{ matrix.provider }}
         run: python scripts/check_missing_models.py

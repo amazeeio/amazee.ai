@@ -9,10 +9,7 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
         # Public models endpoint is intentionally cacheable for 1 hour on success.
         # When the response includes user-specific dedicated regions, use "private"
         # to prevent CDNs/proxies from caching per-team data.
-        if (
-            request.url.path in {"/public/models", "/public/models/"}
-            or request.url.path.startswith("/public/models/missing/")
-        ):
+        if request.url.path in {"/public/models", "/public/models/"}:
             if response.status_code < 400:
                 is_authenticated = getattr(
                     request.state, "_public_models_is_authenticated", False

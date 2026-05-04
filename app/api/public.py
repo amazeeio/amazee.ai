@@ -27,6 +27,7 @@ from app.services.litellm import LiteLLMService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["public"])
+protected_router = APIRouter(tags=["models"])
 
 _CACHE_TTL = timedelta(hours=1)
 _REGION_TIMEOUT = 10.0  # seconds per-region request
@@ -592,7 +593,7 @@ async def list_public_models(
 
 
 # ---------------------------------------------------------------------------
-# /public/models/missing/{provider}
+# /models/missing/{provider}
 # ---------------------------------------------------------------------------
 #
 # Reports models available in an upstream hyperscaler catalog that are NOT
@@ -604,9 +605,9 @@ async def list_public_models(
 # ``bedrock/us.anthropic.claude-...``).
 #
 # Per-provider extension:
-#   /public/models/missing/aws     - implemented (Amazon Bedrock)
-#   /public/models/missing/google  - 501, planned (Google Vertex)
-#   /public/models/missing/azure   - 501, planned (Azure Foundry)
+#   /models/missing/aws     - implemented (Amazon Bedrock)
+#   /models/missing/google  - 501, planned (Google Vertex)
+#   /models/missing/azure   - 501, planned (Azure Foundry)
 #
 # Adding a new provider means writing one ``_build_<provider>_missing_report``
 # helper and wiring it into ``_PROVIDER_BUILDERS``; the dispatcher and
@@ -678,7 +679,7 @@ async def _fetch_bedrock_catalog(url: str) -> list[dict[str, Any]]:
 
         _bedrock_catalog_cache["url"] = url
         _bedrock_catalog_cache["data"] = data
-        _bedrock_catalog_cache["expires_at"] = datetime.now(UTC) + _BEDROCK_CATALOG_TTL
+        _bedrock_catalog_cache["expires_at"] = now + _BEDROCK_CATALOG_TTL
         return data
 
 
@@ -767,7 +768,7 @@ async def _collect_region_bedrock_models(
         raise
     except Exception as exc:
         logger.warning(
-            "Region %s unavailable for /public/models/missing/aws: %s",
+            "Region %s unavailable for /models/missing/aws: %s",
             region.name,
             exc,
         )
@@ -806,10 +807,10 @@ async def _build_aws_missing_report(
 ) -> ProviderMissingModelsReport:
     """Build the AWS Bedrock missing-models report.
 
-    Anonymous callers see only public regions in the "configured" set (which
-    makes the missing list larger).  Authenticated **system admins**
-    additionally include private/dedicated regions so the report reflects the
-    true deployed surface area.
+    Authenticated non-admin callers see only public regions in the
+    "configured" set. Authenticated system admins additionally include
+    private/dedicated regions so the report reflects the true deployed
+    surface area.
     """
     include_private = bool(user and user.is_admin)
 
@@ -877,14 +878,14 @@ _PROVIDER_BUILDERS: dict[str, Any] = {
 _KNOWN_PROVIDERS: set[str] = {"aws", "google", "azure"}
 
 
-@router.get(
+@protected_router.get(
     "/models/missing/{provider}",
     response_model=ProviderMissingModelsReport,
     summary="Models available upstream at a hyperscaler but not yet deployed",
 )
 async def list_missing_provider_models(
     provider: str,
-    request: Request,
+    current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db),
 ) -> ProviderMissingModelsReport:
     """Compare an upstream hyperscaler model catalog against models deployed
@@ -914,9 +915,4 @@ async def list_missing_provider_models(
             ),
         )
 
-    user = await _resolve_optional_user(request, db)
-    # Cache-Control: this report depends on auth (admin gets more data) so we
-    # mark it private when authenticated, mirroring /public/models behavior.
-    request.state._public_models_is_authenticated = user is not None
-
-    return await builder(db, user)
+    return await builder(db, current_user)

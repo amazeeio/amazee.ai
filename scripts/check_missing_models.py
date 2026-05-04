@@ -2,7 +2,7 @@
 
 """Notify Slack about new hyperscaler models that are not yet deployed.
 
-Queries ``GET /public/models/missing/{provider}`` on the configured backend
+Queries ``GET /models/missing/{provider}`` on the configured backend
 (defaults to https://api.amazee.ai), diffs the response against
 ``scripts/missing-models-state-{provider}.json`` checked into the repo, and
 emits machine-readable outputs the surrounding workflow uses to:
@@ -42,7 +42,7 @@ def _default_report_file(provider: str) -> Path:
 def fetch_report(
     api_url: str, provider: str, token: str | None, timeout: int = 60
 ) -> dict[str, Any]:
-    url = api_url.rstrip("/") + f"/public/models/missing/{provider}"
+    url = api_url.rstrip("/") + f"/models/missing/{provider}"
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
     if token:
         request.add_header("Authorization", f"Bearer {token}")
@@ -182,8 +182,8 @@ def main() -> int:
         "--token",
         default=os.environ.get("AMAZEEAI_ADMIN_TOKEN") or None,
         help=(
-            "Optional Bearer token. When set (typically a system admin API "
-            "token), private/dedicated regions are included in the diff."
+            "Required Bearer token for the protected missing-models endpoint. "
+            "A system admin token includes private/dedicated regions in the diff."
         ),
     )
     parser.add_argument(
@@ -197,6 +197,13 @@ def main() -> int:
         help="Path to write the full diff report (default: missing-models-report-{provider}.json).",
     )
     args = parser.parse_args()
+
+    if not args.token:
+        print(
+            "ERROR: --token or AMAZEEAI_ADMIN_TOKEN is required for /models/missing.",
+            file=sys.stderr,
+        )
+        return 1
 
     state_file = args.state_file or _default_state_file(args.provider)
     report_file = args.report_file or _default_report_file(args.provider)

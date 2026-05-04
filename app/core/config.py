@@ -29,15 +29,6 @@ class Settings(BaseSettings):
         "/openapi.json",
         "/public/models",
         "/public/models/",
-        # /public/models/missing/{provider} — enumerated rather than prefix-matched
-        # so the middleware contract (exact-path membership) stays untouched.
-        # Add new entries here when wiring up new providers (google, azure, ...).
-        "/public/models/missing/aws",
-        "/public/models/missing/aws/",
-        "/public/models/missing/google",
-        "/public/models/missing/google/",
-        "/public/models/missing/azure",
-        "/public/models/missing/azure/",
     ]
 
     AWS_ACCESS_KEY_ID: str = "AKIATEST"
@@ -66,7 +57,7 @@ class Settings(BaseSettings):
     DEDICATED_DEFAULT_VECTOR_DB_COUNT: float | None = None
     DEDICATED_DEFAULT_RPM_PER_KEY: float | None = None
 
-    # URL of the upstream Amazon Bedrock model catalog used by /public/models/missing.
+    # URL of the upstream Amazon Bedrock model catalog used by /models/missing.
     # Defaults to the community-maintained mirror used by the k0rdent-clusters tooling.
     BEDROCK_MODELS_URL: str = os.getenv(
         "BEDROCK_MODELS_URL",

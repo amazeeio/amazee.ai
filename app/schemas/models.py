@@ -270,10 +270,6 @@ class BedrockMissingModel(BaseModel):
     model_config = ConfigDict(populate_by_name=True, protected_namespaces=())
 
 
-# Back-compat alias retained for any external schema consumers.
-ProviderMissingModel = BedrockMissingModel
-
-
 class ProviderRegionMissingModels(BaseModel):
     """Per-region-group summary of models we haven't deployed yet.
 
@@ -310,7 +306,7 @@ class ProviderRegionMissingModels(BaseModel):
 
 
 class ProviderMissingModelsReport(BaseModel):
-    """Full report returned by /public/models/missing/{provider}."""
+    """Full report returned by /models/missing/{provider}."""
 
     provider: str = Field(
         ...,

@@ -1,4 +1,4 @@
-"""Tests for the /public/models/missing/{provider} endpoint family."""
+"""Tests for the /models/missing/{provider} endpoint family."""
 
 from datetime import datetime, UTC
 from unittest.mock import AsyncMock, patch
@@ -9,7 +9,7 @@ from app.api import public as public_api
 from app.core.security import get_password_hash
 from app.db.models import DBRegion, DBUser
 
-AWS_PATH = "/public/models/missing/aws"
+AWS_PATH = "/models/missing/aws"
 
 
 def _clear_bedrock_catalog_cache():
@@ -146,34 +146,56 @@ def _patch_catalog_fetch(catalog):
 
 def test_missing_models_unknown_provider_returns_404(client, db):
     _clear_bedrock_catalog_cache()
-    response = client.get("/public/models/missing/lambda")
+    admin, password = _make_admin_user(db, email="unknown-provider-admin@example.com")
+    token = _get_token(client, admin.email, password)
+    response = client.get(
+        "/models/missing/lambda", headers={"Authorization": f"Bearer {token}"}
+    )
     assert response.status_code == 404
     assert "Unknown provider" in response.json()["detail"]
 
 
 def test_missing_models_google_returns_501(client, db):
     _clear_bedrock_catalog_cache()
-    response = client.get("/public/models/missing/google")
+    admin, password = _make_admin_user(db, email="google-missing-admin@example.com")
+    token = _get_token(client, admin.email, password)
+    response = client.get(
+        "/models/missing/google", headers={"Authorization": f"Bearer {token}"}
+    )
     assert response.status_code == 501
     assert "google" in response.json()["detail"].lower()
 
 
 def test_missing_models_azure_returns_501(client, db):
     _clear_bedrock_catalog_cache()
-    response = client.get("/public/models/missing/azure")
+    admin, password = _make_admin_user(db, email="azure-missing-admin@example.com")
+    token = _get_token(client, admin.email, password)
+    response = client.get(
+        "/models/missing/azure", headers={"Authorization": f"Bearer {token}"}
+    )
     assert response.status_code == 501
+
+
+def test_missing_models_requires_bearer_token(client, db):
+    _clear_bedrock_catalog_cache()
+    response = client.get(AWS_PATH)
+    assert response.status_code == 401
 
 
 def test_missing_models_provider_lookup_is_case_insensitive(client, db):
     _clear_bedrock_catalog_cache()
     _make_public_region(db, "us-east-1", suffix="us")
+    admin, password = _make_admin_user(db, email="case-insensitive-admin@example.com")
+    token = _get_token(client, admin.email, password)
     with patch("app.api.public.LiteLLMService") as mock_service_cls, _patch_catalog_fetch(
         _upstream_catalog()
     ):
         mock_service_cls.return_value.get_model_info = AsyncMock(
             return_value=_model_info_with_bedrock([])
         )
-        response = client.get("/public/models/missing/AWS")
+        response = client.get(
+            "/models/missing/AWS", headers={"Authorization": f"Bearer {token}"}
+        )
     assert response.status_code == 200
     assert response.json()["provider"] == "aws"
 
@@ -183,9 +205,11 @@ def test_missing_models_provider_lookup_is_case_insensitive(client, db):
 # ---------------------------------------------------------------------------
 
 
-def test_missing_aws_anonymous_reports_gaps_per_region_group(client, db):
+def test_missing_aws_reports_gaps_per_region_group(client, db):
     _clear_bedrock_catalog_cache()
     _make_public_region(db, "us-east-1", suffix="us")
+    user, password = _make_admin_user(db, email="missing-report-admin@example.com")
+    token = _get_token(client, user.email, password)
 
     deployed = _model_info_with_bedrock(
         [
@@ -198,12 +222,12 @@ def test_missing_aws_anonymous_reports_gaps_per_region_group(client, db):
         _upstream_catalog()
     ):
         mock_service_cls.return_value.get_model_info = AsyncMock(return_value=deployed)
-        response = client.get(AWS_PATH)
+        response = client.get(AWS_PATH, headers={"Authorization": f"Bearer {token}"})
 
     assert response.status_code == 200
     body = response.json()
     assert body["provider"] == "aws"
-    assert body["is_authenticated"] is False
+    assert body["is_authenticated"] is True
     assert body["models_url"].startswith("http")
 
     by_group = {g["region_group"]: g for g in body["region_groups"]}
@@ -232,6 +256,8 @@ def test_missing_aws_anonymous_reports_gaps_per_region_group(client, db):
 def test_missing_aws_ignores_non_bedrock_providers(client, db):
     _clear_bedrock_catalog_cache()
     _make_public_region(db, "us-east-1", suffix="us")
+    admin, password = _make_admin_user(db, email="non-bedrock-admin@example.com")
+    token = _get_token(client, admin.email, password)
 
     deployed = _model_info_with_bedrock(
         [
@@ -247,7 +273,7 @@ def test_missing_aws_ignores_non_bedrock_providers(client, db):
         _upstream_catalog()
     ):
         mock_service_cls.return_value.get_model_info = AsyncMock(return_value=deployed)
-        response = client.get(AWS_PATH)
+        response = client.get(AWS_PATH, headers={"Authorization": f"Bearer {token}"})
 
     assert response.status_code == 200
     by_group = {g["region_group"]: g for g in response.json()["region_groups"]}
@@ -293,10 +319,22 @@ def test_missing_aws_admin_includes_dedicated_regions(client, db):
     assert missing_us == {"meta.llama3-1-70b-instruct-v1:0"}
 
 
-def test_missing_aws_anonymous_excludes_dedicated_regions(client, db):
+def test_missing_aws_non_admin_excludes_dedicated_regions(client, db):
     _clear_bedrock_catalog_cache()
     public_region = _make_public_region(db, "us-east-public", suffix="us-pub")
     dedicated_region = _make_dedicated_region(db, "us-east-private", suffix="us-priv")
+
+    password = "UserPassword123"
+    user = DBUser(
+        email="missing-user@example.com",
+        hashed_password=get_password_hash(password),
+        is_active=True,
+        is_admin=False,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    token = _get_token(client, user.email, password)
 
     def _service_factory(api_url, api_key):
         service = AsyncMock()
@@ -313,9 +351,10 @@ def test_missing_aws_anonymous_excludes_dedicated_regions(client, db):
     with patch(
         "app.api.public.LiteLLMService", side_effect=_service_factory
     ), _patch_catalog_fetch(_upstream_catalog()):
-        response = client.get(AWS_PATH)
+        response = client.get(AWS_PATH, headers={"Authorization": f"Bearer {token}"})
 
     assert response.status_code == 200
+    assert response.json()["is_authenticated"] is True
     by_group = {g["region_group"]: g for g in response.json()["region_groups"]}
     us = by_group["US"]
     assert us["configured_model_count"] == 1
@@ -325,6 +364,8 @@ def test_missing_aws_anonymous_excludes_dedicated_regions(client, db):
 def test_missing_aws_handles_unavailable_region(client, db):
     _clear_bedrock_catalog_cache()
     _make_public_region(db, "us-east-1", suffix="us")
+    admin, password = _make_admin_user(db, email="unavailable-region-admin@example.com")
+    token = _get_token(client, admin.email, password)
 
     with patch("app.api.public.LiteLLMService") as mock_service_cls, _patch_catalog_fetch(
         _upstream_catalog()
@@ -332,7 +373,7 @@ def test_missing_aws_handles_unavailable_region(client, db):
         mock_service_cls.return_value.get_model_info = AsyncMock(
             side_effect=httpx.ConnectError("boom")
         )
-        response = client.get(AWS_PATH)
+        response = client.get(AWS_PATH, headers={"Authorization": f"Bearer {token}"})
 
     assert response.status_code == 200
     by_group = {g["region_group"]: g for g in response.json()["region_groups"]}
@@ -345,27 +386,11 @@ def test_missing_aws_handles_unavailable_region(client, db):
 # ---------------------------------------------------------------------------
 
 
-def test_missing_aws_cache_control_anonymous_is_public(client, db):
+def test_missing_aws_cache_control_is_not_publicly_cacheable(client, db):
     _clear_bedrock_catalog_cache()
     _make_public_region(db, "us-east-1", suffix="us")
-    with patch("app.api.public.LiteLLMService") as mock_service_cls, _patch_catalog_fetch(
-        _upstream_catalog()
-    ):
-        mock_service_cls.return_value.get_model_info = AsyncMock(
-            return_value=_model_info_with_bedrock([])
-        )
-        response = client.get(AWS_PATH)
-
-    assert response.status_code == 200
-    assert response.headers["Cache-Control"].startswith("public")
-
-
-def test_missing_aws_cache_control_authenticated_is_private(client, db):
-    _clear_bedrock_catalog_cache()
-    _make_public_region(db, "us-east-1", suffix="us")
-    admin, password = _make_admin_user(db, email="missing-admin-cache@example.com")
+    admin, password = _make_admin_user(db, email="cache-header-admin@example.com")
     token = _get_token(client, admin.email, password)
-
     with patch("app.api.public.LiteLLMService") as mock_service_cls, _patch_catalog_fetch(
         _upstream_catalog()
     ):
@@ -375,4 +400,4 @@ def test_missing_aws_cache_control_authenticated_is_private(client, db):
         response = client.get(AWS_PATH, headers={"Authorization": f"Bearer {token}"})
 
     assert response.status_code == 200
-    assert response.headers["Cache-Control"].startswith("private")
+    assert response.headers["Cache-Control"] == "no-store, no-cache, must-revalidate, private"
