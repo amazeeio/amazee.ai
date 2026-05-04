@@ -509,7 +509,7 @@ async def create_llm_token(
             litellm_token=litellm_token,
             litellm_api_url=region.litellm_api_url,
             owner_id=owner_id,
-            team_id=None if team_id is None else team_id,
+            team_id=litellm_team if litellm_team != FAKE_ID else None,
             name=private_ai_key.name,
             region_id=private_ai_key.region_id,
         )
