@@ -278,26 +278,58 @@ class BackfillRunner:
                 )
 
             try:
+                user_had_changes = False
                 for region in regions:
                     service = LiteLLMService(
                         region.litellm_api_url, region.litellm_api_key
                     )
-                    if not self.dry_run:
-                        await service.create_user(
-                            user_id=str(user.id),
-                            user_email=user.email,
-                            auto_create_key=False,
-                        )
+                    # Check if user already exists in this region
+                    user_exists = False
+                    try:
+                        await service.get_user_info(str(user.id))
+                        user_exists = True
+                    except Exception:
+                        pass
+
+                    if not user_exists or self.dry_run:
+                        user_had_changes = True
+                        if not self.dry_run:
+                            await service.create_user(
+                                user_id=str(user.id),
+                                user_email=user.email,
+                                auto_create_key=False,
+                            )
+
                     if user.team_id is not None:
                         lite_team_id = LiteLLMService.format_team_id(
                             region.name, user.team_id
                         )
-                        if not self.dry_run:
-                            await service.add_team_member(
-                                team_id=lite_team_id, user_id=str(user.id), role="user"
-                            )
-                counters.changed += 1
-                mode = "would_sync" if self.dry_run else "synced"
+                        # Check team membership
+                        is_member = False
+                        if user_exists:
+                            try:
+                                info = await service.get_team_info(lite_team_id)
+                                members = info.get("members", [])
+                                is_member = any(
+                                    str(m.get("user_id", "")) == str(user.id)
+                                    for m in members
+                                )
+                            except Exception:
+                                pass
+
+                        if not is_member or self.dry_run:
+                            user_had_changes = True
+                            if not self.dry_run:
+                                await service.add_team_member(
+                                    team_id=lite_team_id, user_id=str(user.id), role="user"
+                                )
+
+                if user_had_changes:
+                    counters.changed += 1
+                    mode = "would_sync" if self.dry_run else "synced"
+                else:
+                    counters.skipped += 1
+                    mode = "already_correct"
                 print(f"[users] user={user.id} {mode} regions={len(regions)}")
             except Exception as exc:
                 counters.failed += 1
@@ -485,9 +517,11 @@ class BackfillRunner:
                 print(f"[keys] key={key.id} skipped trial owner={owner.id}")
                 continue
 
+            key_had_changes = False
             effective_team_id = key.team_id
             if effective_team_id is None and owner and owner.team_id is not None:
                 effective_team_id = owner.team_id
+                key_had_changes = True
                 if self.dry_run:
                     print(
                         f"[keys] key={key.id} would_repair_db_team_id null->{effective_team_id}"
@@ -511,6 +545,7 @@ class BackfillRunner:
                     print(
                         f"[keys] key={key.id} would_update_litellm team={lite_team_id} user={owner.id if owner else None}"
                     )
+                    key_had_changes = True
                 else:
                     await self._update_litellm_key_associations(
                         region=region,
@@ -521,7 +556,10 @@ class BackfillRunner:
                     print(
                         f"[keys] key={key.id} updated_litellm team={lite_team_id} user={owner.id if owner else None}"
                     )
-                counters.changed += 1
+                if key_had_changes:
+                    counters.changed += 1
+                else:
+                    counters.skipped += 1
             except Exception as exc:
                 counters.failed += 1
                 self.failures.append(
