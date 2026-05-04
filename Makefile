@@ -28,7 +28,6 @@ test-redis: test-network
 	docker run -d \
 		--name amazee-test-redis \
 		--network amazeeai_default \
-		-p 6379:6379 \
 		redis:alpine && \
 	sleep 2
 
