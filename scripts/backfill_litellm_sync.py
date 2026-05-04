@@ -254,6 +254,11 @@ class BackfillRunner:
             query = query.filter(DBUser.id == self.only_user_id)
         users = query.order_by(DBUser.id.asc()).all()
 
+        # Cache team membership lists per (region_id, lite_team_id) to avoid
+        # fetching the same team roster once per user (quadratic remote calls).
+        # Value is a frozenset of user_id strings already present in that team.
+        team_members_cache: dict[tuple[int, str], frozenset[str]] = {}
+
         for user in users:
             counters.processed += 1
             if is_trial_user(user.email):
@@ -283,15 +288,18 @@ class BackfillRunner:
                     service = LiteLLMService(
                         region.litellm_api_url, region.litellm_api_key
                     )
-                    # Check if user already exists in this region
+                    # Check if user already exists in this region.
+                    # Only suppress 404 (user not found); re-raise all other
+                    # errors (5xx, timeouts, auth) so they surface as failures.
                     user_exists = False
                     try:
                         await service.get_user_info(str(user.id))
                         user_exists = True
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        if parse_status_from_exc(exc) != 404:
+                            raise
 
-                    if not user_exists or self.dry_run:
+                    if not user_exists:
                         user_had_changes = True
                         if not self.dry_run:
                             await service.create_user(
@@ -304,23 +312,30 @@ class BackfillRunner:
                         lite_team_id = LiteLLMService.format_team_id(
                             region.name, user.team_id
                         )
-                        # Check team membership
+                        # Check team membership using a per-run cache so we
+                        # fetch each team roster at most once per region.
                         is_member = False
                         if user_exists:
-                            try:
-                                info = await service.get_team_info(lite_team_id)
-                                members = info.get("members", [])
-                                is_member = any(
-                                    str(m.get("user_id", "")) == str(user.id)
-                                    for m in members
-                                )
-                            except Exception as exc:
-                                print(
-                                    f"[users] user={user.id} region={region.id} team={lite_team_id} "
-                                    f"failed_membership_check={exc}"
-                                )
+                            cache_key = (region.id, lite_team_id)
+                            if cache_key not in team_members_cache:
+                                try:
+                                    info = await service.get_team_info(lite_team_id)
+                                    # LiteLLM may return a wrapped payload;
+                                    # unwrap before reading member list.
+                                    team_data = info.get("team_info", info)
+                                    members = team_data.get("members", [])
+                                    team_members_cache[cache_key] = frozenset(
+                                        str(m.get("user_id", "")) for m in members
+                                    )
+                                except Exception as exc:
+                                    # Only suppress 404 (team not found == no members).
+                                    # Re-raise transient errors so the row fails loudly.
+                                    if parse_status_from_exc(exc) != 404:
+                                        raise
+                                    team_members_cache[cache_key] = frozenset()
+                            is_member = str(user.id) in team_members_cache[cache_key]
 
-                        if not is_member or self.dry_run:
+                        if not is_member:
                             user_had_changes = True
                             if not self.dry_run:
                                 await service.add_team_member(
@@ -556,6 +571,9 @@ class BackfillRunner:
                         lite_team_id=lite_team_id,
                         user_id=owner.id if owner else None,
                     )
+                    # The remote write happened, so always count as changed
+                    # regardless of whether a DB team_id repair was also done.
+                    key_had_changes = True
                     print(
                         f"[keys] key={key.id} updated_litellm team={lite_team_id} user={owner.id if owner else None}"
                     )
