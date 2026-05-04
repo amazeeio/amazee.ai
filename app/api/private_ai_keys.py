@@ -475,6 +475,21 @@ async def create_llm_token(
             status_code=status.HTTP_404_NOT_FOUND, detail="Owner or team not found"
         )
 
+    # DB team_id follows the ownership decision (not LiteLLM scoping).
+    # force_user_keys clears team_id/team above — that must be respected.
+    # When no team was ever in the request but the owner has one, resolve it.
+    # Track whether team_id was originally provided so we don't re-introduce
+    # a team after force_user_keys cleared it.
+    _original_team_id = private_ai_key.team_id
+    db_team_id = team_id
+    if (
+        db_team_id is None
+        and _original_team_id is None
+        and owner is not None
+        and owner.team_id
+    ):
+        db_team_id = owner.team_id
+
     try:
         # Generate LiteLLM token
         litellm_service = LiteLLMService(
@@ -509,7 +524,7 @@ async def create_llm_token(
             litellm_token=litellm_token,
             litellm_api_url=region.litellm_api_url,
             owner_id=owner_id,
-            team_id=None if team_id is None else team_id,
+            team_id=db_team_id,
             name=private_ai_key.name,
             region_id=private_ai_key.region_id,
         )
