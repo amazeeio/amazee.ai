@@ -4,9 +4,11 @@ import os
 os.environ["AMAZEEAI_JWT_SECRET"] = "test-secret-key-for-tests"
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 from app.main import app
 from app.db.database import get_db
 from app.db.models import Base, DBRegion, DBUser, DBTeam, DBProduct
@@ -36,12 +38,16 @@ def mock_rate_limiting(request):
         _rate_limit_counts[key] += 1
 
         # For rate limit tests, actually enforce the limit based on the configured 'times' value
-        if is_rate_limit_test and _rate_limit_counts[key] > times:
+        # Note: fastapi_limiter passes times as a string, so convert to int for comparison
+        if is_rate_limit_test and _rate_limit_counts[key] > int(times):
             # Return a value that indicates rate limiting (simulating Redis response)
             return 1000  # Return positive value indicating wait time in ms
 
         # Return 0 to indicate not rate limited (allow request)
         return 0
+
+    async def mock_http_callback(request, response, pexpire):
+        raise HTTPException(status_code=HTTP_429_TOO_MANY_REQUESTS, detail="Too Many Requests")
 
     mock_redis = AsyncMock()
     mock_redis.evalsha = mock_evalsha
@@ -54,7 +60,7 @@ def mock_rate_limiting(request):
         mock_main_fl.lua_sha = "mock_sha"
         mock_main_fl.prefix = "test"
         mock_main_fl.identifier = AsyncMock(return_value="test-key")
-        mock_main_fl.http_callback = AsyncMock()
+        mock_main_fl.http_callback = mock_http_callback
 
         # Patch FastAPILimiter in depends module (for RateLimiter class)
         with patch('fastapi_limiter.depends.FastAPILimiter') as mock_depends_fl:
@@ -64,7 +70,7 @@ def mock_rate_limiting(request):
             mock_depends_fl.lua_sha = "mock_sha"
             mock_depends_fl.prefix = "test"
             mock_depends_fl.identifier = AsyncMock(return_value="test-key")
-            mock_depends_fl.http_callback = AsyncMock()
+            mock_depends_fl.http_callback = mock_http_callback
 
             yield _rate_limit_counts
 

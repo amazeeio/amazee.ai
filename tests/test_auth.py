@@ -266,6 +266,25 @@ def test_validate_email_invalid_format(client, mock_dynamodb):
         mock_dynamodb.write_validation_code.assert_not_called()
 
 
+def test_validate_email_rate_limit(client, mock_dynamodb, mock_ses):
+    """Test that /auth/validate-email returns HTTP 429 after exceeding the rate limit."""
+    from app.core.config import settings
+
+    email = "ratelimit@example.com"
+    limit = settings.RATE_LIMIT_VALIDATE_EMAIL
+
+    # Requests up to the limit should succeed
+    for attempt in range(limit):
+        response = client.post("/auth/validate-email", json={"email": email})
+        assert response.status_code == 200, (
+            f"Request {attempt + 1} of {limit} should succeed, got {response.status_code}"
+        )
+
+    # The next request should be rate limited
+    response = client.post("/auth/validate-email", json={"email": email})
+    assert response.status_code == 429
+
+
 def test_sign_in_success(client, test_user, mock_dynamodb):
     # First, generate a validation code
     email = test_user.email
