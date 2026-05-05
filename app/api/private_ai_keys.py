@@ -19,7 +19,14 @@ from app.schemas.models import (
     PrivateAIKeyDetail,
 )
 from app.db.postgres import PostgresManager
-from app.db.models import DBPoolPurchase, DBPrivateAIKey, DBRegion, DBSpendCap, DBUser, DBTeam
+from app.db.models import (
+    DBPoolPurchase,
+    DBPrivateAIKey,
+    DBRegion,
+    DBSpendCap,
+    DBUser,
+    DBTeam,
+)
 from app.services.litellm import LiteLLMService
 from app.core.security import (
     get_current_user_from_auth,

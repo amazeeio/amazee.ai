@@ -33,8 +33,6 @@ import os
 import sys
 from datetime import datetime, timezone
 
-import httpx
-from sqlalchemy.orm import Session
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -147,9 +145,7 @@ async def main() -> int:
             counters["processed"] += 1
 
             region = (
-                session.query(DBRegion)
-                .filter(DBRegion.id == key.region_id)
-                .first()
+                session.query(DBRegion).filter(DBRegion.id == key.region_id).first()
             )
             if not region or not region.is_active:
                 print(
