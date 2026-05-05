@@ -897,7 +897,17 @@ async def delete_private_ai_key(
     return {"message": "Private AI Key deleted successfully"}
 
 
-@router.get("/{key_id}/spend", response_model=PrivateAIKeySpendBasic)
+@router.get(
+    "/{key_id}/spend",
+    response_model=PrivateAIKeySpendBasic,
+    deprecated=True,
+    summary="Legacy: use GET /spend/{region_id}/key/{key_id} instead",
+    description=(
+        "Returns spend and budget metadata for a specific key. "
+        "This endpoint is legacy. Prefer /spend/{{region_id}}/key/{{key_id}} "
+        "which provides richer budget metadata and team-level context."
+    ),
+)
 async def get_private_ai_key_spend(
     key_id: int,
     current_user=Depends(get_current_user_from_auth),
