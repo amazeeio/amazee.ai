@@ -115,7 +115,7 @@ jobs:
           git commit -m "chore: update ${{ matrix.provider }} missing models state"
 
           branch="${{ github.ref_name }}"
-          for attempt in 1 2 3; do
+          for _attempt in 1 2 3; do
             git fetch origin "$branch"
             git rebase "origin/$branch"
             if git push origin HEAD:"$branch"; then
