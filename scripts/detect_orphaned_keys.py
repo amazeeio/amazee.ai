@@ -8,13 +8,13 @@ no longer exists in the corresponding LiteLLM instance.
 What this script does:
 1. Iterates over all ai_tokens with a litellm_token
 2. Checks each token against its region's LiteLLM via /key/info
-3. For tokens that return 401 (not found): nullifies litellm_token and litellm_api_url
+3. For tokens that return 401 or 404 (not found): nullifies litellm_token and litellm_api_url
 4. Also cleans up any spend_caps rows for orphaned keys
 
 Default mode is dry-run. Use --apply to execute changes.
 
 Safety:
-  - Only touches keys where LiteLLM explicitly returns 401 "key does not exist"
+  - Only touches keys where LiteLLM explicitly returns 401 or 404 "key does not exist"
   - Transient errors (502, timeouts, 403) are treated as failures, NOT orphans
   - The ai_tokens row is preserved — only litellm_token and litellm_api_url are nulled
   - spend_caps for orphaned keys are deleted (no budget to enforce for a dead key)
@@ -122,7 +122,10 @@ async def main() -> int:
         query = query.filter(DBPrivateAIKey.region_id == args.region_id)
     if args.key_id is not None:
         query = query.filter(DBPrivateAIKey.id == args.key_id)
-    keys = query.order_by(DBPrivateAIKey.id.asc()).all()
+    query = query.order_by(DBPrivateAIKey.id.asc())
+    if args.limit is not None:
+        query = query.limit(args.limit)
+    keys = query.all()
 
     print(f"Found {len(keys)} keys with litellm_token to check")
 
@@ -141,19 +144,28 @@ async def main() -> int:
     }
 
     try:
+        # Preload all active regions once and build a LiteLLMService per region
+        # to avoid an N+1 DB query and redundant service construction per key.
+        region_query = session.query(DBRegion).filter(DBRegion.is_active.is_(True))
+        if args.region_id is not None:
+            region_query = region_query.filter(DBRegion.id == args.region_id)
+        regions_by_id: dict[int, DBRegion] = {r.id: r for r in region_query.all()}
+        services_by_region_id: dict[int, LiteLLMService] = {
+            r.id: LiteLLMService(r.litellm_api_url, r.litellm_api_key)
+            for r in regions_by_id.values()
+        }
+
         for key in keys:
             counters["processed"] += 1
 
-            region = (
-                session.query(DBRegion).filter(DBRegion.id == key.region_id).first()
-            )
-            if not region or not region.is_active:
+            region = regions_by_id.get(key.region_id)
+            if not region:
                 print(
                     f"  key={key.id:5d} | SKIP | region={key.region_id} inactive/missing"
                 )
                 continue
 
-            service = LiteLLMService(region.litellm_api_url, region.litellm_api_key)
+            service = services_by_region_id[region.id]
             status = await check_token_exists(service, key.litellm_token)
 
             if status == "exists":
@@ -167,12 +179,14 @@ async def main() -> int:
 
             if status == "orphaned":
                 counters["orphaned"] += 1
+                token = key.litellm_token or ""
+                redacted_token = f"...{token[-4:]}" if len(token) >= 4 else "****"
                 entry = {
                     "key_id": key.id,
                     "key_name": key.name,
                     "region_id": region.id,
                     "region_name": region.name,
-                    "litellm_token": key.litellm_token,
+                    "litellm_token_hint": redacted_token,
                     "owner_id": key.owner_id,
                     "team_id": key.team_id,
                     "has_spend_cap": False,
@@ -225,10 +239,6 @@ async def main() -> int:
                     f"  key={key.id:5d} | ERROR | region={region.name} | could not check token"
                 )
                 report["error_keys"].append(entry)
-
-            if args.limit is not None and counters["processed"] >= args.limit:
-                print(f"\n  --limit ({args.limit}) reached, stopping")
-                break
 
         if not dry_run:
             session.commit()

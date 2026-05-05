@@ -942,13 +942,13 @@ async def get_private_ai_key_spend(
         # Override max_budget with the value from spend_caps DB table if present.
         # This ensures the configured cap (which may differ from LiteLLM's value
         # for purchase-gated teams) is returned to the caller.
+        # The unique index for key-scope caps is on (region_id, key_id); team_id
+        # and user_id are metadata only and must NOT be used as lookup filters.
         configured_cap = (
             db.query(DBSpendCap.max_budget)
             .filter(
                 DBSpendCap.scope == "key",
                 DBSpendCap.region_id == private_ai_key.region_id,
-                DBSpendCap.team_id == private_ai_key.team_id,
-                DBSpendCap.user_id == private_ai_key.owner_id,
                 DBSpendCap.key_id == private_ai_key.id,
             )
             .first()
