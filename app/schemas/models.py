@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, EmailStr, AfterValidator, Field
-from typing import Optional, List, ClassVar, Literal, Dict, Annotated
+from typing import Optional, List, ClassVar, Literal, Dict, Annotated, Any
 from datetime import datetime
 from sqlalchemy.orm import relationship
 from enum import Enum
@@ -198,6 +198,11 @@ class PublicModel(BaseModel):
 class PublicModelPricing(BaseModel):
     input_cost_per_token: Optional[float] = None
     output_cost_per_token: Optional[float] = None
+    input_cost_per_million_tokens: Optional[float] = None
+    output_cost_per_million_tokens: Optional[float] = None
+    cache_creation_input_cost_per_million_tokens: Optional[float] = None
+    cache_creation_input_cost_above_1hr_per_million_tokens: Optional[float] = None
+    cache_read_input_cost_per_million_tokens: Optional[float] = None
 
 
 class PublicModelCapabilities(BaseModel):
@@ -207,13 +212,25 @@ class PublicModelCapabilities(BaseModel):
     supports_prompt_caching: bool = False
 
 
+class PublicModelManufacturer(BaseModel):
+    name: str
+    website: Optional[str] = None
+    version: Optional[str] = None
+    release_date: Optional[str] = None
+    attribution: Optional[str] = None
+
+
 class PublicModelSummary(BaseModel):
     model_id: str
     display_name: str
+    aliases: List[str] = Field(default_factory=list)
+    metadata_raw: Optional[Any] = None
     provider: str
     type: str
     context_length: Optional[int] = None
     max_output_tokens: Optional[int] = None
+    description: str
+    manufacturer: PublicModelManufacturer
     capabilities: PublicModelCapabilities
     pricing: PublicModelPricing
 
@@ -242,11 +259,25 @@ class PrivateAIKeyBase(BaseModel):
 
 
 class PrivateAIKeyCreate(BaseModel):
-    region_id: int
-    name: str
+    region_id: int = Field(
+        description="Target region ID where the key and backing resources are created."
+    )
+    name: str = Field(description="Human-readable key name.")
     key_alias: Optional[str] = None
-    owner_id: Optional[int] = None
-    team_id: Optional[int] = None
+    owner_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "User-owned key mode. Set this to bind the key to a specific user. "
+            "If omitted together with team_id, owner_id defaults to the current user."
+        ),
+    )
+    team_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Team-owned key mode. Set this to create a shared team key. "
+            "Mutually exclusive with owner_id."
+        ),
+    )
 
 
 class VectorDBCreate(BaseModel):
@@ -317,7 +348,7 @@ class TokenDurationUpdate(BaseModel):
     duration: str  # e.g. "30d" for 30 days, "1y" for 1 year
 
 
-class PrivateAIKeySpend(BaseModel):
+class PrivateAIKeySpendBasic(BaseModel):
     spend: float
     expires: datetime
     created_at: datetime
@@ -326,6 +357,78 @@ class PrivateAIKeySpend(BaseModel):
     budget_duration: Optional[str] = None
     budget_reset_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
+
+
+class PrivateAIKeySpend(BaseModel):
+    spend: float
+    expires: datetime
+    created_at: datetime
+    updated_at: datetime
+    max_budget: Optional[float] = None
+    budget_duration: Optional[str] = None
+    budget_reset_at: Optional[datetime] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SpendKeyItem(BaseModel):
+    key_id: Optional[int] = None
+    key_name: Optional[str] = None
+    owner_id: Optional[int] = None
+    team_id: Optional[int] = None
+    spend: float
+    max_budget: Optional[float] = None
+    cached_spend: Optional[float] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+
+
+class TeamSpendResponse(BaseModel):
+    region_id: int
+    region_name: str
+    team_id: int
+    team_name: str
+    total_spend: float
+    total_budget: float
+    total_prompt_tokens: Optional[int] = None
+    total_completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    key_count: int
+    keys: List[SpendKeyItem]
+
+
+class UserSpendResponse(BaseModel):
+    region_id: int
+    region_name: str
+    user_id: int
+    team_id: Optional[int] = None
+    team_name: Optional[str] = None
+    total_spend: float
+    total_prompt_tokens: Optional[int] = None
+    total_completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    key_count: int
+    keys: List[SpendKeyItem]
+
+
+class SpendBudgetUpdateRequest(BaseModel):
+    max_budget: Optional[float] = Field(default=None, ge=0)
+
+
+class SpendBudgetUpdateResponse(BaseModel):
+    scope: Literal["team", "key", "team_member"]
+    source_endpoint: str
+    region_id: int
+    region_name: str
+    team_id: Optional[int] = None
+    user_id: Optional[int] = None
+    key_id: Optional[int] = None
+    max_budget: Optional[float] = None
+    budget_duration: Optional[str] = None
+    note: Optional[str] = None
 
 
 class LiteLLMToken(BaseModel):
@@ -395,6 +498,7 @@ class TeamCreate(TeamBase):
     force_user_keys: bool = False
     hide_public_regions: bool = False
     budget_type: BudgetType = BudgetType.PERIODIC
+    require_purchase_for_requests: bool = True
 
 
 class TeamUpdate(BaseModel):
@@ -407,6 +511,7 @@ class TeamUpdate(BaseModel):
     force_user_keys: Optional[bool] = False
     hide_public_regions: Optional[bool] = None
     budget_type: Optional[BudgetType] = None
+    require_purchase_for_requests: Optional[bool] = None
 
 
 class Team(TeamBase):
@@ -416,6 +521,7 @@ class Team(TeamBase):
     force_user_keys: Optional[bool] = False
     hide_public_regions: bool = False
     budget_type: BudgetType
+    require_purchase_for_requests: bool
     last_pool_purchase: Optional[datetime] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
@@ -550,6 +656,17 @@ class TeamRegionBudget(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class TeamRegionModelAliasesUpdateRequest(BaseModel):
+    model_aliases: Dict[str, str] = Field(default_factory=dict)
+
+
+class TeamRegionModelAliasesResponse(BaseModel):
+    region_id: int
+    team_id: int
+    model_aliases: Dict[str, str] = Field(default_factory=dict)
+    model_config = ConfigDict(from_attributes=True)
+
+
 class PoolPurchaseRequest(BaseModel):
     amount_cents: int = Field(gt=0)
     currency: str
@@ -610,6 +727,7 @@ class UserSpendRegion(BaseModel):
     region_name: str
     spend: float
     status: str
+    max_budget: Optional[float] = None
 
 
 class UserSpendTeam(BaseModel):
@@ -619,7 +737,7 @@ class UserSpendTeam(BaseModel):
     regions: List[UserSpendRegion]
 
 
-class UserSpendResponse(BaseModel):
+class UserSpendByEmailResponse(BaseModel):
     email: str
     total_spend: float
     teams: List[UserSpendTeam]

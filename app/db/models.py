@@ -1,6 +1,7 @@
 from sqlalchemy import (
     Boolean,
     Column,
+    Index,
     ForeignKey,
     Integer,
     String,
@@ -8,6 +9,8 @@ from sqlalchemy import (
     JSON,
     Float,
     Enum,
+    Date,
+    text,
 )
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime, UTC
@@ -152,6 +155,7 @@ class DBTeam(Base):
         default=BudgetType.PERIODIC,
         nullable=False,
     )
+    require_purchase_for_requests = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     stripe_customer_id = Column(String, nullable=True, unique=True, index=True)
@@ -172,6 +176,28 @@ class DBTeam(Base):
     @property
     def products(self):
         return [tp.product for tp in self.active_products if tp.product]
+
+    @property
+    def is_dedicated(self) -> bool:
+        """True for dedicated teams that use private infrastructure.
+
+        Dedicated teams hide public regions (``hide_public_regions=True``) and are
+        provisioned with private infrastructure. This flag is infrastructure-scoped
+        and independent of funding behavior.
+        """
+        return bool(self.hide_public_regions)
+
+    @property
+    def requires_pool_purchase_gate(self) -> bool:
+        """Whether no-purchase traffic should be blocked for this team."""
+        budget_type_value = (
+            self.budget_type.value
+            if isinstance(self.budget_type, BudgetType)
+            else str(self.budget_type).lower()
+        )
+        return budget_type_value == BudgetType.POOL.value and bool(
+            self.require_purchase_for_requests
+        )
 
 
 class DBTeamMetrics(Base):
@@ -388,5 +414,67 @@ class DBLimitedResource(Base):
     __table_args__ = (
         UniqueConstraint(
             "owner_type", "owner_id", "resource", name="uq_owner_resource"
+        ),
+    )
+
+
+class DBSpendCap(Base):
+    """
+    Persisted spend cap configuration for spend endpoints.
+
+    These records mirror effective cap settings pushed to LiteLLM for:
+    - team caps
+    - team-member caps
+    - key caps
+    """
+
+    __tablename__ = "spend_caps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scope = Column(String, nullable=False, index=True)  # team, team_member, key
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=False, index=True)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    key_id = Column(Integer, ForeignKey("ai_tokens.id"), nullable=True, index=True)
+    max_budget = Column(Float, nullable=True)
+    budget_duration = Column(String, nullable=True)
+    month_anchor = Column(Date, nullable=True)
+    month_start_spend = Column(Float, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "uq_spend_caps_team_scope",
+            "region_id",
+            "team_id",
+            unique=True,
+            postgresql_where=text(
+                "scope = 'team' AND team_id IS NOT NULL AND user_id IS NULL AND key_id IS NULL"
+            ),
+            sqlite_where=text(
+                "scope = 'team' AND team_id IS NOT NULL AND user_id IS NULL AND key_id IS NULL"
+            ),
+        ),
+        Index(
+            "uq_spend_caps_team_member_scope",
+            "region_id",
+            "team_id",
+            "user_id",
+            unique=True,
+            postgresql_where=text(
+                "scope = 'team_member' AND team_id IS NOT NULL AND user_id IS NOT NULL AND key_id IS NULL"
+            ),
+            sqlite_where=text(
+                "scope = 'team_member' AND team_id IS NOT NULL AND user_id IS NOT NULL AND key_id IS NULL"
+            ),
+        ),
+        Index(
+            "uq_spend_caps_key_scope",
+            "region_id",
+            "key_id",
+            unique=True,
+            postgresql_where=text("scope = 'key' AND key_id IS NOT NULL"),
+            sqlite_where=text("scope = 'key' AND key_id IS NOT NULL"),
         ),
     )

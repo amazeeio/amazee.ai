@@ -58,3 +58,6 @@ CLAUDE.local.md
 CLAUDE.md
 # review.nvim
 .review
+
+tests/test_limits_e2e_local.py
+.pi

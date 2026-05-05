@@ -1,5 +1,6 @@
 from app.db.models import (
     DBRegion,
+    DBSpendCap,
     DBUser,
     DBTeam,
     DBProduct,
@@ -278,6 +279,7 @@ def test_get_user_spend_success_with_cache_and_normalization(
     assert len(data["teams"]) == 1
     assert data["teams"][0]["spend"] == 12.5
     assert data["teams"][0]["regions"][0]["status"] == "ok"
+    assert data["teams"][0]["regions"][0]["max_budget"] is None
     first_cached_at = data["cached_at"]
     assert mock_get_team_info.await_count == 1
 
@@ -445,6 +447,77 @@ def test_get_user_spend_includes_user_owned_keys(
     assert data["teams"][0]["regions"][0]["region_name"] == "region-userkey"
     assert data["teams"][0]["regions"][0]["spend"] == 7.25
     assert mock_get_team_info.await_count == 1
+
+
+@patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_user_spend_includes_team_member_region_max_budget(
+    mock_get_team_info, client, admin_token, db
+):
+    team = DBTeam(
+        name="Budget Team",
+        admin_email="budget-team@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    region = DBRegion(
+        name="region-budget",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.budget",
+        litellm_api_key="kb",
+        is_active=True,
+        is_dedicated=False,
+    )
+    user = DBUser(
+        email="budget+member@example.com",
+        hashed_password=get_password_hash("pw"),
+        is_active=True,
+        is_admin=False,
+        team=team,
+    )
+    db.add_all([team, region, user])
+    db.commit()
+    db.refresh(team)
+    db.refresh(region)
+    db.refresh(user)
+
+    db.add(
+        DBPrivateAIKey(
+            database_name="db-budget",
+            database_username="u-budget",
+            owner_id=user.id,
+            team_id=team.id,
+            region_id=region.id,
+        )
+    )
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=region.id,
+            team_id=team.id,
+            user_id=user.id,
+            max_budget=33.5,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "keys": [
+            {"metadata": {"amazeeai_user_id": str(user.id)}, "spend": 1.25},
+        ]
+    }
+
+    response = client.get(
+        "/users/spend?email=budget@example.com",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["teams"][0]["regions"][0]["max_budget"] == 33.5
 
 
 @patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
