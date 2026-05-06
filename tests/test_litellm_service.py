@@ -251,7 +251,7 @@ def test_get_key_info_failure(
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(service.get_key_info("test-token"))
 
-    assert exc_info.value.status_code == 500
+    assert exc_info.value.status_code == 404
     assert "Failed to get LiteLLM key information" in exc_info.value.detail
 
 

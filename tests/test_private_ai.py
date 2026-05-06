@@ -1,5 +1,12 @@
 from unittest.mock import patch, Mock, AsyncMock
-from app.db.models import DBPrivateAIKey, DBTeam, DBUser, DBProduct, DBTeamProduct
+from app.db.models import (
+    DBPrivateAIKey,
+    DBTeam,
+    DBUser,
+    DBProduct,
+    DBTeamProduct,
+    DBSpendCap,
+)
 from datetime import datetime, UTC
 from app.core.security import get_password_hash
 from httpx import HTTPStatusError
@@ -137,6 +144,56 @@ def test_delete_private_ai_key(
     # Verify the key was removed from the database
     deleted_key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
     assert deleted_key is None
+
+
+@patch("httpx.AsyncClient")
+def test_delete_private_ai_key_removes_dependent_spend_caps(
+    mock_client_class,
+    client,
+    test_token,
+    test_region,
+    db,
+    test_user,
+    mock_httpx_post_client,
+):
+    mock_client_class.return_value = mock_httpx_post_client
+
+    test_key = DBPrivateAIKey(
+        database_name="test_db_delete_caps",
+        name="Test Key with Spend Cap",
+        database_host="test-host",
+        database_username="test_user",
+        database_password="test-pass",
+        litellm_token="test-token-delete-caps",
+        litellm_api_url="https://test-litellm.com",
+        owner_id=test_user.id,
+        region_id=test_region.id,
+    )
+    db.add(test_key)
+    db.commit()
+    db.refresh(test_key)
+
+    cap = DBSpendCap(
+        scope="key",
+        region_id=test_region.id,
+        key_id=test_key.id,
+        max_budget=1.0,
+        budget_duration="monthly",
+    )
+    db.add(cap)
+    db.commit()
+
+    response = client.delete(
+        f"/private-ai-keys/{test_key.id}",
+        headers={"Authorization": f"Bearer {test_token}"},
+    )
+
+    assert response.status_code == 200
+    assert db.query(DBSpendCap).filter(DBSpendCap.key_id == test_key.id).count() == 0
+    assert (
+        db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == test_key.id).first()
+        is None
+    )
 
 
 @patch("httpx.AsyncClient")
