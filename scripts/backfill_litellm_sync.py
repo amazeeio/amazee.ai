@@ -339,7 +339,9 @@ class BackfillRunner:
                             user_had_changes = True
                             if not self.dry_run:
                                 await service.add_team_member(
-                                    team_id=lite_team_id, user_id=str(user.id), role="user"
+                                    team_id=lite_team_id,
+                                    user_id=str(user.id),
+                                    role="user",
                                 )
 
                 if user_had_changes:
