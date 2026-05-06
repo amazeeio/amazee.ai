@@ -242,7 +242,22 @@ def test_get_key_info_failure(
     mock_client_class, test_region, mock_httpx_failure_client
 ):
     """Test key info retrieval failure"""
-    mock_client_class.return_value = mock_httpx_failure_client(404, "Not Found")
+    mock_response = Mock()
+    mock_response.status_code = 404
+    mock_response.json.return_value = {"error": {"message": "Not Found"}}
+    request = httpx.Request("GET", f"{test_region.litellm_api_url}/key/info")
+    response = httpx.Response(
+        status_code=404, request=request, json={"error": {"message": "Not Found"}}
+    )
+    mock_response.raise_for_status.side_effect = HTTPStatusError(
+        "Not Found", request=request, response=response
+    )
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
 
     service = LiteLLMService(
         api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
@@ -251,7 +266,7 @@ def test_get_key_info_failure(
     with pytest.raises(HTTPException) as exc_info:
         asyncio.run(service.get_key_info("test-token"))
 
-    assert exc_info.value.status_code == 500
+    assert exc_info.value.status_code == 404
     assert "Failed to get LiteLLM key information" in exc_info.value.detail
 
 
