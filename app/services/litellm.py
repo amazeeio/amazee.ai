@@ -238,6 +238,9 @@ class LiteLLMService:
         except httpx.HTTPStatusError as e:
             error_msg = str(e)
             logger.error(f"Error getting LiteLLM key information: {error_msg}")
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            if hasattr(e, "response") and e.response is not None:
+                status_code = e.response.status_code
             if hasattr(e, "response") and e.response is not None:
                 try:
                     error_details = e.response.json()
@@ -245,7 +248,7 @@ class LiteLLMService:
                 except ValueError:
                     error_msg = f"Status {e.response.status_code}: {e.response.text}"
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=status_code,
                 detail=f"Failed to get LiteLLM key information: {error_msg}",
             )
 

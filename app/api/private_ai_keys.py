@@ -19,7 +19,14 @@ from app.schemas.models import (
     PrivateAIKeyDetail,
 )
 from app.db.postgres import PostgresManager
-from app.db.models import DBPoolPurchase, DBPrivateAIKey, DBRegion, DBUser, DBTeam
+from app.db.models import (
+    DBPoolPurchase,
+    DBPrivateAIKey,
+    DBRegion,
+    DBUser,
+    DBTeam,
+    DBSpendCap,
+)
 from app.services.litellm import LiteLLMService
 from app.core.security import (
     get_current_user_from_auth,
@@ -801,6 +808,16 @@ async def get_private_ai_key(
         key_data.update(info_without_ownership)
 
         return PrivateAIKeyDetail.model_validate(key_data)
+    except HTTPException as e:
+        # If key was already removed in LiteLLM, keep API response usable and rely on DB data.
+        if e.status_code == status.HTTP_404_NOT_FOUND:
+            logger.warning(
+                "LiteLLM key not found for private AI key %s; returning DB-only details",
+                private_ai_key.id,
+            )
+            return PrivateAIKeyDetail.model_validate(private_ai_key.to_dict())
+        logger.error(f"Failed to get Private AI Key details: {str(e)}", exc_info=True)
+        raise
     except Exception as e:
         logger.error(f"Failed to get Private AI Key details: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -890,6 +907,9 @@ async def delete_private_ai_key(
             private_ai_key.database_name, private_ai_key.database_username
         )
 
+    # Remove dependent spend cap rows before deleting key row (FK spend_caps.key_id -> ai_tokens.id)
+    db.query(DBSpendCap).filter(DBSpendCap.key_id == private_ai_key.id).delete()
+
     # Remove the private AI key record from the application database
     db.delete(private_ai_key)
     db.commit()
@@ -926,6 +946,22 @@ async def get_private_ai_key_spend(
         spend_info = {"spend": info.get("spend", 0.0), **info}
 
         return PrivateAIKeySpendBasic.model_validate(spend_info)
+    except HTTPException as e:
+        if e.status_code == status.HTTP_404_NOT_FOUND:
+            logger.warning(
+                "LiteLLM key not found for private AI key %s; returning default spend",
+                private_ai_key.id,
+            )
+            return PrivateAIKeySpendBasic.model_validate(
+                {
+                    "spend": 0.0,
+                    "created_at": private_ai_key.created_at,
+                    "updated_at": private_ai_key.updated_at,
+                    "expires": None,
+                }
+            )
+        logger.error(f"Failed to get Private AI Key spend: {str(e)}", exc_info=True)
+        raise
     except Exception as e:
         logger.error(f"Failed to get Private AI Key spend: {str(e)}", exc_info=True)
         raise HTTPException(
