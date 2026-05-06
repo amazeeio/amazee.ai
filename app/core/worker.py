@@ -625,16 +625,25 @@ async def reconcile_team_keys(
     return team_total
 
 
-def _monitor_team_freshness(team: DBTeam) -> int:
+def _monitor_team_freshness(team: DBTeam, db: Optional[Session] = None) -> int:
     current_time = datetime.now(UTC)
     # Calculate team age based on whether they have made a payment
-    # For pool teams, use last_pool_purchase instead of last_payment
+    # For pool teams, query DBPoolPurchase directly (single source of truth) so that
+    # this function and the has_active_pool_purchase check in monitor_teams are consistent.
     pool_purchase_date = None
-    if (
-        getattr(team, "budget_type", None) == BudgetType.POOL
-        and team.last_pool_purchase
-    ):
-        pool_purchase_date = team.last_pool_purchase
+    if getattr(team, "budget_type", None) == BudgetType.POOL:
+        if db is not None:
+            latest = (
+                db.query(DBPoolPurchase)
+                .filter(DBPoolPurchase.team_id == team.id)
+                .order_by(DBPoolPurchase.purchased_at.desc())
+                .first()
+            )
+            if latest:
+                pool_purchase_date = latest.purchased_at
+        elif team.last_pool_purchase:
+            # Fallback when no db session is available (e.g. unit tests that don't pass db)
+            pool_purchase_date = team.last_pool_purchase
 
     if pool_purchase_date:
         team_freshness = (current_time - pool_purchase_date.replace(tzinfo=UTC)).days
@@ -1052,7 +1061,7 @@ async def monitor_teams(db: Session):
                 await _check_team_retention_policy(db, team, current_time, ses_service)
 
                 # Now handle trial expiry notifications and key expiry (after retention checks)
-                team_freshness = _monitor_team_freshness(team)
+                team_freshness = _monitor_team_freshness(team, db)
                 days_remaining = TRIAL_OVER_DAYS - team_freshness
 
                 # Check if team was monitored within 24 hours
