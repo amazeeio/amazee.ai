@@ -65,7 +65,7 @@ jobs:
           FILES=$(cat /tmp/matched_files.txt)
           DIFF=$(cat /tmp/diff_truncated.txt)
           PR_BODY=$(cat /tmp/pr_body.txt)
-          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_TITLE="${PR_TITLE}"
 
           PROMPT=$(cat <<'PROMPT_END'
           You are a technical writer for amazee.ai documentation (docs.amazee.ai).
@@ -113,13 +113,15 @@ jobs:
         env:
           AMAZEEAI_API_KEY: ${{ secrets.AMAZEEAI_API_KEY }}
           AMAZEEAI_ENDPOINT: ${{ vars.AMAZEEAI_ENDPOINT || 'https://llm.us104.amazee.ai' }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
 
       - name: Open docs issue
         if: steps.check.outputs.has_matches == 'true'
         env:
           GH_TOKEN: ${{ secrets.DOCS_ISSUE_TOKEN }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_TITLE="${PR_TITLE}"
           PR_URL="${{ github.event.pull_request.html_url }}"
           PR_NUM="${{ github.event.pull_request.number }}"
           FILES=$(cat /tmp/matched_files.txt)
@@ -146,14 +148,15 @@ jobs:
             exit 0
           fi
 
+          BACKTICKS='```'
           cat > /tmp/docs_issue_body.md <<EOF
           ### Source PR
           ${PR_URL}
 
           ### Changed files with doc implications
-          ```
+          ${BACKTICKS}
           ${FILES}
-          ```
+          ${BACKTICKS}
 
           ${DRAFT_SECTION}
           ### Action needed
