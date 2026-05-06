@@ -856,7 +856,13 @@ def _send_expiry_notification(
     should_send_notifications: bool,
     days_remaining: int,
     ses_service: Optional[SESService],
+    is_pool_team: bool = False,
 ):
+    # POOL teams have their own budget lifecycle managed by sync_pool_team_budgets.
+    # They should never receive trial expiry notifications.
+    if is_pool_team:
+        return
+
     # Check for notification conditions for teams still in the trial (only if not recently monitored)
     if not has_products and should_send_notifications:
         # Find the admin email for the team
@@ -1064,6 +1070,7 @@ async def monitor_teams(db: Session):
                     should_send_notifications,
                     days_remaining,
                     ses_service,
+                    is_pool_team=team.budget_type == BudgetType.POOL,
                 )
 
                 # Get all keys for the team grouped by region
