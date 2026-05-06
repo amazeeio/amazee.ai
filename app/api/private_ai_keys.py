@@ -817,10 +817,7 @@ async def get_private_ai_key(
             )
             return PrivateAIKeyDetail.model_validate(private_ai_key.to_dict())
         logger.error(f"Failed to get Private AI Key details: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get Private AI Key details: {str(e)}",
-        )
+        raise
     except Exception as e:
         logger.error(f"Failed to get Private AI Key details: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -955,12 +952,16 @@ async def get_private_ai_key_spend(
                 "LiteLLM key not found for private AI key %s; returning default spend",
                 private_ai_key.id,
             )
-            return PrivateAIKeySpendBasic.model_validate({"spend": 0.0})
+            return PrivateAIKeySpendBasic.model_validate(
+                {
+                    "spend": 0.0,
+                    "created_at": private_ai_key.created_at,
+                    "updated_at": private_ai_key.updated_at,
+                    "expires": None,
+                }
+            )
         logger.error(f"Failed to get Private AI Key spend: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get Private AI Key spend: {str(e)}",
-        )
+        raise
     except Exception as e:
         logger.error(f"Failed to get Private AI Key spend: {str(e)}", exc_info=True)
         raise HTTPException(

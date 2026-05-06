@@ -350,9 +350,9 @@ class TokenDurationUpdate(BaseModel):
 
 class PrivateAIKeySpendBasic(BaseModel):
     spend: float
-    expires: datetime
-    created_at: datetime
-    updated_at: datetime
+    expires: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     max_budget: Optional[float] = None
     budget_duration: Optional[str] = None
     budget_reset_at: Optional[datetime] = None
