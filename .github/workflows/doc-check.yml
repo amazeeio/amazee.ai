@@ -65,7 +65,6 @@ jobs:
           FILES=$(cat /tmp/matched_files.txt)
           DIFF=$(cat /tmp/diff_truncated.txt)
           PR_BODY=$(cat /tmp/pr_body.txt)
-          PR_TITLE="${PR_TITLE}"
 
           PROMPT=$(cat <<'PROMPT_END'
           You are a technical writer for amazee.ai documentation (docs.amazee.ai).
@@ -121,7 +120,6 @@ jobs:
           GH_TOKEN: ${{ secrets.DOCS_ISSUE_TOKEN }}
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          PR_TITLE="${PR_TITLE}"
           PR_URL="${{ github.event.pull_request.html_url }}"
           PR_NUM="${{ github.event.pull_request.number }}"
           FILES=$(cat /tmp/matched_files.txt)
