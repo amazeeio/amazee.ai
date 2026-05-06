@@ -407,11 +407,15 @@ def _upsert_spend_cap(
         )
     else:
         # Repair stale columns so the row stays consistent with the
-        # current key/team/user relationship.
-        if team_id is not None and cap.team_id != team_id:
+        # current key/team/user relationship. Normalize all relationship
+        # columns to the requested values, including clearing stale values
+        # to None when they are not part of the current scope.
+        if cap.team_id != team_id:
             cap.team_id = team_id
-        if user_id is not None and cap.user_id != user_id:
+        if cap.user_id != user_id:
             cap.user_id = user_id
+        if cap.key_id != key_id:
+            cap.key_id = key_id
     cap.max_budget = max_budget
     cap.budget_duration = budget_duration
     cap.month_anchor = month_anchor
