@@ -11,7 +11,9 @@ from app.db.models import (
     DBTeamMetrics,
     DBLimitedResource,
     DBTeamRegion,
+    DBPoolPurchase,
 )
+from app.schemas.models import BudgetType
 from app.db.database import get_db
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
@@ -626,7 +628,17 @@ async def reconcile_team_keys(
 def _monitor_team_freshness(team: DBTeam) -> int:
     current_time = datetime.now(UTC)
     # Calculate team age based on whether they have made a payment
-    if team.last_payment:
+    # For pool teams, use last_pool_purchase instead of last_payment
+    pool_purchase_date = None
+    if (
+        getattr(team, "budget_type", None) == BudgetType.POOL
+        and team.last_pool_purchase
+    ):
+        pool_purchase_date = team.last_pool_purchase
+
+    if pool_purchase_date:
+        team_freshness = (current_time - pool_purchase_date.replace(tzinfo=UTC)).days
+    elif team.last_payment:
         team_freshness = (current_time - team.last_payment.replace(tzinfo=UTC)).days
     else:
         team_freshness = (current_time - team.created_at.replace(tzinfo=UTC)).days
@@ -1058,9 +1070,21 @@ async def monitor_teams(db: Session):
                 keys_by_region = get_team_keys_by_region(db, team.id)
                 expire_keys = False
 
+                # Pool teams with purchases should never be treated as expired trials.
+                # Their budget lifecycle is managed separately by sync_pool_team_budgets.
+                has_active_pool_purchase = (
+                    team.budget_type == BudgetType.POOL
+                    and db.query(DBPoolPurchase)
+                    .filter(DBPoolPurchase.team_id == team.id)
+                    .first()
+                    is not None
+                )
+
                 # Expire if team trial has expired (if team has a product, expiry will be handled by Stripe)
+                # Pool teams with purchases are exempt — they are not trial users.
                 if (
                     not has_products
+                    and not has_active_pool_purchase
                     and days_remaining <= 0
                     and should_send_notifications
                 ):

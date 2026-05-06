@@ -6,7 +6,9 @@ from app.db.models import (
     DBTeam,
     DBTeamMetrics,
     DBLimitedResource,
+    DBPoolPurchase,
 )
+from app.schemas.models import BudgetType
 from datetime import datetime, UTC, timedelta
 from app.core.worker import (
     apply_product_for_team,
@@ -874,6 +876,142 @@ async def test_monitor_teams_key_expiration(
     # Verify limit service was called
     mock_limit_service.assert_called_with(db)
     mock_limit_instance.set_team_limits.assert_called_with(test_team)
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_pool_team_with_purchase_not_expired(
+    mock_litellm,
+    mock_ses,
+    mock_limit_service,
+    db,
+    test_team,
+    test_region,
+    test_team_key_creator,
+):
+    """
+    Test that pool teams with purchases are NOT treated as expired trials.
+
+    Regression test: pool teams had their keys expired by monitor_teams because
+    they never have DBTeamProduct entries. The expire_keys logic only checked
+    has_products (False for pool teams) and days_remaining (past 30-day trial),
+    incorrectly treating paying pool teams as expired trials.
+    """
+    # Setup: pool team, 31 days old (past trial), but with a pool purchase
+    test_team.created_at = datetime.now(UTC) - timedelta(days=31)
+    test_team.budget_type = BudgetType.POOL
+    test_team.last_pool_purchase = datetime.now(UTC) - timedelta(days=1)
+    db.add(test_team)
+    db.commit()
+
+    # Add a pool purchase record
+    pool_purchase = DBPoolPurchase(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        amount_cents=2500,
+        currency="usd",
+        purchased_at=datetime.now(UTC) - timedelta(days=1),
+        stripe_payment_id="cs_live_test_pool_not_expired",
+    )
+    db.add(pool_purchase)
+    db.commit()
+
+    # Setup test key
+    test_key = DBPrivateAIKey(
+        name="Pool Team Key",
+        database_name="test_db",
+        database_username="test_user",
+        database_password="test_pass",
+        owner_id=test_team_key_creator.id,
+        team_id=test_team.id,
+        region_id=test_region.id,
+        litellm_token="pool_test_token",
+        created_at=datetime.now(UTC),
+    )
+    db.add(test_key)
+    db.commit()
+
+    # Setup mock LiteLLM service
+    mock_litellm_instance = mock_litellm.return_value
+    mock_litellm_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {"spend": 10.0, "max_budget": 50.0, "key_alias": "pool-key"}
+        }
+    )
+    mock_litellm_instance.update_key_duration = AsyncMock()
+
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
+    # Run monitoring
+    await monitor_teams(db)
+
+    # Key should NOT have been expired
+    mock_litellm_instance.update_key_duration.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_pool_team_without_purchase_is_expired(
+    mock_litellm,
+    mock_ses,
+    mock_limit_service,
+    db,
+    test_team,
+    test_region,
+    test_team_key_creator,
+):
+    """
+    Test that pool teams WITHOUT purchases are still expired as trials.
+    """
+    # Setup: pool team, 31 days old (past trial), no purchases
+    test_team.created_at = datetime.now(UTC) - timedelta(days=31)
+    test_team.budget_type = BudgetType.POOL
+    db.add(test_team)
+    db.commit()
+
+    # Setup test key
+    test_key = DBPrivateAIKey(
+        name="Pool Team Key No Purchase",
+        database_name="test_db",
+        database_username="test_user",
+        database_password="test_pass",
+        owner_id=test_team_key_creator.id,
+        team_id=test_team.id,
+        region_id=test_region.id,
+        litellm_token="pool_no_purchase_token",
+        created_at=datetime.now(UTC),
+    )
+    db.add(test_key)
+    db.commit()
+
+    # Setup mock LiteLLM service
+    mock_litellm_instance = mock_litellm.return_value
+    mock_litellm_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {"spend": 10.0, "max_budget": 50.0, "key_alias": "pool-key-np"}
+        }
+    )
+    mock_litellm_instance.update_key_duration = AsyncMock()
+
+    # Setup mock limit service
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
+    # Run monitoring
+    await monitor_teams(db)
+
+    # Key SHOULD have been expired (no purchase, past trial)
+    mock_litellm_instance.update_key_duration.assert_called_once_with(
+        "pool_no_purchase_token", "0d"
+    )
 
 
 @pytest.mark.asyncio
