@@ -12,6 +12,10 @@ jobs:
       pull-requests: read
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - name: Get changed files
         run: |
           FILES=$(gh pr diff ${{ github.event.pull_request.number }} --name-only)
