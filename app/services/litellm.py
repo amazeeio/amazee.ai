@@ -361,20 +361,29 @@ class LiteLLMService:
         budget_amount: float,
         rpm_limit: int,
         budget_duration: Optional[str] = None,
+        spend: Optional[float] = None,
     ):
-        """Set the restrictions for a LiteLLM API key"""
+        """Set the restrictions for a LiteLLM API key.
+
+        Args:
+            spend: When provided, overrides the key's spend counter
+                   (e.g. 0.0 to reset spend at billing cycle start).
+        """
         try:
+            request_data = {
+                "key": litellm_token,
+                "duration": duration,
+                "budget_duration": budget_duration,
+                "max_budget": budget_amount,
+                "rpm_limit": rpm_limit,
+            }
+            if spend is not None:
+                request_data["spend"] = spend
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{self.api_url}/key/update",
                     headers={"Authorization": f"Bearer {self.master_key}"},
-                    json={
-                        "key": litellm_token,
-                        "duration": duration,
-                        "budget_duration": budget_duration,
-                        "max_budget": budget_amount,
-                        "rpm_limit": rpm_limit,
-                    },
+                    json=request_data,
                 )
                 response.raise_for_status()
         except httpx.HTTPStatusError as e:

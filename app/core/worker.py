@@ -297,6 +297,14 @@ async def apply_product_for_team(
             limit_service.get_token_restrictions(team.id)
         )
 
+        # PERIODIC teams use a fixed 31-day budget duration and compound
+        # the team max_budget to keep the effective monthly budget aligned
+        # with the Stripe billing cycle. Key spends are reset to 0 on each
+        # webhook so that sum(key spends) reflects only the current period.
+        is_periodic = not team.requires_pool_purchase_gate
+        budget_duration = "31d" if is_periodic else f"{days_left_in_period}d"
+        key_duration = "31d" if is_periodic else f"{days_left_in_period}d"
+
         # Get all keys for the team grouped by region
         keys_by_region = get_team_keys_by_region(db, team.id)
 
@@ -309,32 +317,57 @@ async def apply_product_for_team(
 
             # Update the team-level budget (shared ceiling for all keys)
             lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+
+            # For PERIODIC teams, compound the max_budget so that
+            # (max_budget - accumulated_spend) equals the monthly cap.
+            team_max_budget = max_max_spend
+            if is_periodic and keys:
+                try:
+                    team_data = await litellm_service.get_team_info(lite_team_id)
+                    team_info = team_data.get("team_info", team_data)
+                    current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
+                    team_max_budget = current_team_spend + max_max_spend
+                    logger.info(
+                        f"Compounding team {team.id} budget: "
+                        f"spend={current_team_spend} + cap={max_max_spend} = {team_max_budget}"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Could not read team spend for compounding, using flat cap: {e}"
+                    )
+
             try:
                 await litellm_service.update_team_budget(
                     team_id=lite_team_id,
-                    max_budget=max_max_spend,
-                    budget_duration=f"{days_left_in_period}d",
+                    max_budget=team_max_budget,
+                    budget_duration=budget_duration,
                 )
                 logger.info(
-                    f"Updated team {team.id} budget to {max_max_spend} in region {region.name}"
+                    f"Updated team {team.id} budget to {team_max_budget} "
+                    f"(duration={budget_duration}) in region {region.name}"
                 )
             except Exception as e:
                 logger.error(
                     f"Failed to update team {team.id} budget in region {region.name}: {str(e)}"
                 )
 
-            # Update each key's duration and budget via LiteLLM
+            # Update each key's duration and budget via LiteLLM.
+            # For PERIODIC teams, also reset key spend to 0 so that
+            # sum(key spends) = current-period spend only.
             for key in keys:
                 try:
                     await litellm_service.set_key_restrictions(
                         litellm_token=key.litellm_token,
-                        duration=f"{days_left_in_period}d",
-                        budget_duration=f"{days_left_in_period}d",
+                        duration=key_duration,
+                        budget_duration=budget_duration,
                         budget_amount=max_max_spend,
                         rpm_limit=max_rpm_limit,
+                        spend=0.0 if is_periodic else None,
                     )
                     logger.info(
-                        f"Updated key {key.id} limits in LiteLLM: {days_left_in_period} days, {max_max_spend} budget, {max_rpm_limit} RPM"
+                        f"Updated key {key.id} limits in LiteLLM: "
+                        f"duration={key_duration}, budget={max_max_spend}, "
+                        f"rpm={max_rpm_limit}, spend_reset={is_periodic}"
                     )
                 except Exception as e:
                     logger.error(f"Failed to update key {key.id} in LiteLLM: {str(e)}")

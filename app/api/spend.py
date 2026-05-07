@@ -554,10 +554,11 @@ async def get_team_spend(
     total_completion_tokens = None
     total_tokens = None
 
+    is_periodic = not team.requires_pool_purchase_gate
+
     try:
         team_data = await service.get_team_info(lite_team_id)
         team_info = team_data.get("team_info", team_data)
-        total_spend = round(float(team_info.get("spend", 0.0) or 0.0), 4)
         (
             total_prompt_tokens,
             total_completion_tokens,
@@ -573,6 +574,7 @@ async def get_team_spend(
                 litellm_key=litellm_key,
                 fallback_team_id=team_id,
             )
+            key_spend = round(float(litellm_key.get("spend", 0.0) or 0.0), 4)
             items.append(
                 SpendKeyItem(
                     key_id=db_key_id,
@@ -585,7 +587,7 @@ async def get_team_spend(
                         else None
                     ),
                     team_id=team_id,
-                    spend=round(float(litellm_key.get("spend", 0.0) or 0.0), 4),
+                    spend=key_spend,
                     max_budget=(
                         float(litellm_key.get("max_budget"))
                         if litellm_key.get("max_budget") is not None
@@ -599,6 +601,15 @@ async def get_team_spend(
                     total_tokens=_to_int_or_none(litellm_key.get("total_tokens")),
                 )
             )
+
+        # For PERIODIC teams, total_spend must reflect only the current
+        # billing period. Because the team-level spend counter in LiteLLM
+        # is never reset (it compounds), we derive total_spend as the sum
+        # of per-key spends which ARE reset to 0 on each Stripe webhook.
+        if is_periodic and items:
+            total_spend = round(sum(item.spend for item in items), 4)
+        else:
+            total_spend = round(float(team_info.get("spend", 0.0) or 0.0), 4)
     except Exception as exc:
         logger.warning(
             "Falling back to DB-derived team spend for team_id=%s region_id=%s due to LiteLLM error: %s",
@@ -643,6 +654,13 @@ async def get_team_spend(
     )
     if configured_team_cap is not None:
         total_budget = round(configured_team_cap, 4)
+    elif is_periodic and items:
+        # For PERIODIC teams, team_info["max_budget"] is the compounded value
+        # (accumulated_spend + monthly_cap). Derive the actual monthly cap from
+        # the per-key max_budget which is always set to the product cap.
+        key_budgets = [k.max_budget for k in items if k.max_budget is not None]
+        if key_budgets:
+            total_budget = round(max(key_budgets), 4)
     key_cap_map = _get_key_spend_cap_map(
         db,
         region_id=region_id,
