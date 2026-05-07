@@ -1657,7 +1657,9 @@ def test_merge_teams_with_source_team_dedicated_regions_fails(client, admin_toke
 
     assert response.status_code == 400
     assert "region associations" in response.json()["detail"].lower()
-    assert "remove the associations" in response.json()["detail"].lower()
+    assert (
+        "remove the dedicated region associations" in response.json()["detail"].lower()
+    )
     assert source_team.name in response.json()["detail"]
 
     # Verify both teams still exist
@@ -1840,7 +1842,9 @@ def test_merge_teams_with_both_teams_dedicated_regions_fails(client, admin_token
 
     assert response.status_code == 400
     assert "region associations" in response.json()["detail"].lower()
-    assert "remove the associations" in response.json()["detail"].lower()
+    assert (
+        "remove the dedicated region associations" in response.json()["detail"].lower()
+    )
     assert source_team.name in response.json()["detail"]
 
     # Verify both teams still exist
