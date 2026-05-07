@@ -54,14 +54,15 @@ environments:
 tasks:
   post-rollout:
     - run:
-        name: purge fastly
+        name: purge fastly cache
         command: |
           # Extract service ID (remove ":true" if present)
           SERVICE_ID="${LAGOON_FASTLY_SERVICE_ID%%:*}"
 
-          # Purge all cache for the service using Fastly API
-          curl -f -sS -X POST "https://api.fastly.com/service/$SERVICE_ID/purge/${LAGOON_ROUTE#*://}" \
-            -H "Fastly-Soft-Purge: 1" \
+          # Purge all cached content for the Fastly service.
+          # This covers both backend (api.amazee.ai) and frontend (dashboard.amazee.ai)
+          # and ensures HTML pages and JS chunks stay in sync after deploy.
+          curl -f -sS -X POST "https://api.fastly.com/service/$SERVICE_ID/purge_all" \
             -H "Fastly-Key: $FASTLY_TOKEN" \
             -H "Accept: application/json" || { echo "Fastly purge failed! Check FASTLY_TOKEN."; exit 1; }
         service: backend
