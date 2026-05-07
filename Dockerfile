@@ -1,7 +1,6 @@
 FROM uselagoon/python-3.12:latest@sha256:5ab457220705f7b4c072ee746b5920779a385a70175e0471b9a263c840ff1070
 
-RUN apk add bash --no-cache
-RUN apk add curl --no-cache
+RUN apk add bash curl postgresql-client --no-cache
 
 WORKDIR /app
 
