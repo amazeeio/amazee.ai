@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -9,6 +10,7 @@ from app.core.config import settings
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
 from app.core.litellm_user_sync import team_role_for_litellm
 from app.core.roles import UserRole
+from app.core.team_service import get_team_region_litellm_keys
 from app.core.security import (
     get_current_user_from_auth,
     get_private_ai_access,
@@ -27,7 +29,6 @@ from app.db.models import (
 from app.schemas.limits import OwnerType, ResourceType
 from app.api.users import invalidate_user_spend_cache
 from app.schemas.models import (
-    BudgetType,
     PrivateAIKeySpend,
     SpendBudgetUpdateRequest,
     SpendBudgetUpdateResponse,
@@ -94,7 +95,7 @@ def _effective_team_budget_duration(
     """
     if max_budget is None:
         return None
-    if team.budget_type == BudgetType.POOL:
+    if team.requires_pool_purchase_gate:
         return f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
     return MONTHLY_BUDGET_DURATION
 
@@ -202,6 +203,26 @@ def _assert_team_region_association(
         )
 
 
+def _invalidate_team_user_spend_cache(db: Session, team_id: int) -> None:
+    team_user_emails = (
+        db.query(DBUser.email)
+        .filter(DBUser.team_id == team_id, DBUser.is_active.is_(True))
+        .all()
+    )
+    for (email,) in team_user_emails:
+        if email:
+            invalidate_user_spend_cache(db, email)
+
+
+def _invalidate_key_related_user_spend_cache(db: Session, key: DBPrivateAIKey) -> None:
+    if key.owner_id is not None:
+        owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
+        if owner and owner.email:
+            invalidate_user_spend_cache(db, owner.email)
+    elif key.team_id is not None:
+        _invalidate_team_user_spend_cache(db, key.team_id)
+
+
 def _pool_purchased_budget_for_team_region(
     db: Session, team_id: int, region_id: int
 ) -> float:
@@ -214,6 +235,55 @@ def _pool_purchased_budget_for_team_region(
         or 0
     )
     return round(float(total_purchased_cents) / 100.0, 4)
+
+
+def _is_no_purchase_pool_team(team: DBTeam | None, db: Session, region_id: int) -> bool:
+    if team is None or not team.requires_pool_purchase_gate:
+        return False
+    return _pool_purchased_budget_for_team_region(db, team.id, region_id) <= 0
+
+
+def _get_spend_cap_max_budget(
+    db: Session,
+    *,
+    scope: str,
+    region_id: int,
+    team_id: int | None = None,
+    user_id: int | None = None,
+    key_id: int | None = None,
+) -> float | None:
+    cap = (
+        db.query(DBSpendCap.max_budget)
+        .filter(
+            DBSpendCap.scope == scope,
+            DBSpendCap.region_id == region_id,
+            DBSpendCap.team_id == team_id,
+            DBSpendCap.user_id == user_id,
+            DBSpendCap.key_id == key_id,
+        )
+        .first()
+    )
+    if cap is None or cap[0] is None:
+        return None
+    return float(cap[0])
+
+
+def _get_key_spend_cap_map(
+    db: Session, *, region_id: int, key_ids: list[int]
+) -> dict[int, float]:
+    if not key_ids:
+        return {}
+    rows = (
+        db.query(DBSpendCap.key_id, DBSpendCap.max_budget)
+        .filter(
+            DBSpendCap.scope == "key",
+            DBSpendCap.region_id == region_id,
+            DBSpendCap.key_id.in_(key_ids),
+            DBSpendCap.max_budget.isnot(None),
+        )
+        .all()
+    )
+    return {int(key_id): float(max_budget) for key_id, max_budget in rows}
 
 
 def _pool_budget_duration_from_last_purchase(
@@ -237,23 +307,66 @@ def _pool_budget_duration_from_last_purchase(
     return f"{days_left}d"
 
 
-def _assert_pool_budget_cap_within_purchases(
+async def _enforce_pool_no_purchase_key_lock(
     db: Session,
     team: DBTeam | None,
-    region_id: int,
-    max_budget: float | None,
-) -> None:
-    if team is None or team.budget_type != BudgetType.POOL or max_budget is None:
-        return
-    purchased_budget = _pool_purchased_budget_for_team_region(db, team.id, region_id)
-    if float(max_budget) > purchased_budget:
+    region: DBRegion,
+    service: LiteLLMService,
+    key_id: int | None = None,
+    user_id: int | None = None,
+    purchased_budget: float | None = None,
+) -> bool:
+    """
+    For prepaid-pool teams with no purchased budget in a region, hard-lock
+    keys by setting max_budget=0 in LiteLLM to avoid the team budget zero-edge.
+    """
+    if team is None or not team.requires_pool_purchase_gate:
+        return False
+    if purchased_budget is None:
+        purchased_budget = _pool_purchased_budget_for_team_region(
+            db, team.id, region.id
+        )
+    if purchased_budget > 0:
+        return False
+    region_keys = get_team_region_litellm_keys(
+        db,
+        team_id=team.id,
+        region_id=region.id,
+        key_id=key_id,
+        user_id=user_id,
+    )
+    if not region_keys:
+        return False
+
+    semaphore = asyncio.Semaphore(10)
+
+    async def _lock_key(key: DBPrivateAIKey) -> str | None:
+        try:
+            async with semaphore:
+                await service.update_key_budget(
+                    litellm_token=key.litellm_token,
+                    budget_duration=MONTHLY_BUDGET_DURATION,
+                    max_budget=0.0,
+                    clear_max_budget=False,
+                )
+            return None
+        except Exception as exc:
+            return f"Key {key.id}: {str(exc)}"
+
+    errors = [
+        error
+        for error in await asyncio.gather(*[_lock_key(key) for key in region_keys])
+        if error is not None
+    ]
+    if errors:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
+            status_code=status.HTTP_502_BAD_GATEWAY,
             detail=(
-                f"max_budget cannot exceed purchased pool budget "
-                f"({purchased_budget:.4f}) for this team/region"
+                "Failed to enforce no-purchase key lock in LiteLLM: "
+                + "; ".join(errors)
             ),
         )
+    return True
 
 
 def _upsert_spend_cap(
@@ -523,6 +636,20 @@ async def get_team_spend(
                 )
             total_budget = round(float(default_budget or 0.0) * len(keys), 4)
 
+    configured_team_cap = _get_spend_cap_max_budget(
+        db, scope="team", region_id=region_id, team_id=team_id
+    )
+    if configured_team_cap is not None:
+        total_budget = round(configured_team_cap, 4)
+    key_cap_map = _get_key_spend_cap_map(
+        db,
+        region_id=region_id,
+        key_ids=[item.key_id for item in items if item.key_id is not None],
+    )
+    for item in items:
+        if item.key_id is not None and item.key_id in key_cap_map:
+            item.max_budget = round(key_cap_map[item.key_id], 4)
+
     return TeamSpendResponse(
         region_id=region_id,
         region_name=region.name,
@@ -629,6 +756,24 @@ async def get_user_spend(
             total_tokens,
         ) = _sum_optional_token_values(items)
 
+    member_cap = _get_spend_cap_max_budget(
+        db,
+        scope="team_member",
+        region_id=region_id,
+        team_id=target_user.team_id,
+        user_id=user_id,
+    )
+    key_cap_map = _get_key_spend_cap_map(
+        db,
+        region_id=region_id,
+        key_ids=[item.key_id for item in items if item.key_id is not None],
+    )
+    for item in items:
+        if item.key_id is not None and item.key_id in key_cap_map:
+            item.max_budget = round(key_cap_map[item.key_id], 4)
+        elif member_cap is not None:
+            item.max_budget = round(member_cap, 4)
+
     return UserSpendResponse(
         region_id=region_id,
         region_name=region.name,
@@ -687,9 +832,21 @@ async def get_key_spend_alias(
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
+
     try:
         data = await service.get_key_info(key.litellm_token)
         info = data.get("info", {})
+        configured_key_cap = _get_spend_cap_max_budget(
+            db,
+            scope="key",
+            region_id=region_id,
+            team_id=key.team_id,
+            user_id=key.owner_id,
+            key_id=key.id,
+        )
+        if configured_key_cap is not None:
+            info = dict(info)
+            info["max_budget"] = round(configured_key_cap, 4)
         return PrivateAIKeySpend.model_validate(
             {"spend": info.get("spend", 0.0), **info}
         )
@@ -737,12 +894,11 @@ async def update_team_budget(
     _assert_team_budget_write_access(current_user, role, team_id)
     region = _get_region_or_404(db, region_id)
     _assert_team_region_association(db, region, team_id)
-    _assert_pool_budget_cap_within_purchases(db, team, region_id, body.max_budget)
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-    if team.budget_type == BudgetType.POOL and body.max_budget is not None:
+    if team.requires_pool_purchase_gate and body.max_budget is not None:
         effective_duration = _pool_budget_duration_from_last_purchase(
             db=db, team_id=team_id, region_id=region_id
         )
@@ -751,10 +907,12 @@ async def update_team_budget(
     effective_max_budget = body.max_budget
     month_anchor = None
     month_start_spend = None
+    purchased_total: float | None = None
 
-    if team.budget_type == BudgetType.POOL and body.max_budget is not None:
+    if team.requires_pool_purchase_gate and body.max_budget is not None:
         purchased_total = _pool_purchased_budget_for_team_region(db, team_id, region_id)
-        team_info = (await service.get_team_info(lite_team_id)).get("team_info", {})
+        team_info_resp = await service.get_team_info(lite_team_id)
+        team_info = team_info_resp.get("team_info", team_info_resp)
         month_start_spend = round(float(team_info.get("spend", 0.0) or 0.0), 4)
         month_anchor = _current_month_anchor()
         effective_max_budget = _compute_pool_monthly_effective_budget(
@@ -768,6 +926,19 @@ async def update_team_budget(
         max_budget=effective_max_budget,
         budget_duration=effective_duration,
     )
+    if (
+        body.max_budget is not None
+        and team.requires_pool_purchase_gate
+        and purchased_total is not None
+        and purchased_total <= 0
+    ):
+        await _enforce_pool_no_purchase_key_lock(
+            db,
+            team,
+            region,
+            service,
+            purchased_budget=purchased_total,
+        )
     _upsert_spend_cap(
         db,
         scope="team",
@@ -776,11 +947,15 @@ async def update_team_budget(
         max_budget=body.max_budget,
         budget_duration=(
             MONTHLY_BUDGET_DURATION
-            if team.budget_type == BudgetType.POOL
+            if team.requires_pool_purchase_gate
             else effective_duration
         ),
         month_anchor=month_anchor,
         month_start_spend=month_start_spend,
+    )
+    _invalidate_team_user_spend_cache(db, team_id)
+    configured_team_cap = _get_spend_cap_max_budget(
+        db, scope="team", region_id=region_id, team_id=team_id
     )
     info = await service.get_team_info(lite_team_id)
     db.commit()
@@ -791,11 +966,15 @@ async def update_team_budget(
         region_id=region_id,
         region_name=region.name,
         team_id=team_id,
-        max_budget=team_info.get("max_budget"),
+        max_budget=(
+            round(configured_team_cap, 4)
+            if configured_team_cap is not None
+            else team_info.get("max_budget")
+        ),
         budget_duration=team_info.get("budget_duration"),
         note=(
             "For team keys, team budget governs spend enforcement."
-            if team.budget_type != BudgetType.POOL
+            if not team.requires_pool_purchase_gate
             else "POOL monthly cap stored as monthly delta; LiteLLM max_budget is set to month_start_spend + monthly_cap (bounded by purchased total)."
         ),
     )
@@ -840,7 +1019,6 @@ async def update_team_member_budget(
     _assert_team_budget_write_access(current_user, role, team_id)
     region = _get_region_or_404(db, region_id)
     _assert_team_region_association(db, region, team_id)
-    _assert_pool_budget_cap_within_purchases(db, team, region_id, body.max_budget)
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
@@ -852,13 +1030,15 @@ async def update_team_member_budget(
             detail="max_budget is required for team-member budget updates",
         )
 
+    effective_duration = _effective_monthly_budget_duration(body.max_budget)
     await service.update_team_member(
         team_id=lite_team_id,
         user_id=str(user_id),
         role=team_role_for_litellm(user),
         max_budget_in_team=body.max_budget,
+        budget_duration=effective_duration,
     )
-    effective_duration = _effective_monthly_budget_duration(body.max_budget)
+    await _enforce_pool_no_purchase_key_lock(db, team, region, service, user_id=user_id)
     _upsert_spend_cap(
         db,
         scope="team_member",
@@ -932,7 +1112,7 @@ async def clear_team_budget(
     region = _get_region_or_404(db, region_id)
     _assert_team_region_association(db, region, team_id)
 
-    if team.budget_type == BudgetType.POOL:
+    if team.requires_pool_purchase_gate:
         total_purchased_cents = (
             db.query(func.sum(DBPoolPurchase.amount_cents))
             .filter(
@@ -962,7 +1142,7 @@ async def clear_team_budget(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-    if team.budget_type == BudgetType.POOL and max_budget_to_restore is not None:
+    if team.requires_pool_purchase_gate and max_budget_to_restore is not None:
         budget_duration = _pool_budget_duration_from_last_purchase(
             db=db, team_id=team_id, region_id=region_id
         )
@@ -974,6 +1154,7 @@ async def clear_team_budget(
         budget_duration=budget_duration,
     )
     _delete_spend_cap(db, scope="team", region_id=region_id, team_id=team_id)
+    _invalidate_team_user_spend_cache(db, team_id)
     info = await service.get_team_info(lite_team_id)
     db.commit()
     team_info = info.get("team_info", info)
@@ -1123,18 +1304,38 @@ async def update_key_budget(
             )
 
     region = _get_region_or_404(db, region_id)
-    _assert_pool_budget_cap_within_purchases(
-        db, team_for_budget_check, region_id, body.max_budget
-    )
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     effective_duration = _effective_monthly_budget_duration(body.max_budget)
-    await service.update_key_budget(
-        litellm_token=key.litellm_token,
-        budget_duration=effective_duration,
-        max_budget=body.max_budget,
-        clear_max_budget=body.max_budget is None,
+    # For purchase-gated POOL teams with no purchases, skip the initial key
+    # budget update (which would be immediately overridden) to avoid a brief
+    # unlocked window. The lock call below will hard-set max_budget=0 directly.
+    purchased_budget: float | None = None
+    skip_initial_update = False
+    if (
+        team_for_budget_check is not None
+        and team_for_budget_check.requires_pool_purchase_gate
+        and body.max_budget is not None
+    ):
+        purchased_budget = _pool_purchased_budget_for_team_region(
+            db, team_for_budget_check.id, region_id
+        )
+        skip_initial_update = purchased_budget <= 0
+    if not skip_initial_update:
+        await service.update_key_budget(
+            litellm_token=key.litellm_token,
+            budget_duration=effective_duration,
+            max_budget=body.max_budget,
+            clear_max_budget=body.max_budget is None,
+        )
+    lock_applied = await _enforce_pool_no_purchase_key_lock(
+        db,
+        team_for_budget_check,
+        region,
+        service,
+        key_id=key.id,
+        purchased_budget=purchased_budget,
     )
     _upsert_spend_cap(
         db,
@@ -1145,6 +1346,15 @@ async def update_key_budget(
         key_id=key_id,
         max_budget=body.max_budget,
         budget_duration=effective_duration,
+    )
+    _invalidate_key_related_user_spend_cache(db, key)
+    configured_key_cap = _get_spend_cap_max_budget(
+        db,
+        scope="key",
+        region_id=region_id,
+        team_id=key.team_id,
+        user_id=key.owner_id,
+        key_id=key_id,
     )
     key_info = await service.get_key_info(key.litellm_token)
     db.commit()
@@ -1157,9 +1367,18 @@ async def update_key_budget(
         team_id=key.team_id,
         user_id=key.owner_id,
         key_id=key_id,
-        max_budget=info.get("max_budget"),
+        max_budget=(
+            round(configured_key_cap, 4)
+            if configured_key_cap is not None
+            else info.get("max_budget")
+        ),
         budget_duration=info.get("budget_duration"),
-        note="If key has team_id, team/team-member budgets may take precedence during enforcement.",
+        note=(
+            "If key has team_id, team/team-member budgets may take precedence during enforcement. "
+            "No-purchase prepaid-pool teams keep keys hard-locked at max_budget=0 while preserving configured caps for post-purchase restore."
+            if lock_applied
+            else "If key has team_id, team/team-member budgets may take precedence during enforcement."
+        ),
     )
 
 
@@ -1226,6 +1445,7 @@ async def clear_key_budget(
         clear_max_budget=True,
     )
     _delete_spend_cap(db, scope="key", region_id=region_id, key_id=key_id)
+    _invalidate_key_related_user_spend_cache(db, key)
     key_info = await service.get_key_info(key.litellm_token)
     db.commit()
     info = key_info.get("info", {})

@@ -178,6 +178,7 @@ class DBTeam(Base):
         default=BudgetType.PERIODIC,
         nullable=False,
     )
+    require_purchase_for_requests = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     stripe_customer_id = Column(String, nullable=True, unique=True, index=True)
@@ -205,6 +206,7 @@ class DBTeam(Base):
         return [tp.product for tp in self.active_products if tp.product]
 
     @property
+    @property
     def dedicated_regions(self):
         # Backward-compatible alias while team_regions semantics are now generic.
         return self.allowed_region_associations
@@ -212,6 +214,28 @@ class DBTeam(Base):
     @property
     def allowed_regions(self):
         return [tr.region for tr in self.allowed_region_associations if tr.region]
+
+    @property
+    def is_dedicated(self) -> bool:
+        """True for dedicated teams that use private infrastructure.
+
+        Dedicated teams hide public regions (``hide_public_regions=True``) and are
+        provisioned with private infrastructure. This flag is infrastructure-scoped
+        and independent of funding behavior.
+        """
+        return bool(self.hide_public_regions)
+
+    @property
+    def requires_pool_purchase_gate(self) -> bool:
+        """Whether no-purchase traffic should be blocked for this team."""
+        budget_type_value = (
+            self.budget_type.value
+            if isinstance(self.budget_type, BudgetType)
+            else str(self.budget_type).lower()
+        )
+        return budget_type_value == BudgetType.POOL.value and bool(
+            self.require_purchase_for_requests
+        )
 
 
 class DBTeamMetrics(Base):

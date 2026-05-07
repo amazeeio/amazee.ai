@@ -1,5 +1,12 @@
 from unittest.mock import patch, Mock, AsyncMock
-from app.db.models import DBPrivateAIKey, DBTeam, DBUser, DBProduct, DBTeamProduct
+from app.db.models import (
+    DBPrivateAIKey,
+    DBTeam,
+    DBUser,
+    DBProduct,
+    DBTeamProduct,
+    DBSpendCap,
+)
 from datetime import datetime, UTC
 from app.core.security import get_password_hash
 from httpx import HTTPStatusError
@@ -137,6 +144,56 @@ def test_delete_private_ai_key(
     # Verify the key was removed from the database
     deleted_key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
     assert deleted_key is None
+
+
+@patch("httpx.AsyncClient")
+def test_delete_private_ai_key_removes_dependent_spend_caps(
+    mock_client_class,
+    client,
+    test_token,
+    test_region,
+    db,
+    test_user,
+    mock_httpx_post_client,
+):
+    mock_client_class.return_value = mock_httpx_post_client
+
+    test_key = DBPrivateAIKey(
+        database_name="test_db_delete_caps",
+        name="Test Key with Spend Cap",
+        database_host="test-host",
+        database_username="test_user",
+        database_password="test-pass",
+        litellm_token="test-token-delete-caps",
+        litellm_api_url="https://test-litellm.com",
+        owner_id=test_user.id,
+        region_id=test_region.id,
+    )
+    db.add(test_key)
+    db.commit()
+    db.refresh(test_key)
+
+    cap = DBSpendCap(
+        scope="key",
+        region_id=test_region.id,
+        key_id=test_key.id,
+        max_budget=1.0,
+        budget_duration="monthly",
+    )
+    db.add(cap)
+    db.commit()
+
+    response = client.delete(
+        f"/private-ai-keys/{test_key.id}",
+        headers={"Authorization": f"Bearer {test_token}"},
+    )
+
+    assert response.status_code == 200
+    assert db.query(DBSpendCap).filter(DBSpendCap.key_id == test_key.id).count() == 0
+    assert (
+        db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == test_key.id).first()
+        is None
+    )
 
 
 @patch("httpx.AsyncClient")
@@ -986,6 +1043,115 @@ def test_view_spend_with_missing_fields(
     assert (
         data["budget_reset_at"] is None
     )  # No default value for missing budget_reset_at
+
+    # Clean up the test key
+    db.delete(test_key)
+    db.commit()
+
+
+@patch("httpx.AsyncClient")
+def test_view_spend_when_litellm_key_not_found(
+    mock_client_class,
+    client,
+    team_read_only_token,
+    test_region,
+    db,
+    test_team_read_only,
+):
+    """Test that the spend endpoint returns DB-based defaults when LiteLLM returns 404"""
+    # Mock httpx client that raises HTTPException with 404
+    mock_client = AsyncMock()
+    mock_response = Mock()
+    mock_response.status_code = 404
+    mock_response.raise_for_status.side_effect = Exception("Not Found")
+    mock_client.get.side_effect = HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND, detail="Key not found in LiteLLM"
+    )
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    # Create a test key owned by the read-only user
+    test_key = DBPrivateAIKey(
+        database_name="test-db-litellm-404",
+        name="Test Key for LiteLLM 404",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="test-token-litellm-404",
+        litellm_api_url="https://test-litellm.com",
+        owner_id=test_team_read_only.id,
+        region_id=test_region.id,
+    )
+    db.add(test_key)
+    db.commit()
+    db.refresh(test_key)
+
+    response = client.get(
+        f"/private-ai-keys/{test_key.id}/spend",
+        headers={"Authorization": f"Bearer {team_read_only_token}"},
+    )
+
+    # Should return 200 with fallback data from DB
+    assert response.status_code == 200
+    data = response.json()
+    assert data["spend"] == 0.0
+    assert data["expires"] is None
+    # created_at should be populated from DB (key was just created)
+    assert data["created_at"] is not None
+    # updated_at should be None since the key has never been updated
+    assert data["updated_at"] is None
+    assert data["max_budget"] is None
+    assert data["budget_duration"] is None
+    assert data["budget_reset_at"] is None
+
+    # Clean up the test key
+    db.delete(test_key)
+    db.commit()
+
+
+@patch("httpx.AsyncClient")
+def test_view_spend_when_litellm_returns_non_404_error(
+    mock_client_class,
+    client,
+    team_read_only_token,
+    test_region,
+    db,
+    test_team_read_only,
+):
+    """Test that the spend endpoint propagates non-404 LiteLLM HTTP errors"""
+    # Mock httpx client that raises HTTPException with 503
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = HTTPException(
+        status_code=503, detail="LiteLLM service unavailable"
+    )
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    # Create a test key owned by the read-only user
+    test_key = DBPrivateAIKey(
+        database_name="test-db-litellm-503",
+        name="Test Key for LiteLLM 503",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="test-token-litellm-503",
+        litellm_api_url="https://test-litellm.com",
+        owner_id=test_team_read_only.id,
+        region_id=test_region.id,
+    )
+    db.add(test_key)
+    db.commit()
+    db.refresh(test_key)
+
+    response = client.get(
+        f"/private-ai-keys/{test_key.id}/spend",
+        headers={"Authorization": f"Bearer {team_read_only_token}"},
+    )
+
+    # Should propagate the 503 status code, not wrap it as 500
+    assert response.status_code == 503
 
     # Clean up the test key
     db.delete(test_key)

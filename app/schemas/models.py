@@ -209,6 +209,9 @@ class PublicModelPricing(BaseModel):
     output_cost_per_token: Optional[float] = None
     input_cost_per_million_tokens: Optional[float] = None
     output_cost_per_million_tokens: Optional[float] = None
+    cache_creation_input_cost_per_million_tokens: Optional[float] = None
+    cache_creation_input_cost_above_1hr_per_million_tokens: Optional[float] = None
+    cache_read_input_cost_per_million_tokens: Optional[float] = None
 
 
 class PublicModelCapabilities(BaseModel):
@@ -356,9 +359,9 @@ class TokenDurationUpdate(BaseModel):
 
 class PrivateAIKeySpendBasic(BaseModel):
     spend: float
-    expires: datetime
-    created_at: datetime
-    updated_at: datetime
+    expires: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     max_budget: Optional[float] = None
     budget_duration: Optional[str] = None
     budget_reset_at: Optional[datetime] = None
@@ -504,6 +507,7 @@ class TeamCreate(TeamBase):
     force_user_keys: bool = False
     hide_public_regions: bool = False
     budget_type: BudgetType = BudgetType.PERIODIC
+    require_purchase_for_requests: bool = True
 
 
 class TeamUpdate(BaseModel):
@@ -516,6 +520,7 @@ class TeamUpdate(BaseModel):
     force_user_keys: Optional[bool] = False
     hide_public_regions: Optional[bool] = None
     budget_type: Optional[BudgetType] = None
+    require_purchase_for_requests: Optional[bool] = None
 
 
 class Team(TeamBase):
@@ -525,6 +530,7 @@ class Team(TeamBase):
     force_user_keys: Optional[bool] = False
     hide_public_regions: bool = False
     budget_type: BudgetType
+    require_purchase_for_requests: bool
     last_pool_purchase: Optional[datetime] = None
     created_at: datetime
     updated_at: Optional[datetime] = None

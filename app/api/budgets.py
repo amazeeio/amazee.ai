@@ -1,14 +1,19 @@
 import logging
+import asyncio
 from datetime import UTC, date, datetime
 
 from app.core.config import settings
 from app.core.limit_service import LimitService
 from app.core.security import get_role_min_system_admin
-from app.core.team_service import propagate_team_budget_to_keys
+from app.core.team_service import (
+    get_team_region_litellm_keys,
+    propagate_team_budget_to_keys,
+)
 from app.db.database import get_db
 from app.db.models import (
     DBLimitedResource,
     DBPoolPurchase,
+    DBPrivateAIKey,
     DBRegion,
     DBSpendCap,
     DBTeam,
@@ -90,6 +95,77 @@ def _compute_pool_monthly_effective_budget(
     )
 
 
+async def _sync_pool_key_effective_budgets(
+    db: Session, *, team_id: int, region: DBRegion, purchased_total: float
+) -> list[str]:
+    """
+    Keep key-level effective limits coherent for POOL teams.
+
+    - purchased_total <= 0: hard-lock all team keys (max_budget=0)
+    - purchased_total > 0: restore key max_budget from spend_caps (or clear)
+    """
+    keys = get_team_region_litellm_keys(
+        db,
+        team_id=team_id,
+        region_id=region.id,
+    )
+    if not keys:
+        return []
+
+    key_caps = (
+        db.query(DBSpendCap.key_id, DBSpendCap.max_budget)
+        .filter(
+            DBSpendCap.scope == "key",
+            DBSpendCap.region_id == region.id,
+            DBSpendCap.key_id.isnot(None),
+            DBSpendCap.max_budget.isnot(None),
+            DBSpendCap.key_id.in_([k.id for k in keys]),
+        )
+        .all()
+    )
+    cap_map = {int(key_id): float(max_budget) for key_id, max_budget in key_caps}
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    semaphore = asyncio.Semaphore(10)
+
+    async def _sync_key_budget(key: DBPrivateAIKey) -> str | None:
+        try:
+            async with semaphore:
+                if purchased_total <= 0:
+                    await service.update_key_budget(
+                        litellm_token=key.litellm_token,
+                        budget_duration=MONTHLY_BUDGET_DURATION,
+                        max_budget=0.0,
+                        clear_max_budget=False,
+                    )
+                else:
+                    configured_cap = cap_map.get(key.id)
+                    if configured_cap is None:
+                        await service.update_key_budget(
+                            litellm_token=key.litellm_token,
+                            budget_duration=None,
+                            max_budget=None,
+                            clear_max_budget=True,
+                        )
+                    else:
+                        await service.update_key_budget(
+                            litellm_token=key.litellm_token,
+                            budget_duration=MONTHLY_BUDGET_DURATION,
+                            max_budget=configured_cap,
+                            clear_max_budget=False,
+                        )
+            return None
+        except Exception as exc:
+            return f"Key {key.id}: {str(exc)}"
+
+    return [
+        error
+        for error in await asyncio.gather(*[_sync_key_budget(key) for key in keys])
+        if error is not None
+    ]
+
+
 @router.post(
     "/region/{region_id}/teams/{team_id}/purchase",
     response_model=PoolPurchaseResponse,
@@ -105,7 +181,7 @@ async def purchase_pool_budget(
     """
     Record a pool budget purchase for a team and update their LiteLLM team budget.
 
-    Only works for teams with budget_type = POOL.
+    Only works for teams that require purchase-gated POOL requests.
     Handles concurrent purchases by checking for duplicate stripe_payment_id.
     POOL updates are team-budget only; per-key max_budget remains unset.
     """
@@ -115,10 +191,13 @@ async def purchase_pool_budget(
             status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
         )
 
-    if team.budget_type != BudgetType.POOL:
+    if not team.requires_pool_purchase_gate:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This endpoint only works for teams with pool budget type",
+            detail=(
+                "This endpoint only works for teams that require purchase-gated requests "
+                "(pool budget type)"
+            ),
         )
 
     region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
@@ -153,6 +232,27 @@ async def purchase_pool_budget(
     team.last_pool_purchase = purchase.purchased_at
 
     amount_dollars = purchase.amount_cents / 100.0
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+    previous_team_info: dict | None = None
+    previous_max_budget = None
+    previous_budget_duration = None
+    try:
+        previous_team_info_resp = await service.get_team_info(lite_team_id)
+        previous_team_info = previous_team_info_resp.get(
+            "team_info", previous_team_info_resp
+        )
+        previous_max_budget = previous_team_info.get("max_budget")
+        previous_budget_duration = previous_team_info.get("budget_duration")
+    except Exception as exc:
+        logger.warning(
+            "Unable to snapshot existing LiteLLM team budget for rollback (team_id=%s region_id=%s): %s",
+            team_id,
+            region_id,
+            str(exc),
+        )
 
     # Flush before external side effects so stripe_payment_id uniqueness is
     # enforced in this transaction (handles concurrent duplicate requests).
@@ -200,13 +300,13 @@ async def purchase_pool_budget(
     )
     if monthly_cap is not None:
         if monthly_cap.month_start_spend is None:
-            service = LiteLLMService(
-                api_url=region.litellm_api_url, api_key=region.litellm_api_key
-            )
-            lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-            team_info = (await service.get_team_info(lite_team_id)).get("team_info", {})
+            if previous_team_info is None:
+                previous_team_info_resp = await service.get_team_info(lite_team_id)
+                previous_team_info = previous_team_info_resp.get(
+                    "team_info", previous_team_info_resp
+                )
             monthly_cap.month_start_spend = round(
-                float(team_info.get("spend", 0.0) or 0.0), 4
+                float(previous_team_info.get("spend", 0.0) or 0.0), 4
             )
             monthly_cap.month_anchor = _current_month_anchor()
             db.add(monthly_cap)
@@ -257,6 +357,44 @@ async def purchase_pool_budget(
                 detail=(
                     "Failed to update team budget in LiteLLM: "
                     + "; ".join(propagation_result["errors"])
+                ),
+            )
+        key_sync_errors = await _sync_pool_key_effective_budgets(
+            db,
+            team_id=team_id,
+            region=region,
+            purchased_total=new_total_budget,
+        )
+        if key_sync_errors:
+            db.rollback()
+            rollback_error: str | None = None
+            if previous_team_info is not None:
+                try:
+                    await service.update_team_budget(
+                        team_id=lite_team_id,
+                        max_budget=previous_max_budget,
+                        budget_duration=previous_budget_duration,
+                    )
+                except Exception as exc:
+                    rollback_error = str(exc)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=(
+                    "Failed to update key budgets in LiteLLM after purchase: "
+                    + "; ".join(key_sync_errors)
+                    + (
+                        (
+                            ". Also failed to restore previous LiteLLM team budget; "
+                            "manual reconciliation is required: " + rollback_error
+                        )
+                        if rollback_error
+                        else ""
+                    )
+                    + (
+                        ". Previous LiteLLM team budget snapshot was unavailable; manual reconciliation may be required."
+                        if previous_team_info is None
+                        else ""
+                    )
                 ),
             )
     except HTTPException:
@@ -369,7 +507,14 @@ async def sync_pool_team_budgets(db: Session) -> dict:
 
     Returns summary of updates made.
     """
-    pool_teams = db.query(DBTeam).filter(DBTeam.budget_type == BudgetType.POOL).all()
+    pool_teams = (
+        db.query(DBTeam)
+        .filter(
+            DBTeam.budget_type == BudgetType.POOL,
+            DBTeam.require_purchase_for_requests.is_(True),
+        )
+        .all()
+    )
 
     total_updated = 0
     errors = []
@@ -478,7 +623,7 @@ async def sync_pool_team_monthly_caps(db: Session) -> dict:
         if cap.team_id is None or cap.region_id is None:
             continue
         team = db.query(DBTeam).filter(DBTeam.id == cap.team_id).first()
-        if team is None or team.budget_type != BudgetType.POOL:
+        if team is None or not team.requires_pool_purchase_gate:
             continue
         if cap.month_anchor == current_anchor:
             continue

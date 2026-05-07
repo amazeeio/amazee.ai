@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from fastapi import status
@@ -11,7 +12,6 @@ from app.schemas.models import (
     PrivateAIKeyCreate,
     PrivateAIKeySpendBasic,
     BudgetPeriodUpdate,
-    BudgetType,
     LiteLLMToken,
     VectorDBCreate,
     VectorDB,
@@ -19,7 +19,14 @@ from app.schemas.models import (
     PrivateAIKeyDetail,
 )
 from app.db.postgres import PostgresManager
-from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
+from app.db.models import (
+    DBPoolPurchase,
+    DBPrivateAIKey,
+    DBRegion,
+    DBUser,
+    DBTeam,
+    DBSpendCap,
+)
 from app.services.litellm import LiteLLMService
 from app.core.security import (
     get_current_user_from_auth,
@@ -432,8 +439,20 @@ async def create_llm_token(
     if effective_team is None and owner is not None and owner.team_id:
         effective_team = db.query(DBTeam).filter(DBTeam.id == owner.team_id).first()
     is_pool_team = (
-        effective_team is not None and effective_team.budget_type == BudgetType.POOL
+        effective_team is not None and effective_team.requires_pool_purchase_gate
     )
+    pool_purchased_total = None
+    if is_pool_team and effective_team is not None:
+        total_cents = (
+            db.query(func.sum(DBPoolPurchase.amount_cents))
+            .filter(
+                DBPoolPurchase.team_id == effective_team.id,
+                DBPoolPurchase.region_id == region.id,
+            )
+            .scalar()
+            or 0
+        )
+        pool_purchased_total = float(total_cents) / 100.0
 
     if (owner is not None and owner.team_id) or team_id:
         if settings.ENABLE_LIMITS and not is_pool_team:
@@ -463,6 +482,21 @@ async def create_llm_token(
             status_code=status.HTTP_404_NOT_FOUND, detail="Owner or team not found"
         )
 
+    # DB team_id follows the ownership decision (not LiteLLM scoping).
+    # force_user_keys clears team_id/team above — that must be respected.
+    # When no team was ever in the request but the owner has one, resolve it.
+    # Track whether team_id was originally provided so we don't re-introduce
+    # a team after force_user_keys cleared it.
+    _original_team_id = private_ai_key.team_id
+    db_team_id = team_id
+    if (
+        db_team_id is None
+        and _original_team_id is None
+        and owner is not None
+        and owner.team_id
+    ):
+        db_team_id = owner.team_id
+
     try:
         # Generate LiteLLM token
         litellm_service = LiteLLMService(
@@ -480,13 +514,24 @@ async def create_llm_token(
             rpm_limit=max_rpm_limit,
             apply_limits=not is_pool_team,
         )
+        if (
+            is_pool_team
+            and pool_purchased_total is not None
+            and pool_purchased_total <= 0
+        ):
+            await litellm_service.update_key_budget(
+                litellm_token=litellm_token,
+                budget_duration="1mo",
+                max_budget=0.0,
+                clear_max_budget=False,
+            )
 
         # Create response object
         db_token = DBPrivateAIKey(
             litellm_token=litellm_token,
             litellm_api_url=region.litellm_api_url,
             owner_id=owner_id,
-            team_id=None if team_id is None else team_id,
+            team_id=db_team_id,
             name=private_ai_key.name,
             region_id=private_ai_key.region_id,
         )
@@ -763,6 +808,16 @@ async def get_private_ai_key(
         key_data.update(info_without_ownership)
 
         return PrivateAIKeyDetail.model_validate(key_data)
+    except HTTPException as e:
+        # If key was already removed in LiteLLM, keep API response usable and rely on DB data.
+        if e.status_code == status.HTTP_404_NOT_FOUND:
+            logger.warning(
+                "LiteLLM key not found for private AI key %s; returning DB-only details",
+                private_ai_key.id,
+            )
+            return PrivateAIKeyDetail.model_validate(private_ai_key.to_dict())
+        logger.error(f"Failed to get Private AI Key details: {str(e)}", exc_info=True)
+        raise
     except Exception as e:
         logger.error(f"Failed to get Private AI Key details: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -852,6 +907,9 @@ async def delete_private_ai_key(
             private_ai_key.database_name, private_ai_key.database_username
         )
 
+    # Remove dependent spend cap rows before deleting key row (FK spend_caps.key_id -> ai_tokens.id)
+    db.query(DBSpendCap).filter(DBSpendCap.key_id == private_ai_key.id).delete()
+
     # Remove the private AI key record from the application database
     db.delete(private_ai_key)
     db.commit()
@@ -888,6 +946,22 @@ async def get_private_ai_key_spend(
         spend_info = {"spend": info.get("spend", 0.0), **info}
 
         return PrivateAIKeySpendBasic.model_validate(spend_info)
+    except HTTPException as e:
+        if e.status_code == status.HTTP_404_NOT_FOUND:
+            logger.warning(
+                "LiteLLM key not found for private AI key %s; returning default spend",
+                private_ai_key.id,
+            )
+            return PrivateAIKeySpendBasic.model_validate(
+                {
+                    "spend": 0.0,
+                    "created_at": private_ai_key.created_at,
+                    "updated_at": private_ai_key.updated_at,
+                    "expires": None,
+                }
+            )
+        logger.error(f"Failed to get Private AI Key spend: {str(e)}", exc_info=True)
+        raise
     except Exception as e:
         logger.error(f"Failed to get Private AI Key spend: {str(e)}", exc_info=True)
         raise HTTPException(

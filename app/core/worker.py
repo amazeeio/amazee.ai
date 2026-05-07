@@ -11,14 +11,15 @@ from app.db.models import (
     DBTeamMetrics,
     DBLimitedResource,
     DBTeamRegion,
+    DBPoolPurchase,
 )
+from app.schemas.models import BudgetType
 from app.db.database import get_db
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
 from app.core.team_service import get_team_keys_by_region, soft_delete_team
 from app.core.limit_service import LimitService
 from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitedResource
-from app.schemas.models import BudgetType
 import logging
 from collections import defaultdict
 
@@ -624,10 +625,29 @@ async def reconcile_team_keys(
     return team_total
 
 
-def _monitor_team_freshness(team: DBTeam) -> int:
+def _monitor_team_freshness(team: DBTeam, db: Optional[Session] = None) -> int:
     current_time = datetime.now(UTC)
     # Calculate team age based on whether they have made a payment
-    if team.last_payment:
+    # For pool teams, query DBPoolPurchase directly (single source of truth) so that
+    # this function and the has_active_pool_purchase check in monitor_teams are consistent.
+    pool_purchase_date = None
+    if getattr(team, "budget_type", None) == BudgetType.POOL:
+        if db is not None:
+            latest = (
+                db.query(DBPoolPurchase)
+                .filter(DBPoolPurchase.team_id == team.id)
+                .order_by(DBPoolPurchase.purchased_at.desc())
+                .first()
+            )
+            if latest:
+                pool_purchase_date = latest.purchased_at
+        elif team.last_pool_purchase:
+            # Fallback when no db session is available (e.g. unit tests that don't pass db)
+            pool_purchase_date = team.last_pool_purchase
+
+    if pool_purchase_date:
+        team_freshness = (current_time - pool_purchase_date.replace(tzinfo=UTC)).days
+    elif team.last_payment:
         team_freshness = (current_time - team.last_payment.replace(tzinfo=UTC)).days
     else:
         team_freshness = (current_time - team.created_at.replace(tzinfo=UTC)).days
@@ -845,7 +865,13 @@ def _send_expiry_notification(
     should_send_notifications: bool,
     days_remaining: int,
     ses_service: Optional[SESService],
+    is_pool_team: bool = False,
 ):
+    # POOL teams have their own budget lifecycle managed by sync_pool_team_budgets.
+    # They should never receive trial expiry notifications.
+    if is_pool_team:
+        return
+
     # Check for notification conditions for teams still in the trial (only if not recently monitored)
     if not has_products and should_send_notifications:
         # Find the admin email for the team
@@ -1035,7 +1061,7 @@ async def monitor_teams(db: Session):
                 await _check_team_retention_policy(db, team, current_time, ses_service)
 
                 # Now handle trial expiry notifications and key expiry (after retention checks)
-                team_freshness = _monitor_team_freshness(team)
+                team_freshness = _monitor_team_freshness(team, db)
                 days_remaining = TRIAL_OVER_DAYS - team_freshness
 
                 # Check if team was monitored within 24 hours
@@ -1053,15 +1079,28 @@ async def monitor_teams(db: Session):
                     should_send_notifications,
                     days_remaining,
                     ses_service,
+                    is_pool_team=team.budget_type == BudgetType.POOL,
                 )
 
                 # Get all keys for the team grouped by region
                 keys_by_region = get_team_keys_by_region(db, team.id)
                 expire_keys = False
 
+                # Pool teams with purchases should never be treated as expired trials.
+                # Their budget lifecycle is managed separately by sync_pool_team_budgets.
+                has_active_pool_purchase = (
+                    team.budget_type == BudgetType.POOL
+                    and db.query(DBPoolPurchase)
+                    .filter(DBPoolPurchase.team_id == team.id)
+                    .first()
+                    is not None
+                )
+
                 # Expire if team trial has expired (if team has a product, expiry will be handled by Stripe)
+                # Pool teams with purchases are exempt — they are not trial users.
                 if (
                     not has_products
+                    and not has_active_pool_purchase
                     and days_remaining <= 0
                     and should_send_notifications
                 ):
@@ -1084,7 +1123,7 @@ async def monitor_teams(db: Session):
                         ),
                         None,
                     )
-                    if budget_limit and team.budget_type != BudgetType.POOL:
+                    if budget_limit and not team.requires_pool_purchase_gate:
                         max_budget_amount = budget_limit.max_value
 
                     # Get the product with the longest renewal period (renewal period not stored in limits)

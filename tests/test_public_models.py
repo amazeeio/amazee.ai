@@ -1,3 +1,4 @@
+import pytest
 import httpx
 from unittest.mock import AsyncMock, patch
 
@@ -139,10 +140,16 @@ def test_public_models_pricing_numeric_values(client, db):
                             "mode": "chat",
                             "input_cost_per_token": 0.000005,
                             "output_cost_per_token": 0.000015,
+                            "cache_creation_input_token_cost": 0.00000625,
+                            "cache_creation_input_token_cost_above_1hr": 0.00001,
+                            "cache_read_input_token_cost": 0.0000005,
                         },
                     }
                 ]
             }
+        )
+        mock_service.get_cost_margin_config = AsyncMock(
+            return_value={"values": {"global": 0.2}}
         )
 
         response = client.get("/public/models")
@@ -150,10 +157,133 @@ def test_public_models_pricing_numeric_values(client, db):
         data = response.json()
         region_data = next(r for r in data if r["region"] == "ap-southeast-1")
         pricing = region_data["models"][0]["pricing"]
-        assert pricing["input_cost_per_token"] == 0.000005
-        assert pricing["output_cost_per_token"] == 0.000015
-        assert pricing["input_cost_per_million_tokens"] == 5.0
-        assert pricing["output_cost_per_million_tokens"] == 15.0
+        assert pricing["input_cost_per_token"] == pytest.approx(0.000006)
+        assert pricing["output_cost_per_token"] == pytest.approx(0.000018)
+        assert pricing["input_cost_per_million_tokens"] == pytest.approx(6.0)
+        assert pricing["output_cost_per_million_tokens"] == pytest.approx(18.0)
+        assert pricing["cache_creation_input_cost_per_million_tokens"] == pytest.approx(
+            7.5
+        )
+        assert pricing[
+            "cache_creation_input_cost_above_1hr_per_million_tokens"
+        ] == pytest.approx(12.0)
+        assert pricing["cache_read_input_cost_per_million_tokens"] == pytest.approx(0.6)
+
+
+def test_public_models_pricing_uses_litellm_global_margin(client, db):
+    _clear_public_models_cache()
+    region = DBRegion(
+        name="sa-east-1",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="user",
+        postgres_admin_password="pass",
+        litellm_api_url="https://litellm.example",
+        litellm_api_key="key",
+        is_active=True,
+        is_dedicated=False,
+    )
+    db.add(region)
+    db.commit()
+
+    with patch("app.api.public.LiteLLMService") as mock_service_cls:
+        mock_service = mock_service_cls.return_value
+        mock_service.get_model_info = AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        "model_name": "gpt-4o",
+                        "litellm_params": {},
+                        "model_info": {
+                            "mode": "chat",
+                            "input_cost_per_token": 0.000005,
+                            "output_cost_per_token": 0.000015,
+                            "cache_creation_input_token_cost": 0.00000625,
+                            "cache_creation_input_token_cost_above_1hr": 0.00001,
+                            "cache_read_input_token_cost": 0.0000005,
+                        },
+                    }
+                ]
+            }
+        )
+        mock_service.get_cost_margin_config = AsyncMock(
+            return_value={"values": {"global": 0.5}}
+        )
+
+        response = client.get("/public/models")
+        assert response.status_code == 200
+        data = response.json()
+        region_data = next(r for r in data if r["region"] == "sa-east-1")
+        pricing = region_data["models"][0]["pricing"]
+        assert pricing["input_cost_per_token"] == pytest.approx(0.0000075)
+        assert pricing["output_cost_per_token"] == pytest.approx(0.0000225)
+        assert pricing["input_cost_per_million_tokens"] == pytest.approx(7.5)
+        assert pricing["output_cost_per_million_tokens"] == pytest.approx(22.5)
+        assert pricing["cache_creation_input_cost_per_million_tokens"] == pytest.approx(
+            9.375
+        )
+        assert pricing[
+            "cache_creation_input_cost_above_1hr_per_million_tokens"
+        ] == pytest.approx(15.0)
+        assert pricing["cache_read_input_cost_per_million_tokens"] == pytest.approx(
+            0.75
+        )
+
+
+def test_public_models_pricing_falls_back_to_default_margin(client, db):
+    _clear_public_models_cache()
+    region = DBRegion(
+        name="ca-central-1",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="user",
+        postgres_admin_password="pass",
+        litellm_api_url="https://litellm.example",
+        litellm_api_key="key",
+        is_active=True,
+        is_dedicated=False,
+    )
+    db.add(region)
+    db.commit()
+
+    with patch("app.api.public.LiteLLMService") as mock_service_cls:
+        mock_service = mock_service_cls.return_value
+        mock_service.get_model_info = AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        "model_name": "gpt-4o",
+                        "litellm_params": {},
+                        "model_info": {
+                            "mode": "chat",
+                            "input_cost_per_token": 0.000005,
+                            "output_cost_per_token": 0.000015,
+                            "cache_creation_input_token_cost": 0.00000625,
+                            "cache_creation_input_token_cost_above_1hr": 0.00001,
+                            "cache_read_input_token_cost": 0.0000005,
+                        },
+                    }
+                ]
+            }
+        )
+        mock_service.get_cost_margin_config = AsyncMock(return_value={"values": {}})
+
+        response = client.get("/public/models")
+        assert response.status_code == 200
+        data = response.json()
+        region_data = next(r for r in data if r["region"] == "ca-central-1")
+        pricing = region_data["models"][0]["pricing"]
+        assert pricing["input_cost_per_token"] == pytest.approx(0.000006)
+        assert pricing["output_cost_per_token"] == pytest.approx(0.000018)
+        assert pricing["input_cost_per_million_tokens"] == pytest.approx(6.0)
+        assert pricing["output_cost_per_million_tokens"] == pytest.approx(18.0)
+        assert pricing["cache_creation_input_cost_per_million_tokens"] == pytest.approx(
+            7.5
+        )
+        assert pricing[
+            "cache_creation_input_cost_above_1hr_per_million_tokens"
+        ] == pytest.approx(12.0)
+        assert pricing["cache_read_input_cost_per_million_tokens"] == pytest.approx(0.6)
 
 
 def test_public_models_pricing_missing_values(client, db):
@@ -196,6 +326,9 @@ def test_public_models_pricing_missing_values(client, db):
         assert pricing["output_cost_per_token"] is None
         assert pricing["input_cost_per_million_tokens"] is None
         assert pricing["output_cost_per_million_tokens"] is None
+        assert pricing["cache_creation_input_cost_per_million_tokens"] is None
+        assert pricing["cache_creation_input_cost_above_1hr_per_million_tokens"] is None
+        assert pricing["cache_read_input_cost_per_million_tokens"] is None
 
 
 def test_public_models_pricing_non_numeric_values(client, db):
@@ -227,6 +360,9 @@ def test_public_models_pricing_non_numeric_values(client, db):
                             "mode": "chat",
                             "input_cost_per_token": "n/a",
                             "output_cost_per_token": "n/a",
+                            "cache_creation_input_token_cost": "n/a",
+                            "cache_creation_input_token_cost_above_1hr": "n/a",
+                            "cache_read_input_token_cost": "n/a",
                         },
                     }
                 ]
@@ -242,6 +378,9 @@ def test_public_models_pricing_non_numeric_values(client, db):
         assert pricing["output_cost_per_token"] is None
         assert pricing["input_cost_per_million_tokens"] is None
         assert pricing["output_cost_per_million_tokens"] is None
+        assert pricing["cache_creation_input_cost_per_million_tokens"] is None
+        assert pricing["cache_creation_input_cost_above_1hr_per_million_tokens"] is None
+        assert pricing["cache_read_input_cost_per_million_tokens"] is None
 
 
 def test_public_models_uses_region_key_for_model_info(client, db):
