@@ -1458,7 +1458,14 @@ async def clear_key_budget(
         max_budget=None,
         clear_max_budget=True,
     )
-    _delete_spend_cap(db, scope="key", region_id=region_id, key_id=key_id)
+    _delete_spend_cap(
+        db,
+        scope="key",
+        region_id=region_id,
+        team_id=key.team_id,
+        user_id=key.owner_id,
+        key_id=key_id,
+    )
     _invalidate_key_related_user_spend_cache(db, key)
     key_info = await service.get_key_info(key.litellm_token)
     db.commit()
