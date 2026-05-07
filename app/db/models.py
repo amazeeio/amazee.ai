@@ -206,7 +206,6 @@ class DBTeam(Base):
         return [tp.product for tp in self.active_products if tp.product]
 
     @property
-    @property
     def dedicated_regions(self):
         # Backward-compatible alias while team_regions semantics are now generic.
         return self.allowed_region_associations

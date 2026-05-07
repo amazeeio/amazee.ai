@@ -787,14 +787,25 @@ async def merge_teams(
                 detail=f"Cannot merge team '{source_team.name}' - it has active product associations: {', '.join(product_names)}. Please remove product associations before merging.",
             )
 
-        # Check if source team has region associations
-        source_region_associations = (
-            db.query(DBTeamRegion).filter(DBTeamRegion.team_id == source_team.id).all()
+        # Block only if source team has dedicated-region associations; public-region
+        # associations are seeded for every team and will be removed via CASCADE when
+        # the source team is deleted.
+        source_dedicated_region_associations = (
+            db.query(DBTeamRegion)
+            .join(DBRegion, DBTeamRegion.region_id == DBRegion.id)
+            .filter(
+                DBTeamRegion.team_id == source_team.id,
+                DBRegion.is_dedicated.is_(True),
+            )
+            .all()
         )
-        if source_region_associations:
+        if source_dedicated_region_associations:
+            region_names = [
+                assoc.region.name for assoc in source_dedicated_region_associations
+            ]
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot merge team '{source_team.name}' - it has region associations. Please remove the associations before merging.",
+                detail=f"Cannot merge team '{source_team.name}' - it has dedicated region associations: {', '.join(region_names)}. Please remove the dedicated region associations before merging.",
             )
 
         # Get team keys and users (only if no product associations found)
