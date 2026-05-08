@@ -384,6 +384,8 @@ async def test_apply_product_extends_keys_and_sets_budget(
     # Setup mock instance
     mock_instance = mock_litellm.return_value
     mock_instance.set_key_restrictions = AsyncMock()
+    mock_instance.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
+    mock_instance.update_team_budget = AsyncMock()
 
     # Setup mock limit service
     mock_limit_instance = mock_limit_service.return_value
@@ -404,7 +406,8 @@ async def test_apply_product_extends_keys_and_sets_budget(
     all_keys = team_keys + user_keys
     assert mock_instance.set_key_restrictions.call_count == len(all_keys)
 
-    # Verify each key was updated with correct duration and budget
+    # Verify each key was updated with correct duration and budget.
+    # PERIODIC teams use a fixed 31-day budget duration for compounding.
     for key in all_keys:
         # Verify key restrictions update
         restriction_calls = [
@@ -413,18 +416,13 @@ async def test_apply_product_extends_keys_and_sets_budget(
             if call[1]["litellm_token"] == key.litellm_token
         ]
         assert len(restriction_calls) == 1
-        assert (
-            restriction_calls[0][1]["duration"]
-            == f"{test_product.renewal_period_days}d"
-        )
-        assert (
-            restriction_calls[0][1]["budget_duration"]
-            == f"{test_product.renewal_period_days}d"
-        )
+        assert restriction_calls[0][1]["duration"] == "31d"
+        assert restriction_calls[0][1]["budget_duration"] == "31d"
         assert (
             restriction_calls[0][1]["budget_amount"] == test_product.max_budget_per_key
         )
         assert restriction_calls[0][1]["rpm_limit"] == test_product.rpm_per_key
+        assert restriction_calls[0][1]["spend"] == 0.0
 
     # Verify limit service was called with the correct team
     mock_limit_service.assert_called_once_with(db)

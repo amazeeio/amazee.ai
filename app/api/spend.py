@@ -555,6 +555,7 @@ async def get_team_spend(
     total_tokens = None
 
     is_periodic = not team.requires_pool_purchase_gate
+    litellm_fetch_ok = False
 
     try:
         team_data = await service.get_team_info(lite_team_id)
@@ -610,6 +611,7 @@ async def get_team_spend(
             total_spend = round(sum(item.spend for item in items), 4)
         else:
             total_spend = round(float(team_info.get("spend", 0.0) or 0.0), 4)
+        litellm_fetch_ok = True
     except Exception as exc:
         logger.warning(
             "Falling back to DB-derived team spend for team_id=%s region_id=%s due to LiteLLM error: %s",
@@ -654,10 +656,11 @@ async def get_team_spend(
     )
     if configured_team_cap is not None:
         total_budget = round(configured_team_cap, 4)
-    elif is_periodic and items:
+    elif is_periodic and litellm_fetch_ok and items:
         # For PERIODIC teams, team_info["max_budget"] is the compounded value
         # (accumulated_spend + monthly_cap). Derive the actual monthly cap from
         # the per-key max_budget which is always set to the product cap.
+        # Only apply when we got data from LiteLLM directly (not the DB fallback).
         key_budgets = [k.max_budget for k in items if k.max_budget is not None]
         if key_budgets:
             total_budget = round(max(key_budgets), 4)
