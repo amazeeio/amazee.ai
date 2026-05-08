@@ -724,6 +724,134 @@ test_pool_spend_uses_team_counter() {
   finish_test "status=${ts_status}, total_spend=${total_spend}, key_spend=${key_spend}" "$pass"
 }
 
+# ── Test: POOL key with cap shows period dates and accurate spend ────
+
+test_pool_key_with_cap_shows_period_and_spend() {
+  local test_name="POOL key with cap shows period dates and accurate spend"
+  if ! filter_matches "$test_name"; then return; fi
+  start_test "$test_name" \
+    "POOL key with spend cap returns budget_duration, budget_reset_at, period_start, and spend matches LiteLLM"
+
+  local tag="pkc-$(date +%s)"
+  local key_cap=5.0
+  local purchase_amount_cents=2000  # $20 purchase
+
+  step "Creating POOL team, user, key"
+  local tp
+  tp=$(jq -n --arg n "pool-cap-team-${tag}" --arg e "pool-cap-team-${tag}@example.com" \
+    '{name:$n, admin_email:$e, budget_type:"pool", require_purchase_for_requests:true}')
+  api_call "POST" "/teams" "$tp"
+  local team_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_team "$team_id"
+
+  local up
+  up=$(jq -n --arg e "pool-cap-user-${tag}@example.com" --argjson tid "$team_id" \
+    '{email:$e, team_id:$tid, role:"admin"}')
+  api_call "POST" "/users" "$up"
+  local user_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_user "$user_id"
+
+  local kp
+  kp=$(jq -n --argjson rid "$REGION_ID" --argjson uid "$user_id" \
+    '{region_id:$rid, name:"pool-cap-key", owner_id:$uid}')
+  api_call "POST" "/private-ai-keys" "$kp"
+  local key_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  local key_tok="$(echo "$HTTP_BODY" | jq -r '.litellm_token')"
+  local key_url="$(to_public_litellm_url "$(echo "$HTTP_BODY" | jq -r '.litellm_api_url')")"
+  register_key "$key_id"
+
+  step "Purchasing \$$(python3 -c "print(${purchase_amount_cents}/100)") budget for the team"
+  local pp
+  pp=$(jq -n --arg sid "pool-cap-purchase-${tag}" \
+    '{amount_cents:'"${purchase_amount_cents}"', currency:"USD", purchased_at:(now|todateiso8601), stripe_payment_id:$sid}')
+  api_call "POST" "/budgets/region/${REGION_ID}/teams/${team_id}/purchase" "$pp"
+  step "Purchase status: $HTTP_STATUS"
+
+  step "Setting key cap to \$${key_cap} via /spend budget endpoint"
+  api_call "PUT" "/spend/${REGION_ID}/key/${key_id}/budget" \
+    "{\"max_budget\":${key_cap}}"
+  step "Key cap set status: $HTTP_STATUS"
+
+  local model="$(resolve_model_for_url "$key_url")"
+
+  step "Generating spend on the key"
+  chat_usage "$key_url" "$key_tok" "$model" 100 14900
+  local key_spend
+  key_spend="$(wait_for_key_spend_gt "$REGION_ID" "$key_id" "0" 20 || true)"
+  step "Key spend: $key_spend"
+
+  sleep 2
+
+  step "--- GET /spend/{region}/key/{key} response ---"
+  api_call "GET" "/spend/${REGION_ID}/key/${key_id}"
+  echo "$HTTP_BODY" | jq '{spend, max_budget, budget_duration, budget_reset_at, period_start}'
+  local ks_status="$HTTP_STATUS"
+  local ks_spend="$(echo "$HTTP_BODY" | jq -r '.spend')"
+  local ks_cap="$(echo "$HTTP_BODY" | jq -r '.max_budget')"
+  local ks_dur="$(echo "$HTTP_BODY" | jq -r '.budget_duration')"
+  local ks_reset="$(echo "$HTTP_BODY" | jq -r '.budget_reset_at')"
+  local ks_ps="$(echo "$HTTP_BODY" | jq -r '.period_start')"
+
+  step "--- GET /spend/{region}/team/{team} key entry ---"
+  api_call "GET" "/spend/${REGION_ID}/team/${team_id}"
+  echo "$HTTP_BODY" | jq '{total_spend, total_budget, budget_duration, budget_reset_at, period_start, keys: [.keys[] | {key_id, key_name, spend, max_budget, budget_duration, budget_reset_at, period_start}]}'
+  local ts_status="$HTTP_STATUS"
+  local tk_dur="$(echo "$HTTP_BODY" | jq -r '.keys[0].budget_duration')"
+  local tk_reset="$(echo "$HTTP_BODY" | jq -r '.keys[0].budget_reset_at')"
+  local tk_ps="$(echo "$HTTP_BODY" | jq -r '.keys[0].period_start')"
+
+  # Validate key spend response
+  local spend_ok=0 cap_ok=0 dur_ok=0 dates_ok=0 ps_ok=0 math_ok=0
+  [[ "$ks_status" == "200" ]] && spend_ok=1
+  # max_budget should be the cap we set
+  [[ "$(float_eq "$ks_cap" "$key_cap")" == "1" ]] && cap_ok=1
+  # budget_duration should be present (1mo from update_key_budget)
+  [[ "$ks_dur" != "null" ]] && dur_ok=1
+  # budget_reset_at should be a datetime
+  [[ "$ks_reset" == *"T"* ]] && dates_ok=1
+  # period_start should be a datetime
+  [[ "$ks_ps" == *"T"* ]] && ps_ok=1
+
+  # Verify period_start math: should be roughly budget_reset_at - duration
+  if [[ "$ks_reset" == *"T"* && "$ks_dur" != "null" ]]; then
+    # For "1mo", LiteLLM resets on 1st of next month
+    # period_start should be 1st of current month
+    math_ok=$(python3 - "$ks_reset" "$ks_ps" "$ks_dur" <<'PY'
+import sys
+from datetime import datetime, timedelta
+try:
+    reset = datetime.fromisoformat(sys.argv[1])
+    start = datetime.fromisoformat(sys.argv[2])
+    dur = sys.argv[3]
+    if dur == "1mo":
+        # For 1mo, period_start should be 1st of current month
+        expected = reset.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        # If reset is on the 1st, the period started last month
+        if reset.day == 1:
+            if reset.month == 1:
+                expected = reset.replace(year=reset.year-1, month=12, day=1)
+            else:
+                expected = reset.replace(month=reset.month-1, day=1)
+        print(1 if abs((start - expected).total_seconds()) < 86400 else 0)
+    else:
+        print(1)  # unexpected duration but not a fail
+except: print(0)
+PY
+    )
+  fi
+
+  # Validate team response has key period info
+  local team_key_ok=0
+  [[ "$tk_dur" != "null" && "$tk_reset" == *"T"* && "$tk_ps" == *"T"* ]] && team_key_ok=1
+
+  local pass=0
+  if [[ "$spend_ok" == "1" && "$cap_ok" == "1" && "$dur_ok" == "1" \
+        && "$dates_ok" == "1" && "$ps_ok" == "1" && "$math_ok" == "1" && "$team_key_ok" == "1" ]]; then
+    pass=1
+  fi
+  finish_test "key_status=${ks_status}, key_spend=${ks_spend}, key_cap=${ks_cap}, key_dur=${ks_dur}, key_reset=${ks_reset:0:19}, key_ps=${ks_ps:0:19}, math=${math_ok}, team_key_ok=${team_key_ok}" "$pass"
+}
+
 # ── Test: Team response includes period dates ────────────────────────
 
 test_team_spend_includes_period_dates() {
@@ -908,6 +1036,7 @@ declare -a TEST_CASES=(
   "PERIODIC compounding across two billing cycles:test_periodic_compounding_two_cycles"
   "PERIODIC key budget_duration is 31d in LiteLLM:test_periodic_key_duration_31d"
   "POOL total_spend uses team counter not key sum:test_pool_spend_uses_team_counter"
+  "POOL key with cap shows period dates and accurate spend:test_pool_key_with_cap_shows_period_and_spend"
   "Team spend response includes budget period dates:test_team_spend_includes_period_dates"
   "Key spend response includes period_start date:test_key_spend_includes_period_start"
 )

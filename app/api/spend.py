@@ -61,6 +61,22 @@ def _compute_period_start(
     """
     if budget_reset_at is None or not budget_duration:
         return None
+
+    # Handle "1mo" / "30d" — both snap to 1st of next calendar month
+    # so the period start is always the 1st of the current month.
+    if budget_duration in ("1mo", "30d"):
+        # budget_reset_at is midnight on the 1st of next month.
+        # If reset is on 1st, the period that just ended started last month.
+        if budget_reset_at.day == 1:
+            if budget_reset_at.month == 1:
+                return budget_reset_at.replace(
+                    year=budget_reset_at.year - 1, month=12, day=1
+                )
+            return budget_reset_at.replace(
+                month=budget_reset_at.month - 1, day=1
+            )
+        return budget_reset_at.replace(day=1)
+
     match = re.fullmatch(r"(\d+)([d|h|m|s])", budget_duration)
     if not match:
         return None
