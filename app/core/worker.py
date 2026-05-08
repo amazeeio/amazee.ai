@@ -896,7 +896,6 @@ def _send_expiry_notification(
                     template_data = {
                         "name": team.name,
                         "days_remaining": days_remaining,
-                        "dashboard_url": generate_pricing_url(admin_email),
                     }
                     ses_service.send_email(
                         to_addresses=[admin_email],
@@ -924,7 +923,6 @@ def _send_expiry_notification(
                 if admin_email and ses_service:
                     template_data = {
                         "name": team.name,
-                        "dashboard_url": generate_pricing_url(admin_email),
                     }
                     ses_service.send_email(
                         to_addresses=[admin_email],
