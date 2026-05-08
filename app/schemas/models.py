@@ -367,6 +367,7 @@ class PrivateAIKeySpend(BaseModel):
     max_budget: Optional[float] = None
     budget_duration: Optional[str] = None
     budget_reset_at: Optional[datetime] = None
+    period_start: Optional[datetime] = None
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
@@ -384,6 +385,9 @@ class SpendKeyItem(BaseModel):
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
+    budget_duration: Optional[str] = None
+    budget_reset_at: Optional[datetime] = None
+    period_start: Optional[datetime] = None
 
 
 class TeamSpendResponse(BaseModel):
@@ -396,6 +400,9 @@ class TeamSpendResponse(BaseModel):
     total_prompt_tokens: Optional[int] = None
     total_completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
+    budget_duration: Optional[str] = None
+    budget_reset_at: Optional[datetime] = None
+    period_start: Optional[datetime] = None
     key_count: int
     keys: List[SpendKeyItem]
 

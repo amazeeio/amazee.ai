@@ -724,6 +724,181 @@ test_pool_spend_uses_team_counter() {
   finish_test "status=${ts_status}, total_spend=${total_spend}, key_spend=${key_spend}" "$pass"
 }
 
+# ── Test: Team response includes period dates ────────────────────────
+
+test_team_spend_includes_period_dates() {
+  local test_name="Team spend response includes budget period dates"
+  if ! filter_matches "$test_name"; then return; fi
+  start_test "$test_name" \
+    "Team response has budget_duration, budget_reset_at, period_start as calendar dates"
+
+  local tag="tp-$(date +%s)"
+  local monthly_cap=10.0
+
+  step "Creating PERIODIC team, user, key"
+  local tp
+  tp=$(jq -n --arg n "periodic-period-team-${tag}" --arg e "periodic-period-team-${tag}@example.com" \
+    '{name:$n, admin_email:$e, budget_type:"periodic"}')
+  api_call "POST" "/teams" "$tp"
+  local team_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_team "$team_id"
+
+  local up
+  up=$(jq -n --arg e "periodic-period-user-${tag}@example.com" --argjson tid "$team_id" \
+    '{email:$e, team_id:$tid, role:"admin"}')
+  api_call "POST" "/users" "$up"
+  local user_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_user "$user_id"
+
+  local kp
+  kp=$(jq -n --argjson rid "$REGION_ID" --argjson uid "$user_id" \
+    '{region_id:$rid, name:"periodic-period-key", owner_id:$uid}')
+  api_call "POST" "/private-ai-keys" "$kp"
+  local key_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  local key_tok="$(echo "$HTTP_BODY" | jq -r '.litellm_token')"
+  register_key "$key_id"
+
+  local lite_team_id="${REGION_NAME// /_}_${team_id}"
+
+  step "Setting team budget_duration=31d via LiteLLM"
+  litellm_call "POST" "${LITELLM_URL}/team/update" \
+    "{\"team_id\":\"${lite_team_id}\", \"max_budget\":${monthly_cap}, \"budget_duration\":\"31d\"}"
+
+  step "Setting key budget_duration=31d via LiteLLM"
+  litellm_call "POST" "${LITELLM_URL}/key/update" \
+    "{\"key\":\"${key_tok}\", \"max_budget\":${monthly_cap}, \"budget_duration\":\"31d\"}"
+
+  sleep 2
+
+  step "Reading team spend via Amazee API"
+  api_call "GET" "/spend/${REGION_ID}/team/${team_id}"
+  local ts_status="$HTTP_STATUS"
+  local td="$(echo "$HTTP_BODY" | jq -r '.budget_duration')"
+  local tra="$(echo "$HTTP_BODY" | jq -r '.budget_reset_at')"
+  local tps="$(echo "$HTTP_BODY" | jq -r '.period_start')"
+  local kd="$(echo "$HTTP_BODY" | jq -r '.keys[0].budget_duration')"
+  local kra="$(echo "$HTTP_BODY" | jq -r '.keys[0].budget_reset_at')"
+  local kps="$(echo "$HTTP_BODY" | jq -r '.keys[0].period_start')"
+
+  step "Team: duration=${td}, reset_at=${tra}, period_start=${tps}"
+  step "Key:  duration=${kd}, reset_at=${kra}, period_start=${kps}"
+
+  # Validate team-level fields
+  local team_dur_ok=0 team_dates_ok=0
+  [[ "$td" == "31d" ]] && team_dur_ok=1
+  # budget_reset_at should be a datetime string containing "T"
+  [[ "$tra" == *"T"* ]] && team_dates_ok=1
+  # period_start should be a datetime string
+  local team_ps_ok=0
+  [[ "$tps" == *"T"* ]] && team_ps_ok=1
+
+  # Validate key-level fields
+  local key_dur_ok=0 key_dates_ok=0 key_ps_ok=0
+  [[ "$kd" == "31d" ]] && key_dur_ok=1
+  [[ "$kra" == *"T"* ]] && key_dates_ok=1
+  [[ "$kps" == *"T"* ]] && key_ps_ok=1
+
+  # period_start should be budget_reset_at - 31 days
+  local period_math_ok=0
+  if [[ "$kra" == *"T"* && "$kps" == *"T"* ]]; then
+    period_math_ok=$(python3 - "$kra" "$kps" <<'PY'
+import sys
+from datetime import datetime, timedelta
+try:
+    reset = datetime.fromisoformat(sys.argv[1])
+    start = datetime.fromisoformat(sys.argv[2])
+    expected = reset - timedelta(days=31)
+    print(1 if abs((start - expected).total_seconds()) < 60 else 0)
+except: print(0)
+PY
+    )
+  fi
+
+  local pass=0
+  if [[ "$ts_status" == "200" && "$team_dur_ok" == "1" && "$team_dates_ok" == "1" && "$team_ps_ok" == "1" \
+        && "$key_dur_ok" == "1" && "$key_dates_ok" == "1" && "$key_ps_ok" == "1" && "$period_math_ok" == "1" ]]; then
+    pass=1
+  fi
+  finish_test "status=${ts_status}, team(${td}, ${tra:0:19}, ${tps:0:19}), key(${kd}, ${kra:0:19}, ${kps:0:19}), period_math=${period_math_ok}" "$pass"
+}
+
+# ── Test: Key spend response includes period_start ────────────────────
+
+test_key_spend_includes_period_start() {
+  local test_name="Key spend response includes period_start date"
+  if ! filter_matches "$test_name"; then return; fi
+  start_test "$test_name" \
+    "Key /spend endpoint returns budget_duration, budget_reset_at, period_start"
+
+  local tag="kp-$(date +%s)"
+  local monthly_cap=10.0
+
+  step "Creating PERIODIC team, user, key"
+  local tp
+  tp=$(jq -n --arg n "periodic-kperiod-team-${tag}" --arg e "periodic-kperiod-team-${tag}@example.com" \
+    '{name:$n, admin_email:$e, budget_type:"periodic"}')
+  api_call "POST" "/teams" "$tp"
+  local team_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_team "$team_id"
+
+  local up
+  up=$(jq -n --arg e "periodic-kperiod-user-${tag}@example.com" --argjson tid "$team_id" \
+    '{email:$e, team_id:$tid, role:"admin"}')
+  api_call "POST" "/users" "$up"
+  local user_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  register_user "$user_id"
+
+  local kp
+  kp=$(jq -n --argjson rid "$REGION_ID" --argjson uid "$user_id" \
+    '{region_id:$rid, name:"periodic-kperiod-key", owner_id:$uid}')
+  api_call "POST" "/private-ai-keys" "$kp"
+  local key_id="$(echo "$HTTP_BODY" | jq -r '.id')"
+  local key_tok="$(echo "$HTTP_BODY" | jq -r '.litellm_token')"
+  register_key "$key_id"
+
+  step "Setting key budget_duration=31d via LiteLLM"
+  litellm_call "POST" "${LITELLM_URL}/key/update" \
+    "{\"key\":\"${key_tok}\", \"max_budget\":${monthly_cap}, \"budget_duration\":\"31d\"}"
+
+  sleep 2
+
+  step "Reading key spend via Amazee API"
+  api_call "GET" "/spend/${REGION_ID}/key/${key_id}"
+  local ks_status="$HTTP_STATUS"
+  local kd="$(echo "$HTTP_BODY" | jq -r '.budget_duration')"
+  local kra="$(echo "$HTTP_BODY" | jq -r '.budget_reset_at')"
+  local kps="$(echo "$HTTP_BODY" | jq -r '.period_start')"
+
+  step "duration=${kd}, reset_at=${kra}, period_start=${kps}"
+
+  local dur_ok=0 dates_ok=0 ps_ok=0
+  [[ "$kd" == "31d" ]] && dur_ok=1
+  [[ "$kra" == *"T"* ]] && dates_ok=1
+  [[ "$kps" == *"T"* ]] && ps_ok=1
+
+  # period_start ≈ budget_reset_at - 31 days
+  local math_ok=0
+  if [[ "$kra" == *"T"* && "$kps" == *"T"* ]]; then
+    math_ok=$(python3 - "$kra" "$kps" <<'PY'
+import sys
+from datetime import datetime, timedelta
+try:
+    reset = datetime.fromisoformat(sys.argv[1])
+    start = datetime.fromisoformat(sys.argv[2])
+    expected = reset - timedelta(days=31)
+    print(1 if abs((start - expected).total_seconds()) < 60 else 0)
+except: print(0)
+PY
+    )
+  fi
+
+  local pass=0
+  if [[ "$ks_status" == "200" && "$dur_ok" == "1" && "$dates_ok" == "1" && "$ps_ok" == "1" && "$math_ok" == "1" ]]; then
+    pass=1
+  fi
+  finish_test "status=${ks_status}, budget_duration=${kd}, budget_reset_at=${kra:0:19}, period_start=${kps:0:19}, math=${math_ok}" "$pass"
+}
+
 # ── Test dispatcher ──────────────────────────────────────────────────
 
 declare -a TEST_CASES=(
@@ -733,6 +908,8 @@ declare -a TEST_CASES=(
   "PERIODIC compounding across two billing cycles:test_periodic_compounding_two_cycles"
   "PERIODIC key budget_duration is 31d in LiteLLM:test_periodic_key_duration_31d"
   "POOL total_spend uses team counter not key sum:test_pool_spend_uses_team_counter"
+  "Team spend response includes budget period dates:test_team_spend_includes_period_dates"
+  "Key spend response includes period_start date:test_key_spend_includes_period_start"
 )
 
 run_dispatcher() {
