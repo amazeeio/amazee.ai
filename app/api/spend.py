@@ -605,10 +605,18 @@ async def get_team_spend(
 
         # For PERIODIC teams, total_spend must reflect only the current
         # billing period. Because the team-level spend counter in LiteLLM
-        # is never reset (it compounds), we derive total_spend as the sum
-        # of per-key spends which ARE reset to 0 on each Stripe webhook.
+        # is never reset (it compounds), we derive total_spend from the raw
+        # per-key spends which ARE reset to 0 on each Stripe webhook, and
+        # only round the final aggregate to avoid drift from summing
+        # already-rounded display values.
         if is_periodic and items:
-            total_spend = round(sum(item.spend for item in items), 4)
+            total_spend = round(
+                sum(
+                    float(litellm_key.get("spend", 0.0) or 0.0)
+                    for litellm_key in team_data.get("keys", [])
+                ),
+                4,
+            )
         else:
             total_spend = round(float(team_info.get("spend", 0.0) or 0.0), 4)
         litellm_fetch_ok = True
