@@ -641,7 +641,7 @@ async def get_team_spend(
     configured_team_cap = _get_spend_cap_max_budget(
         db, scope="team", region_id=region_id, team_id=team_id
     )
-    if configured_team_cap is not None:
+    if configured_team_cap is not None and team.requires_pool_purchase_gate:
         total_budget = round(configured_team_cap, 4)
     key_cap_map = _get_key_spend_cap_map(
         db,
