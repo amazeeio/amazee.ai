@@ -1451,6 +1451,7 @@ def test_clear_key_budget_endpoint(
         budget_duration=None,
         max_budget=None,
         clear_max_budget=True,
+        clear_budget_duration=True,
     )
     cap = (
         db.query(DBSpendCap)
