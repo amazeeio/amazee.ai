@@ -447,7 +447,9 @@ def test_set_key_restrictions_success(
 
     # This should not raise an exception
     asyncio.run(
-        service.set_key_restrictions("test-token", "30d", 100.0, 1000, "monthly")
+        service.set_key_restrictions(
+            "test-token", "30d", 100.0, 1000, "monthly", spend=None
+        )
     )
 
     mock_httpx_post_client.post.assert_called_once_with(
@@ -459,6 +461,37 @@ def test_set_key_restrictions_success(
             "budget_duration": "monthly",
             "max_budget": 100.0,
             "rpm_limit": 1000,
+        },
+    )
+
+
+@patch("httpx.AsyncClient")
+def test_set_key_restrictions_success_with_spend(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    """Test successful key restrictions setting with spend override"""
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.set_key_restrictions(
+            "test-token", "30d", 100.0, 1000, "monthly", spend=0.0
+        )
+    )
+
+    mock_httpx_post_client.post.assert_called_once_with(
+        f"{test_region.litellm_api_url}/key/update",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={
+            "key": "test-token",
+            "duration": "30d",
+            "budget_duration": "monthly",
+            "max_budget": 100.0,
+            "rpm_limit": 1000,
+            "spend": 0.0,
         },
     )
 
