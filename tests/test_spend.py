@@ -1438,7 +1438,7 @@ def test_clear_key_budget_endpoint(
     )
     db.commit()
     mock_get_key_info.return_value = {
-        "info": {"max_budget": None, "budget_duration": "1mo"}
+        "info": {"max_budget": None, "budget_duration": None}
     }
 
     response = client.post(
@@ -1453,6 +1453,8 @@ def test_clear_key_budget_endpoint(
         clear_max_budget=True,
         clear_budget_duration=True,
     )
+    assert response.json()["max_budget"] is None
+    assert response.json()["budget_duration"] is None
     cap = (
         db.query(DBSpendCap)
         .filter(
