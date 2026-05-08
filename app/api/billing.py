@@ -18,7 +18,6 @@ from app.core.security import (
 )
 from app.db.models import DBTeam, DBSystemSecret, DBProduct, DBTeamProduct
 from app.schemas.models import (
-    PricingTableSession,
     SubscriptionCreate,
     SubscriptionResponse,
     PortalRequest,
@@ -27,7 +26,6 @@ from app.services.stripe import (
     decode_stripe_event,
     create_portal_session,
     create_stripe_customer,
-    get_pricing_table_secret,
     create_zero_rated_stripe_subscription,
     get_subscribed_products_for_customer,
     cancel_subscription,
@@ -158,50 +156,6 @@ async def get_portal(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error creating portal session",
-        )
-
-
-@router.get(
-    "/teams/{team_id}/pricing-table-session",
-    dependencies=[Depends(get_role_min_specific_team_admin)],
-    response_model=PricingTableSession,
-)
-async def get_pricing_table_session(team_id: int, db: Session = Depends(get_db)):
-    """
-    Create a Stripe Customer Session client secret for team subscription management.
-    If the team doesn't have a Stripe customer ID, one will be created first.
-
-    Args:
-        team_id: The ID of the team to create the customer session for
-
-    Returns:
-        JSON response containing the client secret
-    """
-    # Get the team
-    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
-    if not team:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
-        )
-
-    try:
-        # Create Stripe customer if one doesn't exist
-        if not team.stripe_customer_id:
-            logger.info(f"Creating Stripe customer for team {team.id}")
-            team.stripe_customer_id = await create_stripe_customer(team)
-            db.add(team)
-            db.commit()
-
-        logger.info(f"Stripe ID is {team.stripe_customer_id}")
-        # Create customer session using the service
-        client_secret = await get_pricing_table_secret(team.stripe_customer_id)
-
-        return PricingTableSession(client_secret=client_secret)
-    except Exception as e:
-        logger.error(f"Error creating customer session: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error creating customer session",
         )
 
 

@@ -19,7 +19,6 @@ from app.core.security import get_password_hash
 from app.services.ses import SESService
 from app.services.stripe import setup_stripe_webhook
 from app.api.billing import BILLING_WEBHOOK_KEY, BILLING_WEBHOOK_ROUTE
-from scripts.migrate_pricing_tables import migrate_pricing_tables
 from app.core.limit_service import setup_default_limits
 
 
@@ -151,22 +150,6 @@ def init_ses_templates():
         print("PASSWORDLESS_SIGN_IN is disabled - skipping SES initialization")
 
 
-def init_pricing_table_migration(db: Session):
-    """Initialize pricing table data migration"""
-    try:
-        print("Initializing pricing table data migration...")
-        success = migrate_pricing_tables(db)
-        if success:
-            print("Pricing table migration completed successfully")
-        else:
-            print(
-                "Warning: Pricing table migration failed - continuing with initialization"
-            )
-    except Exception as e:
-        print(
-            f"Warning: Error during pricing table migration: {str(e)} - continuing with initialization"
-        )
-
 
 def init_default_limits(db: Session):
     """Initialize default system limits"""
@@ -189,7 +172,6 @@ def main():
         db = init_database()
         init_webhooks(db)
         init_ses_templates()
-        init_pricing_table_migration(db)
         init_default_limits(db)
         db.close()
     except Exception as e:

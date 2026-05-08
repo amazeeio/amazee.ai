@@ -84,11 +84,7 @@ const navigation = [
         href: "/team-admin/private-ai-keys",
         icon: <Key size={16} />,
       },
-      {
-        name: "Pricing",
-        href: "/team-admin/pricing",
-        icon: <Package size={16} />,
-      },
+
     ],
   },
 ];
@@ -230,11 +226,10 @@ export function SidebarLayout({ children }: { children: React.ReactNode }) {
     return null;
   }
 
-  // Don't show the sidebar on the auth login/register pages and upgrade page
+  // Don't show the sidebar on the auth login/register pages
   if (
     pathname === "/auth/login" ||
-    pathname === "/auth/register" ||
-    pathname === "/upgrade"
+    pathname === "/auth/register"
   ) {
     return <>{children}</>;
   }

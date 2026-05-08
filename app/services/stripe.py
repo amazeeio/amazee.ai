@@ -357,26 +357,3 @@ async def get_customer_from_pi(payment_intent: str) -> str:
     return payment_intent.customer
 
 
-async def get_pricing_table_secret(customer_id: str) -> str:
-    """
-    Create a Stripe Customer Session client secret for a customer.
-
-    Args:
-        customer_id: The Stripe customer ID to create the session for
-
-    Returns:
-        str: The customer session client secret
-    """
-    try:
-        # Create the customer session
-        session = stripe.CustomerSession.create(
-            customer=customer_id, components={"pricing_table": {"enabled": True}}
-        )
-
-        return session.client_secret
-    except Exception as e:
-        logger.error(f"Error creating customer session: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error creating customer session",
-        )
