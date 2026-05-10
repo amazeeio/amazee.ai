@@ -10,6 +10,7 @@ from sqlalchemy import (
     Float,
     Enum,
     Date,
+    Text,
     text,
 )
 from sqlalchemy.orm import relationship, declarative_base
@@ -258,6 +259,33 @@ class DBPoolPurchase(Base):
 
     team = relationship("DBTeam")
     region = relationship("DBRegion")
+
+
+class DBPeriodicPayment(Base):
+    """
+    Stores periodic team payments (subscriptions and top-ups).
+    Tracks the synchronization status with LiteLLM to handle gateway failures.
+    """
+
+    __tablename__ = "periodic_payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    team_id = Column(
+        Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    stripe_payment_id = Column(String, unique=True, nullable=False, index=True)
+    amount_cents = Column(Integer, nullable=False)
+    currency = Column(String, nullable=False)
+    payment_type = Column(String, nullable=False)  # "subscription" or "topup"
+    status = Column(String, nullable=False)  # "pending", "completed", "failed"
+    sync_status = Column(
+        String, nullable=False, default="pending"
+    )  # "pending", "success", "sync_failed"
+    error_log = Column(Text, nullable=True)
+    payment_date = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    team = relationship("DBTeam")
 
 
 class DBPrivateAIKey(Base):

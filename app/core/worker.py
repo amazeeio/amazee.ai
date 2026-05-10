@@ -12,6 +12,7 @@ from app.db.models import (
     DBLimitedResource,
     DBTeamRegion,
     DBPoolPurchase,
+    DBPeriodicPayment,
 )
 from app.schemas.models import BudgetType
 from app.db.database import get_db
@@ -30,10 +31,12 @@ from app.services.stripe import (
     get_subscribed_products_for_customer,
     KNOWN_EVENTS,
     SUBSCRIPTION_SUCCESS_EVENTS,
+    SESSION_SUCCESS_EVENTS,
     SESSION_FAILURE_EVENTS,
     SUBSCRIPTION_FAILURE_EVENTS,
     INVOICE_FAILURE_EVENTS,
     INVOICE_SUCCESS_EVENTS,
+    SUCCESS_EVENTS,
 )
 from prometheus_client import Gauge, Counter, Summary
 from typing import Dict, List, Optional
@@ -198,6 +201,64 @@ def set_team_and_user_limits(db: Session, team: DBTeam):
                     continue
 
 
+async def _record_periodic_payment(db: Session, event_object: any) -> Optional[int]:
+    """
+    Record a periodic team payment (subscription or top-up) in the database.
+    Used for audit and to track LiteLLM synchronization status.
+    """
+    try:
+        customer_id = getattr(event_object, "customer", None)
+        if not customer_id:
+            return None
+
+        team = db.query(DBTeam).filter(DBTeam.stripe_customer_id == customer_id).first()
+        if not team:
+            logger.warning(f"No team found for Stripe customer ID: {customer_id}")
+            return None
+
+        stripe_payment_id = event_object.id
+        # Extract amount and currency based on object type (Invoice or Session)
+        amount_cents = getattr(
+            event_object, "amount_paid", getattr(event_object, "amount_total", 0)
+        )
+        currency = getattr(event_object, "currency", "usd")
+
+        # Determine payment type from metadata
+        metadata = getattr(event_object, "metadata", {})
+        payment_type = "subscription"
+        if metadata and metadata.get("ai_budget_increase"):
+            payment_type = "topup"
+
+        # Check if record already exists to avoid duplicates
+        payment_record = (
+            db.query(DBPeriodicPayment)
+            .filter(DBPeriodicPayment.stripe_payment_id == stripe_payment_id)
+            .first()
+        )
+
+        if not payment_record:
+            payment_record = DBPeriodicPayment(
+                team_id=team.id,
+                stripe_payment_id=stripe_payment_id,
+                amount_cents=amount_cents,
+                currency=currency,
+                payment_type=payment_type,
+                status="completed",
+                sync_status="pending",
+                payment_date=datetime.now(UTC),
+            )
+            db.add(payment_record)
+            db.commit()
+            logger.info(
+                f"Recorded {payment_type} payment {stripe_payment_id} for team {team.id}"
+            )
+
+        return payment_record.id
+    except Exception as e:
+        logger.error(f"Failed to record periodic payment: {str(e)}")
+        return None
+
+
 async def handle_stripe_event_background(event):
     """
     Background task to handle Stripe webhook events.
@@ -216,18 +277,69 @@ async def handle_stripe_event_background(event):
         if not customer_id:
             logger.warning("No customer ID found in event, cannot complete processing")
             return
+
+        # Record the payment for audit and sync tracking
+        payment_record_id = None
+        if event_type in SUCCESS_EVENTS:
+            payment_record_id = await _record_periodic_payment(db, event_object)
+
         # Success Events
         if event_type in SUBSCRIPTION_SUCCESS_EVENTS:
             # new subscription
             product_id = await get_product_id_from_subscription(event_object.id)
             start_date = datetime.fromtimestamp(event_object.start_date, tz=UTC)
-            await apply_product_for_team(db, customer_id, product_id, start_date)
+            await apply_product_for_team(
+                db, customer_id, product_id, start_date, payment_record_id
+            )
         elif event_type in INVOICE_SUCCESS_EVENTS:
             # subscription renewed
-            subscription = event_object.parent.subscription_details.subscription
-            product_id = await get_product_id_from_subscription(subscription)
-            start_date = datetime.fromtimestamp(event_object.period_start, tz=UTC)
-            await apply_product_for_team(db, customer_id, product_id, start_date)
+            subscription = getattr(event_object, "subscription", None)
+            # Fallback for complex invoice objects
+            if not subscription and hasattr(event_object, "parent"):
+                try:
+                    subscription = event_object.parent.subscription_details.subscription
+                except AttributeError:
+                    pass
+
+            if subscription:
+                product_id = await get_product_id_from_subscription(subscription)
+                start_date = datetime.fromtimestamp(
+                    getattr(
+                        event_object, "period_start", int(datetime.now().timestamp())
+                    ),
+                    tz=UTC,
+                )
+                await apply_product_for_team(
+                    db, customer_id, product_id, start_date, payment_record_id
+                )
+        elif event_type in SESSION_SUCCESS_EVENTS:
+            # top-up or checkout signup
+            subscription = getattr(event_object, "subscription", None)
+            if subscription:
+                product_id = await get_product_id_from_subscription(subscription)
+                await apply_product_for_team(
+                    db, customer_id, product_id, datetime.now(UTC), payment_record_id
+                )
+            else:
+                # Potential top-up session
+                metadata = getattr(event_object, "metadata", {})
+                if metadata and metadata.get("ai_budget_increase"):
+                    team = (
+                        db.query(DBTeam)
+                        .filter(DBTeam.stripe_customer_id == customer_id)
+                        .first()
+                    )
+                    if team and team.products:
+                        # Use the team's current primary product to refresh limits
+                        product_id = team.products[0].id
+                        await apply_product_for_team(
+                            db,
+                            customer_id,
+                            product_id,
+                            datetime.now(UTC),
+                            payment_record_id,
+                        )
+
         # Failure Events
         elif event_type in SESSION_FAILURE_EVENTS:
             product_id = await get_product_id_from_session(event_object.id)
@@ -237,9 +349,16 @@ async def handle_stripe_event_background(event):
             await remove_product_from_team(db, customer_id, product_id)
         elif event_type in INVOICE_FAILURE_EVENTS:
             # We assume that the invoice is related to a subscription
-            subscription = event_object.parent.subscription_details.subscription
-            product_id = await get_product_id_from_subscription(subscription)
-            await remove_product_from_team(db, customer_id, product_id)
+            subscription = getattr(event_object, "subscription", None)
+            if not subscription and hasattr(event_object, "parent"):
+                try:
+                    subscription = event_object.parent.subscription_details.subscription
+                except AttributeError:
+                    pass
+
+            if subscription:
+                product_id = await get_product_id_from_subscription(subscription)
+                await remove_product_from_team(db, customer_id, product_id)
     except Exception as e:
         logger.error(f"Error in background event handler: {str(e)}")
     finally:
@@ -247,7 +366,11 @@ async def handle_stripe_event_background(event):
 
 
 async def apply_product_for_team(
-    db: Session, customer_id: str, product_id: str, start_date: datetime
+    db: Session,
+    customer_id: str,
+    product_id: str,
+    start_date: datetime,
+    payment_record_id: Optional[int] = None,
 ):
     """
     Apply a product to a team and update their last payment date.
@@ -261,6 +384,7 @@ async def apply_product_for_team(
     Returns:
         bool: True if update was successful, False otherwise
     """
+    sync_errors = []
     logger.info(f"Applying product {product_id} to team {customer_id}")
     try:
         # Find the team and product
@@ -347,9 +471,9 @@ async def apply_product_for_team(
                     f"(duration={budget_duration}) in region {region.name}"
                 )
             except Exception as e:
-                logger.error(
-                    f"Failed to update team {team.id} budget in region {region.name}: {str(e)}"
-                )
+                error_msg = f"Failed to update team {team.id} budget in region {region.name}: {str(e)}"
+                logger.error(error_msg)
+                sync_errors.append(error_msg)
 
             # Update each key's duration and budget via LiteLLM.
             # For PERIODIC teams, also reset key spend to 0 so that
@@ -370,17 +494,51 @@ async def apply_product_for_team(
                         f"rpm={max_rpm_limit}, spend_reset={is_periodic}"
                     )
                 except Exception as e:
-                    logger.error(f"Failed to update key {key.id} in LiteLLM: {str(e)}")
+                    error_msg = f"Failed to update key {key.id} in LiteLLM: {str(e)}"
+                    logger.error(error_msg)
+                    sync_errors.append(error_msg)
                     # Continue with other keys even if one fails
                     continue
 
         # Ensure that limits are updated
         limit_service.set_team_limits(team)
+
+        # Update periodic payment sync status if provided
+        if payment_record_id:
+            payment_record = (
+                db.query(DBPeriodicPayment)
+                .filter(DBPeriodicPayment.id == payment_record_id)
+                .first()
+            )
+            if payment_record:
+                if sync_errors:
+                    payment_record.sync_status = "sync_failed"
+                    payment_record.error_log = "\n".join(sync_errors)
+                else:
+                    payment_record.sync_status = "success"
+
         db.commit()
 
     except Exception as e:
         db.rollback()
         logger.error(f"Error applying product to team: {str(e)}")
+        if payment_record_id:
+            # Try to log the outer exception to the payment record in a new transaction
+            try:
+                # We need a fresh DB session or at least a fresh transaction
+                payment_record = (
+                    db.query(DBPeriodicPayment)
+                    .filter(DBPeriodicPayment.id == payment_record_id)
+                    .first()
+                )
+                if payment_record:
+                    payment_record.sync_status = "sync_failed"
+                    payment_record.error_log = f"Critical failure: {str(e)}"
+                    db.commit()
+            except Exception as inner_e:
+                logger.error(
+                    f"Failed to log critical error to payment record: {inner_e}"
+                )
         raise e
 
 
