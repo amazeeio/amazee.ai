@@ -407,7 +407,7 @@ async def test_apply_product_extends_keys_and_sets_budget(
     assert mock_instance.set_key_restrictions.call_count == len(all_keys)
 
     # Verify each key was updated with correct duration and budget.
-    # PERIODIC teams use a fixed 31-day budget duration for compounding.
+    # PERIODIC teams use calendar-month budget duration for compounding.
     for key in all_keys:
         # Verify key restrictions update
         restriction_calls = [
@@ -416,8 +416,8 @@ async def test_apply_product_extends_keys_and_sets_budget(
             if call[1]["litellm_token"] == key.litellm_token
         ]
         assert len(restriction_calls) == 1
-        assert restriction_calls[0][1]["duration"] == "31d"
-        assert restriction_calls[0][1]["budget_duration"] == "31d"
+        assert restriction_calls[0][1]["duration"] == "1mo"
+        assert restriction_calls[0][1]["budget_duration"] == "1mo"
         assert (
             restriction_calls[0][1]["budget_amount"] == test_product.max_budget_per_key
         )

@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 FIRST_EMAIL_DAYS_LEFT = 7
 SECOND_EMAIL_DAYS_LEFT = 5
 TRIAL_OVER_DAYS = 30
+MONTHLY_BUDGET_DURATION = "1mo"
 
 # Prometheus metrics
 team_freshness_days = Gauge(
@@ -297,13 +298,17 @@ async def apply_product_for_team(
             limit_service.get_token_restrictions(team.id)
         )
 
-        # PERIODIC teams use a fixed 31-day budget duration and compound
+        # PERIODIC teams use calendar-month budget duration and compound
         # the team max_budget to keep the effective monthly budget aligned
         # with the Stripe billing cycle. Key spends are reset to 0 on each
         # webhook so that sum(key spends) reflects only the current period.
         is_periodic = not team.requires_pool_purchase_gate
-        budget_duration = "31d" if is_periodic else f"{days_left_in_period}d"
-        key_duration = "31d" if is_periodic else f"{days_left_in_period}d"
+        budget_duration = (
+            MONTHLY_BUDGET_DURATION if is_periodic else f"{days_left_in_period}d"
+        )
+        key_duration = (
+            MONTHLY_BUDGET_DURATION if is_periodic else f"{days_left_in_period}d"
+        )
 
         # Get all keys for the team grouped by region
         keys_by_region = get_team_keys_by_region(db, team.id)
