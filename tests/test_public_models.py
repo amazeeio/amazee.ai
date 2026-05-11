@@ -758,8 +758,8 @@ def test_public_models_admin_sees_all_dedicated_regions(client, db):
     assert "admin-dedicated-y" in region_names
 
 
-def test_public_models_hide_public_regions(client, db):
-    """When team.hide_public_regions is True, public regions are excluded."""
+def test_public_models_team_visibility_uses_explicit_team_regions(client, db):
+    """Team users only see regions explicitly assigned in team_regions."""
     _clear_public_models_cache()
     team = DBTeam(
         name="Hide Public Team",
@@ -768,7 +768,6 @@ def test_public_models_hide_public_regions(client, db):
         billing_address="1 Hide St",
         is_active=True,
         budget_type="periodic",
-        hide_public_regions=True,
     )
     db.add(team)
     db.commit()

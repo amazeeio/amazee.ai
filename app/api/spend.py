@@ -191,8 +191,6 @@ def _assert_user_budget_write_access(
 def _assert_team_region_association(
     db: Session, region: DBRegion, team_id: int
 ) -> None:
-    if not region.is_dedicated:
-        return
     association = (
         db.query(DBTeamRegion)
         .filter(DBTeamRegion.region_id == region.id, DBTeamRegion.team_id == team_id)
@@ -201,7 +199,7 @@ def _assert_team_region_association(
     if not association:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Team is not associated with this dedicated region",
+            detail="Team is not associated with this region",
         )
 
 

@@ -49,7 +49,7 @@ from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +78,7 @@ def _create_default_limits_for_team(team: DBTeam, db: Session) -> None:
 
 async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
     """
-    Create region-scoped LiteLLM teams for active regions.
-
-    New teams are bootstrapped only in shared (non-dedicated) regions.
-    Dedicated regions are provisioned only after explicit team-region association.
+    Create region-scoped LiteLLM teams for the team's explicitly allowed regions.
 
     POOL teams start with $0 budget and a configurable duration (purchases raise budget).
     PERIODIC teams start with the default budget (DEFAULT_MAX_SPEND).
@@ -93,10 +90,15 @@ async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
         else None
     )
 
-    regions_query = db.query(DBRegion).filter(
-        DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False)
+    regions = (
+        db.query(DBRegion)
+        .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
+        .filter(
+            DBRegion.is_active.is_(True),
+            DBTeamRegion.team_id == team.id,
+        )
+        .all()
     )
-    regions = regions_query.all()
 
     for region in regions:
         litellm_service = LiteLLMService(
@@ -109,6 +111,28 @@ async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
             max_budget=max_budget,
             budget_duration=budget_duration,
         )
+
+
+def _seed_default_allowed_regions_for_team(team: DBTeam, db: Session) -> None:
+    # Keep legacy behavior for callers still sending hide_public_regions=True:
+    # explicit list stays empty instead of inheriting all public regions.
+    if team.hide_public_regions:
+        return
+
+    public_regions = (
+        db.query(DBRegion)
+        .filter(
+            DBRegion.is_active.is_(True),
+            DBRegion.is_dedicated.is_(False),
+        )
+        .all()
+    )
+    db.add_all(
+        [
+            DBTeamRegion(team_id=team.id, region_id=region.id)
+            for region in public_regions
+        ]
+    )
 
 
 @router.post("", response_model=Team, status_code=status.HTTP_201_CREATED)
@@ -160,6 +184,8 @@ async def register_team(
     db.add(db_team)
     try:
         db.flush()
+        _seed_default_allowed_regions_for_team(db_team, db)
+        db.flush()
         await _create_litellm_teams_for_new_team(db_team, db)
         db.commit()
         db.refresh(db_team)
@@ -193,7 +219,10 @@ async def list_teams(include_deleted: bool = False, db: Session = Depends(get_db
         include_deleted: If True, include soft-deleted teams in the results. Defaults to False.
     """
     query = db.query(DBTeam).options(
-        joinedload(DBTeam.active_products).joinedload(DBTeamProduct.product)
+        joinedload(DBTeam.active_products).joinedload(DBTeamProduct.product),
+        selectinload(DBTeam.allowed_region_associations).joinedload(
+            DBTeamRegion.region
+        ),
     )
 
     if not include_deleted:
@@ -223,7 +252,12 @@ async def get_team(
     # Build query based on include_deleted flag
     query = (
         db.query(DBTeam)
-        .options(joinedload(DBTeam.active_products).joinedload(DBTeamProduct.product))
+        .options(
+            joinedload(DBTeam.active_products).joinedload(DBTeamProduct.product),
+            selectinload(DBTeam.allowed_region_associations).joinedload(
+                DBTeamRegion.region
+            ),
+        )
         .filter(DBTeam.id == team_id)
     )
 
@@ -753,14 +787,25 @@ async def merge_teams(
                 detail=f"Cannot merge team '{source_team.name}' - it has active product associations: {', '.join(product_names)}. Please remove product associations before merging.",
             )
 
-        # Check if source team has dedicated region associations
-        source_dedicated_regions = (
-            db.query(DBTeamRegion).filter(DBTeamRegion.team_id == source_team.id).all()
+        # Block only if source team has dedicated-region associations; public-region
+        # associations are seeded for every team and will be removed via CASCADE when
+        # the source team is deleted.
+        source_dedicated_region_associations = (
+            db.query(DBTeamRegion)
+            .join(DBRegion, DBTeamRegion.region_id == DBRegion.id)
+            .filter(
+                DBTeamRegion.team_id == source_team.id,
+                DBRegion.is_dedicated.is_(True),
+            )
+            .all()
         )
-        if source_dedicated_regions:
+        if source_dedicated_region_associations:
+            region_names = [
+                assoc.region.name for assoc in source_dedicated_region_associations
+            ]
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot merge team '{source_team.name}' - it has dedicated region associations. Please remove the association before merging.",
+                detail=f"Cannot merge team '{source_team.name}' - it has dedicated region associations: {', '.join(region_names)}. Please remove the dedicated region associations before merging.",
             )
 
         # Get team keys and users (only if no product associations found)

@@ -224,6 +224,32 @@ def test_register_periodic_team_excludes_dedicated_regions_from_litellm_bootstra
     )
 
 
+def test_register_team_seeds_public_region_associations(
+    client, admin_token, test_region, db
+):
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
+        response = client.post(
+            "/teams/",
+            json={
+                "name": "Seed Regions Team",
+                "admin_email": "seed-regions@example.com",
+                "budget_type": "periodic",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+    assert response.status_code == 201
+    team_id = response.json()["id"]
+
+    association = (
+        db.query(DBTeamRegion)
+        .filter(
+            DBTeamRegion.team_id == team_id, DBTeamRegion.region_id == test_region.id
+        )
+        .first()
+    )
+    assert association is not None
+
+
 def test_register_team_allows_purchase_gate_override(client, admin_token):
     response = client.post(
         "/teams/",
@@ -1630,8 +1656,10 @@ def test_merge_teams_with_source_team_dedicated_regions_fails(client, admin_toke
     )
 
     assert response.status_code == 400
-    assert "dedicated region" in response.json()["detail"].lower()
-    assert "remove the association" in response.json()["detail"].lower()
+    assert "region associations" in response.json()["detail"].lower()
+    assert (
+        "remove the dedicated region associations" in response.json()["detail"].lower()
+    )
     assert source_team.name in response.json()["detail"]
 
     # Verify both teams still exist
@@ -1813,8 +1841,10 @@ def test_merge_teams_with_both_teams_dedicated_regions_fails(client, admin_token
     )
 
     assert response.status_code == 400
-    assert "dedicated region" in response.json()["detail"].lower()
-    assert "remove the association" in response.json()["detail"].lower()
+    assert "region associations" in response.json()["detail"].lower()
+    assert (
+        "remove the dedicated region associations" in response.json()["detail"].lower()
+    )
     assert source_team.name in response.json()["detail"]
 
     # Verify both teams still exist
