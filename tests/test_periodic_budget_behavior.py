@@ -207,7 +207,7 @@ async def test_periodic_team_compounds_max_budget(
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.worker.get_team_keys_by_region")
 @patch("app.core.worker.LimitService")
-async def test_periodic_compounding_fallback_on_get_team_info_failure(
+async def test_periodic_compounding_stops_on_get_team_info_failure(
     mock_limit_service,
     mock_get_keys,
     mock_litellm_class,
@@ -216,22 +216,18 @@ async def test_periodic_compounding_fallback_on_get_team_info_failure(
     test_product,
     test_region,
 ):
-    """When get_team_info fails, PERIODIC teams must fall back to the flat
-    monthly cap (max_max_spend) instead of compounding.
+    """When get_team_info fails, apply_product_for_team must abort the sync
+    (break out of the region loop), NOT continue with a flat cap.
 
-    The code at worker.py line ~460 catches the exception and continues
-    with `team_max_budget` still set to `max_max_spend` (the initial value).
+    The payment record must be left as sync_failed so a future retry
+    process can pick it up. No update_team_budget or set_key_restrictions
+    calls should be made after the failure.
 
-        team_max_budget = max_max_spend          # default
-        if is_periodic and keys:
-            try:
-                team_data = ...                   # may fail
-                team_max_budget = spend + cap     # only on success
-            except Exception:
-                logger.warning(...)               # team_max_budget stays flat
-
-    This ensures a transient LiteLLM outage does not block the webhook
-    processing — the team still gets a budget, just without compounding.
+    Rationale: get_team_info is the first LiteLLM call in the sync process.
+    If we can't read the current team spend, compounding is impossible.
+    Continuing with a flat cap would shortchange the team by
+    accumulated_spend, and the payment would be incorrectly marked as
+    "success" with inaccurate data.
     """
     test_team.stripe_customer_id = "cus_fallback"
     db.commit()
@@ -251,11 +247,32 @@ async def test_periodic_compounding_fallback_on_get_team_info_failure(
     # get_team_info blows up
     mock_litellm.get_team_info = AsyncMock(side_effect=Exception("LiteLLM down"))
 
-    await apply_product_for_team(db, "cus_fallback", test_product.id, datetime.now(UTC))
+    # Create a payment record to track sync status
+    payment = DBPeriodicPayment(
+        team_id=test_team.id,
+        stripe_payment_id="pay_fallback",
+        amount_cents=1000,
+        currency="usd",
+        payment_type="subscription",
+        status="completed",
+        sync_status="pending",
+        payment_date=datetime.now(UTC),
+    )
+    db.add(payment)
+    db.commit()
 
-    # Should fall back to flat cap (100.0), not compound
-    team_call = mock_litellm.update_team_budget.await_args
-    assert team_call.kwargs["max_budget"] == 100.0
+    await apply_product_for_team(
+        db, "cus_fallback", test_product.id, datetime.now(UTC), payment.id
+    )
+
+    # Must NOT have called update_team_budget or set_key_restrictions
+    mock_litellm.update_team_budget.assert_not_awaited()
+    mock_litellm.set_key_restrictions.assert_not_awaited()
+
+    # Payment record must be sync_failed with the error logged
+    db.refresh(payment)
+    assert payment.sync_status == "sync_failed"
+    assert "LiteLLM down" in payment.error_log
 
 
 # ─── 5. PERIODIC teams reset key spend to 0 ──────────────────────────────

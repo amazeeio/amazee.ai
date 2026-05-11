@@ -453,6 +453,9 @@ async def apply_product_for_team(
 
             # For PERIODIC teams, compound the max_budget so that
             # (max_budget - accumulated_spend) equals the monthly cap.
+            # get_team_info is the first LiteLLM call in the sync process.
+            # If it fails we abort the sync entirely and leave the payment
+            # record as pending so a future retry can pick it up.
             team_max_budget = max_max_spend
             if is_periodic and keys:
                 try:
@@ -465,9 +468,15 @@ async def apply_product_for_team(
                         f"spend={current_team_spend} + cap={max_max_spend} = {team_max_budget}"
                     )
                 except Exception as e:
-                    logger.warning(
-                        f"Could not read team spend for compounding, using flat cap: {e}"
+                    error_msg = (
+                        f"Failed to read team spend for compounding "
+                        f"(team {team.id}, region {region.name}): {e}"
                     )
+                    logger.error(error_msg)
+                    sync_errors.append(error_msg)
+                    # Do not continue with inaccurate data — mark as failed
+                    # and let a future sync process retry.
+                    break
 
             try:
                 await litellm_service.update_team_budget(
