@@ -88,6 +88,7 @@ class RegionConversionRunner:
         }
 
         self._team_members_cache: dict[tuple[int, str], frozenset[str]] = {}
+        self._pre_conversion_dedicated_only_team_ids: list[int] = []
 
     def _region(self) -> DBRegion | None:
         return (
@@ -104,6 +105,37 @@ class RegionConversionRunner:
         return [
             t.id for t in self._active_teams_query().order_by(DBTeam.id.asc()).all()
         ]
+
+    def _active_public_regions(self) -> list[DBRegion]:
+        return (
+            self.session.query(DBRegion)
+            .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
+            .order_by(DBRegion.id.asc())
+            .all()
+        )
+
+    def _current_associated_region_ids_for_team(self, team_id: int) -> set[int]:
+        rows = (
+            self.session.query(DBTeamRegion.region_id)
+            .filter(DBTeamRegion.team_id == team_id)
+            .all()
+        )
+        return {r[0] for r in rows}
+
+    def _snapshot_preconversion_dedicated_only_teams(self) -> list[int]:
+        teams = self._active_teams_query().order_by(DBTeam.id.asc()).all()
+        public_region_ids = {
+            r.id
+            for r in self.session.query(DBRegion)
+            .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
+            .all()
+        }
+        dedicated_only: list[int] = []
+        for team in teams:
+            assoc_region_ids = self._current_associated_region_ids_for_team(team.id)
+            if assoc_region_ids and assoc_region_ids.isdisjoint(public_region_ids):
+                dedicated_only.append(team.id)
+        return dedicated_only
 
     def _active_users_for_teams(self, team_ids: list[int]) -> list[DBUser]:
         if not team_ids:
@@ -170,6 +202,10 @@ class RegionConversionRunner:
             .count()
         )
 
+        self._pre_conversion_dedicated_only_team_ids = (
+            self._snapshot_preconversion_dedicated_only_teams()
+        )
+
         counters.changed = 1
         self._record_phase(
             "preflight",
@@ -182,6 +218,9 @@ class RegionConversionRunner:
                 "active_team_users": active_users,
                 "region_keys": region_keys,
                 "user_admin_region_rows": admin_region_rows,
+                "pre_conversion_dedicated_only_teams": len(
+                    self._pre_conversion_dedicated_only_team_ids
+                ),
             },
         )
         return counters
@@ -491,6 +530,140 @@ class RegionConversionRunner:
         self._record_phase("litellm-keys", counters, {"region_keys": len(keys)})
         return counters
 
+    async def phase_reverse_transfer_to_public_regions(self) -> Counters:
+        counters = Counters()
+        source_team_ids = list(self._pre_conversion_dedicated_only_team_ids)
+        if not source_team_ids:
+            self._record_phase(
+                "reverse-transfer",
+                counters,
+                {"dedicated_only_teams": 0, "public_regions": 0},
+            )
+            return counters
+
+        public_regions = self._active_public_regions()
+        users = self._active_users_for_teams(source_team_ids)
+
+        for team_id in source_team_ids:
+            current_assocs = self._current_associated_region_ids_for_team(team_id)
+            for region in public_regions:
+                counters.processed += 1
+                if region.id in current_assocs:
+                    counters.skipped += 1
+                    continue
+                counters.changed += 1
+                if not self.dry_run:
+                    self.session.add(DBTeamRegion(team_id=team_id, region_id=region.id))
+
+        if not self.dry_run:
+            self.session.commit()
+        else:
+            self.session.rollback()
+
+        for region in public_regions:
+            service = LiteLLMService(region.litellm_api_url, region.litellm_api_key)
+            for team_id in source_team_ids:
+                lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+                try:
+                    await service.get_team_info(lite_team_id)
+                except Exception as exc:
+                    if parse_status_from_exc(exc) != 404:
+                        counters.failed += 1
+                        self.failures.append(
+                            {
+                                "phase": "reverse-transfer",
+                                "team_id": team_id,
+                                "region_id": region.id,
+                                "error": str(exc),
+                            }
+                        )
+                        continue
+                    if not self.dry_run:
+                        team = (
+                            self.session.query(DBTeam)
+                            .filter(DBTeam.id == team_id)
+                            .first()
+                        )
+                        if team is None:
+                            counters.failed += 1
+                            continue
+                        if team.requires_pool_purchase_gate:
+                            max_budget = 0.0
+                            budget_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+                        else:
+                            max_budget = None
+                            budget_duration = None
+                        await service.create_team(
+                            team_id=lite_team_id,
+                            team_alias=lite_team_id,
+                            max_budget=max_budget,
+                            budget_duration=budget_duration,
+                        )
+
+            for user in users:
+                if is_trial_user(user.email):
+                    continue
+                lite_team_id = LiteLLMService.format_team_id(region.name, user.team_id)
+                try:
+                    try:
+                        await service.get_user_info(str(user.id))
+                    except Exception as exc:
+                        if parse_status_from_exc(exc) != 404:
+                            raise
+                        if not self.dry_run:
+                            await service.create_user(
+                                user_id=str(user.id),
+                                user_email=user.email,
+                                auto_create_key=False,
+                            )
+
+                    cache_key = (region.id, lite_team_id)
+                    if cache_key not in self._team_members_cache:
+                        try:
+                            info = await service.get_team_info(lite_team_id)
+                            team_data = info.get("team_info", info)
+                            members = team_data.get("members", [])
+                            self._team_members_cache[cache_key] = frozenset(
+                                str(m.get("user_id", "")) for m in members
+                            )
+                        except Exception as exc:
+                            if parse_status_from_exc(exc) != 404:
+                                raise
+                            self._team_members_cache[cache_key] = frozenset()
+
+                    if str(user.id) not in self._team_members_cache[cache_key]:
+                        if not self.dry_run:
+                            await service.add_team_member(
+                                team_id=lite_team_id,
+                                user_id=str(user.id),
+                                role="user",
+                            )
+                        self._team_members_cache[cache_key] = frozenset(
+                            set(self._team_members_cache[cache_key]) | {str(user.id)}
+                        )
+                except Exception as exc:
+                    counters.failed += 1
+                    self.failures.append(
+                        {
+                            "phase": "reverse-transfer",
+                            "user_id": user.id,
+                            "team_id": user.team_id,
+                            "region_id": region.id,
+                            "error": str(exc),
+                        }
+                    )
+
+        self._record_phase(
+            "reverse-transfer",
+            counters,
+            {
+                "dedicated_only_teams": len(source_team_ids),
+                "public_regions": len(public_regions),
+                "users_in_scope": len(users),
+            },
+        )
+        return counters
+
     async def phase_verify(self) -> Counters:
         counters = Counters(processed=1)
         region = self._region()
@@ -596,6 +769,8 @@ async def main() -> int:
             await runner.phase_litellm_users()
         if args.phase in ("litellm-keys", "all"):
             await runner.phase_litellm_keys()
+        if args.phase in ("all",):
+            await runner.phase_reverse_transfer_to_public_regions()
         if args.phase in ("verify", "all"):
             await runner.phase_verify()
     finally:
