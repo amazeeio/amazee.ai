@@ -17,6 +17,19 @@ down_revision: Union[str, None] = "f4d2c6a9b1e7"
 
 
 def upgrade() -> None:
+    # Idempotent: skip if column already exists (can happen when alembic
+    # stamp was ahead of actual schema and migrations are being replayed).
+    conn = op.get_bind()
+    result = conn.execute(
+        sa.text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'teams' AND column_name = 'require_purchase_for_requests'"
+        )
+    )
+    if result.fetchone():
+        print("Column 'require_purchase_for_requests' already exists - skipping")
+        return
+
     op.add_column(
         "teams",
         sa.Column(
