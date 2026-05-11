@@ -3,7 +3,11 @@ from datetime import datetime, UTC
 from unittest.mock import MagicMock, patch, AsyncMock
 from sqlalchemy.orm import Session
 from app.db.models import DBPeriodicPayment
-from app.core.worker import _record_periodic_payment, apply_product_for_team
+from app.core.worker import (
+    _record_periodic_payment,
+    apply_product_for_team,
+    handle_stripe_event_background,
+)
 
 
 @pytest.fixture
@@ -19,7 +23,7 @@ def mock_event():
 
 @pytest.fixture
 def mock_session_event():
-    event = MagicMock()
+    event = MagicMock(spec=["id", "customer", "amount_total", "currency", "metadata"])
     event.id = "cs_test_123"
     event.customer = "cus_test_123"
     event.amount_total = 5000
@@ -182,3 +186,131 @@ async def test_apply_product_updates_sync_status_failure(
     db.refresh(payment)
     assert payment.sync_status == "sync_failed"
     assert "Gateway Timeout" in payment.error_log
+
+
+# --- Tests for AttributeError fallback paths in handle_stripe_event_background ---
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.get_db")
+@patch("app.core.worker.apply_product_for_team", new_callable=AsyncMock)
+@patch("app.core.worker.get_product_id_from_subscription", new_callable=AsyncMock)
+@patch("app.core.worker._record_periodic_payment", new_callable=AsyncMock)
+async def test_invoice_success_no_subscription_no_parent(
+    mock_record,
+    mock_get_product_id,
+    mock_apply_product,
+    mock_get_db,
+):
+    """Invoice success event with no subscription attribute and no parent
+    should complete without error and NOT call apply_product_for_team."""
+    mock_db = MagicMock()
+    mock_db.close = MagicMock()
+    mock_get_db.return_value = iter([mock_db])
+    mock_record.return_value = None
+
+    event = MagicMock()
+    event.type = "invoice.paid"
+    event_object = MagicMock()
+    event_object.customer = "cus_inv_no_sub"
+    event_object.subscription = None
+    del event_object.parent
+    event_object.period_start = int(datetime.now(UTC).timestamp())
+    event.data.object = event_object
+
+    await handle_stripe_event_background(event)
+
+    mock_apply_product.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.get_db")
+@patch("app.core.worker.apply_product_for_team", new_callable=AsyncMock)
+@patch("app.core.worker.get_product_id_from_subscription", new_callable=AsyncMock)
+@patch("app.core.worker._record_periodic_payment", new_callable=AsyncMock)
+async def test_invoice_success_parent_missing_subscription_details(
+    mock_record,
+    mock_get_product_id,
+    mock_apply_product,
+    mock_get_db,
+):
+    """Invoice success event where parent exists but subscription_details
+    raises AttributeError should complete without error."""
+    mock_db = MagicMock()
+    mock_db.close = MagicMock()
+    mock_get_db.return_value = iter([mock_db])
+    mock_record.return_value = None
+
+    event = MagicMock()
+    event.type = "invoice.paid"
+    event_object = MagicMock()
+    event_object.customer = "cus_inv_attr_err"
+    event_object.subscription = None
+    event_object.parent = MagicMock()
+    # Make subscription_details.subscription raise AttributeError
+    del event_object.parent.subscription_details.subscription
+    event_object.period_start = int(datetime.now(UTC).timestamp())
+    event.data.object = event_object
+
+    await handle_stripe_event_background(event)
+
+    # Should not crash; apply_product should not be called since
+    # subscription remains None after the AttributeError
+    mock_apply_product.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.get_db")
+@patch("app.core.worker.remove_product_from_team", new_callable=AsyncMock)
+@patch("app.core.worker.get_product_id_from_subscription", new_callable=AsyncMock)
+async def test_invoice_failure_no_subscription_no_parent(
+    mock_get_product_id,
+    mock_remove_product,
+    mock_get_db,
+):
+    """Invoice failure event with no subscription and no parent
+    should complete without error and NOT call remove_product_from_team."""
+    mock_db = MagicMock()
+    mock_db.close = MagicMock()
+    mock_get_db.return_value = iter([mock_db])
+
+    event = MagicMock()
+    event.type = "invoice.payment_failed"
+    event_object = MagicMock()
+    event_object.customer = "cus_inv_fail_no_sub"
+    event_object.subscription = None
+    del event_object.parent
+    event.data.object = event_object
+
+    await handle_stripe_event_background(event)
+
+    mock_remove_product.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.get_db")
+@patch("app.core.worker.remove_product_from_team", new_callable=AsyncMock)
+@patch("app.core.worker.get_product_id_from_subscription", new_callable=AsyncMock)
+async def test_invoice_failure_parent_missing_subscription_details(
+    mock_get_product_id,
+    mock_remove_product,
+    mock_get_db,
+):
+    """Invoice failure event where parent exists but subscription_details
+    raises AttributeError should complete without error."""
+    mock_db = MagicMock()
+    mock_db.close = MagicMock()
+    mock_get_db.return_value = iter([mock_db])
+
+    event = MagicMock()
+    event.type = "invoice.payment_failed"
+    event_object = MagicMock()
+    event_object.customer = "cus_inv_fail_attr_err"
+    event_object.subscription = None
+    event_object.parent = MagicMock()
+    del event_object.parent.subscription_details.subscription
+    event.data.object = event_object
+
+    await handle_stripe_event_background(event)
+
+    mock_remove_product.assert_not_awaited()
