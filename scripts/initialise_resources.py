@@ -11,6 +11,7 @@ import alembic.command
 import asyncio
 import glob
 from sqlalchemy import inspect
+from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.orm import sessionmaker, Session
 from app.db.database import engine
 from app.db.models import Base, DBUser
@@ -52,7 +53,7 @@ def verify_schema_matches_models() -> None:
 
 
 def _restamp_to_safe_revision(
-    alembic_cfg: alembic.config.Config, inspector: inspect
+    alembic_cfg: alembic.config.Config, inspector: Inspector
 ) -> None:
     """Re-stamp alembic to the ``down_revision`` of the first migration
     (from head backwards) whose schema effects are missing from the DB.
@@ -75,50 +76,103 @@ def _restamp_to_safe_revision(
             }
         return db_columns_cache[table_name]
 
-    # Walk from head backwards to find the earliest unapplied revision
-    last_good_revision = None
     revision = script.get_current_head()
+    if revision is None:
+        print("Could not determine alembic head revision - skipping re-stamp")
+        return
 
-    while revision:
-        rev_obj = script.get_revision(revision)
+    pending = [revision]
+    visited: set[str] = set()
+    missing_revisions: set[str] = set()
+    parent_map: dict[str, tuple[str, ...]] = {}
+
+    while pending:
+        current_revision = pending.pop()
+        if current_revision in visited:
+            continue
+        visited.add(current_revision)
+
+        rev_obj = script.get_revision(current_revision)
         if rev_obj is None:
-            break
+            print(
+                f"Could not resolve revision {current_revision} - skipping re-stamp"
+            )
+            return
 
-        # Parse the migration source to find create_table / add_column targets
+        path = getattr(rev_obj, "path", None)
+        if not path:
+            print(
+                f"Could not read source path for revision {current_revision} - skipping re-stamp"
+            )
+            return
+
         try:
-            source = pathlib.Path(rev_obj.module.__file__).read_text()
-        except Exception:
-            break
+            source = pathlib.Path(path).read_text()
+        except Exception as exc:
+            print(
+                f"Could not analyze migration {current_revision} ({exc}) - skipping re-stamp"
+            )
+            return
 
-        creates_missing = _migration_has_missing_ops(source, db_tables, _get_columns)
+        has_relevant_ops, creates_missing = _migration_has_missing_ops(
+            source, db_tables, _get_columns
+        )
+
+        down_revision = rev_obj.down_revision
+        if down_revision is None:
+            parents: tuple[str, ...] = ()
+        elif isinstance(down_revision, tuple):
+            parents = down_revision
+        else:
+            parents = (down_revision,)
+        parent_map[current_revision] = parents
 
         if creates_missing:
-            # This revision hasn't been applied yet – remember its parent
-            down = rev_obj.down_revision
-            last_good_revision = down if not isinstance(down, tuple) else down[0]
-        else:
-            # This revision's effects are present – stop
-            last_good_revision = revision
-            break
+            missing_revisions.add(current_revision)
 
-        revision = last_good_revision
+        if has_relevant_ops or parents:
+            pending.extend(parents)
 
-    stamp_target = last_good_revision or "base"
+    if not missing_revisions:
+        print(
+            "Schema gap detected but no actionable migration ops found - keeping current alembic stamp"
+        )
+        return
+
+    stamp_targets: set[str] = set()
+    for missing_revision in missing_revisions:
+        parents = parent_map.get(missing_revision, ())
+        if not parents:
+            stamp_targets.add("base")
+            continue
+        for parent in parents:
+            if parent not in missing_revisions:
+                stamp_targets.add(parent)
+
+    if len(stamp_targets) != 1:
+        print(
+            f"Could not determine a single safe alembic stamp target ({sorted(stamp_targets)}) - keeping current stamp"
+        )
+        return
+
+    stamp_target = next(iter(stamp_targets))
     print(f"Re-stamping alembic to revision: {stamp_target}")
     alembic.command.stamp(alembic_cfg, stamp_target)
 
 
 def _migration_has_missing_ops(
     source: str, db_tables: set, get_columns
-) -> bool:
-    """Return True if the migration source contains ``create_table`` or
-    ``add_column`` calls targeting tables/columns not yet in the DB."""
+) -> tuple[bool, bool]:
+    """Return (has_relevant_ops, has_missing_ops) for schema operations."""
     import ast
 
     try:
         tree = ast.parse(source)
     except SyntaxError:
-        return True
+        return True, True
+
+    has_relevant_ops = False
+    has_missing_ops = False
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -128,12 +182,14 @@ def _migration_has_missing_ops(
             continue
 
         if func.attr == "create_table":
+            has_relevant_ops = True
             # First positional arg is the table name
             if node.args and isinstance(node.args[0], ast.Constant):
                 if node.args[0].value not in db_tables:
-                    return True
+                    has_missing_ops = True
 
         elif func.attr == "add_column":
+            has_relevant_ops = True
             # First arg = table name, second arg = Column with name
             if (
                 len(node.args) >= 2
@@ -151,9 +207,47 @@ def _migration_has_missing_ops(
                 ):
                     col_name = col_arg.args[0].value
                     if col_name not in get_columns(table_name):
-                        return True
+                        has_missing_ops = True
+                elif table_name not in db_tables:
+                    has_missing_ops = True
 
-    return False
+        elif func.attr == "rename_table":
+            has_relevant_ops = True
+            if (
+                len(node.args) >= 2
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[1], ast.Constant)
+            ):
+                old_name = node.args[0].value
+                new_name = node.args[1].value
+                if old_name in db_tables and new_name not in db_tables:
+                    has_missing_ops = True
+
+        elif func.attr == "alter_column":
+            has_relevant_ops = True
+            if len(node.args) >= 2 and isinstance(node.args[0], ast.Constant):
+                table_name = node.args[0].value
+                if not isinstance(node.args[1], ast.Constant):
+                    continue
+                old_col_name = node.args[1].value
+                new_col_name = None
+                for kwarg in node.keywords:
+                    if (
+                        kwarg.arg == "new_column_name"
+                        and isinstance(kwarg.value, ast.Constant)
+                    ):
+                        new_col_name = kwarg.value.value
+                        break
+
+                if new_col_name and table_name in db_tables:
+                    existing_columns = get_columns(table_name)
+                    if (
+                        old_col_name in existing_columns
+                        and new_col_name not in existing_columns
+                    ):
+                        has_missing_ops = True
+
+    return has_relevant_ops, has_missing_ops
 
 
 def init_database() -> Session:
