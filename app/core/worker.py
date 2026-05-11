@@ -298,8 +298,12 @@ async def handle_stripe_event_background(event):
             if not subscription and hasattr(event_object, "parent"):
                 try:
                     subscription = event_object.parent.subscription_details.subscription
-                except AttributeError:
-                    pass
+                except AttributeError as err:
+                    logger.debug(
+                        "Invoice object missing nested subscription_details.subscription; "
+                        "continuing without subscription fallback: %s",
+                        err,
+                    )
 
             if subscription:
                 product_id = await get_product_id_from_subscription(subscription)
