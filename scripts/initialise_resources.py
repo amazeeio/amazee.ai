@@ -51,6 +51,111 @@ def verify_schema_matches_models() -> None:
         raise RuntimeError("Schema verification failed - " + "; ".join(details))
 
 
+def _restamp_to_safe_revision(
+    alembic_cfg: alembic.config.Config, inspector: inspect
+) -> None:
+    """Re-stamp alembic to the ``down_revision`` of the first migration
+    (from head backwards) whose schema effects are missing from the DB.
+
+    This handles the case where ``alembic_version`` was stamped past
+    migrations that never actually ran (e.g. a ``create_all`` +
+    ``stamp('head')`` on a previous deploy that missed later migrations).
+    """
+    from alembic.script import ScriptDirectory
+    import pathlib
+
+    script = ScriptDirectory.from_config(alembic_cfg)
+    db_tables = set(inspector.get_table_names())
+    db_columns_cache: dict[str, set[str]] = {}
+
+    def _get_columns(table_name: str) -> set[str]:
+        if table_name not in db_columns_cache:
+            db_columns_cache[table_name] = {
+                col["name"] for col in inspector.get_columns(table_name)
+            }
+        return db_columns_cache[table_name]
+
+    # Walk from head backwards to find the earliest unapplied revision
+    last_good_revision = None
+    revision = script.get_current_head()
+
+    while revision:
+        rev_obj = script.get_revision(revision)
+        if rev_obj is None:
+            break
+
+        # Parse the migration source to find create_table / add_column targets
+        try:
+            source = pathlib.Path(rev_obj.module.__file__).read_text()
+        except Exception:
+            break
+
+        creates_missing = _migration_has_missing_ops(source, db_tables, _get_columns)
+
+        if creates_missing:
+            # This revision hasn't been applied yet – remember its parent
+            down = rev_obj.down_revision
+            last_good_revision = down if not isinstance(down, tuple) else down[0]
+        else:
+            # This revision's effects are present – stop
+            last_good_revision = revision
+            break
+
+        revision = last_good_revision
+
+    stamp_target = last_good_revision or "base"
+    print(f"Re-stamping alembic to revision: {stamp_target}")
+    alembic.command.stamp(alembic_cfg, stamp_target)
+
+
+def _migration_has_missing_ops(
+    source: str, db_tables: set, get_columns
+) -> bool:
+    """Return True if the migration source contains ``create_table`` or
+    ``add_column`` calls targeting tables/columns not yet in the DB."""
+    import ast
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return True
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            continue
+
+        if func.attr == "create_table":
+            # First positional arg is the table name
+            if node.args and isinstance(node.args[0], ast.Constant):
+                if node.args[0].value not in db_tables:
+                    return True
+
+        elif func.attr == "add_column":
+            # First arg = table name, second arg = Column with name
+            if (
+                len(node.args) >= 2
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[1], ast.Call)
+            ):
+                table_name = node.args[0].value
+                col_arg = node.args[1]
+                if (
+                    table_name in db_tables
+                    and isinstance(col_arg.func, ast.Attribute)
+                    and col_arg.func.attr == "Column"
+                    and col_arg.args
+                    and isinstance(col_arg.args[0], ast.Constant)
+                ):
+                    col_name = col_arg.args[0].value
+                    if col_name not in get_columns(table_name):
+                        return True
+
+    return False
+
+
 def init_database() -> Session:
     # Check if database is empty (no tables exist)
     inspector = inspect(engine)
@@ -76,6 +181,21 @@ def init_database() -> Session:
         print("Stamped alembic version for future migrations")
     else:
         print("Tables already exist - running migrations...")
+
+        # Guard against stale alembic stamps: if the DB reports it is at
+        # head but the actual schema is missing tables/columns, re-stamp
+        # to a safe point so ``upgrade head`` can replay missing migrations.
+        # We walk backwards from head, checking each revision's upgrade()
+        # effects until we find one that has already been applied.
+        try:
+            verify_schema_matches_models()
+        except RuntimeError as exc:
+            print(
+                f"Schema gap detected ({exc}) "
+                f"- finding safe alembic stamp point to replay migrations"
+            )
+            _restamp_to_safe_revision(alembic_cfg, inspector)
+
         alembic.command.upgrade(alembic_cfg, "head")
         print("Database migrations completed successfully!")
 
