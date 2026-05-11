@@ -354,7 +354,12 @@ async def handle_stripe_event_background(event):
                 try:
                     subscription = event_object.parent.subscription_details.subscription
                 except AttributeError:
-                    pass
+                    # Some invoice payloads do not include nested subscription details.
+                    # Keep existing behavior (no subscription fallback) but make it explicit.
+                    logger.debug(
+                        "Invoice event missing parent.subscription_details.subscription; "
+                        "skipping subscription-based removal fallback."
+                    )
 
             if subscription:
                 product_id = await get_product_id_from_subscription(subscription)
