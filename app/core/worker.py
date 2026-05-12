@@ -40,6 +40,10 @@ from typing import Dict, List, Optional
 from app.core.security import create_access_token
 from app.core.config import settings
 from urllib.parse import urljoin
+from app.core.spend_period_service import (
+    fetch_team_spend_snapshot_for_region,
+    upsert_team_spend_period,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +216,7 @@ async def handle_stripe_event_background(event):
             logger.info(f"Unknown event type: {event_type}")
             return
         event_object = event.data.object
+        event_id = getattr(event, "id", None)
         customer_id = event_object.customer
         if not customer_id:
             logger.warning("No customer ID found in event, cannot complete processing")
@@ -228,6 +233,12 @@ async def handle_stripe_event_background(event):
             product_id = await get_product_id_from_subscription(subscription)
             start_date = datetime.fromtimestamp(event_object.period_start, tz=UTC)
             await apply_product_for_team(db, customer_id, product_id, start_date)
+            await capture_periodic_team_spend_for_invoice(
+                db=db,
+                customer_id=customer_id,
+                invoice_obj=event_object,
+                stripe_event_id=event_id,
+            )
         # Failure Events
         elif event_type in SESSION_FAILURE_EVENTS:
             product_id = await get_product_id_from_session(event_object.id)
@@ -244,6 +255,72 @@ async def handle_stripe_event_background(event):
         logger.error(f"Error in background event handler: {str(e)}")
     finally:
         db.close()
+
+
+async def capture_periodic_team_spend_for_invoice(
+    *,
+    db: Session,
+    customer_id: str,
+    invoice_obj,
+    stripe_event_id: str | None,
+) -> None:
+    team = db.query(DBTeam).filter(DBTeam.stripe_customer_id == customer_id).first()
+    if team is None:
+        logger.warning(
+            "Skipping spend period capture: no team for customer_id=%s", customer_id
+        )
+        return
+    if team.budget_type != BudgetType.PERIODIC:
+        return
+
+    period_start_ts = getattr(invoice_obj, "period_start", None)
+    period_end_ts = getattr(invoice_obj, "period_end", None)
+    if period_start_ts is None or period_end_ts is None:
+        logger.warning(
+            "Skipping spend period capture: missing period_start/period_end for team_id=%s",
+            team.id,
+        )
+        return
+
+    period_start = datetime.fromtimestamp(period_start_ts, tz=UTC)
+    period_end = datetime.fromtimestamp(period_end_ts, tz=UTC)
+
+    keys_by_region = get_team_keys_by_region(db, team.id)
+    if not keys_by_region:
+        return
+
+    for region in keys_by_region.keys():
+        try:
+            snapshot = await fetch_team_spend_snapshot_for_region(
+                db=db,
+                team=team,
+                region=region,
+            )
+            upsert_team_spend_period(
+                db=db,
+                team=team,
+                region_id=region.id,
+                period_start=period_start,
+                period_end=period_end,
+                source="stripe_webhook_litellm_sync",
+                snapshot=snapshot,
+                stripe_event_id=stripe_event_id,
+                stripe_invoice_id=getattr(invoice_obj, "id", None),
+                stripe_subscription_id=getattr(
+                    getattr(getattr(invoice_obj, "parent", None), "subscription_details", None),
+                    "subscription",
+                    None,
+                ),
+            )
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            logger.error(
+                "Failed to capture spend period for team_id=%s region_id=%s: %s",
+                team.id,
+                region.id,
+                str(exc),
+            )
 
 
 async def apply_product_for_team(
