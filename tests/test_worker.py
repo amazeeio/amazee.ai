@@ -3524,8 +3524,8 @@ async def test_subscription_success_does_not_capture_spend(
     """
     GIVEN: A customer.subscription.updated event (SUBSCRIPTION_SUCCESS)
     WHEN:  handle_stripe_event_background is called
-    THEN:  No spend-period snapshot is captured (subscriptions lack period_start/end)
-           and no warning is logged about missing period fields.
+    THEN:  No spend-period snapshot is captured (subscriptions lack period_start/end
+           and capture_periodic_team_spend_for_invoice is not called).
     """
     from app.db.models import DBTeamSpendPeriod
 

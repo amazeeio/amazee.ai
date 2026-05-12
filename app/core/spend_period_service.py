@@ -154,16 +154,25 @@ def upsert_team_spend_period(
             source=source,
             created_at=datetime.now(UTC),
         )
-        db.add(new_row)
         try:
-            db.flush()
+            # Use a savepoint so that a concurrent insert only rolls back the
+            # nested transaction, leaving the outer transaction intact.
+            with db.begin_nested():
+                db.add(new_row)
+                db.flush()
             row = new_row
         except IntegrityError:
-            # Another concurrent task inserted the same row; roll back and re-fetch.
-            db.rollback()
+            # Another concurrent task inserted the same row; the savepoint was
+            # rolled back, so the outer transaction is still valid – re-fetch.
             row = _query_spend_period(
                 db, team.id, region_id, budget_type, period_start, period_end
             )
+            if row is None:
+                raise RuntimeError(
+                    f"Concurrent insert race: spend period not found after IntegrityError "
+                    f"(team_id={team.id} region_id={region_id} "
+                    f"window={period_start} to {period_end})"
+                )
 
     row.currency = None
     row.total_spend = float(snapshot.get("total_spend", 0.0) or 0.0)

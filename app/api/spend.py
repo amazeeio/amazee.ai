@@ -91,6 +91,7 @@ async def get_team_spend_history(
             TeamSpendHistoryKeyItem(
                 key_id=row.key_id,
                 owner_id=row.owner_id,
+                key_name_snapshot=row.key_name_snapshot,
                 spend=round(float(row.spend or 0.0), 4),
                 max_budget=(
                     round(float(row.max_budget), 4)

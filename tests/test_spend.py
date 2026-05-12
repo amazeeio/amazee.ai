@@ -2264,6 +2264,7 @@ def test_get_team_spend_history_includes_key_rows(
     assert len(keys) == 1
     assert keys[0]["key_id"] == key.id
     assert keys[0]["owner_id"] == test_team_user.id
+    assert keys[0]["key_name_snapshot"] == "hist-key"
     assert keys[0]["spend"] == 7.5
     assert keys[0]["max_budget"] == 50.0
 

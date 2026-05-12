@@ -225,7 +225,8 @@ async def purchase_pool_budget(
             detail="A purchase with this stripe_payment_id already exists",
         )
 
-    # Capture spend for the closing POOL period BEFORE mutating budget state.
+    # Compute the closing POOL period window using the state BEFORE the new
+    # purchase is recorded (latest_purchase_at must be queried before the insert).
     latest_purchase_at = (
         db.query(func.max(DBPoolPurchase.purchased_at))
         .filter(
@@ -235,6 +236,35 @@ async def purchase_pool_budget(
     )
     period_start = latest_purchase_at or team.created_at or purchase.purchased_at
     period_end = purchase.purchased_at
+
+    # Insert the purchase record and flush BEFORE any external calls so that
+    # stripe_payment_id uniqueness is enforced in the DB before side effects.
+    # Concurrent duplicate requests will fail here rather than wasting an
+    # external LiteLLM round-trip.
+    purchase_record = DBPoolPurchase(
+        team_id=team_id,
+        region_id=region_id,
+        amount_cents=purchase.amount_cents,
+        currency=purchase.currency,
+        purchased_at=purchase.purchased_at,
+        stripe_payment_id=purchase.stripe_payment_id,
+        created_at=datetime.now(UTC),
+    )
+    db.add(purchase_record)
+
+    team.last_pool_purchase = purchase.purchased_at
+
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A purchase with this stripe_payment_id already exists",
+        )
+
+    # Capture spend for the closing POOL period BEFORE mutating budget state.
+    # Uses the pre-computed period window (before the insert above).
     if period_start and period_end and period_end > period_start:
         try:
             snapshot = await fetch_team_spend_snapshot_for_region(
@@ -268,19 +298,6 @@ async def purchase_pool_budget(
             # LiteLLM DNS/network issues in tests or degraded environments).
             # Budget update/purchase recording remains the primary operation.
 
-    purchase_record = DBPoolPurchase(
-        team_id=team_id,
-        region_id=region_id,
-        amount_cents=purchase.amount_cents,
-        currency=purchase.currency,
-        purchased_at=purchase.purchased_at,
-        stripe_payment_id=purchase.stripe_payment_id,
-        created_at=datetime.now(UTC),
-    )
-    db.add(purchase_record)
-
-    team.last_pool_purchase = purchase.purchased_at
-
     amount_dollars = purchase.amount_cents / 100.0
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
@@ -302,17 +319,6 @@ async def purchase_pool_budget(
             team_id,
             region_id,
             str(exc),
-        )
-
-    # Flush before external side effects so stripe_payment_id uniqueness is
-    # enforced in this transaction (handles concurrent duplicate requests).
-    try:
-        db.flush()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A purchase with this stripe_payment_id already exists",
         )
 
     total_purchased_cents = (
