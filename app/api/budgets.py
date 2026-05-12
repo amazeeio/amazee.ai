@@ -267,7 +267,6 @@ async def purchase_pool_budget(
             # Do not block purchases if snapshot capture fails (e.g. transient
             # LiteLLM DNS/network issues in tests or degraded environments).
             # Budget update/purchase recording remains the primary operation.
-            pass
 
     purchase_record = DBPoolPurchase(
         team_id=team_id,
