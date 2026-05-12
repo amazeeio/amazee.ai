@@ -71,7 +71,9 @@ def test_upsert_team_spend_period_creates_parent_and_keys(db, test_team, test_re
     assert len(keys) == 2
 
 
-def test_upsert_team_spend_period_is_idempotent_for_same_window(db, test_team, test_region):
+def test_upsert_team_spend_period_is_idempotent_for_same_window(
+    db, test_team, test_region
+):
     period_start = datetime(2026, 4, 1, tzinfo=UTC)
     period_end = datetime(2026, 5, 1, tzinfo=UTC)
 

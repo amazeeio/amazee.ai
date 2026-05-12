@@ -49,13 +49,45 @@ def upgrade() -> None:
             name="uq_team_spend_period_unique_window",
         ),
     )
-    op.create_index(op.f("ix_team_spend_periods_id"), "team_spend_periods", ["id"], unique=False)
-    op.create_index(op.f("ix_team_spend_periods_team_id"), "team_spend_periods", ["team_id"], unique=False)
-    op.create_index(op.f("ix_team_spend_periods_region_id"), "team_spend_periods", ["region_id"], unique=False)
-    op.create_index(op.f("ix_team_spend_periods_budget_type"), "team_spend_periods", ["budget_type"], unique=False)
-    op.create_index(op.f("ix_team_spend_periods_period_start"), "team_spend_periods", ["period_start"], unique=False)
-    op.create_index(op.f("ix_team_spend_periods_period_end"), "team_spend_periods", ["period_end"], unique=False)
-    op.create_index(op.f("ix_team_spend_periods_stripe_event_id"), "team_spend_periods", ["stripe_event_id"], unique=False)
+    op.create_index(
+        op.f("ix_team_spend_periods_id"), "team_spend_periods", ["id"], unique=False
+    )
+    op.create_index(
+        op.f("ix_team_spend_periods_team_id"),
+        "team_spend_periods",
+        ["team_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_team_spend_periods_region_id"),
+        "team_spend_periods",
+        ["region_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_team_spend_periods_budget_type"),
+        "team_spend_periods",
+        ["budget_type"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_team_spend_periods_period_start"),
+        "team_spend_periods",
+        ["period_start"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_team_spend_periods_period_end"),
+        "team_spend_periods",
+        ["period_end"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_team_spend_periods_stripe_event_id"),
+        "team_spend_periods",
+        ["stripe_event_id"],
+        unique=False,
+    )
 
     op.create_table(
         "team_spend_period_keys",
@@ -71,24 +103,55 @@ def upgrade() -> None:
         sa.Column("total_tokens", sa.Integer(), nullable=True),
         sa.ForeignKeyConstraint(["key_id"], ["ai_tokens.id"], ondelete="SET NULL"),
         sa.ForeignKeyConstraint(["owner_id"], ["users.id"], ondelete="SET NULL"),
-        sa.ForeignKeyConstraint(["team_spend_period_id"], ["team_spend_periods.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(
+            ["team_spend_period_id"], ["team_spend_periods.id"], ondelete="CASCADE"
+        ),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("team_spend_period_id", "key_id", name="uq_team_spend_period_key"),
+        sa.UniqueConstraint(
+            "team_spend_period_id", "key_id", name="uq_team_spend_period_key"
+        ),
     )
-    op.create_index(op.f("ix_team_spend_period_keys_id"), "team_spend_period_keys", ["id"], unique=False)
-    op.create_index(op.f("ix_team_spend_period_keys_team_spend_period_id"), "team_spend_period_keys", ["team_spend_period_id"], unique=False)
+    op.create_index(
+        op.f("ix_team_spend_period_keys_id"),
+        "team_spend_period_keys",
+        ["id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_team_spend_period_keys_team_spend_period_id"),
+        "team_spend_period_keys",
+        ["team_spend_period_id"],
+        unique=False,
+    )
 
 
 def downgrade() -> None:
-    op.drop_index(op.f("ix_team_spend_period_keys_team_spend_period_id"), table_name="team_spend_period_keys")
-    op.drop_index(op.f("ix_team_spend_period_keys_id"), table_name="team_spend_period_keys")
+    op.drop_index(
+        op.f("ix_team_spend_period_keys_team_spend_period_id"),
+        table_name="team_spend_period_keys",
+    )
+    op.drop_index(
+        op.f("ix_team_spend_period_keys_id"), table_name="team_spend_period_keys"
+    )
     op.drop_table("team_spend_period_keys")
 
-    op.drop_index(op.f("ix_team_spend_periods_stripe_event_id"), table_name="team_spend_periods")
-    op.drop_index(op.f("ix_team_spend_periods_period_end"), table_name="team_spend_periods")
-    op.drop_index(op.f("ix_team_spend_periods_period_start"), table_name="team_spend_periods")
-    op.drop_index(op.f("ix_team_spend_periods_budget_type"), table_name="team_spend_periods")
-    op.drop_index(op.f("ix_team_spend_periods_region_id"), table_name="team_spend_periods")
-    op.drop_index(op.f("ix_team_spend_periods_team_id"), table_name="team_spend_periods")
+    op.drop_index(
+        op.f("ix_team_spend_periods_stripe_event_id"), table_name="team_spend_periods"
+    )
+    op.drop_index(
+        op.f("ix_team_spend_periods_period_end"), table_name="team_spend_periods"
+    )
+    op.drop_index(
+        op.f("ix_team_spend_periods_period_start"), table_name="team_spend_periods"
+    )
+    op.drop_index(
+        op.f("ix_team_spend_periods_budget_type"), table_name="team_spend_periods"
+    )
+    op.drop_index(
+        op.f("ix_team_spend_periods_region_id"), table_name="team_spend_periods"
+    )
+    op.drop_index(
+        op.f("ix_team_spend_periods_team_id"), table_name="team_spend_periods"
+    )
     op.drop_index(op.f("ix_team_spend_periods_id"), table_name="team_spend_periods")
     op.drop_table("team_spend_periods")

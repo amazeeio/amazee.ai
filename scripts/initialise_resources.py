@@ -113,13 +113,13 @@ def _restamp_to_safe_revision(
 
     # If we get here, all revisions look applied but schema still fails.
     # Fall back to base to let alembic replay everything.
-    print("All migrations appear applied but schema still has gaps - re-stamping to base")
+    print(
+        "All migrations appear applied but schema still has gaps - re-stamping to base"
+    )
     alembic.command.stamp(alembic_cfg, "base")
 
 
-def _migration_has_missing_ops(
-    source: str, db_tables: set, get_columns
-) -> bool:
+def _migration_has_missing_ops(source: str, db_tables: set, get_columns) -> bool:
     """Return True when migration schema operations appear unapplied."""
     import ast
 
@@ -180,9 +180,8 @@ def _migration_has_missing_ops(
                 old_col_name = node.args[1].value
                 new_col_name = None
                 for kwarg in node.keywords:
-                    if (
-                        kwarg.arg == "new_column_name"
-                        and isinstance(kwarg.value, ast.Constant)
+                    if kwarg.arg == "new_column_name" and isinstance(
+                        kwarg.value, ast.Constant
                     ):
                         new_col_name = kwarg.value.value
                         break

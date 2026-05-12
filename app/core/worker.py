@@ -313,7 +313,11 @@ async def capture_periodic_team_spend_for_invoice(
                 stripe_event_id=stripe_event_id,
                 stripe_invoice_id=getattr(invoice_obj, "id", None),
                 stripe_subscription_id=getattr(
-                    getattr(getattr(invoice_obj, "parent", None), "subscription_details", None),
+                    getattr(
+                        getattr(invoice_obj, "parent", None),
+                        "subscription_details",
+                        None,
+                    ),
                     "subscription",
                     None,
                 ),

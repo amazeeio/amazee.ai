@@ -28,7 +28,9 @@ async def fetch_team_spend_snapshot_for_region(
     team: DBTeam,
     region,
 ) -> dict[str, Any]:
-    service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
     lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
     team_data = await service.get_team_info(lite_team_id)
     team_info = team_data.get("team_info", team_data)

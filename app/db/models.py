@@ -577,8 +577,12 @@ class DBTeamSpendPeriodKey(Base):
         nullable=False,
         index=True,
     )
-    key_id = Column(Integer, ForeignKey("ai_tokens.id", ondelete="SET NULL"), nullable=True)
-    owner_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    key_id = Column(
+        Integer, ForeignKey("ai_tokens.id", ondelete="SET NULL"), nullable=True
+    )
+    owner_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     key_name_snapshot = Column(String, nullable=True)
     spend = Column(Float, nullable=False, default=0.0)
     max_budget = Column(Float, nullable=True)
