@@ -126,8 +126,10 @@ KEY1_NAME="spend-hist-key-1-${RUN_ID}"
 KEY2_NAME="spend-hist-key-2-${RUN_ID}"
 STRIPE_CUSTOMER_ID="cus_local_e2e_${RUN_ID}"
 STRIPE_SUB_ID="sub_local_e2e_${RUN_ID}"
-STRIPE_EVENT_ID="evt_local_e2e_${RUN_ID}"
-STRIPE_INVOICE_ID="in_local_e2e_${RUN_ID}"
+STRIPE_EVENT_ID_1="evt_local_e2e_${RUN_ID}_1"
+STRIPE_EVENT_ID_2="evt_local_e2e_${RUN_ID}_2"
+STRIPE_INVOICE_ID_1="in_local_e2e_${RUN_ID}_1"
+STRIPE_INVOICE_ID_2="in_local_e2e_${RUN_ID}_2"
 
 say "Creating PERIODIC team"
 api POST "/teams/" "$(jq -nc --arg n "$TEAM_NAME" --arg e "$TEAM_EMAIL" '{name:$n,admin_email:$e,budget_type:"periodic",require_purchase_for_requests:false}')"
@@ -153,23 +155,7 @@ KEY2_TOKEN="$(echo "$HTTP_BODY" | jq -r '.litellm_token')"
 
 say "Created keys: ${KEY1_ID}, ${KEY2_ID}"
 
-say "Sending mocked usage to LiteLLM for both keys"
-for token in "$KEY1_TOKEN" "$KEY2_TOKEN"; do
-  curl -sS http://localhost:4000/v1/chat/completions \
-    -H "Authorization: Bearer ${token}" \
-    -H "Content-Type: application/json" \
-    -d '{"model":"dummy-gpt-5-4","messages":[{"role":"user","content":"Hello"}],"mock_response":{"content":"Test response","usage":{"prompt_tokens":100,"completion_tokens":14900,"total_tokens":15000}}}' \
-    | jq '{id,model,usage}'
-done
-
-say "Waiting for spend propagation to API /spend endpoint"
-if PRE_SPEND="$(wait_for_team_spend_gt_zero "$REGION_ID" "$TEAM_ID" 30)"; then
-  pass "Spend propagated before webhook (total_spend=${PRE_SPEND})"
-else
-  fail_msg "Spend still zero after waiting. Continuing, but history will likely also be zero."
-fi
-
-say "Current spend snapshot before webhook"
+say "Current spend snapshot before any webhook"
 api GET "/spend/${REGION_ID}/team/${TEAM_ID}"
 echo "$HTTP_BODY" | jq '{team_id,region_id,total_spend,key_count,keys: [.keys[]|{key_id,spend}]}'
 
@@ -197,23 +183,28 @@ fi
 [[ -n "$WEBHOOK_SECRET" ]] || fail "Unable to resolve webhook secret (WEBHOOK_SIG/system_secrets)"
 say "Webhook secret resolved"
 
-say "Building fake Stripe invoice.paid event payload"
+say "Building and sending first fake Stripe invoice.paid webhook ($5)"
 NOW_TS="$(date +%s)"
-PERIOD_END="$NOW_TS"
-PERIOD_START="$((NOW_TS - 2592000))"
-PAYLOAD_FILE="$TMP_DIR/stripe_event.json"
-cat > "$PAYLOAD_FILE" <<JSON
+P1_START="$((NOW_TS - 5184000))"
+P1_END="$((NOW_TS - 2592000))"
+P2_START="$P1_END"
+P2_END="$NOW_TS"
+
+PAYLOAD_FILE_1="$TMP_DIR/stripe_event_1.json"
+cat > "$PAYLOAD_FILE_1" <<JSON
 {
-  "id": "${STRIPE_EVENT_ID}",
+  "id": "${STRIPE_EVENT_ID_1}",
   "object": "event",
   "type": "invoice.paid",
   "data": {
     "object": {
-      "id": "${STRIPE_INVOICE_ID}",
+      "id": "${STRIPE_INVOICE_ID_1}",
       "object": "invoice",
       "customer": "${STRIPE_CUSTOMER_ID}",
-      "period_start": ${PERIOD_START},
-      "period_end": ${PERIOD_END},
+      "amount_paid": 500,
+      "currency": "usd",
+      "period_start": ${P1_START},
+      "period_end": ${P1_END},
       "parent": {
         "subscription_details": {
           "subscription": "${STRIPE_SUB_ID}"
@@ -223,34 +214,109 @@ cat > "$PAYLOAD_FILE" <<JSON
   }
 }
 JSON
-PAYLOAD="$(cat "$PAYLOAD_FILE")"
+PAYLOAD_1="$(cat "$PAYLOAD_FILE_1")"
 
 TS="$(date +%s)"
-SIGNED_PAYLOAD="${TS}.${PAYLOAD}"
-SIG="$(printf '%s' "$SIGNED_PAYLOAD" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | awk '{print $2}')"
-STRIPE_SIGNATURE="t=${TS},v1=${SIG}"
+SIGNED_PAYLOAD_1="${TS}.${PAYLOAD_1}"
+SIG_1="$(printf '%s' "$SIGNED_PAYLOAD_1" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | awk '{print $2}')"
+STRIPE_SIGNATURE_1="t=${TS},v1=${SIG_1}"
 
-say "Posting fake Stripe webhook to /billing/events"
+say "Posting first fake Stripe webhook to /billing/events"
 WEBHOOK_RESP_FILE="$TMP_DIR/webhook_resp.txt"
 WEBHOOK_STATUS=$(curl -sS -o "$WEBHOOK_RESP_FILE" -w "%{http_code}" -X POST "${BASE_URL}/billing/events" \
   -H "Content-Type: application/json" \
-  -H "stripe-signature: ${STRIPE_SIGNATURE}" \
-  --data-binary @"$PAYLOAD_FILE")
+  -H "stripe-signature: ${STRIPE_SIGNATURE_1}" \
+  --data-binary @"$PAYLOAD_FILE_1")
 echo "Webhook status=${WEBHOOK_STATUS}"
 cat "$WEBHOOK_RESP_FILE"
-assert_status "$WEBHOOK_STATUS" "200" "Fake Stripe webhook accepted"
+assert_status "$WEBHOOK_STATUS" "200" "First fake Stripe webhook accepted"
+
+say "Creating mocked usage in current period (between webhook 1 and webhook 2)"
+for token in "$KEY1_TOKEN" "$KEY2_TOKEN"; do
+  curl -sS http://localhost:4000/v1/chat/completions \
+    -H "Authorization: Bearer ${token}" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"dummy-gpt-5-4","messages":[{"role":"user","content":"Hello"}],"mock_response":{"content":"Test response","usage":{"prompt_tokens":100,"completion_tokens":14900,"total_tokens":15000}}}' \
+    | jq '{id,model,usage}'
+done
+
+say "Waiting for spend propagation to API /spend endpoint"
+if PRE_SPEND="$(wait_for_team_spend_gt_zero "$REGION_ID" "$TEAM_ID" 30)"; then
+  pass "Spend propagated before second webhook (total_spend=${PRE_SPEND})"
+else
+  fail_msg "Spend still zero after waiting. Continuing, but second snapshot may be zero."
+fi
+
+say "Building and sending second fake Stripe invoice.paid webhook ($5, new period)"
+PAYLOAD_FILE_2="$TMP_DIR/stripe_event_2.json"
+cat > "$PAYLOAD_FILE_2" <<JSON
+{
+  "id": "${STRIPE_EVENT_ID_2}",
+  "object": "event",
+  "type": "invoice.paid",
+  "data": {
+    "object": {
+      "id": "${STRIPE_INVOICE_ID_2}",
+      "object": "invoice",
+      "customer": "${STRIPE_CUSTOMER_ID}",
+      "amount_paid": 500,
+      "currency": "usd",
+      "period_start": ${P2_START},
+      "period_end": ${P2_END},
+      "parent": {
+        "subscription_details": {
+          "subscription": "${STRIPE_SUB_ID}"
+        }
+      }
+    }
+  }
+}
+JSON
+PAYLOAD_2="$(cat "$PAYLOAD_FILE_2")"
+TS2="$(date +%s)"
+SIGNED_PAYLOAD_2="${TS2}.${PAYLOAD_2}"
+SIG_2="$(printf '%s' "$SIGNED_PAYLOAD_2" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | awk '{print $2}')"
+STRIPE_SIGNATURE_2="t=${TS2},v1=${SIG_2}"
+
+WEBHOOK_STATUS2=$(curl -sS -o "$WEBHOOK_RESP_FILE" -w "%{http_code}" -X POST "${BASE_URL}/billing/events" \
+  -H "Content-Type: application/json" \
+  -H "stripe-signature: ${STRIPE_SIGNATURE_2}" \
+  --data-binary @"$PAYLOAD_FILE_2")
+echo "Webhook2 status=${WEBHOOK_STATUS2}"
+cat "$WEBHOOK_RESP_FILE"
+assert_status "$WEBHOOK_STATUS2" "200" "Second fake Stripe webhook accepted"
 
 say "Waiting for background processing"
-sleep 3
+sleep 4
 
 say "Querying new historical endpoint"
 api GET "/spend/${REGION_ID}/team/${TEAM_ID}/history"
 HISTORY="$HTTP_BODY"
+say "Full history endpoint JSON response"
+echo "$HISTORY" | jq '.'
 echo "$HISTORY" | jq '{team_id,region_id,period_count:(.periods|length),latest:(.periods[0] // null)}'
 
-EVENT_MATCH="$(echo "$HISTORY" | jq -r --arg eid "$STRIPE_EVENT_ID" '[.periods[]? | select(.stripe_event_id==$eid)] | length')"
-[[ "$EVENT_MATCH" -ge 1 ]] || fail "No history period found for stripe_event_id=${STRIPE_EVENT_ID}"
-pass "History row created for stripe_event_id=${STRIPE_EVENT_ID}"
+EVENT1_MATCH="$(echo "$HISTORY" | jq -r --arg eid "$STRIPE_EVENT_ID_1" '[.periods[]? | select(.stripe_event_id==$eid)] | length')"
+EVENT2_MATCH="$(echo "$HISTORY" | jq -r --arg eid "$STRIPE_EVENT_ID_2" '[.periods[]? | select(.stripe_event_id==$eid)] | length')"
+[[ "$EVENT1_MATCH" -ge 1 ]] || fail "No history period found for stripe_event_id=${STRIPE_EVENT_ID_1}"
+[[ "$EVENT2_MATCH" -ge 1 ]] || fail "No history period found for stripe_event_id=${STRIPE_EVENT_ID_2}"
+pass "History rows created for both webhook events"
+
+EP_SNAPSHOT2_SPEND="$(echo "$HISTORY" | jq -r --arg eid "$STRIPE_EVENT_ID_2" '[.periods[] | select(.stripe_event_id==$eid)][0].total_spend // 0')"
+DB_SNAPSHOT2_SPEND="$(docker exec "$POSTGRES_CONTAINER" psql -U postgres -d "$DB_NAME" -tAc "select total_spend from team_spend_periods where team_id=${TEAM_ID} and stripe_event_id='${STRIPE_EVENT_ID_2}' limit 1;" | tr -d '[:space:]')"
+[[ -n "$DB_SNAPSHOT2_SPEND" ]] || fail "DB row missing for second webhook snapshot"
+
+if python3 - "$EP_SNAPSHOT2_SPEND" "$DB_SNAPSHOT2_SPEND" <<'PY'
+import sys
+a=float(sys.argv[1]); b=float(sys.argv[2])
+print('ok' if abs(a-b) < 1e-9 else 'bad')
+sys.exit(0 if abs(a-b) < 1e-9 else 1)
+PY
+then
+  pass "Endpoint and DB total_spend match for second snapshot (${EP_SNAPSHOT2_SPEND})"
+else
+  fail "Mismatch endpoint vs DB spend: endpoint=${EP_SNAPSHOT2_SPEND} db=${DB_SNAPSHOT2_SPEND}"
+fi
 
 say "Inspecting API DB persisted rows"
 docker exec "$POSTGRES_CONTAINER" psql -U postgres -d "$DB_NAME" -c "select id,team_id,region_id,budget_type,period_start,period_end,total_spend,stripe_event_id,stripe_invoice_id from team_spend_periods where team_id=${TEAM_ID} order by id desc limit 5;"
@@ -260,4 +326,4 @@ say "Inspecting LiteLLM DB spend logs for team eu-west_${TEAM_ID}"
 docker exec amazeeai-litellm_db-1 sh -lc "psql -U llmproxy -d litellm -c \"select api_key,team_id,model,total_tokens,prompt_tokens,completion_tokens,spend,\\\"startTime\\\" from \\\"LiteLLM_SpendLogs\\\" where team_id='eu-west_${TEAM_ID}' order by \\\"startTime\\\" desc limit 5;\""
 
 say "E2E completed successfully"
-echo "Artifacts: team_id=${TEAM_ID} key_ids=${KEY1_ID},${KEY2_ID} stripe_event_id=${STRIPE_EVENT_ID}"
+echo "Artifacts: team_id=${TEAM_ID} key_ids=${KEY1_ID},${KEY2_ID} stripe_event_ids=${STRIPE_EVENT_ID_1},${STRIPE_EVENT_ID_2}"
