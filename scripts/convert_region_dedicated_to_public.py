@@ -70,6 +70,7 @@ class RegionConversionRunner:
         cleanup_admin_regions: str,
         batch_size: int,
         max_rows: int | None,
+        force: bool,
     ) -> None:
         self.session = session
         self.region_id = region_id
@@ -77,12 +78,15 @@ class RegionConversionRunner:
         self.cleanup_admin_regions = cleanup_admin_regions
         self.batch_size = max(1, batch_size)
         self.max_rows = max_rows
+        self.force = force
 
         self.failures: list[dict] = []
         self.report: dict = {
             "region_id": region_id,
             "dry_run": dry_run,
             "cleanup_admin_regions": cleanup_admin_regions,
+            "batch_size": self.batch_size,
+            "force": force,
             "started_at": datetime.now(UTC).isoformat(),
             "phases": {},
         }
@@ -251,29 +255,61 @@ class RegionConversionRunner:
 
     async def phase_db_backfill(self) -> Counters:
         counters = Counters()
+        region = self._region()
+        if not region:
+            counters.failed = 1
+            self.failures.append({"phase": "db-backfill", "error": "Region not found"})
+            self._record_phase("db-backfill", counters)
+            return counters
+
+        if region.is_dedicated and not self.force:
+            counters.failed = 1
+            self.failures.append(
+                {
+                    "phase": "db-backfill",
+                    "error": "Refusing to backfill while region is still dedicated (use --force to override)",
+                }
+            )
+            self._record_phase(
+                "db-backfill",
+                counters,
+                {
+                    "result": "aborted",
+                    "reason": "region_still_dedicated",
+                },
+            )
+            return counters
+
         team_ids = self._in_scope_team_ids()
+        if self.max_rows is not None:
+            team_ids = team_ids[: self.max_rows]
+
+        existing_team_ids = {
+            row[0]
+            for row in self.session.query(DBTeamRegion.team_id)
+            .filter(
+                DBTeamRegion.region_id == self.region_id,
+                DBTeamRegion.team_id.in_(team_ids) if team_ids else False,
+            )
+            .all()
+        }
+        pending_writes = 0
 
         for team_id in team_ids:
             counters.processed += 1
-            assoc = (
-                self.session.query(DBTeamRegion)
-                .filter(
-                    DBTeamRegion.team_id == team_id,
-                    DBTeamRegion.region_id == self.region_id,
-                )
-                .first()
-            )
-            if assoc:
+            if team_id in existing_team_ids:
                 counters.skipped += 1
             else:
                 counters.changed += 1
+                existing_team_ids.add(team_id)
                 if not self.dry_run:
                     self.session.add(
                         DBTeamRegion(team_id=team_id, region_id=self.region_id)
                     )
-
-            if self.max_rows is not None and counters.processed >= self.max_rows:
-                break
+                    pending_writes += 1
+                    if pending_writes >= self.batch_size:
+                        self.session.commit()
+                        pending_writes = 0
 
         cleanup_changed = 0
         cleanup_skipped = 0
@@ -730,6 +766,11 @@ async def main() -> int:
         default="delete",
     )
     parser.add_argument("--batch-size", type=int, default=100)
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Allow potentially unsafe phase execution (for example, db-backfill before convert)",
+    )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument(
         "--failures-json",
@@ -754,6 +795,7 @@ async def main() -> int:
         cleanup_admin_regions=args.cleanup_admin_regions,
         batch_size=args.batch_size,
         max_rows=args.limit,
+        force=args.force,
     )
 
     try:
