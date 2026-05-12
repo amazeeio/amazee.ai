@@ -23,6 +23,8 @@ from app.db.models import (
     DBRegion,
     DBSpendCap,
     DBTeam,
+    DBTeamSpendPeriod,
+    DBTeamSpendPeriodKey,
     DBTeamRegion,
     DBUser,
 )
@@ -33,6 +35,9 @@ from app.schemas.models import (
     SpendBudgetUpdateRequest,
     SpendBudgetUpdateResponse,
     SpendKeyItem,
+    TeamSpendHistoryKeyItem,
+    TeamSpendHistoryPeriodItem,
+    TeamSpendHistoryResponse,
     TeamSpendResponse,
     UserSpendResponse,
 )
@@ -41,6 +46,100 @@ from app.services.litellm import LiteLLMService
 router = APIRouter(tags=["spend"])
 logger = logging.getLogger(__name__)
 MONTHLY_BUDGET_DURATION = "1mo"
+
+
+@router.get(
+    "/{region_id}/team/{team_id}/history",
+    response_model=TeamSpendHistoryResponse,
+    summary="Get historical team spend by region",
+    description=(
+        "Returns historical spend periods from the API database for a team in a "
+        "region, including per-key spend for each period."
+    ),
+    response_description="Team historical spend periods with per-key breakdown.",
+)
+async def get_team_spend_history(
+    region_id: int,
+    team_id: int,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    team = (
+        db.query(DBTeam)
+        .filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None))
+        .first()
+    )
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    _assert_team_access(current_user, user_role, team_id)
+    region = _get_region_or_404(db, region_id)
+
+    periods = (
+        db.query(DBTeamSpendPeriod)
+        .filter(
+            DBTeamSpendPeriod.team_id == team_id,
+            DBTeamSpendPeriod.region_id == region_id,
+        )
+        .order_by(DBTeamSpendPeriod.period_end.desc(), DBTeamSpendPeriod.id.desc())
+        .all()
+    )
+
+    period_items: list[TeamSpendHistoryPeriodItem] = []
+    for period in periods:
+        key_rows = (
+            db.query(DBTeamSpendPeriodKey)
+            .filter(DBTeamSpendPeriodKey.team_spend_period_id == period.id)
+            .order_by(DBTeamSpendPeriodKey.id.asc())
+            .all()
+        )
+        key_items = [
+            TeamSpendHistoryKeyItem(
+                key_id=row.key_id,
+                owner_id=row.owner_id,
+                key_name=row.key_name_snapshot,
+                spend=round(float(row.spend or 0.0), 4),
+                max_budget=(
+                    round(float(row.max_budget), 4)
+                    if row.max_budget is not None
+                    else None
+                ),
+                prompt_tokens=row.prompt_tokens,
+                completion_tokens=row.completion_tokens,
+                total_tokens=row.total_tokens,
+            )
+            for row in key_rows
+        ]
+
+        period_items.append(
+            TeamSpendHistoryPeriodItem(
+                period_start=period.period_start,
+                period_end=period.period_end,
+                budget_type=period.budget_type,
+                total_spend=round(float(period.total_spend or 0.0), 4),
+                total_budget=(
+                    round(float(period.total_budget), 4)
+                    if period.total_budget is not None
+                    else None
+                ),
+                total_prompt_tokens=period.total_prompt_tokens,
+                total_completion_tokens=period.total_completion_tokens,
+                total_tokens=period.total_tokens,
+                source=period.source,
+                stripe_event_id=period.stripe_event_id,
+                stripe_invoice_id=period.stripe_invoice_id,
+                stripe_subscription_id=period.stripe_subscription_id,
+                keys=key_items,
+            )
+        )
+
+    return TeamSpendHistoryResponse(
+        region_id=region_id,
+        region_name=region.name,
+        team_id=team_id,
+        team_name=team.name,
+        periods=period_items,
+    )
 
 
 def _to_int_or_none(value) -> int | None:
