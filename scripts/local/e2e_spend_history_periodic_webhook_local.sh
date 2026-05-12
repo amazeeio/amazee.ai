@@ -292,7 +292,9 @@ sleep 4
 say "Querying new historical endpoint"
 api GET "/spend/${REGION_ID}/team/${TEAM_ID}/history"
 HISTORY="$HTTP_BODY"
-say "Full history endpoint JSON response"
+say "Raw history endpoint response"
+echo "$HISTORY"
+say "Pretty history endpoint response"
 echo "$HISTORY" | jq '.'
 echo "$HISTORY" | jq '{team_id,region_id,period_count:(.periods|length),latest:(.periods[0] // null)}'
 
