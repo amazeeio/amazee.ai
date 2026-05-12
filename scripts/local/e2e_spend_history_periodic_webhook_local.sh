@@ -372,11 +372,11 @@ else
 fi
 
 say "Inspecting API DB persisted rows"
-docker exec "$POSTGRES_CONTAINER" psql -U postgres -d "$DB_NAME" -c "select id,team_id,region_id,budget_type,period_start,period_end,total_spend,stripe_event_id,stripe_invoice_id from team_spend_periods where team_id=${TEAM_ID} order by id desc limit 5;"
-docker exec "$POSTGRES_CONTAINER" psql -U postgres -d "$DB_NAME" -c "select team_spend_period_id,key_id,key_name_snapshot,spend,total_tokens from team_spend_period_keys where team_spend_period_id in (select id from team_spend_periods where team_id=${TEAM_ID}) order by id desc limit 10;"
+docker exec "$POSTGRES_CONTAINER" sh -lc "psql -U postgres -d '$DB_NAME' -tAc \"select coalesce(json_agg(t), '[]'::json) from (select id,team_id,region_id,budget_type,period_start,period_end,total_spend,stripe_event_id,stripe_invoice_id,stripe_subscription_id from team_spend_periods where team_id=${TEAM_ID} order by id desc limit 5) t;\"" | jq '.'
+docker exec "$POSTGRES_CONTAINER" sh -lc "psql -U postgres -d '$DB_NAME' -tAc \"select coalesce(json_agg(t), '[]'::json) from (select team_spend_period_id,key_id,owner_id,key_name_snapshot,spend,total_tokens from team_spend_period_keys where team_spend_period_id in (select id from team_spend_periods where team_id=${TEAM_ID}) order by id desc limit 10) t;\"" | jq '.'
 
 say "Inspecting LiteLLM DB spend logs for team eu-west_${TEAM_ID}"
-docker exec amazeeai-litellm_db-1 sh -lc "psql -U llmproxy -d litellm -c \"select api_key,team_id,model,total_tokens,prompt_tokens,completion_tokens,spend,\\\"startTime\\\" from \\\"LiteLLM_SpendLogs\\\" where team_id='eu-west_${TEAM_ID}' order by \\\"startTime\\\" desc limit 5;\""
+docker exec amazeeai-litellm_db-1 sh -lc "psql -U llmproxy -d litellm -tAc \"select coalesce(json_agg(t), '[]'::json) from (select api_key,team_id,model,total_tokens,prompt_tokens,completion_tokens,spend,\\\"startTime\\\" from \\\"LiteLLM_SpendLogs\\\" where team_id='eu-west_${TEAM_ID}' order by \\\"startTime\\\" desc limit 5) t;\"" | jq '.'
 
 say "E2E completed successfully"
 echo "Artifacts: team_id=${TEAM_ID} key_ids=${KEY1_ID},${KEY2_ID} stripe_event_ids=${STRIPE_EVENT_ID_1},${STRIPE_EVENT_ID_2}"
