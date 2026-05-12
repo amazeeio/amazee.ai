@@ -283,9 +283,8 @@ class RegionConversionRunner:
 
         team_ids = self._in_scope_team_ids(limit=self.max_rows)
 
-        existing_team_ids: set[int] = set()
-        if team_ids:
-            existing_team_ids = {
+        existing_team_ids: set[int] = (
+            {
                 row[0]
                 for row in self.session.query(DBTeamRegion.team_id)
                 .filter(
@@ -294,6 +293,9 @@ class RegionConversionRunner:
                 )
                 .all()
             }
+            if team_ids
+            else set()
+        )
         pending_writes = 0
 
         for team_id in team_ids:
