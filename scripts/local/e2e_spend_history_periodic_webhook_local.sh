@@ -17,9 +17,48 @@ TEAM_ID=""
 KEY1_ID=""
 KEY2_ID=""
 
+pass() { say "✅ $*"; }
+fail_msg() { say "❌ $*"; }
+
+assert_status() {
+  local got="$1" expected="$2" label="$3"
+  if [[ "$got" == "$expected" ]]; then
+    pass "$label (status=$got)"
+  else
+    fail_msg "$label (status=$got, expected=$expected)"
+    exit 1
+  fi
+}
+
+float_gt_zero() {
+  python3 - "$1" <<'PY'
+import sys
+v=float(sys.argv[1])
+print(1 if v > 0 else 0)
+PY
+}
+
+wait_for_team_spend_gt_zero() {
+  local region_id="$1" team_id="$2" timeout="${3:-20}"
+  local i=0
+  while (( i < timeout )); do
+    api GET "/spend/${region_id}/team/${team_id}"
+    local spend
+    spend="$(echo "$HTTP_BODY" | jq -r '.total_spend // 0')"
+    if [[ "$(float_gt_zero "$spend")" == "1" ]]; then
+      echo "$spend"
+      return 0
+    fi
+    sleep 1
+    i=$((i+1))
+  done
+  echo "0"
+  return 1
+}
+
 cleanup() {
-  rm -rf "$TMP_DIR"
   if [[ "$CLEANUP_CREATED" != "1" ]]; then
+    rm -rf "$TMP_DIR"
     return
   fi
 
@@ -55,6 +94,8 @@ PY" >/dev/null 2>&1 || true
     api DELETE "/teams/${TEAM_ID}" || true
     say "Delete team id=${TEAM_ID} status=${HTTP_STATUS:-n/a}"
   fi
+
+  rm -rf "$TMP_DIR"
 }
 
 trap cleanup EXIT
@@ -93,6 +134,7 @@ api POST "/teams/" "$(jq -nc --arg n "$TEAM_NAME" --arg e "$TEAM_EMAIL" '{name:$
 [[ "$HTTP_STATUS" == "201" ]] || fail "team create failed status=$HTTP_STATUS body=$HTTP_BODY"
 TEAM_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
 say "Team created: id=${TEAM_ID}"
+pass "Team created"
 
 say "Ensuring team is associated with region ${REGION_ID}"
 api POST "/regions/${REGION_ID}/teams/${TEAM_ID}" || true
@@ -100,12 +142,12 @@ say "Associate status=${HTTP_STATUS}"
 
 say "Creating 2 team keys"
 api POST "/private-ai-keys/" "$(jq -nc --argjson rid "$REGION_ID" --argjson tid "$TEAM_ID" --arg name "$KEY1_NAME" '{region_id:$rid,name:$name,team_id:$tid}')"
-[[ "$HTTP_STATUS" == "200" ]] || fail "key1 create failed status=$HTTP_STATUS body=$HTTP_BODY"
+assert_status "$HTTP_STATUS" "200" "Key 1 created"
 KEY1_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
 KEY1_TOKEN="$(echo "$HTTP_BODY" | jq -r '.litellm_token')"
 
 api POST "/private-ai-keys/" "$(jq -nc --argjson rid "$REGION_ID" --argjson tid "$TEAM_ID" --arg name "$KEY2_NAME" '{region_id:$rid,name:$name,team_id:$tid}')"
-[[ "$HTTP_STATUS" == "200" ]] || fail "key2 create failed status=$HTTP_STATUS body=$HTTP_BODY"
+assert_status "$HTTP_STATUS" "200" "Key 2 created"
 KEY2_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
 KEY2_TOKEN="$(echo "$HTTP_BODY" | jq -r '.litellm_token')"
 
@@ -119,6 +161,13 @@ for token in "$KEY1_TOKEN" "$KEY2_TOKEN"; do
     -d '{"model":"dummy-gpt-5-4","messages":[{"role":"user","content":"Hello"}],"mock_response":{"content":"Test response","usage":{"prompt_tokens":100,"completion_tokens":14900,"total_tokens":15000}}}' \
     | jq '{id,model,usage}'
 done
+
+say "Waiting for spend propagation to API /spend endpoint"
+if PRE_SPEND="$(wait_for_team_spend_gt_zero "$REGION_ID" "$TEAM_ID" 30)"; then
+  pass "Spend propagated before webhook (total_spend=${PRE_SPEND})"
+else
+  fail_msg "Spend still zero after waiting. Continuing, but history will likely also be zero."
+fi
 
 say "Current spend snapshot before webhook"
 api GET "/spend/${REGION_ID}/team/${TEAM_ID}"
@@ -189,7 +238,7 @@ WEBHOOK_STATUS=$(curl -sS -o "$WEBHOOK_RESP_FILE" -w "%{http_code}" -X POST "${B
   --data-binary @"$PAYLOAD_FILE")
 echo "Webhook status=${WEBHOOK_STATUS}"
 cat "$WEBHOOK_RESP_FILE"
-[[ "$WEBHOOK_STATUS" == "200" ]] || fail "webhook call failed"
+assert_status "$WEBHOOK_STATUS" "200" "Fake Stripe webhook accepted"
 
 say "Waiting for background processing"
 sleep 3
@@ -201,6 +250,7 @@ echo "$HISTORY" | jq '{team_id,region_id,period_count:(.periods|length),latest:(
 
 EVENT_MATCH="$(echo "$HISTORY" | jq -r --arg eid "$STRIPE_EVENT_ID" '[.periods[]? | select(.stripe_event_id==$eid)] | length')"
 [[ "$EVENT_MATCH" -ge 1 ]] || fail "No history period found for stripe_event_id=${STRIPE_EVENT_ID}"
+pass "History row created for stripe_event_id=${STRIPE_EVENT_ID}"
 
 say "Inspecting API DB persisted rows"
 docker exec "$POSTGRES_CONTAINER" psql -U postgres -d "$DB_NAME" -c "select id,team_id,region_id,budget_type,period_start,period_end,total_spend,stripe_event_id,stripe_invoice_id from team_spend_periods where team_id=${TEAM_ID} order by id desc limit 5;"
