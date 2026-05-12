@@ -226,19 +226,25 @@ async def handle_stripe_event_background(event):
             # new subscription
             product_id = await get_product_id_from_subscription(event_object.id)
             start_date = datetime.fromtimestamp(event_object.start_date, tz=UTC)
-            await apply_product_for_team(db, customer_id, product_id, start_date)
-        elif event_type in INVOICE_SUCCESS_EVENTS:
-            # subscription renewed
-            subscription = event_object.parent.subscription_details.subscription
-            product_id = await get_product_id_from_subscription(subscription)
-            start_date = datetime.fromtimestamp(event_object.period_start, tz=UTC)
-            await apply_product_for_team(db, customer_id, product_id, start_date)
             await capture_periodic_team_spend_for_invoice(
                 db=db,
                 customer_id=customer_id,
                 invoice_obj=event_object,
                 stripe_event_id=event_id,
             )
+            await apply_product_for_team(db, customer_id, product_id, start_date)
+        elif event_type in INVOICE_SUCCESS_EVENTS:
+            # subscription renewed
+            subscription = event_object.parent.subscription_details.subscription
+            product_id = await get_product_id_from_subscription(subscription)
+            start_date = datetime.fromtimestamp(event_object.period_start, tz=UTC)
+            await capture_periodic_team_spend_for_invoice(
+                db=db,
+                customer_id=customer_id,
+                invoice_obj=event_object,
+                stripe_event_id=event_id,
+            )
+            await apply_product_for_team(db, customer_id, product_id, start_date)
         # Failure Events
         elif event_type in SESSION_FAILURE_EVENTS:
             product_id = await get_product_id_from_session(event_object.id)
