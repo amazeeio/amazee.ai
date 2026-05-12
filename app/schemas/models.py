@@ -443,7 +443,6 @@ class SpendBudgetUpdateResponse(BaseModel):
 class TeamSpendHistoryKeyItem(BaseModel):
     key_id: Optional[int] = None
     owner_id: Optional[int] = None
-    key_name: Optional[str] = None
     spend: float
     max_budget: Optional[float] = None
     prompt_tokens: Optional[int] = None
