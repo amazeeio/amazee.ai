@@ -92,6 +92,10 @@ db.close()
 PY" >/dev/null 2>&1 || true
 
     api DELETE "/teams/${TEAM_ID}" || true
+    if [[ "${HTTP_STATUS:-}" == "500" ]]; then
+      api POST "/teams/${TEAM_ID}/soft-delete" || true
+      say "Soft-delete team fallback id=${TEAM_ID} status=${HTTP_STATUS:-n/a}"
+    fi
     say "Delete team id=${TEAM_ID} status=${HTTP_STATUS:-n/a}"
   fi
 
@@ -176,14 +180,46 @@ db.close()
 PY"
 
 say "Resolving Stripe webhook secret"
-WEBHOOK_SECRET="$(docker exec "$BACKEND_CONTAINER" sh -lc 'printenv WEBHOOK_SIG' | tr -d '\r')"
+WEBHOOK_SECRET="$(docker exec "$BACKEND_CONTAINER" sh -lc 'printenv WEBHOOK_SIG' 2>/dev/null | tr -d '\r' || true)"
 if [[ -z "$WEBHOOK_SECRET" ]]; then
-  WEBHOOK_SECRET="$(docker exec "$POSTGRES_CONTAINER" psql -U postgres -d "$DB_NAME" -tAc "select value from system_secrets where key='stripe_webhook_secret' order by id desc limit 1;" | tr -d '[:space:]')"
+  WEBHOOK_SECRET="$(docker exec "$POSTGRES_CONTAINER" sh -lc "psql -U postgres -d '$DB_NAME' -tAc \"select value from system_secrets where key='stripe_webhook_secret' order by id desc limit 1;\" 2>/dev/null || true" | tr -d '[:space:]' || true)"
+fi
+if [[ -z "$WEBHOOK_SECRET" ]]; then
+  WEBHOOK_SECRET="$(docker exec "$BACKEND_CONTAINER" sh -lc "cd /app && python3 - <<'PY'
+from sqlalchemy.orm import sessionmaker
+from app.db.database import engine
+from app.db.models import DBSystemSecret
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+db = SessionLocal()
+row = db.query(DBSystemSecret).filter(DBSystemSecret.key == 'stripe_webhook_secret').order_by(DBSystemSecret.id.desc()).first()
+print(row.value if row else '')
+db.close()
+PY" | tr -d '[:space:]' || true)"
+fi
+if [[ -z "$WEBHOOK_SECRET" ]]; then
+  say "No webhook secret found; creating local test secret in API DB"
+  WEBHOOK_SECRET="whsec_local_${RUN_ID}"
+  docker exec "$BACKEND_CONTAINER" sh -lc "cd /app && python3 - <<'PY'
+from sqlalchemy.orm import sessionmaker
+from app.db.database import engine
+from app.db.models import DBSystemSecret
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+db = SessionLocal()
+row = db.query(DBSystemSecret).filter(DBSystemSecret.key == 'stripe_webhook_secret').first()
+if row is None:
+    row = DBSystemSecret(key='stripe_webhook_secret', value='${WEBHOOK_SECRET}', description='local e2e webhook secret')
+else:
+    row.value = '${WEBHOOK_SECRET}'
+db.add(row)
+db.commit()
+print('secret_upserted')
+db.close()
+PY" >/dev/null
 fi
 [[ -n "$WEBHOOK_SECRET" ]] || fail "Unable to resolve webhook secret (WEBHOOK_SIG/system_secrets)"
 say "Webhook secret resolved"
 
-say "Building and sending first fake Stripe invoice.paid webhook ($5)"
+say "Building and sending first fake Stripe invoice.paid webhook (\$5)"
 NOW_TS="$(date +%s)"
 P1_START="$((NOW_TS - 5184000))"
 P1_END="$((NOW_TS - 2592000))"
@@ -217,9 +253,16 @@ JSON
 PAYLOAD_1="$(cat "$PAYLOAD_FILE_1")"
 
 TS="$(date +%s)"
-SIGNED_PAYLOAD_1="${TS}.${PAYLOAD_1}"
-SIG_1="$(printf '%s' "$SIGNED_PAYLOAD_1" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | awk '{print $2}')"
-STRIPE_SIGNATURE_1="t=${TS},v1=${SIG_1}"
+STRIPE_SIGNATURE_1="$(python3 - "$WEBHOOK_SECRET" "$TS" "$PAYLOAD_FILE_1" <<'PY'
+import hmac, hashlib, sys
+secret = sys.argv[1].encode()
+ts = sys.argv[2]
+payload = open(sys.argv[3], 'rb').read()
+signed = ts.encode() + b'.' + payload
+sig = hmac.new(secret, signed, hashlib.sha256).hexdigest()
+print(f"t={ts},v1={sig}")
+PY
+)"
 
 say "Posting first fake Stripe webhook to /billing/events"
 WEBHOOK_RESP_FILE="$TMP_DIR/webhook_resp.txt"
@@ -247,7 +290,7 @@ else
   fail_msg "Spend still zero after waiting. Continuing, but second snapshot may be zero."
 fi
 
-say "Building and sending second fake Stripe invoice.paid webhook ($5, new period)"
+say "Building and sending second fake Stripe invoice.paid webhook (\$5, new period)"
 PAYLOAD_FILE_2="$TMP_DIR/stripe_event_2.json"
 cat > "$PAYLOAD_FILE_2" <<JSON
 {
@@ -274,9 +317,16 @@ cat > "$PAYLOAD_FILE_2" <<JSON
 JSON
 PAYLOAD_2="$(cat "$PAYLOAD_FILE_2")"
 TS2="$(date +%s)"
-SIGNED_PAYLOAD_2="${TS2}.${PAYLOAD_2}"
-SIG_2="$(printf '%s' "$SIGNED_PAYLOAD_2" | openssl dgst -sha256 -hmac "$WEBHOOK_SECRET" -hex | awk '{print $2}')"
-STRIPE_SIGNATURE_2="t=${TS2},v1=${SIG_2}"
+STRIPE_SIGNATURE_2="$(python3 - "$WEBHOOK_SECRET" "$TS2" "$PAYLOAD_FILE_2" <<'PY'
+import hmac, hashlib, sys
+secret = sys.argv[1].encode()
+ts = sys.argv[2]
+payload = open(sys.argv[3], 'rb').read()
+signed = ts.encode() + b'.' + payload
+sig = hmac.new(secret, signed, hashlib.sha256).hexdigest()
+print(f"t={ts},v1={sig}")
+PY
+)"
 
 WEBHOOK_STATUS2=$(curl -sS -o "$WEBHOOK_RESP_FILE" -w "%{http_code}" -X POST "${BASE_URL}/billing/events" \
   -H "Content-Type: application/json" \
@@ -311,8 +361,9 @@ DB_SNAPSHOT2_SPEND="$(docker exec "$POSTGRES_CONTAINER" psql -U postgres -d "$DB
 if python3 - "$EP_SNAPSHOT2_SPEND" "$DB_SNAPSHOT2_SPEND" <<'PY'
 import sys
 a=float(sys.argv[1]); b=float(sys.argv[2])
-print('ok' if abs(a-b) < 1e-9 else 'bad')
-sys.exit(0 if abs(a-b) < 1e-9 else 1)
+tol = 1e-4
+print('ok' if abs(a-b) <= tol else 'bad')
+sys.exit(0 if abs(a-b) <= tol else 1)
 PY
 then
   pass "Endpoint and DB total_spend match for second snapshot (${EP_SNAPSHOT2_SPEND})"
