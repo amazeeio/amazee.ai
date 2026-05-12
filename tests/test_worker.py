@@ -3514,6 +3514,7 @@ async def test_monitor_teams_continues_processing_after_error(
 # Spend period snapshot capture tests
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 @patch("app.core.worker.get_product_id_from_subscription", new_callable=AsyncMock)
 @patch("app.core.worker.apply_product_for_team", new_callable=AsyncMock)
@@ -3547,15 +3548,19 @@ async def test_subscription_success_does_not_capture_spend(
     mock_event.data.object = sub_obj
     mock_event.data.object.customer = "cus_sub_ok"
 
-    with patch("app.core.worker.capture_periodic_team_spend_for_invoice") as mock_capture:
+    with patch(
+        "app.core.worker.capture_periodic_team_spend_for_invoice"
+    ) as mock_capture:
         await handle_stripe_event_background(mock_event)
         # capture_periodic_team_spend_for_invoice must NOT be called for subscription events
         mock_capture.assert_not_called()
 
     # No spend period rows should exist
-    count = db.query(DBTeamSpendPeriod).filter(
-        DBTeamSpendPeriod.team_id == test_team.id
-    ).count()
+    count = (
+        db.query(DBTeamSpendPeriod)
+        .filter(DBTeamSpendPeriod.team_id == test_team.id)
+        .count()
+    )
     assert count == 0
 
 
@@ -3621,10 +3626,14 @@ async def test_invoice_payment_success_captures_spend_period(
     await handle_stripe_event_background(mock_event)
 
     # A spend period row must have been written
-    rows = db.query(DBTeamSpendPeriod).filter(
-        DBTeamSpendPeriod.team_id == test_team.id,
-        DBTeamSpendPeriod.region_id == test_region.id,
-    ).all()
+    rows = (
+        db.query(DBTeamSpendPeriod)
+        .filter(
+            DBTeamSpendPeriod.team_id == test_team.id,
+            DBTeamSpendPeriod.region_id == test_region.id,
+        )
+        .all()
+    )
     assert len(rows) == 1
     assert rows[0].total_spend == 42.0
     assert rows[0].stripe_event_id == "evt_inv_ok"

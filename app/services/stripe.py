@@ -14,7 +14,9 @@ logger = logging.getLogger(__name__)
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
 # Full list of possible events: https://docs.stripe.com/api/events/types
-INVOICE_SUCCESS_EVENTS = ["invoice.paid"]  # Renewal
+# Keep both names: Stripe commonly emits `invoice.paid`, while some tests/
+# fixtures still use `invoice.payment_succeeded`.
+INVOICE_SUCCESS_EVENTS = ["invoice.paid", "invoice.payment_succeeded"]  # Renewal
 SUBSCRIPTION_SUCCESS_EVENTS = [
     "customer.subscription.resumed",
     "customer.subscription.created",

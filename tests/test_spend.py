@@ -2153,6 +2153,7 @@ def test_get_user_spend_db_key_cap_beats_member_cap_beats_litellm_for_purchased_
 # /spend/{region_id}/team/{team_id}/history tests
 # ---------------------------------------------------------------------------
 
+
 def test_get_team_spend_history_returns_empty_for_no_periods(
     client, team_admin_token, test_team, test_region
 ):
