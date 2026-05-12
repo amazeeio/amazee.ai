@@ -284,15 +284,17 @@ class RegionConversionRunner:
         if self.max_rows is not None:
             team_ids = team_ids[: self.max_rows]
 
-        existing_team_ids = {
-            row[0]
-            for row in self.session.query(DBTeamRegion.team_id)
-            .filter(
-                DBTeamRegion.region_id == self.region_id,
-                DBTeamRegion.team_id.in_(team_ids) if team_ids else False,
-            )
-            .all()
-        }
+        existing_team_ids: set[int] = set()
+        if team_ids:
+            existing_team_ids = {
+                row[0]
+                for row in self.session.query(DBTeamRegion.team_id)
+                .filter(
+                    DBTeamRegion.region_id == self.region_id,
+                    DBTeamRegion.team_id.in_(team_ids),
+                )
+                .all()
+            }
         pending_writes = 0
 
         for team_id in team_ids:
@@ -310,6 +312,9 @@ class RegionConversionRunner:
                     if pending_writes >= self.batch_size:
                         self.session.commit()
                         pending_writes = 0
+        if not self.dry_run and pending_writes > 0:
+            self.session.commit()
+            pending_writes = 0
 
         cleanup_changed = 0
         cleanup_skipped = 0
