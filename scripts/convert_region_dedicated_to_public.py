@@ -314,7 +314,6 @@ class RegionConversionRunner:
                         pending_writes = 0
         if not self.dry_run and pending_writes > 0:
             self.session.commit()
-            pending_writes = 0
 
         cleanup_changed = 0
         cleanup_skipped = 0
