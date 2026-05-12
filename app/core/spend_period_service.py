@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.models import (
@@ -35,6 +36,17 @@ async def fetch_team_spend_snapshot_for_region(
     team_data = await service.get_team_info(lite_team_id)
     team_info = team_data.get("team_info", team_data)
 
+    # Preload all keys for this region/team once to avoid per-key DB round trips.
+    all_region_team_keys: list[DBPrivateAIKey] = (
+        db.query(DBPrivateAIKey)
+        .filter(
+            DBPrivateAIKey.region_id == region.id,
+            DBPrivateAIKey.team_id == team.id,
+        )
+        .order_by(DBPrivateAIKey.id.desc())
+        .all()
+    )
+
     keys_payload: list[dict[str, Any]] = []
     for litellm_key in team_data.get("keys", []):
         metadata = litellm_key.get("metadata") or {}
@@ -42,17 +54,13 @@ async def fetch_team_spend_snapshot_for_region(
         owner_raw = litellm_key.get("user_id")
         owner_id = int(owner_raw) if str(owner_raw).isdigit() else None
 
-        key_id = None
-        query = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.region_id == region.id)
+        candidates = list(all_region_team_keys)
         if key_name:
-            query = query.filter(DBPrivateAIKey.name == key_name)
+            candidates = [k for k in candidates if k.name == key_name]
         if owner_id is not None:
-            query = query.filter(DBPrivateAIKey.owner_id == owner_id)
-        else:
-            query = query.filter(DBPrivateAIKey.team_id == team.id)
-        db_key = query.order_by(DBPrivateAIKey.id.desc()).first()
-        if db_key:
-            key_id = db_key.id
+            candidates = [k for k in candidates if k.owner_id == owner_id]
+        db_key = candidates[0] if candidates else None
+        key_id = db_key.id if db_key else None
 
         keys_payload.append(
             {
@@ -97,6 +105,27 @@ async def fetch_team_spend_snapshot_for_region(
     }
 
 
+def _query_spend_period(
+    db: Session,
+    team_id: int,
+    region_id: int,
+    budget_type: str,
+    period_start: datetime,
+    period_end: datetime,
+):
+    return (
+        db.query(DBTeamSpendPeriod)
+        .filter(
+            DBTeamSpendPeriod.team_id == team_id,
+            DBTeamSpendPeriod.region_id == region_id,
+            DBTeamSpendPeriod.budget_type == budget_type,
+            DBTeamSpendPeriod.period_start == period_start,
+            DBTeamSpendPeriod.period_end == period_end,
+        )
+        .first()
+    )
+
+
 def upsert_team_spend_period(
     *,
     db: Session,
@@ -111,27 +140,30 @@ def upsert_team_spend_period(
     stripe_subscription_id: str | None = None,
     raw_payload: dict[str, Any] | None = None,
 ) -> DBTeamSpendPeriod:
-    row = (
-        db.query(DBTeamSpendPeriod)
-        .filter(
-            DBTeamSpendPeriod.team_id == team.id,
-            DBTeamSpendPeriod.region_id == region_id,
-            DBTeamSpendPeriod.budget_type == _resolve_budget_type(team),
-            DBTeamSpendPeriod.period_start == period_start,
-            DBTeamSpendPeriod.period_end == period_end,
-        )
-        .first()
+    budget_type = _resolve_budget_type(team)
+    row = _query_spend_period(
+        db, team.id, region_id, budget_type, period_start, period_end
     )
     if row is None:
-        row = DBTeamSpendPeriod(
+        new_row = DBTeamSpendPeriod(
             team_id=team.id,
             region_id=region_id,
-            budget_type=_resolve_budget_type(team),
+            budget_type=budget_type,
             period_start=period_start,
             period_end=period_end,
             source=source,
             created_at=datetime.now(UTC),
         )
+        db.add(new_row)
+        try:
+            db.flush()
+            row = new_row
+        except IntegrityError:
+            # Another concurrent task inserted the same row; roll back and re-fetch.
+            db.rollback()
+            row = _query_spend_period(
+                db, team.id, region_id, budget_type, period_start, period_end
+            )
 
     row.currency = None
     row.total_spend = float(snapshot.get("total_spend", 0.0) or 0.0)

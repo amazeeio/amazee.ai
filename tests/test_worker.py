@@ -3508,3 +3508,123 @@ async def test_monitor_teams_continues_processing_after_error(
     assert mock_reconcile_products.call_count == 4  # test_team + 3 new teams
     # reconcile_team_keys should have been called for all teams except the failing one
     assert mock_reconcile.call_count == 3  # 4 teams - 1 failing = 3 successful
+
+
+# ---------------------------------------------------------------------------
+# Spend period snapshot capture tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@patch("app.core.worker.get_product_id_from_subscription", new_callable=AsyncMock)
+@patch("app.core.worker.apply_product_for_team", new_callable=AsyncMock)
+async def test_subscription_success_does_not_capture_spend(
+    mock_apply_product, mock_get_product, db, test_team, test_product
+):
+    """
+    GIVEN: A customer.subscription.updated event (SUBSCRIPTION_SUCCESS)
+    WHEN:  handle_stripe_event_background is called
+    THEN:  No spend-period snapshot is captured (subscriptions lack period_start/end)
+           and no warning is logged about missing period fields.
+    """
+    from app.db.models import DBTeamSpendPeriod
+
+    test_team.stripe_customer_id = "cus_sub_ok"
+    db.add(test_team)
+    db.commit()
+
+    mock_get_product.return_value = test_product.id
+    mock_apply_product.return_value = None
+
+    mock_event = Mock()
+    mock_event.type = "customer.subscription.updated"
+    mock_event.id = "evt_sub_ok"
+    sub_obj = Mock()
+    sub_obj.customer = "cus_sub_ok"
+    sub_obj.id = "sub_ok"
+    sub_obj.start_date = 1_700_000_000
+    # Subscriptions do NOT have period_start / period_end – mimic that by NOT
+    # setting those attributes (Mock raises AttributeError instead of None).
+    mock_event.data.object = sub_obj
+    mock_event.data.object.customer = "cus_sub_ok"
+
+    with patch("app.core.worker.capture_periodic_team_spend_for_invoice") as mock_capture:
+        await handle_stripe_event_background(mock_event)
+        # capture_periodic_team_spend_for_invoice must NOT be called for subscription events
+        mock_capture.assert_not_called()
+
+    # No spend period rows should exist
+    count = db.query(DBTeamSpendPeriod).filter(
+        DBTeamSpendPeriod.team_id == test_team.id
+    ).count()
+    assert count == 0
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.fetch_team_spend_snapshot_for_region", new_callable=AsyncMock)
+@patch("app.core.worker.get_product_id_from_subscription", new_callable=AsyncMock)
+@patch("app.core.worker.apply_product_for_team", new_callable=AsyncMock)
+async def test_invoice_payment_success_captures_spend_period(
+    mock_apply_product,
+    mock_get_product,
+    mock_fetch_snapshot,
+    db,
+    test_team,
+    test_product,
+    test_region,
+):
+    """
+    GIVEN: An invoice.payment_succeeded event (INVOICE_SUCCESS)
+    WHEN:  handle_stripe_event_background is called
+    THEN:  A spend-period snapshot is persisted to the DB for each region the team
+           has keys in.
+    """
+    from app.db.models import DBTeamSpendPeriod, DBPrivateAIKey
+
+    test_team.stripe_customer_id = "cus_inv_ok"
+    db.add(test_team)
+    # Give the team a key in the test region so keys_by_region is non-empty
+    key = DBPrivateAIKey(
+        name="inv-test-key",
+        litellm_token="inv-test-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+
+    mock_get_product.return_value = test_product.id
+    mock_apply_product.return_value = None
+    mock_fetch_snapshot.return_value = {
+        "total_spend": 42.0,
+        "total_budget": 100.0,
+        "total_prompt_tokens": 500,
+        "total_completion_tokens": 200,
+        "total_tokens": 700,
+        "keys": [],
+    }
+
+    period_start_ts = 1_700_000_000
+    period_end_ts = 1_702_678_400
+
+    mock_event = Mock()
+    mock_event.type = "invoice.payment_succeeded"
+    mock_event.id = "evt_inv_ok"
+    inv_obj = Mock()
+    inv_obj.customer = "cus_inv_ok"
+    inv_obj.id = "inv_ok"
+    inv_obj.period_start = period_start_ts
+    inv_obj.period_end = period_end_ts
+    # parent.subscription_details.subscription for subscription ID extraction
+    inv_obj.parent.subscription_details.subscription = "sub_ok"
+    mock_event.data.object = inv_obj
+
+    await handle_stripe_event_background(mock_event)
+
+    # A spend period row must have been written
+    rows = db.query(DBTeamSpendPeriod).filter(
+        DBTeamSpendPeriod.team_id == test_team.id,
+        DBTeamSpendPeriod.region_id == test_region.id,
+    ).all()
+    assert len(rows) == 1
+    assert rows[0].total_spend == 42.0
+    assert rows[0].stripe_event_id == "evt_inv_ok"

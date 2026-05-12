@@ -4,7 +4,9 @@ from app.core.spend_period_service import upsert_team_spend_period
 from app.db.models import DBTeamSpendPeriod, DBTeamSpendPeriodKey
 
 
-def test_upsert_team_spend_period_creates_parent_and_keys(db, test_team, test_region):
+def test_upsert_team_spend_period_creates_parent_and_keys(
+    db, test_team, test_region, test_team_user
+):
     period_start = datetime(2026, 4, 1, tzinfo=UTC)
     period_end = datetime(2026, 5, 1, tzinfo=UTC)
 
@@ -27,7 +29,7 @@ def test_upsert_team_spend_period_creates_parent_and_keys(db, test_team, test_re
             },
             {
                 "key_id": None,
-                "owner_id": 1,
+                "owner_id": test_team_user.id,
                 "key_name_snapshot": "k2",
                 "spend": 2.34,
                 "max_budget": None,

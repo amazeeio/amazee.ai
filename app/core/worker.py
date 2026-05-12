@@ -223,15 +223,10 @@ async def handle_stripe_event_background(event):
             return
         # Success Events
         if event_type in SUBSCRIPTION_SUCCESS_EVENTS:
-            # new subscription
+            # new subscription – subscription objects expose current_period_start/end,
+            # not period_start/period_end, so spend capture is handled on invoice events only.
             product_id = await get_product_id_from_subscription(event_object.id)
             start_date = datetime.fromtimestamp(event_object.start_date, tz=UTC)
-            await capture_periodic_team_spend_for_invoice(
-                db=db,
-                customer_id=customer_id,
-                invoice_obj=event_object,
-                stripe_event_id=event_id,
-            )
             await apply_product_for_team(db, customer_id, product_id, start_date)
         elif event_type in INVOICE_SUCCESS_EVENTS:
             # subscription renewed

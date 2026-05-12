@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import settings
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
@@ -24,7 +24,6 @@ from app.db.models import (
     DBSpendCap,
     DBTeam,
     DBTeamSpendPeriod,
-    DBTeamSpendPeriodKey,
     DBTeamRegion,
     DBUser,
 )
@@ -77,6 +76,7 @@ async def get_team_spend_history(
 
     periods = (
         db.query(DBTeamSpendPeriod)
+        .options(selectinload(DBTeamSpendPeriod.keys))
         .filter(
             DBTeamSpendPeriod.team_id == team_id,
             DBTeamSpendPeriod.region_id == region_id,
@@ -87,12 +87,6 @@ async def get_team_spend_history(
 
     period_items: list[TeamSpendHistoryPeriodItem] = []
     for period in periods:
-        key_rows = (
-            db.query(DBTeamSpendPeriodKey)
-            .filter(DBTeamSpendPeriodKey.team_spend_period_id == period.id)
-            .order_by(DBTeamSpendPeriodKey.id.asc())
-            .all()
-        )
         key_items = [
             TeamSpendHistoryKeyItem(
                 key_id=row.key_id,
@@ -107,7 +101,7 @@ async def get_team_spend_history(
                 completion_tokens=row.completion_tokens,
                 total_tokens=row.total_tokens,
             )
-            for row in key_rows
+            for row in sorted(period.keys, key=lambda k: k.id)
         ]
 
         period_items.append(
