@@ -7,12 +7,57 @@ REGION_ID="${REGION_ID:-1}"
 BACKEND_CONTAINER="${BACKEND_CONTAINER:-amazeeai-backend-1}"
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-amazeeai-postgres-1}"
 DB_NAME="${DB_NAME:-postgres_service}"
+CLEANUP_CREATED=1
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "Missing command: $1" >&2; exit 1; }; }
 for c in curl jq openssl python3 docker; do need_cmd "$c"; done
 
 TMP_DIR="$(mktemp -d /tmp/e2e_spend_history.XXXXXX)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+TEAM_ID=""
+KEY1_ID=""
+KEY2_ID=""
+
+cleanup() {
+  rm -rf "$TMP_DIR"
+  if [[ "$CLEANUP_CREATED" != "1" ]]; then
+    return
+  fi
+
+  echo
+  say "Cleanup: deleting created entities"
+
+  if [[ -n "$KEY1_ID" ]]; then
+    api DELETE "/private-ai-keys/${KEY1_ID}" || true
+    say "Delete key1 id=${KEY1_ID} status=${HTTP_STATUS:-n/a}"
+  fi
+  if [[ -n "$KEY2_ID" ]]; then
+    api DELETE "/private-ai-keys/${KEY2_ID}" || true
+    say "Delete key2 id=${KEY2_ID} status=${HTTP_STATUS:-n/a}"
+  fi
+
+  if [[ -n "$TEAM_ID" ]]; then
+    docker exec "$BACKEND_CONTAINER" sh -lc "cd /app && python3 - <<'PY'
+from sqlalchemy.orm import sessionmaker
+from app.db.database import engine
+from app.db.models import DBTeam
+TEAM_ID = ${TEAM_ID}
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+db = SessionLocal()
+team = db.query(DBTeam).filter(DBTeam.id == TEAM_ID).first()
+if team is not None:
+    team.stripe_customer_id = None
+    db.add(team)
+    db.commit()
+print('stripe_customer_id_reset', TEAM_ID)
+db.close()
+PY" >/dev/null 2>&1 || true
+
+    api DELETE "/teams/${TEAM_ID}" || true
+    say "Delete team id=${TEAM_ID} status=${HTTP_STATUS:-n/a}"
+  fi
+}
+
+trap cleanup EXIT
 
 api() {
   local method="$1"; local path="$2"; local data="${3:-}"
