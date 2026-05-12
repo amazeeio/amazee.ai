@@ -105,10 +105,11 @@ class RegionConversionRunner:
             DBTeam.is_active.is_(True),
         )
 
-    def _in_scope_team_ids(self) -> list[int]:
-        return [
-            t.id for t in self._active_teams_query().order_by(DBTeam.id.asc()).all()
-        ]
+    def _in_scope_team_ids(self, limit: int | None = None) -> list[int]:
+        query = self._active_teams_query().order_by(DBTeam.id.asc())
+        if limit is not None:
+            query = query.limit(limit)
+        return [t.id for t in query.all()]
 
     def _active_public_regions(self) -> list[DBRegion]:
         return (
@@ -280,9 +281,7 @@ class RegionConversionRunner:
             )
             return counters
 
-        team_ids = self._in_scope_team_ids()
-        if self.max_rows is not None:
-            team_ids = team_ids[: self.max_rows]
+        team_ids = self._in_scope_team_ids(limit=self.max_rows)
 
         existing_team_ids: set[int] = set()
         if team_ids:
@@ -303,7 +302,6 @@ class RegionConversionRunner:
                 counters.skipped += 1
             else:
                 counters.changed += 1
-                existing_team_ids.add(team_id)
                 if not self.dry_run:
                     self.session.add(
                         DBTeamRegion(team_id=team_id, region_id=self.region_id)
