@@ -31,6 +31,10 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.services.litellm import LiteLLMService
+from app.core.spend_period_service import (
+    fetch_team_spend_snapshot_for_region,
+    upsert_team_spend_period,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +224,48 @@ async def purchase_pool_budget(
             status_code=status.HTTP_409_CONFLICT,
             detail="A purchase with this stripe_payment_id already exists",
         )
+
+    # Capture spend for the closing POOL period BEFORE mutating budget state.
+    latest_purchase_at = (
+        db.query(func.max(DBPoolPurchase.purchased_at))
+        .filter(DBPoolPurchase.team_id == team_id, DBPoolPurchase.region_id == region_id)
+        .scalar()
+    )
+    period_start = latest_purchase_at or team.created_at or purchase.purchased_at
+    period_end = purchase.purchased_at
+    if period_start and period_end and period_end > period_start:
+        try:
+            snapshot = await fetch_team_spend_snapshot_for_region(
+                db=db,
+                team=team,
+                region=region,
+            )
+            upsert_team_spend_period(
+                db=db,
+                team=team,
+                region_id=region_id,
+                period_start=period_start,
+                period_end=period_end,
+                source="pool_purchase_litellm_sync",
+                snapshot=snapshot,
+                stripe_invoice_id=purchase.stripe_payment_id,
+                raw_payload={
+                    "trigger": "pool_purchase",
+                    "amount_cents": purchase.amount_cents,
+                    "currency": purchase.currency,
+                },
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to capture POOL spend period for team_id=%s region_id=%s before purchase: %s",
+                team_id,
+                region_id,
+                str(exc),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Failed to capture pre-purchase spend snapshot",
+            )
 
     purchase_record = DBPoolPurchase(
         team_id=team_id,
