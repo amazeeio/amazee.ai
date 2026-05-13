@@ -65,6 +65,7 @@ async def get_periodic_budget_status(
         raise HTTPException(status_code=404, detail="Region not found")
 
     sub_remaining = 0
+    subscription_period_end = None
     active_subscriptions = (
         db.query(DBPeriodicBudgetLedgerEntry)
         .filter(
@@ -77,6 +78,23 @@ async def get_periodic_budget_status(
     )
     for row in active_subscriptions:
         sub_remaining += max(0, row.amount_cents - row.consumed_cents)
+        if row.effective_period_end and (
+            subscription_period_end is None
+            or row.effective_period_end > subscription_period_end
+        ):
+            subscription_period_end = row.effective_period_end
+
+    nearest_topup_expiry = (
+        db.query(func.min(DBPeriodicBudgetLedgerEntry.expires_at))
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team_id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"]),
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            DBPeriodicBudgetLedgerEntry.expires_at.isnot(None),
+        )
+        .scalar()
+    )
     topup_remaining = compute_active_topup_remaining(
         db, team_id=team_id, region_id=region_id
     )
@@ -86,6 +104,8 @@ async def get_periodic_budget_status(
         subscription_remaining_cents=sub_remaining,
         topup_remaining_cents=topup_remaining,
         desired_remaining_cents=sub_remaining + topup_remaining,
+        subscription_period_end=subscription_period_end,
+        nearest_topup_expiry=nearest_topup_expiry,
     )
 
 

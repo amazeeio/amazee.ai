@@ -16,6 +16,13 @@ class AllocationResult:
     unallocated_cents: int
 
 
+@dataclass
+class BudgetDriftResult:
+    expected_max_budget: float
+    actual_max_budget: float
+    drift: float
+
+
 def _active_entries(db: Session, team_id: int, region_id: int) -> list[DBPeriodicBudgetLedgerEntry]:
     now = datetime.now(UTC)
     return (

@@ -561,6 +561,29 @@ async def _record_periodic_topup_ledger_from_checkout(
     db.commit()
 
 
+async def reconcile_periodic_team_budget_drift(
+    *, db: Session, team: DBTeam, region: DBRegion
+) -> dict | None:
+    if team.budget_type != BudgetType.PERIODIC:
+        return None
+    service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+    lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+    team_info_resp = await service.get_team_info(lite_team_id)
+    team_info = team_info_resp.get("team_info", team_info_resp)
+    current_spend = float(team_info.get("spend", 0.0) or 0.0)
+    actual_max_budget = float(team_info.get("max_budget", 0.0) or 0.0)
+    topup_remaining = compute_active_topup_remaining(db, team_id=team.id, region_id=region.id) / 100.0
+    expected_max_budget = current_spend + topup_remaining
+    drift = round(actual_max_budget - expected_max_budget, 6)
+    return {
+        "team_id": team.id,
+        "region_id": region.id,
+        "expected_max_budget": expected_max_budget,
+        "actual_max_budget": actual_max_budget,
+        "drift": drift,
+    }
+
+
 async def apply_product_for_team(
     db: Session,
     customer_id: str,

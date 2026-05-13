@@ -403,6 +403,8 @@ def test_update_team_budget_endpoint(
     test_region,
     db,
 ):
+    test_team.budget_type = BudgetType.POOL
+    db.commit()
     mock_get_team_info.return_value = {
         "team_info": {"max_budget": 12.5, "budget_duration": "1mo"}
     }
@@ -446,6 +448,8 @@ def test_update_team_budget_invalidates_user_spend_cache_for_team_members(
     test_region,
     db,
 ):
+    test_team.budget_type = BudgetType.POOL
+    db.commit()
     team_user = DBUser(
         email="cache-team-user@example.com",
         hashed_password=get_password_hash("password"),
@@ -536,10 +540,9 @@ def test_update_invoice_budget_allows_any_value_for_dedicated_team(
         headers={"Authorization": f"Bearer {admin_token}"},
         json={"max_budget": 100.0},
     )
-    assert response.status_code == 200, response.json()
-    mock_update_team_budget.assert_awaited_once()
-    assert mock_update_team_budget.await_args.kwargs["max_budget"] == 100.0
-    assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "1mo"
+    assert response.status_code == 400
+    assert "not supported for PERIODIC teams" in response.json()["detail"]
+    mock_update_team_budget.assert_not_awaited()
 
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)

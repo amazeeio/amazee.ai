@@ -1109,6 +1109,11 @@ async def update_team_budget(
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
     _assert_team_budget_write_access(current_user, role, team_id)
+    if team.budget_type == BudgetType.PERIODIC:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Manual team budget override is not supported for PERIODIC teams",
+        )
     region = _get_region_or_404(db, region_id)
     _assert_team_region_association(db, region, team_id)
     service = LiteLLMService(

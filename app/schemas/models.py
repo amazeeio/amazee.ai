@@ -788,6 +788,8 @@ class PeriodicBudgetStatusResponse(BaseModel):
     subscription_remaining_cents: int
     topup_remaining_cents: int
     desired_remaining_cents: int
+    subscription_period_end: Optional[datetime] = None
+    nearest_topup_expiry: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
 
