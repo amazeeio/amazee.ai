@@ -1046,8 +1046,10 @@ async def monitor_teams(db: Session):
                 team_label = (str(team.id), team.name)
                 current_team_labels.add(team_label)
 
-                # Reconcile product associations with Stripe before any other processing
-                await reconcile_team_product_associations(db, team)
+                # Reconcile product associations with Stripe for non-POOL teams only.
+                # POOL teams follow a separate purchase-gated lifecycle.
+                if team.budget_type != BudgetType.POOL:
+                    await reconcile_team_product_associations(db, team)
 
                 # Check if team has any products
                 has_products = (
