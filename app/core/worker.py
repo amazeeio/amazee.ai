@@ -13,6 +13,7 @@ from app.db.models import (
     DBTeamRegion,
     DBPoolPurchase,
     DBPeriodicPayment,
+    DBStripeProcessedEvent,
 )
 from app.schemas.models import BudgetType
 from app.db.database import get_db
@@ -46,6 +47,13 @@ from urllib.parse import urljoin
 from app.core.spend_period_service import (
     fetch_team_spend_snapshot_for_region,
     upsert_team_spend_period,
+)
+from app.core.periodic_budget_ledger_service import (
+    add_subscription_entry,
+    add_topup_entry,
+    allocate_period_spend_fifo,
+    compute_active_topup_remaining,
+    expire_subscription_entries,
 )
 
 logger = logging.getLogger(__name__)
@@ -276,8 +284,25 @@ async def handle_stripe_event_background(event):
         if event_type not in KNOWN_EVENTS:
             logger.info(f"Unknown event type: {event_type}")
             return
-        event_object = event.data.object
         event_id = getattr(event, "id", None)
+        if event_id:
+            existing_event = (
+                db.query(DBStripeProcessedEvent)
+                .filter(DBStripeProcessedEvent.stripe_event_id == event_id)
+                .first()
+            )
+            if existing_event:
+                logger.info("Stripe event already processed: %s", event_id)
+                return
+            db.add(
+                DBStripeProcessedEvent(
+                    stripe_event_id=event_id,
+                    event_type=event_type,
+                )
+            )
+            db.commit()
+
+        event_object = event.data.object
         customer_id = event_object.customer
         if not customer_id:
             logger.warning("No customer ID found in event, cannot complete processing")
@@ -328,6 +353,12 @@ async def handle_stripe_event_background(event):
                 await apply_product_for_team(
                     db, customer_id, product_id, start_date, payment_record_id
                 )
+                await _sync_periodic_ledger_for_invoice(
+                    db=db,
+                    customer_id=customer_id,
+                    invoice_obj=event_object,
+                    source_payment_id=payment_record_id,
+                )
         elif event_type in SESSION_SUCCESS_EVENTS:
             # top-up or checkout signup
             subscription = getattr(event_object, "subscription", None)
@@ -346,6 +377,12 @@ async def handle_stripe_event_background(event):
                         .first()
                     )
                     if team and team.products:
+                        await _record_periodic_topup_ledger_from_checkout(
+                            db=db,
+                            team=team,
+                            event_object=event_object,
+                            source_payment_id=payment_record_id,
+                        )
                         # Use the team's current primary product to refresh limits
                         product_id = team.products[0].id
                         await apply_product_for_team(
@@ -456,6 +493,66 @@ async def capture_periodic_team_spend_for_invoice(
             )
 
 
+async def _sync_periodic_ledger_for_invoice(
+    *, db: Session, customer_id: str, invoice_obj, source_payment_id: int | None
+) -> None:
+    team = db.query(DBTeam).filter(DBTeam.stripe_customer_id == customer_id).first()
+    if not team or team.budget_type != BudgetType.PERIODIC:
+        return
+
+    period_start_ts = getattr(invoice_obj, "period_start", None)
+    period_end_ts = getattr(invoice_obj, "period_end", None)
+    amount_paid = int(getattr(invoice_obj, "amount_paid", 0) or 0)
+    if period_start_ts is None or period_end_ts is None:
+        return
+    period_start = datetime.fromtimestamp(period_start_ts, tz=UTC)
+    period_end = datetime.fromtimestamp(period_end_ts, tz=UTC)
+
+    keys_by_region = get_team_keys_by_region(db, team.id)
+    for region in keys_by_region.keys():
+        snapshot = await fetch_team_spend_snapshot_for_region(db=db, team=team, region=region)
+        spend_cents = int(round(float(snapshot.total_spend) * 100))
+        allocate_period_spend_fifo(db, team_id=team.id, region_id=region.id, spend_cents=spend_cents)
+        expire_subscription_entries(
+            db, team_id=team.id, region_id=region.id, period_end=period_end
+        )
+        add_subscription_entry(
+            db,
+            team_id=team.id,
+            region_id=region.id,
+            amount_cents=amount_paid,
+            purchased_at=period_start,
+            period_start=period_start,
+            period_end=period_end,
+            source_payment_id=source_payment_id,
+            source_invoice_id=getattr(invoice_obj, "id", None),
+        )
+    db.commit()
+
+
+async def _record_periodic_topup_ledger_from_checkout(
+    *, db: Session, team: DBTeam, event_object, source_payment_id: int | None
+) -> None:
+    if team.budget_type != BudgetType.PERIODIC:
+        return
+    amount = int(getattr(event_object, "amount_total", 0) or 0)
+    stripe_payment_id = getattr(event_object, "id", None)
+    if not stripe_payment_id or amount <= 0:
+        return
+    keys_by_region = get_team_keys_by_region(db, team.id)
+    for region in keys_by_region.keys():
+        add_topup_entry(
+            db,
+            team_id=team.id,
+            region_id=region.id,
+            amount_cents=amount,
+            purchased_at=datetime.now(UTC),
+            source_payment_id=source_payment_id,
+            stripe_payment_id=stripe_payment_id,
+        )
+    db.commit()
+
+
 async def apply_product_for_team(
     db: Session,
     customer_id: str,
@@ -516,7 +613,7 @@ async def apply_product_for_team(
         # the team max_budget to keep the effective monthly budget aligned
         # with the Stripe billing cycle. Key spends are reset to 0 on each
         # webhook so that sum(key spends) reflects only the current period.
-        is_periodic = not team.requires_pool_purchase_gate
+        is_periodic = team.budget_type == BudgetType.PERIODIC
         budget_duration = "31d" if is_periodic else f"{days_left_in_period}d"
 
         # Get all keys for the team grouped by region
@@ -543,7 +640,11 @@ async def apply_product_for_team(
                     team_data = await litellm_service.get_team_info(lite_team_id)
                     team_info = team_data.get("team_info", team_data)
                     current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
-                    team_max_budget = current_team_spend + max_max_spend
+                    topup_remaining_cents = compute_active_topup_remaining(
+                        db, team_id=team.id, region_id=region.id
+                    )
+                    desired_remaining = max_max_spend + (topup_remaining_cents / 100.0)
+                    team_max_budget = current_team_spend + desired_remaining
                     logger.info(
                         f"Compounding team {team.id} budget: "
                         f"spend={current_team_spend} + cap={max_max_spend} = {team_max_budget}"

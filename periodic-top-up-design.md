@@ -32,6 +32,47 @@ Add periodic-team top-ups with rollover semantics while preserving existing peri
 - No dedicated periodic top-up endpoint behavior that compounds from ledger state.
 - No periodic budget status endpoint exposing subscription-vs-top-up breakdown.
 
+## Critical critique (gaps in this plan vs actual code)
+
+1. **Event idempotency is incomplete for webhook retries**
+- Current code deduplicates by `DBPeriodicPayment.stripe_payment_id`, where `stripe_payment_id` is set to `event_object.id`.
+- For `invoice.*` this is invoice id; for checkout session top-ups this is session id. That is not a stable dedupe key across all event types and does not protect against mixed-event duplicates touching the same financial action.
+- Required change: add an explicit processed-events ledger keyed by Stripe `event.id` (or add `stripe_event_id` with unique constraint) and short-circuit duplicate event processing before business logic.
+
+2. **`DBPeriodicPayment` is global-per-team, not region-aware**
+- Top-up and renewal sync currently applies budget updates for every team region in `apply_product_for_team()`.
+- Plan’s ledger is `(team_id, region_id)` scoped, but Stripe payments are team-scoped. Without a mapping policy, one payment can be double-counted across regions.
+- Required change: define and enforce one billing region per periodic team or document deterministic split rules; otherwise ledger math and LiteLLM updates diverge.
+
+3. **Wrong periodic detection in worker code**
+- `apply_product_for_team()` currently uses `is_periodic = not team.requires_pool_purchase_gate`, but pool gating is a derived flag combining `budget_type == POOL` and `require_purchase_for_requests`.
+- This can misclassify non-gated pool teams as periodic.
+- Required change: switch to explicit `team.budget_type == BudgetType.PERIODIC` for all periodic-only behavior.
+
+4. **Top-up path ownership is underspecified**
+- There is no periodic purchase endpoint today; only `/budget/region/{region_id}/teams/{team_id}/purchase` for POOL with a hard guard `requires_pool_purchase_gate`.
+- Current top-up effects come from Stripe `checkout.session.completed` metadata (`ai_budget_increase`) handled in webhook worker.
+- Required change: plan must state whether periodic top-up remains webhook-driven only or introduces a new API endpoint + checkout initiation flow. “Extend app/api/budgets.py” is insufficient and likely incorrect for current flow.
+
+5. **Transaction/side-effect ordering risks partial financial state**
+- Existing code commits `DBPeriodicPayment` early, then performs external LiteLLM calls, then updates sync status.
+- Introducing ledger writes + allocation + rollover without an explicit saga/order can leave “recorded but unsynced” ambiguous states.
+- Required change: define atomic DB transaction boundaries and compensating state transitions (`pending -> allocated -> synced` / `sync_failed`) with deterministic retry behavior.
+
+6. **Period boundary source is ambiguous**
+- Spend capture uses invoice `period_start/period_end`; plan also proposes subscription expiry materialization and rollover creation.
+- Stripe period timestamps are authoritative, but plan does not pin rollover to invoice period close and invoice id, risking duplicate rollover rows when retries occur.
+- Required change: bind rollover creation idempotently to `(team_id, region_id, closed_period_end, source_invoice_id)`.
+
+7. **Manual override guardrail partially exists but not for periodic team budget writes**
+- Existing manual-cap logic is implemented in POOL purchase flow only.
+- Plan mentions rejecting periodic manual overrides but does not identify the concrete endpoint behavior in `spend.py` and compatibility with current tests.
+- Required change: explicitly patch `PUT /spend/{region}/team/{team}/budget` with `budget_type` checks and add regression tests.
+
+8. **Key update semantics may clobber intended per-key caps**
+- Worker sets each key budget to `max_max_spend` each renewal, then resets spend for periodic. This can overwrite key-specific desired caps if those caps are managed elsewhere.
+- Required change: periodic renewal must preserve configured key cap policy (or explicitly reset to team ceiling by policy), and tests must lock this behavior.
+
 ## Architectural decision update
 Use **incremental evolution** from existing tables, not a net-new replacement model.
 
@@ -57,6 +98,14 @@ Use **incremental evolution** from existing tables, not a net-new replacement mo
 
 Reason: `periodic_payments` alone is audit-only and lacks consumption/rollover state.
 
+### Additional table/constraint updates (required)
+- Add `stripe_events_processed` (or equivalent) with unique `stripe_event_id`.
+- Add idempotency uniqueness on ledger entry creation:
+  - top-up entries keyed by source Stripe payment/session id
+  - subscription entries keyed by `(team_id, region_id, source_invoice_id)`
+  - rollover entries keyed by `(rolled_over_from_id, effective_period_end)`
+- Optionally add `billing_region_id` to teams for periodic-billing consistency.
+
 ## Revised functional plan by item
 
 1. Data model and migration
@@ -76,6 +125,7 @@ Reason: `periodic_payments` alone is audit-only and lacks consumption/rollover s
 
 3. Webhook renewal flow integration
 - In `handle_stripe_event_background` invoice success path:
+  - Enforce event-id idempotency using `event.id` before processing.
   - Keep existing spend snapshot capture to `team_spend_periods`.
   - Derive period spend and allocate FIFO against active ledger entries.
   - Expire previous subscription entries at period boundary.
@@ -87,12 +137,14 @@ Reason: `periodic_payments` alone is audit-only and lacks consumption/rollover s
   - Update related `DBPeriodicPayment.sync_status`.
 
 4. Top-up purchase flow
-- Extend existing budget purchase API path in `app/api/budgets.py` (prefer unified endpoint branching by `budget_type`).
-- For periodic teams:
-  - write `DBPeriodicPayment` (if not already done in this flow) and new `topup` ledger entry.
-  - fetch current team spend.
-  - recompute desired remaining using active ledger entries.
-  - compound and push updated team max budget.
+- Keep Stripe checkout/webhook as source of truth for periodic top-ups in this iteration.
+- In `checkout.session.completed` handler with `metadata.ai_budget_increase`:
+  - enforce event-id idempotency
+  - write/ensure `DBPeriodicPayment`
+  - create top-up ledger entry idempotently
+  - fetch current team spend
+  - recompute desired remaining using active ledger entries
+  - compound and push updated team max budget
 - For pool teams: no change.
 
 5. Read APIs
@@ -112,7 +164,10 @@ Reason: `periodic_payments` alone is audit-only and lacks consumption/rollover s
 7. Observability and recovery
 - Add structured logs around rollover decisions (allocation, expired, rolled over, compounded budget).
 - Add reconciliation helper that compares expected budget (ledger-derived) vs LiteLLM team budget.
-- Define failure handling: DB transaction rollback on LiteLLM update failure where appropriate.
+- Define failure handling with explicit state machine:
+  - DB records persist with `sync_status=pending`
+  - failed LiteLLM sync marks `sync_failed` with retry-safe idempotent re-entry
+  - retries never duplicate ledger allocation/rollover entries
 
 8. Tests to add/update
 - Unit tests for FIFO allocation and 365-day expiry edge cases.
@@ -123,6 +178,11 @@ Reason: `periodic_payments` alone is audit-only and lacks consumption/rollover s
   - duplicate webhook idempotency
 - API tests for periodic top-up endpoint and periodic budget status endpoint.
 - Regression tests ensuring pool purchase flow remains unchanged.
+- Add tests for:
+  - duplicate Stripe `event.id` replay on invoice and checkout session
+  - region policy for periodic billing (single billing region or deterministic distribution)
+  - periodic-vs-pool classification (`budget_type` based, not purchase-gate based)
+  - failed LiteLLM update followed by retry without double allocation
 
 ## Phase plan (execution order)
 
@@ -152,3 +212,5 @@ Reason: `periodic_payments` alone is audit-only and lacks consumption/rollover s
 - Effective LiteLLM team budget always equals `current_team_spend + desired_remaining_budget`.
 - Duplicate Stripe events do not duplicate financial state.
 - Pool teams pass existing behavior unchanged.
+- Duplicate webhook deliveries (same `event.id`) are no-ops after first successful state transition.
+- Periodic ledger state is region-consistent with how budgets are actually applied in LiteLLM.

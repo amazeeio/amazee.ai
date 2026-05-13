@@ -325,6 +325,65 @@ class DBPeriodicPayment(Base):
     team = relationship("DBTeam")
 
 
+class DBStripeProcessedEvent(Base):
+    __tablename__ = "stripe_processed_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    stripe_event_id = Column(String, unique=True, nullable=False, index=True)
+    event_type = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+
+class DBPeriodicBudgetLedgerEntry(Base):
+    __tablename__ = "periodic_budget_ledger_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    team_id = Column(
+        Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    region_id = Column(
+        Integer,
+        ForeignKey("regions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    entry_type = Column(String, nullable=False, index=True)
+    source_payment_id = Column(
+        Integer, ForeignKey("periodic_payments.id", ondelete="SET NULL"), nullable=True
+    )
+    source_invoice_id = Column(String, nullable=True, index=True)
+    stripe_payment_id = Column(String, nullable=True, index=True)
+    amount_cents = Column(Integer, nullable=False)
+    consumed_cents = Column(Integer, nullable=False, default=0)
+    purchased_at = Column(DateTime(timezone=True), nullable=False)
+    effective_period_start = Column(DateTime(timezone=True), nullable=True)
+    effective_period_end = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    rolled_over_from_id = Column(
+        Integer,
+        ForeignKey("periodic_budget_ledger_entries.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    team = relationship("DBTeam")
+    region = relationship("DBRegion")
+    source_payment = relationship("DBPeriodicPayment")
+    rolled_over_from = relationship("DBPeriodicBudgetLedgerEntry", remote_side=[id])
+
+    __table_args__ = (
+        UniqueConstraint(
+            "team_id",
+            "region_id",
+            "entry_type",
+            "stripe_payment_id",
+            name="uq_periodic_ledger_topup_payment",
+        ),
+    )
+
+
 class DBPrivateAIKey(Base):
     __tablename__ = "ai_tokens"
 
