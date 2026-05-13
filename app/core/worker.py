@@ -1086,21 +1086,15 @@ async def monitor_teams(db: Session):
                 keys_by_region = get_team_keys_by_region(db, team.id)
                 expire_keys = False
 
-                # Pool teams with purchases should never be treated as expired trials.
+                # POOL teams should never be treated as expired trials.
                 # Their budget lifecycle is managed separately by sync_pool_team_budgets.
-                has_active_pool_purchase = (
-                    team.budget_type == BudgetType.POOL
-                    and db.query(DBPoolPurchase)
-                    .filter(DBPoolPurchase.team_id == team.id)
-                    .first()
-                    is not None
-                )
+                is_pool_team = team.budget_type == BudgetType.POOL
 
                 # Expire if team trial has expired (if team has a product, expiry will be handled by Stripe)
-                # Pool teams with purchases are exempt — they are not trial users.
+                # POOL teams are always exempt from trial expiration.
                 if (
                     not has_products
-                    and not has_active_pool_purchase
+                    and not is_pool_team
                     and days_remaining <= 0
                     and should_send_notifications
                 ):
