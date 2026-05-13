@@ -73,15 +73,11 @@ async def fetch_team_spend_snapshot_for_region(
                     if litellm_key.get("max_budget") is not None
                     else None
                 ),
-                "prompt_tokens": int(litellm_key.get("prompt_tokens"))
-                if str(litellm_key.get("prompt_tokens", "")).isdigit()
-                else None,
-                "completion_tokens": int(litellm_key.get("completion_tokens"))
-                if str(litellm_key.get("completion_tokens", "")).isdigit()
-                else None,
-                "total_tokens": int(litellm_key.get("total_tokens"))
-                if str(litellm_key.get("total_tokens", "")).isdigit()
-                else None,
+                "prompt_tokens": _to_int_or_none(litellm_key.get("prompt_tokens")),
+                "completion_tokens": _to_int_or_none(
+                    litellm_key.get("completion_tokens")
+                ),
+                "total_tokens": _to_int_or_none(litellm_key.get("total_tokens")),
             }
         )
 
