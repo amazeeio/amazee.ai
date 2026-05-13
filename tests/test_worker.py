@@ -903,6 +903,7 @@ async def test_monitor_teams_pool_team_with_purchase_not_expired(
     # Setup: pool team, 31 days old (past trial), but with a pool purchase
     test_team.created_at = datetime.now(UTC) - timedelta(days=31)
     test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
     test_team.last_pool_purchase = datetime.now(UTC) - timedelta(days=1)
     db.add(test_team)
     db.commit()
@@ -974,6 +975,7 @@ async def test_monitor_teams_pool_team_without_purchase_not_expired(
     # Setup: pool team, 31 days old (past trial), no purchases
     test_team.created_at = datetime.now(UTC) - timedelta(days=31)
     test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
     db.add(test_team)
     db.commit()
 
