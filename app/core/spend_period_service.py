@@ -16,6 +16,15 @@ from app.schemas.models import BudgetType
 from app.services.litellm import LiteLLMService
 
 
+def _to_int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _resolve_budget_type(team: DBTeam) -> str:
     budget_type = team.budget_type
     if isinstance(budget_type, BudgetType):
@@ -73,15 +82,11 @@ async def fetch_team_spend_snapshot_for_region(
                     if litellm_key.get("max_budget") is not None
                     else None
                 ),
-                "prompt_tokens": int(litellm_key.get("prompt_tokens"))
-                if str(litellm_key.get("prompt_tokens", "")).isdigit()
-                else None,
-                "completion_tokens": int(litellm_key.get("completion_tokens"))
-                if str(litellm_key.get("completion_tokens", "")).isdigit()
-                else None,
-                "total_tokens": int(litellm_key.get("total_tokens"))
-                if str(litellm_key.get("total_tokens", "")).isdigit()
-                else None,
+                "prompt_tokens": _to_int_or_none(litellm_key.get("prompt_tokens")),
+                "completion_tokens": _to_int_or_none(
+                    litellm_key.get("completion_tokens")
+                ),
+                "total_tokens": _to_int_or_none(litellm_key.get("total_tokens")),
             }
         )
 

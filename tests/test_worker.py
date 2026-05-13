@@ -3576,7 +3576,7 @@ async def test_invoice_payment_success_captures_spend_period(
     test_region,
 ):
     """
-    GIVEN: An invoice.payment_succeeded event (INVOICE_SUCCESS)
+    GIVEN: An invoice.paid event (INVOICE_SUCCESS)
     WHEN:  handle_stripe_event_background is called
     THEN:  A spend-period snapshot is persisted to the DB for each region the team
            has keys in.
@@ -3610,7 +3610,7 @@ async def test_invoice_payment_success_captures_spend_period(
     period_end_ts = 1_702_678_400
 
     mock_event = Mock()
-    mock_event.type = "invoice.payment_succeeded"
+    mock_event.type = "invoice.paid"
     mock_event.id = "evt_inv_ok"
     inv_obj = Mock()
     inv_obj.customer = "cus_inv_ok"

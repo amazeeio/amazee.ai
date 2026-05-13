@@ -626,4 +626,13 @@ class DBTeamSpendPeriodKey(Base):
             "key_id",
             name="uq_team_spend_period_key",
         ),
+        Index(
+            "uq_team_spend_period_key_null_key_id",
+            "team_spend_period_id",
+            "owner_id",
+            "key_name_snapshot",
+            unique=True,
+            postgresql_where=text("key_id IS NULL"),
+            sqlite_where=text("key_id IS NULL"),
+        ),
     )
