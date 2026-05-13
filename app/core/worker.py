@@ -436,7 +436,6 @@ async def apply_product_for_team(
         # webhook so that sum(key spends) reflects only the current period.
         is_periodic = not team.requires_pool_purchase_gate
         budget_duration = "31d" if is_periodic else f"{days_left_in_period}d"
-        key_duration = "31d" if is_periodic else f"{days_left_in_period}d"
 
         # Get all keys for the team grouped by region
         keys_by_region = get_team_keys_by_region(db, team.id)
@@ -500,7 +499,7 @@ async def apply_product_for_team(
                 try:
                     await litellm_service.set_key_restrictions(
                         litellm_token=key.litellm_token,
-                        duration=key_duration,
+                        duration=budget_duration,
                         budget_duration=budget_duration,
                         budget_amount=max_max_spend,
                         rpm_limit=max_rpm_limit,
@@ -508,7 +507,7 @@ async def apply_product_for_team(
                     )
                     logger.info(
                         f"Updated key {key.id} limits in LiteLLM: "
-                        f"duration={key_duration}, budget={max_max_spend}, "
+                        f"duration={budget_duration}, budget={max_max_spend}, "
                         f"rpm={max_rpm_limit}, spend_reset={is_periodic}"
                     )
                 except Exception as e:
