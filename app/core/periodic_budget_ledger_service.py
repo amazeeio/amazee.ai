@@ -23,7 +23,9 @@ class BudgetDriftResult:
     drift: float
 
 
-def _active_entries(db: Session, team_id: int, region_id: int) -> list[DBPeriodicBudgetLedgerEntry]:
+def _active_entries(
+    db: Session, team_id: int, region_id: int
+) -> list[DBPeriodicBudgetLedgerEntry]:
     now = datetime.now(UTC)
     return (
         db.query(DBPeriodicBudgetLedgerEntry)
@@ -31,10 +33,17 @@ def _active_entries(db: Session, team_id: int, region_id: int) -> list[DBPeriodi
             DBPeriodicBudgetLedgerEntry.team_id == team_id,
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
             DBPeriodicBudgetLedgerEntry.is_active.is_(True),
-            (DBPeriodicBudgetLedgerEntry.expires_at.is_(None) | (DBPeriodicBudgetLedgerEntry.expires_at > now)),
-            DBPeriodicBudgetLedgerEntry.consumed_cents < DBPeriodicBudgetLedgerEntry.amount_cents,
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+            ),
+            DBPeriodicBudgetLedgerEntry.consumed_cents
+            < DBPeriodicBudgetLedgerEntry.amount_cents,
         )
-        .order_by(DBPeriodicBudgetLedgerEntry.purchased_at.asc(), DBPeriodicBudgetLedgerEntry.id.asc())
+        .order_by(
+            DBPeriodicBudgetLedgerEntry.purchased_at.asc(),
+            DBPeriodicBudgetLedgerEntry.id.asc(),
+        )
         .all()
     )
 
@@ -145,7 +154,9 @@ def allocate_period_spend_fifo(
     return AllocationResult(allocated_cents=allocated, unallocated_cents=remaining)
 
 
-def expire_subscription_entries(db: Session, *, team_id: int, region_id: int, period_end: datetime) -> None:
+def expire_subscription_entries(
+    db: Session, *, team_id: int, region_id: int, period_end: datetime
+) -> None:
     entries = (
         db.query(DBPeriodicBudgetLedgerEntry)
         .filter(
@@ -171,7 +182,10 @@ def compute_active_topup_remaining(db: Session, *, team_id: int, region_id: int)
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
             DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"]),
             DBPeriodicBudgetLedgerEntry.is_active.is_(True),
-            (DBPeriodicBudgetLedgerEntry.expires_at.is_(None) | (DBPeriodicBudgetLedgerEntry.expires_at > now)),
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+            ),
         )
         .all()
     )
@@ -209,7 +223,10 @@ def materialize_topup_rollovers(
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
             DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"]),
             DBPeriodicBudgetLedgerEntry.is_active.is_(True),
-            (DBPeriodicBudgetLedgerEntry.expires_at.is_(None) | (DBPeriodicBudgetLedgerEntry.expires_at > now)),
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+            ),
         )
         .all()
     )

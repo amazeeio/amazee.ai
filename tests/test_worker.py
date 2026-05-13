@@ -159,17 +159,34 @@ async def test_handle_stripe_event_replay_is_noop_by_event_id(db, test_team):
     mock_event.data.object = obj
 
     with (
-        patch("app.core.worker.get_product_id_from_subscription", new_callable=AsyncMock) as m_prod,
-        patch("app.core.worker.capture_periodic_team_spend_for_invoice", new_callable=AsyncMock),
+        patch(
+            "app.core.worker.get_product_id_from_subscription", new_callable=AsyncMock
+        ) as m_prod,
+        patch(
+            "app.core.worker.capture_periodic_team_spend_for_invoice",
+            new_callable=AsyncMock,
+        ),
         patch("app.core.worker.apply_product_for_team", new_callable=AsyncMock),
-        patch("app.core.worker._sync_periodic_ledger_for_invoice", new_callable=AsyncMock),
+        patch(
+            "app.core.worker._sync_periodic_ledger_for_invoice", new_callable=AsyncMock
+        ),
     ):
         m_prod.return_value = "prod_x"
         await handle_stripe_event_background(mock_event)
         await handle_stripe_event_background(mock_event)
 
-    assert db.query(DBStripeProcessedEvent).filter(DBStripeProcessedEvent.stripe_event_id == "evt_replay_1").count() == 1
-    assert db.query(DBPeriodicPayment).filter(DBPeriodicPayment.stripe_payment_id == "in_replay").count() == 1
+    assert (
+        db.query(DBStripeProcessedEvent)
+        .filter(DBStripeProcessedEvent.stripe_event_id == "evt_replay_1")
+        .count()
+        == 1
+    )
+    assert (
+        db.query(DBPeriodicPayment)
+        .filter(DBPeriodicPayment.stripe_payment_id == "in_replay")
+        .count()
+        == 1
+    )
 
 
 @pytest.mark.asyncio
@@ -3727,7 +3744,10 @@ async def test_invoice_ledger_topup_carry_forward_across_periods(
         .all()
         if r.entry_type in ("topup", "topup_rollover") and r.is_active
     ]
-    assert sum(r.amount_cents - r.consumed_cents for r in topup_remaining_after_inv1) == 200
+    assert (
+        sum(r.amount_cents - r.consumed_cents for r in topup_remaining_after_inv1)
+        == 200
+    )
 
     inv2 = Mock()
     inv2.id = "in_cf_2"
@@ -3792,10 +3812,16 @@ async def test_invoice_ledger_duplicate_invoice_id_is_idempotent(
 
     mock_fetch_snapshot.return_value = Mock(total_spend=1.0)
     await _sync_periodic_ledger_for_invoice(
-        db=db, customer_id="cus_periodic_ledger_b", invoice_obj=inv, source_payment_id=None
+        db=db,
+        customer_id="cus_periodic_ledger_b",
+        invoice_obj=inv,
+        source_payment_id=None,
     )
     await _sync_periodic_ledger_for_invoice(
-        db=db, customer_id="cus_periodic_ledger_b", invoice_obj=inv, source_payment_id=None
+        db=db,
+        customer_id="cus_periodic_ledger_b",
+        invoice_obj=inv,
+        source_payment_id=None,
     )
 
     rollover_rows = (

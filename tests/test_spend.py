@@ -418,9 +418,9 @@ def test_update_team_budget_endpoint(
     assert data["scope"] == "team"
     assert data["team_id"] == test_team.id
     assert data["max_budget"] == 12.5
-    assert data["budget_duration"] == "1mo"
+    assert data["budget_duration"] == "365d"
     mock_update_team_budget.assert_awaited_once()
-    assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "1mo"
+    assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "365d"
     cap = (
         db.query(DBSpendCap)
         .filter(
@@ -1614,6 +1614,8 @@ def test_update_team_budget_rejects_unassociated_dedicated_region(
     test_team,
     db,
 ):
+    test_team.budget_type = BudgetType.POOL
+    db.commit()
     dedicated = DBRegion(
         name="dedicated-spend",
         label="Dedicated Spend",

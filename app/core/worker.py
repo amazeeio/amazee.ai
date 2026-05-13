@@ -511,9 +511,13 @@ async def _sync_periodic_ledger_for_invoice(
 
     keys_by_region = get_team_keys_by_region(db, team.id)
     for region in keys_by_region.keys():
-        snapshot = await fetch_team_spend_snapshot_for_region(db=db, team=team, region=region)
+        snapshot = await fetch_team_spend_snapshot_for_region(
+            db=db, team=team, region=region
+        )
         spend_cents = int(round(float(snapshot.total_spend) * 100))
-        allocate_period_spend_fifo(db, team_id=team.id, region_id=region.id, spend_cents=spend_cents)
+        allocate_period_spend_fifo(
+            db, team_id=team.id, region_id=region.id, spend_cents=spend_cents
+        )
         materialize_topup_rollovers(
             db,
             team_id=team.id,
@@ -566,13 +570,17 @@ async def reconcile_periodic_team_budget_drift(
 ) -> dict | None:
     if team.budget_type != BudgetType.PERIODIC:
         return None
-    service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
     lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
     team_info_resp = await service.get_team_info(lite_team_id)
     team_info = team_info_resp.get("team_info", team_info_resp)
     current_spend = float(team_info.get("spend", 0.0) or 0.0)
     actual_max_budget = float(team_info.get("max_budget", 0.0) or 0.0)
-    topup_remaining = compute_active_topup_remaining(db, team_id=team.id, region_id=region.id) / 100.0
+    topup_remaining = (
+        compute_active_topup_remaining(db, team_id=team.id, region_id=region.id) / 100.0
+    )
     expected_max_budget = current_spend + topup_remaining
     drift = round(actual_max_budget - expected_max_budget, 6)
     return {
