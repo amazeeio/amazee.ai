@@ -16,6 +16,15 @@ from app.schemas.models import BudgetType
 from app.services.litellm import LiteLLMService
 
 
+def _to_int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _resolve_budget_type(team: DBTeam) -> str:
     budget_type = team.budget_type
     if isinstance(budget_type, BudgetType):
