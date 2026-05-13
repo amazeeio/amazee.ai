@@ -22,3 +22,4 @@ six==1.17.0
 httpx==0.28.1
 fastapi-limiter==0.1.6
 redis==4.6.0
+apscheduler==3.11.2
