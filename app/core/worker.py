@@ -1063,8 +1063,8 @@ async def monitor_teams(db: Session):
                 await _check_team_retention_policy(db, team, current_time, ses_service)
 
                 # Now handle trial expiry notifications and key expiry (after retention checks)
-                team_freshness = _monitor_team_freshness(team, db)
-                days_remaining = TRIAL_OVER_DAYS - team_freshness
+                is_pool_team = team.budget_type == BudgetType.POOL
+                days_remaining = None
 
                 # Check if team was monitored within 24 hours
                 should_send_notifications = settings.ENABLE_LIMITS
@@ -1074,29 +1074,31 @@ async def monitor_teams(db: Session):
                     ).total_seconds() / 3600
                     should_send_notifications = hours_since_monitored >= 24
 
-                _send_expiry_notification(
-                    db,
-                    team,
-                    has_products,
-                    should_send_notifications,
-                    days_remaining,
-                    ses_service,
-                    is_pool_team=team.budget_type == BudgetType.POOL,
-                )
+                # POOL teams are managed by pool-specific lifecycle jobs;
+                # skip trial freshness and expiry notifications.
+                if not is_pool_team:
+                    team_freshness = _monitor_team_freshness(team, db)
+                    days_remaining = TRIAL_OVER_DAYS - team_freshness
+                    _send_expiry_notification(
+                        db,
+                        team,
+                        has_products,
+                        should_send_notifications,
+                        days_remaining,
+                        ses_service,
+                        is_pool_team=False,
+                    )
 
                 # Get all keys for the team grouped by region
                 keys_by_region = get_team_keys_by_region(db, team.id)
                 expire_keys = False
-
-                # POOL teams should never be treated as expired trials.
-                # Their budget lifecycle is managed separately by sync_pool_team_budgets.
-                is_pool_team = team.budget_type == BudgetType.POOL
 
                 # Expire if team trial has expired (if team has a product, expiry will be handled by Stripe)
                 # POOL teams are always exempt from trial expiration.
                 if (
                     not has_products
                     and not is_pool_team
+                    and days_remaining is not None
                     and days_remaining <= 0
                     and should_send_notifications
                 ):
