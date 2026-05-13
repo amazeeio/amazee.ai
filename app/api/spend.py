@@ -75,7 +75,7 @@ def _compute_period_start(
             return budget_reset_at.replace(month=budget_reset_at.month - 1, day=1)
         return budget_reset_at.replace(day=1)
 
-    match = re.fullmatch(r"(\d+)([d|h|m|s])", budget_duration)
+    match = re.fullmatch(r"(\d+)([dhms])", budget_duration)
     if not match:
         return None
     value = int(match.group(1))
