@@ -870,13 +870,7 @@ def _send_expiry_notification(
     should_send_notifications: bool,
     days_remaining: int,
     ses_service: Optional[SESService],
-    is_pool_team: bool = False,
 ):
-    # POOL teams have their own budget lifecycle managed by sync_pool_team_budgets.
-    # They should never receive trial expiry notifications.
-    if is_pool_team:
-        return
-
     # Check for notification conditions for teams still in the trial (only if not recently monitored)
     if not has_products and should_send_notifications:
         # Find the admin email for the team
@@ -1068,7 +1062,7 @@ async def monitor_teams(db: Session):
                 await _check_team_retention_policy(db, team, current_time, ses_service)
 
                 # Now handle trial expiry notifications and key expiry (after retention checks)
-                is_purchase_gated_pool_team = team.requires_pool_purchase_gate
+                is_pool_team = team.budget_type == BudgetType.POOL
 
                 # Check if team was monitored within 24 hours
                 should_send_notifications = settings.ENABLE_LIMITS
@@ -1078,11 +1072,11 @@ async def monitor_teams(db: Session):
                     ).total_seconds() / 3600
                     should_send_notifications = hours_since_monitored >= 24
 
-                # Always compute freshness to emit team_freshness_days metrics for all teams;
-                # only skip trial notifications for purchase-gated POOL teams.
+                # Always compute freshness to emit team_freshness_days metrics for all teams.
+                # POOL teams have their own lifecycle and are excluded from trial notifications.
                 team_freshness = _monitor_team_freshness(team, db)
                 days_remaining = TRIAL_OVER_DAYS - team_freshness
-                if not is_purchase_gated_pool_team:
+                if not is_pool_team:
                     _send_expiry_notification(
                         db,
                         team,
@@ -1090,7 +1084,6 @@ async def monitor_teams(db: Session):
                         should_send_notifications,
                         days_remaining,
                         ses_service,
-                        is_pool_team=False,
                     )
 
                 # Get all keys for the team grouped by region
@@ -1098,10 +1091,10 @@ async def monitor_teams(db: Session):
                 expire_keys = False
 
                 # Expire if team trial has expired (if team has a product, expiry will be handled by Stripe)
-                # Purchase-gated POOL teams are always exempt from trial expiration.
+                # POOL teams are always exempt from trial expiration.
                 if (
                     not has_products
-                    and not is_purchase_gated_pool_team
+                    and not is_pool_team
                     and days_remaining <= 0
                     and should_send_notifications
                 ):
