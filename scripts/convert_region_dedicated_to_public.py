@@ -386,7 +386,8 @@ class RegionConversionRunner:
                 cleanup_changed += 1
                 if not self.dry_run:
                     self.session.delete(row)
-            self._log(f"  Deleted {cleanup_changed} admin_region rows")
+            action = "Would delete" if self.dry_run else "Deleted"
+            self._log(f"  {action} {cleanup_changed} admin_region rows")
         else:
             cleanup_skipped = (
                 self.session.query(DBUserAdminRegion)
@@ -662,13 +663,11 @@ class RegionConversionRunner:
 
         public_regions = self._active_public_regions()
         users = self._active_users_for_teams(source_team_ids)
-        total_db_ops = len(source_team_ids) * len(public_regions)
-        t0 = self._log_phase_start(
-            "reverse-transfer",
-            total_db_ops
-            + len(source_team_ids) * len(public_regions)
-            + len(users) * len(public_regions),
-        )
+        db_assoc_ops = len(source_team_ids) * len(public_regions)
+        litellm_team_ops = len(source_team_ids) * len(public_regions)
+        litellm_user_ops = len(users) * len(public_regions)
+        total_ops = db_assoc_ops + litellm_team_ops + litellm_user_ops
+        t0 = self._log_phase_start("reverse-transfer", total_ops)
         self._log(
             f"  {len(source_team_ids)} dedicated-only teams × {len(public_regions)} public regions, "
             f"{len(users)} users"
@@ -697,6 +696,7 @@ class RegionConversionRunner:
             )
             service = LiteLLMService(region.litellm_api_url, region.litellm_api_key)
             for team_id in source_team_ids:
+                counters.processed += 1
                 lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
                 try:
                     await service.get_team_info(lite_team_id)
@@ -737,7 +737,10 @@ class RegionConversionRunner:
                     counters.changed += 1
 
             for user in users:
+                counters.processed += 1
                 if is_trial_user(user.email):
+                    counters.skipped += 1
+                    self._log_progress("reverse-transfer", counters, total_ops)
                     continue
                 lite_team_id = LiteLLMService.format_team_id(region.name, user.team_id)
                 try:
@@ -791,8 +794,7 @@ class RegionConversionRunner:
                             "error": str(exc),
                         }
                     )
-                counters.processed += 1
-                self._log_progress("reverse-transfer", counters, counters.processed + 1)
+                self._log_progress("reverse-transfer", counters, total_ops)
 
         self._record_phase(
             "reverse-transfer",
