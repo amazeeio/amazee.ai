@@ -746,6 +746,11 @@ async def _check_team_retention_policy(
         current_time: Current timestamp
         ses_service: SES service instance for sending emails
     """
+    # POOL teams are always considered active per product policy.
+    # They are excluded from inactivity-based retention checks.
+    if team.budget_type == BudgetType.POOL:
+        return
+
     # Check team retention policy (only for non-deleted teams)
     if team.deleted_at:
         return  # Team already soft-deleted, skip retention check
