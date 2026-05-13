@@ -143,7 +143,7 @@ async def test_handle_stripe_event_replay_is_noop_by_event_id(db, test_team):
 
     mock_event = Mock()
     mock_event.id = "evt_replay_1"
-    mock_event.type = "invoice.payment_succeeded"
+    mock_event.type = "invoice.paid"
 
     obj = Mock()
     obj.customer = "cus_replay"
