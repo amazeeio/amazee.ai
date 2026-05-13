@@ -21,6 +21,7 @@ SUBSCRIPTION_SUCCESS_EVENTS = [
     "customer.subscription.resumed",
     "customer.subscription.created",
 ]  # New subscription
+SESSION_SUCCESS_EVENTS = ["checkout.session.completed"]  # Top-ups and new sessions
 SESSION_FAILURE_EVENTS = [
     "checkout.session.async_payment_failed",
     "checkout.session.expired",
@@ -31,7 +32,9 @@ SUBSCRIPTION_FAILURE_EVENTS = [
 ]  # Subscription failure
 INVOICE_FAILURE_EVENTS = ["invoice.payment_failed"]  # Invoice failure
 
-SUCCESS_EVENTS = INVOICE_SUCCESS_EVENTS + SUBSCRIPTION_SUCCESS_EVENTS
+SUCCESS_EVENTS = (
+    INVOICE_SUCCESS_EVENTS + SUBSCRIPTION_SUCCESS_EVENTS + SESSION_SUCCESS_EVENTS
+)
 FAILURE_EVENTS = (
     SESSION_FAILURE_EVENTS + SUBSCRIPTION_FAILURE_EVENTS + INVOICE_FAILURE_EVENTS
 )

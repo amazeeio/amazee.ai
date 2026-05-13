@@ -2310,3 +2310,268 @@ def test_get_team_spend_history_admin_can_access_any_team(
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert response.status_code == 200
+
+
+# ── _compute_period_start unit tests ─────────────────────────────────
+
+
+def test_compute_period_start_31d():
+    from app.api.spend import _compute_period_start
+
+    reset_at = datetime(2026, 6, 8, 0, 0, 0, tzinfo=UTC)
+    result = _compute_period_start(reset_at, "31d")
+    assert result == datetime(2026, 5, 8, 0, 0, 0, tzinfo=UTC)
+
+
+def test_compute_period_start_365d():
+    from app.api.spend import _compute_period_start
+
+    reset_at = datetime(2027, 5, 8, 0, 0, 0, tzinfo=UTC)
+    result = _compute_period_start(reset_at, "365d")
+    assert result == datetime(2026, 5, 8, 0, 0, 0, tzinfo=UTC)
+
+
+def test_compute_period_start_1mo_resets_on_first():
+    """1mo resets on 1st of next month → period_start = 1st of current month."""
+    from app.api.spend import _compute_period_start
+
+    reset_at = datetime(2026, 6, 1, 0, 0, 0, tzinfo=UTC)
+    result = _compute_period_start(reset_at, "1mo")
+    assert result == datetime(2026, 5, 1, 0, 0, 0, tzinfo=UTC)
+
+
+def test_compute_period_start_1mo_january_wraps():
+    """1mo resetting on Feb 1st → period starts Jan 1st."""
+    from app.api.spend import _compute_period_start
+
+    reset_at = datetime(2027, 2, 1, 0, 0, 0, tzinfo=UTC)
+    result = _compute_period_start(reset_at, "1mo")
+    assert result == datetime(2027, 1, 1, 0, 0, 0, tzinfo=UTC)
+
+
+def test_compute_period_start_1mo_december_wraps_year():
+    """1mo resetting on Jan 1st → period starts Dec 1st of prev year."""
+    from app.api.spend import _compute_period_start
+
+    reset_at = datetime(2027, 1, 1, 0, 0, 0, tzinfo=UTC)
+    result = _compute_period_start(reset_at, "1mo")
+    assert result == datetime(2026, 12, 1, 0, 0, 0, tzinfo=UTC)
+
+
+def test_compute_period_start_none_inputs():
+    from app.api.spend import _compute_period_start
+
+    assert _compute_period_start(None, "31d") is None
+    assert _compute_period_start(datetime(2026, 6, 1, tzinfo=UTC), None) is None
+    assert _compute_period_start(None, None) is None
+    assert _compute_period_start(datetime(2026, 6, 1, tzinfo=UTC), "") is None
+
+
+def test_compute_period_start_unknown_duration():
+    from app.api.spend import _compute_period_start
+
+    reset_at = datetime(2026, 6, 1, 0, 0, 0, tzinfo=UTC)
+    assert _compute_period_start(reset_at, "2w") is None
+
+
+# ── Spend endpoint period fields tests ───────────────────────────────
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_team_spend_includes_period_fields_for_periodic_team(
+    mock_get_team_info, client, admin_token, test_team, test_region, db
+):
+    key = DBPrivateAIKey(
+        name="periodic-period-key",
+        litellm_token="periodic-period-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "team_info": {
+            "spend": 5.0,
+            "max_budget": 10.0,
+            "budget_duration": "31d",
+            "budget_reset_at": "2026-06-08T00:00:00Z",
+        },
+        "keys": [
+            {
+                "metadata": {"amazeeai_private_ai_key_name": key.name},
+                "user_id": None,
+                "spend": 5.0,
+                "max_budget": 10.0,
+                "budget_duration": "31d",
+                "budget_reset_at": "2026-06-08T00:00:00Z",
+            }
+        ],
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    # Team-level period fields
+    assert data["budget_duration"] == "31d"
+    assert data["budget_reset_at"] == "2026-06-08T00:00:00Z"
+    assert data["period_start"] == "2026-05-08T00:00:00Z"
+    # Per-key period fields
+    assert data["keys"][0]["budget_duration"] == "31d"
+    assert data["keys"][0]["budget_reset_at"] == "2026-06-08T00:00:00Z"
+    assert data["keys"][0]["period_start"] == "2026-05-08T00:00:00Z"
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_team_spend_period_fields_null_when_no_budget(
+    mock_get_team_info, client, admin_token, test_team, test_region, db
+):
+    """When LiteLLM has no budget set, period fields should be null."""
+    key = DBPrivateAIKey(
+        name="no-budget-key",
+        litellm_token="no-budget-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "team_info": {
+            "spend": 1.0,
+            "max_budget": None,
+            "budget_duration": None,
+            "budget_reset_at": None,
+        },
+        "keys": [
+            {
+                "metadata": {"amazeeai_private_ai_key_name": key.name},
+                "user_id": None,
+                "spend": 1.0,
+                "max_budget": None,
+                "budget_duration": None,
+                "budget_reset_at": None,
+            }
+        ],
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["budget_duration"] is None
+    assert data["budget_reset_at"] is None
+    assert data["period_start"] is None
+    assert data["keys"][0]["budget_duration"] is None
+    assert data["keys"][0]["budget_reset_at"] is None
+    assert data["keys"][0]["period_start"] is None
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_key_spend_includes_period_start(
+    mock_get_key_info, client, admin_token, test_team, test_team_user, test_region, db
+):
+    key = DBPrivateAIKey(
+        name="period-key",
+        litellm_token="period-key-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+
+    mock_get_key_info.return_value = {
+        "info": {
+            "spend": 3.0,
+            "expires": "2026-12-31T23:59:59Z",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-05-01T00:00:00Z",
+            "max_budget": 10.0,
+            "budget_duration": "31d",
+            "budget_reset_at": "2026-06-08T00:00:00Z",
+        }
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["budget_duration"] == "31d"
+    assert data["budget_reset_at"] == "2026-06-08T00:00:00Z"
+    assert data["period_start"] == "2026-05-08T00:00:00Z"
+
+
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_pool_key_with_cap_shows_period_fields(
+    mock_get_team_info, client, admin_token, test_team, test_region, db
+):
+    """POOL team key with a spend cap gets 1mo budget_duration from
+    update_key_budget, so period fields should be populated."""
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.add(test_team)
+    db.commit()
+
+    key = DBPrivateAIKey(
+        name="pool-cap-key",
+        litellm_token="pool-cap-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            key_id=key.id,
+            max_budget=5.0,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "team_info": {
+            "spend": 0.5,
+            "max_budget": 20.0,
+            "budget_duration": "365d",
+            "budget_reset_at": "2027-05-08T00:00:00Z",
+        },
+        "keys": [
+            {
+                "metadata": {"amazeeai_private_ai_key_name": key.name},
+                "user_id": None,
+                "spend": 0.5,
+                "max_budget": 5.0,
+                "budget_duration": "1mo",
+                "budget_reset_at": "2026-06-01T00:00:00Z",
+            }
+        ],
+    }
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    # Team has 365d from purchase
+    assert data["budget_duration"] == "365d"
+    assert data["budget_reset_at"] == "2027-05-08T00:00:00Z"
+    assert data["period_start"] == "2026-05-08T00:00:00Z"
+    # Key has 1mo cap
+    k = data["keys"][0]
+    assert k["budget_duration"] == "1mo"
+    assert k["budget_reset_at"] == "2026-06-01T00:00:00Z"
+    assert k["period_start"] == "2026-05-01T00:00:00Z"
