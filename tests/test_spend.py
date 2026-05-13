@@ -404,6 +404,7 @@ def test_update_team_budget_endpoint(
     db,
 ):
     test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = False
     db.commit()
     mock_get_team_info.return_value = {
         "team_info": {"max_budget": 12.5, "budget_duration": "1mo"}
@@ -418,9 +419,9 @@ def test_update_team_budget_endpoint(
     assert data["scope"] == "team"
     assert data["team_id"] == test_team.id
     assert data["max_budget"] == 12.5
-    assert data["budget_duration"] == "365d"
+    assert data["budget_duration"] == "1mo"
     mock_update_team_budget.assert_awaited_once()
-    assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "365d"
+    assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "1mo"
     cap = (
         db.query(DBSpendCap)
         .filter(
@@ -449,6 +450,7 @@ def test_update_team_budget_invalidates_user_spend_cache_for_team_members(
     db,
 ):
     test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = False
     db.commit()
     team_user = DBUser(
         email="cache-team-user@example.com",
@@ -486,6 +488,7 @@ def test_update_team_budget_allows_cap_above_pool_purchases(
     db,
 ):
     test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
     db.add(test_team)
     db.add(
         DBPoolPurchase(
@@ -1615,6 +1618,7 @@ def test_update_team_budget_rejects_unassociated_dedicated_region(
     db,
 ):
     test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
     db.commit()
     dedicated = DBRegion(
         name="dedicated-spend",
