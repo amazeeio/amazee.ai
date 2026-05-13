@@ -414,6 +414,7 @@ class RegionConversionRunner:
         return counters
 
     async def phase_litellm_teams(self) -> Counters:
+        t0 = self._log_phase_start("litellm-teams")
         counters = Counters()
         region = self._region()
         if not region:
@@ -422,6 +423,7 @@ class RegionConversionRunner:
                 {"phase": "litellm-teams", "error": "Region not found"}
             )
             self._record_phase("litellm-teams", counters)
+            self._log_phase_end("litellm-teams", counters, t0)
             return counters
 
         team_ids = self._in_scope_team_ids()
@@ -432,7 +434,7 @@ class RegionConversionRunner:
             .all()
         )
 
-        t0 = self._log_phase_start("litellm-teams", len(teams))
+        self._log(f"  Processing {len(teams)} teams")
         service = LiteLLMService(region.litellm_api_url, region.litellm_api_key)
         for team in teams:
             counters.processed += 1
@@ -477,6 +479,7 @@ class RegionConversionRunner:
         return counters
 
     async def phase_litellm_users(self) -> Counters:
+        t0 = self._log_phase_start("litellm-users")
         counters = Counters()
         region = self._region()
         if not region:
@@ -485,11 +488,12 @@ class RegionConversionRunner:
                 {"phase": "litellm-users", "error": "Region not found"}
             )
             self._record_phase("litellm-users", counters)
+            self._log_phase_end("litellm-users", counters, t0)
             return counters
 
         team_ids = self._in_scope_team_ids()
         users = self._active_users_for_teams(team_ids)
-        t0 = self._log_phase_start("litellm-users", len(users))
+        self._log(f"  Processing {len(users)} users")
         service = LiteLLMService(region.litellm_api_url, region.litellm_api_key)
 
         for user in users:
@@ -563,12 +567,14 @@ class RegionConversionRunner:
         return counters
 
     async def phase_litellm_keys(self) -> Counters:
+        t0 = self._log_phase_start("litellm-keys")
         counters = Counters()
         region = self._region()
         if not region:
             counters.failed = 1
             self.failures.append({"phase": "litellm-keys", "error": "Region not found"})
             self._record_phase("litellm-keys", counters)
+            self._log_phase_end("litellm-keys", counters, t0)
             return counters
 
         in_scope_teams = set(self._in_scope_team_ids())
@@ -582,7 +588,7 @@ class RegionConversionRunner:
         )
         keys = query.all()
 
-        t0 = self._log_phase_start("litellm-keys", len(keys))
+        self._log(f"  Processing {len(keys)} keys")
         headers = {"Authorization": f"Bearer {region.litellm_api_key}"}
         async with httpx.AsyncClient() as client:
             for key in keys:
