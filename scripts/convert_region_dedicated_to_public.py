@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, UTC
 
@@ -93,6 +94,37 @@ class RegionConversionRunner:
 
         self._team_members_cache: dict[tuple[int, str], frozenset[str]] = {}
         self._pre_conversion_dedicated_only_team_ids: list[int] = []
+        self._progress_interval: int = 25  # log every N items
+
+    @staticmethod
+    def _log(msg: str) -> None:
+        """Print a progress message with timestamp, flushed immediately."""
+        ts = datetime.now(UTC).strftime("%H:%M:%S")
+        print(f"[{ts}] {msg}", flush=True)
+
+    def _log_phase_start(self, phase: str, total: int | None = None) -> float:
+        """Log the start of a phase and return the start time."""
+        suffix = f" ({total} items)" if total is not None else ""
+        self._log(f"▶ [{phase}] Starting{suffix}")
+        return time.monotonic()
+
+    def _log_phase_end(self, phase: str, counters: Counters, start_time: float) -> None:
+        """Log the end of a phase with counters and elapsed time."""
+        elapsed = time.monotonic() - start_time
+        self._log(
+            f"✔ [{phase}] Done in {elapsed:.1f}s — "
+            f"processed={counters.processed} changed={counters.changed} "
+            f"skipped={counters.skipped} failed={counters.failed}"
+        )
+
+    def _log_progress(self, phase: str, counters: Counters, total: int) -> None:
+        """Log progress if we hit the interval boundary."""
+        if counters.processed > 0 and counters.processed % self._progress_interval == 0:
+            pct = counters.processed / total * 100 if total else 0
+            self._log(
+                f"  [{phase}] {counters.processed}/{total} ({pct:.0f}%) "
+                f"changed={counters.changed} skipped={counters.skipped} failed={counters.failed}"
+            )
 
     def _region(self) -> DBRegion | None:
         return (
@@ -161,28 +193,34 @@ class RegionConversionRunner:
         self.report["phases"][name] = payload
 
     async def phase_preflight(self) -> Counters:
+        t0 = self._log_phase_start("preflight")
         counters = Counters(processed=1)
         region = self._region()
         if not region:
             counters.failed = 1
             self.failures.append({"phase": "preflight", "error": "Region not found"})
             self._record_phase("preflight", counters)
+            self._log_phase_end("preflight", counters, t0)
             return counters
         if not region.is_active:
             counters.failed = 1
             self.failures.append({"phase": "preflight", "error": "Region is inactive"})
             self._record_phase("preflight", counters)
+            self._log_phase_end("preflight", counters, t0)
             return counters
 
+        self._log("  Checking LiteLLM connectivity...")
         try:
             service = LiteLLMService(region.litellm_api_url, region.litellm_api_key)
             await service.get_model_info()
+            self._log(f"  LiteLLM reachable at {region.litellm_api_url}")
         except Exception as exc:
             counters.failed = 1
             self.failures.append(
                 {"phase": "preflight", "error": f"LiteLLM reachability failed: {exc}"}
             )
             self._record_phase("preflight", counters)
+            self._log_phase_end("preflight", counters, t0)
             return counters
 
         associated_teams = (
@@ -211,6 +249,12 @@ class RegionConversionRunner:
             self._snapshot_preconversion_dedicated_only_teams()
         )
 
+        self._log(
+            f"  Region: {region.name} (dedicated={region.is_dedicated}, "
+            f"teams={active_teams}, associated={associated_teams}, "
+            f"users={active_users}, keys={region_keys})"
+        )
+
         counters.changed = 1
         self._record_phase(
             "preflight",
@@ -228,39 +272,50 @@ class RegionConversionRunner:
                 ),
             },
         )
+        self._log_phase_end("preflight", counters, t0)
         return counters
 
     async def phase_convert(self) -> Counters:
+        t0 = self._log_phase_start("convert")
         counters = Counters(processed=1)
         region = self._region()
         if not region:
             counters.failed = 1
             self.failures.append({"phase": "convert", "error": "Region not found"})
             self._record_phase("convert", counters)
+            self._log_phase_end("convert", counters, t0)
             return counters
 
         if not region.is_dedicated:
             counters.skipped = 1
+            self._log("  Region is already public, nothing to convert")
             self._record_phase(
                 "convert", counters, {"result": "noop", "reason": "already_public"}
             )
+            self._log_phase_end("convert", counters, t0)
             return counters
 
         counters.changed = 1
         if not self.dry_run:
             region.is_dedicated = False
             self.session.commit()
+            self._log(f"  Set region {region.name} is_dedicated=False (committed)")
+        else:
+            self._log(f"  Would set region {region.name} is_dedicated=False")
 
         self._record_phase("convert", counters, {"result": "converted"})
+        self._log_phase_end("convert", counters, t0)
         return counters
 
     async def phase_db_backfill(self) -> Counters:
+        t0 = self._log_phase_start("db-backfill")
         counters = Counters()
         region = self._region()
         if not region:
             counters.failed = 1
             self.failures.append({"phase": "db-backfill", "error": "Region not found"})
             self._record_phase("db-backfill", counters)
+            self._log_phase_end("db-backfill", counters, t0)
             return counters
 
         if region.is_dedicated and not self.force:
@@ -279,9 +334,11 @@ class RegionConversionRunner:
                     "reason": "region_still_dedicated",
                 },
             )
+            self._log_phase_end("db-backfill", counters, t0)
             return counters
 
         team_ids = self._in_scope_team_ids(limit=self.max_rows)
+        self._log(f"  Backfilling {len(team_ids)} teams (batch_size={self.batch_size})")
 
         existing_team_ids: set[int] = (
             {
@@ -296,6 +353,7 @@ class RegionConversionRunner:
             if team_ids
             else set()
         )
+        self._log(f"  {len(existing_team_ids)} teams already associated")
         pending_writes = 0
 
         for team_id in team_ids:
@@ -312,6 +370,7 @@ class RegionConversionRunner:
                     if pending_writes >= self.batch_size:
                         self.session.commit()
                         pending_writes = 0
+            self._log_progress("db-backfill", counters, len(team_ids))
         if not self.dry_run and pending_writes > 0:
             self.session.commit()
 
@@ -327,12 +386,14 @@ class RegionConversionRunner:
                 cleanup_changed += 1
                 if not self.dry_run:
                     self.session.delete(row)
+            self._log(f"  Deleted {cleanup_changed} admin_region rows")
         else:
             cleanup_skipped = (
                 self.session.query(DBUserAdminRegion)
                 .filter(DBUserAdminRegion.region_id == self.region_id)
                 .count()
             )
+            self._log(f"  Kept {cleanup_skipped} admin_region rows")
 
         if not self.dry_run:
             self.session.commit()
@@ -348,6 +409,7 @@ class RegionConversionRunner:
                 "admin_region_rows_kept": cleanup_skipped,
             },
         )
+        self._log_phase_end("db-backfill", counters, t0)
         return counters
 
     async def phase_litellm_teams(self) -> Counters:
@@ -369,6 +431,7 @@ class RegionConversionRunner:
             .all()
         )
 
+        t0 = self._log_phase_start("litellm-teams", len(teams))
         service = LiteLLMService(region.litellm_api_url, region.litellm_api_key)
         for team in teams:
             counters.processed += 1
@@ -403,10 +466,13 @@ class RegionConversionRunner:
                         budget_duration=budget_duration,
                     )
 
+            self._log_progress("litellm-teams", counters, len(teams))
             if self.max_rows is not None and counters.processed >= self.max_rows:
+                self._log(f"  Reached --limit {self.max_rows}, stopping")
                 break
 
         self._record_phase("litellm-teams", counters, {"in_scope_teams": len(teams)})
+        self._log_phase_end("litellm-teams", counters, t0)
         return counters
 
     async def phase_litellm_users(self) -> Counters:
@@ -422,12 +488,14 @@ class RegionConversionRunner:
 
         team_ids = self._in_scope_team_ids()
         users = self._active_users_for_teams(team_ids)
+        t0 = self._log_phase_start("litellm-users", len(users))
         service = LiteLLMService(region.litellm_api_url, region.litellm_api_key)
 
         for user in users:
             counters.processed += 1
             if is_trial_user(user.email):
                 counters.skipped += 1
+                self._log_progress("litellm-users", counters, len(users))
                 continue
 
             try:
@@ -484,10 +552,13 @@ class RegionConversionRunner:
                     {"phase": "litellm-users", "user_id": user.id, "error": str(exc)}
                 )
 
+            self._log_progress("litellm-users", counters, len(users))
             if self.max_rows is not None and counters.processed >= self.max_rows:
+                self._log(f"  Reached --limit {self.max_rows}, stopping")
                 break
 
         self._record_phase("litellm-users", counters, {"in_scope_users": len(users)})
+        self._log_phase_end("litellm-users", counters, t0)
         return counters
 
     async def phase_litellm_keys(self) -> Counters:
@@ -510,6 +581,7 @@ class RegionConversionRunner:
         )
         keys = query.all()
 
+        t0 = self._log_phase_start("litellm-keys", len(keys))
         headers = {"Authorization": f"Bearer {region.litellm_api_key}"}
         async with httpx.AsyncClient() as client:
             for key in keys:
@@ -534,6 +606,7 @@ class RegionConversionRunner:
                     and effective_team_id not in in_scope_teams
                 ):
                     counters.skipped += 1
+                    self._log_progress("litellm-keys", counters, len(keys))
                     continue
 
                 payload = {"key": key.litellm_token}
@@ -559,7 +632,9 @@ class RegionConversionRunner:
                         {"phase": "litellm-keys", "key_id": key.id, "error": str(exc)}
                     )
 
+                self._log_progress("litellm-keys", counters, len(keys))
                 if self.max_rows is not None and counters.processed >= self.max_rows:
+                    self._log(f"  Reached --limit {self.max_rows}, stopping")
                     break
 
         if not self.dry_run:
@@ -568,21 +643,34 @@ class RegionConversionRunner:
             self.session.rollback()
 
         self._record_phase("litellm-keys", counters, {"region_keys": len(keys)})
+        self._log_phase_end("litellm-keys", counters, t0)
         return counters
 
     async def phase_reverse_transfer_to_public_regions(self) -> Counters:
         counters = Counters()
         source_team_ids = list(self._pre_conversion_dedicated_only_team_ids)
         if not source_team_ids:
+            t0 = self._log_phase_start("reverse-transfer")
+            self._log("  No dedicated-only teams found, skipping")
             self._record_phase(
                 "reverse-transfer",
                 counters,
                 {"dedicated_only_teams": 0, "public_regions": 0},
             )
+            self._log_phase_end("reverse-transfer", counters, t0)
             return counters
 
         public_regions = self._active_public_regions()
         users = self._active_users_for_teams(source_team_ids)
+        total_db_ops = len(source_team_ids) * len(public_regions)
+        t0 = self._log_phase_start(
+            "reverse-transfer",
+            total_db_ops + len(source_team_ids) * len(public_regions) + len(users) * len(public_regions),
+        )
+        self._log(
+            f"  {len(source_team_ids)} dedicated-only teams × {len(public_regions)} public regions, "
+            f"{len(users)} users"
+        )
 
         for team_id in source_team_ids:
             current_assocs = self._current_associated_region_ids_for_team(team_id)
@@ -599,13 +687,16 @@ class RegionConversionRunner:
             self.session.commit()
         else:
             self.session.rollback()
+        self._log(f"  DB backfill done for reverse-transfer")
 
         for region in public_regions:
+            self._log(f"  Reconciling LiteLLM teams/users for public region {region.name}...")
             service = LiteLLMService(region.litellm_api_url, region.litellm_api_key)
             for team_id in source_team_ids:
                 lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
                 try:
                     await service.get_team_info(lite_team_id)
+                    counters.skipped += 1
                 except Exception as exc:
                     if parse_status_from_exc(exc) != 404:
                         counters.failed += 1
@@ -639,6 +730,7 @@ class RegionConversionRunner:
                             max_budget=max_budget,
                             budget_duration=budget_duration,
                         )
+                    counters.changed += 1
 
             for user in users:
                 if is_trial_user(user.email):
@@ -681,6 +773,9 @@ class RegionConversionRunner:
                         self._team_members_cache[cache_key] = frozenset(
                             set(self._team_members_cache[cache_key]) | {str(user.id)}
                         )
+                        counters.changed += 1
+                    else:
+                        counters.skipped += 1
                 except Exception as exc:
                     counters.failed += 1
                     self.failures.append(
@@ -692,6 +787,8 @@ class RegionConversionRunner:
                             "error": str(exc),
                         }
                     )
+                counters.processed += 1
+                self._log_progress("reverse-transfer", counters, counters.processed + 1)
 
         self._record_phase(
             "reverse-transfer",
@@ -702,15 +799,18 @@ class RegionConversionRunner:
                 "users_in_scope": len(users),
             },
         )
+        self._log_phase_end("reverse-transfer", counters, t0)
         return counters
 
     async def phase_verify(self) -> Counters:
+        t0 = self._log_phase_start("verify")
         counters = Counters(processed=1)
         region = self._region()
         if not region:
             counters.failed = 1
             self.failures.append({"phase": "verify", "error": "Region not found"})
             self._record_phase("verify", counters)
+            self._log_phase_end("verify", counters, t0)
             return counters
 
         team_ids = self._in_scope_team_ids()
@@ -730,6 +830,12 @@ class RegionConversionRunner:
             .count()
         )
 
+        self._log(
+            f"  region.is_dedicated={region.is_dedicated}, "
+            f"associations={assoc_count}/{len(team_ids)} teams, "
+            f"admin_region_rows={admin_region_count}"
+        )
+
         counters.changed = 1
         self._record_phase(
             "verify",
@@ -741,6 +847,7 @@ class RegionConversionRunner:
                 "remaining_user_admin_region_rows": admin_region_count,
             },
         )
+        self._log_phase_end("verify", counters, t0)
         return counters
 
 
