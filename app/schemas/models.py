@@ -782,6 +782,15 @@ class PoolRegionPurchaseHistoryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PeriodicBudgetStatusResponse(BaseModel):
+    team_id: int
+    region_id: int
+    subscription_remaining_cents: int
+    topup_remaining_cents: int
+    desired_remaining_cents: int
+    model_config = ConfigDict(from_attributes=True)
+
+
 class UserSpendRegion(BaseModel):
     region_id: int
     region_name: str

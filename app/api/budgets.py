@@ -17,6 +17,7 @@ from app.db.models import (
     DBRegion,
     DBSpendCap,
     DBTeam,
+    DBPeriodicBudgetLedgerEntry,
 )
 from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
 from app.schemas.models import (
@@ -25,6 +26,7 @@ from app.schemas.models import (
     PoolPurchaseRequest,
     PoolPurchaseResponse,
     PoolRegionPurchaseHistoryResponse,
+    PeriodicBudgetStatusResponse,
 )
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
@@ -35,11 +37,56 @@ from app.core.spend_period_service import (
     fetch_team_spend_snapshot_for_region,
     upsert_team_spend_period,
 )
+from app.core.periodic_budget_ledger_service import compute_active_topup_remaining
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["budgets"])
 MONTHLY_BUDGET_DURATION = "1mo"
+
+
+@router.get(
+    "/region/{region_id}/teams/{team_id}/periodic-status",
+    response_model=PeriodicBudgetStatusResponse,
+    dependencies=[Depends(get_role_min_system_admin)],
+)
+async def get_periodic_budget_status(
+    region_id: int, team_id: int, db: Session = Depends(get_db)
+):
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    if team.budget_type != BudgetType.PERIODIC:
+        raise HTTPException(
+            status_code=400, detail="Endpoint is only valid for PERIODIC teams"
+        )
+    region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+
+    sub_remaining = 0
+    active_subscriptions = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team_id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+        )
+        .all()
+    )
+    for row in active_subscriptions:
+        sub_remaining += max(0, row.amount_cents - row.consumed_cents)
+    topup_remaining = compute_active_topup_remaining(
+        db, team_id=team_id, region_id=region_id
+    )
+    return PeriodicBudgetStatusResponse(
+        team_id=team_id,
+        region_id=region_id,
+        subscription_remaining_cents=sub_remaining,
+        topup_remaining_cents=topup_remaining,
+        desired_remaining_cents=sub_remaining + topup_remaining,
+    )
 
 
 def _get_operator_manual_team_budget_limit(db: Session, team_id: int) -> float | None:

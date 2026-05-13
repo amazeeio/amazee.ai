@@ -155,3 +155,75 @@ def compute_active_topup_remaining(db: Session, *, team_id: int, region_id: int)
         .all()
     )
     return sum(max(0, e.amount_cents - e.consumed_cents) for e in entries)
+
+
+def materialize_topup_rollovers(
+    db: Session,
+    *,
+    team_id: int,
+    region_id: int,
+    source_invoice_id: str | None,
+    rollover_at: datetime,
+) -> int:
+    if source_invoice_id:
+        existing_for_invoice = (
+            db.query(DBPeriodicBudgetLedgerEntry.id)
+            .filter(
+                DBPeriodicBudgetLedgerEntry.team_id == team_id,
+                DBPeriodicBudgetLedgerEntry.region_id == region_id,
+                DBPeriodicBudgetLedgerEntry.entry_type == "topup_rollover",
+                DBPeriodicBudgetLedgerEntry.source_invoice_id == source_invoice_id,
+            )
+            .first()
+        )
+        if existing_for_invoice:
+            return 0
+
+    now = datetime.now(UTC)
+    rollover_total = 0
+    source_entries = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team_id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"]),
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            (DBPeriodicBudgetLedgerEntry.expires_at.is_(None) | (DBPeriodicBudgetLedgerEntry.expires_at > now)),
+        )
+        .all()
+    )
+    for entry in source_entries:
+        remaining = max(0, entry.amount_cents - entry.consumed_cents)
+        if remaining <= 0:
+            entry.is_active = False
+            continue
+        existing = (
+            db.query(DBPeriodicBudgetLedgerEntry)
+            .filter(
+                DBPeriodicBudgetLedgerEntry.entry_type == "topup_rollover",
+                DBPeriodicBudgetLedgerEntry.rolled_over_from_id == entry.id,
+                DBPeriodicBudgetLedgerEntry.source_invoice_id == source_invoice_id,
+            )
+            .first()
+        )
+        if existing:
+            entry.is_active = False
+            continue
+        db.add(
+            DBPeriodicBudgetLedgerEntry(
+                team_id=team_id,
+                region_id=region_id,
+                entry_type="topup_rollover",
+                source_invoice_id=source_invoice_id,
+                amount_cents=remaining,
+                consumed_cents=0,
+                purchased_at=rollover_at,
+                expires_at=entry.expires_at,
+                rolled_over_from_id=entry.id,
+                is_active=True,
+            )
+        )
+        entry.is_active = False
+        rollover_total += remaining
+    db.flush()
+    return rollover_total

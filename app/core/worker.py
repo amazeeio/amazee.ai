@@ -54,6 +54,7 @@ from app.core.periodic_budget_ledger_service import (
     allocate_period_spend_fifo,
     compute_active_topup_remaining,
     expire_subscription_entries,
+    materialize_topup_rollovers,
 )
 
 logger = logging.getLogger(__name__)
@@ -513,6 +514,13 @@ async def _sync_periodic_ledger_for_invoice(
         snapshot = await fetch_team_spend_snapshot_for_region(db=db, team=team, region=region)
         spend_cents = int(round(float(snapshot.total_spend) * 100))
         allocate_period_spend_fifo(db, team_id=team.id, region_id=region.id, spend_cents=spend_cents)
+        materialize_topup_rollovers(
+            db,
+            team_id=team.id,
+            region_id=region.id,
+            source_invoice_id=getattr(invoice_obj, "id", None),
+            rollover_at=period_end,
+        )
         expire_subscription_entries(
             db, team_id=team.id, region_id=region.id, period_end=period_end
         )
