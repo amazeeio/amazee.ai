@@ -665,7 +665,9 @@ class RegionConversionRunner:
         total_db_ops = len(source_team_ids) * len(public_regions)
         t0 = self._log_phase_start(
             "reverse-transfer",
-            total_db_ops + len(source_team_ids) * len(public_regions) + len(users) * len(public_regions),
+            total_db_ops
+            + len(source_team_ids) * len(public_regions)
+            + len(users) * len(public_regions),
         )
         self._log(
             f"  {len(source_team_ids)} dedicated-only teams × {len(public_regions)} public regions, "
@@ -687,10 +689,12 @@ class RegionConversionRunner:
             self.session.commit()
         else:
             self.session.rollback()
-        self._log(f"  DB backfill done for reverse-transfer")
+        self._log("  DB backfill done for reverse-transfer")
 
         for region in public_regions:
-            self._log(f"  Reconciling LiteLLM teams/users for public region {region.name}...")
+            self._log(
+                f"  Reconciling LiteLLM teams/users for public region {region.name}..."
+            )
             service = LiteLLMService(region.litellm_api_url, region.litellm_api_key)
             for team_id in source_team_ids:
                 lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
