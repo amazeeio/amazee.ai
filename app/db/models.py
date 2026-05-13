@@ -381,6 +381,18 @@ class DBPeriodicBudgetLedgerEntry(Base):
             "stripe_payment_id",
             name="uq_periodic_ledger_topup_payment",
         ),
+        UniqueConstraint(
+            "team_id",
+            "region_id",
+            "entry_type",
+            "source_invoice_id",
+            name="uq_periodic_ledger_subscription_invoice",
+        ),
+        UniqueConstraint(
+            "rolled_over_from_id",
+            "source_invoice_id",
+            name="uq_periodic_ledger_rollover_source_invoice",
+        ),
     )
 
 

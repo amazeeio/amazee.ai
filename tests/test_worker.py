@@ -7,6 +7,8 @@ from app.db.models import (
     DBTeamMetrics,
     DBLimitedResource,
     DBPoolPurchase,
+    DBPeriodicPayment,
+    DBStripeProcessedEvent,
 )
 from app.schemas.models import BudgetType
 from datetime import datetime, UTC, timedelta
@@ -132,6 +134,40 @@ async def test_handle_unknown_event_type(db):
     await handle_stripe_event_background(mock_event)
 
     # No assertion needed as we're just verifying no error occurs
+
+
+@pytest.mark.asyncio
+async def test_handle_stripe_event_replay_is_noop_by_event_id(db, test_team):
+    test_team.stripe_customer_id = "cus_replay"
+    db.commit()
+
+    mock_event = Mock()
+    mock_event.id = "evt_replay_1"
+    mock_event.type = "invoice.payment_succeeded"
+
+    obj = Mock()
+    obj.customer = "cus_replay"
+    obj.id = "in_replay"
+    obj.amount_paid = 3000
+    obj.currency = "usd"
+    obj.subscription = "sub_replay"
+    obj.period_start = int(datetime.now(UTC).timestamp())
+    obj.period_end = int((datetime.now(UTC) + timedelta(days=30)).timestamp())
+    obj.parent = Mock(subscription_details=Mock(subscription="sub_replay"))
+    mock_event.data.object = obj
+
+    with (
+        patch("app.core.worker.get_product_id_from_subscription", new_callable=AsyncMock) as m_prod,
+        patch("app.core.worker.capture_periodic_team_spend_for_invoice", new_callable=AsyncMock),
+        patch("app.core.worker.apply_product_for_team", new_callable=AsyncMock),
+        patch("app.core.worker._sync_periodic_ledger_for_invoice", new_callable=AsyncMock),
+    ):
+        m_prod.return_value = "prod_x"
+        await handle_stripe_event_background(mock_event)
+        await handle_stripe_event_background(mock_event)
+
+    assert db.query(DBStripeProcessedEvent).filter(DBStripeProcessedEvent.stripe_event_id == "evt_replay_1").count() == 1
+    assert db.query(DBPeriodicPayment).filter(DBPeriodicPayment.stripe_payment_id == "in_replay").count() == 1
 
 
 @pytest.mark.asyncio
