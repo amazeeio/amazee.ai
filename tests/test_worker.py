@@ -23,7 +23,9 @@ from app.core.worker import (
     team_total_spend,
     active_team_labels,
     reconcile_team_keys,
+    _sync_periodic_ledger_for_invoice,
 )
+from app.core.periodic_budget_ledger_service import add_topup_entry
 from app.core.team_service import get_team_keys_by_region
 from app.schemas.limits import (
     ResourceType,
@@ -3671,3 +3673,148 @@ async def test_invoice_payment_success_captures_spend_period(
     assert len(rows) == 1
     assert rows[0].total_spend == 42.0
     assert rows[0].stripe_event_id == "evt_inv_ok"
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.fetch_team_spend_snapshot_for_region", new_callable=AsyncMock)
+async def test_invoice_ledger_topup_carry_forward_across_periods(
+    mock_fetch_snapshot, db, test_team, test_region
+):
+    from app.db.models import DBPrivateAIKey, DBPeriodicBudgetLedgerEntry
+
+    test_team.stripe_customer_id = "cus_periodic_ledger_a"
+    db.add(test_team)
+    db.add(
+        DBPrivateAIKey(
+            name="ledger-key",
+            litellm_token="ledger-token",
+            region_id=test_region.id,
+            team_id=test_team.id,
+        )
+    )
+    db.commit()
+
+    now = datetime.now(UTC)
+    add_topup_entry(
+        db,
+        team_id=test_team.id,
+        region_id=test_region.id,
+        amount_cents=1000,
+        purchased_at=now - timedelta(days=20),
+        source_payment_id=None,
+        stripe_payment_id="sess_cf_1",
+    )
+    db.commit()
+
+    inv1 = Mock()
+    inv1.id = "in_cf_1"
+    inv1.period_start = int((now - timedelta(days=30)).timestamp())
+    inv1.period_end = int(now.timestamp())
+    inv1.amount_paid = 3000
+
+    mock_fetch_snapshot.return_value = Mock(total_spend=8.0)
+    await _sync_periodic_ledger_for_invoice(
+        db=db,
+        customer_id="cus_periodic_ledger_a",
+        invoice_obj=inv1,
+        source_payment_id=None,
+    )
+
+    topup_remaining_after_inv1 = [
+        r
+        for r in db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.team_id == test_team.id)
+        .all()
+        if r.entry_type in ("topup", "topup_rollover") and r.is_active
+    ]
+    assert sum(r.amount_cents - r.consumed_cents for r in topup_remaining_after_inv1) == 200
+
+    inv2 = Mock()
+    inv2.id = "in_cf_2"
+    inv2.period_start = int(now.timestamp())
+    inv2.period_end = int((now + timedelta(days=30)).timestamp())
+    inv2.amount_paid = 3000
+
+    mock_fetch_snapshot.return_value = Mock(total_spend=31.0)
+    await _sync_periodic_ledger_for_invoice(
+        db=db,
+        customer_id="cus_periodic_ledger_a",
+        invoice_obj=inv2,
+        source_payment_id=None,
+    )
+
+    final_topup_remaining = [
+        r
+        for r in db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.team_id == test_team.id)
+        .all()
+        if r.entry_type in ("topup", "topup_rollover") and r.is_active
+    ]
+    assert sum(r.amount_cents - r.consumed_cents for r in final_topup_remaining) == 0
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.fetch_team_spend_snapshot_for_region", new_callable=AsyncMock)
+async def test_invoice_ledger_duplicate_invoice_id_is_idempotent(
+    mock_fetch_snapshot, db, test_team, test_region
+):
+    from app.db.models import DBPrivateAIKey, DBPeriodicBudgetLedgerEntry
+
+    test_team.stripe_customer_id = "cus_periodic_ledger_b"
+    db.add(test_team)
+    db.add(
+        DBPrivateAIKey(
+            name="ledger-key-2",
+            litellm_token="ledger-token-2",
+            region_id=test_region.id,
+            team_id=test_team.id,
+        )
+    )
+    db.commit()
+
+    now = datetime.now(UTC)
+    add_topup_entry(
+        db,
+        team_id=test_team.id,
+        region_id=test_region.id,
+        amount_cents=500,
+        purchased_at=now - timedelta(days=10),
+        source_payment_id=None,
+        stripe_payment_id="sess_idem_1",
+    )
+    db.commit()
+
+    inv = Mock()
+    inv.id = "in_idem_1"
+    inv.period_start = int((now - timedelta(days=30)).timestamp())
+    inv.period_end = int(now.timestamp())
+    inv.amount_paid = 3000
+
+    mock_fetch_snapshot.return_value = Mock(total_spend=1.0)
+    await _sync_periodic_ledger_for_invoice(
+        db=db, customer_id="cus_periodic_ledger_b", invoice_obj=inv, source_payment_id=None
+    )
+    await _sync_periodic_ledger_for_invoice(
+        db=db, customer_id="cus_periodic_ledger_b", invoice_obj=inv, source_payment_id=None
+    )
+
+    rollover_rows = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == test_team.id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "topup_rollover",
+            DBPeriodicBudgetLedgerEntry.source_invoice_id == "in_idem_1",
+        )
+        .all()
+    )
+    subscription_rows = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == test_team.id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.source_invoice_id == "in_idem_1",
+        )
+        .all()
+    )
+    assert len(rollover_rows) <= 1
+    assert len(subscription_rows) <= 1

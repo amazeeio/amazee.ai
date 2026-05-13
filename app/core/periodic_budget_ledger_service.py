@@ -44,6 +44,20 @@ def add_subscription_entry(
     source_payment_id: int | None,
     source_invoice_id: str | None,
 ) -> DBPeriodicBudgetLedgerEntry:
+    if source_invoice_id:
+        existing = (
+            db.query(DBPeriodicBudgetLedgerEntry)
+            .filter(
+                DBPeriodicBudgetLedgerEntry.team_id == team_id,
+                DBPeriodicBudgetLedgerEntry.region_id == region_id,
+                DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+                DBPeriodicBudgetLedgerEntry.source_invoice_id == source_invoice_id,
+            )
+            .first()
+        )
+        if existing:
+            return existing
+
     entry = DBPeriodicBudgetLedgerEntry(
         team_id=team_id,
         region_id=region_id,
