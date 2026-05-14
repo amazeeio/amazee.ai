@@ -279,9 +279,7 @@ async def test_hard_delete_cascades_region_associations(
     When: Running the hard delete job
     Then: Should delete the team-region associations
     """
-    # Associate team with region
-    team_region = DBTeamRegion(team_id=test_team.id, region_id=test_region.id)
-    db.add(team_region)
+    # test_region fixture already auto-associates active teams to public regions
 
     # Soft delete the team 61 days ago
     soft_delete_team_for_test(

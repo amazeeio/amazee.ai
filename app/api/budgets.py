@@ -142,11 +142,14 @@ async def _sync_pool_key_effective_budgets(
                 else:
                     configured_cap = cap_map.get(key.id)
                     if configured_cap is None:
+                        # No user-defined key cap — clear both max_budget
+                        # and budget_duration so no stale duration remains.
                         await service.update_key_budget(
                             litellm_token=key.litellm_token,
                             budget_duration=None,
                             max_budget=None,
                             clear_max_budget=True,
+                            clear_budget_duration=True,
                         )
                     else:
                         await service.update_key_budget(

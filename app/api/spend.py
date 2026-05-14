@@ -191,8 +191,6 @@ def _assert_user_budget_write_access(
 def _assert_team_region_association(
     db: Session, region: DBRegion, team_id: int
 ) -> None:
-    if not region.is_dedicated:
-        return
     association = (
         db.query(DBTeamRegion)
         .filter(DBTeamRegion.region_id == region.id, DBTeamRegion.team_id == team_id)
@@ -201,7 +199,7 @@ def _assert_team_region_association(
     if not association:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Team is not associated with this dedicated region",
+            detail="Team is not associated with this region",
         )
 
 
@@ -641,7 +639,7 @@ async def get_team_spend(
     configured_team_cap = _get_spend_cap_max_budget(
         db, scope="team", region_id=region_id, team_id=team_id
     )
-    if configured_team_cap is not None:
+    if configured_team_cap is not None and team.requires_pool_purchase_gate:
         total_budget = round(configured_team_cap, 4)
     key_cap_map = _get_key_spend_cap_map(
         db,
@@ -1389,10 +1387,10 @@ async def update_key_budget(
     response_model=SpendBudgetUpdateResponse,
     summary="Clear key budget override",
     description=(
-        "Clears key max_budget override by setting it to null in LiteLLM. "
-        "This endpoint does not intentionally modify budget_duration."
+        "Clears key max_budget and budget_duration by setting both to null "
+        "in LiteLLM. Removes the spend cap and budget reset window from the key."
     ),
-    response_description="Key budget clear result with max_budget=null.",
+    response_description="Key budget clear result with max_budget=null and budget_duration=null.",
     openapi_extra={
         "responses": {
             200: {
@@ -1407,8 +1405,8 @@ async def update_key_budget(
                             "user_id": 7,
                             "key_id": 99,
                             "max_budget": None,
-                            "budget_duration": "1mo",
-                            "note": "Cleared key max_budget override without changing budget duration.",
+                            "budget_duration": None,
+                            "note": "Cleared key max_budget and budget_duration overrides.",
                         }
                     }
                 }
@@ -1445,8 +1443,16 @@ async def clear_key_budget(
         budget_duration=None,
         max_budget=None,
         clear_max_budget=True,
+        clear_budget_duration=True,
     )
-    _delete_spend_cap(db, scope="key", region_id=region_id, key_id=key_id)
+    _delete_spend_cap(
+        db,
+        scope="key",
+        region_id=region_id,
+        team_id=key.team_id,
+        user_id=key.owner_id,
+        key_id=key_id,
+    )
     _invalidate_key_related_user_spend_cache(db, key)
     key_info = await service.get_key_info(key.litellm_token)
     db.commit()
@@ -1461,5 +1467,5 @@ async def clear_key_budget(
         key_id=key_id,
         max_budget=info.get("max_budget"),
         budget_duration=info.get("budget_duration"),
-        note="Cleared key max_budget override without changing budget duration.",
+        note="Cleared key max_budget and budget_duration overrides.",
     )

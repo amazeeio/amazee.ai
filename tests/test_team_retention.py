@@ -11,6 +11,7 @@ from app.db.models import (
     DBProduct,
     DBRegion,
 )
+from app.schemas.models import BudgetType
 from app.core.worker import (
     _calculate_last_team_activity,
     _send_retention_warning,
@@ -255,6 +256,29 @@ async def test_check_team_retention_policy_warning_sent(
 
     # Verify warning was sent
     mock_send_warning.assert_called_once_with(db, test_team, None)
+
+
+@patch("app.core.worker.soft_delete_team", new_callable=AsyncMock)
+@patch("app.core.worker._send_retention_warning")
+@pytest.mark.asyncio
+async def test_check_team_retention_policy_skips_pool_teams(
+    mock_send_warning, mock_soft_delete, db: Session, test_team
+):
+    """
+    Given: A POOL team that would otherwise qualify for retention actions
+    When: Checking the team retention policy
+    Then: No warning or soft deletion should be triggered
+    """
+    test_team.budget_type = BudgetType.POOL
+    test_team.retention_warning_sent_at = datetime.now(UTC) - timedelta(days=20)
+    db.add(test_team)
+    db.commit()
+
+    current_time = datetime.now(UTC)
+    await _check_team_retention_policy(db, test_team, current_time, None)
+
+    mock_send_warning.assert_not_called()
+    mock_soft_delete.assert_not_called()
 
 
 @patch("app.core.worker.soft_delete_team", new_callable=AsyncMock)

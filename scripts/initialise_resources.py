@@ -11,6 +11,7 @@ import alembic.command
 import asyncio
 import glob
 from sqlalchemy import inspect
+from sqlalchemy.engine.reflection import Inspector
 from sqlalchemy.orm import sessionmaker, Session
 from app.db.database import engine
 from app.db.models import Base, DBUser
@@ -51,6 +52,151 @@ def verify_schema_matches_models() -> None:
         raise RuntimeError("Schema verification failed - " + "; ".join(details))
 
 
+def _restamp_to_safe_revision(
+    alembic_cfg: alembic.config.Config, inspector: Inspector
+) -> None:
+    """Re-stamp alembic to the ``down_revision`` of the first migration
+    (walking from head backwards) whose schema effects are missing.
+
+    This handles the case where ``alembic_version`` was stamped past
+    migrations that never actually ran (e.g. a ``create_all`` +
+    ``stamp('head')`` on a previous deploy that missed later migrations).
+    """
+    from alembic.script import ScriptDirectory
+    import pathlib
+
+    script = ScriptDirectory.from_config(alembic_cfg)
+    db_tables = set(inspector.get_table_names())
+    db_columns_cache: dict[str, set[str]] = {}
+
+    def _get_columns(table_name: str) -> set[str]:
+        if table_name not in db_columns_cache:
+            db_columns_cache[table_name] = {
+                col["name"] for col in inspector.get_columns(table_name)
+            }
+        return db_columns_cache[table_name]
+
+    # Walk linearly from head backwards.  Find the first revision (from
+    # head) whose schema effects are NOT present.  Stamp to its
+    # down_revision so ``upgrade head`` can replay it and everything after.
+    revision = script.get_current_head()
+    if revision is None:
+        print("Could not determine alembic head revision - skipping re-stamp")
+        return
+
+    while revision:
+        rev_obj = script.get_revision(revision)
+        if rev_obj is None:
+            break
+
+        try:
+            source = pathlib.Path(rev_obj.module.__file__).read_text()
+        except Exception:
+            break
+
+        if _migration_has_missing_ops(source, db_tables, _get_columns):
+            # This revision hasn't been applied – stamp to its parent
+            # so ``upgrade head`` will replay from there.
+            down = rev_obj.down_revision
+            if isinstance(down, tuple):
+                down = down[0]
+            stamp_target = down or "base"
+            print(f"Re-stamping alembic to revision: {stamp_target}")
+            alembic.command.stamp(alembic_cfg, stamp_target)
+            return
+
+        # This revision is applied – keep walking back
+        down = rev_obj.down_revision
+        if isinstance(down, tuple):
+            down = down[0]
+        revision = down
+
+    # If we get here, all revisions look applied but schema still fails.
+    # Fall back to base to let alembic replay everything.
+    print(
+        "All migrations appear applied but schema still has gaps - re-stamping to base"
+    )
+    alembic.command.stamp(alembic_cfg, "base")
+
+
+def _migration_has_missing_ops(source: str, db_tables: set, get_columns) -> bool:
+    """Return True when migration schema operations appear unapplied."""
+    import ast
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return True
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            continue
+
+        if func.attr == "create_table":
+            # First positional arg is the table name
+            if node.args and isinstance(node.args[0], ast.Constant):
+                if node.args[0].value not in db_tables:
+                    return True
+
+        elif func.attr == "add_column":
+            # First arg = table name, second arg = Column with name
+            if (
+                len(node.args) >= 2
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[1], ast.Call)
+            ):
+                table_name = node.args[0].value
+                col_arg = node.args[1]
+                if (
+                    table_name in db_tables
+                    and isinstance(col_arg.func, ast.Attribute)
+                    and col_arg.func.attr == "Column"
+                    and col_arg.args
+                    and isinstance(col_arg.args[0], ast.Constant)
+                ):
+                    col_name = col_arg.args[0].value
+                    if col_name not in get_columns(table_name):
+                        return True
+
+        elif func.attr == "rename_table":
+            if (
+                len(node.args) >= 2
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[1], ast.Constant)
+            ):
+                old_name = node.args[0].value
+                new_name = node.args[1].value
+                if old_name in db_tables and new_name not in db_tables:
+                    return True
+
+        elif func.attr == "alter_column":
+            if len(node.args) >= 2 and isinstance(node.args[0], ast.Constant):
+                table_name = node.args[0].value
+                if not isinstance(node.args[1], ast.Constant):
+                    continue
+                old_col_name = node.args[1].value
+                new_col_name = None
+                for kwarg in node.keywords:
+                    if kwarg.arg == "new_column_name" and isinstance(
+                        kwarg.value, ast.Constant
+                    ):
+                        new_col_name = kwarg.value.value
+                        break
+
+                if new_col_name and table_name in db_tables:
+                    existing_columns = get_columns(table_name)
+                    if (
+                        old_col_name in existing_columns
+                        and new_col_name not in existing_columns
+                    ):
+                        return True
+
+    return False
+
+
 def init_database() -> Session:
     # Check if database is empty (no tables exist)
     inspector = inspect(engine)
@@ -76,6 +222,21 @@ def init_database() -> Session:
         print("Stamped alembic version for future migrations")
     else:
         print("Tables already exist - running migrations...")
+
+        # Guard against stale alembic stamps: if the DB reports it is at
+        # head but the actual schema is missing tables/columns, re-stamp
+        # to a safe point so ``upgrade head`` can replay missing migrations.
+        # We walk backwards from head, checking each revision's upgrade()
+        # effects until we find one that has already been applied.
+        try:
+            verify_schema_matches_models()
+        except RuntimeError as exc:
+            print(
+                f"Schema gap detected ({exc}) "
+                f"- finding safe alembic stamp point to replay migrations"
+            )
+            _restamp_to_safe_revision(alembic_cfg, inspector)
+
         alembic.command.upgrade(alembic_cfg, "head")
         print("Database migrations completed successfully!")
 

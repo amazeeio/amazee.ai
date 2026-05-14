@@ -12,10 +12,14 @@ jobs:
       pull-requests: read
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - name: Get changed files
         run: |
-          FILES=$(gh pr diff ${{ github.event.pull_request.number }} --name-only)
-          echo "$FILES" > /tmp/all_changed.txt
+          gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files \
+            --paginate --jq '.[].filename' > /tmp/all_changed.txt
         env:
           GH_TOKEN: ${{ github.token }}
 

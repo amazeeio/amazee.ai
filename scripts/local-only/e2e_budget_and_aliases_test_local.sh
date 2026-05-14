@@ -44,7 +44,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --help)
       cat <<'EOF'
-Usage: ./scripts/e2e_budget_and_aliases_test_local.sh [--filter <value>]
+Usage: ./scripts/local-only/e2e_budget_and_aliases_test_local.sh [--filter <value>]
 
 Options:
   --filter <value>     Run only tests partially matching value (case-insensitive).

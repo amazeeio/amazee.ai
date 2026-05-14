@@ -1438,7 +1438,7 @@ def test_clear_key_budget_endpoint(
     )
     db.commit()
     mock_get_key_info.return_value = {
-        "info": {"max_budget": None, "budget_duration": "1mo"}
+        "info": {"max_budget": None, "budget_duration": None}
     }
 
     response = client.post(
@@ -1451,7 +1451,10 @@ def test_clear_key_budget_endpoint(
         budget_duration=None,
         max_budget=None,
         clear_max_budget=True,
+        clear_budget_duration=True,
     )
+    assert response.json()["max_budget"] is None
+    assert response.json()["budget_duration"] is None
     cap = (
         db.query(DBSpendCap)
         .filter(
@@ -1631,7 +1634,7 @@ def test_update_team_budget_rejects_unassociated_dedicated_region(
         json={"max_budget": 5.0},
     )
     assert response.status_code == 400
-    assert "not associated with this dedicated region" in response.json()["detail"]
+    assert "not associated with this region" in response.json()["detail"]
     mock_update_team_budget.assert_not_awaited()
 
 

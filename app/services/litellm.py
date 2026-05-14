@@ -296,17 +296,19 @@ class LiteLLMService:
         budget_duration: Optional[str] = None,
         max_budget: Optional[float] = None,
         clear_max_budget: bool = False,
+        clear_budget_duration: bool = False,
     ) -> None:
         """Update budget fields for a LiteLLM key.
 
         When clear_max_budget=True, max_budget is explicitly sent as null.
+        When clear_budget_duration=True, budget_duration is explicitly sent as null.
         This method intentionally avoids updating key duration/expiry.
         """
         try:
             request_data = {
                 "key": litellm_token,
             }
-            if budget_duration is not None:
+            if clear_budget_duration or budget_duration is not None:
                 request_data["budget_duration"] = budget_duration
             if clear_max_budget or max_budget is not None:
                 request_data["max_budget"] = max_budget
