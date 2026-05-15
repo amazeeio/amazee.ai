@@ -13,6 +13,7 @@ from app.db.models import (
     DBTeamRegion,
     DBPoolPurchase,
     DBPeriodicPayment,
+    DBPeriodicBudgetLedgerEntry,
     DBStripeProcessedEvent,
 )
 from app.schemas.models import BudgetType
@@ -356,14 +357,14 @@ async def handle_stripe_event_background(event):
                     ),
                     tz=UTC,
                 )
-                await apply_product_for_team(
-                    db, customer_id, product_id, start_date, payment_record_id
-                )
                 await _sync_periodic_ledger_for_invoice(
                     db=db,
                     customer_id=customer_id,
                     invoice_obj=event_object,
                     source_payment_id=payment_record_id,
+                )
+                await apply_product_for_team(
+                    db, customer_id, product_id, start_date, payment_record_id
                 )
         elif event_type in SESSION_SUCCESS_EVENTS:
             # checkout signup/subscription flow
@@ -551,7 +552,21 @@ async def reconcile_periodic_team_budget_drift(
     topup_remaining_dollars = (
         compute_active_topup_remaining(db, team_id=team.id, region_id=region.id) / 100.0
     )
-    expected_max_budget = current_spend + topup_remaining_dollars
+    sub_remaining_cents = 0
+    active_subscriptions = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team.id,
+            DBPeriodicBudgetLedgerEntry.region_id == region.id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+        )
+        .all()
+    )
+    for row in active_subscriptions:
+        sub_remaining_cents += max(0, row.amount_cents - row.consumed_cents)
+    sub_remaining_dollars = sub_remaining_cents / 100.0
+    expected_max_budget = current_spend + sub_remaining_dollars + topup_remaining_dollars
     drift = round(actual_max_budget - expected_max_budget, 6)
     return BudgetDriftResult(
         expected_max_budget=expected_max_budget,
