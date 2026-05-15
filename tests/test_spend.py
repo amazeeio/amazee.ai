@@ -2147,3 +2147,166 @@ def test_get_user_spend_db_key_cap_beats_member_cap_beats_litellm_for_purchased_
     assert max_budget_by_name[key_with_key_cap.name] == 12.0
     # DB member cap wins over LiteLLM after purchase
     assert max_budget_by_name[key_with_member_cap.name] == 8.0
+
+
+# ---------------------------------------------------------------------------
+# /spend/{region_id}/team/{team_id}/history tests
+# ---------------------------------------------------------------------------
+
+
+def test_get_team_spend_history_returns_empty_for_no_periods(
+    client, team_admin_token, test_team, test_region
+):
+    """Endpoint returns an empty periods list when no snapshots exist."""
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/history",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["team_id"] == test_team.id
+    assert data["region_id"] == test_region.id
+    assert data["periods"] == []
+
+
+def test_get_team_spend_history_returns_periods_ordered_desc(
+    client, team_admin_token, test_team, test_region, db
+):
+    """Periods are returned newest-first (period_end desc)."""
+    from datetime import UTC, datetime
+    from app.db.models import DBTeamSpendPeriod
+
+    p1 = DBTeamSpendPeriod(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        budget_type="periodic",
+        period_start=datetime(2026, 3, 1, tzinfo=UTC),
+        period_end=datetime(2026, 4, 1, tzinfo=UTC),
+        total_spend=5.0,
+        source="test",
+    )
+    p2 = DBTeamSpendPeriod(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        budget_type="periodic",
+        period_start=datetime(2026, 4, 1, tzinfo=UTC),
+        period_end=datetime(2026, 5, 1, tzinfo=UTC),
+        total_spend=10.0,
+        source="test",
+    )
+    db.add_all([p1, p2])
+    db.commit()
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/history",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["periods"]) == 2
+    # Newest period (April→May) must come first
+    assert data["periods"][0]["total_spend"] == 10.0
+    assert data["periods"][1]["total_spend"] == 5.0
+
+
+def test_get_team_spend_history_includes_key_rows(
+    client, team_admin_token, test_team, test_region, test_team_user, db
+):
+    """Key-level spend rows are embedded inside each period."""
+    from datetime import UTC, datetime
+    from app.db.models import DBTeamSpendPeriod, DBTeamSpendPeriodKey, DBPrivateAIKey
+
+    key = DBPrivateAIKey(
+        name="hist-key",
+        litellm_token="hist-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+        owner_id=test_team_user.id,
+    )
+    db.add(key)
+    db.commit()
+
+    period = DBTeamSpendPeriod(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        budget_type="periodic",
+        period_start=datetime(2026, 4, 1, tzinfo=UTC),
+        period_end=datetime(2026, 5, 1, tzinfo=UTC),
+        total_spend=7.5,
+        source="test",
+    )
+    db.add(period)
+    db.flush()
+
+    db.add(
+        DBTeamSpendPeriodKey(
+            team_spend_period_id=period.id,
+            key_id=key.id,
+            owner_id=test_team_user.id,
+            key_name_snapshot="hist-key",
+            spend=7.5,
+            max_budget=50.0,
+            prompt_tokens=100,
+            completion_tokens=50,
+            total_tokens=150,
+        )
+    )
+    db.commit()
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/history",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["periods"]) == 1
+    keys = data["periods"][0]["keys"]
+    assert len(keys) == 1
+    assert keys[0]["key_id"] == key.id
+    assert keys[0]["owner_id"] == test_team_user.id
+    assert keys[0]["key_name_snapshot"] == "hist-key"
+    assert keys[0]["spend"] == 7.5
+    assert keys[0]["max_budget"] == 50.0
+
+
+def test_get_team_spend_history_access_denied_for_other_team(
+    client, team_admin_token, test_region, db
+):
+    """Team admin cannot access history of a different team."""
+    from app.db.models import DBTeam
+
+    other_team = DBTeam(
+        name="Other Team",
+        admin_email="other@example.com",
+        is_active=True,
+    )
+    db.add(other_team)
+    db.commit()
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{other_team.id}/history",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code in (403, 404)
+
+
+def test_get_team_spend_history_404_for_nonexistent_team(
+    client, admin_token, test_region
+):
+    """Returns 404 when the requested team does not exist."""
+    response = client.get(
+        f"/spend/{test_region.id}/team/999999/history",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 404
+
+
+def test_get_team_spend_history_admin_can_access_any_team(
+    client, admin_token, test_team, test_region
+):
+    """Site admins can access history for any team."""
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/history",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200

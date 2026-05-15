@@ -515,3 +515,96 @@ class DBSpendCap(Base):
             sqlite_where=text("scope = 'key' AND key_id IS NOT NULL"),
         ),
     )
+
+
+class DBTeamSpendPeriod(Base):
+    __tablename__ = "team_spend_periods"
+
+    id = Column(Integer, primary_key=True, index=True)
+    team_id = Column(
+        Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    region_id = Column(
+        Integer,
+        ForeignKey("regions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    budget_type = Column(String, nullable=False, index=True)
+    period_start = Column(DateTime(timezone=True), nullable=False, index=True)
+    period_end = Column(DateTime(timezone=True), nullable=False, index=True)
+    currency = Column(String, nullable=True)
+    total_spend = Column(Float, nullable=False, default=0.0)
+    total_budget = Column(Float, nullable=True)
+    total_prompt_tokens = Column(Integer, nullable=True)
+    total_completion_tokens = Column(Integer, nullable=True)
+    total_tokens = Column(Integer, nullable=True)
+    source = Column(String, nullable=False)
+    stripe_event_id = Column(String, nullable=True, index=True)
+    stripe_invoice_id = Column(String, nullable=True)
+    stripe_subscription_id = Column(String, nullable=True)
+    raw_payload = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    team = relationship("DBTeam")
+    region = relationship("DBRegion")
+    keys = relationship(
+        "DBTeamSpendPeriodKey",
+        back_populates="team_spend_period",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "team_id",
+            "region_id",
+            "budget_type",
+            "period_start",
+            "period_end",
+            name="uq_team_spend_period_unique_window",
+        ),
+    )
+
+
+class DBTeamSpendPeriodKey(Base):
+    __tablename__ = "team_spend_period_keys"
+
+    id = Column(Integer, primary_key=True, index=True)
+    team_spend_period_id = Column(
+        Integer,
+        ForeignKey("team_spend_periods.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    key_id = Column(
+        Integer, ForeignKey("ai_tokens.id", ondelete="SET NULL"), nullable=True
+    )
+    owner_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    key_name_snapshot = Column(String, nullable=True)
+    spend = Column(Float, nullable=False, default=0.0)
+    max_budget = Column(Float, nullable=True)
+    prompt_tokens = Column(Integer, nullable=True)
+    completion_tokens = Column(Integer, nullable=True)
+    total_tokens = Column(Integer, nullable=True)
+
+    team_spend_period = relationship("DBTeamSpendPeriod", back_populates="keys")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "team_spend_period_id",
+            "key_id",
+            name="uq_team_spend_period_key",
+        ),
+        Index(
+            "uq_team_spend_period_key_null_key_id",
+            "team_spend_period_id",
+            "owner_id",
+            "key_name_snapshot",
+            unique=True,
+            postgresql_where=text("key_id IS NULL"),
+            sqlite_where=text("key_id IS NULL"),
+        ),
+    )

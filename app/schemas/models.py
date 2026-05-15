@@ -440,6 +440,41 @@ class SpendBudgetUpdateResponse(BaseModel):
     note: Optional[str] = None
 
 
+class TeamSpendHistoryKeyItem(BaseModel):
+    key_id: Optional[int] = None
+    owner_id: Optional[int] = None
+    key_name_snapshot: Optional[str] = None
+    spend: float
+    max_budget: Optional[float] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+
+
+class TeamSpendHistoryPeriodItem(BaseModel):
+    period_start: datetime
+    period_end: datetime
+    budget_type: str
+    total_spend: float
+    total_budget: Optional[float] = None
+    total_prompt_tokens: Optional[int] = None
+    total_completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    source: str
+    stripe_event_id: Optional[str] = None
+    stripe_invoice_id: Optional[str] = None
+    stripe_subscription_id: Optional[str] = None
+    keys: List[TeamSpendHistoryKeyItem]
+
+
+class TeamSpendHistoryResponse(BaseModel):
+    region_id: int
+    region_name: str
+    team_id: int
+    team_name: str
+    periods: List[TeamSpendHistoryPeriodItem]
+
+
 class LiteLLMToken(BaseModel):
     id: int
     litellm_token: str
