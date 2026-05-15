@@ -748,6 +748,27 @@ class PoolPurchaseResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PeriodicTopupRequest(BaseModel):
+    amount_cents: int = Field(gt=0)
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+
+
+class PeriodicTopupResponse(BaseModel):
+    id: int
+    team_id: int
+    region_id: int
+    amount_cents: int
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+    created_at: datetime
+    new_total_budget_cents: int
+    budget_type: BudgetType = BudgetType.PERIODIC
+    model_config = ConfigDict(from_attributes=True)
+
+
 class PoolPurchaseHistoryItem(BaseModel):
     id: int
     amount_cents: int

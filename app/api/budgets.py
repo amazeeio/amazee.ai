@@ -18,6 +18,7 @@ from app.db.models import (
     DBRegion,
     DBSpendCap,
     DBTeam,
+    DBTeamRegion,
     DBPeriodicBudgetLedgerEntry,
 )
 from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
@@ -28,6 +29,8 @@ from app.schemas.models import (
     PoolPurchaseResponse,
     PoolRegionPurchaseHistoryResponse,
     PeriodicBudgetStatusResponse,
+    PeriodicTopupRequest,
+    PeriodicTopupResponse,
 )
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
@@ -246,14 +249,14 @@ async def _sync_pool_key_effective_budgets(
 
 @router.post(
     "/region/{region_id}/teams/{team_id}/purchase",
-    response_model=PoolPurchaseResponse,
+    response_model=PoolPurchaseResponse | PeriodicTopupResponse,
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(get_role_min_system_admin)],
 )
-async def purchase_pool_budget(
+async def purchase_team_budget(
     region_id: int,
     team_id: int,
-    purchase: PoolPurchaseRequest,
+    purchase: PoolPurchaseRequest | PeriodicTopupRequest,
     db: Session = Depends(get_db),
 ):
     """
@@ -574,12 +577,22 @@ async def purchase_pool_budget(
 
 
 async def purchase_periodic_topup(
-    *, region_id: int, team: DBTeam, purchase: PoolPurchaseRequest, db: Session
-) -> PoolPurchaseResponse:
+    *, region_id: int, team: DBTeam, purchase: PoolPurchaseRequest | PeriodicTopupRequest, db: Session
+) -> PeriodicTopupResponse:
     region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
     if not region:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
+        )
+    team_region = (
+        db.query(DBTeamRegion)
+        .filter(DBTeamRegion.team_id == team.id, DBTeamRegion.region_id == region_id)
+        .first()
+    )
+    if team_region is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Region is not assigned to this team",
         )
 
     existing_topup = (
@@ -669,7 +682,7 @@ async def purchase_periodic_topup(
     db.commit()
     db.refresh(topup_entry)
 
-    return PoolPurchaseResponse(
+    return PeriodicTopupResponse(
         id=topup_entry.id,
         team_id=team.id,
         region_id=region_id,

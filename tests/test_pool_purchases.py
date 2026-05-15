@@ -190,6 +190,7 @@ def test_create_periodic_topup_success(client, admin_token, db, test_team, test_
     assert data["region_id"] == test_region.id
     assert data["amount_cents"] == 5000
     assert data["new_total_budget_cents"] == 5350
+    assert data["budget_type"] == "periodic"
 
     payment = (
         db.query(DBPeriodicPayment)
@@ -201,6 +202,31 @@ def test_create_periodic_topup_success(client, admin_token, db, test_team, test_
     assert payment.payment_type == "topup"
 
     mock_instance.update_team_budget.assert_awaited_once()
+
+
+def test_create_periodic_topup_region_not_assigned_rejected(
+    client, admin_token, db, test_team, test_region
+):
+    test_team.budget_type = "periodic"
+    db.query(DBTeamRegion).filter(
+        DBTeamRegion.team_id == test_team.id,
+        DBTeamRegion.region_id == test_region.id,
+    ).delete()
+    db.commit()
+
+    response = client.post(
+        f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+        json={
+            "amount_cents": 5000,
+            "currency": "usd",
+            "purchased_at": "2026-03-13T10:00:00Z",
+            "stripe_payment_id": f"cs_periodic_{int(time.time() * 1000000)}",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 400
+    assert "not assigned" in response.json()["detail"]
 
 
 def test_create_periodic_topup_duplicate_payment_id(

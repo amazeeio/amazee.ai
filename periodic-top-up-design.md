@@ -8,10 +8,13 @@
 - Implemented: new periodic branch persists `periodic_payments` (`payment_type=topup`) and creates a linked top-up ledger entry (`source_payment_id`).
 - Implemented: periodic branch updates LiteLLM team budget using compounding rule (`max_budget = current_spend + desired_remaining`), where desired remaining is computed from active subscription + top-up ledger balances.
 - Implemented: tests added for periodic top-up success and duplicate `stripe_payment_id` conflict handling.
-- Pending: separate API schema for periodic purchases (currently reuses `PoolPurchaseResponse`).
+- Implemented: periodic top-up API now has dedicated periodic request/response schema.
+- Implemented: periodic top-up API validates requested region is assigned to the team.
+- Implemented: periodic top-up API remains region-specific (single region write, no split).
 - Pending: decision and implementation for checkout initiation endpoint vs direct admin purchase API semantics.
 - Pending: reconcile regional allocation policy for team-scoped Stripe payment to region-scoped ledger.
 - Pending: tighten idempotency model across webhook events and API path (event-level dedupe + payment-level dedupe alignment).
+- Decision (2026-05-15): PERIODIC top-ups follow POOL semantics for purchases: region-specific top-up application, no multi-region split.
 
 ## Goal
 Add periodic-team top-ups with rollover semantics while preserving existing periodic compounding behavior and keeping pool-team behavior unchanged.
@@ -52,7 +55,7 @@ Add periodic-team top-ups with rollover semantics while preserving existing peri
 2. **`DBPeriodicPayment` is global-per-team, not region-aware**
 - Top-up and renewal sync currently applies budget updates for every team region in `apply_product_for_team()`.
 - Plan’s ledger is `(team_id, region_id)` scoped, but Stripe payments are team-scoped. Without a mapping policy, one payment can be double-counted across regions.
-- Required change: define and enforce one billing region per periodic team or document deterministic split rules; otherwise ledger math and LiteLLM updates diverge.
+- Required change: enforce region-specific top-up targeting (same as POOL purchase semantics) and avoid split-across-regions behavior for top-ups.
 
 3. **Wrong periodic detection in worker code**
 - `apply_product_for_team()` currently uses `is_periodic = not team.requires_pool_purchase_gate`, but pool gating is a derived flag combining `budget_type == POOL` and `require_purchase_for_requests`.
@@ -151,7 +154,7 @@ Reason: `periodic_payments` alone is audit-only and lacks consumption/rollover s
 - In `checkout.session.completed` handler with `metadata.ai_budget_increase`:
   - enforce event-id idempotency
   - write/ensure `DBPeriodicPayment`
-  - create top-up ledger entry idempotently
+  - resolve explicit target region and create a single region-scoped top-up ledger entry idempotently (no split)
   - fetch current team spend
   - recompute desired remaining using active ledger entries
   - compound and push updated team max budget
@@ -190,7 +193,7 @@ Reason: `periodic_payments` alone is audit-only and lacks consumption/rollover s
 - Regression tests ensuring pool purchase flow remains unchanged.
 - Add tests for:
   - duplicate Stripe `event.id` replay on invoice and checkout session
-  - region policy for periodic billing (single billing region or deterministic distribution)
+  - region policy for periodic top-ups (single explicit target region, no distribution)
   - periodic-vs-pool classification (`budget_type` based, not purchase-gate based)
   - failed LiteLLM update followed by retry without double allocation
 
@@ -223,4 +226,4 @@ Reason: `periodic_payments` alone is audit-only and lacks consumption/rollover s
 - Duplicate Stripe events do not duplicate financial state.
 - Pool teams pass existing behavior unchanged.
 - Duplicate webhook deliveries (same `event.id`) are no-ops after first successful state transition.
-- Periodic ledger state is region-consistent with how budgets are actually applied in LiteLLM.
+- Periodic top-ups are region-specific (no split), and ledger state is region-consistent with applied LiteLLM budget updates.
