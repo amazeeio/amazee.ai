@@ -49,6 +49,7 @@ from app.core.spend_period_service import (
     upsert_team_spend_period,
 )
 from app.core.periodic_budget_ledger_service import (
+    BudgetDriftResult,
     add_subscription_entry,
     add_topup_entry,
     allocate_period_spend_fifo,
@@ -567,12 +568,22 @@ async def _record_periodic_topup_ledger_from_checkout(
     if not stripe_payment_id or amount <= 0:
         return
     keys_by_region = get_team_keys_by_region(db, team.id)
-    for region in keys_by_region.keys():
+    if not keys_by_region:
+        return
+
+    region_count = len(keys_by_region)
+    per_region_amount = amount // region_count
+    remainder = amount % region_count
+
+    for index, region in enumerate(keys_by_region.keys()):
+        amount_for_region = per_region_amount + (1 if index < remainder else 0)
+        if amount_for_region <= 0:
+            continue
         add_topup_entry(
             db,
             team_id=team.id,
             region_id=region.id,
-            amount_cents=amount,
+            amount_cents=amount_for_region,
             purchased_at=datetime.now(UTC),
             source_payment_id=source_payment_id,
             stripe_payment_id=stripe_payment_id,
@@ -582,7 +593,7 @@ async def _record_periodic_topup_ledger_from_checkout(
 
 async def reconcile_periodic_team_budget_drift(
     *, db: Session, team: DBTeam, region: DBRegion
-) -> dict | None:
+) -> BudgetDriftResult | None:
     if team.budget_type != BudgetType.PERIODIC:
         return None
     service = LiteLLMService(
@@ -593,18 +604,16 @@ async def reconcile_periodic_team_budget_drift(
     team_info = team_info_resp.get("team_info", team_info_resp)
     current_spend = float(team_info.get("spend", 0.0) or 0.0)
     actual_max_budget = float(team_info.get("max_budget", 0.0) or 0.0)
-    topup_remaining = (
+    topup_remaining_dollars = (
         compute_active_topup_remaining(db, team_id=team.id, region_id=region.id) / 100.0
     )
-    expected_max_budget = current_spend + topup_remaining
+    expected_max_budget = current_spend + topup_remaining_dollars
     drift = round(actual_max_budget - expected_max_budget, 6)
-    return {
-        "team_id": team.id,
-        "region_id": region.id,
-        "expected_max_budget": expected_max_budget,
-        "actual_max_budget": actual_max_budget,
-        "drift": drift,
-    }
+    return BudgetDriftResult(
+        expected_max_budget=expected_max_budget,
+        actual_max_budget=actual_max_budget,
+        drift=drift,
+    )
 
 
 async def apply_product_for_team(
@@ -697,7 +706,8 @@ async def apply_product_for_team(
                     topup_remaining_cents = compute_active_topup_remaining(
                         db, team_id=team.id, region_id=region.id
                     )
-                    desired_remaining = max_max_spend + (topup_remaining_cents / 100.0)
+                    topup_remaining_dollars = topup_remaining_cents / 100.0
+                    desired_remaining = max_max_spend + topup_remaining_dollars
                     team_max_budget = current_team_spend + desired_remaining
                     logger.info(
                         f"Compounding team {team.id} budget: "

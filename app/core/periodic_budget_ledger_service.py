@@ -4,10 +4,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db.models import DBPeriodicBudgetLedgerEntry
-
-
-TOPUP_EXPIRY_DAYS = 365
 
 
 @dataclass
@@ -125,7 +123,7 @@ def add_topup_entry(
         amount_cents=amount_cents,
         consumed_cents=0,
         purchased_at=purchased_at,
-        expires_at=purchased_at + timedelta(days=TOPUP_EXPIRY_DAYS),
+        expires_at=purchased_at + timedelta(days=settings.PERIODIC_TOPUP_EXPIRY_DAYS),
         is_active=True,
     )
     db.add(entry)

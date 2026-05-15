@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     POOL_BUDGET_EXPIRATION_DAYS: int = int(
         os.getenv("POOL_BUDGET_EXPIRATION_DAYS", "365")
     )
+    PERIODIC_TOPUP_EXPIRY_DAYS: int = int(
+        os.getenv("PERIODIC_TOPUP_EXPIRY_DAYS", "365")
+    )
     DEDICATED_DEFAULT_USER_COUNT: float | None = None
     DEDICATED_DEFAULT_SERVICE_KEYS: float | None = None
     DEDICATED_DEFAULT_VECTOR_DB_COUNT: float | None = None
