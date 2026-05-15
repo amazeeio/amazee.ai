@@ -81,9 +81,19 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(op.f("ix_periodic_payments_team_id"), table_name="periodic_payments")
     op.drop_index(
-        op.f("ix_periodic_payments_stripe_payment_id"), table_name="periodic_payments"
+        op.f("ix_periodic_payments_team_id"),
+        table_name="periodic_payments",
+        if_exists=True,
     )
-    op.drop_index(op.f("ix_periodic_payments_id"), table_name="periodic_payments")
-    op.drop_table("periodic_payments")
+    op.drop_index(
+        op.f("ix_periodic_payments_stripe_payment_id"),
+        table_name="periodic_payments",
+        if_exists=True,
+    )
+    op.drop_index(
+        op.f("ix_periodic_payments_id"),
+        table_name="periodic_payments",
+        if_exists=True,
+    )
+    op.drop_table("periodic_payments", if_exists=True)
