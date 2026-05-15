@@ -293,7 +293,10 @@ async def handle_stripe_event_background(event):
         if event_type not in KNOWN_EVENTS:
             logger.info(f"Unknown event type: {event_type}")
             return
-        event_id = getattr(event, "id", None)
+        raw_event_id = getattr(event, "id", None)
+        event_id = (
+            raw_event_id if isinstance(raw_event_id, str) and raw_event_id else None
+        )
         should_mark_processed = False
         if event_id:
             existing_event = (
