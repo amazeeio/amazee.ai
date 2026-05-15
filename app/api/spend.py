@@ -1115,6 +1115,14 @@ async def update_team_budget(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+    if team.budget_type == BudgetType.PERIODIC and body.max_budget is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Manual team budget updates are not allowed for periodic teams. "
+                "Use subscription renewal and periodic top-up purchase flows."
+            ),
+        )
     if team.requires_pool_purchase_gate and body.max_budget is not None:
         effective_duration = _pool_budget_duration_from_last_purchase(
             db=db, team_id=team_id, region_id=region_id

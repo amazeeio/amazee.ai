@@ -1,6 +1,11 @@
 import time
 
-from app.db.models import DBLimitedResource, DBPoolPurchase, DBSpendCap, DBPeriodicPayment
+from app.db.models import (
+    DBLimitedResource,
+    DBPoolPurchase,
+    DBSpendCap,
+    DBPeriodicPayment,
+)
 from app.db.models import DBPeriodicBudgetLedgerEntry
 from app.db.models import DBTeamRegion
 from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
@@ -298,8 +303,6 @@ def test_create_periodic_topup_marks_sync_failed_on_litellm_error(
     assert payment is not None
     assert payment.sync_status == "sync_failed"
     assert "failed" in (payment.error_log or "").lower()
-
-
 
 
 def test_create_pool_purchase_team_not_found(client, admin_token, db, test_region):

@@ -419,6 +419,29 @@ def test_update_team_budget_endpoint(
     assert data["budget_duration"] == "1mo"
     mock_update_team_budget.assert_awaited_once()
     assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "1mo"
+
+
+@patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
+def test_update_team_budget_rejects_manual_cap_for_periodic_team(
+    mock_update_team_budget,
+    client,
+    admin_token,
+    test_team,
+    test_region,
+    db,
+):
+    test_team.budget_type = BudgetType.PERIODIC
+    test_team.require_purchase_for_requests = False
+    db.commit()
+
+    response = client.put(
+        f"/spend/{test_region.id}/team/{test_team.id}/budget",
+        json={"max_budget": 42.0},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 400
+    assert "not allowed for periodic teams" in response.json()["detail"].lower()
+    mock_update_team_budget.assert_not_awaited()
     cap = (
         db.query(DBSpendCap)
         .filter(
