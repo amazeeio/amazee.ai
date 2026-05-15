@@ -39,6 +39,7 @@ from app.schemas.models import (
     SpendBudgetUpdateResponse,
     SpendKeyItem,
     TeamSpendHistoryKeyItem,
+    TeamPeriodicTransactionItem,
     TeamSpendHistoryPeriodItem,
     TeamSpendHistoryResponse,
     TeamSpendResponse,
@@ -104,9 +105,14 @@ def _compute_period_start(
     summary="Get historical team spend by region",
     description=(
         "Returns historical spend periods from the API database for a team in a "
-        "region, including per-key spend for each period."
+        "region, including per-key spend for each period. For PERIODIC teams, "
+        "response also includes region-scoped `periodic_transactions` entries "
+        "covering Stripe renewals and top-up purchases linked to that region."
     ),
-    response_description="Team historical spend periods with per-key breakdown.",
+    response_description=(
+        "Team historical spend periods with per-key breakdown, plus periodic "
+        "transaction history for PERIODIC teams."
+    ),
 )
 async def get_team_spend_history(
     region_id: int,
@@ -186,17 +192,17 @@ async def get_team_spend_history(
         periods=period_items,
         periodic_transactions=(
             [
-                {
-                    "id": row.id,
-                    "payment_type": row.payment_type,
-                    "amount_cents": row.amount_cents,
-                    "currency": row.currency,
-                    "stripe_payment_id": row.stripe_payment_id,
-                    "payment_date": row.payment_date,
-                    "status": row.status,
-                    "sync_status": row.sync_status,
-                    "source": "periodic_payments",
-                }
+                TeamPeriodicTransactionItem(
+                    id=row.id,
+                    payment_type=row.payment_type,
+                    amount_cents=row.amount_cents,
+                    currency=row.currency,
+                    stripe_payment_id=row.stripe_payment_id,
+                    payment_date=row.payment_date,
+                    status=row.status,
+                    sync_status=row.sync_status,
+                    source="periodic_payments",
+                )
                 for row in (
                     db.query(DBPeriodicPayment)
                     .join(

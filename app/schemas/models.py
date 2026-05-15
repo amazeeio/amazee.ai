@@ -480,7 +480,21 @@ class TeamSpendHistoryResponse(BaseModel):
     team_id: int
     team_name: str
     periods: List[TeamSpendHistoryPeriodItem]
-    periodic_transactions: List[dict] = Field(default_factory=list)
+    periodic_transactions: List["TeamPeriodicTransactionItem"] = Field(
+        default_factory=list
+    )
+
+
+class TeamPeriodicTransactionItem(BaseModel):
+    id: int
+    payment_type: str
+    amount_cents: int
+    currency: str
+    stripe_payment_id: str
+    payment_date: datetime
+    status: str
+    sync_status: str
+    source: str
 
 
 class LiteLLMToken(BaseModel):

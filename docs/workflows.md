@@ -128,6 +128,9 @@ While `PERIODIC` budgets reset automatically, `POOL` budgets are "topped up" by 
     *   If LiteLLM update fails, request fails immediately (`502`).
     *   Failed top-up does not keep allocatable top-up balance in ledger.
     *   Payment record is kept with `sync_status=sync_failed` for audit/ops visibility.
+*   **History**:
+    *   `GET /spend/{region_id}/team/{team_id}/history` includes `periodic_transactions` for `PERIODIC` teams.
+    *   `periodic_transactions` contains region-scoped Stripe renewal and top-up payment records linked through the periodic ledger.
 
 ---
 
