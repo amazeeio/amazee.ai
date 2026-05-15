@@ -1,4 +1,4 @@
-import { Loader2, UserPlus, Plus } from "lucide-react";
+import { Loader2, UserPlus, Plus, Info } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,6 +21,12 @@ import {
 } from "@/components/ui/table";
 import { TableActionButtons } from "@/components/ui/table-action-buttons";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useTeams } from "@/hooks/use-teams";
 import { PrivateAIKey } from "@/types/private-ai-key";
 import { Product } from "@/types/product";
@@ -532,6 +538,28 @@ export function TeamExpansionRow({
                   </TabsContent>
                   <TabsContent value="shared-keys" className="mt-4">
                     <div className="space-y-4">
+                      {/* Team-level budget info */}
+                      {(() => {
+                        const teamBudgetLimit = teamLimits.find(
+                          (l) =>
+                            l.resource === "max_budget" &&
+                            l.limit_type === "data_plane",
+                        );
+                        return (
+                          <div className="flex items-center gap-2 rounded-md border bg-muted/50 p-3 text-sm">
+                            <Info className="h-4 w-4 text-muted-foreground shrink-0" />
+                            <span>
+                              <strong>Team Budget:</strong>{" "}
+                              {teamBudgetLimit
+                                ? `$${teamBudgetLimit.max_value.toFixed(2)} (${teamBudgetLimit.limited_by})`
+                                : "Not set"}{" "}
+                              — Budget is enforced at the team level and
+                              overrides individual key budgets. Edit it in the{" "}
+                              <strong>Limits</strong> tab.
+                            </span>
+                          </div>
+                        );
+                      })()}
                       {isLoadingTeamAIKeys ? (
                         <div className="flex justify-center items-center py-8">
                           <Loader2 className="h-8 w-8 animate-spin" />
@@ -547,7 +575,24 @@ export function TeamExpansionRow({
                                 <TableHead>Database</TableHead>
                                 <TableHead>Created At</TableHead>
                                 <TableHead>Spend</TableHead>
-                                <TableHead>Budget</TableHead>
+                                <TableHead>
+                                  <div className="flex items-center gap-1">
+                                    Budget (Team)
+                                    <TooltipProvider>
+                                      <Tooltip>
+                                        <TooltipTrigger>
+                                          <Info className="h-3 w-3 text-muted-foreground" />
+                                        </TooltipTrigger>
+                                        <TooltipContent>
+                                          <p>
+                                            Budget is set at team level and
+                                            overrides key-level budgets.
+                                          </p>
+                                        </TooltipContent>
+                                      </Tooltip>
+                                    </TooltipProvider>
+                                  </div>
+                                </TableHead>
                               </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -595,15 +640,25 @@ export function TeamExpansionRow({
                                       )}
                                     </TableCell>
                                     <TableCell>
-                                      {spendInfo?.max_budget ? (
-                                        <span>
-                                          ${spendInfo.max_budget.toFixed(2)}
-                                        </span>
-                                      ) : (
-                                        <span className="text-muted-foreground">
-                                          No limit
-                                        </span>
-                                      )}
+                                      {(() => {
+                                        const teamBudgetLimit = teamLimits.find(
+                                          (l) =>
+                                            l.resource === "max_budget" &&
+                                            l.limit_type === "data_plane",
+                                        );
+                                        return teamBudgetLimit ? (
+                                          <span>
+                                            $
+                                            {teamBudgetLimit.max_value.toFixed(
+                                              2,
+                                            )}
+                                          </span>
+                                        ) : (
+                                          <span className="text-muted-foreground">
+                                            No limit
+                                          </span>
+                                        );
+                                      })()}
                                     </TableCell>
                                   </TableRow>
                                 );
