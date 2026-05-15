@@ -673,36 +673,52 @@ async def purchase_periodic_topup(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
-    team_info_resp = await service.get_team_info(lite_team_id)
-    team_info = team_info_resp.get("team_info", team_info_resp)
-    current_spend = float(team_info.get("spend", 0.0) or 0.0)
+    try:
+        team_info_resp = await service.get_team_info(lite_team_id)
+        team_info = team_info_resp.get("team_info", team_info_resp)
+        current_spend = float(team_info.get("spend", 0.0) or 0.0)
 
-    sub_remaining_cents = 0
-    active_subscriptions = (
-        db.query(DBPeriodicBudgetLedgerEntry)
-        .filter(
-            DBPeriodicBudgetLedgerEntry.team_id == team.id,
-            DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
-            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+        sub_remaining_cents = 0
+        active_subscriptions = (
+            db.query(DBPeriodicBudgetLedgerEntry)
+            .filter(
+                DBPeriodicBudgetLedgerEntry.team_id == team.id,
+                DBPeriodicBudgetLedgerEntry.region_id == region_id,
+                DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+                DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            )
+            .all()
         )
-        .all()
-    )
-    for row in active_subscriptions:
-        sub_remaining_cents += max(0, row.amount_cents - row.consumed_cents)
+        for row in active_subscriptions:
+            sub_remaining_cents += max(0, row.amount_cents - row.consumed_cents)
 
-    topup_remaining_cents = compute_active_topup_remaining(
-        db, team_id=team.id, region_id=region_id
-    )
-    desired_remaining = (sub_remaining_cents + topup_remaining_cents) / 100.0
-    new_total_budget = round(current_spend + desired_remaining, 4)
+        topup_remaining_cents = compute_active_topup_remaining(
+            db, team_id=team.id, region_id=region_id
+        )
+        desired_remaining = (sub_remaining_cents + topup_remaining_cents) / 100.0
+        new_total_budget = round(current_spend + desired_remaining, 4)
 
-    await service.update_team_budget(
-        team_id=lite_team_id,
-        max_budget=new_total_budget,
-        budget_duration=MONTHLY_BUDGET_DURATION,
-    )
-    db.commit()
+        await service.update_team_budget(
+            team_id=lite_team_id,
+            max_budget=new_total_budget,
+            budget_duration=MONTHLY_BUDGET_DURATION,
+        )
+        payment_record.sync_status = "success"
+        payment_record.error_log = None
+        db.commit()
+    except Exception as exc:
+        payment_record.sync_status = "sync_failed"
+        payment_record.error_log = (
+            f"Periodic top-up sync failed for region_id={region_id}: {str(exc)}"
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=(
+                "Periodic top-up recorded but failed to sync budget to LiteLLM. "
+                "Record marked sync_failed for retry."
+            ),
+        )
     db.refresh(topup_entry)
 
     return PeriodicTopupResponse(
@@ -716,6 +732,88 @@ async def purchase_periodic_topup(
         created_at=topup_entry.created_at,
         new_total_budget_cents=int(new_total_budget * 100),
     )
+
+
+async def sync_failed_periodic_topups(db: Session) -> dict:
+    """
+    Retry LiteLLM sync for periodic top-ups marked sync_failed/pending.
+    Only retries top-up payments with a linked top-up ledger entry.
+    """
+    payments = (
+        db.query(DBPeriodicPayment)
+        .filter(
+            DBPeriodicPayment.payment_type == "topup",
+            DBPeriodicPayment.sync_status.in_(["pending", "sync_failed"]),
+        )
+        .all()
+    )
+    synced = 0
+    errors: list[str] = []
+
+    for payment in payments:
+        entry = (
+            db.query(DBPeriodicBudgetLedgerEntry)
+            .filter(
+                DBPeriodicBudgetLedgerEntry.source_payment_id == payment.id,
+                DBPeriodicBudgetLedgerEntry.entry_type == "topup",
+            )
+            .first()
+        )
+        if entry is None:
+            continue
+        team = db.query(DBTeam).filter(DBTeam.id == payment.team_id).first()
+        region = db.query(DBRegion).filter(DBRegion.id == entry.region_id).first()
+        if team is None or region is None:
+            continue
+        try:
+            service = LiteLLMService(
+                api_url=region.litellm_api_url, api_key=region.litellm_api_key
+            )
+            lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+            team_info_resp = await service.get_team_info(lite_team_id)
+            team_info = team_info_resp.get("team_info", team_info_resp)
+            current_spend = float(team_info.get("spend", 0.0) or 0.0)
+
+            sub_remaining_cents = 0
+            active_subscriptions = (
+                db.query(DBPeriodicBudgetLedgerEntry)
+                .filter(
+                    DBPeriodicBudgetLedgerEntry.team_id == team.id,
+                    DBPeriodicBudgetLedgerEntry.region_id == region.id,
+                    DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+                    DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+                )
+                .all()
+            )
+            for row in active_subscriptions:
+                sub_remaining_cents += max(0, row.amount_cents - row.consumed_cents)
+
+            topup_remaining_cents = compute_active_topup_remaining(
+                db, team_id=team.id, region_id=region.id
+            )
+            desired_remaining = (sub_remaining_cents + topup_remaining_cents) / 100.0
+            new_total_budget = round(current_spend + desired_remaining, 4)
+            await service.update_team_budget(
+                team_id=lite_team_id,
+                max_budget=new_total_budget,
+                budget_duration=MONTHLY_BUDGET_DURATION,
+            )
+            payment.sync_status = "success"
+            payment.error_log = None
+            db.add(payment)
+            db.commit()
+            synced += 1
+        except Exception as exc:
+            db.rollback()
+            payment.sync_status = "sync_failed"
+            payment.error_log = (
+                f"Retry failed for periodic top-up payment_id={payment.id}: {str(exc)}"
+            )
+            db.add(payment)
+            db.commit()
+            errors.append(payment.error_log)
+
+    return {"payments_synced": synced, "errors": errors}
 
 
 @router.get(
