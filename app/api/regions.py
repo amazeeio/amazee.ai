@@ -25,6 +25,7 @@ from app.db.models import (
     DBTeamRegion,
     DBTeam,
     DBUser,
+    DBUserAdminRegion,
 )
 from app.core.security import (
     get_role_min_system_admin,
@@ -177,31 +178,16 @@ async def list_regions(
             .all()
         )
 
-    # Team members can see non-dedicated regions plus their team's dedicated regions
-    team = db.query(DBTeam).filter(DBTeam.id == current_user.team_id).first()
-    hide_public = team.hide_public_regions if team else False
-
-    team_dedicated_regions = (
+    # Team members can only see their team's explicitly assigned regions.
+    return (
         db.query(DBRegion)
-        .join(DBTeamRegion)
+        .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
         .filter(
             DBRegion.is_active.is_(True),
-            DBRegion.is_dedicated.is_(True),
             DBTeamRegion.team_id == current_user.team_id,
         )
         .all()
     )
-
-    if hide_public:
-        return team_dedicated_regions
-
-    non_dedicated_regions = (
-        db.query(DBRegion)
-        .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
-        .all()
-    )
-
-    return non_dedicated_regions + team_dedicated_regions
 
 
 @router.get(
@@ -302,48 +288,65 @@ async def update_region(
     return db_region
 
 
-@router.post(
-    "/{region_id}/teams/{team_id}", dependencies=[Depends(get_role_min_system_admin)]
-)
-async def associate_team_with_region(
-    region_id: int, team_id: int, db: Session = Depends(get_db)
-):
-    """Associate a team with a dedicated region. Only system admins can do this."""
+def _assert_team_region_write_access(
+    db: Session,
+    current_user: DBUser,
+    team_id: int,
+    region: DBRegion,
+) -> None:
+    if current_user.is_admin:
+        return
+    if current_user.role != UserRole.TEAM_ADMIN or current_user.team_id != team_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action",
+        )
+    if not region.is_dedicated:
+        return
+    allowed = (
+        db.query(DBUserAdminRegion)
+        .filter(
+            DBUserAdminRegion.user_id == current_user.id,
+            DBUserAdminRegion.region_id == region.id,
+        )
+        .first()
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to assign this dedicated region",
+        )
 
-    # Check if region exists and is dedicated
+
+async def _associate_team_with_region(
+    *,
+    region_id: int,
+    team_id: int,
+    db: Session,
+) -> dict[str, str]:
     region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
     if not region:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
         )
 
-    if not region.is_dedicated:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Can only associate teams with dedicated regions",
-        )
-
-    # Check if team exists
     team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not team:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
         )
 
-    # Check if association already exists
     existing_association = (
         db.query(DBTeamRegion)
         .filter(DBTeamRegion.team_id == team_id, DBTeamRegion.region_id == region_id)
         .first()
     )
-
     if existing_association:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Team is already associated with this region",
         )
 
-    # Create the association first so local state is durable.
     team_region = DBTeamRegion(team_id=team_id, region_id=region_id)
     db.add(team_region)
 
@@ -379,7 +382,7 @@ async def associate_team_with_region(
         )
     except Exception as e:
         logger.error(
-            "Failed to bootstrap LiteLLM team %s (db team_id=%s) in dedicated region %s: %s",
+            "Failed to bootstrap LiteLLM team %s (db team_id=%s) in region %s: %s",
             lite_team_id,
             team_id,
             region.name,
@@ -419,7 +422,7 @@ async def associate_team_with_region(
             )
     except Exception as e:
         logger.error(
-            "Failed to sync LiteLLM members for team %s (db team_id=%s) in dedicated region %s: %s",
+            "Failed to sync LiteLLM members for team %s (db team_id=%s) in region %s: %s",
             lite_team_id,
             team_id,
             region.name,
@@ -451,15 +454,12 @@ async def associate_team_with_region(
     return {"message": "Team associated with region successfully"}
 
 
-@router.delete(
-    "/{region_id}/teams/{team_id}", dependencies=[Depends(get_role_min_system_admin)]
-)
-async def disassociate_team_from_region(
-    region_id: int, team_id: int, db: Session = Depends(get_db)
-):
-    """Disassociate a team from a dedicated region. Only system admins can do this."""
-
-    # Check if association exists
+async def _disassociate_team_from_region(
+    *,
+    region_id: int,
+    team_id: int,
+    db: Session,
+) -> dict[str, str]:
     association = (
         db.query(DBTeamRegion)
         .filter(DBTeamRegion.team_id == team_id, DBTeamRegion.region_id == region_id)
@@ -474,8 +474,6 @@ async def disassociate_team_from_region(
 
     region = association.region
     team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
-
-    # Remove the association first so local state is durable.
     db.delete(association)
 
     try:
@@ -515,24 +513,98 @@ async def disassociate_team_from_region(
 
 
 @router.get(
+    "/teams/{team_id}/regions",
+    response_model=List[RegionResponse],
+    dependencies=[Depends(get_role_min_specific_team_admin)],
+)
+async def list_regions_for_team(team_id: int, db: Session = Depends(get_db)):
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if not team:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
+        )
+    return (
+        db.query(DBRegion)
+        .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
+        .filter(DBTeamRegion.team_id == team_id, DBRegion.is_active.is_(True))
+        .all()
+    )
+
+
+@router.post(
+    "/teams/{team_id}/regions/{region_id}",
+)
+async def add_region_to_team(
+    team_id: int,
+    region_id: int,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db),
+):
+    region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+    _assert_team_region_write_access(db, current_user, team_id, region)
+    return await _associate_team_with_region(
+        region_id=region_id, team_id=team_id, db=db
+    )
+
+
+@router.delete(
+    "/teams/{team_id}/regions/{region_id}",
+)
+async def remove_region_from_team(
+    team_id: int,
+    region_id: int,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db),
+):
+    region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+    _assert_team_region_write_access(db, current_user, team_id, region)
+    return await _disassociate_team_from_region(
+        region_id=region_id,
+        team_id=team_id,
+        db=db,
+    )
+
+
+@router.post(
+    "/{region_id}/teams/{team_id}", dependencies=[Depends(get_role_min_system_admin)]
+)
+async def associate_team_with_region(
+    region_id: int, team_id: int, db: Session = Depends(get_db)
+):
+    return await _associate_team_with_region(
+        region_id=region_id, team_id=team_id, db=db
+    )
+
+
+@router.delete(
+    "/{region_id}/teams/{team_id}", dependencies=[Depends(get_role_min_system_admin)]
+)
+async def disassociate_team_from_region(
+    region_id: int, team_id: int, db: Session = Depends(get_db)
+):
+    return await _disassociate_team_from_region(
+        region_id=region_id,
+        team_id=team_id,
+        db=db,
+    )
+
+
+@router.get(
     "/{region_id}/teams",
     response_model=List[TeamSummary],
     dependencies=[Depends(get_role_min_system_admin)],
 )
 async def list_teams_for_region(region_id: int, db: Session = Depends(get_db)):
-    """List teams associated with a dedicated region. Only system admins can do this."""
+    """List teams associated with a region. Only system admins can do this."""
 
-    # Check if region exists and is dedicated
     region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
     if not region:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
-        )
-
-    if not region.is_dedicated:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Can only list teams for dedicated regions",
         )
 
     # Get associated teams

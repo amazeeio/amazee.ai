@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import settings
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
@@ -24,6 +24,7 @@ from app.db.models import (
     DBRegion,
     DBSpendCap,
     DBTeam,
+    DBTeamSpendPeriod,
     DBTeamRegion,
     DBUser,
 )
@@ -34,6 +35,9 @@ from app.schemas.models import (
     SpendBudgetUpdateRequest,
     SpendBudgetUpdateResponse,
     SpendKeyItem,
+    TeamSpendHistoryKeyItem,
+    TeamSpendHistoryPeriodItem,
+    TeamSpendHistoryResponse,
     TeamSpendResponse,
     UserSpendResponse,
 )
@@ -89,6 +93,95 @@ def _compute_period_start(
     if unit == "s":
         return budget_reset_at - timedelta(seconds=value)
     return None
+
+
+@router.get(
+    "/{region_id}/team/{team_id}/history",
+    response_model=TeamSpendHistoryResponse,
+    summary="Get historical team spend by region",
+    description=(
+        "Returns historical spend periods from the API database for a team in a "
+        "region, including per-key spend for each period."
+    ),
+    response_description="Team historical spend periods with per-key breakdown.",
+)
+async def get_team_spend_history(
+    region_id: int,
+    team_id: int,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    team = (
+        db.query(DBTeam)
+        .filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None))
+        .first()
+    )
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    _assert_team_access(current_user, user_role, team_id)
+    region = _get_region_or_404(db, region_id)
+
+    periods = (
+        db.query(DBTeamSpendPeriod)
+        .options(selectinload(DBTeamSpendPeriod.keys))
+        .filter(
+            DBTeamSpendPeriod.team_id == team_id,
+            DBTeamSpendPeriod.region_id == region_id,
+        )
+        .order_by(DBTeamSpendPeriod.period_end.desc(), DBTeamSpendPeriod.id.desc())
+        .all()
+    )
+
+    period_items: list[TeamSpendHistoryPeriodItem] = []
+    for period in periods:
+        key_items = [
+            TeamSpendHistoryKeyItem(
+                key_id=row.key_id,
+                owner_id=row.owner_id,
+                key_name_snapshot=row.key_name_snapshot,
+                spend=round(float(row.spend or 0.0), 4),
+                max_budget=(
+                    round(float(row.max_budget), 4)
+                    if row.max_budget is not None
+                    else None
+                ),
+                prompt_tokens=row.prompt_tokens,
+                completion_tokens=row.completion_tokens,
+                total_tokens=row.total_tokens,
+            )
+            for row in sorted(period.keys, key=lambda k: k.id)
+        ]
+
+        period_items.append(
+            TeamSpendHistoryPeriodItem(
+                period_start=period.period_start,
+                period_end=period.period_end,
+                budget_type=period.budget_type,
+                total_spend=round(float(period.total_spend or 0.0), 4),
+                total_budget=(
+                    round(float(period.total_budget), 4)
+                    if period.total_budget is not None
+                    else None
+                ),
+                total_prompt_tokens=period.total_prompt_tokens,
+                total_completion_tokens=period.total_completion_tokens,
+                total_tokens=period.total_tokens,
+                source=period.source,
+                stripe_event_id=period.stripe_event_id,
+                stripe_invoice_id=period.stripe_invoice_id,
+                stripe_subscription_id=period.stripe_subscription_id,
+                keys=key_items,
+            )
+        )
+
+    return TeamSpendHistoryResponse(
+        region_id=region_id,
+        region_name=region.name,
+        team_id=team_id,
+        team_name=team.name,
+        periods=period_items,
+    )
 
 
 def _to_int_or_none(value) -> int | None:
@@ -239,8 +332,6 @@ def _assert_user_budget_write_access(
 def _assert_team_region_association(
     db: Session, region: DBRegion, team_id: int
 ) -> None:
-    if not region.is_dedicated:
-        return
     association = (
         db.query(DBTeamRegion)
         .filter(DBTeamRegion.region_id == region.id, DBTeamRegion.team_id == team_id)
@@ -249,7 +340,7 @@ def _assert_team_region_association(
     if not association:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Team is not associated with this dedicated region",
+            detail="Team is not associated with this region",
         )
 
 
@@ -716,7 +807,7 @@ async def get_team_spend(
     configured_team_cap = _get_spend_cap_max_budget(
         db, scope="team", region_id=region_id, team_id=team_id
     )
-    if configured_team_cap is not None:
+    if configured_team_cap is not None and team.requires_pool_purchase_gate:
         total_budget = round(configured_team_cap, 4)
     elif is_periodic and litellm_fetch_ok and items:
         # For PERIODIC teams, team_info["max_budget"] is the compounded value
@@ -1513,10 +1604,10 @@ async def update_key_budget(
     response_model=SpendBudgetUpdateResponse,
     summary="Clear key budget override",
     description=(
-        "Clears key max_budget override by setting it to null in LiteLLM. "
-        "This endpoint does not intentionally modify budget_duration."
+        "Clears key max_budget and budget_duration by setting both to null "
+        "in LiteLLM. Removes the spend cap and budget reset window from the key."
     ),
-    response_description="Key budget clear result with max_budget=null.",
+    response_description="Key budget clear result with max_budget=null and budget_duration=null.",
     openapi_extra={
         "responses": {
             200: {
@@ -1531,8 +1622,8 @@ async def update_key_budget(
                             "user_id": 7,
                             "key_id": 99,
                             "max_budget": None,
-                            "budget_duration": "1mo",
-                            "note": "Cleared key max_budget override without changing budget duration.",
+                            "budget_duration": None,
+                            "note": "Cleared key max_budget and budget_duration overrides.",
                         }
                     }
                 }
@@ -1569,6 +1660,7 @@ async def clear_key_budget(
         budget_duration=None,
         max_budget=None,
         clear_max_budget=True,
+        clear_budget_duration=True,
     )
     _delete_spend_cap(
         db,
@@ -1592,5 +1684,5 @@ async def clear_key_budget(
         key_id=key_id,
         max_budget=info.get("max_budget"),
         budget_duration=info.get("budget_duration"),
-        note="Cleared key max_budget override without changing budget duration.",
+        note="Cleared key max_budget and budget_duration overrides.",
     )

@@ -179,6 +179,15 @@ class RegionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class RegionSummaryResponse(BaseModel):
+    id: int
+    name: str
+    label: Optional[str] = None
+    is_active: bool
+    is_dedicated: bool
+    model_config = ConfigDict(from_attributes=True)
+
+
 class Region(RegionBase):
     id: int
     created_at: datetime
@@ -438,6 +447,41 @@ class SpendBudgetUpdateResponse(BaseModel):
     note: Optional[str] = None
 
 
+class TeamSpendHistoryKeyItem(BaseModel):
+    key_id: Optional[int] = None
+    owner_id: Optional[int] = None
+    key_name_snapshot: Optional[str] = None
+    spend: float
+    max_budget: Optional[float] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+
+
+class TeamSpendHistoryPeriodItem(BaseModel):
+    period_start: datetime
+    period_end: datetime
+    budget_type: str
+    total_spend: float
+    total_budget: Optional[float] = None
+    total_prompt_tokens: Optional[int] = None
+    total_completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    source: str
+    stripe_event_id: Optional[str] = None
+    stripe_invoice_id: Optional[str] = None
+    stripe_subscription_id: Optional[str] = None
+    keys: List[TeamSpendHistoryKeyItem]
+
+
+class TeamSpendHistoryResponse(BaseModel):
+    region_id: int
+    region_name: str
+    team_id: int
+    team_name: str
+    periods: List[TeamSpendHistoryPeriodItem]
+
+
 class LiteLLMToken(BaseModel):
     id: int
     litellm_token: str
@@ -536,11 +580,20 @@ class Team(TeamBase):
     deleted_at: Optional[datetime] = None
     retention_warning_sent_at: Optional[datetime] = None
     products: List[Product] = []
+    allowed_regions: List[RegionSummaryResponse] = []
     model_config = ConfigDict(from_attributes=True)
 
 
 class TeamWithUsers(Team):
     users: List[User] = []
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserAdminRegionResponse(BaseModel):
+    user_id: int
+    region_id: int
+    region: RegionSummaryResponse
+    created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
 

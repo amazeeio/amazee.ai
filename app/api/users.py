@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, contains_eager
 
 from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -24,6 +24,7 @@ from app.schemas.models import (
     UserUpdate,
     UserCreate,
     TeamOperation,
+    UserAdminRegionResponse,
     UserRoleUpdate,
     UserSpendRegion,
     UserSpendByEmailResponse,
@@ -36,6 +37,7 @@ from app.db.models import (
     DBTeam,
     DBTeamRegion,
     DBUser,
+    DBUserAdminRegion,
     DBUserSpendCache,
 )
 from app.core.security import (
@@ -306,11 +308,6 @@ async def _compute_user_spend(
         except (TypeError, ValueError):
             continue
 
-    public_regions = (
-        db.query(DBRegion)
-        .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
-        .all()
-    )
     team_regions = (
         db.query(DBTeamRegion, DBRegion)
         .join(DBRegion, DBTeamRegion.region_id == DBRegion.id)
@@ -319,8 +316,7 @@ async def _compute_user_spend(
     )
 
     regions_by_team: dict[int, dict[int, DBRegion]] = {
-        team_id: {region.id: region for region in public_regions}
-        for team_id in team_ids
+        team_id: {} for team_id in team_ids
     }
     for assoc, region in team_regions:
         regions_by_team.setdefault(assoc.team_id, {})[region.id] = region
@@ -541,6 +537,99 @@ async def get_user_spend(
         payload.pop("cached_at", None)
         _upsert_user_spend_cache(db, normalized_email, payload, response.cached_at)
     return response
+
+
+@router.get(
+    "/{user_id}/admin-regions",
+    response_model=List[UserAdminRegionResponse],
+)
+async def list_user_admin_regions(
+    user_id: int,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db),
+):
+    if not current_user.is_admin and current_user.id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action",
+        )
+    user = db.query(DBUser).filter(DBUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return (
+        db.query(DBUserAdminRegion)
+        .join(DBRegion, DBUserAdminRegion.region_id == DBRegion.id)
+        .filter(DBUserAdminRegion.user_id == user_id, DBRegion.is_dedicated.is_(True))
+        .options(contains_eager(DBUserAdminRegion.region))
+        .all()
+    )
+
+
+@router.post(
+    "/{user_id}/admin-regions/{region_id}",
+    response_model=UserAdminRegionResponse,
+    dependencies=[Depends(get_role_min_system_admin)],
+)
+async def assign_user_admin_region(
+    user_id: int,
+    region_id: int,
+    db: Session = Depends(get_db),
+):
+    user = db.query(DBUser).filter(DBUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+    if not region.is_dedicated:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only dedicated regions can be assigned as admin regions",
+        )
+
+    association = (
+        db.query(DBUserAdminRegion)
+        .filter(
+            DBUserAdminRegion.user_id == user_id,
+            DBUserAdminRegion.region_id == region_id,
+        )
+        .first()
+    )
+    if association:
+        return association
+
+    association = DBUserAdminRegion(user_id=user_id, region_id=region_id)
+    db.add(association)
+    db.commit()
+    db.refresh(association)
+    return association
+
+
+@router.delete(
+    "/{user_id}/admin-regions/{region_id}",
+    dependencies=[Depends(get_role_min_system_admin)],
+)
+async def remove_user_admin_region(
+    user_id: int,
+    region_id: int,
+    db: Session = Depends(get_db),
+):
+    association = (
+        db.query(DBUserAdminRegion)
+        .filter(
+            DBUserAdminRegion.user_id == user_id,
+            DBUserAdminRegion.region_id == region_id,
+        )
+        .first()
+    )
+    if not association:
+        raise HTTPException(
+            status_code=404, detail="User admin-region association not found"
+        )
+
+    db.delete(association)
+    db.commit()
+    return {"message": "User admin-region association removed"}
 
 
 @router.get(

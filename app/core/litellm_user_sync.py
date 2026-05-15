@@ -131,25 +131,22 @@ def team_role_for_litellm(db_user: DBUser) -> str:
 
 
 def get_target_regions_for_user(db: Session, team_id: int | None) -> List[DBRegion]:
-    shared_regions = (
-        db.query(DBRegion)
-        .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
-        .all()
-    )
     if team_id is None:
-        return shared_regions
+        return (
+            db.query(DBRegion)
+            .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
+            .all()
+        )
 
-    dedicated_regions = (
+    return (
         db.query(DBRegion)
         .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
         .filter(
             DBRegion.is_active.is_(True),
-            DBRegion.is_dedicated.is_(True),
             DBTeamRegion.team_id == team_id,
         )
         .all()
     )
-    return _dedupe_regions([*shared_regions, *dedicated_regions])
 
 
 async def sync_create_user_across_regions(
