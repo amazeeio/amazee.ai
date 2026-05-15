@@ -682,6 +682,14 @@ async def purchase_periodic_topup(
         source_payment_id=payment_record.id,
         stripe_payment_id=purchase.stripe_payment_id,
     )
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A purchase with this stripe_payment_id already exists",
+        )
     if topup_entry is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -729,7 +737,11 @@ async def purchase_periodic_topup(
         # Top-up purchase failed to reach LiteLLM; do not keep allocatable
         # balance in the periodic ledger for this failed API purchase.
         if topup_entry is not None:
-            db.delete(topup_entry)
+            # Keep audit visibility but ensure failed top-up cannot contribute
+            # to future allocatable balance.
+            topup_entry.is_active = False
+            topup_entry.consumed_cents = topup_entry.amount_cents
+            db.add(topup_entry)
             db.flush()
         payment_record.sync_status = "sync_failed"
         payment_record.error_log = (

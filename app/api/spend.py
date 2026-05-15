@@ -4,6 +4,7 @@ import re
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.orm import aliased
@@ -118,6 +119,8 @@ def _compute_period_start(
 async def get_team_spend_history(
     region_id: int,
     team_id: int,
+    period_limit: int = Query(default=200, ge=1, le=1000),
+    tx_limit: int = Query(default=200, ge=1, le=1000),
     current_user: DBUser = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
@@ -140,6 +143,7 @@ async def get_team_spend_history(
             DBTeamSpendPeriod.region_id == region_id,
         )
         .order_by(DBTeamSpendPeriod.period_end.desc(), DBTeamSpendPeriod.id.desc())
+        .limit(period_limit)
         .all()
     )
 
@@ -211,6 +215,7 @@ async def get_team_spend_history(
                 DBPeriodicPayment.payment_date.desc(),
                 DBPeriodicPayment.id.desc(),
             )
+            .limit(tx_limit)
             .all()
         )
         periodic_transactions = [

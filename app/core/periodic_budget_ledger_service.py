@@ -57,7 +57,9 @@ def add_subscription_entry(
     period_end: datetime,
     source_payment_id: int | None,
     source_invoice_id: str | None,
-) -> DBPeriodicBudgetLedgerEntry:
+) -> DBPeriodicBudgetLedgerEntry | None:
+    if amount_cents <= 0:
+        return None
     if source_invoice_id:
         existing = (
             db.query(DBPeriodicBudgetLedgerEntry)
@@ -101,6 +103,8 @@ def add_topup_entry(
     source_payment_id: int | None,
     stripe_payment_id: str,
 ) -> DBPeriodicBudgetLedgerEntry | None:
+    if amount_cents <= 0:
+        return None
     existing = (
         db.query(DBPeriodicBudgetLedgerEntry)
         .filter(
@@ -180,6 +184,8 @@ def compute_active_topup_remaining(db: Session, *, team_id: int, region_id: int)
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
             DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"]),
             DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            DBPeriodicBudgetLedgerEntry.consumed_cents
+            < DBPeriodicBudgetLedgerEntry.amount_cents,
             (
                 DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
                 | (DBPeriodicBudgetLedgerEntry.expires_at > now)
