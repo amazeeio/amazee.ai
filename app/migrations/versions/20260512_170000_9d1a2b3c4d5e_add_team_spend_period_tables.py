@@ -16,113 +16,162 @@ branch_labels = None
 depends_on = None
 
 
-def upgrade() -> None:
-    op.create_table(
-        "team_spend_periods",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("team_id", sa.Integer(), nullable=False),
-        sa.Column("region_id", sa.Integer(), nullable=False),
-        sa.Column("budget_type", sa.String(), nullable=False),
-        sa.Column("period_start", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("period_end", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("currency", sa.String(), nullable=True),
-        sa.Column("total_spend", sa.Float(), nullable=False),
-        sa.Column("total_budget", sa.Float(), nullable=True),
-        sa.Column("total_prompt_tokens", sa.Integer(), nullable=True),
-        sa.Column("total_completion_tokens", sa.Integer(), nullable=True),
-        sa.Column("total_tokens", sa.Integer(), nullable=True),
-        sa.Column("source", sa.String(), nullable=False),
-        sa.Column("stripe_event_id", sa.String(), nullable=True),
-        sa.Column("stripe_invoice_id", sa.String(), nullable=True),
-        sa.Column("stripe_subscription_id", sa.String(), nullable=True),
-        sa.Column("raw_payload", sa.JSON(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(["region_id"], ["regions.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["team_id"], ["teams.id"], ondelete="CASCADE"),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "team_id",
-            "region_id",
-            "budget_type",
-            "period_start",
-            "period_end",
-            name="uq_team_spend_period_unique_window",
-        ),
-    )
-    op.create_index(
-        op.f("ix_team_spend_periods_id"), "team_spend_periods", ["id"], unique=False
-    )
-    op.create_index(
-        op.f("ix_team_spend_periods_team_id"),
-        "team_spend_periods",
-        ["team_id"],
-        unique=False,
-    )
-    op.create_index(
-        op.f("ix_team_spend_periods_region_id"),
-        "team_spend_periods",
-        ["region_id"],
-        unique=False,
-    )
-    op.create_index(
-        op.f("ix_team_spend_periods_budget_type"),
-        "team_spend_periods",
-        ["budget_type"],
-        unique=False,
-    )
-    op.create_index(
-        op.f("ix_team_spend_periods_period_start"),
-        "team_spend_periods",
-        ["period_start"],
-        unique=False,
-    )
-    op.create_index(
-        op.f("ix_team_spend_periods_period_end"),
-        "team_spend_periods",
-        ["period_end"],
-        unique=False,
-    )
-    op.create_index(
-        op.f("ix_team_spend_periods_stripe_event_id"),
-        "team_spend_periods",
-        ["stripe_event_id"],
-        unique=False,
-    )
+def _table_exists(bind, table_name: str) -> bool:
+    return sa.inspect(bind).has_table(table_name)
 
-    op.create_table(
+
+def _index_exists(bind, table_name: str, index_name: str) -> bool:
+    insp = sa.inspect(bind)
+    try:
+        indexes = insp.get_indexes(table_name)
+    except Exception:
+        return False
+    return any(idx.get("name") == index_name for idx in indexes)
+
+
+def upgrade() -> None:
+    bind = op.get_bind()
+
+    if not _table_exists(bind, "team_spend_periods"):
+        op.create_table(
+            "team_spend_periods",
+            sa.Column("id", sa.Integer(), nullable=False),
+            sa.Column("team_id", sa.Integer(), nullable=False),
+            sa.Column("region_id", sa.Integer(), nullable=False),
+            sa.Column("budget_type", sa.String(), nullable=False),
+            sa.Column("period_start", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("period_end", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("currency", sa.String(), nullable=True),
+            sa.Column("total_spend", sa.Float(), nullable=False),
+            sa.Column("total_budget", sa.Float(), nullable=True),
+            sa.Column("total_prompt_tokens", sa.Integer(), nullable=True),
+            sa.Column("total_completion_tokens", sa.Integer(), nullable=True),
+            sa.Column("total_tokens", sa.Integer(), nullable=True),
+            sa.Column("source", sa.String(), nullable=False),
+            sa.Column("stripe_event_id", sa.String(), nullable=True),
+            sa.Column("stripe_invoice_id", sa.String(), nullable=True),
+            sa.Column("stripe_subscription_id", sa.String(), nullable=True),
+            sa.Column("raw_payload", sa.JSON(), nullable=True),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+            sa.ForeignKeyConstraint(["region_id"], ["regions.id"], ondelete="CASCADE"),
+            sa.ForeignKeyConstraint(["team_id"], ["teams.id"], ondelete="CASCADE"),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint(
+                "team_id",
+                "region_id",
+                "budget_type",
+                "period_start",
+                "period_end",
+                name="uq_team_spend_period_unique_window",
+            ),
+        )
+
+    if not _index_exists(bind, "team_spend_periods", op.f("ix_team_spend_periods_id")):
+        op.create_index(
+            op.f("ix_team_spend_periods_id"),
+            "team_spend_periods",
+            ["id"],
+            unique=False,
+        )
+    if not _index_exists(
+        bind, "team_spend_periods", op.f("ix_team_spend_periods_team_id")
+    ):
+        op.create_index(
+            op.f("ix_team_spend_periods_team_id"),
+            "team_spend_periods",
+            ["team_id"],
+            unique=False,
+        )
+    if not _index_exists(
+        bind, "team_spend_periods", op.f("ix_team_spend_periods_region_id")
+    ):
+        op.create_index(
+            op.f("ix_team_spend_periods_region_id"),
+            "team_spend_periods",
+            ["region_id"],
+            unique=False,
+        )
+    if not _index_exists(
+        bind, "team_spend_periods", op.f("ix_team_spend_periods_budget_type")
+    ):
+        op.create_index(
+            op.f("ix_team_spend_periods_budget_type"),
+            "team_spend_periods",
+            ["budget_type"],
+            unique=False,
+        )
+    if not _index_exists(
+        bind, "team_spend_periods", op.f("ix_team_spend_periods_period_start")
+    ):
+        op.create_index(
+            op.f("ix_team_spend_periods_period_start"),
+            "team_spend_periods",
+            ["period_start"],
+            unique=False,
+        )
+    if not _index_exists(
+        bind, "team_spend_periods", op.f("ix_team_spend_periods_period_end")
+    ):
+        op.create_index(
+            op.f("ix_team_spend_periods_period_end"),
+            "team_spend_periods",
+            ["period_end"],
+            unique=False,
+        )
+    if not _index_exists(
+        bind, "team_spend_periods", op.f("ix_team_spend_periods_stripe_event_id")
+    ):
+        op.create_index(
+            op.f("ix_team_spend_periods_stripe_event_id"),
+            "team_spend_periods",
+            ["stripe_event_id"],
+            unique=False,
+        )
+
+    if not _table_exists(bind, "team_spend_period_keys"):
+        op.create_table(
+            "team_spend_period_keys",
+            sa.Column("id", sa.Integer(), nullable=False),
+            sa.Column("team_spend_period_id", sa.Integer(), nullable=False),
+            sa.Column("key_id", sa.Integer(), nullable=True),
+            sa.Column("owner_id", sa.Integer(), nullable=True),
+            sa.Column("key_name_snapshot", sa.String(), nullable=True),
+            sa.Column("spend", sa.Float(), nullable=False),
+            sa.Column("max_budget", sa.Float(), nullable=True),
+            sa.Column("prompt_tokens", sa.Integer(), nullable=True),
+            sa.Column("completion_tokens", sa.Integer(), nullable=True),
+            sa.Column("total_tokens", sa.Integer(), nullable=True),
+            sa.ForeignKeyConstraint(["key_id"], ["ai_tokens.id"], ondelete="SET NULL"),
+            sa.ForeignKeyConstraint(["owner_id"], ["users.id"], ondelete="SET NULL"),
+            sa.ForeignKeyConstraint(
+                ["team_spend_period_id"], ["team_spend_periods.id"], ondelete="CASCADE"
+            ),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint(
+                "team_spend_period_id", "key_id", name="uq_team_spend_period_key"
+            ),
+        )
+
+    if not _index_exists(
+        bind, "team_spend_period_keys", op.f("ix_team_spend_period_keys_id")
+    ):
+        op.create_index(
+            op.f("ix_team_spend_period_keys_id"),
+            "team_spend_period_keys",
+            ["id"],
+            unique=False,
+        )
+    if not _index_exists(
+        bind,
         "team_spend_period_keys",
-        sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("team_spend_period_id", sa.Integer(), nullable=False),
-        sa.Column("key_id", sa.Integer(), nullable=True),
-        sa.Column("owner_id", sa.Integer(), nullable=True),
-        sa.Column("key_name_snapshot", sa.String(), nullable=True),
-        sa.Column("spend", sa.Float(), nullable=False),
-        sa.Column("max_budget", sa.Float(), nullable=True),
-        sa.Column("prompt_tokens", sa.Integer(), nullable=True),
-        sa.Column("completion_tokens", sa.Integer(), nullable=True),
-        sa.Column("total_tokens", sa.Integer(), nullable=True),
-        sa.ForeignKeyConstraint(["key_id"], ["ai_tokens.id"], ondelete="SET NULL"),
-        sa.ForeignKeyConstraint(["owner_id"], ["users.id"], ondelete="SET NULL"),
-        sa.ForeignKeyConstraint(
-            ["team_spend_period_id"], ["team_spend_periods.id"], ondelete="CASCADE"
-        ),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "team_spend_period_id", "key_id", name="uq_team_spend_period_key"
-        ),
-    )
-    op.create_index(
-        op.f("ix_team_spend_period_keys_id"),
-        "team_spend_period_keys",
-        ["id"],
-        unique=False,
-    )
-    op.create_index(
         op.f("ix_team_spend_period_keys_team_spend_period_id"),
-        "team_spend_period_keys",
-        ["team_spend_period_id"],
-        unique=False,
-    )
+    ):
+        op.create_index(
+            op.f("ix_team_spend_period_keys_team_spend_period_id"),
+            "team_spend_period_keys",
+            ["team_spend_period_id"],
+            unique=False,
+        )
 
 
 def downgrade() -> None:
