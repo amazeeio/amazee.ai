@@ -4,7 +4,7 @@
 **Status:** In progress
 
 ## Progress tracker (updated 2026-05-15)
-- Implemented: existing `POST /budgets/region/{region_id}/teams/{team_id}/purchase` now accepts `PERIODIC` teams via budget-type dispatch.
+- Implemented: dedicated periodic top-up endpoint `POST /budgets/region/{region_id}/teams/{team_id}/purchase/periodic`.
 - Implemented: new periodic branch persists `periodic_payments` (`payment_type=topup`) and creates a linked top-up ledger entry (`source_payment_id`).
 - Implemented: periodic branch updates LiteLLM team budget using compounding rule (`max_budget = current_spend + desired_remaining`), where desired remaining is computed from active subscription + top-up ledger balances.
 - Implemented: tests added for periodic top-up success and duplicate `stripe_payment_id` conflict handling.
@@ -12,6 +12,8 @@
 - Implemented: periodic top-up API validates requested region is assigned to the team.
 - Implemented: periodic top-up API remains region-specific (single region write, no split).
 - Implemented: periodic top-up endpoint is now split from POOL purchase endpoint for strict API contracts.
+- Implemented: periodic top-up failures return immediate error (`502`) and do not keep allocatable top-up ledger balance.
+- Implemented: manual team budget updates are rejected for PERIODIC teams in `PUT /spend/{region}/team/{team}/budget`.
 - Pending: decision and implementation for checkout initiation endpoint vs direct admin purchase API semantics.
 - Pending: reconcile regional allocation policy for team-scoped Stripe payment to region-scoped ledger.
 - Pending: tighten idempotency model across webhook events and API path (event-level dedupe + payment-level dedupe alignment).
@@ -63,10 +65,11 @@ Add periodic-team top-ups with rollover semantics while preserving existing peri
 - This can misclassify non-gated pool teams as periodic.
 - Required change: switch to explicit `team.budget_type == BudgetType.PERIODIC` for all periodic-only behavior.
 
-4. **Top-up path ownership is underspecified**
-- There is no periodic purchase endpoint today; only `/budget/region/{region_id}/teams/{team_id}/purchase` for POOL with a hard guard `requires_pool_purchase_gate`.
-- Current top-up effects come from Stripe `checkout.session.completed` metadata (`ai_budget_increase`) handled in webhook worker.
-- Required change: plan must state whether periodic top-up remains webhook-driven only or introduces a new API endpoint + checkout initiation flow. “Extend app/api/budgets.py” is insufficient and likely incorrect for current flow.
+4. **Top-up path ownership**
+- Dedicated periodic purchase endpoint exists for admin/API flow:
+  `/budgets/region/{region_id}/teams/{team_id}/purchase/periodic`.
+- Webhook top-up effects still exist via Stripe `checkout.session.completed` metadata (`ai_budget_increase`) handled in worker.
+- Required change: align webhook top-up region behavior with API region-specific policy.
 
 5. **Transaction/side-effect ordering risks partial financial state**
 - Existing code commits `DBPeriodicPayment` early, then performs external LiteLLM calls, then updates sync status.

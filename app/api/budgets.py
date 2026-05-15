@@ -251,6 +251,14 @@ async def _sync_pool_key_effective_budgets(
     "/region/{region_id}/teams/{team_id}/purchase",
     response_model=PoolPurchaseResponse,
     status_code=status.HTTP_201_CREATED,
+    summary="Create POOL purchase",
+    description=(
+        "Create a region-scoped purchase for POOL teams.\n\n"
+        "- Valid only for purchase-gated POOL teams.\n"
+        "- Idempotency is enforced by `stripe_payment_id` (duplicate => 409).\n"
+        "- On LiteLLM sync failure, request fails and no successful budget update is applied."
+    ),
+    response_description="Created POOL purchase and updated effective team budget for the region.",
     dependencies=[Depends(get_role_min_system_admin)],
 )
 async def purchase_pool_budget(
@@ -573,6 +581,17 @@ async def purchase_pool_budget(
     "/region/{region_id}/teams/{team_id}/purchase/periodic",
     response_model=PeriodicTopupResponse,
     status_code=status.HTTP_201_CREATED,
+    summary="Create PERIODIC top-up purchase",
+    description=(
+        "Create a region-scoped top-up for PERIODIC teams.\n\n"
+        "- Valid only for PERIODIC teams.\n"
+        "- Target region must be assigned to the team.\n"
+        "- Idempotency is enforced by `stripe_payment_id` (duplicate => 409).\n"
+        "- Compounding is region-scoped: `max_budget = current_spend + desired_remaining`.\n"
+        "- On LiteLLM sync failure, request fails (502), payment is marked `sync_failed`, and "
+        "no allocatable top-up ledger balance is retained for that failed API purchase."
+    ),
+    response_description="Created PERIODIC top-up and updated the target region budget.",
     dependencies=[Depends(get_role_min_system_admin)],
 )
 async def create_periodic_topup(

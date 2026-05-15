@@ -112,7 +112,26 @@ While `PERIODIC` budgets reset automatically, `POOL` budgets are "topped up" by 
 
 ---
 
-## 5. System Defaults & Limits
+## 5. Periodic Top-Ups
+
+`PERIODIC` teams can receive region-specific top-up purchases via a dedicated endpoint.
+
+*   **Purchase**: `POST /budgets/region/{region_id}/teams/{team_id}/purchase/periodic`
+    *   Endpoint is valid only for `PERIODIC` teams.
+    *   Target region must be assigned to the team.
+    *   Uses `stripe_payment_id` idempotency and returns `409` for duplicates.
+    *   Persists a periodic payment audit record and a linked periodic top-up ledger entry.
+*   **Budget application**:
+    *   Applies compounding on the target region only: `max_budget = current_spend + desired_remaining`.
+    *   `desired_remaining` is region-scoped: active subscription remaining + active top-up remaining.
+*   **Failure behavior**:
+    *   If LiteLLM update fails, request fails immediately (`502`).
+    *   Failed top-up does not keep allocatable top-up balance in ledger.
+    *   Payment record is kept with `sync_status=sync_failed` for audit/ops visibility.
+
+---
+
+## 6. System Defaults & Limits
 
 Limits are managed via the `LimitService` (`app/core/limit_service.py`). They follow a hierarchy: **MANUAL > PRODUCT > DEFAULT**.
 
@@ -128,7 +147,7 @@ Limits are managed via the `LimitService` (`app/core/limit_service.py`). They fo
 
 ---
 
-## 4. Trial & Expiry Logic
+## 7. Trial & Expiry Logic
 
 The system calculates "Trial Status" for teams to determine if they should still have access.
 

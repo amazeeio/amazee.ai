@@ -1083,7 +1083,8 @@ async def get_key_spend_alias(
         "budget controls are being finalized.\n\n"
         "Request body accepts only `max_budget`.\n"
         "`budget_duration` is computed server-side and returned in the response:\n"
-        "- PERIODIC teams: monthly (`1mo`)\n"
+        "- PERIODIC teams: manual team budget updates are rejected; use subscription "
+        "renewal and periodic top-up purchase flows.\n"
         "- POOL teams: purchase-window duration for enforcement while storing "
         "monthly-cap semantics in local spend caps."
     ),
