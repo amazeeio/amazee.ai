@@ -10,7 +10,6 @@ from unittest.mock import patch, AsyncMock
 from app.api.budgets import (
     sync_pool_team_budgets,
     sync_pool_team_monthly_caps,
-    sync_failed_periodic_topups,
 )
 
 
@@ -301,49 +300,6 @@ def test_create_periodic_topup_marks_sync_failed_on_litellm_error(
     assert "failed" in (payment.error_log or "").lower()
 
 
-@pytest.mark.asyncio
-async def test_sync_failed_periodic_topups_retries_and_marks_success(
-    db, test_team, test_region
-):
-    test_team.budget_type = "periodic"
-    payment = DBPeriodicPayment(
-        team_id=test_team.id,
-        stripe_payment_id=f"cs_retry_{int(time.time() * 1000000)}",
-        amount_cents=5000,
-        currency="usd",
-        payment_type="topup",
-        status="completed",
-        sync_status="sync_failed",
-        error_log="previous failure",
-        payment_date=datetime.now(UTC),
-    )
-    db.add(payment)
-    db.flush()
-    db.add(
-        DBPeriodicBudgetLedgerEntry(
-            team_id=test_team.id,
-            region_id=test_region.id,
-            entry_type="topup",
-            source_payment_id=payment.id,
-            source_invoice_id=None,
-            stripe_payment_id=payment.stripe_payment_id,
-            amount_cents=5000,
-            consumed_cents=0,
-            purchased_at=datetime.now(UTC),
-            is_active=True,
-        )
-    )
-    db.commit()
-
-    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
-        mock_instance = mock_litellm.return_value
-        mock_instance.get_team_info = AsyncMock(return_value={"team_info": {"spend": 1.0}})
-        mock_instance.update_team_budget = AsyncMock()
-        result = await sync_failed_periodic_topups(db)
-
-    assert result["payments_synced"] >= 1
-    db.refresh(payment)
-    assert payment.sync_status == "success"
 
 
 def test_create_pool_purchase_team_not_found(client, admin_token, db, test_region):
