@@ -24,7 +24,7 @@ def _index_exists(bind, table_name: str, index_name: str) -> bool:
     insp = sa.inspect(bind)
     try:
         indexes = insp.get_indexes(table_name)
-    except Exception:
+    except sa.exc.NoSuchTableError:
         return False
     return any(idx.get("name") == index_name for idx in indexes)
 
