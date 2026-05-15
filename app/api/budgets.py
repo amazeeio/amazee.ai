@@ -707,6 +707,11 @@ async def purchase_periodic_topup(
         payment_record.error_log = None
         db.commit()
     except Exception as exc:
+        # Top-up purchase failed to reach LiteLLM; do not keep allocatable
+        # balance in the periodic ledger for this failed API purchase.
+        if topup_entry is not None:
+            db.delete(topup_entry)
+            db.flush()
         payment_record.sync_status = "sync_failed"
         payment_record.error_log = (
             f"Periodic top-up sync failed for region_id={region_id}: {str(exc)}"
