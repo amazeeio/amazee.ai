@@ -231,10 +231,16 @@ async def _record_periodic_payment(db: Session, event_object: any) -> Optional[i
 
         stripe_payment_id = event_object.id
         # Extract amount and currency based on object type (Invoice or Session)
-        amount_cents = getattr(
+        raw_amount = getattr(
             event_object, "amount_paid", getattr(event_object, "amount_total", 0)
         )
-        currency = getattr(event_object, "currency", "usd")
+        try:
+            amount_cents = int(raw_amount)
+        except (TypeError, ValueError):
+            amount_cents = 0
+
+        raw_currency = getattr(event_object, "currency", "usd")
+        currency = str(raw_currency).lower() if isinstance(raw_currency, str) else "usd"
 
         # Determine payment type from metadata
         metadata = getattr(event_object, "metadata", {})
@@ -268,6 +274,7 @@ async def _record_periodic_payment(db: Session, event_object: any) -> Optional[i
 
         return payment_record.id
     except Exception as e:
+        db.rollback()
         logger.error(f"Failed to record periodic payment: {str(e)}")
         return None
 
@@ -1176,6 +1183,11 @@ async def _check_team_retention_policy(
         current_time: Current timestamp
         ses_service: SES service instance for sending emails
     """
+    # POOL teams are always considered active per product policy.
+    # They are excluded from inactivity-based retention checks.
+    if team.budget_type == BudgetType.POOL:
+        return
+
     # Check team retention policy (only for non-deleted teams)
     if team.deleted_at:
         return  # Team already soft-deleted, skip retention check
@@ -1295,13 +1307,7 @@ def _send_expiry_notification(
     should_send_notifications: bool,
     days_remaining: int,
     ses_service: Optional[SESService],
-    is_pool_team: bool = False,
 ):
-    # POOL teams have their own budget lifecycle managed by sync_pool_team_budgets.
-    # They should never receive trial expiry notifications.
-    if is_pool_team:
-        return
-
     # Check for notification conditions for teams still in the trial (only if not recently monitored)
     if not has_products and should_send_notifications:
         # Find the admin email for the team
@@ -1476,8 +1482,10 @@ async def monitor_teams(db: Session):
                 team_label = (str(team.id), team.name)
                 current_team_labels.add(team_label)
 
-                # Reconcile product associations with Stripe before any other processing
-                await reconcile_team_product_associations(db, team)
+                # Reconcile product associations with Stripe, skipping only purchase-gated
+                # POOL teams which follow a separate purchase-gated lifecycle.
+                if not team.requires_pool_purchase_gate:
+                    await reconcile_team_product_associations(db, team)
 
                 # Check if team has any products
                 has_products = (
@@ -1491,8 +1499,7 @@ async def monitor_teams(db: Session):
                 await _check_team_retention_policy(db, team, current_time, ses_service)
 
                 # Now handle trial expiry notifications and key expiry (after retention checks)
-                team_freshness = _monitor_team_freshness(team, db)
-                days_remaining = TRIAL_OVER_DAYS - team_freshness
+                is_pool_team = team.budget_type == BudgetType.POOL
 
                 # Check if team was monitored within 24 hours
                 should_send_notifications = settings.ENABLE_LIMITS
@@ -1502,35 +1509,29 @@ async def monitor_teams(db: Session):
                     ).total_seconds() / 3600
                     should_send_notifications = hours_since_monitored >= 24
 
-                _send_expiry_notification(
-                    db,
-                    team,
-                    has_products,
-                    should_send_notifications,
-                    days_remaining,
-                    ses_service,
-                    is_pool_team=team.budget_type == BudgetType.POOL,
-                )
+                # Always compute freshness to emit team_freshness_days metrics for all teams.
+                # POOL teams have their own lifecycle and are excluded from trial notifications.
+                team_freshness = _monitor_team_freshness(team, db)
+                days_remaining = TRIAL_OVER_DAYS - team_freshness
+                if not is_pool_team:
+                    _send_expiry_notification(
+                        db,
+                        team,
+                        has_products,
+                        should_send_notifications,
+                        days_remaining,
+                        ses_service,
+                    )
 
                 # Get all keys for the team grouped by region
                 keys_by_region = get_team_keys_by_region(db, team.id)
                 expire_keys = False
 
-                # Pool teams with purchases should never be treated as expired trials.
-                # Their budget lifecycle is managed separately by sync_pool_team_budgets.
-                has_active_pool_purchase = (
-                    team.budget_type == BudgetType.POOL
-                    and db.query(DBPoolPurchase)
-                    .filter(DBPoolPurchase.team_id == team.id)
-                    .first()
-                    is not None
-                )
-
                 # Expire if team trial has expired (if team has a product, expiry will be handled by Stripe)
-                # Pool teams with purchases are exempt — they are not trial users.
+                # POOL teams are always exempt from trial expiration.
                 if (
                     not has_products
-                    and not has_active_pool_purchase
+                    and not is_pool_team
                     and days_remaining <= 0
                     and should_send_notifications
                 ):

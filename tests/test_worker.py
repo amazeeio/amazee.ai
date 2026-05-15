@@ -956,6 +956,7 @@ async def test_monitor_teams_pool_team_with_purchase_not_expired(
     # Setup: pool team, 31 days old (past trial), but with a pool purchase
     test_team.created_at = datetime.now(UTC) - timedelta(days=31)
     test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
     test_team.last_pool_purchase = datetime.now(UTC) - timedelta(days=1)
     db.add(test_team)
     db.commit()
@@ -1012,7 +1013,7 @@ async def test_monitor_teams_pool_team_with_purchase_not_expired(
 @patch("app.core.worker.SESService")
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
-async def test_monitor_teams_pool_team_without_purchase_is_expired(
+async def test_monitor_teams_pool_team_without_purchase_not_expired(
     mock_litellm,
     mock_ses,
     mock_limit_service,
@@ -1022,11 +1023,12 @@ async def test_monitor_teams_pool_team_without_purchase_is_expired(
     test_team_key_creator,
 ):
     """
-    Test that pool teams WITHOUT purchases are still expired as trials.
+    Test that pool teams WITHOUT purchases are NOT expired as trials.
     """
     # Setup: pool team, 31 days old (past trial), no purchases
     test_team.created_at = datetime.now(UTC) - timedelta(days=31)
     test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
     db.add(test_team)
     db.commit()
 
@@ -1061,10 +1063,8 @@ async def test_monitor_teams_pool_team_without_purchase_is_expired(
     # Run monitoring
     await monitor_teams(db)
 
-    # Key SHOULD have been expired (no purchase, past trial)
-    mock_litellm_instance.update_key_duration.assert_called_once_with(
-        "pool_no_purchase_token", "0d"
-    )
+    # Key should NOT have been expired
+    mock_litellm_instance.update_key_duration.assert_not_called()
 
 
 @pytest.mark.asyncio

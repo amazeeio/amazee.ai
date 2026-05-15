@@ -31,7 +31,6 @@ from app.db.models import (
 from app.schemas.limits import OwnerType, ResourceType
 from app.api.users import invalidate_user_spend_cache
 from app.schemas.models import (
-    BudgetType,
     PrivateAIKeySpend,
     SpendBudgetUpdateRequest,
     SpendBudgetUpdateResponse,
@@ -47,6 +46,53 @@ from app.services.litellm import LiteLLMService
 router = APIRouter(tags=["spend"])
 logger = logging.getLogger(__name__)
 MONTHLY_BUDGET_DURATION = "1mo"
+
+
+def _compute_period_start(
+    budget_reset_at: datetime | None, budget_duration: str | None
+) -> datetime | None:
+    """
+    Derive the start of the current budget period from LiteLLM's
+    ``budget_reset_at`` (end-of-period) and ``budget_duration``.
+
+    LiteLLM sets ``budget_reset_at`` to the moment the budget will auto-reset.
+    For ``"Nd"`` durations the reset is rolling N days after the last update;
+    for ``"1mo"`` / ``"30d"`` it snaps to the 1st of the next calendar month.
+
+    We parse the duration string and subtract from ``budget_reset_at`` to get
+    a best-effort calendar ``period_start``.  Returns ``None`` when either
+    input is missing or the duration cannot be parsed.
+    """
+    if budget_reset_at is None or not budget_duration:
+        return None
+
+    # Handle "1mo" / "30d" — both snap to 1st of next calendar month
+    # so the period start is always the 1st of the current month.
+    if budget_duration in ("1mo", "30d"):
+        # budget_reset_at is midnight on the 1st of next month.
+        # If reset is on 1st, the period that just ended started last month.
+        if budget_reset_at.day == 1:
+            if budget_reset_at.month == 1:
+                return budget_reset_at.replace(
+                    year=budget_reset_at.year - 1, month=12, day=1
+                )
+            return budget_reset_at.replace(month=budget_reset_at.month - 1, day=1)
+        return budget_reset_at.replace(day=1)
+
+    match = re.fullmatch(r"(\d+)([dhms])", budget_duration)
+    if not match:
+        return None
+    value = int(match.group(1))
+    unit = match.group(2)
+    if unit == "d":
+        return budget_reset_at - timedelta(days=value)
+    if unit == "h":
+        return budget_reset_at - timedelta(hours=value)
+    if unit == "m":
+        return budget_reset_at - timedelta(minutes=value)
+    if unit == "s":
+        return budget_reset_at - timedelta(seconds=value)
+    return None
 
 
 @router.get(
@@ -136,53 +182,6 @@ async def get_team_spend_history(
         team_name=team.name,
         periods=period_items,
     )
-
-
-def _compute_period_start(
-    budget_reset_at: datetime | None, budget_duration: str | None
-) -> datetime | None:
-    """
-    Derive the start of the current budget period from LiteLLM's
-    ``budget_reset_at`` (end-of-period) and ``budget_duration``.
-
-    LiteLLM sets ``budget_reset_at`` to the moment the budget will auto-reset.
-    For ``"Nd"`` durations the reset is rolling N days after the last update;
-    for ``"1mo"`` / ``"30d"`` it snaps to the 1st of the next calendar month.
-
-    We parse the duration string and subtract from ``budget_reset_at`` to get
-    a best-effort calendar ``period_start``.  Returns ``None`` when either
-    input is missing or the duration cannot be parsed.
-    """
-    if budget_reset_at is None or not budget_duration:
-        return None
-
-    # Handle "1mo" / "30d" — both snap to 1st of next calendar month
-    # so the period start is always the 1st of the current month.
-    if budget_duration in ("1mo", "30d"):
-        # budget_reset_at is midnight on the 1st of next month.
-        # If reset is on 1st, the period that just ended started last month.
-        if budget_reset_at.day == 1:
-            if budget_reset_at.month == 1:
-                return budget_reset_at.replace(
-                    year=budget_reset_at.year - 1, month=12, day=1
-                )
-            return budget_reset_at.replace(month=budget_reset_at.month - 1, day=1)
-        return budget_reset_at.replace(day=1)
-
-    match = re.fullmatch(r"(\d+)([dhms])", budget_duration)
-    if not match:
-        return None
-    value = int(match.group(1))
-    unit = match.group(2)
-    if unit == "d":
-        return budget_reset_at - timedelta(days=value)
-    if unit == "h":
-        return budget_reset_at - timedelta(hours=value)
-    if unit == "m":
-        return budget_reset_at - timedelta(minutes=value)
-    if unit == "s":
-        return budget_reset_at - timedelta(seconds=value)
-    return None
 
 
 def _to_int_or_none(value) -> int | None:
@@ -1110,11 +1109,6 @@ async def update_team_budget(
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
     _assert_team_budget_write_access(current_user, role, team_id)
-    if team.budget_type == BudgetType.PERIODIC:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Manual team budget override is not supported for PERIODIC teams",
-        )
     region = _get_region_or_404(db, region_id)
     _assert_team_region_association(db, region, team_id)
     service = LiteLLMService(
