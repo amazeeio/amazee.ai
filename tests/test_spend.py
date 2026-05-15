@@ -2598,3 +2598,50 @@ def test_get_team_spend_history_admin_can_access_any_team(
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert response.status_code == 200
+
+
+def test_get_team_spend_history_includes_periodic_transactions(
+    client, team_admin_token, test_team, test_region, db
+):
+    from datetime import datetime, UTC
+    from app.db.models import DBPeriodicPayment, DBPeriodicBudgetLedgerEntry
+
+    test_team.budget_type = "periodic"
+    db.add(test_team)
+    db.flush()
+
+    payment = DBPeriodicPayment(
+        team_id=test_team.id,
+        stripe_payment_id="cs_hist_periodic_1",
+        amount_cents=500,
+        currency="usd",
+        payment_type="topup",
+        status="completed",
+        sync_status="success",
+        payment_date=datetime.now(UTC),
+    )
+    db.add(payment)
+    db.flush()
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            source_payment_id=payment.id,
+            stripe_payment_id="cs_hist_periodic_1",
+            amount_cents=500,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC),
+            is_active=True,
+        )
+    )
+    db.commit()
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/history",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["periodic_transactions"]) >= 1
+    assert data["periodic_transactions"][0]["payment_type"] in ("subscription", "topup")

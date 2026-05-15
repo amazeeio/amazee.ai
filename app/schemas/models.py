@@ -480,6 +480,7 @@ class TeamSpendHistoryResponse(BaseModel):
     team_id: int
     team_name: str
     periods: List[TeamSpendHistoryPeriodItem]
+    periodic_transactions: List[dict] = Field(default_factory=list)
 
 
 class LiteLLMToken(BaseModel):

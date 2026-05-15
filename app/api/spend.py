@@ -19,6 +19,8 @@ from app.core.security import (
 )
 from app.db.database import get_db
 from app.db.models import (
+    DBPeriodicPayment,
+    DBPeriodicBudgetLedgerEntry,
     DBPoolPurchase,
     DBPrivateAIKey,
     DBRegion,
@@ -182,6 +184,40 @@ async def get_team_spend_history(
         team_id=team_id,
         team_name=team.name,
         periods=period_items,
+        periodic_transactions=(
+            [
+                {
+                    "id": row.id,
+                    "payment_type": row.payment_type,
+                    "amount_cents": row.amount_cents,
+                    "currency": row.currency,
+                    "stripe_payment_id": row.stripe_payment_id,
+                    "payment_date": row.payment_date,
+                    "status": row.status,
+                    "sync_status": row.sync_status,
+                    "source": "periodic_payments",
+                }
+                for row in (
+                    db.query(DBPeriodicPayment)
+                    .join(
+                        DBPeriodicBudgetLedgerEntry,
+                        DBPeriodicBudgetLedgerEntry.source_payment_id
+                        == DBPeriodicPayment.id,
+                    )
+                    .filter(
+                        DBPeriodicPayment.team_id == team_id,
+                        DBPeriodicBudgetLedgerEntry.region_id == region_id,
+                    )
+                    .order_by(
+                        DBPeriodicPayment.payment_date.desc(),
+                        DBPeriodicPayment.id.desc(),
+                    )
+                    .all()
+                )
+            ]
+            if team.budget_type == BudgetType.PERIODIC
+            else []
+        ),
     )
 
 
