@@ -249,14 +249,14 @@ async def _sync_pool_key_effective_budgets(
 
 @router.post(
     "/region/{region_id}/teams/{team_id}/purchase",
-    response_model=PoolPurchaseResponse | PeriodicTopupResponse,
+    response_model=PoolPurchaseResponse,
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(get_role_min_system_admin)],
 )
-async def purchase_team_budget(
+async def purchase_pool_budget(
     region_id: int,
     team_id: int,
-    purchase: PoolPurchaseRequest | PeriodicTopupRequest,
+    purchase: PoolPurchaseRequest,
     db: Session = Depends(get_db),
 ):
     """
@@ -273,13 +273,6 @@ async def purchase_team_budget(
         )
 
     if not team.requires_pool_purchase_gate:
-        if team.budget_type == BudgetType.PERIODIC:
-            return await purchase_periodic_topup(
-                region_id=region_id,
-                team=team,
-                purchase=purchase,
-                db=db,
-            )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
@@ -576,8 +569,38 @@ async def purchase_team_budget(
     )
 
 
+@router.post(
+    "/region/{region_id}/teams/{team_id}/purchase/periodic",
+    response_model=PeriodicTopupResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(get_role_min_system_admin)],
+)
+async def create_periodic_topup(
+    region_id: int,
+    team_id: int,
+    purchase: PeriodicTopupRequest,
+    db: Session = Depends(get_db),
+):
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if not team:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
+        )
+    if team.budget_type != BudgetType.PERIODIC:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This endpoint only works for periodic budget teams",
+        )
+    return await purchase_periodic_topup(
+        region_id=region_id,
+        team=team,
+        purchase=purchase,
+        db=db,
+    )
+
+
 async def purchase_periodic_topup(
-    *, region_id: int, team: DBTeam, purchase: PoolPurchaseRequest | PeriodicTopupRequest, db: Session
+    *, region_id: int, team: DBTeam, purchase: PeriodicTopupRequest, db: Session
 ) -> PeriodicTopupResponse:
     region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
     if not region:
@@ -692,7 +715,6 @@ async def purchase_periodic_topup(
         stripe_payment_id=topup_entry.stripe_payment_id or purchase.stripe_payment_id,
         created_at=topup_entry.created_at,
         new_total_budget_cents=int(new_total_budget * 100),
-        keys_updated=0,
     )
 
 

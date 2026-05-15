@@ -11,6 +11,7 @@
 - Implemented: periodic top-up API now has dedicated periodic request/response schema.
 - Implemented: periodic top-up API validates requested region is assigned to the team.
 - Implemented: periodic top-up API remains region-specific (single region write, no split).
+- Implemented: periodic top-up endpoint is now split from POOL purchase endpoint for strict API contracts.
 - Pending: decision and implementation for checkout initiation endpoint vs direct admin purchase API semantics.
 - Pending: reconcile regional allocation policy for team-scoped Stripe payment to region-scoped ledger.
 - Pending: tighten idempotency model across webhook events and API path (event-level dedupe + payment-level dedupe alignment).
