@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import aliased
 
 from app.core.config import settings
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
@@ -184,46 +185,56 @@ async def get_team_spend_history(
             )
         )
 
+    periodic_transactions: list[TeamPeriodicTransactionItem] = []
+    if team.budget_type == BudgetType.PERIODIC:
+        latest_ledger = aliased(DBPeriodicBudgetLedgerEntry)
+        latest_payment_ids_subq = (
+            db.query(
+                latest_ledger.source_payment_id.label("source_payment_id"),
+                func.max(latest_ledger.id).label("latest_ledger_id"),
+            )
+            .filter(
+                latest_ledger.region_id == region_id,
+                latest_ledger.source_payment_id.isnot(None),
+            )
+            .group_by(latest_ledger.source_payment_id)
+            .subquery()
+        )
+        periodic_rows = (
+            db.query(DBPeriodicPayment)
+            .join(
+                latest_payment_ids_subq,
+                latest_payment_ids_subq.c.source_payment_id == DBPeriodicPayment.id,
+            )
+            .filter(DBPeriodicPayment.team_id == team_id)
+            .order_by(
+                DBPeriodicPayment.payment_date.desc(),
+                DBPeriodicPayment.id.desc(),
+            )
+            .all()
+        )
+        periodic_transactions = [
+            TeamPeriodicTransactionItem(
+                id=row.id,
+                payment_type=row.payment_type,
+                amount_cents=row.amount_cents,
+                currency=row.currency,
+                stripe_payment_id=row.stripe_payment_id,
+                payment_date=row.payment_date,
+                status=row.status,
+                sync_status=row.sync_status,
+                source="periodic_payments",
+            )
+            for row in periodic_rows
+        ]
+
     return TeamSpendHistoryResponse(
         region_id=region_id,
         region_name=region.name,
         team_id=team_id,
         team_name=team.name,
         periods=period_items,
-        periodic_transactions=(
-            [
-                TeamPeriodicTransactionItem(
-                    id=row.id,
-                    payment_type=row.payment_type,
-                    amount_cents=row.amount_cents,
-                    currency=row.currency,
-                    stripe_payment_id=row.stripe_payment_id,
-                    payment_date=row.payment_date,
-                    status=row.status,
-                    sync_status=row.sync_status,
-                    source="periodic_payments",
-                )
-                for row in (
-                    db.query(DBPeriodicPayment)
-                    .join(
-                        DBPeriodicBudgetLedgerEntry,
-                        DBPeriodicBudgetLedgerEntry.source_payment_id
-                        == DBPeriodicPayment.id,
-                    )
-                    .filter(
-                        DBPeriodicPayment.team_id == team_id,
-                        DBPeriodicBudgetLedgerEntry.region_id == region_id,
-                    )
-                    .order_by(
-                        DBPeriodicPayment.payment_date.desc(),
-                        DBPeriodicPayment.id.desc(),
-                    )
-                    .all()
-                )
-            ]
-            if team.budget_type == BudgetType.PERIODIC
-            else []
-        ),
+        periodic_transactions=periodic_transactions,
     )
 
 

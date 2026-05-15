@@ -2645,3 +2645,91 @@ def test_get_team_spend_history_includes_periodic_transactions(
     data = response.json()
     assert len(data["periodic_transactions"]) >= 1
     assert data["periodic_transactions"][0]["payment_type"] in ("subscription", "topup")
+
+
+def test_get_team_spend_history_periodic_transactions_empty_for_non_periodic_team(
+    client, team_admin_token, test_team, test_region, db
+):
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.add(test_team)
+    db.commit()
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/history",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["periodic_transactions"] == []
+
+
+def test_get_team_spend_history_periodic_transactions_region_scoped(
+    client, team_admin_token, test_team, test_region, second_region, db
+):
+    from datetime import datetime, UTC
+    from app.db.models import DBPeriodicPayment, DBPeriodicBudgetLedgerEntry
+
+    test_team.budget_type = "periodic"
+    db.add(test_team)
+    db.flush()
+
+    p1 = DBPeriodicPayment(
+        team_id=test_team.id,
+        stripe_payment_id="cs_hist_region_1",
+        amount_cents=500,
+        currency="usd",
+        payment_type="topup",
+        status="completed",
+        sync_status="success",
+        payment_date=datetime.now(UTC),
+    )
+    p2 = DBPeriodicPayment(
+        team_id=test_team.id,
+        stripe_payment_id="cs_hist_region_2",
+        amount_cents=700,
+        currency="usd",
+        payment_type="topup",
+        status="completed",
+        sync_status="success",
+        payment_date=datetime.now(UTC),
+    )
+    db.add_all([p1, p2])
+    db.flush()
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            source_payment_id=p1.id,
+            stripe_payment_id="cs_hist_region_1",
+            amount_cents=500,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC),
+            is_active=True,
+        )
+    )
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=second_region.id,
+            entry_type="topup",
+            source_payment_id=p2.id,
+            stripe_payment_id="cs_hist_region_2",
+            amount_cents=700,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC),
+            is_active=True,
+        )
+    )
+    db.commit()
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/history",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    ids = [t["stripe_payment_id"] for t in data["periodic_transactions"]]
+    assert "cs_hist_region_1" in ids
+    assert "cs_hist_region_2" not in ids
