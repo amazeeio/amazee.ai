@@ -1,6 +1,7 @@
 import logging
 import asyncio
-from datetime import UTC, date, datetime
+import re
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
@@ -45,6 +46,53 @@ from app.services.litellm import LiteLLMService
 router = APIRouter(tags=["spend"])
 logger = logging.getLogger(__name__)
 MONTHLY_BUDGET_DURATION = "1mo"
+
+
+def _compute_period_start(
+    budget_reset_at: datetime | None, budget_duration: str | None
+) -> datetime | None:
+    """
+    Derive the start of the current budget period from LiteLLM's
+    ``budget_reset_at`` (end-of-period) and ``budget_duration``.
+
+    LiteLLM sets ``budget_reset_at`` to the moment the budget will auto-reset.
+    For ``"Nd"`` durations the reset is rolling N days after the last update;
+    for ``"1mo"`` / ``"30d"`` it snaps to the 1st of the next calendar month.
+
+    We parse the duration string and subtract from ``budget_reset_at`` to get
+    a best-effort calendar ``period_start``.  Returns ``None`` when either
+    input is missing or the duration cannot be parsed.
+    """
+    if budget_reset_at is None or not budget_duration:
+        return None
+
+    # Handle "1mo" / "30d" — both snap to 1st of next calendar month
+    # so the period start is always the 1st of the current month.
+    if budget_duration in ("1mo", "30d"):
+        # budget_reset_at is midnight on the 1st of next month.
+        # If reset is on 1st, the period that just ended started last month.
+        if budget_reset_at.day == 1:
+            if budget_reset_at.month == 1:
+                return budget_reset_at.replace(
+                    year=budget_reset_at.year - 1, month=12, day=1
+                )
+            return budget_reset_at.replace(month=budget_reset_at.month - 1, day=1)
+        return budget_reset_at.replace(day=1)
+
+    match = re.fullmatch(r"(\d+)([dhms])", budget_duration)
+    if not match:
+        return None
+    value = int(match.group(1))
+    unit = match.group(2)
+    if unit == "d":
+        return budget_reset_at - timedelta(days=value)
+    if unit == "h":
+        return budget_reset_at - timedelta(hours=value)
+    if unit == "m":
+        return budget_reset_at - timedelta(minutes=value)
+    if unit == "s":
+        return budget_reset_at - timedelta(seconds=value)
+    return None
 
 
 @router.get(
@@ -645,10 +693,12 @@ async def get_team_spend(
     total_completion_tokens = None
     total_tokens = None
 
+    is_periodic = not team.requires_pool_purchase_gate
+    litellm_fetch_ok = False
+
     try:
         team_data = await service.get_team_info(lite_team_id)
         team_info = team_data.get("team_info", team_data)
-        total_spend = round(float(team_info.get("spend", 0.0) or 0.0), 4)
         (
             total_prompt_tokens,
             total_completion_tokens,
@@ -664,6 +714,7 @@ async def get_team_spend(
                 litellm_key=litellm_key,
                 fallback_team_id=team_id,
             )
+            key_spend = round(float(litellm_key.get("spend", 0.0) or 0.0), 4)
             items.append(
                 SpendKeyItem(
                     key_id=db_key_id,
@@ -676,7 +727,7 @@ async def get_team_spend(
                         else None
                     ),
                     team_id=team_id,
-                    spend=round(float(litellm_key.get("spend", 0.0) or 0.0), 4),
+                    spend=key_spend,
                     max_budget=(
                         float(litellm_key.get("max_budget"))
                         if litellm_key.get("max_budget") is not None
@@ -688,8 +739,32 @@ async def get_team_spend(
                         litellm_key.get("completion_tokens")
                     ),
                     total_tokens=_to_int_or_none(litellm_key.get("total_tokens")),
+                    budget_duration=litellm_key.get("budget_duration"),
+                    budget_reset_at=(
+                        datetime.fromisoformat(litellm_key["budget_reset_at"])
+                        if litellm_key.get("budget_reset_at")
+                        else None
+                    ),
                 )
             )
+
+        # For PERIODIC teams, total_spend must reflect only the current
+        # billing period. Because the team-level spend counter in LiteLLM
+        # is never reset (it compounds), we derive total_spend from the raw
+        # per-key spends which ARE reset to 0 on each Stripe webhook, and
+        # only round the final aggregate to avoid drift from summing
+        # already-rounded display values.
+        if is_periodic and items:
+            total_spend = round(
+                sum(
+                    float(litellm_key.get("spend", 0.0) or 0.0)
+                    for litellm_key in team_data.get("keys", [])
+                ),
+                4,
+            )
+        else:
+            total_spend = round(float(team_info.get("spend", 0.0) or 0.0), 4)
+        litellm_fetch_ok = True
     except Exception as exc:
         logger.warning(
             "Falling back to DB-derived team spend for team_id=%s region_id=%s due to LiteLLM error: %s",
@@ -734,6 +809,14 @@ async def get_team_spend(
     )
     if configured_team_cap is not None and team.requires_pool_purchase_gate:
         total_budget = round(configured_team_cap, 4)
+    elif is_periodic and litellm_fetch_ok and items:
+        # For PERIODIC teams, team_info["max_budget"] is the compounded value
+        # (accumulated_spend + monthly_cap). Derive the actual monthly cap from
+        # the per-key max_budget which is always set to the product cap.
+        # Only apply when we got data from LiteLLM directly (not the DB fallback).
+        key_budgets = [k.max_budget for k in items if k.max_budget is not None]
+        if key_budgets:
+            total_budget = round(max(key_budgets), 4)
     key_cap_map = _get_key_spend_cap_map(
         db,
         region_id=region_id,
@@ -742,6 +825,22 @@ async def get_team_spend(
     for item in items:
         if item.key_id is not None and item.key_id in key_cap_map:
             item.max_budget = round(key_cap_map[item.key_id], 4)
+
+    # Compute period_start for each key from budget_reset_at + budget_duration.
+    team_budget_duration = None
+    team_budget_reset_at = None
+    if litellm_fetch_ok:
+        team_budget_duration = team_info.get("budget_duration")
+        team_budget_reset_at_raw = team_info.get("budget_reset_at")
+        if team_budget_reset_at_raw:
+            team_budget_reset_at = datetime.fromisoformat(team_budget_reset_at_raw)
+    for item in items:
+        item.period_start = _compute_period_start(
+            item.budget_reset_at, item.budget_duration
+        )
+    team_period_start = _compute_period_start(
+        team_budget_reset_at, team_budget_duration
+    )
 
     return TeamSpendResponse(
         region_id=region_id,
@@ -753,6 +852,9 @@ async def get_team_spend(
         total_prompt_tokens=total_prompt_tokens,
         total_completion_tokens=total_completion_tokens,
         total_tokens=total_tokens,
+        budget_duration=team_budget_duration,
+        budget_reset_at=team_budget_reset_at,
+        period_start=team_period_start,
         key_count=len(items),
         keys=items,
     )
@@ -825,6 +927,12 @@ async def get_user_spend(
                         litellm_key.get("completion_tokens")
                     ),
                     total_tokens=_to_int_or_none(litellm_key.get("total_tokens")),
+                    budget_duration=litellm_key.get("budget_duration"),
+                    budget_reset_at=(
+                        datetime.fromisoformat(litellm_key["budget_reset_at"])
+                        if litellm_key.get("budget_reset_at")
+                        else None
+                    ),
                 )
             )
     except Exception as exc:
@@ -866,6 +974,9 @@ async def get_user_spend(
             item.max_budget = round(key_cap_map[item.key_id], 4)
         elif member_cap is not None:
             item.max_budget = round(member_cap, 4)
+        item.period_start = _compute_period_start(
+            item.budget_reset_at, item.budget_duration
+        )
 
     return UserSpendResponse(
         region_id=region_id,
@@ -940,8 +1051,21 @@ async def get_key_spend_alias(
         if configured_key_cap is not None:
             info = dict(info)
             info["max_budget"] = round(configured_key_cap, 4)
+        budget_reset_at = (
+            datetime.fromisoformat(info["budget_reset_at"])
+            if info.get("budget_reset_at")
+            else None
+        )
+        period_start = _compute_period_start(
+            budget_reset_at, info.get("budget_duration")
+        )
         return PrivateAIKeySpend.model_validate(
-            {"spend": info.get("spend", 0.0), **info}
+            {
+                "spend": info.get("spend", 0.0),
+                **info,
+                "budget_reset_at": budget_reset_at,
+                "period_start": period_start,
+            }
         )
     except Exception as exc:
         raise HTTPException(
