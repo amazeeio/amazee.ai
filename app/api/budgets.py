@@ -641,7 +641,7 @@ async def purchase_periodic_topup(
         currency=purchase.currency.lower(),
         payment_type="topup",
         status="completed",
-        sync_status="pending",
+        sync_status="sync_failed",
         payment_date=purchase.purchased_at,
     )
     db.add(payment_record)
@@ -736,14 +736,14 @@ async def purchase_periodic_topup(
 
 async def sync_failed_periodic_topups(db: Session) -> dict:
     """
-    Retry LiteLLM sync for periodic top-ups marked sync_failed/pending.
+    Retry LiteLLM sync for periodic top-ups marked sync_failed.
     Only retries top-up payments with a linked top-up ledger entry.
     """
     payments = (
         db.query(DBPeriodicPayment)
         .filter(
             DBPeriodicPayment.payment_type == "topup",
-            DBPeriodicPayment.sync_status.in_(["pending", "sync_failed"]),
+            DBPeriodicPayment.sync_status == "sync_failed",
         )
         .all()
     )
