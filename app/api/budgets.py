@@ -12,6 +12,7 @@ from app.core.team_service import (
 from app.db.database import get_db
 from app.db.models import (
     DBLimitedResource,
+    DBPeriodicPayment,
     DBPoolPurchase,
     DBPrivateAIKey,
     DBRegion,
@@ -37,7 +38,10 @@ from app.core.spend_period_service import (
     fetch_team_spend_snapshot_for_region,
     upsert_team_spend_period,
 )
-from app.core.periodic_budget_ledger_service import compute_active_topup_remaining
+from app.core.periodic_budget_ledger_service import (
+    add_topup_entry,
+    compute_active_topup_remaining,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +270,13 @@ async def purchase_pool_budget(
         )
 
     if not team.requires_pool_purchase_gate:
+        if team.budget_type == BudgetType.PERIODIC:
+            return await purchase_periodic_topup(
+                region_id=region_id,
+                team=team,
+                purchase=purchase,
+                db=db,
+            )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
@@ -557,6 +568,116 @@ async def purchase_pool_budget(
         purchased_at=purchase_record.purchased_at,
         stripe_payment_id=purchase_record.stripe_payment_id,
         created_at=purchase_record.created_at,
+        new_total_budget_cents=int(new_total_budget * 100),
+        keys_updated=0,
+    )
+
+
+async def purchase_periodic_topup(
+    *, region_id: int, team: DBTeam, purchase: PoolPurchaseRequest, db: Session
+) -> PoolPurchaseResponse:
+    region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+    if not region:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
+        )
+
+    existing_topup = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team.id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "topup",
+            DBPeriodicBudgetLedgerEntry.stripe_payment_id == purchase.stripe_payment_id,
+        )
+        .first()
+    )
+    if existing_topup:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A purchase with this stripe_payment_id already exists",
+        )
+
+    payment_record = DBPeriodicPayment(
+        team_id=team.id,
+        stripe_payment_id=purchase.stripe_payment_id,
+        amount_cents=purchase.amount_cents,
+        currency=purchase.currency.lower(),
+        payment_type="topup",
+        status="completed",
+        sync_status="pending",
+        payment_date=purchase.purchased_at,
+    )
+    db.add(payment_record)
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A purchase with this stripe_payment_id already exists",
+        )
+
+    topup_entry = add_topup_entry(
+        db,
+        team_id=team.id,
+        region_id=region_id,
+        amount_cents=purchase.amount_cents,
+        purchased_at=purchase.purchased_at,
+        source_payment_id=payment_record.id,
+        stripe_payment_id=purchase.stripe_payment_id,
+    )
+    if topup_entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A purchase with this stripe_payment_id already exists",
+        )
+
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+    team_info_resp = await service.get_team_info(lite_team_id)
+    team_info = team_info_resp.get("team_info", team_info_resp)
+    current_spend = float(team_info.get("spend", 0.0) or 0.0)
+
+    sub_remaining_cents = 0
+    active_subscriptions = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team.id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+        )
+        .all()
+    )
+    for row in active_subscriptions:
+        sub_remaining_cents += max(0, row.amount_cents - row.consumed_cents)
+
+    topup_remaining_cents = compute_active_topup_remaining(
+        db, team_id=team.id, region_id=region_id
+    )
+    desired_remaining = (sub_remaining_cents + topup_remaining_cents) / 100.0
+    new_total_budget = round(current_spend + desired_remaining, 4)
+
+    await service.update_team_budget(
+        team_id=lite_team_id,
+        max_budget=new_total_budget,
+        budget_duration=MONTHLY_BUDGET_DURATION,
+    )
+    db.commit()
+    db.refresh(topup_entry)
+
+    return PoolPurchaseResponse(
+        id=topup_entry.id,
+        team_id=team.id,
+        region_id=region_id,
+        amount_cents=topup_entry.amount_cents,
+        currency=purchase.currency,
+        purchased_at=topup_entry.purchased_at,
+        stripe_payment_id=topup_entry.stripe_payment_id or purchase.stripe_payment_id,
+        created_at=topup_entry.created_at,
         new_total_budget_cents=int(new_total_budget * 100),
         keys_updated=0,
     )

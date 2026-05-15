@@ -1,6 +1,7 @@
 import time
 
-from app.db.models import DBLimitedResource, DBPoolPurchase, DBSpendCap
+from app.db.models import DBLimitedResource, DBPoolPurchase, DBSpendCap, DBPeriodicPayment
+from app.db.models import DBPeriodicBudgetLedgerEntry
 from app.db.models import DBTeamRegion
 from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
 from datetime import datetime, UTC, timedelta
@@ -159,6 +160,81 @@ def test_create_pool_purchase_non_pool_team_rejected(
 
     assert response.status_code == 400
     assert "pool budget type" in response.json()["detail"]
+
+
+def test_create_periodic_topup_success(client, admin_token, db, test_team, test_region):
+    test_team.budget_type = "periodic"
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 3.5}}
+        )
+        mock_instance.update_team_budget = AsyncMock()
+
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": f"cs_periodic_{int(time.time() * 1000000)}",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201
+    data = response.json()
+    assert data["team_id"] == test_team.id
+    assert data["region_id"] == test_region.id
+    assert data["amount_cents"] == 5000
+    assert data["new_total_budget_cents"] == 5350
+
+    payment = (
+        db.query(DBPeriodicPayment)
+        .filter(DBPeriodicPayment.stripe_payment_id == data["stripe_payment_id"])
+        .first()
+    )
+    assert payment is not None
+    assert payment.team_id == test_team.id
+    assert payment.payment_type == "topup"
+
+    mock_instance.update_team_budget.assert_awaited_once()
+
+
+def test_create_periodic_topup_duplicate_payment_id(
+    client, admin_token, db, test_team, test_region
+):
+    test_team.budget_type = "periodic"
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            source_payment_id=None,
+            source_invoice_id=None,
+            stripe_payment_id="cs_dup",
+            amount_cents=1000,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC),
+            is_active=True,
+        )
+    )
+    db.commit()
+
+    response = client.post(
+        f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+        json={
+            "amount_cents": 5000,
+            "currency": "usd",
+            "purchased_at": "2026-03-13T10:00:00Z",
+            "stripe_payment_id": "cs_dup",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 409
+    assert "already exists" in response.json()["detail"]
 
 
 def test_create_pool_purchase_team_not_found(client, admin_token, db, test_region):

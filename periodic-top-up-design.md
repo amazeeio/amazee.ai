@@ -1,7 +1,17 @@
 # Periodic Top-Up Plan (Revised Against Current Codebase)
 
 **Date:** 2026-05-13  
-**Status:** Revised implementation plan
+**Status:** In progress
+
+## Progress tracker (updated 2026-05-15)
+- Implemented: existing `POST /budgets/region/{region_id}/teams/{team_id}/purchase` now accepts `PERIODIC` teams via budget-type dispatch.
+- Implemented: new periodic branch persists `periodic_payments` (`payment_type=topup`) and creates a linked top-up ledger entry (`source_payment_id`).
+- Implemented: periodic branch updates LiteLLM team budget using compounding rule (`max_budget = current_spend + desired_remaining`), where desired remaining is computed from active subscription + top-up ledger balances.
+- Implemented: tests added for periodic top-up success and duplicate `stripe_payment_id` conflict handling.
+- Pending: separate API schema for periodic purchases (currently reuses `PoolPurchaseResponse`).
+- Pending: decision and implementation for checkout initiation endpoint vs direct admin purchase API semantics.
+- Pending: reconcile regional allocation policy for team-scoped Stripe payment to region-scoped ledger.
+- Pending: tighten idempotency model across webhook events and API path (event-level dedupe + payment-level dedupe alignment).
 
 ## Goal
 Add periodic-team top-ups with rollover semantics while preserving existing periodic compounding behavior and keeping pool-team behavior unchanged.
