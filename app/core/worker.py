@@ -51,7 +51,6 @@ from app.core.spend_period_service import (
 from app.core.periodic_budget_ledger_service import (
     BudgetDriftResult,
     add_subscription_entry,
-    add_topup_entry,
     allocate_period_spend_fifo,
     compute_active_topup_remaining,
     expire_subscription_entries,
@@ -367,38 +366,13 @@ async def handle_stripe_event_background(event):
                     source_payment_id=payment_record_id,
                 )
         elif event_type in SESSION_SUCCESS_EVENTS:
-            # top-up or checkout signup
+            # checkout signup/subscription flow
             subscription = getattr(event_object, "subscription", None)
             if subscription:
                 product_id = await get_product_id_from_subscription(subscription)
                 await apply_product_for_team(
                     db, customer_id, product_id, datetime.now(UTC), payment_record_id
                 )
-            else:
-                # Potential top-up session
-                metadata = getattr(event_object, "metadata", {})
-                if metadata and metadata.get("ai_budget_increase"):
-                    team = (
-                        db.query(DBTeam)
-                        .filter(DBTeam.stripe_customer_id == customer_id)
-                        .first()
-                    )
-                    if team and team.products:
-                        await _record_periodic_topup_ledger_from_checkout(
-                            db=db,
-                            team=team,
-                            event_object=event_object,
-                            source_payment_id=payment_record_id,
-                        )
-                        # Use the team's current primary product to refresh limits
-                        product_id = team.products[0].id
-                        await apply_product_for_team(
-                            db,
-                            customer_id,
-                            product_id,
-                            datetime.now(UTC),
-                            payment_record_id,
-                        )
 
         # Failure Events
         elif event_type in SESSION_FAILURE_EVENTS:
@@ -557,39 +531,6 @@ async def _sync_periodic_ledger_for_invoice(
             period_end=period_end,
             source_payment_id=source_payment_id,
             source_invoice_id=getattr(invoice_obj, "id", None),
-        )
-    db.commit()
-
-
-async def _record_periodic_topup_ledger_from_checkout(
-    *, db: Session, team: DBTeam, event_object, source_payment_id: int | None
-) -> None:
-    if team.budget_type != BudgetType.PERIODIC:
-        return
-    amount = int(getattr(event_object, "amount_total", 0) or 0)
-    stripe_payment_id = getattr(event_object, "id", None)
-    if not stripe_payment_id or amount <= 0:
-        return
-    keys_by_region = get_team_keys_by_region(db, team.id)
-    if not keys_by_region:
-        return
-
-    region_count = len(keys_by_region)
-    per_region_amount = amount // region_count
-    remainder = amount % region_count
-
-    for index, region in enumerate(keys_by_region.keys()):
-        amount_for_region = per_region_amount + (1 if index < remainder else 0)
-        if amount_for_region <= 0:
-            continue
-        add_topup_entry(
-            db,
-            team_id=team.id,
-            region_id=region.id,
-            amount_cents=amount_for_region,
-            purchased_at=datetime.now(UTC),
-            source_payment_id=source_payment_id,
-            stripe_payment_id=stripe_payment_id,
         )
     db.commit()
 
