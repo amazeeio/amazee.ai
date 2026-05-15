@@ -222,10 +222,16 @@ async def _record_periodic_payment(db: Session, event_object: any) -> Optional[i
 
         stripe_payment_id = event_object.id
         # Extract amount and currency based on object type (Invoice or Session)
-        amount_cents = getattr(
+        raw_amount = getattr(
             event_object, "amount_paid", getattr(event_object, "amount_total", 0)
         )
-        currency = getattr(event_object, "currency", "usd")
+        try:
+            amount_cents = int(raw_amount)
+        except (TypeError, ValueError):
+            amount_cents = 0
+
+        raw_currency = getattr(event_object, "currency", "usd")
+        currency = str(raw_currency).lower() if isinstance(raw_currency, str) else "usd"
 
         # Determine payment type from metadata
         metadata = getattr(event_object, "metadata", {})
@@ -259,6 +265,7 @@ async def _record_periodic_payment(db: Session, event_object: any) -> Optional[i
 
         return payment_record.id
     except Exception as e:
+        db.rollback()
         logger.error(f"Failed to record periodic payment: {str(e)}")
         return None
 
