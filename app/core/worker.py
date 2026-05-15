@@ -293,6 +293,7 @@ async def handle_stripe_event_background(event):
             logger.info(f"Unknown event type: {event_type}")
             return
         event_id = getattr(event, "id", None)
+        should_mark_processed = False
         if event_id:
             existing_event = (
                 db.query(DBStripeProcessedEvent)
@@ -302,13 +303,7 @@ async def handle_stripe_event_background(event):
             if existing_event:
                 logger.info("Stripe event already processed: %s", event_id)
                 return
-            db.add(
-                DBStripeProcessedEvent(
-                    stripe_event_id=event_id,
-                    event_type=event_type,
-                )
-            )
-            db.commit()
+            should_mark_processed = True
 
         event_object = event.data.object
         customer_id = event_object.customer
@@ -425,7 +420,17 @@ async def handle_stripe_event_background(event):
             if subscription:
                 product_id = await get_product_id_from_subscription(subscription)
                 await remove_product_from_team(db, customer_id, product_id)
+
+        if should_mark_processed and event_id:
+            db.add(
+                DBStripeProcessedEvent(
+                    stripe_event_id=event_id,
+                    event_type=event_type,
+                )
+            )
+            db.commit()
     except Exception as e:
+        db.rollback()
         logger.error(f"Error in background event handler: {str(e)}")
     finally:
         db.close()
@@ -504,6 +509,9 @@ async def capture_periodic_team_spend_for_invoice(
 async def _sync_periodic_ledger_for_invoice(
     *, db: Session, customer_id: str, invoice_obj, source_payment_id: int | None
 ) -> None:
+    # Ledger allocation is invoice-driven, not real-time. We reconcile the latest
+    # spend snapshot per billing period; therefore consumed_cents is eventually
+    # consistent between invoices, not a live spend counter.
     team = db.query(DBTeam).filter(DBTeam.stripe_customer_id == customer_id).first()
     if not team or team.budget_type != BudgetType.PERIODIC:
         return

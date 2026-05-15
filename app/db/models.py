@@ -381,17 +381,21 @@ class DBPeriodicBudgetLedgerEntry(Base):
             "stripe_payment_id",
             name="uq_periodic_ledger_topup_payment",
         ),
-        UniqueConstraint(
+        Index(
+            "uq_periodic_ledger_subscription_invoice_not_null",
             "team_id",
             "region_id",
             "entry_type",
             "source_invoice_id",
-            name="uq_periodic_ledger_subscription_invoice",
+            unique=True,
+            postgresql_where=text("source_invoice_id IS NOT NULL"),
         ),
-        UniqueConstraint(
+        Index(
+            "uq_periodic_ledger_rollover_source_invoice_not_null",
             "rolled_over_from_id",
             "source_invoice_id",
-            name="uq_periodic_ledger_rollover_source_invoice",
+            unique=True,
+            postgresql_where=text("source_invoice_id IS NOT NULL"),
         ),
     )
 
