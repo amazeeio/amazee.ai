@@ -157,6 +157,10 @@ export function TeamExpansionRow({
     return new Date(team.last_payment) < thirtyDaysAgo;
   };
 
+  const teamBudgetLimit = teamLimits.find(
+    (l) => l.resource === "max_budget" && l.limit_type === "data_plane",
+  );
+
   return (
     <TableRow>
       <TableCell colSpan={7} className="p-0">
@@ -539,27 +543,18 @@ export function TeamExpansionRow({
                   <TabsContent value="shared-keys" className="mt-4">
                     <div className="space-y-4">
                       {/* Team-level budget info */}
-                      {(() => {
-                        const teamBudgetLimit = teamLimits.find(
-                          (l) =>
-                            l.resource === "max_budget" &&
-                            l.limit_type === "data_plane",
-                        );
-                        return (
-                          <div className="flex items-center gap-2 rounded-md border bg-muted/50 p-3 text-sm">
-                            <Info className="h-4 w-4 text-muted-foreground shrink-0" />
-                            <span>
-                              <strong>Team Budget:</strong>{" "}
-                              {teamBudgetLimit
-                                ? `$${teamBudgetLimit.max_value.toFixed(2)} (${teamBudgetLimit.limited_by})`
-                                : "Not set"}{" "}
-                              — Budget is enforced at the team level and
-                              overrides individual key budgets. Edit it in the{" "}
-                              <strong>Limits</strong> tab.
-                            </span>
-                          </div>
-                        );
-                      })()}
+                      <div className="flex items-center gap-2 rounded-md border bg-muted/50 p-3 text-sm">
+                        <Info className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <span>
+                          <strong>Team Budget:</strong>{" "}
+                          {teamBudgetLimit
+                            ? `$${teamBudgetLimit.max_value.toFixed(2)} (${teamBudgetLimit.limited_by})`
+                            : "Not set"}{" "}
+                          — Budget is enforced at the team level and
+                          overrides individual key budgets. Edit it in the{" "}
+                          <strong>Limits</strong> tab.
+                        </span>
+                      </div>
                       {isLoadingTeamAIKeys ? (
                         <div className="flex justify-center items-center py-8">
                           <Loader2 className="h-8 w-8 animate-spin" />
@@ -640,25 +635,16 @@ export function TeamExpansionRow({
                                       )}
                                     </TableCell>
                                     <TableCell>
-                                      {(() => {
-                                        const teamBudgetLimit = teamLimits.find(
-                                          (l) =>
-                                            l.resource === "max_budget" &&
-                                            l.limit_type === "data_plane",
-                                        );
-                                        return teamBudgetLimit ? (
-                                          <span>
-                                            $
-                                            {teamBudgetLimit.max_value.toFixed(
-                                              2,
-                                            )}
-                                          </span>
-                                        ) : (
-                                          <span className="text-muted-foreground">
-                                            No limit
-                                          </span>
-                                        );
-                                      })()}
+                                      {teamBudgetLimit ? (
+                                        <span>
+                                          $
+                                          {teamBudgetLimit.max_value.toFixed(2)}
+                                        </span>
+                                      ) : (
+                                        <span className="text-muted-foreground">
+                                          No limit
+                                        </span>
+                                      )}
                                     </TableCell>
                                   </TableRow>
                                 );

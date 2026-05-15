@@ -9,7 +9,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { formatTimeUntil } from "@/lib/utils";
 import { get } from "@/utils/api";
 import { useQuery } from "@tanstack/react-query";
 
@@ -106,46 +105,34 @@ export function PrivateAIKeySpendCell({
   }
 
   return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-center gap-2">
-        <span className="text-sm font-medium">
-          ${spendData.spend.toFixed(2)}
-        </span>
-        <span className="text-xs text-muted-foreground">
-          {spendData.max_budget !== null
-            ? `/ $${spendData.max_budget.toFixed(2)}`
-            : "(No budget)"}
-        </span>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-4 w-4"
-          onClick={handleRefreshSpend}
-          disabled={isRefreshing}
-        >
-          {isRefreshing ? (
-            <Loader2 className="h-3 w-3 animate-spin" />
-          ) : (
-            <RefreshCw className="h-3 w-3" />
-          )}
-        </Button>
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Info className="h-3 w-3 text-muted-foreground" />
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>Budget is managed at the team level.</p>
-              <p>To change it, edit the team&apos;s limits.</p>
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      </div>
-      <span className="text-xs text-muted-foreground">
-        {spendData.budget_duration || "No budget period"}
-        {spendData.budget_reset_at &&
-          ` • Resets ${formatTimeUntil(spendData.budget_reset_at)}`}
+    <div className="flex items-center gap-2">
+      <span className="text-sm font-medium">
+        ${spendData.spend.toFixed(2)}
       </span>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-4 w-4"
+        onClick={handleRefreshSpend}
+        disabled={isRefreshing}
+      >
+        {isRefreshing ? (
+          <Loader2 className="h-3 w-3 animate-spin" />
+        ) : (
+          <RefreshCw className="h-3 w-3" />
+        )}
+      </Button>
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Info className="h-3 w-3 text-muted-foreground" />
+          </TooltipTrigger>
+          <TooltipContent>
+            <p>Budget is managed at the team level.</p>
+            <p>To change it, edit the team&apos;s limits.</p>
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
     </div>
   );
 }
