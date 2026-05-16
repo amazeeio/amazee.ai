@@ -3,6 +3,7 @@ from app.db.models import (
     DBProduct,
     DBTeamProduct,
     DBPrivateAIKey,
+    DBRegion,
     DBTeam,
     DBTeamMetrics,
     DBLimitedResource,
@@ -401,9 +402,22 @@ async def test_apply_product_extends_keys_and_sets_budget(
     test_team.stripe_customer_id = "cus_test123"
     db.commit()
 
+    # Create an extra region so the budget is split across 2 active regions
+    extra_region = DBRegion(
+        name="us-test-region",
+        litellm_api_key="us-test-key",
+        litellm_api_url="https://us-test.example.com",
+        pg_host="localhost",
+        pg_port=5432,
+        pg_user="postgres",
+        pg_password="postgres",
+    )
+    db.add(extra_region)
+    db.commit()
+
     # Create test keys for the team
     team_keys = []
-    for i in range(2):  # 2 team-owned keys
+    for i in range(2):  # 2 team-owned keys in primary region
         key = DBPrivateAIKey(
             name=f"Team Key {i}",
             database_name=f"db_team_{i}",
@@ -416,6 +430,18 @@ async def test_apply_product_extends_keys_and_sets_budget(
         )
         db.add(key)
         team_keys.append(key)
+    extra_region_key = DBPrivateAIKey(
+        name="Team Key extra region",
+        database_name="db_team_extra_region",
+        database_username="test_user",
+        database_password="test_pass",
+        team_id=test_team.id,
+        region_id=extra_region.id,
+        litellm_token="test_token_team_extra_region",
+        created_at=datetime.now(UTC),
+    )
+    db.add(extra_region_key)
+    team_keys.append(extra_region_key)
 
     # Create test keys for both team users
     user_keys = []
@@ -453,9 +479,7 @@ async def test_apply_product_extends_keys_and_sets_budget(
     )
 
     # Verify LiteLLM service was initialized with correct region settings
-    mock_litellm.assert_called_once_with(
-        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
-    )
+    assert mock_litellm.call_count == 2
 
     # Verify LiteLLM service was called for all keys (both team and user owned)
     all_keys = team_keys + user_keys
@@ -473,8 +497,8 @@ async def test_apply_product_extends_keys_and_sets_budget(
         assert len(restriction_calls) == 1
         assert restriction_calls[0][1]["duration"] == "31d"
         assert restriction_calls[0][1]["budget_duration"] == "31d"
-        assert (
-            restriction_calls[0][1]["budget_amount"] == test_product.max_budget_per_key
+        assert restriction_calls[0][1]["budget_amount"] == (
+            test_product.max_budget_per_key / 2
         )
         assert restriction_calls[0][1]["rpm_limit"] == test_product.rpm_per_key
         assert restriction_calls[0][1]["spend"] == 0.0

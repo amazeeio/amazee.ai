@@ -640,6 +640,10 @@ async def apply_product_for_team(
 
         # Get all keys for the team grouped by region
         keys_by_region = get_team_keys_by_region(db, team.id)
+        num_regions = len(keys_by_region)
+        per_region_budget = (
+            max_max_spend / num_regions if num_regions else max_max_spend
+        )
 
         # Update keys and team budget for each region
         for region, keys in keys_by_region.items():
@@ -656,7 +660,7 @@ async def apply_product_for_team(
             # get_team_info is the first LiteLLM call in the sync process.
             # If it fails we abort the sync entirely and leave the payment
             # record as pending so a future retry can pick it up.
-            team_max_budget = max_max_spend
+            team_max_budget = per_region_budget
             if is_periodic and keys:
                 try:
                     team_data = await litellm_service.get_team_info(lite_team_id)
@@ -666,11 +670,11 @@ async def apply_product_for_team(
                         db, team_id=team.id, region_id=region.id
                     )
                     topup_remaining_dollars = topup_remaining_cents / 100.0
-                    desired_remaining = max_max_spend + topup_remaining_dollars
+                    desired_remaining = per_region_budget + topup_remaining_dollars
                     team_max_budget = current_team_spend + desired_remaining
                     logger.info(
                         f"Compounding team {team.id} budget: "
-                        f"spend={current_team_spend} + cap={max_max_spend} = {team_max_budget}"
+                        f"spend={current_team_spend} + cap={per_region_budget} = {team_max_budget}"
                     )
                 except Exception as e:
                     error_msg = (
@@ -707,13 +711,13 @@ async def apply_product_for_team(
                         litellm_token=key.litellm_token,
                         duration=budget_duration,
                         budget_duration=budget_duration,
-                        budget_amount=max_max_spend,
+                        budget_amount=per_region_budget,
                         rpm_limit=max_rpm_limit,
                         spend=0.0 if is_periodic else None,
                     )
                     logger.info(
                         f"Updated key {key.id} limits in LiteLLM: "
-                        f"duration={budget_duration}, budget={max_max_spend}, "
+                        f"duration={budget_duration}, budget={per_region_budget}, "
                         f"rpm={max_rpm_limit}, spend_reset={is_periodic}"
                     )
                 except Exception as e:
