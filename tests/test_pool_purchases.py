@@ -305,6 +305,61 @@ def test_create_periodic_topup_marks_sync_failed_on_litellm_error(
     assert "failed" in (payment.error_log or "").lower()
 
 
+def test_create_periodic_topup_expiry_anchors_to_last_topup_date(
+    client, admin_token, db, test_team, test_region
+):
+    test_team.budget_type = "periodic"
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 0.0}}
+        )
+        mock_instance.update_team_budget = AsyncMock()
+
+        first_payment_id = f"cs_periodic_first_{int(time.time() * 1000000)}"
+        second_payment_id = f"cs_periodic_second_{int(time.time() * 1000000)}"
+
+        response_first = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic",
+            json={
+                "amount_cents": 2000,
+                "currency": "usd",
+                "purchased_at": "2026-03-20T10:00:00Z",
+                "stripe_payment_id": first_payment_id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response_first.status_code == 201
+
+        response_second = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic",
+            json={
+                "amount_cents": 2000,
+                "currency": "usd",
+                "purchased_at": "2026-03-10T10:00:00Z",
+                "stripe_payment_id": second_payment_id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response_second.status_code == 201
+
+    first_entry = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.stripe_payment_id == first_payment_id)
+        .first()
+    )
+    second_entry = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.stripe_payment_id == second_payment_id)
+        .first()
+    )
+    assert first_entry is not None
+    assert second_entry is not None
+    assert second_entry.expires_at == first_entry.expires_at
+
+
 def test_create_pool_purchase_team_not_found(client, admin_token, db, test_region):
     """Test that 404 is returned for non-existent team"""
     response = client.post(

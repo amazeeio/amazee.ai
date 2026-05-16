@@ -47,7 +47,9 @@ class DBTeamProduct(Base):
         primary_key=True,
         nullable=False,
     )
-    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=func.now(), nullable=False, index=True
+    )
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 
     team = relationship("DBTeam", back_populates="active_products")

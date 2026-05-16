@@ -1,6 +1,7 @@
 from datetime import datetime, UTC, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, and_
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.db.models import (
     DBTeam,
     DBProduct,
@@ -298,17 +299,18 @@ async def handle_stripe_event_background(event):
         event_id = (
             raw_event_id if isinstance(raw_event_id, str) and raw_event_id else None
         )
-        should_mark_processed = False
         if event_id:
-            existing_event = (
-                db.query(DBStripeProcessedEvent)
-                .filter(DBStripeProcessedEvent.stripe_event_id == event_id)
-                .first()
+            claim_stmt = (
+                pg_insert(DBStripeProcessedEvent)
+                .values(stripe_event_id=event_id, event_type=event_type)
+                .on_conflict_do_nothing(index_elements=["stripe_event_id"])
             )
-            if existing_event:
+            claim_result = db.execute(claim_stmt)
+            if (claim_result.rowcount or 0) == 0:
+                db.rollback()
                 logger.info("Stripe event already processed: %s", event_id)
                 return
-            should_mark_processed = True
+            db.flush()
 
         event_object = event.data.object
         customer_id = event_object.customer
@@ -401,14 +403,7 @@ async def handle_stripe_event_background(event):
                 product_id = await get_product_id_from_subscription(subscription)
                 await remove_product_from_team(db, customer_id, product_id)
 
-        if should_mark_processed and event_id:
-            db.add(
-                DBStripeProcessedEvent(
-                    stripe_event_id=event_id,
-                    event_type=event_type,
-                )
-            )
-            db.commit()
+        db.commit()
     except Exception as e:
         db.rollback()
         logger.error(f"Error in background event handler: {str(e)}")
@@ -448,7 +443,10 @@ async def capture_periodic_team_spend_for_invoice(
     if not keys_by_region:
         return
 
-    for region in keys_by_region.keys():
+    num_regions = len(keys_by_region)
+    per_region_amount_cents = amount_paid // num_regions if num_regions else 0
+    remainder_cents = amount_paid % num_regions if num_regions else 0
+    for idx, region in enumerate(keys_by_region.keys()):
         try:
             snapshot = await fetch_team_spend_snapshot_for_region(
                 db=db,
@@ -527,14 +525,13 @@ async def _sync_periodic_ledger_for_invoice(
             db,
             team_id=team.id,
             region_id=region.id,
-            amount_cents=amount_paid,
+            amount_cents=per_region_amount_cents + (1 if idx < remainder_cents else 0),
             purchased_at=period_start,
             period_start=period_start,
             period_end=period_end,
             source_payment_id=source_payment_id,
             source_invoice_id=getattr(invoice_obj, "id", None),
         )
-    db.commit()
 
 
 async def reconcile_periodic_team_budget_drift(
@@ -644,6 +641,12 @@ async def apply_product_for_team(
         # Get all keys for the team grouped by region
         keys_by_region = get_team_keys_by_region(db, team.id)
         num_regions = len(keys_by_region)
+        if num_regions == 0:
+            logger.warning(
+                "Skipping product sync for team %s: no regions with keys found",
+                team.id,
+            )
+            return
         per_region_budget = (
             max_max_spend / num_regions if num_regions else max_max_spend
         )

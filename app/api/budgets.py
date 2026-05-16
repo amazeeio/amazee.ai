@@ -608,7 +608,7 @@ async def create_periodic_topup(
     if team.budget_type != BudgetType.PERIODIC:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="This endpoint only works for periodic budget teams",
+            detail="Endpoint is only valid for PERIODIC teams",
         )
     return await purchase_periodic_topup(
         region_id=region_id,

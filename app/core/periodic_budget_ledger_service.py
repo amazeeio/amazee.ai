@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.models import DBPeriodicBudgetLedgerEntry
+
+ENTRY_TYPE_SUBSCRIPTION = "subscription"
+ENTRY_TYPE_TOPUP = "topup"
+ENTRY_TYPE_TOPUP_ROLLOVER = "topup_rollover"
 
 
 @dataclass
@@ -38,6 +43,7 @@ def _active_entries(
             DBPeriodicBudgetLedgerEntry.consumed_cents
             < DBPeriodicBudgetLedgerEntry.amount_cents,
         )
+        .with_for_update()
         .order_by(
             DBPeriodicBudgetLedgerEntry.purchased_at.asc(),
             DBPeriodicBudgetLedgerEntry.id.asc(),
@@ -66,7 +72,7 @@ def add_subscription_entry(
             .filter(
                 DBPeriodicBudgetLedgerEntry.team_id == team_id,
                 DBPeriodicBudgetLedgerEntry.region_id == region_id,
-                DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+                DBPeriodicBudgetLedgerEntry.entry_type == ENTRY_TYPE_SUBSCRIPTION,
                 DBPeriodicBudgetLedgerEntry.source_invoice_id == source_invoice_id,
             )
             .first()
@@ -77,7 +83,7 @@ def add_subscription_entry(
     entry = DBPeriodicBudgetLedgerEntry(
         team_id=team_id,
         region_id=region_id,
-        entry_type="subscription",
+        entry_type=ENTRY_TYPE_SUBSCRIPTION,
         source_payment_id=source_payment_id,
         source_invoice_id=source_invoice_id,
         amount_cents=amount_cents,
@@ -110,7 +116,7 @@ def add_topup_entry(
         .filter(
             DBPeriodicBudgetLedgerEntry.team_id == team_id,
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            DBPeriodicBudgetLedgerEntry.entry_type == "topup",
+            DBPeriodicBudgetLedgerEntry.entry_type == ENTRY_TYPE_TOPUP,
             DBPeriodicBudgetLedgerEntry.stripe_payment_id == stripe_payment_id,
         )
         .first()
@@ -118,16 +124,37 @@ def add_topup_entry(
     if existing:
         return None
 
+    # For periodic teams, top-up expiry should be anchored to the latest
+    # top-up date in this team/region so consecutive top-ups extend from
+    # the most recent top-up window.
+    last_topup = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team_id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == ENTRY_TYPE_TOPUP,
+        )
+        .order_by(
+            DBPeriodicBudgetLedgerEntry.purchased_at.desc(),
+            DBPeriodicBudgetLedgerEntry.id.desc(),
+        )
+        .first()
+    )
+    expiry_anchor = purchased_at
+    if last_topup and last_topup.purchased_at and last_topup.purchased_at > expiry_anchor:
+        expiry_anchor = last_topup.purchased_at
+
     entry = DBPeriodicBudgetLedgerEntry(
         team_id=team_id,
         region_id=region_id,
-        entry_type="topup",
+        entry_type=ENTRY_TYPE_TOPUP,
         source_payment_id=source_payment_id,
         stripe_payment_id=stripe_payment_id,
         amount_cents=amount_cents,
         consumed_cents=0,
         purchased_at=purchased_at,
-        expires_at=purchased_at + timedelta(days=settings.PERIODIC_TOPUP_EXPIRY_DAYS),
+        expires_at=expiry_anchor
+        + timedelta(days=settings.PERIODIC_TOPUP_EXPIRY_DAYS),
         is_active=True,
     )
     db.add(entry)
@@ -164,7 +191,7 @@ def expire_subscription_entries(
         .filter(
             DBPeriodicBudgetLedgerEntry.team_id == team_id,
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.entry_type == ENTRY_TYPE_SUBSCRIPTION,
             DBPeriodicBudgetLedgerEntry.is_active.is_(True),
             DBPeriodicBudgetLedgerEntry.effective_period_end <= period_end,
         )
@@ -177,12 +204,18 @@ def expire_subscription_entries(
 
 def compute_active_topup_remaining(db: Session, *, team_id: int, region_id: int) -> int:
     now = datetime.now(UTC)
-    entries = (
-        db.query(DBPeriodicBudgetLedgerEntry)
+    remaining_cents_expr = (
+        DBPeriodicBudgetLedgerEntry.amount_cents
+        - DBPeriodicBudgetLedgerEntry.consumed_cents
+    )
+    total = (
+        db.query(func.coalesce(func.sum(remaining_cents_expr), 0))
         .filter(
             DBPeriodicBudgetLedgerEntry.team_id == team_id,
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"]),
+            DBPeriodicBudgetLedgerEntry.entry_type.in_(
+                [ENTRY_TYPE_TOPUP, ENTRY_TYPE_TOPUP_ROLLOVER]
+            ),
             DBPeriodicBudgetLedgerEntry.is_active.is_(True),
             DBPeriodicBudgetLedgerEntry.consumed_cents
             < DBPeriodicBudgetLedgerEntry.amount_cents,
@@ -191,9 +224,9 @@ def compute_active_topup_remaining(db: Session, *, team_id: int, region_id: int)
                 | (DBPeriodicBudgetLedgerEntry.expires_at > now)
             ),
         )
-        .all()
+        .scalar()
     )
-    return sum(max(0, e.amount_cents - e.consumed_cents) for e in entries)
+    return int(total or 0)
 
 
 def materialize_topup_rollovers(
@@ -210,7 +243,7 @@ def materialize_topup_rollovers(
             .filter(
                 DBPeriodicBudgetLedgerEntry.team_id == team_id,
                 DBPeriodicBudgetLedgerEntry.region_id == region_id,
-                DBPeriodicBudgetLedgerEntry.entry_type == "topup_rollover",
+                DBPeriodicBudgetLedgerEntry.entry_type == ENTRY_TYPE_TOPUP_ROLLOVER,
                 DBPeriodicBudgetLedgerEntry.source_invoice_id == source_invoice_id,
             )
             .first()
@@ -225,7 +258,9 @@ def materialize_topup_rollovers(
         .filter(
             DBPeriodicBudgetLedgerEntry.team_id == team_id,
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"]),
+            DBPeriodicBudgetLedgerEntry.entry_type.in_(
+                [ENTRY_TYPE_TOPUP, ENTRY_TYPE_TOPUP_ROLLOVER]
+            ),
             DBPeriodicBudgetLedgerEntry.is_active.is_(True),
             (
                 DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
@@ -242,7 +277,7 @@ def materialize_topup_rollovers(
         existing = (
             db.query(DBPeriodicBudgetLedgerEntry)
             .filter(
-                DBPeriodicBudgetLedgerEntry.entry_type == "topup_rollover",
+                DBPeriodicBudgetLedgerEntry.entry_type == ENTRY_TYPE_TOPUP_ROLLOVER,
                 DBPeriodicBudgetLedgerEntry.rolled_over_from_id == entry.id,
                 DBPeriodicBudgetLedgerEntry.source_invoice_id == source_invoice_id,
             )
@@ -255,7 +290,7 @@ def materialize_topup_rollovers(
             DBPeriodicBudgetLedgerEntry(
                 team_id=team_id,
                 region_id=region_id,
-                entry_type="topup_rollover",
+                entry_type=ENTRY_TYPE_TOPUP_ROLLOVER,
                 source_invoice_id=source_invoice_id,
                 amount_cents=remaining,
                 consumed_cents=0,
