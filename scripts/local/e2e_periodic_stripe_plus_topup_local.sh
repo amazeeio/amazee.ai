@@ -9,6 +9,8 @@ BACKEND_CONTAINER="${BACKEND_CONTAINER:-amazeeai-backend-1}"
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-amazeeai-postgres-1}"
 DB_NAME="${DB_NAME:-postgres_service}"
 CLEANUP_CREATED="${CLEANUP_CREATED:-1}"
+RUN_BASELINE="${RUN_BASELINE:-1}"
+RUN_WEBHOOK="${RUN_WEBHOOK:-1}"
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "Missing command: $1" >&2; exit 1; }; }
 for c in curl jq python3 docker; do need_cmd "$c"; done
@@ -24,6 +26,8 @@ fail(){ echo "ERROR: $*" >&2; exit 1; }
 step(){ say "---- $*"; }
 check(){ say "CHECK: $*"; }
 value(){ say "      $1=$2"; }
+blank(){ echo; }
+expect_actual(){ say "      Expected: $1"; say "      Actual:   $2"; }
 SUMMARY=()
 record_ok(){ SUMMARY+=("✅ $1"); }
 
@@ -73,18 +77,19 @@ STRIPE_EVENT_ID="evt_periodic_mix_${RUN_ID}_1"
 STRIPE_INVOICE_ID="in_periodic_mix_${RUN_ID}_1"
 TOPUP_ID="cs_periodic_mix_${RUN_ID}_1"
 
-say "Plan: PERIODIC Stripe webhook + top-up E2E"
+say "Plan: PERIODIC top-up E2E (baseline + webhook/multi-region)"
 say "Tests:"
-say "  1) Create periodic team with keys in two active shared regions"
-say "  2) Set explicit key cap on region-1 key"
-say "  3) Send Stripe invoice.paid webhook"
-say "  4) Verify key-cap preservation + split-budget behavior after webhook"
-say "  5) Create periodic top-up and validate ledger/status/history invariants"
+say "  A) Baseline top-up API: success + duplicate rejection + periodic-status remaining"
+say "  B) Webhook/multi-region: key-cap preservation + split-budget invariant + ledger/history checks"
 value "BASE_URL" "$BASE_URL"
 value "REGION_ID" "$REGION_ID"
 value "SECOND_REGION_ID" "$SECOND_REGION_ID"
+value "RUN_BASELINE" "$RUN_BASELINE"
+value "RUN_WEBHOOK" "$RUN_WEBHOOK"
+blank
 step "Create PERIODIC team"
 api POST "/teams/" "$(jq -nc --arg n "$TEAM_NAME" --arg e "$TEAM_EMAIL" '{name:$n,admin_email:$e,budget_type:"periodic",require_purchase_for_requests:false}')"
+expect_actual "HTTP 201" "HTTP ${HTTP_STATUS}"
 [[ "$HTTP_STATUS" == "201" ]] || fail "team create failed: $HTTP_STATUS $HTTP_BODY"
 TEAM_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
 pass "Team created id=${TEAM_ID}"
@@ -93,8 +98,10 @@ record_ok "Team created (id=${TEAM_ID})"
 step "Associate team with primary region"
 api POST "/regions/${REGION_ID}/teams/${TEAM_ID}" || true
 
+blank
 step "Create one team key in primary region"
 api POST "/private-ai-keys/" "$(jq -nc --argjson rid "$REGION_ID" --argjson tid "$TEAM_ID" --arg name "periodic-mixed-key-${RUN_ID}" '{region_id:$rid,name:$name,team_id:$tid}')"
+expect_actual "HTTP 200" "HTTP ${HTTP_STATUS}"
 [[ "$HTTP_STATUS" == "200" ]] || fail "key create failed: $HTTP_STATUS $HTTP_BODY"
 KEY_ID="$(echo "$HTTP_BODY" | jq -r '.id')"
 pass "Key created id=${KEY_ID}"
@@ -103,6 +110,7 @@ record_ok "Primary-region key created (key_id=${KEY_ID})"
 step "Ensure second team-region association exists (for split-budget check)"
 api POST "/regions/${SECOND_REGION_ID}/teams/${TEAM_ID}" || true
 
+blank
 step "Create one team key in second region"
 api POST "/private-ai-keys/" "$(jq -nc --argjson rid "$SECOND_REGION_ID" --argjson tid "$TEAM_ID" --arg name "periodic-mixed-key-second-${RUN_ID}" '{region_id:$rid,name:$name,team_id:$tid}')"
 if [[ "$HTTP_STATUS" == "200" ]]; then
@@ -113,12 +121,41 @@ else
   fail "second-region key create failed (set SECOND_REGION_ID to a valid region): $HTTP_STATUS $HTTP_BODY"
 fi
 
-step "Set explicit key cap on first-region key (\$3.25)"
-check "PUT /spend/${REGION_ID}/key/${KEY_ID}/budget returns 200"
-api PUT "/spend/${REGION_ID}/key/${KEY_ID}/budget" '{"max_budget":3.25}'
-[[ "$HTTP_STATUS" == "200" ]] || fail "set key cap failed: $HTTP_STATUS $HTTP_BODY"
-pass "Key cap set for key_id=${KEY_ID}"
-record_ok "Explicit key cap applied to primary key (3.25)"
+if [[ "$RUN_BASELINE" == "1" ]]; then
+  blank
+  step "Baseline: periodic top-up success + duplicate + status remaining"
+  BASE_TOPUP_ID="cs-periodic-baseline-${RUN_ID}"
+  check "POST /budgets/region/${REGION_ID}/teams/${TEAM_ID}/purchase/periodic returns 201"
+  api POST "/budgets/region/${REGION_ID}/teams/${TEAM_ID}/purchase/periodic" "$(jq -nc --arg sid "$BASE_TOPUP_ID" '{amount_cents:500,currency:"USD",purchased_at:(now|todateiso8601),stripe_payment_id:$sid}')"
+  expect_actual "HTTP 201" "HTTP ${HTTP_STATUS}"
+  [[ "$HTTP_STATUS" == "201" ]] || fail "baseline periodic topup failed: $HTTP_STATUS $HTTP_BODY"
+  record_ok "Baseline top-up accepted (201)"
+
+  check "Duplicate POST with same stripe_payment_id returns 409"
+  api POST "/budgets/region/${REGION_ID}/teams/${TEAM_ID}/purchase/periodic" "$(jq -nc --arg sid "$BASE_TOPUP_ID" '{amount_cents:500,currency:"USD",purchased_at:(now|todateiso8601),stripe_payment_id:$sid}')"
+  expect_actual "HTTP 409" "HTTP ${HTTP_STATUS}"
+  [[ "$HTTP_STATUS" == "409" ]] || fail "baseline duplicate expected 409, got $HTTP_STATUS $HTTP_BODY"
+  record_ok "Baseline duplicate top-up rejected (409)"
+
+  check "GET periodic-status returns 200 and topup_remaining_cents > 0"
+  api GET "/budgets/region/${REGION_ID}/teams/${TEAM_ID}/periodic-status"
+  expect_actual "HTTP 200" "HTTP ${HTTP_STATUS}"
+  [[ "$HTTP_STATUS" == "200" ]] || fail "baseline periodic status failed: $HTTP_STATUS $HTTP_BODY"
+  BASE_TOPUP_REMAINING="$(echo "$HTTP_BODY" | jq -r '.topup_remaining_cents // 0')"
+  expect_actual "topup_remaining_cents > 0" "topup_remaining_cents=${BASE_TOPUP_REMAINING}"
+  [[ "$BASE_TOPUP_REMAINING" -gt 0 ]] || fail "baseline expected topup_remaining_cents > 0, got ${BASE_TOPUP_REMAINING}"
+  record_ok "Baseline periodic-status remaining=${BASE_TOPUP_REMAINING}"
+fi
+
+if [[ "$RUN_WEBHOOK" == "1" ]]; then
+  blank
+  step "Set explicit key cap on first-region key (\$3.25)"
+  check "PUT /spend/${REGION_ID}/key/${KEY_ID}/budget returns 200"
+  api PUT "/spend/${REGION_ID}/key/${KEY_ID}/budget" '{"max_budget":3.25}'
+  expect_actual "HTTP 200" "HTTP ${HTTP_STATUS}"
+  [[ "$HTTP_STATUS" == "200" ]] || fail "set key cap failed: $HTTP_STATUS $HTTP_BODY"
+  pass "Key cap set for key_id=${KEY_ID}"
+  record_ok "Explicit key cap applied to primary key (3.25)"
 
 step "Set stripe_customer_id on team"
 docker exec "$BACKEND_CONTAINER" sh -lc "cd /app && python3 - <<'PY'
@@ -141,6 +178,7 @@ fi
 [[ -n "$WEBHOOK_SECRET" ]] || fail "Unable to resolve webhook secret"
 record_ok "Webhook secret resolved"
 
+blank
 step "Send fake Stripe invoice.paid (\$10)"
 NOW_TS="$(date +%s)"
 P_START="$((NOW_TS - 2592000))"
@@ -177,6 +215,7 @@ print(f"t={ts},v1={sig}")
 PY
 )"
 WH_STATUS=$(curl -sS -o "$TMP_DIR/wh_resp.json" -w "%{http_code}" -X POST "${BASE_URL}/billing/events" -H "Content-Type: application/json" -H "stripe-signature: ${SIG}" --data-binary @"$PAYLOAD_FILE")
+expect_actual "HTTP 200 from /billing/events" "HTTP ${WH_STATUS}"
 [[ "$WH_STATUS" == "200" ]] || fail "webhook failed status=${WH_STATUS} body=$(cat "$TMP_DIR/wh_resp.json")"
 pass "Stripe invoice webhook accepted"
 value "stripe_event_id" "$STRIPE_EVENT_ID"
@@ -184,12 +223,15 @@ value "stripe_invoice_id" "$STRIPE_INVOICE_ID"
 record_ok "Stripe invoice webhook accepted (200)"
 sleep 3
 
+blank
 step "Assert webhook split budget across regions and preserve key cap"
 REGION1_TEAM_INFO="$(curl -sS -H "Authorization: Bearer ${AUTH_TOKEN}" "${BASE_URL}/spend/${REGION_ID}/team/${TEAM_ID}")"
 REGION2_TEAM_INFO="$(curl -sS -H "Authorization: Bearer ${AUTH_TOKEN}" "${BASE_URL}/spend/${SECOND_REGION_ID}/team/${TEAM_ID}")"
 R1_KEY_CAP="$(echo "$REGION1_TEAM_INFO" | jq -r --argjson kid "$KEY_ID" '.keys[] | select(.key_id==$kid) | .max_budget')"
 R2_KEY_CAP="$(echo "$REGION2_TEAM_INFO" | jq -r --argjson kid "$SECOND_KEY_ID" '.keys[] | select(.key_id==$kid) | .max_budget')"
+expect_actual "region-1 key cap = 3.25" "region-1 key cap = ${R1_KEY_CAP}"
 [[ "$R1_KEY_CAP" == "3.25" ]] || fail "expected key cap 3.25 preserved for key ${KEY_ID}, got ${R1_KEY_CAP}"
+expect_actual "region-2 key cap unset (null)" "region-2 key cap = ${R2_KEY_CAP}"
 [[ "$R2_KEY_CAP" == "null" ]] || fail "expected uncapped second-region key to remain uncapped in spend projection, got ${R2_KEY_CAP}"
 R1_TEAM_BUDGET="$(echo "$REGION1_TEAM_INFO" | jq -r '.total_budget')"
 R2_TEAM_BUDGET="$(echo "$REGION2_TEAM_INFO" | jq -r '.total_budget')"
@@ -231,6 +273,7 @@ async def main():
 asyncio.run(main())
 db.close()
 PY" | tr -d '[:space:]')"
+expect_actual "region-2 remaining budget ~= split cap (${EXPECTED_SPLIT})" "region-2 remaining budget = ${REGION2_REMAINING}"
 python3 - <<PY || fail "expected uncapped region remaining budget ~= split cap (${EXPECTED_SPLIT}); got remaining=${REGION2_REMAINING} (region2_total_budget=${R2_TEAM_BUDGET})"
 remaining = float("${REGION2_REMAINING}")
 expected = float("${EXPECTED_SPLIT}")
@@ -241,28 +284,36 @@ value "region2_remaining_budget" "$REGION2_REMAINING"
 pass "Webhook preserved explicit key cap and numeric split invariant"
 record_ok "Webhook checks passed: key-cap preserved; split-cap invariant satisfied"
 
+blank
 step "Create periodic top-up purchase (\$5)"
 api POST "/budgets/region/${REGION_ID}/teams/${TEAM_ID}/purchase/periodic" "$(jq -nc --arg sid "$TOPUP_ID" '{amount_cents:500,currency:"USD",purchased_at:(now|todateiso8601),stripe_payment_id:$sid}')"
+expect_actual "HTTP 201" "HTTP ${HTTP_STATUS}"
 [[ "$HTTP_STATUS" == "201" ]] || fail "periodic topup failed: $HTTP_STATUS $HTTP_BODY"
 pass "Periodic top-up accepted"
 record_ok "Periodic top-up accepted (201)"
 
+blank
 step "Assert periodic status has topup remaining > 0"
 api GET "/budgets/region/${REGION_ID}/teams/${TEAM_ID}/periodic-status"
+expect_actual "HTTP 200" "HTTP ${HTTP_STATUS}"
 [[ "$HTTP_STATUS" == "200" ]] || fail "periodic status failed: $HTTP_STATUS $HTTP_BODY"
 TOPUP_REMAINING="$(echo "$HTTP_BODY" | jq -r '.topup_remaining_cents // 0')"
+expect_actual "topup_remaining_cents > 0" "topup_remaining_cents=${TOPUP_REMAINING}"
 [[ "$TOPUP_REMAINING" -gt 0 ]] || fail "expected topup_remaining_cents > 0, got ${TOPUP_REMAINING}"
 pass "periodic-status topup_remaining_cents=${TOPUP_REMAINING}"
 record_ok "periodic-status shows topup_remaining_cents=${TOPUP_REMAINING}"
 
+blank
 step "Assert periodic payments include subscription + topup rows"
 PAYMENT_TYPES="$(docker exec "$POSTGRES_CONTAINER" sh -lc "psql -U postgres -d '$DB_NAME' -tAc \"select coalesce(string_agg(distinct payment_type, ','), '') from periodic_payments where team_id=${TEAM_ID};\"" | tr -d '[:space:]')"
 echo "payment_types=${PAYMENT_TYPES}"
+expect_actual "payment_types include subscription and topup" "payment_types=${PAYMENT_TYPES}"
 [[ "$PAYMENT_TYPES" == *"subscription"* ]] || fail "expected subscription periodic payment row"
 [[ "$PAYMENT_TYPES" == *"topup"* ]] || fail "expected topup periodic payment row"
 pass "Found subscription and topup payment rows"
 record_ok "DB periodic_payments contains subscription + topup"
 
+blank
 step "Assert /spend history includes periodic transactions across tested regions"
 api GET "/spend/${REGION_ID}/team/${TEAM_ID}/history"
 [[ "$HTTP_STATUS" == "200" ]] || fail "history endpoint (region ${REGION_ID}) failed: $HTTP_STATUS $HTTP_BODY"
@@ -271,10 +322,13 @@ api GET "/spend/${SECOND_REGION_ID}/team/${TEAM_ID}/history"
 [[ "$HTTP_STATUS" == "200" ]] || fail "history endpoint (region ${SECOND_REGION_ID}) failed: $HTTP_STATUS $HTTP_BODY"
 REGION2_HISTORY="$HTTP_BODY"
 HAS_TOPUP_TOTAL="$(jq -n --argjson a "$REGION1_HISTORY" --argjson b "$REGION2_HISTORY" '[($a.periodic_transactions[]?, $b.periodic_transactions[]?) | select(.payment_type=="topup")] | length')"
+expect_actual "combined topup transactions >= 1" "combined topup transactions=${HAS_TOPUP_TOTAL}"
 [[ "$HAS_TOPUP_TOTAL" -ge 1 ]] || fail "combined region history missing topup transaction"
-pass "combined region history contains topup transaction(s)"
-record_ok "History endpoint includes topup periodic transaction"
+  pass "combined region history contains topup transaction(s)"
+  record_ok "History endpoint includes topup periodic transaction"
+fi
 
+blank
 step "Summary"
 for item in "${SUMMARY[@]}"; do say "$item"; done
 pass "PERIODIC mixed Stripe+topup E2E complete"
