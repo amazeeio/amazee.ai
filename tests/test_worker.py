@@ -36,7 +36,7 @@ from app.schemas.limits import (
     LimitType,
     LimitedResource,
 )
-from unittest.mock import AsyncMock, patch, Mock
+from unittest.mock import AsyncMock, patch, Mock, call
 
 
 @pytest.mark.parametrize(
@@ -407,10 +407,10 @@ async def test_apply_product_extends_keys_and_sets_budget(
         name="us-test-region",
         litellm_api_key="us-test-key",
         litellm_api_url="https://us-test.example.com",
-        pg_host="localhost",
-        pg_port=5432,
-        pg_user="postgres",
-        pg_password="postgres",
+        postgres_host="localhost",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
     )
     db.add(extra_region)
     db.commit()
@@ -478,8 +478,20 @@ async def test_apply_product_extends_keys_and_sets_budget(
         db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
     )
 
-    # Verify LiteLLM service was initialized with correct region settings
+    # Verify LiteLLM service was initialized for both active regions
     assert mock_litellm.call_count == 2
+    mock_litellm.assert_has_calls(
+        [
+            call(
+                api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+            ),
+            call(
+                api_url=extra_region.litellm_api_url,
+                api_key=extra_region.litellm_api_key,
+            ),
+        ],
+        any_order=True,
+    )
 
     # Verify LiteLLM service was called for all keys (both team and user owned)
     all_keys = team_keys + user_keys
