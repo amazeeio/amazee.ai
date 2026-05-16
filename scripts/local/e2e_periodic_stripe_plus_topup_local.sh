@@ -28,18 +28,21 @@ check(){ say "CHECK: $*"; }
 value(){ say "      $1=$2"; }
 blank(){ echo; }
 expect_actual(){ say "      Expected: $1"; say "      Actual:   $2"; }
+SEP_LINE="############################################################"
+DIV_LINE="------------------------------------------------------------"
 test_block_start(){
   local n="$1" title="$2" description="$3" why="$4"
   blank
-  say "############################################################"
+  say "$SEP_LINE"
   say "TEST ${n}: ${title}"
-  say "Description: ${description}"
-  say "Why: ${why}"
-  say "############################################################"
+  say "$DIV_LINE"
+  say "Description : ${description}"
+  say "Why         : ${why}"
+  say "$SEP_LINE"
 }
-test_step(){ say "- Step: $1"; }
-test_result_ok(){ say "✅ Test Result: $1"; }
-test_result_fail(){ say "❌ Test Result: $1"; }
+test_step(){ say "  Step      : $1"; }
+test_result_ok(){ say "  ✅ Result : $1"; }
+test_result_fail(){ say "  ❌ Result : $1"; }
 SUMMARY=()
 record_ok(){ SUMMARY+=("✅ $1"); }
 wait_until(){
@@ -105,15 +108,18 @@ STRIPE_EVENT_ID="evt_periodic_mix_${RUN_ID}_1"
 STRIPE_INVOICE_ID="in_periodic_mix_${RUN_ID}_1"
 TOPUP_ID="cs_periodic_mix_${RUN_ID}_1"
 
-say "Plan: PERIODIC top-up E2E (baseline + webhook/multi-region)"
+say "$SEP_LINE"
+say "Plan        : PERIODIC top-up E2E (baseline + webhook/multi-region)"
 say "Tests:"
 say "  A) Baseline top-up API: success + duplicate rejection + periodic-status remaining"
 say "  B) Webhook/multi-region: key-cap preservation + split-budget invariant + ledger/history checks"
+say "$DIV_LINE"
 value "BASE_URL" "$BASE_URL"
 value "REGION_ID" "$REGION_ID"
 value "SECOND_REGION_ID" "$SECOND_REGION_ID"
 value "RUN_BASELINE" "$RUN_BASELINE"
 value "RUN_WEBHOOK" "$RUN_WEBHOOK"
+say "$SEP_LINE"
 blank
 step "Create PERIODIC team"
 api POST "/teams/" "$(jq -nc --arg n "$TEAM_NAME" --arg e "$TEAM_EMAIL" '{name:$n,admin_email:$e,budget_type:"periodic",require_purchase_for_requests:false}')"
