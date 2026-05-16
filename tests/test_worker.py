@@ -548,6 +548,89 @@ async def test_apply_product_extends_keys_and_sets_budget(
 
 
 @pytest.mark.asyncio
+@patch("app.core.worker.compute_active_topup_remaining")
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.LiteLLMService")
+async def test_apply_product_periodic_compounds_team_budget_with_split_and_region_topup(
+    mock_litellm,
+    mock_limit_service,
+    mock_topup_remaining,
+    db,
+    test_team,
+    test_product,
+    test_region,
+):
+    test_team.stripe_customer_id = "cus_periodic_compound_split"
+    db.commit()
+
+    extra_region = DBRegion(
+        name="periodic-compound-us",
+        litellm_api_key="periodic-compound-us-key",
+        litellm_api_url="https://periodic-compound-us.example.com",
+        postgres_host="localhost",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+    )
+    db.add(extra_region)
+    db.commit()
+
+    key_r1 = DBPrivateAIKey(
+        name="Periodic R1 key",
+        database_name="db_periodic_r1",
+        database_username="test_user",
+        database_password="test_pass",
+        team_id=test_team.id,
+        region_id=test_region.id,
+        litellm_token="periodic_r1_token",
+        created_at=datetime.now(UTC),
+    )
+    key_r2 = DBPrivateAIKey(
+        name="Periodic R2 key",
+        database_name="db_periodic_r2",
+        database_username="test_user",
+        database_password="test_pass",
+        team_id=test_team.id,
+        region_id=extra_region.id,
+        litellm_token="periodic_r2_token",
+        created_at=datetime.now(UTC),
+    )
+    db.add_all([key_r1, key_r2])
+    db.commit()
+
+    mock_instance = mock_litellm.return_value
+    mock_instance.set_key_restrictions = AsyncMock()
+    # team_info["spend"] is different per region to validate compounding math
+    mock_instance.get_team_info = AsyncMock(
+        side_effect=[
+            {"team_info": {"spend": 12.5}},  # region 1
+            {"team_info": {"spend": 7.8}},  # region 2
+        ]
+    )
+    mock_instance.update_team_budget = AsyncMock()
+
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+    # Total monthly cap = 50, split across 2 regions => 25 each
+    mock_limit_instance.get_token_restrictions = Mock(return_value=(30, 50.0, 1000))
+
+    # Top-up remaining differs by region
+    mock_topup_remaining.side_effect = [300, 0]  # cents => $3.0, $0.0
+
+    await apply_product_for_team(
+        db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
+    )
+
+    update_calls = mock_instance.update_team_budget.await_args_list
+    assert len(update_calls) == 2
+
+    # Region 1: 12.5 + (25 + 3.0) = 40.5
+    # Region 2: 7.8 + (25 + 0.0) = 32.8
+    max_budgets = sorted([float(call.kwargs["max_budget"]) for call in update_calls])
+    assert max_budgets == [32.8, 40.5]
+
+
+@pytest.mark.asyncio
 @patch("app.core.worker.LimitService")
 @patch("app.core.worker.get_subscribed_products_for_customer", new_callable=AsyncMock)
 async def test_remove_product_calls_limit_service(
