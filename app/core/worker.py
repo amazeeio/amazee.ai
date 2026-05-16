@@ -668,16 +668,18 @@ async def apply_product_for_team(
                 try:
                     team_data = await litellm_service.get_team_info(lite_team_id)
                     team_info = team_data.get("team_info", team_data)
-                    current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
                     topup_remaining_cents = compute_active_topup_remaining(
                         db, team_id=team.id, region_id=region.id
                     )
                     topup_remaining_dollars = topup_remaining_cents / 100.0
                     desired_remaining = per_region_budget + topup_remaining_dollars
-                    team_max_budget = current_team_spend + desired_remaining
+                    # PERIODIC webhook sync resets key spends for the new
+                    # billing window; use desired remaining directly as the
+                    # team cap to avoid double-counting prior accumulated spend.
+                    team_max_budget = desired_remaining
                     logger.info(
                         f"Compounding team {team.id} budget: "
-                        f"spend={current_team_spend} + cap={per_region_budget} = {team_max_budget}"
+                        f"cap={per_region_budget} + topup={topup_remaining_dollars} = {team_max_budget}"
                     )
                 except Exception as e:
                     error_msg = (
