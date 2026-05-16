@@ -564,15 +564,25 @@ async def reconcile_periodic_team_budget_drift(
     for row in active_subscriptions:
         sub_remaining_cents += max(0, row.amount_cents - row.consumed_cents)
     sub_remaining_dollars = sub_remaining_cents / 100.0
-    expected_max_budget = (
-        current_spend + sub_remaining_dollars + topup_remaining_dollars
-    )
-    drift = round(actual_max_budget - expected_max_budget, 6)
+    expected_max_budget = current_spend + sub_remaining_dollars + topup_remaining_dollars
+    expected_max_budget_cents = int(round(expected_max_budget * 100))
+    actual_max_budget_cents = int(round(actual_max_budget * 100))
+    drift_cents = actual_max_budget_cents - expected_max_budget_cents
     return BudgetDriftResult(
-        expected_max_budget=expected_max_budget,
-        actual_max_budget=actual_max_budget,
-        drift=drift,
+        expected_max_budget_cents=expected_max_budget_cents,
+        actual_max_budget_cents=actual_max_budget_cents,
+        drift_cents=drift_cents,
     )
+
+
+def purge_old_processed_stripe_events(db: Session, retention_days: int = 30) -> int:
+    cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+    deleted = (
+        db.query(DBStripeProcessedEvent)
+        .filter(DBStripeProcessedEvent.created_at < cutoff)
+        .delete(synchronize_session=False)
+    )
+    return int(deleted or 0)
 
 
 async def apply_product_for_team(
@@ -704,6 +714,30 @@ async def apply_product_for_team(
                     f"Updated team {team.id} budget to {team_max_budget} "
                     f"(duration={budget_duration}) in region {region.name}"
                 )
+                if is_periodic and keys:
+                    try:
+                        drift_result = await reconcile_periodic_team_budget_drift(
+                            db=db, team=team, region=region
+                        )
+                        if drift_result and drift_result.drift_cents != 0:
+                            logger.warning(
+                                "Periodic budget drift detected team_id=%s region_id=%s "
+                                "expected_max_budget_cents=%s actual_max_budget_cents=%s drift_cents=%s",
+                                team.id,
+                                region.id,
+                                drift_result.expected_max_budget_cents,
+                                drift_result.actual_max_budget_cents,
+                                drift_result.drift_cents,
+                            )
+                    except Exception as drift_exc:
+                        # Drift reconciliation is observability-only and must not
+                        # interfere with budget propagation.
+                        logger.warning(
+                            "Drift reconciliation failed for team_id=%s region_id=%s: %s",
+                            team.id,
+                            region.id,
+                            drift_exc,
+                        )
             except Exception as e:
                 error_msg = f"Failed to update team {team.id} budget in region {region.name}: {str(e)}"
                 logger.error(error_msg)
@@ -1464,6 +1498,9 @@ async def monitor_teams(db: Session):
     """
     logger.info("Monitoring teams")
     try:
+        purged_events = purge_old_processed_stripe_events(db)
+        if purged_events:
+            logger.info("Purged %s old processed Stripe events", purged_events)
         # Get all non-deleted teams
         teams = db.query(DBTeam).filter(DBTeam.deleted_at.is_(None)).all()
         current_time = datetime.now(UTC)

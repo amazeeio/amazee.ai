@@ -21,9 +21,9 @@ class AllocationResult:
 
 @dataclass
 class BudgetDriftResult:
-    expected_max_budget: float
-    actual_max_budget: float
-    drift: float
+    expected_max_budget_cents: int
+    actual_max_budget_cents: int
+    drift_cents: int
 
 
 def _active_entries(

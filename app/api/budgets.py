@@ -653,44 +653,37 @@ async def purchase_periodic_topup(
             detail="A purchase with this stripe_payment_id already exists",
         )
 
-    payment_record = DBPeriodicPayment(
-        team_id=team.id,
-        stripe_payment_id=purchase.stripe_payment_id,
-        amount_cents=purchase.amount_cents,
-        currency=purchase.currency.lower(),
-        payment_type="topup",
-        status="completed",
-        sync_status="sync_failed",
-        payment_date=purchase.purchased_at,
-    )
-    db.add(payment_record)
     try:
-        db.flush()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A purchase with this stripe_payment_id already exists",
+        payment_record = DBPeriodicPayment(
+            team_id=team.id,
+            stripe_payment_id=purchase.stripe_payment_id,
+            amount_cents=purchase.amount_cents,
+            currency=purchase.currency.lower(),
+            payment_type="topup",
+            status="completed",
+            sync_status="sync_failed",
+            payment_date=purchase.purchased_at,
         )
+        db.add(payment_record)
+        db.flush()
 
-    topup_entry = add_topup_entry(
-        db,
-        team_id=team.id,
-        region_id=region_id,
-        amount_cents=purchase.amount_cents,
-        purchased_at=purchase.purchased_at,
-        source_payment_id=payment_record.id,
-        stripe_payment_id=purchase.stripe_payment_id,
-    )
-    try:
+        topup_entry = add_topup_entry(
+            db,
+            team_id=team.id,
+            region_id=region_id,
+            amount_cents=purchase.amount_cents,
+            purchased_at=purchase.purchased_at,
+            source_payment_id=payment_record.id,
+            stripe_payment_id=purchase.stripe_payment_id,
+        )
+        if topup_entry is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A purchase with this stripe_payment_id already exists",
+            )
         db.flush()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A purchase with this stripe_payment_id already exists",
-        )
-    if topup_entry is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A purchase with this stripe_payment_id already exists",
