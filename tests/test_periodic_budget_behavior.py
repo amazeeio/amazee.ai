@@ -173,7 +173,7 @@ async def test_periodic_team_compounds_max_budget(
     test_product,
     test_region,
 ):
-    """PERIODIC teams must compound: max_budget = accumulated_spend + monthly_cap."""
+    """PERIODIC webhook resets key spend to 0; max_budget = desired_remaining = monthly_cap + topup."""
     test_team.stripe_customer_id = "cus_compound"
     db.commit()
 
@@ -195,9 +195,10 @@ async def test_periodic_team_compounds_max_budget(
 
     await apply_product_for_team(db, "cus_compound", test_product.id, datetime.now(UTC))
 
-    # max_budget must be 37.50 (accumulated) + 100.0 (cap) = 137.50
+    # Webhook resets key spend to 0; max_budget = desired_remaining = cap + topup = 100.0 + 0.0
+    # (get_team_info is called to detect region availability but spend is not used in the formula)
     team_call = mock_litellm.update_team_budget.await_args
-    assert team_call.kwargs["max_budget"] == 137.50
+    assert team_call.kwargs["max_budget"] == 100.0
 
 
 # ─── 4. Compounding falls back to flat cap when get_team_info fails ───────

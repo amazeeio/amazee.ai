@@ -551,6 +551,7 @@ async def reconcile_periodic_team_budget_drift(
         compute_active_topup_remaining(db, team_id=team.id, region_id=region.id) / 100.0
     )
     sub_remaining_cents = 0
+    now_utc = datetime.now(UTC)
     active_subscriptions = (
         db.query(DBPeriodicBudgetLedgerEntry)
         .filter(
@@ -558,6 +559,10 @@ async def reconcile_periodic_team_budget_drift(
             DBPeriodicBudgetLedgerEntry.region_id == region.id,
             DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
             DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > now_utc)
+            ),
         )
         .all()
     )
@@ -636,7 +641,9 @@ async def apply_product_for_team(
         if not existing_association:
             team_product = DBTeamProduct(team_id=team.id, product_id=product.id)
             db.add(team_product)
-            db.commit()  # Commit the product association
+
+        # Always commit: persists last_payment and any new product association
+        db.commit()
 
         limit_service = LimitService(db)
         days_left_in_period, max_max_spend, max_rpm_limit = (

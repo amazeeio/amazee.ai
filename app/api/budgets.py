@@ -50,6 +50,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["budgets"])
 MONTHLY_BUDGET_DURATION = "1mo"
+# PERIODIC teams use a fixed 31d rolling window so LiteLLM never self-resets
+# on a calendar boundary. Spend is reset manually on each Stripe webhook renewal.
+PERIODIC_BUDGET_DURATION = "31d"
 
 
 @router.get(
@@ -71,6 +74,7 @@ async def get_periodic_budget_status(
     if not region:
         raise HTTPException(status_code=404, detail="Region not found")
 
+    now = datetime.now(UTC)
     sub_remaining = 0
     subscription_period_end = None
     active_subscriptions = (
@@ -80,6 +84,10 @@ async def get_periodic_budget_status(
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
             DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
             DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+            ),
         )
         .all()
     )
@@ -99,6 +107,7 @@ async def get_periodic_budget_status(
             DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"]),
             DBPeriodicBudgetLedgerEntry.is_active.is_(True),
             DBPeriodicBudgetLedgerEntry.expires_at.isnot(None),
+            DBPeriodicBudgetLedgerEntry.expires_at > now,
         )
         .scalar()
     )
@@ -654,17 +663,30 @@ async def purchase_periodic_topup(
         )
 
     try:
-        payment_record = DBPeriodicPayment(
-            team_id=team.id,
-            stripe_payment_id=purchase.stripe_payment_id,
-            amount_cents=purchase.amount_cents,
-            currency=purchase.currency.lower(),
-            payment_type="topup",
-            status="completed",
-            sync_status="sync_failed",
-            payment_date=purchase.purchased_at,
+        # Reuse an existing payment record if a prior webhook already created one
+        # for this stripe_payment_id (e.g. checkout.session.completed fired before
+        # this API call). Without this check a second DBPeriodicPayment row would be
+        # committed for the same Stripe payment, creating a duplicate audit entry.
+        existing_payment = (
+            db.query(DBPeriodicPayment)
+            .filter(DBPeriodicPayment.stripe_payment_id == purchase.stripe_payment_id)
+            .first()
         )
-        db.add(payment_record)
+        if existing_payment is not None:
+            payment_record = existing_payment
+            payment_record.sync_status = "sync_failed"
+        else:
+            payment_record = DBPeriodicPayment(
+                team_id=team.id,
+                stripe_payment_id=purchase.stripe_payment_id,
+                amount_cents=purchase.amount_cents,
+                currency=purchase.currency.lower(),
+                payment_type="topup",
+                status="completed",
+                sync_status="sync_failed",
+                payment_date=purchase.purchased_at,
+            )
+            db.add(payment_record)
         db.flush()
 
         topup_entry = add_topup_entry(
@@ -699,6 +721,7 @@ async def purchase_periodic_topup(
         current_spend = float(team_info.get("spend", 0.0) or 0.0)
 
         sub_remaining_cents = 0
+        now_topup = datetime.now(UTC)
         active_subscriptions = (
             db.query(DBPeriodicBudgetLedgerEntry)
             .filter(
@@ -706,6 +729,10 @@ async def purchase_periodic_topup(
                 DBPeriodicBudgetLedgerEntry.region_id == region_id,
                 DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
                 DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+                (
+                    DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                    | (DBPeriodicBudgetLedgerEntry.expires_at > now_topup)
+                ),
             )
             .all()
         )
@@ -721,7 +748,7 @@ async def purchase_periodic_topup(
         await service.update_team_budget(
             team_id=lite_team_id,
             max_budget=new_total_budget,
-            budget_duration=MONTHLY_BUDGET_DURATION,
+            budget_duration=PERIODIC_BUDGET_DURATION,
         )
         payment_record.sync_status = "success"
         payment_record.error_log = None

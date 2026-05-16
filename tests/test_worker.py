@@ -321,18 +321,20 @@ async def test_apply_product_already_active(db, test_team, test_product):
     db.commit()
     db.refresh(test_team)  # Refresh to ensure we have the latest data
 
-    # First apply the product
+    # First apply the product with an explicit start date
+    first_date = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
     await apply_product_for_team(
-        db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
+        db, test_team.stripe_customer_id, test_product.id, first_date
     )
 
     # Get the initial last payment date
     db.refresh(test_team)
     initial_last_payment = test_team.last_payment
 
-    # Apply the same product again
+    # Apply the same product again with a later date
+    second_date = datetime(2025, 1, 2, 12, 0, 0, tzinfo=UTC)
     await apply_product_for_team(
-        db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
+        db, test_team.stripe_customer_id, test_product.id, second_date
     )
 
     # Refresh team from database
@@ -347,10 +349,11 @@ async def test_apply_product_already_active(db, test_team, test_product):
 
 
 @pytest.mark.asyncio
+@patch("app.core.worker.reconcile_periodic_team_budget_drift", new_callable=AsyncMock)
 @patch("app.core.worker.LimitService")
 @patch("app.core.worker.LiteLLMService")
 async def test_apply_product_calls_limit_service(
-    mock_litellm, mock_limit_service, db, test_team, test_product
+    mock_litellm, mock_limit_service, mock_drift, db, test_team, test_product, test_region
 ):
     """
     Test that applying a product calls the limit service to set team limits.
@@ -362,6 +365,26 @@ async def test_apply_product_calls_limit_service(
     # Set stripe customer ID for the test team
     test_team.stripe_customer_id = "cus_test123"
     db.commit()
+
+    # Create a key so the function doesn't return early (requires at least one key)
+    key = DBPrivateAIKey(
+        name="Test Key",
+        database_name="db_test",
+        database_username="test_user",
+        database_password="test_pass",
+        team_id=test_team.id,
+        region_id=test_region.id,
+        litellm_token="test_token",
+        created_at=datetime.now(UTC),
+    )
+    db.add(key)
+    db.commit()
+
+    # Setup mock LiteLLM instance
+    mock_instance = mock_litellm.return_value
+    mock_instance.set_key_restrictions = AsyncMock()
+    mock_instance.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
+    mock_instance.update_team_budget = AsyncMock()
 
     # Setup mock limit service
     mock_limit_instance = mock_limit_service.return_value
@@ -379,11 +402,13 @@ async def test_apply_product_calls_limit_service(
 
 
 @pytest.mark.asyncio
+@patch("app.core.worker.reconcile_periodic_team_budget_drift", new_callable=AsyncMock)
 @patch("app.core.worker.LimitService")
 @patch("app.core.worker.LiteLLMService")
 async def test_apply_product_extends_keys_and_sets_budget(
     mock_litellm,
     mock_limit_service,
+    mock_drift,
     db,
     test_team,
     test_product,
@@ -548,6 +573,7 @@ async def test_apply_product_extends_keys_and_sets_budget(
 
 
 @pytest.mark.asyncio
+@patch("app.core.worker.reconcile_periodic_team_budget_drift", new_callable=AsyncMock)
 @patch("app.core.worker.compute_active_topup_remaining")
 @patch("app.core.worker.LimitService")
 @patch("app.core.worker.LiteLLMService")
@@ -555,6 +581,7 @@ async def test_apply_product_periodic_compounds_team_budget_with_split_and_regio
     mock_litellm,
     mock_limit_service,
     mock_topup_remaining,
+    mock_drift,
     db,
     test_team,
     test_product,
@@ -624,10 +651,11 @@ async def test_apply_product_periodic_compounds_team_budget_with_split_and_regio
     update_calls = mock_instance.update_team_budget.await_args_list
     assert len(update_calls) == 2
 
-    # Region 1: 12.5 + (25 + 3.0) = 40.5
-    # Region 2: 7.8 + (25 + 0.0) = 32.8
+    # Webhook resets key spend to 0; max_budget = desired_remaining = per_region_cap + topup_remaining
+    # Region 1: 25.0 + 3.0 = 28.0
+    # Region 2: 25.0 + 0.0 = 25.0
     max_budgets = sorted([float(call.kwargs["max_budget"]) for call in update_calls])
-    assert max_budgets == [32.8, 40.5]
+    assert max_budgets == [25.0, 28.0]
 
 
 @pytest.mark.asyncio
