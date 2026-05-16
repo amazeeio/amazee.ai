@@ -10,6 +10,7 @@ from app.db.models import (
     DBPoolPurchase,
     DBPeriodicPayment,
     DBStripeProcessedEvent,
+    DBSpendCap,
 )
 from app.schemas.models import BudgetType
 from datetime import datetime, UTC, timedelta
@@ -473,6 +474,23 @@ async def test_apply_product_extends_keys_and_sets_budget(
     mock_limit_instance.set_team_limits = Mock()
     mock_limit_instance.get_token_restrictions = Mock(return_value=(30, 50.0, 1000))
 
+    # Set a key-specific cap override for one key in the primary region.
+    # Webhook renewal should preserve this override and only apply split budget
+    # to keys without explicit key caps.
+    key_with_override = team_keys[0]
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=key_with_override.owner_id,
+            key_id=key_with_override.id,
+            max_budget=7.5,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+
     # Apply product to team
     await apply_product_for_team(
         db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
@@ -509,9 +527,12 @@ async def test_apply_product_extends_keys_and_sets_budget(
         assert len(restriction_calls) == 1
         assert restriction_calls[0][1]["duration"] == "31d"
         assert restriction_calls[0][1]["budget_duration"] == "31d"
-        assert restriction_calls[0][1]["budget_amount"] == (
-            test_product.max_budget_per_key / 2
+        expected_budget = (
+            7.5
+            if key.id == key_with_override.id
+            else test_product.max_budget_per_key / 2
         )
+        assert restriction_calls[0][1]["budget_amount"] == expected_budget
         assert restriction_calls[0][1]["rpm_limit"] == test_product.rpm_per_key
         assert restriction_calls[0][1]["spend"] == 0.0
 

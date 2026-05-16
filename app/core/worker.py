@@ -15,6 +15,7 @@ from app.db.models import (
     DBPeriodicPayment,
     DBPeriodicBudgetLedgerEntry,
     DBStripeProcessedEvent,
+    DBSpendCap,
 )
 from app.schemas.models import BudgetType
 from app.db.database import get_db
@@ -566,7 +567,9 @@ async def reconcile_periodic_team_budget_drift(
     for row in active_subscriptions:
         sub_remaining_cents += max(0, row.amount_cents - row.consumed_cents)
     sub_remaining_dollars = sub_remaining_cents / 100.0
-    expected_max_budget = current_spend + sub_remaining_dollars + topup_remaining_dollars
+    expected_max_budget = (
+        current_spend + sub_remaining_dollars + topup_remaining_dollars
+    )
     drift = round(actual_max_budget - expected_max_budget, 6)
     return BudgetDriftResult(
         expected_max_budget=expected_max_budget,
@@ -707,17 +710,31 @@ async def apply_product_for_team(
             # sum(key spends) = current-period spend only.
             for key in keys:
                 try:
+                    key_spend_cap = (
+                        db.query(DBSpendCap.max_budget)
+                        .filter(
+                            DBSpendCap.scope == "key",
+                            DBSpendCap.region_id == region.id,
+                            DBSpendCap.key_id == key.id,
+                        )
+                        .scalar()
+                    )
+                    effective_key_budget = (
+                        float(key_spend_cap)
+                        if key_spend_cap is not None
+                        else per_region_budget
+                    )
                     await litellm_service.set_key_restrictions(
                         litellm_token=key.litellm_token,
                         duration=budget_duration,
                         budget_duration=budget_duration,
-                        budget_amount=per_region_budget,
+                        budget_amount=effective_key_budget,
                         rpm_limit=max_rpm_limit,
                         spend=0.0 if is_periodic else None,
                     )
                     logger.info(
                         f"Updated key {key.id} limits in LiteLLM: "
-                        f"duration={budget_duration}, budget={per_region_budget}, "
+                        f"duration={budget_duration}, budget={effective_key_budget}, "
                         f"rpm={max_rpm_limit}, spend_reset={is_periodic}"
                     )
                 except Exception as e:
