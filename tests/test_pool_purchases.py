@@ -134,7 +134,7 @@ def test_create_pool_purchase_duplicate_payment_id(
     db.commit()
 
     response = client.post(
-        f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic",
+        f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
         json={
             "amount_cents": 3000,
             "currency": "usd",
@@ -156,7 +156,7 @@ def test_create_pool_purchase_non_pool_team_rejected(
     db.commit()
 
     response = client.post(
-        f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic",
+        f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
         json={
             "amount_cents": 5000,
             "currency": "usd",
@@ -182,7 +182,7 @@ def test_create_periodic_topup_success(client, admin_token, db, test_team, test_
         mock_instance.update_team_budget = AsyncMock()
 
         response = client.post(
-            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic",
             json={
                 "amount_cents": 5000,
                 "currency": "usd",
@@ -223,7 +223,7 @@ def test_create_periodic_topup_region_not_assigned_rejected(
     db.commit()
 
     response = client.post(
-        f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+        f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic",
         json={
             "amount_cents": 5000,
             "currency": "usd",
@@ -258,7 +258,7 @@ def test_create_periodic_topup_duplicate_payment_id(
     db.commit()
 
     response = client.post(
-        f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+        f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic",
         json={
             "amount_cents": 5000,
             "currency": "usd",

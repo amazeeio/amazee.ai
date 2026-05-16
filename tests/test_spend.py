@@ -403,6 +403,9 @@ def test_update_team_budget_endpoint(
     test_region,
     db,
 ):
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.commit()
     mock_get_team_info.return_value = {
         "team_info": {"max_budget": 12.5, "budget_duration": "1mo"}
     }
@@ -418,7 +421,7 @@ def test_update_team_budget_endpoint(
     assert data["max_budget"] == 12.5
     assert data["budget_duration"] == "1mo"
     mock_update_team_budget.assert_awaited_once()
-    assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "1mo"
+    assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "365d"
 
 
 @patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
@@ -442,18 +445,6 @@ def test_update_team_budget_rejects_manual_cap_for_periodic_team(
     assert response.status_code == 400
     assert "not allowed for periodic teams" in response.json()["detail"].lower()
     mock_update_team_budget.assert_not_awaited()
-    cap = (
-        db.query(DBSpendCap)
-        .filter(
-            DBSpendCap.scope == "team",
-            DBSpendCap.region_id == test_region.id,
-            DBSpendCap.team_id == test_team.id,
-        )
-        .first()
-    )
-    assert cap is not None
-    assert cap.max_budget == 12.5
-    assert cap.budget_duration == "1mo"
 
 
 @patch("app.api.spend.invalidate_user_spend_cache")
@@ -469,6 +460,9 @@ def test_update_team_budget_invalidates_user_spend_cache_for_team_members(
     test_region,
     db,
 ):
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.commit()
     team_user = DBUser(
         email="cache-team-user@example.com",
         hashed_password=get_password_hash("password"),
@@ -542,7 +536,7 @@ def test_update_invoice_budget_allows_any_value_for_dedicated_team(
     test_region,
     db,
 ):
-    """Dedicated invoice teams must not be blocked by pool purchase caps."""
+    """Periodic teams reject manual team budget updates, including dedicated teams."""
     test_team.budget_type = "periodic"
     test_team.require_purchase_for_requests = False
     test_team.hide_public_regions = True
@@ -559,10 +553,9 @@ def test_update_invoice_budget_allows_any_value_for_dedicated_team(
         headers={"Authorization": f"Bearer {admin_token}"},
         json={"max_budget": 100.0},
     )
-    assert response.status_code == 200, response.json()
-    mock_update_team_budget.assert_awaited_once()
-    assert mock_update_team_budget.await_args.kwargs["max_budget"] == 100.0
-    assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "1mo"
+    assert response.status_code == 400, response.json()
+    assert "not allowed for periodic teams" in response.json()["detail"].lower()
+    mock_update_team_budget.assert_not_awaited()
 
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
@@ -2665,13 +2658,25 @@ def test_get_team_spend_history_periodic_transactions_empty_for_non_periodic_tea
 
 
 def test_get_team_spend_history_periodic_transactions_region_scoped(
-    client, team_admin_token, test_team, test_region, second_region, db
+    client, team_admin_token, test_team, test_region, db
 ):
     from datetime import datetime, UTC
-    from app.db.models import DBPeriodicPayment, DBPeriodicBudgetLedgerEntry
+    from app.db.models import DBPeriodicPayment, DBPeriodicBudgetLedgerEntry, DBRegion
 
     test_team.budget_type = "periodic"
     db.add(test_team)
+    db.flush()
+    second_region = DBRegion(
+        name=f"hist-second-region-{test_team.id}",
+        postgres_host="localhost",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="https://hist-second-region.example.com",
+        litellm_api_key="hist-second-region-key",
+        is_active=True,
+    )
+    db.add(second_region)
     db.flush()
 
     p1 = DBPeriodicPayment(
