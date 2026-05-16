@@ -353,7 +353,13 @@ async def test_apply_product_already_active(db, test_team, test_product):
 @patch("app.core.worker.LimitService")
 @patch("app.core.worker.LiteLLMService")
 async def test_apply_product_calls_limit_service(
-    mock_litellm, mock_limit_service, mock_drift, db, test_team, test_product, test_region
+    mock_litellm,
+    mock_limit_service,
+    mock_drift,
+    db,
+    test_team,
+    test_product,
+    test_region,
 ):
     """
     Test that applying a product calls the limit service to set team limits.
