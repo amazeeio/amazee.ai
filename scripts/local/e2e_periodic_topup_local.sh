@@ -77,4 +77,8 @@ TOPUP_REMAINING="$(echo "$HTTP_BODY" | jq -r '.topup_remaining_cents // 0')"
 [[ "$TOPUP_REMAINING" -gt 0 ]] || fail "expected topup_remaining_cents > 0, got ${TOPUP_REMAINING}"
 pass "Periodic status shows topup_remaining_cents=${TOPUP_REMAINING}"
 
+say "Note: this script validates periodic top-up API flow only."
+say "For webhook-driven multi-region budget split and periodic key-cap preservation,"
+say "run scripts/local/e2e_periodic_stripe_plus_topup_local.sh"
+
 pass "PERIODIC top-up local E2E complete"
