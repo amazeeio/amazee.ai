@@ -2681,10 +2681,10 @@ async def test_monitor_teams_uses_budget_from_limits_not_products(
 
     # Find the call for our team (calls might include other teams from fixtures)
     team_call = None
-    for call in calls:
-        call_args = call[0]  # positional args
+    for litellm_call in calls:
+        call_args = litellm_call[0]  # positional args
         if len(call_args) > 1 and call_args[1].id == test_team.id:
-            team_call = call
+            team_call = litellm_call
             break
 
     assert team_call is not None, (
