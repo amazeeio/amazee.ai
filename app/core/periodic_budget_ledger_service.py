@@ -141,7 +141,11 @@ def add_topup_entry(
         .first()
     )
     expiry_anchor = purchased_at
-    if last_topup and last_topup.purchased_at and last_topup.purchased_at > expiry_anchor:
+    if (
+        last_topup
+        and last_topup.purchased_at
+        and last_topup.purchased_at > expiry_anchor
+    ):
         expiry_anchor = last_topup.purchased_at
 
     entry = DBPeriodicBudgetLedgerEntry(
@@ -153,8 +157,7 @@ def add_topup_entry(
         amount_cents=amount_cents,
         consumed_cents=0,
         purchased_at=purchased_at,
-        expires_at=expiry_anchor
-        + timedelta(days=settings.PERIODIC_TOPUP_EXPIRY_DAYS),
+        expires_at=expiry_anchor + timedelta(days=settings.PERIODIC_TOPUP_EXPIRY_DAYS),
         is_active=True,
     )
     db.add(entry)

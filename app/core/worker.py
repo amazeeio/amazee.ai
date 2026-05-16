@@ -443,10 +443,7 @@ async def capture_periodic_team_spend_for_invoice(
     if not keys_by_region:
         return
 
-    num_regions = len(keys_by_region)
-    per_region_amount_cents = amount_paid // num_regions if num_regions else 0
-    remainder_cents = amount_paid % num_regions if num_regions else 0
-    for idx, region in enumerate(keys_by_region.keys()):
+    for region in keys_by_region.keys():
         try:
             snapshot = await fetch_team_spend_snapshot_for_region(
                 db=db,
@@ -503,7 +500,10 @@ async def _sync_periodic_ledger_for_invoice(
     period_end = datetime.fromtimestamp(period_end_ts, tz=UTC)
 
     keys_by_region = get_team_keys_by_region(db, team.id)
-    for region in keys_by_region.keys():
+    num_regions = len(keys_by_region)
+    per_region_amount_cents = amount_paid // num_regions if num_regions else 0
+    remainder_cents = amount_paid % num_regions if num_regions else 0
+    for idx, region in enumerate(keys_by_region.keys()):
         snapshot = await fetch_team_spend_snapshot_for_region(
             db=db, team=team, region=region
         )
@@ -564,7 +564,9 @@ async def reconcile_periodic_team_budget_drift(
     for row in active_subscriptions:
         sub_remaining_cents += max(0, row.amount_cents - row.consumed_cents)
     sub_remaining_dollars = sub_remaining_cents / 100.0
-    expected_max_budget = current_spend + sub_remaining_dollars + topup_remaining_dollars
+    expected_max_budget = (
+        current_spend + sub_remaining_dollars + topup_remaining_dollars
+    )
     expected_max_budget_cents = int(round(expected_max_budget * 100))
     actual_max_budget_cents = int(round(actual_max_budget * 100))
     drift_cents = actual_max_budget_cents - expected_max_budget_cents
