@@ -666,8 +666,7 @@ async def apply_product_for_team(
             team_max_budget = per_region_budget
             if is_periodic and keys:
                 try:
-                    team_data = await litellm_service.get_team_info(lite_team_id)
-                    team_info = team_data.get("team_info", team_data)
+                    await litellm_service.get_team_info(lite_team_id)
                     topup_remaining_cents = compute_active_topup_remaining(
                         db, team_id=team.id, region_id=region.id
                     )
