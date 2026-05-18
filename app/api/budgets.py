@@ -242,6 +242,8 @@ async def purchase_pool_budget(
     # are offset-naive while the request payload carries offset-aware ISO strings.
     if period_start is not None and period_start.tzinfo is None:
         period_start = period_start.replace(tzinfo=UTC)
+    if period_end is not None and period_end.tzinfo is None:
+        period_end = period_end.replace(tzinfo=UTC)
 
     # Insert the purchase record and flush BEFORE any external calls so that
     # stripe_payment_id uniqueness is enforced in the DB before side effects.
@@ -252,13 +254,13 @@ async def purchase_pool_budget(
         region_id=region_id,
         amount_cents=purchase.amount_cents,
         currency=purchase.currency,
-        purchased_at=purchase.purchased_at,
+        purchased_at=period_end,
         stripe_payment_id=purchase.stripe_payment_id,
         created_at=datetime.now(UTC),
     )
     db.add(purchase_record)
 
-    team.last_pool_purchase = purchase.purchased_at
+    team.last_pool_purchase = period_end
 
     try:
         db.flush()
