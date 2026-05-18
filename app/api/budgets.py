@@ -237,6 +237,12 @@ async def purchase_pool_budget(
     period_start = latest_purchase_at or team.created_at or purchase.purchased_at
     period_end = purchase.purchased_at
 
+    # Ensure period_start is offset-aware before comparing with period_end.
+    # DB-sourced datetimes (DBPoolPurchase.purchased_at, DBTeam.created_at)
+    # are offset-naive while the request payload carries offset-aware ISO strings.
+    if period_start is not None and period_start.tzinfo is None:
+        period_start = period_start.replace(tzinfo=UTC)
+
     # Insert the purchase record and flush BEFORE any external calls so that
     # stripe_payment_id uniqueness is enforced in the DB before side effects.
     # Concurrent duplicate requests will fail here rather than wasting an
