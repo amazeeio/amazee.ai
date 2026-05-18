@@ -142,6 +142,8 @@ def test_create_pool_purchase_duplicate_payment_id(
 def test_create_pool_purchase_naive_purchased_at_does_not_fail_datetime_comparison(
     client, admin_token, db, test_team, test_region
 ):
+    """Regression test: naive purchased_at must not crash the offset-aware
+    period_start sourced from the DB (the bug fixed in #503)."""
     test_team.budget_type = "pool"
     db.add(
         DBPoolPurchase(
@@ -156,16 +158,20 @@ def test_create_pool_purchase_naive_purchased_at_does_not_fail_datetime_comparis
     )
     db.commit()
 
-    response = client.post(
-        f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
-        json={
-            "amount_cents": 2000,
-            "currency": "usd",
-            "purchased_at": "2026-03-13T10:00:00",
-            "stripe_payment_id": f"pi_naive_{int(time.time() * 1000000)}",
-        },
-        headers={"Authorization": f"Bearer {admin_token}"},
-    )
+    with patch(
+        "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
+    ) as mock_propagate:
+        mock_propagate.return_value = {"teams_updated": 1, "errors": []}
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 2000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00",
+                "stripe_payment_id": f"pi_naive_{int(time.time() * 1000000)}",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
 
     assert response.status_code == 201
 
