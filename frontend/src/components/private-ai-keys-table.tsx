@@ -29,9 +29,7 @@ interface PrivateAIKeysTableProps {
   isLoading?: boolean;
   showOwner?: boolean;
   allowModification?: boolean;
-  onUpdateBudget?: (keyId: number, budgetDuration: string) => void;
   isDeleting?: boolean;
-  isUpdatingBudget?: boolean;
   teamDetails?: Record<number, { name: string }>;
   teamMembers?: User[];
 }
@@ -42,9 +40,7 @@ export function PrivateAIKeysTable({
   isLoading = false,
   showOwner = false,
   allowModification = false,
-  onUpdateBudget,
   isDeleting = false,
-  isUpdatingBudget = false,
   teamDetails = {},
   teamMembers = [],
 }: PrivateAIKeysTableProps) {
@@ -446,9 +442,6 @@ export function PrivateAIKeysTable({
                   <PrivateAIKeySpendCell
                     keyId={key.id}
                     hasLiteLLMToken={!!key.litellm_token}
-                    allowModification={allowModification}
-                    onUpdateBudget={onUpdateBudget}
-                    isUpdatingBudget={isUpdatingBudget}
                   />
                 </TableCell>
                 {allowModification && (

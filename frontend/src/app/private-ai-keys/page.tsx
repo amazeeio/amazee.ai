@@ -52,39 +52,6 @@ export default function DashboardPage() {
     new Set(),
   );
 
-  // Update budget period mutation
-  const updateBudgetMutation = useMutation({
-    mutationFn: async ({
-      keyId,
-      budgetDuration,
-    }: {
-      keyId: number;
-      budgetDuration: string;
-    }) => {
-      const response = await post(`/private-ai-keys/${keyId}/budget-period`, {
-        budget_duration: budgetDuration,
-      });
-      return response.json();
-    },
-    onSuccess: (_, { keyId }) => {
-      // Invalidate the specific key's spend query to refresh the data
-      queryClient.invalidateQueries({
-        queryKey: ["private-ai-key-spend", keyId],
-      });
-      toast({
-        title: "Success",
-        description: "Budget period updated successfully",
-      });
-    },
-    onError: () => {
-      toast({
-        title: "Error",
-        description: "Failed to update budget period",
-        variant: "destructive",
-      });
-    },
-  });
-
   // Delete key mutation
   const deleteKeyMutation = useMutation({
     mutationFn: async (keyId: number) => {
@@ -209,11 +176,7 @@ export default function DashboardPage() {
         isLoading={createKeyMutation.isPending}
         showOwner={true}
         allowModification={mutatingRoles.includes(getUserRole(user))}
-        onUpdateBudget={(keyId, budgetDuration) =>
-          updateBudgetMutation.mutate({ keyId, budgetDuration })
-        }
         isDeleting={deleteKeyMutation.isPending}
-        isUpdatingBudget={updateBudgetMutation.isPending}
         teamDetails={teamDetails}
         teamMembers={teamMembers}
       />
