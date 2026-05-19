@@ -530,7 +530,11 @@ async def _sync_periodic_ledger_for_invoice(
 
     period_start_ts = getattr(invoice_obj, "period_start", None)
     period_end_ts = getattr(invoice_obj, "period_end", None)
-    amount_paid = int(getattr(invoice_obj, "amount_paid", 0) or 0)
+    raw_amount_paid = getattr(invoice_obj, "amount_paid", 0)
+    try:
+        amount_paid = int(raw_amount_paid or 0)
+    except (TypeError, ValueError):
+        amount_paid = 0
     if period_start_ts is None or period_end_ts is None:
         return
     period_start = datetime.fromtimestamp(period_start_ts, tz=UTC)
@@ -544,7 +548,12 @@ async def _sync_periodic_ledger_for_invoice(
         snapshot = await fetch_team_spend_snapshot_for_region(
             db=db, team=team, region=region
         )
-        spend_cents = int(round(float(snapshot.total_spend) * 100))
+        snapshot_total_spend = (
+            snapshot.get("total_spend", 0.0)
+            if isinstance(snapshot, dict)
+            else getattr(snapshot, "total_spend", 0.0)
+        )
+        spend_cents = int(round(float(snapshot_total_spend) * 100))
         allocate_period_spend_fifo(
             db, team_id=team.id, region_id=region.id, spend_cents=spend_cents
         )
