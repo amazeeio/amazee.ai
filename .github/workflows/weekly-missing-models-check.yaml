@@ -2,7 +2,7 @@ name: Weekly Missing Models Check
 
 on:
   schedule:
-    - cron: '0 7 * * 1' # Every Monday at 07:00 UTC
+    - cron: '0 7 * * 1,4' # Every Monday and Thursday at 07:00 UTC
   workflow_dispatch:
     inputs:
       api_url:
@@ -19,7 +19,7 @@ on:
         default: all
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   check-missing-models:
@@ -34,8 +34,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Skip if workflow_dispatch limited to a different provider
         id: gate
@@ -52,6 +50,15 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.x'
+
+      - name: Restore missing-models state cache
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: scripts/missing-models-state-${{ matrix.provider }}.json
+          key: missing-models-state-${{ matrix.provider }}-${{ github.run_id }}
+          restore-keys: |
+            missing-models-state-${{ matrix.provider }}-
 
       - name: Compare deployed models against upstream catalog (${{ matrix.provider }})
         id: compare
@@ -108,28 +115,4 @@ jobs:
               ]
             }
 
-      - name: Commit refreshed state file (${{ matrix.provider }})
-        if: steps.gate.outputs.skip != 'true' && steps.compare.outputs.state_changed == 'true'
-        run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
-          git add scripts/missing-models-state-${{ matrix.provider }}.json
-          if git diff --cached --quiet; then
-            echo "No state diff to commit."
-            exit 0
-          fi
-          git commit -m "chore: update ${{ matrix.provider }} missing models state"
 
-          branch="${{ github.ref_name }}"
-          for _attempt in 1 2 3; do
-            git fetch origin "$branch"
-            git rebase "origin/$branch"
-            if git push origin HEAD:"$branch"; then
-              exit 0
-            fi
-            git rebase --abort || true
-            sleep 5
-          done
-
-          echo "Failed to push updated state after 3 attempts" >&2
-          exit 1
