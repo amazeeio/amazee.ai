@@ -56,3 +56,13 @@ updates:
       update-types:
       - "minor"
       - "patch"
+
+- package-ecosystem: docker
+  directory: /frontend
+  schedule:
+    interval: daily
+
+- package-ecosystem: npm
+  directory: /frontend
+  schedule:
+    interval: daily
