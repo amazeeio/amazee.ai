@@ -22,7 +22,11 @@ from app.schemas.models import BudgetType
 from app.db.database import get_db
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
-from app.core.team_service import get_team_keys_by_region, soft_delete_team
+from app.core.team_service import (
+    get_team_keys_by_region,
+    get_team_region_litellm_keys,
+    soft_delete_team,
+)
 from app.core.limit_service import LimitService
 from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitedResource
 import logging
@@ -133,6 +137,18 @@ hard_delete_teams_duration = Summary(
 
 # Track active team labels to zero out metrics for inactive teams
 active_team_labels = set()
+
+
+def _resolve_event_region_id(event_object: any) -> Optional[int]:
+    metadata = getattr(event_object, "metadata", None) or {}
+    for key in ("region_id", "regionId"):
+        raw = metadata.get(key)
+        try:
+            if raw is not None:
+                return int(raw)
+        except (TypeError, ValueError):
+            logger.warning("Invalid region metadata %s=%s", key, raw)
+    return None
 
 
 def set_team_and_user_limits(db: Session, team: DBTeam):
@@ -320,6 +336,7 @@ async def handle_stripe_event_background(event):
 
         # Record the payment for audit and sync tracking
         payment_record_id = None
+        event_region_id = _resolve_event_region_id(event_object)
         if event_type in SUCCESS_EVENTS:
             payment_record_id = await _record_periodic_payment(db, event_object)
 
@@ -330,7 +347,12 @@ async def handle_stripe_event_background(event):
             product_id = await get_product_id_from_subscription(event_object.id)
             start_date = datetime.fromtimestamp(event_object.start_date, tz=UTC)
             await apply_product_for_team(
-                db, customer_id, product_id, start_date, payment_record_id
+                db,
+                customer_id,
+                product_id,
+                start_date,
+                payment_record_id,
+                region_id=event_region_id,
             )
         elif event_type in INVOICE_SUCCESS_EVENTS:
             # subscription renewed
@@ -367,7 +389,12 @@ async def handle_stripe_event_background(event):
                     source_payment_id=payment_record_id,
                 )
                 await apply_product_for_team(
-                    db, customer_id, product_id, start_date, payment_record_id
+                    db,
+                    customer_id,
+                    product_id,
+                    start_date,
+                    payment_record_id,
+                    region_id=event_region_id,
                 )
         elif event_type in SESSION_SUCCESS_EVENTS:
             # checkout signup/subscription flow
@@ -375,7 +402,12 @@ async def handle_stripe_event_background(event):
             if subscription:
                 product_id = await get_product_id_from_subscription(subscription)
                 await apply_product_for_team(
-                    db, customer_id, product_id, datetime.now(UTC), payment_record_id
+                    db,
+                    customer_id,
+                    product_id,
+                    datetime.now(UTC),
+                    payment_record_id,
+                    region_id=event_region_id,
                 )
 
         # Failure Events
@@ -598,6 +630,7 @@ async def apply_product_for_team(
     product_id: str,
     start_date: datetime,
     payment_record_id: Optional[int] = None,
+    region_id: Optional[int] = None,
 ):
     """
     Apply a product to a team and update their last payment date.
@@ -657,8 +690,22 @@ async def apply_product_for_team(
         is_periodic = team.budget_type == BudgetType.PERIODIC
         budget_duration = "31d" if is_periodic else f"{days_left_in_period}d"
 
-        # Get all keys for the team grouped by region
-        keys_by_region = get_team_keys_by_region(db, team.id)
+        # Get all keys for the team grouped by region, optionally scoped to one region
+        if region_id is None:
+            keys_by_region = get_team_keys_by_region(db, team.id)
+        else:
+            region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+            if not region:
+                logger.warning(
+                    "Skipping product sync for team %s: region %s not found",
+                    team.id,
+                    region_id,
+                )
+                return
+            region_keys = get_team_region_litellm_keys(
+                db, team_id=team.id, region_id=region_id
+            )
+            keys_by_region = {region: region_keys}
         num_regions = len(keys_by_region)
         if num_regions == 0:
             logger.warning(

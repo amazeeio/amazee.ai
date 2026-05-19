@@ -261,6 +261,45 @@ async def test_invoice_success_parent_missing_subscription_details(
 
 @pytest.mark.asyncio
 @patch("app.core.worker.get_db")
+@patch("app.core.worker.apply_product_for_team", new_callable=AsyncMock)
+@patch("app.core.worker.get_product_id_from_subscription", new_callable=AsyncMock)
+@patch(
+    "app.core.worker.capture_periodic_team_spend_for_invoice", new_callable=AsyncMock
+)
+@patch("app.core.worker._sync_periodic_ledger_for_invoice", new_callable=AsyncMock)
+@patch("app.core.worker._record_periodic_payment", new_callable=AsyncMock)
+async def test_invoice_success_passes_region_id_from_metadata(
+    mock_record,
+    mock_sync_ledger,
+    mock_capture_spend,
+    mock_get_product_id,
+    mock_apply_product,
+    mock_get_db,
+):
+    mock_db = MagicMock()
+    mock_db.close = MagicMock()
+    mock_get_db.return_value = iter([mock_db])
+    mock_record.return_value = 77
+    mock_get_product_id.return_value = "prod_test_123"
+
+    event = MagicMock()
+    event.type = "invoice.paid"
+    event_object = MagicMock()
+    event_object.customer = "cus_inv_region"
+    event_object.subscription = "sub_inv_region"
+    event_object.period_start = int(datetime.now(UTC).timestamp())
+    event_object.metadata = {"regionId": "42"}
+    event.data.object = event_object
+
+    await handle_stripe_event_background(event)
+
+    mock_apply_product.assert_awaited_once()
+    kwargs = mock_apply_product.await_args.kwargs
+    assert kwargs["region_id"] == 42
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.get_db")
 @patch("app.core.worker.remove_product_from_team", new_callable=AsyncMock)
 @patch("app.core.worker.get_product_id_from_subscription", new_callable=AsyncMock)
 async def test_invoice_failure_no_subscription_no_parent(
