@@ -199,6 +199,7 @@ async def get_team_spend_history(
             )
             .filter(
                 latest_ledger.region_id == region_id,
+                latest_ledger.team_id == team_id,
                 latest_ledger.source_payment_id.isnot(None),
             )
             .group_by(latest_ledger.source_payment_id)

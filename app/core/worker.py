@@ -306,24 +306,28 @@ async def handle_stripe_event_background(event):
     """
     # Create a new database session for this processing task
     db = next(get_db())
+    event_id: str | None = None
+    event_claimed = False
     try:
         event_type = event.type
         if event_type not in KNOWN_EVENTS:
             logger.info(f"Unknown event type: {event_type}")
             return
         raw_event_id = getattr(event, "id", None)
-        event_id = (
-            raw_event_id if isinstance(raw_event_id, str) and raw_event_id else None
-        )
+        event_id = raw_event_id if isinstance(raw_event_id, str) and raw_event_id else None
         if event_id:
-            already_processed = (
-                db.query(DBStripeProcessedEvent)
-                .filter(DBStripeProcessedEvent.stripe_event_id == event_id)
-                .first()
+            claim_stmt = (
+                pg_insert(DBStripeProcessedEvent)
+                .values(stripe_event_id=event_id, event_type=event_type)
+                .on_conflict_do_nothing(index_elements=["stripe_event_id"])
+                .returning(DBStripeProcessedEvent.id)
             )
-            if already_processed:
+            claim_row = db.execute(claim_stmt).first()
+            db.commit()
+            if claim_row is None:
                 logger.info("Stripe event already processed: %s", event_id)
                 return
+            event_claimed = True
 
         event_object = event.data.object
         customer_id = event_object.customer
@@ -432,16 +436,19 @@ async def handle_stripe_event_background(event):
                 product_id = await get_product_id_from_subscription(subscription)
                 await remove_product_from_team(db, customer_id, product_id)
 
-        if event_id:
-            mark_processed_stmt = (
-                pg_insert(DBStripeProcessedEvent)
-                .values(stripe_event_id=event_id, event_type=event_type)
-                .on_conflict_do_nothing(index_elements=["stripe_event_id"])
-            )
-            db.execute(mark_processed_stmt)
         db.commit()
     except Exception as e:
         db.rollback()
+        if event_claimed and event_id:
+            try:
+                (
+                    db.query(DBStripeProcessedEvent)
+                    .filter(DBStripeProcessedEvent.stripe_event_id == event_id)
+                    .delete()
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
         logger.error(f"Error in background event handler: {str(e)}")
         raise
     finally:

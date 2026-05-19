@@ -31,7 +31,7 @@ def test_create_pool_purchase_success(client, admin_token, db, test_team, test_r
         mock_instance.update_team_budget = AsyncMock()
 
         response = client.post(
-            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic",
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
             json={
                 "amount_cents": 5000,
                 "currency": "usd",

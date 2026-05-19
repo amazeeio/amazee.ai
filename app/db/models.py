@@ -47,9 +47,7 @@ class DBTeamProduct(Base):
         primary_key=True,
         nullable=False,
     )
-    created_at = Column(
-        DateTime(timezone=True), default=func.now(), nullable=False, index=True
-    )
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 
     team = relationship("DBTeam", back_populates="active_products")
@@ -333,7 +331,9 @@ class DBStripeProcessedEvent(Base):
     id = Column(Integer, primary_key=True, index=True)
     stripe_event_id = Column(String, unique=True, nullable=False, index=True)
     event_type = Column(String, nullable=False)
-    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=func.now(), nullable=False, index=True
+    )
 
 
 class DBPeriodicBudgetLedgerEntry(Base):

@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import (
     APIRouter,
     Depends,
@@ -37,6 +38,7 @@ from app.core.worker import handle_stripe_event_background
 logger = logging.getLogger(__name__)
 BILLING_WEBHOOK_KEY = "stripe_webhook_secret"
 BILLING_WEBHOOK_ROUTE = "/billing/events"
+STRIPE_WEBHOOK_PROCESSING_TIMEOUT_SECONDS = 25
 
 router = APIRouter(tags=["billing"])
 
@@ -90,7 +92,17 @@ async def handle_events(request: Request, db: Session = Depends(get_db)):
 
         event = decode_stripe_event(payload, signature, webhook_secret)
 
-        await handle_stripe_event_background(event)
+        try:
+            await asyncio.wait_for(
+                handle_stripe_event_background(event),
+                timeout=STRIPE_WEBHOOK_PROCESSING_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as exc:
+            logger.error("Stripe webhook processing timed out: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Error processing webhook",
+            ) from exc
 
         return Response(
             status_code=status.HTTP_200_OK,
