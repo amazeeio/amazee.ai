@@ -25,11 +25,15 @@ interface SpendInfo {
 interface PrivateAIKeySpendCellProps {
   keyId: number;
   hasLiteLLMToken: boolean;
+  region?: string;
+  teamId?: number;
 }
 
 export function PrivateAIKeySpendCell({
   keyId,
   hasLiteLLMToken,
+  region,
+  teamId,
 }: PrivateAIKeySpendCellProps) {
   const [isLoaded, setIsLoaded] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -40,8 +44,23 @@ export function PrivateAIKeySpendCell({
     isLoading,
     refetch,
   } = useQuery<SpendInfo>({
-    queryKey: ["private-ai-key-spend", keyId],
+    queryKey: ["private-ai-key-spend", keyId, region, teamId],
     queryFn: async () => {
+      if (teamId && region) {
+        // Look up region_id from regions list
+        const regionsResponse = await get("regions");
+        const regions = await regionsResponse.json();
+        const matchedRegion = regions.find(
+          (r: { name: string }) => r.name === region,
+        );
+        if (matchedRegion) {
+          const response = await get(
+            `spend/${matchedRegion.id}/team/${teamId}`,
+          );
+          return response.json();
+        }
+      }
+      // Fallback for keys without team_id
       const response = await get(`private-ai-keys/${keyId}/spend`);
       return response.json();
     },
@@ -105,39 +124,51 @@ export function PrivateAIKeySpendCell({
   }
 
   return (
-    <div className="flex items-center gap-2">
-      <span className="text-sm font-medium">
-        ${spendData.spend.toFixed(2)}
-      </span>
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-2">
+        <span className="text-sm font-medium">
+          ${spendData.spend.toFixed(2)}
+        </span>
+        {spendData.max_budget != null && (
+          <span className="text-sm text-muted-foreground">
+            / ${spendData.max_budget.toFixed(2)}
+          </span>
+        )}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-4 w-4"
+          onClick={handleRefreshSpend}
+          disabled={isRefreshing}
+          aria-label="Refresh spend"
+        >
+          {isRefreshing ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <RefreshCw className="h-3 w-3" />
+          )}
+          <span className="sr-only">Refresh spend</span>
+        </Button>
+        {spendData.max_budget != null && (
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger>
+                <Info className="h-3 w-3 text-muted-foreground" />
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>This is a shared team budget.</p>
+                <p>All keys in the team share this budget.</p>
+                <p>To change it, edit the team&apos;s limits.</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
+      </div>
       {spendData.max_budget != null && (
-        <span className="text-sm text-muted-foreground">
-          / ${spendData.max_budget.toFixed(2)}
+        <span className="text-xs text-muted-foreground">
+          Team budget — shared across all keys
         </span>
       )}
-      <Button
-        variant="ghost"
-        size="icon"
-        className="h-4 w-4"
-        onClick={handleRefreshSpend}
-        disabled={isRefreshing}
-      >
-        {isRefreshing ? (
-          <Loader2 className="h-3 w-3 animate-spin" />
-        ) : (
-          <RefreshCw className="h-3 w-3" />
-        )}
-      </Button>
-      <TooltipProvider>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Info className="h-3 w-3 text-muted-foreground" />
-          </TooltipTrigger>
-          <TooltipContent>
-            <p>Shown budget is this key&apos;s cap.</p>
-            <p>Team-level budgets may override key caps.</p>
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
     </div>
   );
 }

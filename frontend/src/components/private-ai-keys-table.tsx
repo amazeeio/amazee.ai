@@ -442,6 +442,8 @@ export function PrivateAIKeysTable({
                   <PrivateAIKeySpendCell
                     keyId={key.id}
                     hasLiteLLMToken={!!key.litellm_token}
+                    region={key.region}
+                    teamId={key.team_id}
                   />
                 </TableCell>
                 {allowModification && (
