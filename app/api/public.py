@@ -8,10 +8,14 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.security import get_current_user_from_auth
 from app.db.database import get_db
 from app.db.models import DBRegion, DBTeamRegion, DBUser
 from app.schemas.models import (
+    BedrockMissingModel,
+    ProviderMissingModelsReport,
+    ProviderRegionMissingModels,
     PublicModelCapabilities,
     PublicModelManufacturer,
     PublicModelPricing,
@@ -23,6 +27,7 @@ from app.services.litellm import LiteLLMService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["public"])
+protected_router = APIRouter(tags=["models"])
 
 _CACHE_TTL = timedelta(hours=1)
 _REGION_TIMEOUT = 10.0  # seconds per-region request
@@ -480,7 +485,7 @@ async def list_public_models(
                 _models_cache["expires_at"] = datetime.now(UTC) + _CACHE_TTL
             public_groups = fetched_groups
 
-    # --- User-scoped visibility ---
+    # --- Dedicated regions (optional, per-user) ---
     user = await _resolve_optional_user(request, db)
     visible_groups = list(public_groups)
 
@@ -585,3 +590,329 @@ async def list_public_models(
     request.state._public_models_is_authenticated = user is not None
 
     return _filter_region_groups_by_alias(visible_groups, alias_filters)
+
+
+# ---------------------------------------------------------------------------
+# /models/missing/{provider}
+# ---------------------------------------------------------------------------
+#
+# Reports models available in an upstream hyperscaler catalog that are NOT
+# yet deployed to any of the LiteLLM regions known to this backend.  This is
+# the "we should add this model" feed.  The original implementation lived in
+# amazeeai-k0rdent-clusters and parsed the raw ClusterDeployment YAML; here
+# we infer the deployed set live from `LiteLLMService.get_model_info()` for
+# each region, which gives us the same `litellm_params.model` strings (e.g.
+# ``bedrock/us.anthropic.claude-...``).
+#
+# Per-provider extension:
+#   /models/missing/aws     - implemented (Amazon Bedrock)
+#   /models/missing/google  - 501, planned (Google Vertex)
+#   /models/missing/azure   - 501, planned (Azure Foundry)
+#
+# Adding a new provider means writing one ``_build_<provider>_missing_report``
+# helper and wiring it into ``_PROVIDER_BUILDERS``; the dispatcher and
+# response shape stay the same.
+
+# AWS Bedrock region groups, mirroring the k0rdent script.  Each "region
+# group" is a market code that maps a provider ID prefix
+# (``bedrock/<prefix>.modelId``) back to its upstream AWS region.
+_AWS_REGION_GROUPS: dict[str, dict[str, str]] = {
+    "US": {"upstream_region": "us-east-1", "provider_prefix": "us."},
+    "EU": {"upstream_region": "eu-central-1", "provider_prefix": "eu."},
+    "AU": {"upstream_region": "ap-southeast-2", "provider_prefix": "au."},
+}
+
+_BEDROCK_CATALOG_TTL = timedelta(hours=1)
+_bedrock_catalog_lock = asyncio.Lock()
+_bedrock_catalog_cache: dict[str, Any] = {
+    "url": None,
+    "expires_at": datetime.min.replace(tzinfo=UTC),
+    "data": None,
+}
+
+
+async def _fetch_bedrock_catalog(url: str) -> list[dict[str, Any]]:
+    """Fetch the upstream Bedrock model catalog, with a small in-memory cache.
+
+    The catalog is on the order of a few hundred KB and changes infrequently,
+    so a 1h TTL is plenty.  Cache key includes the URL so overrides bypass
+    stale data automatically.
+    """
+    now = datetime.now(UTC)
+    if (
+        _bedrock_catalog_cache["url"] == url
+        and _bedrock_catalog_cache["expires_at"] > now
+        and _bedrock_catalog_cache["data"] is not None
+    ):
+        return _bedrock_catalog_cache["data"]
+
+    async with _bedrock_catalog_lock:
+        now = datetime.now(UTC)
+        if (
+            _bedrock_catalog_cache["url"] == url
+            and _bedrock_catalog_cache["expires_at"] > now
+            and _bedrock_catalog_cache["data"] is not None
+        ):
+            return _bedrock_catalog_cache["data"]
+
+        timeout = settings.BEDROCK_MISSING_MODELS_TIMEOUT_SECONDS
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        f"Upstream Bedrock catalog at {url} returned non-JSON response: {exc}"
+                    ),
+                ) from exc
+
+        if not isinstance(data, list):
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"Upstream Bedrock catalog at {url} did not return a JSON array"
+                ),
+            )
+
+        _bedrock_catalog_cache["url"] = url
+        _bedrock_catalog_cache["data"] = data
+        _bedrock_catalog_cache["expires_at"] = now + _BEDROCK_CATALOG_TTL
+        return data
+
+
+def _build_available_aws_models_by_group(
+    upstream_models: list[dict[str, Any]],
+) -> dict[str, dict[str, dict[str, str]]]:
+    """Group upstream Bedrock models by AWS region group, keyed by ``modelId``.
+
+    Mirrors the k0rdent script: only ACTIVE models (or models that don't
+    declare a lifecycle status) are considered, and a model is "available"
+    in a group if its ``regions`` list contains the group's AWS region.
+    """
+    available: dict[str, dict[str, dict[str, str]]] = {
+        group: {} for group in _AWS_REGION_GROUPS
+    }
+
+    for model in upstream_models:
+        if not isinstance(model, dict):
+            continue
+        model_id = model.get("modelId")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+
+        lifecycle = model.get("modelLifecycle") or {}
+        status = lifecycle.get("status") if isinstance(lifecycle, dict) else None
+        if status and status != "ACTIVE":
+            continue
+
+        regions_raw = model.get("regions")
+        if not isinstance(regions_raw, (list, tuple)):
+            regions_raw = []
+        regions = {r for r in regions_raw if isinstance(r, str)}
+
+        for group, details in _AWS_REGION_GROUPS.items():
+            if details["upstream_region"] in regions:
+                available[group][model_id] = {
+                    "model_id": model_id,
+                    "model_name": str(model.get("modelName") or model_id),
+                    "provider_name": str(model.get("providerName") or "Unknown"),
+                }
+
+    return available
+
+
+def _normalize_bedrock_provider_id(
+    provider_model_id: str, provider_prefix: str
+) -> str | None:
+    """Strip ``bedrock/<prefix>.`` off a LiteLLM provider model id.
+
+    Returns ``None`` when the id isn't a bedrock id at all so the caller
+    can ignore non-bedrock providers (Vertex, Azure, OpenAI, etc.).
+    """
+    if not isinstance(provider_model_id, str):
+        return None
+    if not provider_model_id.startswith("bedrock/"):
+        return None
+
+    normalized = provider_model_id.split("/", 1)[1]
+    if normalized.startswith(provider_prefix):
+        normalized = normalized[len(provider_prefix):]
+    return normalized
+
+
+async def _collect_region_bedrock_models(
+    region: DBRegion,
+) -> tuple[str, dict[str, set[str]]]:
+    """Return ``(region_name, {region_group: {normalized_model_id, ...}})``.
+
+    Failures are logged and produce empty sets so a single broken region can't
+    take down the whole report.  We deliberately do NOT short-circuit when a
+    region returns zero models — that's a legitimate state.
+    """
+    configured: dict[str, set[str]] = {group: set() for group in _AWS_REGION_GROUPS}
+
+    service = LiteLLMService(
+        api_url=region.litellm_api_url,
+        api_key=region.litellm_api_key,
+    )
+    try:
+        async with _REGION_SEMAPHORE:
+            model_info = await asyncio.wait_for(
+                service.get_model_info(),
+                timeout=settings.BEDROCK_MISSING_MODELS_TIMEOUT_SECONDS,
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "Region %s unavailable for /models/missing/aws: %s",
+            region.name,
+            exc,
+        )
+        return region.name, configured
+
+    for item in model_info.get("data", []) or []:
+        if not isinstance(item, dict):
+            continue
+        params = item.get("litellm_params") or {}
+        provider_model_id = (
+            params.get("model") if isinstance(params, dict) else None
+        )
+        if not isinstance(provider_model_id, str) or not provider_model_id:
+            continue
+
+        for group, details in _AWS_REGION_GROUPS.items():
+            normalized = _normalize_bedrock_provider_id(
+                provider_model_id, details["provider_prefix"]
+            )
+            if normalized is None:
+                continue
+            # Only count a deployed bedrock model toward a group when its
+            # provider id explicitly carries that group's prefix
+            # (e.g. ``bedrock/us.anthropic...`` -> US).  Unprefixed bedrock
+            # ids can't be safely attributed without per-region AWS-region
+            # metadata, so we leave them out of every group rather than
+            # double-count and hide real gaps.
+            if provider_model_id.startswith(f"bedrock/{details['provider_prefix']}"):
+                configured[group].add(normalized)
+
+    return region.name, configured
+
+
+async def _build_aws_missing_report(
+    db: Session, user: DBUser | None
+) -> ProviderMissingModelsReport:
+    """Build the AWS Bedrock missing-models report.
+
+    Authenticated non-admin callers see only public regions in the
+    "configured" set. Authenticated system admins additionally include
+    private/dedicated regions so the report reflects the true deployed
+    surface area.
+    """
+    include_private = bool(user and user.is_admin)
+
+    upstream_models = await _fetch_bedrock_catalog(settings.BEDROCK_MODELS_URL)
+    available_by_group = _build_available_aws_models_by_group(upstream_models)
+
+    region_query = db.query(DBRegion).filter(DBRegion.is_active.is_(True))
+    if not include_private:
+        region_query = region_query.filter(DBRegion.is_dedicated.is_(False))
+    regions = region_query.all()
+
+    configured_by_group: dict[str, set[str]] = {
+        group: set() for group in _AWS_REGION_GROUPS
+    }
+    contributing_regions_by_group: dict[str, set[str]] = {
+        group: set() for group in _AWS_REGION_GROUPS
+    }
+
+    if regions:
+        per_region = await asyncio.gather(
+            *(_collect_region_bedrock_models(region) for region in regions)
+        )
+        for region_name, region_configured in per_region:
+            for group, ids in region_configured.items():
+                if ids:
+                    configured_by_group[group].update(ids)
+                    contributing_regions_by_group[group].add(region_name)
+
+    region_groups: list[ProviderRegionMissingModels] = []
+    for group, details in _AWS_REGION_GROUPS.items():
+        available = available_by_group[group]
+        configured_ids = configured_by_group[group]
+        missing_ids = sorted(set(available) - configured_ids)
+        missing_models = [
+            BedrockMissingModel(**available[model_id]) for model_id in missing_ids
+        ]
+        region_groups.append(
+            ProviderRegionMissingModels(
+                region_group=group,
+                upstream_region=details["upstream_region"],
+                regions=sorted(contributing_regions_by_group[group]),
+                available_model_count=len(available),
+                configured_model_count=len(configured_ids),
+                missing_model_count=len(missing_models),
+                missing_models=missing_models,
+            )
+        )
+
+    return ProviderMissingModelsReport(
+        provider="aws",
+        generated_at=datetime.now(UTC),
+        models_url=settings.BEDROCK_MODELS_URL,
+        is_authenticated=user is not None,
+        region_groups=region_groups,
+    )
+
+
+# Provider dispatcher.  Adding a new provider is a single line here plus a
+# helper above; the endpoint shape and response schema are shared.
+_PROVIDER_BUILDERS: dict[str, Any] = {
+    "aws": _build_aws_missing_report,
+    # "google": _build_google_missing_report,   # planned
+    # "azure": _build_azure_missing_report,     # planned
+}
+_KNOWN_PROVIDERS: set[str] = {"aws", "google", "azure"}
+
+
+@protected_router.get(
+    "/models/missing/{provider}",
+    response_model=ProviderMissingModelsReport,
+    summary="Models available upstream at a hyperscaler but not yet deployed",
+)
+async def list_missing_provider_models(
+    provider: str,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db),
+) -> ProviderMissingModelsReport:
+    """Compare an upstream hyperscaler model catalog against models deployed
+    to the LiteLLM regions known to this backend.
+
+    ``provider`` is the hyperscaler to inspect: ``aws`` (implemented),
+    ``google`` (planned), ``azure`` (planned).  Unknown providers return
+    404; known-but-unimplemented providers return 501.
+    """
+    provider_key = provider.lower()
+    if provider_key not in _KNOWN_PROVIDERS:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Unknown provider '{provider}'. "
+                f"Supported: {sorted(_KNOWN_PROVIDERS)}"
+            ),
+        )
+
+    builder = _PROVIDER_BUILDERS.get(provider_key)
+    if builder is None:
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                f"Provider '{provider_key}' is recognised but not yet "
+                "implemented on this backend."
+            ),
+        )
+
+    return await builder(db, current_user)
