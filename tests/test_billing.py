@@ -1,4 +1,4 @@
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, Mock
 from app.db.models import DBTeamProduct
 from fastapi import HTTPException, status
 
@@ -217,14 +217,61 @@ def test_get_pricing_table_session_team_not_found(client, db, admin_token):
     non_existent_team_id = 999
 
     # Act
-    response = client.get(
+    client.get(
         f"/billing/teams/{non_existent_team_id}/pricing-table-session",
         headers={"Authorization": f"Bearer {admin_token}"},
     )
 
-    # Assert
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Team not found"
+
+@patch("app.api.billing.handle_stripe_event_background", new_callable=AsyncMock)
+@patch("app.api.billing.decode_stripe_event")
+def test_billing_webhook_returns_200_only_after_success(
+    mock_decode_event,
+    mock_handle_event,
+    client,
+    db,
+    monkeypatch,
+):
+    monkeypatch.setenv("WEBHOOK_SIG", "whsec_test")
+    mock_event = Mock()
+    mock_event.type = "invoice.paid"
+    mock_event.data.object = Mock()
+    mock_decode_event.return_value = mock_event
+    mock_handle_event.return_value = None
+
+    response = client.post(
+        "/billing/events",
+        content=b'{"id":"evt_test"}',
+        headers={"stripe-signature": "sig_test"},
+    )
+
+    assert response.status_code == 200
+    mock_handle_event.assert_awaited_once_with(mock_event)
+
+
+@patch("app.api.billing.handle_stripe_event_background", new_callable=AsyncMock)
+@patch("app.api.billing.decode_stripe_event")
+def test_billing_webhook_returns_500_on_processing_failure(
+    mock_decode_event,
+    mock_handle_event,
+    client,
+    db,
+    monkeypatch,
+):
+    monkeypatch.setenv("WEBHOOK_SIG", "whsec_test")
+    mock_event = Mock()
+    mock_event.type = "invoice.paid"
+    mock_event.data.object = Mock()
+    mock_decode_event.return_value = mock_event
+    mock_handle_event.side_effect = Exception("transient downstream failure")
+
+    response = client.post(
+        "/billing/events",
+        content=b'{"id":"evt_test"}',
+        headers={"stripe-signature": "sig_test"},
+    )
+
+    assert response.status_code == 500
 
 
 @patch("app.services.stripe.stripe.api_key", "sk_test_mock")

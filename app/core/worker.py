@@ -304,7 +304,7 @@ async def handle_stripe_event_background(event):
     This runs in a separate thread to avoid blocking the webhook response.
     Creates its own database session to avoid using the request-scoped session.
     """
-    # Create a new database session for this background task
+    # Create a new database session for this processing task
     db = next(get_db())
     try:
         event_type = event.type
@@ -316,17 +316,14 @@ async def handle_stripe_event_background(event):
             raw_event_id if isinstance(raw_event_id, str) and raw_event_id else None
         )
         if event_id:
-            claim_stmt = (
-                pg_insert(DBStripeProcessedEvent)
-                .values(stripe_event_id=event_id, event_type=event_type)
-                .on_conflict_do_nothing(index_elements=["stripe_event_id"])
+            already_processed = (
+                db.query(DBStripeProcessedEvent)
+                .filter(DBStripeProcessedEvent.stripe_event_id == event_id)
+                .first()
             )
-            claim_result = db.execute(claim_stmt)
-            if (claim_result.rowcount or 0) == 0:
-                db.rollback()
+            if already_processed:
                 logger.info("Stripe event already processed: %s", event_id)
                 return
-            db.flush()
 
         event_object = event.data.object
         customer_id = event_object.customer
@@ -435,10 +432,18 @@ async def handle_stripe_event_background(event):
                 product_id = await get_product_id_from_subscription(subscription)
                 await remove_product_from_team(db, customer_id, product_id)
 
+        if event_id:
+            mark_processed_stmt = (
+                pg_insert(DBStripeProcessedEvent)
+                .values(stripe_event_id=event_id, event_type=event_type)
+                .on_conflict_do_nothing(index_elements=["stripe_event_id"])
+            )
+            db.execute(mark_processed_stmt)
         db.commit()
     except Exception as e:
         db.rollback()
         logger.error(f"Error in background event handler: {str(e)}")
+        raise
     finally:
         db.close()
 

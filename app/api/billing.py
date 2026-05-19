@@ -5,7 +5,6 @@ from fastapi import (
     status,
     Request,
     Response,
-    BackgroundTasks,
 )
 from sqlalchemy.orm import Session
 import logging
@@ -59,14 +58,12 @@ def get_return_url(team_id: int) -> str:
 
 
 @router.post("/events")
-async def handle_events(
-    request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)
-):
+async def handle_events(request: Request, db: Session = Depends(get_db)):
     """
     Handle Stripe webhook events.
 
-    This endpoint processes various Stripe events like subscription updates,
-    payment successes, and failures. Events are processed asynchronously in the background.
+    This endpoint processes Stripe events synchronously and only returns 200
+    after durable processing has completed.
     """
     try:
         # Get the webhook secret from database or environment variable
@@ -93,15 +90,14 @@ async def handle_events(
 
         event = decode_stripe_event(payload, signature, webhook_secret)
 
-        # Add the event handling to background tasks
-        # Note: Don't pass the request-scoped db session to background task
-        background_tasks.add_task(handle_stripe_event_background, event)
+        await handle_stripe_event_background(event)
 
         return Response(
             status_code=status.HTTP_200_OK,
-            content="Webhook received and processing started",
+            content="Webhook processed successfully",
         )
-
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error handling Stripe event: {str(e)}")
         raise HTTPException(
