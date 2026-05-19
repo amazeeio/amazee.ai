@@ -1,0 +1,135 @@
+name: Weekly Missing Models Check
+
+on:
+  schedule:
+    - cron: '0 7 * * 1' # Every Monday at 07:00 UTC
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: 'Override AMAZEEAI_API_URL for this run (e.g. https://api.amazee.ai)'
+        required: false
+        type: string
+      provider:
+        description: 'Limit run to a single provider (otherwise all enabled providers run).'
+        required: false
+        type: choice
+        options:
+          - all
+          - aws
+        default: all
+
+permissions:
+  contents: write
+
+jobs:
+  check-missing-models:
+    runs-on: ubuntu-latest
+    strategy:
+      # Don't let one provider's failure abort the others.
+      fail-fast: false
+      matrix:
+        # Add 'google' and 'azure' here once the corresponding endpoints are
+        # implemented in app/api/public.py. No other workflow changes needed.
+        provider: [aws]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Skip if workflow_dispatch limited to a different provider
+        id: gate
+        run: |
+          requested="${{ github.event.inputs.provider }}"
+          if [ -n "$requested" ] && [ "$requested" != "all" ] && [ "$requested" != "${{ matrix.provider }}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: '3.x'
+
+      - name: Compare deployed models against upstream catalog (${{ matrix.provider }})
+        id: compare
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          # Repository variable; set AMAZEEAI_API_URL in repo Settings → Variables.
+          AMAZEEAI_API_URL: ${{ github.event.inputs.api_url || vars.AMAZEEAI_API_URL || 'https://api.amazee.ai' }}
+          # Required Bearer token for /models/missing/{provider}. A system-admin
+          # token additionally covers private/dedicated regions.
+          # Set this in repo Settings → Secrets → Actions as AMAZEEAI_ADMIN_TOKEN.
+          AMAZEEAI_ADMIN_TOKEN: ${{ secrets.AMAZEEAI_ADMIN_TOKEN }}
+          MISSING_MODELS_PROVIDER: ${{ matrix.provider }}
+        run: |
+          if [ -z "$AMAZEEAI_ADMIN_TOKEN" ]; then
+            echo "::error::AMAZEEAI_ADMIN_TOKEN secret is not set. Configure it in repo Settings → Secrets → Actions."
+            exit 1
+          fi
+          python scripts/check_missing_models.py
+
+      - name: Notify Slack about new missing models
+        if: steps.gate.outputs.skip != 'true' && steps.compare.outputs.has_new_missing == 'true'
+        uses: slackapi/slack-github-action@485a9d42d3a73031f12ec201c457e2162c45d02d # v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "${{ vars.SLACK_CHANNEL_ID }}",
+              "text": ":robot_face: New ${{ matrix.provider }} models are available upstream but not yet deployed to amazee.ai.",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":robot_face: *New `${{ matrix.provider }}` models detected*\nThe following models exist upstream but are not yet deployed to one of the amazee.ai LiteLLM regions."
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ${{ steps.compare.outputs.summary_json }}
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Workflow:*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|${{ github.workflow }}>"
+                    }
+                  ]
+                }
+              ]
+            }
+
+      - name: Commit refreshed state file (${{ matrix.provider }})
+        if: steps.gate.outputs.skip != 'true' && steps.compare.outputs.state_changed == 'true'
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add scripts/missing-models-state-${{ matrix.provider }}.json
+          if git diff --cached --quiet; then
+            echo "No state diff to commit."
+            exit 0
+          fi
+          git commit -m "chore: update ${{ matrix.provider }} missing models state"
+
+          branch="${{ github.ref_name }}"
+          for _attempt in 1 2 3; do
+            git fetch origin "$branch"
+            git rebase "origin/$branch"
+            if git push origin HEAD:"$branch"; then
+              exit 0
+            fi
+            git rebase --abort || true
+            sleep 5
+          done
+
+          echo "Failed to push updated state after 3 attempts" >&2
+          exit 1

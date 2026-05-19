@@ -109,6 +109,11 @@ export function PrivateAIKeySpendCell({
       <span className="text-sm font-medium">
         ${spendData.spend.toFixed(2)}
       </span>
+      {spendData.max_budget != null && (
+        <span className="text-sm text-muted-foreground">
+          / ${spendData.max_budget.toFixed(2)}
+        </span>
+      )}
       <Button
         variant="ghost"
         size="icon"
@@ -128,8 +133,8 @@ export function PrivateAIKeySpendCell({
             <Info className="h-3 w-3 text-muted-foreground" />
           </TooltipTrigger>
           <TooltipContent>
-            <p>Budget is managed at the team level.</p>
-            <p>To change it, edit the team&apos;s limits.</p>
+            <p>Shown budget is this key&apos;s cap.</p>
+            <p>Team-level budgets may override key caps.</p>
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>

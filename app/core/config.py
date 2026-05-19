@@ -57,6 +57,17 @@ class Settings(BaseSettings):
     DEDICATED_DEFAULT_VECTOR_DB_COUNT: float | None = None
     DEDICATED_DEFAULT_RPM_PER_KEY: float | None = None
 
+    # URL of the upstream Amazon Bedrock model catalog used by /models/missing.
+    # Defaults to the community-maintained mirror used by the k0rdent-clusters tooling.
+    BEDROCK_MODELS_URL: str = os.getenv(
+        "BEDROCK_MODELS_URL",
+        "https://raw.githubusercontent.com/amazonbedrockmodels/amazonbedrockmodels.github.io/main/data/models.json",
+    )
+    # Per-region timeout for fetching bedrock model availability and our LiteLLM /model/info.
+    BEDROCK_MISSING_MODELS_TIMEOUT_SECONDS: float = float(
+        os.getenv("BEDROCK_MISSING_MODELS_TIMEOUT_SECONDS", "15")
+    )
+
     model_config = ConfigDict(env_file=".env", extra="ignore")
     main_route: str = os.getenv("LAGOON_ROUTE", "http://localhost:8800")
     frontend_route: str = os.getenv("FRONTEND_ROUTE", "http://localhost:3000")
