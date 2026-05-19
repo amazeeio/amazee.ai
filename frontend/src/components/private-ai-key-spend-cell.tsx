@@ -133,8 +133,8 @@ export function PrivateAIKeySpendCell({
             <Info className="h-3 w-3 text-muted-foreground" />
           </TooltipTrigger>
           <TooltipContent>
-            <p>Budget is managed at the team level.</p>
-            <p>To change it, edit the team&apos;s limits.</p>
+            <p>Shown budget is this key&apos;s cap.</p>
+            <p>Team-level budgets may override key caps.</p>
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>
