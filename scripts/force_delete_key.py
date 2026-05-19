@@ -7,7 +7,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sqlalchemy.orm import Session, joinedload
 from app.db.database import SessionLocal
-from app.db.models import DBPrivateAIKey, DBUser, DBRegion
+from app.db.models import DBPrivateAIKey, DBUser, DBRegion, DBSpendCap
 
 
 def delete_key(
@@ -61,6 +61,8 @@ def delete_key(
         for key in keys_to_delete:
             region_str = key.region.name if key.region else "None"
             print(f"Deleting key: {key.name} (ID: {key.id}) from region: {region_str}")
+            # Delete associated spend_caps to avoid FK violation
+            db.query(DBSpendCap).filter(DBSpendCap.key_id == key.id).delete()
             db.delete(key)
 
         db.commit()
