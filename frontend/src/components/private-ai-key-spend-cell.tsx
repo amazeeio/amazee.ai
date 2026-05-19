@@ -109,6 +109,11 @@ export function PrivateAIKeySpendCell({
       <span className="text-sm font-medium">
         ${spendData.spend.toFixed(2)}
       </span>
+      {spendData.max_budget != null && (
+        <span className="text-sm text-muted-foreground">
+          / ${spendData.max_budget.toFixed(2)}
+        </span>
+      )}
       <Button
         variant="ghost"
         size="icon"
