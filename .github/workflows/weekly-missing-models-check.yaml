@@ -73,7 +73,7 @@ jobs:
 
       - name: Notify Slack about new missing models
         if: steps.gate.outputs.skip != 'true' && steps.compare.outputs.has_new_missing == 'true'
-        uses: slackapi/slack-github-action@485a9d42d3a73031f12ec201c457e2162c45d02d # v2.0.0
+        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3.0.3
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}
