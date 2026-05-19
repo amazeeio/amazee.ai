@@ -12,6 +12,7 @@ from app.db.models import (
     DBLimitedResource,
     DBTeamRegion,
     DBPoolPurchase,
+    DBPeriodicPayment,
 )
 from app.schemas.models import BudgetType
 from app.db.database import get_db
@@ -30,16 +31,22 @@ from app.services.stripe import (
     get_subscribed_products_for_customer,
     KNOWN_EVENTS,
     SUBSCRIPTION_SUCCESS_EVENTS,
+    SESSION_SUCCESS_EVENTS,
     SESSION_FAILURE_EVENTS,
     SUBSCRIPTION_FAILURE_EVENTS,
     INVOICE_FAILURE_EVENTS,
     INVOICE_SUCCESS_EVENTS,
+    SUCCESS_EVENTS,
 )
 from prometheus_client import Gauge, Counter, Summary
 from typing import Dict, List, Optional
 from app.core.security import create_access_token
 from app.core.config import settings
 from urllib.parse import urljoin
+from app.core.spend_period_service import (
+    fetch_team_spend_snapshot_for_region,
+    upsert_team_spend_period,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +205,71 @@ def set_team_and_user_limits(db: Session, team: DBTeam):
                     continue
 
 
+async def _record_periodic_payment(db: Session, event_object: any) -> Optional[int]:
+    """
+    Record a periodic team payment (subscription or top-up) in the database.
+    Used for audit and to track LiteLLM synchronization status.
+    """
+    try:
+        customer_id = getattr(event_object, "customer", None)
+        if not customer_id:
+            return None
+
+        team = db.query(DBTeam).filter(DBTeam.stripe_customer_id == customer_id).first()
+        if not team:
+            logger.warning(f"No team found for Stripe customer ID: {customer_id}")
+            return None
+
+        stripe_payment_id = event_object.id
+        # Extract amount and currency based on object type (Invoice or Session)
+        raw_amount = getattr(
+            event_object, "amount_paid", getattr(event_object, "amount_total", 0)
+        )
+        try:
+            amount_cents = int(raw_amount)
+        except (TypeError, ValueError):
+            amount_cents = 0
+
+        raw_currency = getattr(event_object, "currency", "usd")
+        currency = str(raw_currency).lower() if isinstance(raw_currency, str) else "usd"
+
+        # Determine payment type from metadata
+        metadata = getattr(event_object, "metadata", {})
+        payment_type = "subscription"
+        if metadata and metadata.get("ai_budget_increase"):
+            payment_type = "topup"
+
+        # Check if record already exists to avoid duplicates
+        payment_record = (
+            db.query(DBPeriodicPayment)
+            .filter(DBPeriodicPayment.stripe_payment_id == stripe_payment_id)
+            .first()
+        )
+
+        if not payment_record:
+            payment_record = DBPeriodicPayment(
+                team_id=team.id,
+                stripe_payment_id=stripe_payment_id,
+                amount_cents=amount_cents,
+                currency=currency,
+                payment_type=payment_type,
+                status="completed",
+                sync_status="pending",
+                payment_date=datetime.now(UTC),
+            )
+            db.add(payment_record)
+            db.commit()
+            logger.info(
+                f"Recorded {payment_type} payment {stripe_payment_id} for team {team.id}"
+            )
+
+        return payment_record.id
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to record periodic payment: {str(e)}")
+        return None
+
+
 async def handle_stripe_event_background(event):
     """
     Background task to handle Stripe webhook events.
@@ -212,22 +284,85 @@ async def handle_stripe_event_background(event):
             logger.info(f"Unknown event type: {event_type}")
             return
         event_object = event.data.object
+        event_id = getattr(event, "id", None)
         customer_id = event_object.customer
         if not customer_id:
             logger.warning("No customer ID found in event, cannot complete processing")
             return
+
+        # Record the payment for audit and sync tracking
+        payment_record_id = None
+        if event_type in SUCCESS_EVENTS:
+            payment_record_id = await _record_periodic_payment(db, event_object)
+
         # Success Events
         if event_type in SUBSCRIPTION_SUCCESS_EVENTS:
-            # new subscription
+            # new subscription – subscription objects expose current_period_start/end,
+            # not period_start/period_end, so spend capture is handled on invoice events only.
             product_id = await get_product_id_from_subscription(event_object.id)
             start_date = datetime.fromtimestamp(event_object.start_date, tz=UTC)
-            await apply_product_for_team(db, customer_id, product_id, start_date)
+            await apply_product_for_team(
+                db, customer_id, product_id, start_date, payment_record_id
+            )
         elif event_type in INVOICE_SUCCESS_EVENTS:
             # subscription renewed
-            subscription = event_object.parent.subscription_details.subscription
-            product_id = await get_product_id_from_subscription(subscription)
-            start_date = datetime.fromtimestamp(event_object.period_start, tz=UTC)
-            await apply_product_for_team(db, customer_id, product_id, start_date)
+            await capture_periodic_team_spend_for_invoice(
+                db=db,
+                customer_id=customer_id,
+                invoice_obj=event_object,
+                stripe_event_id=event_id,
+            )
+            subscription = getattr(event_object, "subscription", None)
+            # Fallback for complex invoice objects
+            if not subscription and hasattr(event_object, "parent"):
+                try:
+                    subscription = event_object.parent.subscription_details.subscription
+                except AttributeError as err:
+                    logger.debug(
+                        "Invoice object missing nested subscription_details.subscription; "
+                        "continuing without subscription fallback: %s",
+                        err,
+                    )
+
+            if subscription:
+                product_id = await get_product_id_from_subscription(subscription)
+                start_date = datetime.fromtimestamp(
+                    getattr(
+                        event_object, "period_start", int(datetime.now().timestamp())
+                    ),
+                    tz=UTC,
+                )
+                await apply_product_for_team(
+                    db, customer_id, product_id, start_date, payment_record_id
+                )
+        elif event_type in SESSION_SUCCESS_EVENTS:
+            # top-up or checkout signup
+            subscription = getattr(event_object, "subscription", None)
+            if subscription:
+                product_id = await get_product_id_from_subscription(subscription)
+                await apply_product_for_team(
+                    db, customer_id, product_id, datetime.now(UTC), payment_record_id
+                )
+            else:
+                # Potential top-up session
+                metadata = getattr(event_object, "metadata", {})
+                if metadata and metadata.get("ai_budget_increase"):
+                    team = (
+                        db.query(DBTeam)
+                        .filter(DBTeam.stripe_customer_id == customer_id)
+                        .first()
+                    )
+                    if team and team.products:
+                        # Use the team's current primary product to refresh limits
+                        product_id = team.products[0].id
+                        await apply_product_for_team(
+                            db,
+                            customer_id,
+                            product_id,
+                            datetime.now(UTC),
+                            payment_record_id,
+                        )
+
         # Failure Events
         elif event_type in SESSION_FAILURE_EVENTS:
             product_id = await get_product_id_from_session(event_object.id)
@@ -237,17 +372,103 @@ async def handle_stripe_event_background(event):
             await remove_product_from_team(db, customer_id, product_id)
         elif event_type in INVOICE_FAILURE_EVENTS:
             # We assume that the invoice is related to a subscription
-            subscription = event_object.parent.subscription_details.subscription
-            product_id = await get_product_id_from_subscription(subscription)
-            await remove_product_from_team(db, customer_id, product_id)
+            subscription = getattr(event_object, "subscription", None)
+            if not subscription and hasattr(event_object, "parent"):
+                try:
+                    subscription = event_object.parent.subscription_details.subscription
+                except AttributeError:
+                    # Some invoice payloads do not include nested subscription details.
+                    # Keep existing behavior (no subscription fallback) but make it explicit.
+                    logger.debug(
+                        "Invoice event missing parent.subscription_details.subscription; "
+                        "skipping subscription-based removal fallback."
+                    )
+
+            if subscription:
+                product_id = await get_product_id_from_subscription(subscription)
+                await remove_product_from_team(db, customer_id, product_id)
     except Exception as e:
         logger.error(f"Error in background event handler: {str(e)}")
     finally:
         db.close()
 
 
+async def capture_periodic_team_spend_for_invoice(
+    *,
+    db: Session,
+    customer_id: str,
+    invoice_obj,
+    stripe_event_id: str | None,
+) -> None:
+    team = db.query(DBTeam).filter(DBTeam.stripe_customer_id == customer_id).first()
+    if team is None:
+        logger.warning(
+            "Skipping spend period capture: no team for customer_id=%s", customer_id
+        )
+        return
+    if team.budget_type != BudgetType.PERIODIC:
+        return
+
+    period_start_ts = getattr(invoice_obj, "period_start", None)
+    period_end_ts = getattr(invoice_obj, "period_end", None)
+    if period_start_ts is None or period_end_ts is None:
+        logger.warning(
+            "Skipping spend period capture: missing period_start/period_end for team_id=%s",
+            team.id,
+        )
+        return
+
+    period_start = datetime.fromtimestamp(period_start_ts, tz=UTC)
+    period_end = datetime.fromtimestamp(period_end_ts, tz=UTC)
+
+    keys_by_region = get_team_keys_by_region(db, team.id)
+    if not keys_by_region:
+        return
+
+    for region in keys_by_region.keys():
+        try:
+            snapshot = await fetch_team_spend_snapshot_for_region(
+                db=db,
+                team=team,
+                region=region,
+            )
+            upsert_team_spend_period(
+                db=db,
+                team=team,
+                region_id=region.id,
+                period_start=period_start,
+                period_end=period_end,
+                source="stripe_webhook_litellm_sync",
+                snapshot=snapshot,
+                stripe_event_id=stripe_event_id,
+                stripe_invoice_id=getattr(invoice_obj, "id", None),
+                stripe_subscription_id=getattr(
+                    getattr(
+                        getattr(invoice_obj, "parent", None),
+                        "subscription_details",
+                        None,
+                    ),
+                    "subscription",
+                    None,
+                ),
+            )
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            logger.error(
+                "Failed to capture spend period for team_id=%s region_id=%s: %s",
+                team.id,
+                region.id,
+                str(exc),
+            )
+
+
 async def apply_product_for_team(
-    db: Session, customer_id: str, product_id: str, start_date: datetime
+    db: Session,
+    customer_id: str,
+    product_id: str,
+    start_date: datetime,
+    payment_record_id: Optional[int] = None,
 ):
     """
     Apply a product to a team and update their last payment date.
@@ -261,6 +482,7 @@ async def apply_product_for_team(
     Returns:
         bool: True if update was successful, False otherwise
     """
+    sync_errors = []
     logger.info(f"Applying product {product_id} to team {customer_id}")
     try:
         # Find the team and product
@@ -297,6 +519,13 @@ async def apply_product_for_team(
             limit_service.get_token_restrictions(team.id)
         )
 
+        # PERIODIC teams use a fixed 31-day budget duration and compound
+        # the team max_budget to keep the effective monthly budget aligned
+        # with the Stripe billing cycle. Key spends are reset to 0 on each
+        # webhook so that sum(key spends) reflects only the current period.
+        is_periodic = not team.requires_pool_purchase_gate
+        budget_duration = "31d" if is_periodic else f"{days_left_in_period}d"
+
         # Get all keys for the team grouped by region
         keys_by_region = get_team_keys_by_region(db, team.id)
 
@@ -309,45 +538,113 @@ async def apply_product_for_team(
 
             # Update the team-level budget (shared ceiling for all keys)
             lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+
+            # For PERIODIC teams, compound the max_budget so that
+            # (max_budget - accumulated_spend) equals the monthly cap.
+            # get_team_info is the first LiteLLM call in the sync process.
+            # If it fails we abort the sync entirely and leave the payment
+            # record as pending so a future retry can pick it up.
+            team_max_budget = max_max_spend
+            if is_periodic and keys:
+                try:
+                    team_data = await litellm_service.get_team_info(lite_team_id)
+                    team_info = team_data.get("team_info", team_data)
+                    current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
+                    team_max_budget = current_team_spend + max_max_spend
+                    logger.info(
+                        f"Compounding team {team.id} budget: "
+                        f"spend={current_team_spend} + cap={max_max_spend} = {team_max_budget}"
+                    )
+                except Exception as e:
+                    error_msg = (
+                        f"Failed to read team spend for compounding "
+                        f"(team {team.id}, region {region.name}): {e}"
+                    )
+                    logger.error(error_msg)
+                    sync_errors.append(error_msg)
+                    # Do not continue with inaccurate data — mark as failed
+                    # and let a future sync process retry.
+                    break
+
             try:
                 await litellm_service.update_team_budget(
                     team_id=lite_team_id,
-                    max_budget=max_max_spend,
-                    budget_duration=f"{days_left_in_period}d",
+                    max_budget=team_max_budget,
+                    budget_duration=budget_duration,
                 )
                 logger.info(
-                    f"Updated team {team.id} budget to {max_max_spend} in region {region.name}"
+                    f"Updated team {team.id} budget to {team_max_budget} "
+                    f"(duration={budget_duration}) in region {region.name}"
                 )
             except Exception as e:
-                logger.error(
-                    f"Failed to update team {team.id} budget in region {region.name}: {str(e)}"
-                )
+                error_msg = f"Failed to update team {team.id} budget in region {region.name}: {str(e)}"
+                logger.error(error_msg)
+                sync_errors.append(error_msg)
 
-            # Update each key's duration and budget via LiteLLM
+            # Update each key's duration and budget via LiteLLM.
+            # For PERIODIC teams, also reset key spend to 0 so that
+            # sum(key spends) = current-period spend only.
             for key in keys:
                 try:
                     await litellm_service.set_key_restrictions(
                         litellm_token=key.litellm_token,
-                        duration=f"{days_left_in_period}d",
-                        budget_duration=f"{days_left_in_period}d",
+                        duration=budget_duration,
+                        budget_duration=budget_duration,
                         budget_amount=max_max_spend,
                         rpm_limit=max_rpm_limit,
+                        spend=0.0 if is_periodic else None,
                     )
                     logger.info(
-                        f"Updated key {key.id} limits in LiteLLM: {days_left_in_period} days, {max_max_spend} budget, {max_rpm_limit} RPM"
+                        f"Updated key {key.id} limits in LiteLLM: "
+                        f"duration={budget_duration}, budget={max_max_spend}, "
+                        f"rpm={max_rpm_limit}, spend_reset={is_periodic}"
                     )
                 except Exception as e:
-                    logger.error(f"Failed to update key {key.id} in LiteLLM: {str(e)}")
+                    error_msg = f"Failed to update key {key.id} in LiteLLM: {str(e)}"
+                    logger.error(error_msg)
+                    sync_errors.append(error_msg)
                     # Continue with other keys even if one fails
                     continue
 
         # Ensure that limits are updated
         limit_service.set_team_limits(team)
+
+        # Update periodic payment sync status if provided
+        if payment_record_id:
+            payment_record = (
+                db.query(DBPeriodicPayment)
+                .filter(DBPeriodicPayment.id == payment_record_id)
+                .first()
+            )
+            if payment_record:
+                if sync_errors:
+                    payment_record.sync_status = "sync_failed"
+                    payment_record.error_log = "\n".join(sync_errors)
+                else:
+                    payment_record.sync_status = "success"
+
         db.commit()
 
     except Exception as e:
         db.rollback()
         logger.error(f"Error applying product to team: {str(e)}")
+        if payment_record_id:
+            # Try to log the outer exception to the payment record in a new transaction
+            try:
+                # We need a fresh DB session or at least a fresh transaction
+                payment_record = (
+                    db.query(DBPeriodicPayment)
+                    .filter(DBPeriodicPayment.id == payment_record_id)
+                    .first()
+                )
+                if payment_record:
+                    payment_record.sync_status = "sync_failed"
+                    payment_record.error_log = f"Critical failure: {str(e)}"
+                    db.commit()
+            except Exception as inner_e:
+                logger.error(
+                    f"Failed to log critical error to payment record: {inner_e}"
+                )
         raise e
 
 

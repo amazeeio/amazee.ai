@@ -8,7 +8,7 @@ import { usePrivateAIKeysData } from "@/hooks/use-private-ai-keys-data";
 import { useToast } from "@/hooks/use-toast";
 import { PrivateAIKey } from "@/types/private-ai-key";
 import { User } from "@/types/user";
-import { get, post, del, put } from "@/utils/api";
+import { get, post, del } from "@/utils/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 export default function TeamAIKeysPage() {
@@ -94,37 +94,6 @@ export default function TeamAIKeysPage() {
     },
   });
 
-  const updateBudgetPeriodMutation = useMutation({
-    mutationFn: async ({
-      keyId,
-      budgetDuration,
-    }: {
-      keyId: number;
-      budgetDuration: string;
-    }) => {
-      const response = await put(`private-ai-keys/${keyId}/budget-period`, {
-        budget_duration: budgetDuration,
-      });
-      return response.json();
-    },
-    onSuccess: (data, variables) => {
-      queryClient.invalidateQueries({
-        queryKey: ["private-ai-key-spend", variables.keyId],
-      });
-      toast({
-        title: "Success",
-        description: "Budget period updated successfully",
-      });
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
-
   const handleCreateKey = (data: {
     name: string;
     region_id: number;
@@ -164,10 +133,6 @@ export default function TeamAIKeysPage() {
         isDeleting={deleteKeyMutation.isPending}
         allowModification={true}
         showOwner={true}
-        onUpdateBudget={(keyId, budgetDuration) => {
-          updateBudgetPeriodMutation.mutate({ keyId, budgetDuration });
-        }}
-        isUpdatingBudget={updateBudgetPeriodMutation.isPending}
         teamDetails={teamDetails}
         teamMembers={teamMembers}
       />

@@ -7,7 +7,7 @@ import { usePrivateAIKeysData } from "@/hooks/use-private-ai-keys-data";
 import { useTeams } from "@/hooks/use-teams";
 import { useToast } from "@/hooks/use-toast";
 import { PrivateAIKey } from "@/types/private-ai-key";
-import { get, del, put, post } from "@/utils/api";
+import { get, del, post } from "@/utils/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 export default function PrivateAIKeysPage() {
@@ -90,37 +90,6 @@ export default function PrivateAIKeysPage() {
     },
   });
 
-  const updateBudgetPeriodMutation = useMutation({
-    mutationFn: async ({
-      keyId,
-      budgetDuration,
-    }: {
-      keyId: number;
-      budgetDuration: string;
-    }) => {
-      const response = await put(`/private-ai-keys/${keyId}/budget-period`, {
-        budget_duration: budgetDuration,
-      });
-      return response.json();
-    },
-    onSuccess: (data, variables) => {
-      queryClient.invalidateQueries({
-        queryKey: ["private-ai-key-spend", variables.keyId],
-      });
-      toast({
-        title: "Success",
-        description: "Budget period updated successfully",
-      });
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
-
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
@@ -148,10 +117,6 @@ export default function PrivateAIKeysPage() {
         isDeleting={deletePrivateAIKeyMutation.isPending}
         allowModification={true}
         showOwner={true}
-        onUpdateBudget={(keyId, budgetDuration) => {
-          updateBudgetPeriodMutation.mutate({ keyId, budgetDuration });
-        }}
-        isUpdatingBudget={updateBudgetPeriodMutation.isPending}
         teamDetails={teamDetails}
         teamMembers={teamMembers}
       />
