@@ -314,7 +314,9 @@ async def handle_stripe_event_background(event):
             logger.info(f"Unknown event type: {event_type}")
             return
         raw_event_id = getattr(event, "id", None)
-        event_id = raw_event_id if isinstance(raw_event_id, str) and raw_event_id else None
+        event_id = (
+            raw_event_id if isinstance(raw_event_id, str) and raw_event_id else None
+        )
         if event_id:
             claim_stmt = (
                 pg_insert(DBStripeProcessedEvent)
@@ -580,7 +582,9 @@ async def _sync_periodic_ledger_for_invoice(
         )
         return
 
-    snapshot = await fetch_team_spend_snapshot_for_region(db=db, team=team, region=region)
+    snapshot = await fetch_team_spend_snapshot_for_region(
+        db=db, team=team, region=region
+    )
     snapshot_total_spend = (
         snapshot.get("total_spend", 0.0)
         if isinstance(snapshot, dict)
