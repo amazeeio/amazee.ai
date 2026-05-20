@@ -29,6 +29,9 @@ from urllib.error import HTTPError, URLError
 DEFAULT_API_URL = "https://api.amazee.ai"
 DEFAULT_PROVIDER = "aws"
 SCRIPTS_DIR = Path(__file__).resolve().parent
+# Slack Block Kit section.text.text supports up to 3000 characters.
+# Keep some headroom so chunked summaries remain safely within the field limit.
+SLACK_MAX_TEXT_LENGTH = 2900
 
 
 def _default_state_file(provider: str) -> Path:
@@ -153,20 +156,84 @@ def build_diff(
     }
 
 
+def _chunk_summary(summary: str, max_length: int = SLACK_MAX_TEXT_LENGTH) -> list[str]:
+    """Split the Slack summary into chunks that each fit within Slack's text block limit.
+
+    Splits on section boundaries (double newlines) to keep region-group sections intact.
+    """
+    if not summary:
+        return []
+    if len(summary) <= max_length:
+        return [summary]
+
+    sections = summary.split("\n\n")
+    chunks: list[str] = []
+    current_parts: list[str] = []
+    current_len = 0
+
+    for section in sections:
+        # Guard: if a single section exceeds max_length, split by lines.
+        if len(section) > max_length:
+            if current_parts:
+                chunks.append("\n\n".join(current_parts))
+                current_parts = []
+                current_len = 0
+            lines = section.split("\n")
+            line_buf: list[str] = []
+            buf_len = 0
+            for line in lines:
+                line_addition = len(line) + (1 if line_buf else 0)
+                if line_buf and buf_len + line_addition > max_length:
+                    chunks.append("\n".join(line_buf))
+                    line_buf = [line]
+                    buf_len = len(line)
+                else:
+                    line_buf.append(line)
+                    buf_len += line_addition
+            if line_buf:
+                chunks.append("\n".join(line_buf))
+            continue
+        addition = len(section) + (2 if current_parts else 0)  # +2 for "\n\n" join
+        if current_parts and current_len + addition > max_length:
+            chunks.append("\n\n".join(current_parts))
+            current_parts = [section]
+            current_len = len(section)
+        else:
+            current_parts.append(section)
+            current_len += addition
+
+    if current_parts:
+        chunks.append("\n\n".join(current_parts))
+
+    return chunks
+
+
 def write_github_outputs(diff: dict[str, Any]) -> None:
-    """Emit ``$GITHUB_OUTPUT`` lines so the surrounding workflow can branch."""
+    """Emit ``$GITHUB_OUTPUT`` lines so the surrounding workflow can branch.
+
+    Also writes chunked summaries to a JSON file for the workflow to iterate over
+    when sending multiple Slack messages.
+    """
     output_path = os.environ.get("GITHUB_OUTPUT")
     if not output_path:
         return
-    summary = diff["slack_summary"] or "No new missing models detected."
+    chunks = _chunk_summary(diff["slack_summary"])
+    if not chunks:
+        chunks = ["No new missing models detected."]
+
+    # Write chunks to a file the workflow can read with jq.
+    chunks_file = Path("slack-summary-chunks.json")
+    chunks_file.write_text(json.dumps(chunks, indent=2) + "\n", encoding="utf-8")
+
     with open(output_path, "a", encoding="utf-8") as handle:
         handle.write(
             f"has_new_missing={'true' if diff['has_new_missing'] else 'false'}\n"
         )
         handle.write(f"state_changed={'true' if diff['state_changed'] else 'false'}\n")
         handle.write(f"provider={diff.get('provider', '')}\n")
-        # JSON-encoded so newlines/quotes are safe to interpolate into a Slack payload.
-        handle.write(f"summary_json={json.dumps(summary)}\n")
+        handle.write(f"summary_chunk_count={len(chunks)}\n")
+        # Keep summary_json as the first chunk for backward compat.
+        handle.write(f"summary_json={json.dumps(chunks[0])}\n")
 
 
 def main() -> int:

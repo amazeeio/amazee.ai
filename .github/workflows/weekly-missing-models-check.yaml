@@ -90,39 +90,82 @@ jobs:
 
       - name: Notify Slack about new missing models
         if: steps.gate.outputs.skip != 'true' && steps.compare.outputs.has_new_missing == 'true'
-        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3.0.3
-        with:
-          method: chat.postMessage
-          token: ${{ secrets.SLACK_BOT_TOKEN }}
-          payload: |
-            {
-              "channel": "${{ vars.SLACK_CHANNEL_ID }}",
-              "text": ":robot_face: New ${{ matrix.provider }} models are available upstream but not yet deployed to amazee.ai.",
-              "blocks": [
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
+          PROVIDER: ${{ matrix.provider }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+        run: |
+          # Helper: post to Slack and assert ok==true
+          slack_post() {
+            local payload="$1"
+            local response
+            response=$(curl -s -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "$payload")
+            if ! echo "$response" | jq -e '.ok' > /dev/null 2>&1; then
+              echo "::error::Slack API error: $response"
+              return 1
+            fi
+            echo "$response"
+          }
+
+          # Send a header message
+          header_payload=$(jq -n \
+            --arg channel "$SLACK_CHANNEL_ID" \
+            --arg provider "$PROVIDER" \
+            --arg workflow_url "$WORKFLOW_URL" \
+            --arg workflow_name "$WORKFLOW_NAME" \
+            '{
+              channel: $channel,
+              text: ":robot_face: New \($provider) models are available upstream but not yet deployed to amazee.ai.",
+              blocks: [
                 {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": ":robot_face: *New `${{ matrix.provider }}` models detected*\nThe following models exist upstream but are not yet deployed to one of the amazee.ai LiteLLM regions."
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: ":robot_face: *New `\($provider)` models detected*\nThe following models exist upstream but are not yet deployed to one of the amazee.ai LiteLLM regions."
                   }
                 },
                 {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": ${{ steps.compare.outputs.summary_json }}
-                  }
-                },
-                {
-                  "type": "section",
-                  "fields": [
+                  type: "section",
+                  fields: [
                     {
-                      "type": "mrkdwn",
-                      "text": "*Workflow:*\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|${{ github.workflow }}>"
+                      type: "mrkdwn",
+                      text: "*Workflow:*\n<\($workflow_url)|\($workflow_name)>"
                     }
                   ]
                 }
               ]
-            }
+            }')
+          header_response=$(slack_post "$header_payload")
+          thread_ts=$(echo "$header_response" | jq -r '.ts')
+
+          # Send each summary chunk as a threaded reply
+          chunk_count=$(jq 'length' slack-summary-chunks.json)
+          for i in $(seq 0 $(( chunk_count - 1 ))); do
+            chunk=$(jq -r ".[$i]" slack-summary-chunks.json)
+            payload=$(jq -n \
+              --arg channel "$SLACK_CHANNEL_ID" \
+              --arg text "$chunk" \
+              --arg thread_ts "$thread_ts" \
+              '{
+                channel: $channel,
+                thread_ts: $thread_ts,
+                text: $text,
+                blocks: [
+                  {
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: $text
+                    }
+                  }
+                ]
+              }')
+            slack_post "$payload" > /dev/null
+          done
 
 
