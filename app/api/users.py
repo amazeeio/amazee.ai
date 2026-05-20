@@ -540,12 +540,8 @@ async def update_users_marketing_updates_by_email(
 
     hubspot = HubSpotService()
     for user in users:
-        contact_id = await hubspot.find_contact_by_email(user.email)
-        if not contact_id:
-            logger.info("HubSpot contact not found for user email=%s", user.email)
-            continue
-        await hubspot.update_marketable_status(
-            contact_id=contact_id, enabled=user.receive_marketing_updates
+        await hubspot.upsert_contact_marketable_status(
+            email=user.email, enabled=user.receive_marketing_updates
         )
 
     return users
@@ -957,13 +953,9 @@ async def update_user(
         and user_update.receive_marketing_updates != previous_marketing_updates
     ):
         hubspot = HubSpotService()
-        contact_id = await hubspot.find_contact_by_email(db_user.email)
-        if contact_id:
-            await hubspot.update_marketable_status(
-                contact_id=contact_id, enabled=db_user.receive_marketing_updates
-            )
-        else:
-            logger.info("HubSpot contact not found for user email=%s", db_user.email)
+        await hubspot.upsert_contact_marketable_status(
+            email=db_user.email, enabled=db_user.receive_marketing_updates
+        )
 
     return db_user
 

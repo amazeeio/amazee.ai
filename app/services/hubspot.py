@@ -26,70 +26,34 @@ class HubSpotService:
             "Content-Type": "application/json",
         }
 
-    async def find_contact_by_email(self, email: str) -> Optional[str]:
+    async def upsert_contact_marketable_status(self, email: str, enabled: bool) -> None:
         payload = {
-            "filterGroups": [
+            "inputs": [
                 {
-                    "filters": [
-                        {
-                            "propertyName": "email",
-                            "operator": "EQ",
-                            "value": email,
-                        }
-                    ]
+                    "idProperty": "email",
+                    "id": email,
+                    "properties": {
+                        "email": email,
+                        "hs_marketable_status": "true" if enabled else "false",
+                    },
                 }
-            ],
-            "properties": ["email", "hs_marketable_status"],
+            ]
         }
-
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
-                f"{self.BASE_URL}/crm/v3/objects/contacts/search",
+                f"{self.BASE_URL}/crm/v3/objects/contacts/batch/upsert",
                 headers=self._headers(),
                 json=payload,
             )
 
         if response.status_code >= 400:
             logger.error(
-                "HubSpot contact lookup failed for email=%s status=%s body=%s",
+                "HubSpot contact upsert failed email=%s status=%s body=%s",
                 email,
                 response.status_code,
                 response.text,
             )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Failed to search HubSpot contact",
-            )
-
-        data = response.json()
-        results = data.get("results") or []
-        if not results:
-            return None
-
-        return results[0].get("id")
-
-    async def update_marketable_status(self, contact_id: str, enabled: bool) -> None:
-        payload = {
-            "properties": {
-                "hs_marketable_status": "true" if enabled else "false",
-            }
-        }
-
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.patch(
-                f"{self.BASE_URL}/crm/v3/objects/contacts/{contact_id}",
-                headers=self._headers(),
-                json=payload,
-            )
-
-        if response.status_code >= 400:
-            logger.error(
-                "HubSpot contact update failed contact_id=%s status=%s body=%s",
-                contact_id,
-                response.status_code,
-                response.text,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Failed to update HubSpot contact",
+                detail="Failed to upsert HubSpot contact",
             )
