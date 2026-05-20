@@ -17,7 +17,6 @@ from app.db.models import (
     DBUser,
     DBPrivateAIKey,
     DBProduct,
-    DBRegion,
 )
 from app.schemas.models import BudgetType
 
