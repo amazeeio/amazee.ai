@@ -559,9 +559,7 @@ async def test_apply_product_extends_keys_and_sets_budget(
         assert restriction_calls[0][1]["duration"] == "31d"
         assert restriction_calls[0][1]["budget_duration"] == "31d"
         expected_budget = (
-            7.5
-            if key.id == key_with_override.id
-            else test_product.max_budget_per_key
+            7.5 if key.id == key_with_override.id else test_product.max_budget_per_key
         )
         assert restriction_calls[0][1]["budget_amount"] == expected_budget
         assert restriction_calls[0][1]["rpm_limit"] == test_product.rpm_per_key
