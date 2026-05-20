@@ -47,6 +47,7 @@ class UserCreate(UserBase):
     password: Optional[str] = None
     team_id: Optional[int] = None
     role: Optional[str] = None
+    receive_marketing_updates: Optional[bool] = None
     model_config = ConfigDict(from_attributes=True)
 
 

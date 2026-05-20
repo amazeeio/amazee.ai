@@ -796,6 +796,11 @@ async def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
         is_admin=False,  # Users are created as non-admin by default
         team_id=user.team_id,
         role=user.role,
+        receive_marketing_updates=(
+            user.receive_marketing_updates
+            if user.receive_marketing_updates is not None
+            else False
+        ),
     )
 
     db.add(db_user)
