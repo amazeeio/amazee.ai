@@ -393,17 +393,16 @@ def _get_spend_cap_max_budget(
     user_id: int | None = None,
     key_id: int | None = None,
 ) -> float | None:
-    cap = (
-        db.query(DBSpendCap.max_budget)
-        .filter(
-            DBSpendCap.scope == scope,
-            DBSpendCap.region_id == region_id,
-            DBSpendCap.team_id == team_id,
-            DBSpendCap.user_id == user_id,
-            DBSpendCap.key_id == key_id,
-        )
-        .first()
-    )
+    # Match on unique-index columns only (see _upsert_spend_cap for rationale).
+    filters = [DBSpendCap.scope == scope, DBSpendCap.region_id == region_id]
+    if scope == "team":
+        filters.append(DBSpendCap.team_id == team_id)
+    elif scope == "team_member":
+        filters.extend([DBSpendCap.team_id == team_id, DBSpendCap.user_id == user_id])
+    elif scope == "key":
+        filters.append(DBSpendCap.key_id == key_id)
+
+    cap = db.query(DBSpendCap.max_budget).filter(*filters).first()
     if cap is None or cap[0] is None:
         return None
     return float(cap[0])
@@ -523,17 +522,20 @@ def _upsert_spend_cap(
     month_anchor: date | None = None,
     month_start_spend: float | None = None,
 ) -> None:
-    cap = (
-        db.query(DBSpendCap)
-        .filter(
-            DBSpendCap.scope == scope,
-            DBSpendCap.region_id == region_id,
-            DBSpendCap.team_id == team_id,
-            DBSpendCap.user_id == user_id,
-            DBSpendCap.key_id == key_id,
-        )
-        .first()
-    )
+    # Look up the existing row using the same columns as the partial unique
+    # index for this scope.  A previous implementation filtered on ALL four
+    # columns (team_id, user_id, key_id) which could miss a row whose
+    # team_id had been repaired from NULL to a real value, causing a
+    # UniqueViolation on INSERT.
+    filters = [DBSpendCap.scope == scope, DBSpendCap.region_id == region_id]
+    if scope == "team":
+        filters.append(DBSpendCap.team_id == team_id)
+    elif scope == "team_member":
+        filters.extend([DBSpendCap.team_id == team_id, DBSpendCap.user_id == user_id])
+    elif scope == "key":
+        filters.append(DBSpendCap.key_id == key_id)
+
+    cap = db.query(DBSpendCap).filter(*filters).first()
     if cap is None:
         cap = DBSpendCap(
             scope=scope,
@@ -542,6 +544,17 @@ def _upsert_spend_cap(
             user_id=user_id,
             key_id=key_id,
         )
+    else:
+        # Repair stale columns so the row stays consistent with the
+        # current key/team/user relationship. Normalize all relationship
+        # columns to the requested values, including clearing stale values
+        # to None when they are not part of the current scope.
+        if cap.team_id != team_id:
+            cap.team_id = team_id
+        if cap.user_id != user_id:
+            cap.user_id = user_id
+        if cap.key_id != key_id:
+            cap.key_id = key_id
     cap.max_budget = max_budget
     cap.budget_duration = budget_duration
     cap.month_anchor = month_anchor
@@ -560,17 +573,16 @@ def _delete_spend_cap(
     user_id: int | None = None,
     key_id: int | None = None,
 ) -> None:
-    (
-        db.query(DBSpendCap)
-        .filter(
-            DBSpendCap.scope == scope,
-            DBSpendCap.region_id == region_id,
-            DBSpendCap.team_id == team_id,
-            DBSpendCap.user_id == user_id,
-            DBSpendCap.key_id == key_id,
-        )
-        .delete()
-    )
+    # Match on unique-index columns only (see _upsert_spend_cap for rationale).
+    filters = [DBSpendCap.scope == scope, DBSpendCap.region_id == region_id]
+    if scope == "team":
+        filters.append(DBSpendCap.team_id == team_id)
+    elif scope == "team_member":
+        filters.extend([DBSpendCap.team_id == team_id, DBSpendCap.user_id == user_id])
+    elif scope == "key":
+        filters.append(DBSpendCap.key_id == key_id)
+
+    db.query(DBSpendCap).filter(*filters).delete()
     # Defer commit to the endpoint so DB changes and remote sync share one boundary.
     db.flush()
 

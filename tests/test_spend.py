@@ -5,6 +5,7 @@ from app.core.roles import UserRole
 from datetime import UTC, datetime, timedelta
 from sqlalchemy.exc import IntegrityError
 
+from app.api.spend import _upsert_spend_cap
 from app.core.security import get_password_hash
 from app.db.models import (
     BudgetType,
@@ -1815,6 +1816,72 @@ def test_spend_caps_unique_key_scope_enforced(db, test_region, test_team_user):
     with pytest.raises(IntegrityError):
         db.commit()
     db.rollback()
+
+
+def test_upsert_spend_cap_repairs_stale_team_and_user_columns(
+    db, test_region, test_team, test_team_user
+):
+    """
+    Regression: _upsert_spend_cap must find an existing key-scope row by
+    (region_id, key_id) even when team_id/user_id were NULL (stale), update
+    those columns in-place, and NOT insert a second row (which would raise a
+    UniqueViolation on the uq_spend_caps_key_scope index).
+    """
+    key = DBPrivateAIKey(
+        name="stale-repair-key",
+        litellm_token="stale-repair-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+
+    # Insert an initial key-scope cap with NULL team_id/user_id (simulating
+    # the stale state that caused UniqueViolation before the fix).
+    stale_cap = DBSpendCap(
+        scope="key",
+        region_id=test_region.id,
+        key_id=key.id,
+        team_id=None,
+        user_id=None,
+        max_budget=10.0,
+    )
+    db.add(stale_cap)
+    db.commit()
+    db.refresh(stale_cap)
+    stale_cap_id = stale_cap.id
+
+    # Call _upsert_spend_cap with the correct team/user values.
+    # Before the fix this would miss the stale row and attempt an INSERT,
+    # causing a UniqueViolation.  After the fix it should repair in-place.
+    _upsert_spend_cap(
+        db,
+        scope="key",
+        region_id=test_region.id,
+        key_id=key.id,
+        team_id=test_team.id,
+        user_id=test_team_user.id,
+        max_budget=20.0,
+    )
+    db.commit()
+
+    # Only one row for this key should exist
+    caps = (
+        db.query(DBSpendCap)
+        .filter(DBSpendCap.scope == "key", DBSpendCap.key_id == key.id)
+        .all()
+    )
+    assert len(caps) == 1
+    repaired = caps[0]
+    # Same row, not a new insert
+    assert repaired.id == stale_cap_id
+    # Stale columns repaired
+    assert repaired.team_id == test_team.id
+    assert repaired.user_id == test_team_user.id
+    # Budget updated
+    assert repaired.max_budget == 20.0
 
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)

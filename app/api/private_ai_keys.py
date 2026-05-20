@@ -23,9 +23,9 @@ from app.db.models import (
     DBPoolPurchase,
     DBPrivateAIKey,
     DBRegion,
+    DBSpendCap,
     DBUser,
     DBTeam,
-    DBSpendCap,
 )
 from app.services.litellm import LiteLLMService
 from app.core.security import (
@@ -917,7 +917,17 @@ async def delete_private_ai_key(
     return {"message": "Private AI Key deleted successfully"}
 
 
-@router.get("/{key_id}/spend", response_model=PrivateAIKeySpendBasic)
+@router.get(
+    "/{key_id}/spend",
+    response_model=PrivateAIKeySpendBasic,
+    deprecated=True,
+    summary="Legacy: use GET /spend/{region_id}/key/{key_id} instead",
+    description=(
+        "Returns spend and budget metadata for a specific key. "
+        "This endpoint is legacy. Prefer /spend/{{region_id}}/key/{{key_id}} "
+        "which provides richer budget metadata and team-level context."
+    ),
+)
 async def get_private_ai_key_spend(
     key_id: int,
     current_user=Depends(get_current_user_from_auth),
@@ -941,6 +951,24 @@ async def get_private_ai_key_spend(
     try:
         data = await litellm_service.get_key_info(private_ai_key.litellm_token)
         info = data.get("info", {})
+
+        # Override max_budget with the value from spend_caps DB table if present.
+        # This ensures the configured cap (which may differ from LiteLLM's value
+        # for purchase-gated teams) is returned to the caller.
+        # The unique index for key-scope caps is on (region_id, key_id); team_id
+        # and user_id are metadata only and must NOT be used as lookup filters.
+        configured_cap = (
+            db.query(DBSpendCap.max_budget)
+            .filter(
+                DBSpendCap.scope == "key",
+                DBSpendCap.region_id == private_ai_key.region_id,
+                DBSpendCap.key_id == private_ai_key.id,
+            )
+            .first()
+        )
+        if configured_cap is not None and configured_cap[0] is not None:
+            info = dict(info)
+            info["max_budget"] = round(float(configured_cap[0]), 4)
 
         # Only set default for spend field
         spend_info = {"spend": info.get("spend", 0.0), **info}
