@@ -18,7 +18,6 @@ from app.db.models import (
     DBPrivateAIKey,
     DBProduct,
 )
-from app.schemas.models import BudgetType
 
 # Import the functions under test — the script lives one level up from tests/
 import sys, os
