@@ -75,8 +75,9 @@ def find_internal_teams(
     if team_ids:
         query = query.filter(DBTeam.id.in_(team_ids))
     else:
+        escaped = email_pattern.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_").replace(".", "\\.")
         query = query.filter(
-            func.lower(DBTeam.admin_email).like(f"%{email_pattern.lower()}%")
+            func.lower(DBTeam.admin_email).like(f"%{escaped}%", escape="\\")
         )
 
     return query.order_by(DBTeam.id).all()
