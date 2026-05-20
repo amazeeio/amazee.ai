@@ -86,24 +86,19 @@ def get_team_summary(db: Session, team: DBTeam) -> dict:
     """Build an activity summary for a single team."""
     user_count = db.query(DBUser).filter(DBUser.team_id == team.id).count()
 
-    key_count = (
-        db.query(DBPrivateAIKey).filter(DBPrivateAIKey.team_id == team.id).count()
-    )
-
-    # Also count keys owned by users in the team (user-scoped keys)
+    # Collect keys owned by users in the team (user-scoped keys)
     team_user_ids = [
         uid
         for (uid,) in db.query(DBUser.id).filter(DBUser.team_id == team.id).all()
     ]
-    user_key_count = 0
-    if team_user_ids:
-        user_key_count = (
-            db.query(DBPrivateAIKey)
-            .filter(DBPrivateAIKey.owner_id.in_(team_user_ids))
-            .count()
-        )
 
-    total_keys = key_count + user_key_count
+    # Use OR (not addition) to avoid double-counting keys that carry both
+    # team_id and owner_id belonging to this team.
+    key_filter = DBPrivateAIKey.team_id == team.id
+    if team_user_ids:
+        key_filter = key_filter | DBPrivateAIKey.owner_id.in_(team_user_ids)
+
+    total_keys = db.query(DBPrivateAIKey).filter(key_filter).count()
 
     products = (
         db.query(DBTeamProduct).filter(DBTeamProduct.team_id == team.id).all()
