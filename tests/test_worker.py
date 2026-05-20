@@ -434,7 +434,7 @@ async def test_apply_product_extends_keys_and_sets_budget(
     test_team.stripe_customer_id = "cus_test123"
     db.commit()
 
-    # Create an extra region so the budget is split across 2 active regions
+    # Create an extra region to verify budget is applied per-region (no split)
     extra_region = DBRegion(
         name="us-test-region",
         litellm_api_key="us-test-key",
@@ -506,7 +506,7 @@ async def test_apply_product_extends_keys_and_sets_budget(
     mock_limit_instance.get_token_restrictions = Mock(return_value=(30, 50.0, 1000))
 
     # Set a key-specific cap override for one key in the primary region.
-    # Webhook renewal should preserve this override and only apply split budget
+    # Webhook renewal should preserve this override and apply full budget
     # to keys without explicit key caps.
     key_with_override = team_keys[0]
     db.add(
@@ -561,7 +561,7 @@ async def test_apply_product_extends_keys_and_sets_budget(
         expected_budget = (
             7.5
             if key.id == key_with_override.id
-            else test_product.max_budget_per_key / 2
+            else test_product.max_budget_per_key
         )
         assert restriction_calls[0][1]["budget_amount"] == expected_budget
         assert restriction_calls[0][1]["rpm_limit"] == test_product.rpm_per_key
@@ -658,10 +658,11 @@ async def test_apply_product_periodic_compounds_team_budget_with_split_and_regio
     assert len(update_calls) == 2
 
     # Webhook resets key spend to 0; max_budget = desired_remaining = per_region_cap + topup_remaining
-    # Region 1: 25.0 + 3.0 = 28.0
-    # Region 2: 25.0 + 0.0 = 25.0
+    # Each region gets the full cap (no split), plus its own topup_remaining
+    # Region 1: 50.0 + 3.0 = 53.0
+    # Region 2: 50.0 + 0.0 = 50.0
     max_budgets = sorted([float(call.kwargs["max_budget"]) for call in update_calls])
-    assert max_budgets == [25.0, 28.0]
+    assert max_budgets == [50.0, 53.0]
 
 
 @pytest.mark.asyncio
@@ -3846,6 +3847,7 @@ async def test_invoice_payment_success_captures_spend_period(
     inv_obj.id = "inv_ok"
     inv_obj.period_start = period_start_ts
     inv_obj.period_end = period_end_ts
+    inv_obj.metadata = {"regionId": str(test_region.id)}
     # parent.subscription_details.subscription for subscription ID extraction
     inv_obj.parent.subscription_details.subscription = "sub_ok"
     mock_event.data.object = inv_obj
@@ -3930,7 +3932,7 @@ async def test_invoice_ledger_topup_carry_forward_across_periods(
     inv2.period_end = int((now + timedelta(days=30)).timestamp())
     inv2.amount_paid = 3000
 
-    mock_fetch_snapshot.return_value = Mock(total_spend=31.0)
+    mock_fetch_snapshot.return_value = Mock(total_spend=32.0)
     await _sync_periodic_ledger_for_invoice(
         db=db,
         customer_id="cus_periodic_ledger_a",
