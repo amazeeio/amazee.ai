@@ -379,7 +379,6 @@ async def handle_stripe_event_background(event):
                     )
 
             if subscription:
-                product_id = await get_product_id_from_subscription(subscription)
                 start_date = datetime.fromtimestamp(
                     getattr(
                         event_object, "period_start", int(datetime.now().timestamp())
@@ -393,14 +392,16 @@ async def handle_stripe_event_background(event):
                     source_payment_id=payment_record_id,
                     region_id=event_region_id,
                 )
-                await apply_product_for_team(
-                    db,
-                    customer_id,
-                    product_id,
-                    start_date,
-                    payment_record_id,
-                    region_id=event_region_id,
-                )
+                product_id = await get_product_id_from_subscription(subscription)
+                if product_id:
+                    await apply_product_for_team(
+                        db,
+                        customer_id,
+                        product_id,
+                        start_date,
+                        payment_record_id,
+                        region_id=event_region_id,
+                    )
         elif event_type in SESSION_SUCCESS_EVENTS:
             # checkout signup/subscription flow
             subscription = getattr(event_object, "subscription", None)
@@ -757,16 +758,13 @@ async def apply_product_for_team(
                 db, team_id=team.id, region_id=region_id
             )
             keys_by_region = {region: region_keys}
-        num_regions = len(keys_by_region)
-        if num_regions == 0:
+        if not keys_by_region:
             logger.warning(
                 "Skipping product sync for team %s: no regions with keys found",
                 team.id,
             )
             return
-        per_region_budget = (
-            max_max_spend / num_regions if num_regions else max_max_spend
-        )
+        per_region_budget = max_max_spend
 
         # Update keys and team budget for each region
         for region, keys in keys_by_region.items():

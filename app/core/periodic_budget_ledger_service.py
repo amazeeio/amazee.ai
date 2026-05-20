@@ -37,7 +37,14 @@ def _active_entries(
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
             DBPeriodicBudgetLedgerEntry.is_active.is_(True),
             (
-                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                # Subscription entries are managed exclusively by
+                # expire_subscription_entries (is_active flag).  Their
+                # expires_at equals Stripe's period_end, which is precisely
+                # "now" when the webhook fires, so an expires_at > now check
+                # would incorrectly exclude them and drain top-up budget first.
+                # Top-up / rollover entries still need the time-window guard.
+                (DBPeriodicBudgetLedgerEntry.entry_type == ENTRY_TYPE_SUBSCRIPTION)
+                | DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
                 | (DBPeriodicBudgetLedgerEntry.expires_at > now)
             ),
             DBPeriodicBudgetLedgerEntry.consumed_cents
@@ -256,6 +263,7 @@ def materialize_topup_rollovers(
 
     now = datetime.now(UTC)
     rollover_total = 0
+    rollover_expiry: datetime | None = None
     source_entries = (
         db.query(DBPeriodicBudgetLedgerEntry)
         .filter(
@@ -277,33 +285,29 @@ def materialize_topup_rollovers(
         if remaining <= 0:
             entry.is_active = False
             continue
-        existing = (
-            db.query(DBPeriodicBudgetLedgerEntry)
-            .filter(
-                DBPeriodicBudgetLedgerEntry.entry_type == ENTRY_TYPE_TOPUP_ROLLOVER,
-                DBPeriodicBudgetLedgerEntry.rolled_over_from_id == entry.id,
-                DBPeriodicBudgetLedgerEntry.source_invoice_id == source_invoice_id,
-            )
-            .first()
-        )
-        if existing:
-            entry.is_active = False
-            continue
+        if rollover_expiry is None or (
+            entry.expires_at is not None
+            and (rollover_expiry is None or entry.expires_at > rollover_expiry)
+        ):
+            rollover_expiry = entry.expires_at
+
+        entry.is_active = False
+        rollover_total += remaining
+
+    if rollover_total > 0:
         db.add(
             DBPeriodicBudgetLedgerEntry(
                 team_id=team_id,
                 region_id=region_id,
                 entry_type=ENTRY_TYPE_TOPUP_ROLLOVER,
                 source_invoice_id=source_invoice_id,
-                amount_cents=remaining,
+                amount_cents=rollover_total,
                 consumed_cents=0,
                 purchased_at=rollover_at,
-                expires_at=entry.expires_at,
-                rolled_over_from_id=entry.id,
+                expires_at=rollover_expiry,
+                rolled_over_from_id=None,
                 is_active=True,
             )
         )
-        entry.is_active = False
-        rollover_total += remaining
     db.flush()
     return rollover_total
