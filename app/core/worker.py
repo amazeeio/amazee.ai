@@ -362,6 +362,7 @@ async def handle_stripe_event_background(event):
                 customer_id=customer_id,
                 invoice_obj=event_object,
                 stripe_event_id=event_id,
+                region_id=event_region_id,
             )
             subscription = getattr(event_object, "subscription", None)
             # Fallback for complex invoice objects
@@ -388,6 +389,7 @@ async def handle_stripe_event_background(event):
                     customer_id=customer_id,
                     invoice_obj=event_object,
                     source_payment_id=payment_record_id,
+                    region_id=event_region_id,
                 )
                 await apply_product_for_team(
                     db,
@@ -461,6 +463,7 @@ async def capture_periodic_team_spend_for_invoice(
     customer_id: str,
     invoice_obj,
     stripe_event_id: str | None,
+    region_id: int | None,
 ) -> None:
     team = db.query(DBTeam).filter(DBTeam.stripe_customer_id == customer_id).first()
     if team is None:
@@ -483,50 +486,65 @@ async def capture_periodic_team_spend_for_invoice(
     period_start = datetime.fromtimestamp(period_start_ts, tz=UTC)
     period_end = datetime.fromtimestamp(period_end_ts, tz=UTC)
 
-    keys_by_region = get_team_keys_by_region(db, team.id)
-    if not keys_by_region:
+    if region_id is None:
+        logger.warning(
+            "Skipping spend period capture: missing region_id for periodic team_id=%s",
+            team.id,
+        )
+        return
+    region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+    if not region:
+        logger.warning(
+            "Skipping spend period capture: region_id=%s not found for periodic team_id=%s",
+            region_id,
+            team.id,
+        )
         return
 
-    for region in keys_by_region.keys():
-        try:
-            snapshot = await fetch_team_spend_snapshot_for_region(
-                db=db,
-                team=team,
-                region=region,
-            )
-            upsert_team_spend_period(
-                db=db,
-                team=team,
-                region_id=region.id,
-                period_start=period_start,
-                period_end=period_end,
-                source="stripe_webhook_litellm_sync",
-                snapshot=snapshot,
-                stripe_event_id=stripe_event_id,
-                stripe_invoice_id=getattr(invoice_obj, "id", None),
-                stripe_subscription_id=getattr(
-                    getattr(
-                        getattr(invoice_obj, "parent", None),
-                        "subscription_details",
-                        None,
-                    ),
-                    "subscription",
+    try:
+        snapshot = await fetch_team_spend_snapshot_for_region(
+            db=db,
+            team=team,
+            region=region,
+        )
+        upsert_team_spend_period(
+            db=db,
+            team=team,
+            region_id=region.id,
+            period_start=period_start,
+            period_end=period_end,
+            source="stripe_webhook_litellm_sync",
+            snapshot=snapshot,
+            stripe_event_id=stripe_event_id,
+            stripe_invoice_id=getattr(invoice_obj, "id", None),
+            stripe_subscription_id=getattr(
+                getattr(
+                    getattr(invoice_obj, "parent", None),
+                    "subscription_details",
                     None,
                 ),
-            )
-            db.commit()
-        except Exception as exc:
-            db.rollback()
-            logger.error(
-                "Failed to capture spend period for team_id=%s region_id=%s: %s",
-                team.id,
-                region.id,
-                str(exc),
-            )
+                "subscription",
+                None,
+            ),
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error(
+            "Failed to capture spend period for team_id=%s region_id=%s: %s",
+            team.id,
+            region.id,
+            str(exc),
+        )
 
 
 async def _sync_periodic_ledger_for_invoice(
-    *, db: Session, customer_id: str, invoice_obj, source_payment_id: int | None
+    *,
+    db: Session,
+    customer_id: str,
+    invoice_obj,
+    source_payment_id: int | None,
+    region_id: int | None,
 ) -> None:
     # Ledger allocation is invoice-driven, not real-time. We reconcile the latest
     # spend snapshot per billing period; therefore consumed_cents is eventually
@@ -547,44 +565,52 @@ async def _sync_periodic_ledger_for_invoice(
     period_start = datetime.fromtimestamp(period_start_ts, tz=UTC)
     period_end = datetime.fromtimestamp(period_end_ts, tz=UTC)
 
-    keys_by_region = get_team_keys_by_region(db, team.id)
-    num_regions = len(keys_by_region)
-    per_region_amount_cents = amount_paid // num_regions if num_regions else 0
-    remainder_cents = amount_paid % num_regions if num_regions else 0
-    for idx, region in enumerate(keys_by_region.keys()):
-        snapshot = await fetch_team_spend_snapshot_for_region(
-            db=db, team=team, region=region
+    if region_id is None:
+        logger.warning(
+            "Skipping periodic ledger sync: missing region_id for periodic team_id=%s",
+            team.id,
         )
-        snapshot_total_spend = (
-            snapshot.get("total_spend", 0.0)
-            if isinstance(snapshot, dict)
-            else getattr(snapshot, "total_spend", 0.0)
+        return
+    region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+    if not region:
+        logger.warning(
+            "Skipping periodic ledger sync: region_id=%s not found for periodic team_id=%s",
+            region_id,
+            team.id,
         )
-        spend_cents = int(round(float(snapshot_total_spend) * 100))
-        allocate_period_spend_fifo(
-            db, team_id=team.id, region_id=region.id, spend_cents=spend_cents
-        )
-        materialize_topup_rollovers(
-            db,
-            team_id=team.id,
-            region_id=region.id,
-            source_invoice_id=getattr(invoice_obj, "id", None),
-            rollover_at=period_end,
-        )
-        expire_subscription_entries(
-            db, team_id=team.id, region_id=region.id, period_end=period_end
-        )
-        add_subscription_entry(
-            db,
-            team_id=team.id,
-            region_id=region.id,
-            amount_cents=per_region_amount_cents + (1 if idx < remainder_cents else 0),
-            purchased_at=period_start,
-            period_start=period_start,
-            period_end=period_end,
-            source_payment_id=source_payment_id,
-            source_invoice_id=getattr(invoice_obj, "id", None),
-        )
+        return
+
+    snapshot = await fetch_team_spend_snapshot_for_region(db=db, team=team, region=region)
+    snapshot_total_spend = (
+        snapshot.get("total_spend", 0.0)
+        if isinstance(snapshot, dict)
+        else getattr(snapshot, "total_spend", 0.0)
+    )
+    spend_cents = int(round(float(snapshot_total_spend) * 100))
+    allocate_period_spend_fifo(
+        db, team_id=team.id, region_id=region.id, spend_cents=spend_cents
+    )
+    materialize_topup_rollovers(
+        db,
+        team_id=team.id,
+        region_id=region.id,
+        source_invoice_id=getattr(invoice_obj, "id", None),
+        rollover_at=period_end,
+    )
+    expire_subscription_entries(
+        db, team_id=team.id, region_id=region.id, period_end=period_end
+    )
+    add_subscription_entry(
+        db,
+        team_id=team.id,
+        region_id=region.id,
+        amount_cents=amount_paid,
+        purchased_at=period_start,
+        period_start=period_start,
+        period_end=period_end,
+        source_payment_id=source_payment_id,
+        source_invoice_id=getattr(invoice_obj, "id", None),
+    )
 
 
 async def reconcile_periodic_team_budget_drift(

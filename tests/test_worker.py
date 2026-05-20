@@ -3909,6 +3909,7 @@ async def test_invoice_ledger_topup_carry_forward_across_periods(
         customer_id="cus_periodic_ledger_a",
         invoice_obj=inv1,
         source_payment_id=None,
+        region_id=test_region.id,
     )
 
     topup_remaining_after_inv1 = [
@@ -3935,6 +3936,7 @@ async def test_invoice_ledger_topup_carry_forward_across_periods(
         customer_id="cus_periodic_ledger_a",
         invoice_obj=inv2,
         source_payment_id=None,
+        region_id=test_region.id,
     )
 
     final_topup_remaining = [
@@ -3990,12 +3992,14 @@ async def test_invoice_ledger_duplicate_invoice_id_is_idempotent(
         customer_id="cus_periodic_ledger_b",
         invoice_obj=inv,
         source_payment_id=None,
+        region_id=test_region.id,
     )
     await _sync_periodic_ledger_for_invoice(
         db=db,
         customer_id="cus_periodic_ledger_b",
         invoice_obj=inv,
         source_payment_id=None,
+        region_id=test_region.id,
     )
 
     rollover_rows = (
