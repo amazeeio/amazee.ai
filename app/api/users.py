@@ -29,6 +29,7 @@ from app.schemas.models import (
     UserSpendRegion,
     UserSpendByEmailResponse,
     UserSpendTeam,
+    UserMarketingUpdatesByEmailUpdate,
 )
 from app.db.models import (
     DBPrivateAIKey,
@@ -48,6 +49,7 @@ from app.core.security import (
 )
 from app.core.roles import UserRole
 from app.services.litellm import LiteLLMService
+from app.services.hubspot import HubSpotService
 from datetime import datetime, UTC
 import logging
 import asyncio
@@ -505,6 +507,50 @@ async def get_users_by_email(
     return result
 
 
+@router.put(
+    "/by-email/marketing-updates",
+    response_model=List[User],
+    dependencies=[Depends(get_role_min_system_admin)],
+)
+async def update_users_marketing_updates_by_email(
+    payload: UserMarketingUpdatesByEmailUpdate,
+    db: Session = Depends(get_db),
+):
+    normalized_email = _normalize_email_for_lookup(payload.email)
+
+    users = (
+        db.query(DBUser)
+        .outerjoin(DBTeam, DBUser.team_id == DBTeam.id)
+        .filter(
+            func.regexp_replace(func.lower(DBUser.email), r"\+[^@]*@", "@")
+            == normalized_email,
+            DBUser.is_active.is_(True),
+            (DBUser.team_id.is_(None)) | (DBTeam.deleted_at.is_(None)),
+        )
+        .all()
+    )
+    if not users:
+        return []
+
+    for user in users:
+        user.receive_marketing_updates = payload.receive_marketing_updates
+    db.commit()
+    for user in users:
+        db.refresh(user)
+
+    hubspot = HubSpotService()
+    for user in users:
+        contact_id = await hubspot.find_contact_by_email(user.email)
+        if not contact_id:
+            logger.info("HubSpot contact not found for user email=%s", user.email)
+            continue
+        await hubspot.update_marketable_status(
+            contact_id=contact_id, enabled=user.receive_marketing_updates
+        )
+
+    return users
+
+
 @router.get(
     "/spend",
     response_model=UserSpendByEmailResponse,
@@ -836,6 +882,7 @@ async def update_user(
             )
 
     previous_email = db_user.email
+    previous_marketing_updates = db_user.receive_marketing_updates
     for key, value in user_update.model_dump(exclude_unset=True).items():
         setattr(db_user, key, value)
 
@@ -904,6 +951,20 @@ async def update_user(
         raise
 
     db.refresh(db_user)
+
+    if (
+        user_update.receive_marketing_updates is not None
+        and user_update.receive_marketing_updates != previous_marketing_updates
+    ):
+        hubspot = HubSpotService()
+        contact_id = await hubspot.find_contact_by_email(db_user.email)
+        if contact_id:
+            await hubspot.update_marketable_status(
+                contact_id=contact_id, enabled=db_user.receive_marketing_updates
+            )
+        else:
+            logger.info("HubSpot contact not found for user email=%s", db_user.email)
+
     return db_user
 
 

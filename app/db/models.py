@@ -147,6 +147,9 @@ class DBUser(Base):
     is_admin = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), default=func.now())
     role = Column(String, default="user")  # user, admin, key_creator, read_only
+    receive_marketing_updates = Column(
+        Boolean, default=False, nullable=False, server_default=text("false")
+    )
     team_id = Column(Integer, ForeignKey("teams.id", name="fk_user_team"))
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

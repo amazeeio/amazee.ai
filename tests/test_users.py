@@ -30,6 +30,7 @@ def test_create_user(client, test_admin, admin_token):
     user_data = response.json()
     assert user_data["email"] == "newuser@example.com"
     assert user_data["is_admin"] is False
+    assert user_data["receive_marketing_updates"] is False
     assert "id" in user_data
 
 
@@ -83,6 +84,69 @@ def test_update_user(client, admin_token, test_user):
     assert response.status_code == 200
     user_data = response.json()
     assert user_data["email"] == "updated@example.com"
+
+
+@patch("app.api.users.HubSpotService.find_contact_by_email", new_callable=AsyncMock)
+@patch("app.api.users.HubSpotService.update_marketable_status", new_callable=AsyncMock)
+def test_update_user_marketing_updates_by_id(
+    mock_update_marketable_status,
+    mock_find_contact_by_email,
+    client,
+    admin_token,
+    test_user,
+):
+    mock_find_contact_by_email.return_value = "12345"
+    response = client.put(
+        f"/users/{test_user.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"receive_marketing_updates": True},
+    )
+    assert response.status_code == 200
+    user_data = response.json()
+    assert user_data["receive_marketing_updates"] is True
+
+
+@patch("app.api.users.HubSpotService.find_contact_by_email", new_callable=AsyncMock)
+@patch("app.api.users.HubSpotService.update_marketable_status", new_callable=AsyncMock)
+def test_update_users_marketing_updates_by_email(
+    mock_update_marketable_status, mock_find_contact_by_email, client, admin_token, db
+):
+    team = DBTeam(
+        name="Marketing Team",
+        admin_email="marketing-team@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    u1 = DBUser(
+        email="marketing+one@example.com",
+        hashed_password=get_password_hash("pw"),
+        is_active=True,
+        is_admin=False,
+        team=team,
+    )
+    u2 = DBUser(
+        email="marketing+two@example.com",
+        hashed_password=get_password_hash("pw"),
+        is_active=True,
+        is_admin=False,
+        team=team,
+    )
+    db.add_all([team, u1, u2])
+    db.commit()
+
+    mock_find_contact_by_email.side_effect = ["cid-1", "cid-2"]
+
+    response = client.put(
+        "/users/by-email/marketing-updates",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"email": "marketing@example.com", "receive_marketing_updates": True},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 2
+    assert all(u["receive_marketing_updates"] is True for u in data)
+    assert mock_update_marketable_status.await_count == 2
 
 
 def test_delete_user(client, admin_token, test_user):

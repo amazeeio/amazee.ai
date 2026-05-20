@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "sk_test_string")
     STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "pk_test_string")
     WEBHOOK_SIG: str = os.getenv("WEBHOOK_SIG", "whsec_test_1234567890")
+    HUBSPOT_TOKEN: str = os.getenv("HUBSPOT_TOKEN", "")
     ENABLE_METRICS: bool = os.getenv("ENABLE_METRICS", "false") == "true"
     PROMETHEUS_API_KEY: str = os.getenv("PROMETHEUS_API_KEY", "")
     POOL_BUDGET_EXPIRATION_DAYS: int = int(
