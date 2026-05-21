@@ -140,6 +140,7 @@ active_team_labels = set()
 
 
 def _resolve_event_region_id(event_object: any) -> Optional[int]:
+    # 1. Try the event object's own metadata first (checkout sessions, subscriptions).
     metadata = getattr(event_object, "metadata", None) or {}
     for key in ("region_id", "regionId"):
         raw = metadata.get(key)
@@ -148,6 +149,24 @@ def _resolve_event_region_id(event_object: any) -> Optional[int]:
                 return int(raw)
         except (TypeError, ValueError):
             logger.warning("Invalid region metadata %s=%s", key, raw)
+
+    # 2. Fallback: invoice objects don't inherit subscription metadata, but their
+    #    line items do. Check the first line item's metadata for regionId.
+    lines = getattr(event_object, "lines", None)
+    if lines:
+        line_data = getattr(lines, "data", None) or lines
+        if isinstance(line_data, list) and line_data:
+            line_metadata = getattr(line_data[0], "metadata", None) or {}
+            for key in ("region_id", "regionId"):
+                raw = line_metadata.get(key)
+                try:
+                    if raw is not None:
+                        return int(raw)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Invalid line-item region metadata %s=%s", key, raw
+                    )
+
     return None
 
 
