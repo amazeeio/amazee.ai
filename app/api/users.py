@@ -539,10 +539,15 @@ async def update_users_marketing_updates_by_email(
         db.refresh(user)
 
     hubspot = HubSpotService()
-    for user in users:
-        await hubspot.upsert_contact_marketable_status(
-            email=user.email, enabled=user.receive_marketing_updates
+    try:
+        await hubspot.upsert_contacts_marketable_status(
+            [
+                (user.email, user.receive_marketing_updates)
+                for user in users
+            ]
         )
+    except HTTPException:
+        logger.exception("HubSpot sync failed for users marketing-updates by email")
 
     return users
 
@@ -958,9 +963,15 @@ async def update_user(
         and user_update.receive_marketing_updates != previous_marketing_updates
     ):
         hubspot = HubSpotService()
-        await hubspot.upsert_contact_marketable_status(
-            email=db_user.email, enabled=db_user.receive_marketing_updates
-        )
+        try:
+            await hubspot.upsert_contact_marketable_status(
+                email=db_user.email, enabled=db_user.receive_marketing_updates
+            )
+        except HTTPException:
+            logger.exception(
+                "HubSpot sync failed for user marketing-updates update user_id=%s",
+                db_user.id,
+            )
 
     return db_user
 

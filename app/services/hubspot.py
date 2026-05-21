@@ -26,7 +26,11 @@ class HubSpotService:
             "Content-Type": "application/json",
         }
 
-    async def upsert_contact_marketable_status(self, email: str, enabled: bool) -> None:
+    async def _upsert_contacts_marketable_status(
+        self, contacts: list[tuple[str, bool]]
+    ) -> None:
+        if not contacts:
+            return
         payload = {
             "inputs": [
                 {
@@ -37,6 +41,7 @@ class HubSpotService:
                         "hs_marketable_status": "true" if enabled else "false",
                     },
                 }
+                for email, enabled in contacts
             ]
         }
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -47,13 +52,23 @@ class HubSpotService:
             )
 
         if response.status_code >= 400:
+            request_id = response.headers.get("x-hubspot-request-id", "unknown")
+            body_excerpt = response.text[:500]
             logger.error(
-                "HubSpot contact upsert failed email=%s status=%s body=%s",
-                email,
+                "HubSpot contact upsert failed status=%s request_id=%s body_excerpt=%s",
                 response.status_code,
-                response.text,
+                request_id,
+                body_excerpt,
             )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Failed to upsert HubSpot contact",
             )
+
+    async def upsert_contact_marketable_status(self, email: str, enabled: bool) -> None:
+        await self._upsert_contacts_marketable_status([(email, enabled)])
+
+    async def upsert_contacts_marketable_status(
+        self, contacts: list[tuple[str, bool]]
+    ) -> None:
+        await self._upsert_contacts_marketable_status(contacts)
