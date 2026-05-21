@@ -849,3 +849,32 @@ class UserSpendByEmailResponse(BaseModel):
     total_spend: float
     teams: List[UserSpendTeam]
     cached_at: datetime
+
+
+class SubscriptionCycleRequest(BaseModel):
+    transaction_id: str
+    budget_cents: int
+    team_id: int
+    region_id: int
+
+
+class SubscriptionDeactivateRequest(BaseModel):
+    transaction_id: str
+    team_id: int
+    region_id: int
+    reason: Optional[str] = None
+
+
+class SubscriptionCycleResponse(BaseModel):
+    status: str
+    team_id: int
+    payment_id: Optional[int] = None
+    budget_dollars: Optional[float] = None
+    idempotent: bool = False
+
+
+class SubscriptionDeactivateResponse(BaseModel):
+    status: str
+    team_id: int
+    payment_id: Optional[int] = None
+    idempotent: bool = False

@@ -1,121 +1,37 @@
-import asyncio
-from fastapi import (
-    APIRouter,
-    Depends,
-    HTTPException,
-    status,
-    Request,
-    Response,
-)
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 import logging
 import os
-from datetime import datetime, UTC
-from app.db.database import get_db
+from datetime import UTC, datetime
+
 from app.core.security import (
     get_role_min_specific_team_admin,
     get_role_min_system_admin,
 )
-from app.db.models import DBTeam, DBSystemSecret, DBProduct, DBTeamProduct
+from app.db.database import get_db
+from app.db.models import DBProduct, DBTeam, DBTeamProduct
 from app.schemas.models import (
+    PortalRequest,
     PricingTableSession,
     SubscriptionCreate,
     SubscriptionResponse,
-    PortalRequest,
 )
 from app.services.stripe import (
-    decode_stripe_event,
+    cancel_subscription,
     create_portal_session,
     create_stripe_customer,
-    get_pricing_table_secret,
     create_zero_rated_stripe_subscription,
+    get_pricing_table_secret,
     get_subscribed_products_for_customer,
-    cancel_subscription,
 )
-from app.core.worker import handle_stripe_event_background
 
-# Configure logger
 logger = logging.getLogger(__name__)
-BILLING_WEBHOOK_KEY = "stripe_webhook_secret"
-BILLING_WEBHOOK_ROUTE = "/billing/events"
-STRIPE_WEBHOOK_PROCESSING_TIMEOUT_SECONDS = 25
-
 router = APIRouter(tags=["billing"])
 
 
-# TODO: Verify where we want this to be
 def get_return_url(team_id: int) -> str:
-    """
-    Get the return URL for the team dashboard.
-
-    Args:
-        team_id: The ID of the team to get the return URL for
-
-    Returns:
-        The return URL for the team dashboard
-    """
-    # Get the frontend URL from environment
     frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
     return f"{frontend_url}/teams/{team_id}/dashboard"
-
-
-@router.post("/events")
-async def handle_events(request: Request, db: Session = Depends(get_db)):
-    """
-    Handle Stripe webhook events.
-
-    This endpoint processes Stripe events synchronously and only returns 200
-    after durable processing has completed.
-    """
-    try:
-        # Get the webhook secret from database or environment variable
-        if os.getenv("WEBHOOK_SIG"):
-            webhook_secret = os.getenv("WEBHOOK_SIG")
-        else:
-            webhook_secret = (
-                db.query(DBSystemSecret)
-                .filter(DBSystemSecret.key == BILLING_WEBHOOK_KEY)
-                .first()
-                .value
-            )
-
-        if not webhook_secret:
-            logger.error("Stripe webhook secret not configured")
-            # 404 for security reasons - if we're not accepting traffic here, then it doesn't exist
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Not found"
-            )
-
-        # Get the raw request body
-        payload = await request.body()
-        signature = request.headers.get("stripe-signature")
-
-        event = decode_stripe_event(payload, signature, webhook_secret)
-
-        try:
-            await asyncio.wait_for(
-                handle_stripe_event_background(event),
-                timeout=STRIPE_WEBHOOK_PROCESSING_TIMEOUT_SECONDS,
-            )
-        except TimeoutError as exc:
-            logger.error("Stripe webhook processing timed out: %s", exc)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Error processing webhook",
-            ) from exc
-
-        return Response(
-            status_code=status.HTTP_200_OK,
-            content="Webhook processed successfully",
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error handling Stripe event: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error processing webhook",
-        )
 
 
 @router.post(
@@ -126,18 +42,6 @@ async def get_portal(
     portal_request: PortalRequest = PortalRequest(),
     db: Session = Depends(get_db),
 ):
-    """
-    Create a Stripe Customer Portal session for team subscription management and redirect to it.
-    If the team doesn't have a Stripe customer ID, one will be created first.
-
-    Args:
-        team_id: The ID of the team to create the portal session for
-        portal_request: Optional request body with return_url parameter
-
-    Returns:
-        Redirects to the Stripe Customer Portal URL
-    """
-    # Get the team
     team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not team:
         raise HTTPException(
@@ -155,9 +59,7 @@ async def get_portal(
             if portal_request.return_url
             else get_return_url(team_id)
         )
-        # Create portal session using the service
         portal_url = await create_portal_session(team.stripe_customer_id, return_url)
-
         return Response(
             status_code=status.HTTP_303_SEE_OTHER, headers={"Location": portal_url}
         )
@@ -175,17 +77,6 @@ async def get_portal(
     response_model=PricingTableSession,
 )
 async def get_pricing_table_session(team_id: int, db: Session = Depends(get_db)):
-    """
-    Create a Stripe Customer Session client secret for team subscription management.
-    If the team doesn't have a Stripe customer ID, one will be created first.
-
-    Args:
-        team_id: The ID of the team to create the customer session for
-
-    Returns:
-        JSON response containing the client secret
-    """
-    # Get the team
     team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not team:
         raise HTTPException(
@@ -193,7 +84,6 @@ async def get_pricing_table_session(team_id: int, db: Session = Depends(get_db))
         )
 
     try:
-        # Create Stripe customer if one doesn't exist
         if not team.stripe_customer_id:
             logger.info(f"Creating Stripe customer for team {team.id}")
             team.stripe_customer_id = await create_stripe_customer(team)
@@ -201,9 +91,7 @@ async def get_pricing_table_session(team_id: int, db: Session = Depends(get_db))
             db.commit()
 
         logger.info(f"Stripe ID is {team.stripe_customer_id}")
-        # Create customer session using the service
         client_secret = await get_pricing_table_secret(team.stripe_customer_id)
-
         return PricingTableSession(client_secret=client_secret)
     except Exception as e:
         logger.error(f"Error creating customer session: {str(e)}")
@@ -222,24 +110,12 @@ async def get_pricing_table_session(team_id: int, db: Session = Depends(get_db))
 async def create_team_subscription(
     team_id: int, subscription_data: SubscriptionCreate, db: Session = Depends(get_db)
 ):
-    """
-    Create a subscription for a specific team. Only accessible by system admin users.
-
-    Args:
-        team_id: The ID of the team to create the subscription for
-        subscription_data: The subscription data containing the Stripe product ID
-
-    Returns:
-        JSON response containing the subscription details
-    """
-    # Get the team
     team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not team:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
         )
 
-    # Check if the product exists in the database
     product = (
         db.query(DBProduct).filter(DBProduct.id == subscription_data.product_id).first()
     )
@@ -249,11 +125,9 @@ async def create_team_subscription(
             detail=f"Product with ID {subscription_data.product_id} not found in database",
         )
 
-    # Check if the team is already subscribed to any product
     existing_subscription = (
         db.query(DBTeamProduct).filter(DBTeamProduct.team_id == team_id).first()
     )
-
     if existing_subscription:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -261,18 +135,15 @@ async def create_team_subscription(
         )
 
     try:
-        # Create Stripe customer if one doesn't exist
         if not team.stripe_customer_id:
             logger.info(f"Creating Stripe customer for team {team.id}")
             team.stripe_customer_id = await create_stripe_customer(team)
             db.add(team)
             db.commit()
 
-        # Create the Stripe subscription
         subscription_id = await create_zero_rated_stripe_subscription(
             customer_id=team.stripe_customer_id, product_id=subscription_data.product_id
         )
-
         logger.info(
             f"Created subscription {subscription_id} for team {team.id} to product {subscription_data.product_id}"
         )
@@ -283,7 +154,6 @@ async def create_team_subscription(
             team_id=team_id,
             created_at=datetime.now(UTC),
         )
-
     except Exception as e:
         logger.error(f"Error creating subscription for team {team_id}: {str(e)}")
         raise HTTPException(
@@ -299,13 +169,6 @@ async def create_team_subscription(
 async def delete_team_subscription(
     team_id: int, product_id: str, db: Session = Depends(get_db)
 ):
-    """
-    Delete the subscription for a specific team to a specific product
-
-    Args:
-        team_id: The ID of the team to delete the subscription for
-        product_id: The ID of the product to be removed from the team
-    """
     team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not team:
         raise HTTPException(
@@ -326,21 +189,18 @@ async def delete_team_subscription(
         )
         .first()
     )
-
     if not existing_subscription or not team.stripe_customer_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Team {team_id} is not associated with product {product_id}",
         )
 
-    # 1. Check Stripe Status
     stripe_products = await get_subscribed_products_for_customer(
         team.stripe_customer_id
     )
     for stripe_subscription, stripe_product in stripe_products:
         if stripe_product == product_id:
             await cancel_subscription(stripe_subscription)
-    # 3. Remove Association
     db.delete(existing_subscription)
     db.commit()
 

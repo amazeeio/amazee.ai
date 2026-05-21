@@ -1,7 +1,6 @@
-from datetime import datetime, UTC, timedelta
+from datetime import UTC, datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, and_
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.db.models import (
     DBTeam,
     DBProduct,
@@ -15,11 +14,9 @@ from app.db.models import (
     DBPoolPurchase,
     DBPeriodicPayment,
     DBPeriodicBudgetLedgerEntry,
-    DBStripeProcessedEvent,
     DBSpendCap,
 )
 from app.schemas.models import BudgetType
-from app.db.database import get_db
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
 from app.core.team_service import (
@@ -33,19 +30,7 @@ import logging
 from collections import defaultdict
 
 # get_token_restrictions is now available through LimitService
-from app.services.stripe import (
-    get_product_id_from_session,
-    get_product_id_from_subscription,
-    get_subscribed_products_for_customer,
-    KNOWN_EVENTS,
-    SUBSCRIPTION_SUCCESS_EVENTS,
-    SESSION_SUCCESS_EVENTS,
-    SESSION_FAILURE_EVENTS,
-    SUBSCRIPTION_FAILURE_EVENTS,
-    INVOICE_FAILURE_EVENTS,
-    INVOICE_SUCCESS_EVENTS,
-    SUCCESS_EVENTS,
-)
+from app.services.stripe import get_subscribed_products_for_customer
 from prometheus_client import Gauge, Counter, Summary
 from typing import Dict, List, Optional
 from app.core.security import create_access_token
@@ -137,37 +122,6 @@ hard_delete_teams_duration = Summary(
 
 # Track active team labels to zero out metrics for inactive teams
 active_team_labels = set()
-
-
-def _resolve_event_region_id(event_object: any) -> Optional[int]:
-    # 1. Try the event object's own metadata first (checkout sessions, subscriptions).
-    metadata = getattr(event_object, "metadata", None) or {}
-    for key in ("region_id", "regionId"):
-        raw = metadata.get(key)
-        try:
-            if raw is not None:
-                return int(raw)
-        except (TypeError, ValueError):
-            logger.warning("Invalid region metadata %s=%s", key, raw)
-
-    # 2. Fallback: invoice objects don't inherit subscription metadata, but their
-    #    line items do. Check the first line item's metadata for regionId.
-    lines = getattr(event_object, "lines", None)
-    if lines:
-        line_data = getattr(lines, "data", None) or lines
-        if isinstance(line_data, list) and line_data:
-            line_metadata = getattr(line_data[0], "metadata", None) or {}
-            for key in ("region_id", "regionId"):
-                raw = line_metadata.get(key)
-                try:
-                    if raw is not None:
-                        return int(raw)
-                except (TypeError, ValueError):
-                    logger.warning(
-                        "Invalid line-item region metadata %s=%s", key, raw
-                    )
-
-    return None
 
 
 def set_team_and_user_limits(db: Session, team: DBTeam):
@@ -317,166 +271,53 @@ async def _record_periodic_payment(db: Session, event_object: any) -> Optional[i
         return None
 
 
-async def handle_stripe_event_background(event):
-    """
-    Background task to handle Stripe webhook events.
-    This runs in a separate thread to avoid blocking the webhook response.
-    Creates its own database session to avoid using the request-scoped session.
-    """
-    # Create a new database session for this processing task
-    db = next(get_db())
-    event_id: str | None = None
-    event_claimed = False
+async def _record_periodic_payment_direct(
+    db: Session,
+    *,
+    team_id: int,
+    transaction_id: str,
+    amount_cents: int,
+    currency: str = "usd",
+    payment_type: str = "subscription",
+) -> Optional[int]:
+    """Record a periodic team payment using direct billing payload fields."""
     try:
-        event_type = event.type
-        if event_type not in KNOWN_EVENTS:
-            logger.info(f"Unknown event type: {event_type}")
-            return
-        raw_event_id = getattr(event, "id", None)
-        event_id = (
-            raw_event_id if isinstance(raw_event_id, str) and raw_event_id else None
+        team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+        if not team:
+            logger.warning(f"No team found for team ID: {team_id}")
+            return None
+
+        payment_record = (
+            db.query(DBPeriodicPayment)
+            .filter(DBPeriodicPayment.stripe_payment_id == transaction_id)
+            .first()
         )
-        if event_id:
-            claim_stmt = (
-                pg_insert(DBStripeProcessedEvent)
-                .values(stripe_event_id=event_id, event_type=event_type)
-                .on_conflict_do_nothing(index_elements=["stripe_event_id"])
-                .returning(DBStripeProcessedEvent.id)
+
+        if not payment_record:
+            payment_record = DBPeriodicPayment(
+                team_id=team.id,
+                stripe_payment_id=transaction_id,
+                amount_cents=amount_cents,
+                currency=currency.lower(),
+                payment_type=payment_type,
+                status="completed",
+                sync_status="pending",
+                payment_date=datetime.now(UTC),
             )
-            claim_row = db.execute(claim_stmt).first()
+            db.add(payment_record)
             db.commit()
-            if claim_row is None:
-                logger.info("Stripe event already processed: %s", event_id)
-                return
-            event_claimed = True
-
-        event_object = event.data.object
-        customer_id = event_object.customer
-        if not customer_id:
-            logger.warning("No customer ID found in event, cannot complete processing")
-            return
-
-        # Record the payment for audit and sync tracking
-        payment_record_id = None
-        event_region_id = _resolve_event_region_id(event_object)
-        if event_type in SUCCESS_EVENTS:
-            payment_record_id = await _record_periodic_payment(db, event_object)
-
-        # Success Events
-        if event_type in SUBSCRIPTION_SUCCESS_EVENTS:
-            # new subscription – subscription objects expose current_period_start/end,
-            # not period_start/period_end, so spend capture is handled on invoice events only.
-            product_id = await get_product_id_from_subscription(event_object.id)
-            start_date = datetime.fromtimestamp(event_object.start_date, tz=UTC)
-            await apply_product_for_team(
-                db,
-                customer_id,
-                product_id,
-                start_date,
-                payment_record_id,
-                region_id=event_region_id,
+            logger.info(
+                "Recorded %s payment %s for team %s",
+                payment_type,
+                transaction_id,
+                team.id,
             )
-        elif event_type in INVOICE_SUCCESS_EVENTS:
-            # subscription renewed
-            await capture_periodic_team_spend_for_invoice(
-                db=db,
-                customer_id=customer_id,
-                invoice_obj=event_object,
-                stripe_event_id=event_id,
-                region_id=event_region_id,
-            )
-            subscription = getattr(event_object, "subscription", None)
-            # Fallback for complex invoice objects
-            if not subscription and hasattr(event_object, "parent"):
-                try:
-                    subscription = event_object.parent.subscription_details.subscription
-                except AttributeError as err:
-                    logger.debug(
-                        "Invoice object missing nested subscription_details.subscription; "
-                        "continuing without subscription fallback: %s",
-                        err,
-                    )
 
-            if subscription:
-                start_date = datetime.fromtimestamp(
-                    getattr(
-                        event_object, "period_start", int(datetime.now().timestamp())
-                    ),
-                    tz=UTC,
-                )
-                await _sync_periodic_ledger_for_invoice(
-                    db=db,
-                    customer_id=customer_id,
-                    invoice_obj=event_object,
-                    source_payment_id=payment_record_id,
-                    region_id=event_region_id,
-                )
-                product_id = await get_product_id_from_subscription(subscription)
-                if product_id:
-                    await apply_product_for_team(
-                        db,
-                        customer_id,
-                        product_id,
-                        start_date,
-                        payment_record_id,
-                        region_id=event_region_id,
-                    )
-        elif event_type in SESSION_SUCCESS_EVENTS:
-            # checkout signup/subscription flow
-            subscription = getattr(event_object, "subscription", None)
-            if subscription:
-                product_id = await get_product_id_from_subscription(subscription)
-                await apply_product_for_team(
-                    db,
-                    customer_id,
-                    product_id,
-                    datetime.now(UTC),
-                    payment_record_id,
-                    region_id=event_region_id,
-                )
-
-        # Failure Events
-        elif event_type in SESSION_FAILURE_EVENTS:
-            product_id = await get_product_id_from_session(event_object.id)
-            await remove_product_from_team(db, customer_id, product_id)
-        elif event_type in SUBSCRIPTION_FAILURE_EVENTS:
-            product_id = await get_product_id_from_subscription(event_object.id)
-            await remove_product_from_team(db, customer_id, product_id)
-        elif event_type in INVOICE_FAILURE_EVENTS:
-            # We assume that the invoice is related to a subscription
-            subscription = getattr(event_object, "subscription", None)
-            if not subscription and hasattr(event_object, "parent"):
-                try:
-                    subscription = event_object.parent.subscription_details.subscription
-                except AttributeError:
-                    # Some invoice payloads do not include nested subscription details.
-                    # Keep existing behavior (no subscription fallback) but make it explicit.
-                    logger.debug(
-                        "Invoice event missing parent.subscription_details.subscription; "
-                        "skipping subscription-based removal fallback."
-                    )
-
-            if subscription:
-                product_id = await get_product_id_from_subscription(subscription)
-                await remove_product_from_team(db, customer_id, product_id)
-
-        db.commit()
+        return payment_record.id
     except Exception as e:
         db.rollback()
-        if event_claimed and event_id:
-            try:
-                (
-                    db.query(DBStripeProcessedEvent)
-                    .filter(DBStripeProcessedEvent.stripe_event_id == event_id)
-                    .delete()
-                )
-                db.commit()
-            except Exception:
-                db.rollback()
-        logger.error(f"Error in background event handler: {str(e)}")
-        raise
-    finally:
-        db.close()
+        logger.error(f"Failed to record periodic payment: {str(e)}")
+        return None
 
 
 async def capture_periodic_team_spend_for_invoice(
@@ -548,6 +389,47 @@ async def capture_periodic_team_spend_for_invoice(
                 "subscription",
                 None,
             ),
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error(
+            "Failed to capture spend period for team_id=%s region_id=%s: %s",
+            team.id,
+            region.id,
+            str(exc),
+        )
+
+
+async def capture_periodic_team_spend_for_period(
+    *,
+    db: Session,
+    team: DBTeam,
+    region: DBRegion,
+    period_start: datetime,
+    period_end: datetime,
+    source_event_id: str | None,
+) -> None:
+    if team.budget_type != BudgetType.PERIODIC:
+        return
+
+    try:
+        snapshot = await fetch_team_spend_snapshot_for_region(
+            db=db,
+            team=team,
+            region=region,
+        )
+        upsert_team_spend_period(
+            db=db,
+            team=team,
+            region_id=region.id,
+            period_start=period_start,
+            period_end=period_end,
+            source="moad_subscription_cycle",
+            snapshot=snapshot,
+            stripe_event_id=source_event_id,
+            stripe_invoice_id=None,
+            stripe_subscription_id=None,
         )
         db.commit()
     except Exception as exc:
@@ -637,6 +519,55 @@ async def _sync_periodic_ledger_for_invoice(
     )
 
 
+async def _sync_periodic_ledger_for_period(
+    *,
+    db: Session,
+    team: DBTeam,
+    region: DBRegion,
+    period_start: datetime,
+    period_end: datetime,
+    amount_cents: int,
+    source_payment_id: int | None,
+    source_invoice_id: str | None,
+) -> None:
+    if team.budget_type != BudgetType.PERIODIC:
+        return
+
+    snapshot = await fetch_team_spend_snapshot_for_region(
+        db=db, team=team, region=region
+    )
+    snapshot_total_spend = (
+        snapshot.get("total_spend", 0.0)
+        if isinstance(snapshot, dict)
+        else getattr(snapshot, "total_spend", 0.0)
+    )
+    spend_cents = int(round(float(snapshot_total_spend) * 100))
+    allocate_period_spend_fifo(
+        db, team_id=team.id, region_id=region.id, spend_cents=spend_cents
+    )
+    materialize_topup_rollovers(
+        db,
+        team_id=team.id,
+        region_id=region.id,
+        source_invoice_id=source_invoice_id,
+        rollover_at=period_end,
+    )
+    expire_subscription_entries(
+        db, team_id=team.id, region_id=region.id, period_end=period_end
+    )
+    add_subscription_entry(
+        db,
+        team_id=team.id,
+        region_id=region.id,
+        amount_cents=amount_cents,
+        purchased_at=period_start,
+        period_start=period_start,
+        period_end=period_end,
+        source_payment_id=source_payment_id,
+        source_invoice_id=source_invoice_id,
+    )
+
+
 async def reconcile_periodic_team_budget_drift(
     *, db: Session, team: DBTeam, region: DBRegion
 ) -> BudgetDriftResult | None:
@@ -685,149 +616,72 @@ async def reconcile_periodic_team_budget_drift(
     )
 
 
-def purge_old_processed_stripe_events(db: Session, retention_days: int = 30) -> int:
-    cutoff = datetime.now(UTC) - timedelta(days=retention_days)
-    deleted = (
-        db.query(DBStripeProcessedEvent)
-        .filter(DBStripeProcessedEvent.created_at < cutoff)
-        .delete(synchronize_session=False)
-    )
-    return int(deleted or 0)
-
-
-async def apply_product_for_team(
+async def apply_billing_cycle_for_team(
     db: Session,
-    customer_id: str,
-    product_id: str,
-    start_date: datetime,
-    payment_record_id: Optional[int] = None,
-    region_id: Optional[int] = None,
-):
-    """
-    Apply a product to a team and update their last payment date.
-    Also extends all team keys and sets their max budgets via LiteLLM service.
-
-    Args:
-        db: Database session
-        customer_id: Stripe customer ID
-        product_id: Product ID from the database
-
-    Returns:
-        bool: True if update was successful, False otherwise
-    """
-    sync_errors = []
-    logger.info(f"Applying product {product_id} to team {customer_id}")
+    team_id: int,
+    budget_cents: int,
+    region_id: int,
+    period_start: datetime,
+    period_end: datetime,
+    source_payment_id: Optional[int] = None,
+) -> list[str]:
+    sync_errors: list[str] = []
     try:
-        # Find the team and product
-        team = db.query(DBTeam).filter(DBTeam.stripe_customer_id == customer_id).first()
-        product = db.query(DBProduct).filter(DBProduct.id == product_id).first()
-
+        team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
         if not team:
-            logger.error(f"Team not found for customer ID: {customer_id}")
-            return
-        if not product:
-            logger.error(f"Product not found for ID: {product_id}")
-            return
+            logger.error(f"Team not found for team ID: {team_id}")
+            return sync_errors
+        if team.budget_type != BudgetType.PERIODIC:
+            raise ValueError(f"Team {team_id} is not PERIODIC")
 
-        # Update the last payment date
-        team.last_payment = start_date
-
-        # Check if the product is already active for the team
-        existing_association = (
-            db.query(DBTeamProduct)
-            .filter(
-                DBTeamProduct.team_id == team.id, DBTeamProduct.product_id == product.id
+        region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+        if not region:
+            logger.warning(
+                "Skipping billing cycle sync for team %s: region %s not found",
+                team.id,
+                region_id,
             )
-            .first()
-        )
+            return sync_errors
 
-        # Only create new association if it doesn't exist
-        if not existing_association:
-            team_product = DBTeamProduct(team_id=team.id, product_id=product.id)
-            db.add(team_product)
-
-        # Always commit: persists last_payment and any new product association
+        team.last_payment = period_start
         db.commit()
 
         limit_service = LimitService(db)
-        days_left_in_period, max_max_spend, max_rpm_limit = (
-            limit_service.get_token_restrictions(team.id)
+        _, _, max_rpm_limit = limit_service.get_token_restrictions(team.id)
+        per_region_budget = budget_cents / 100.0
+        budget_duration = "31d"
+        keys = get_team_region_litellm_keys(db, team_id=team.id, region_id=region.id)
+
+        litellm_service = LiteLLMService(
+            api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
+        lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
 
-        # PERIODIC teams use a fixed 31-day budget duration and compound
-        # the team max_budget to keep the effective monthly budget aligned
-        # with the Stripe billing cycle. Key spends are reset to 0 on each
-        # webhook so that sum(key spends) reflects only the current period.
-        is_periodic = team.budget_type == BudgetType.PERIODIC
-        budget_duration = "31d" if is_periodic else f"{days_left_in_period}d"
-
-        # Get all keys for the team grouped by region, optionally scoped to one region
-        if region_id is None:
-            keys_by_region = get_team_keys_by_region(db, team.id)
-        else:
-            region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
-            if not region:
-                logger.warning(
-                    "Skipping product sync for team %s: region %s not found",
-                    team.id,
-                    region_id,
+        team_max_budget = per_region_budget
+        if keys:
+            try:
+                await litellm_service.get_team_info(lite_team_id)
+                topup_remaining_cents = compute_active_topup_remaining(
+                    db, team_id=team.id, region_id=region.id
                 )
-                return
-            region_keys = get_team_region_litellm_keys(
-                db, team_id=team.id, region_id=region_id
-            )
-            keys_by_region = {region: region_keys}
-        if not keys_by_region:
-            logger.warning(
-                "Skipping product sync for team %s: no regions with keys found",
-                team.id,
-            )
-            return
-        per_region_budget = max_max_spend
+                topup_remaining_dollars = topup_remaining_cents / 100.0
+                team_max_budget = per_region_budget + topup_remaining_dollars
+                logger.info(
+                    "Compounding team %s budget: cap=%s + topup=%s = %s",
+                    team.id,
+                    per_region_budget,
+                    topup_remaining_dollars,
+                    team_max_budget,
+                )
+            except Exception as e:
+                error_msg = (
+                    f"Failed to read team spend for compounding "
+                    f"(team {team.id}, region {region.name}): {e}"
+                )
+                logger.error(error_msg)
+                sync_errors.append(error_msg)
 
-        # Update keys and team budget for each region
-        for region, keys in keys_by_region.items():
-            # Initialize LiteLLM service for this region
-            litellm_service = LiteLLMService(
-                api_url=region.litellm_api_url, api_key=region.litellm_api_key
-            )
-
-            # Update the team-level budget (shared ceiling for all keys)
-            lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
-
-            # For PERIODIC teams, compound the max_budget so that
-            # (max_budget - accumulated_spend) equals the monthly cap.
-            # get_team_info is the first LiteLLM call in the sync process.
-            # If it fails we abort the sync entirely and leave the payment
-            # record as pending so a future retry can pick it up.
-            team_max_budget = per_region_budget
-            if is_periodic and keys:
-                try:
-                    await litellm_service.get_team_info(lite_team_id)
-                    topup_remaining_cents = compute_active_topup_remaining(
-                        db, team_id=team.id, region_id=region.id
-                    )
-                    topup_remaining_dollars = topup_remaining_cents / 100.0
-                    desired_remaining = per_region_budget + topup_remaining_dollars
-                    # PERIODIC webhook sync resets key spends for the new
-                    # billing window; use desired remaining directly as the
-                    # team cap to avoid double-counting prior accumulated spend.
-                    team_max_budget = desired_remaining
-                    logger.info(
-                        f"Compounding team {team.id} budget: "
-                        f"cap={per_region_budget} + topup={topup_remaining_dollars} = {team_max_budget}"
-                    )
-                except Exception as e:
-                    error_msg = (
-                        f"Failed to read team spend for compounding "
-                        f"(team {team.id}, region {region.name}): {e}"
-                    )
-                    logger.error(error_msg)
-                    sync_errors.append(error_msg)
-                    # Do not continue with inaccurate data — mark as failed
-                    # and let a future sync process retry.
-                    break
-
+        if not sync_errors:
             try:
                 await litellm_service.update_team_budget(
                     team_id=lite_team_id,
@@ -835,18 +689,20 @@ async def apply_product_for_team(
                     budget_duration=budget_duration,
                 )
                 logger.info(
-                    f"Updated team {team.id} budget to {team_max_budget} "
-                    f"(duration={budget_duration}) in region {region.name}"
+                    "Updated team %s budget to %s (duration=%s) in region %s",
+                    team.id,
+                    team_max_budget,
+                    budget_duration,
+                    region.name,
                 )
-                if is_periodic and keys:
+                if keys:
                     try:
                         drift_result = await reconcile_periodic_team_budget_drift(
                             db=db, team=team, region=region
                         )
                         if drift_result and drift_result.drift_cents != 0:
                             logger.warning(
-                                "Periodic budget drift detected team_id=%s region_id=%s "
-                                "expected_max_budget_cents=%s actual_max_budget_cents=%s drift_cents=%s",
+                                "Periodic budget drift detected team_id=%s region_id=%s expected_max_budget_cents=%s actual_max_budget_cents=%s drift_cents=%s",
                                 team.id,
                                 region.id,
                                 drift_result.expected_max_budget_cents,
@@ -854,8 +710,6 @@ async def apply_product_for_team(
                                 drift_result.drift_cents,
                             )
                     except Exception as drift_exc:
-                        # Drift reconciliation is observability-only and must not
-                        # interfere with budget propagation.
                         logger.warning(
                             "Drift reconciliation failed for team_id=%s region_id=%s: %s",
                             team.id,
@@ -867,9 +721,7 @@ async def apply_product_for_team(
                 logger.error(error_msg)
                 sync_errors.append(error_msg)
 
-            # Update each key's duration and budget via LiteLLM.
-            # For PERIODIC teams, also reset key spend to 0 so that
-            # sum(key spends) = current-period spend only.
+        if not sync_errors:
             for key in keys:
                 try:
                     key_spend_cap = (
@@ -892,28 +744,26 @@ async def apply_product_for_team(
                         budget_duration=budget_duration,
                         budget_amount=effective_key_budget,
                         rpm_limit=max_rpm_limit,
-                        spend=0.0 if is_periodic else None,
+                        spend=0.0,
                     )
                     logger.info(
-                        f"Updated key {key.id} limits in LiteLLM: "
-                        f"duration={budget_duration}, budget={effective_key_budget}, "
-                        f"rpm={max_rpm_limit}, spend_reset={is_periodic}"
+                        "Updated key %s limits in LiteLLM: duration=%s, budget=%s, rpm=%s, spend_reset=True",
+                        key.id,
+                        budget_duration,
+                        effective_key_budget,
+                        max_rpm_limit,
                     )
                 except Exception as e:
                     error_msg = f"Failed to update key {key.id} in LiteLLM: {str(e)}"
                     logger.error(error_msg)
                     sync_errors.append(error_msg)
-                    # Continue with other keys even if one fails
-                    continue
 
-        # Ensure that limits are updated
-        limit_service.set_team_limits(team)
+        set_team_and_user_limits(db, team)
 
-        # Update periodic payment sync status if provided
-        if payment_record_id:
+        if source_payment_id:
             payment_record = (
                 db.query(DBPeriodicPayment)
-                .filter(DBPeriodicPayment.id == payment_record_id)
+                .filter(DBPeriodicPayment.id == source_payment_id)
                 .first()
             )
             if payment_record:
@@ -924,17 +774,15 @@ async def apply_product_for_team(
                     payment_record.sync_status = "success"
 
         db.commit()
-
+        return sync_errors
     except Exception as e:
         db.rollback()
-        logger.error(f"Error applying product to team: {str(e)}")
-        if payment_record_id:
-            # Try to log the outer exception to the payment record in a new transaction
+        logger.error(f"Error applying billing cycle to team: {str(e)}")
+        if source_payment_id:
             try:
-                # We need a fresh DB session or at least a fresh transaction
                 payment_record = (
                     db.query(DBPeriodicPayment)
-                    .filter(DBPeriodicPayment.id == payment_record_id)
+                    .filter(DBPeriodicPayment.id == source_payment_id)
                     .first()
                 )
                 if payment_record:
@@ -945,65 +793,163 @@ async def apply_product_for_team(
                 logger.error(
                     f"Failed to log critical error to payment record: {inner_e}"
                 )
-        raise e
+        raise
 
 
-async def remove_product_from_team(db: Session, customer_id: str, product_id: str):
-    logger.info(f"Removing product {product_id} from team {customer_id}")
-    try:
-        # Find the team and product
-        team = db.query(DBTeam).filter(DBTeam.stripe_customer_id == customer_id).first()
-        product = db.query(DBProduct).filter(DBProduct.id == product_id).first()
+async def apply_product_for_team(
+    db: Session,
+    customer_id: str,
+    product_id: str,
+    start_date: datetime,
+    payment_record_id: Optional[int] = None,
+    region_id: Optional[int] = None,
+):
+    """Compatibility wrapper for legacy product-based tests and flows."""
+    team = db.query(DBTeam).filter(DBTeam.stripe_customer_id == customer_id).first()
+    product = db.query(DBProduct).filter(DBProduct.id == product_id).first()
 
-        if not team:
-            logger.error(f"Team not found for customer ID: {customer_id}")
-            return
-        if not product:
-            logger.error(f"Product not found for ID: {product_id}")
-            return
-        # Check if the product is already active for the team
-        existing_association = (
-            db.query(DBTeamProduct)
-            .filter(
-                DBTeamProduct.team_id == team.id, DBTeamProduct.product_id == product.id
+    if not team:
+        logger.error(f"Team not found for customer ID: {customer_id}")
+        return []
+    if not product:
+        logger.error(f"Product not found for ID: {product_id}")
+        return []
+
+    team.last_payment = start_date
+    existing_association = (
+        db.query(DBTeamProduct)
+        .filter(
+            DBTeamProduct.team_id == team.id, DBTeamProduct.product_id == product.id
+        )
+        .first()
+    )
+    if not existing_association:
+        db.add(DBTeamProduct(team_id=team.id, product_id=product.id))
+    db.commit()
+
+    if team.budget_type == BudgetType.PERIODIC:
+        period_start = start_date
+        period_end = start_date + timedelta(days=31)
+        budget_cents = int(round((product.max_budget_per_key or 0.0) * 100))
+        if region_id is not None:
+            return await apply_billing_cycle_for_team(
+                db=db,
+                team_id=team.id,
+                budget_cents=budget_cents,
+                region_id=region_id,
+                period_start=period_start,
+                period_end=period_end,
+                source_payment_id=payment_record_id,
             )
+
+        keys_by_region = get_team_keys_by_region(db, team.id)
+        if not keys_by_region:
+            set_team_and_user_limits(db, team)
+            return []
+
+        all_errors: list[str] = []
+        for region in keys_by_region:
+            all_errors.extend(
+                await apply_billing_cycle_for_team(
+                    db=db,
+                    team_id=team.id,
+                    budget_cents=budget_cents,
+                    region_id=region.id,
+                    period_start=period_start,
+                    period_end=period_end,
+                    source_payment_id=payment_record_id,
+                )
+            )
+        return all_errors
+
+    sync_errors = []
+    limit_service = LimitService(db)
+    days_left_in_period, max_max_spend, max_rpm_limit = (
+        limit_service.get_token_restrictions(team.id)
+    )
+    budget_duration = f"{days_left_in_period}d"
+
+    if region_id is None:
+        keys_by_region = get_team_keys_by_region(db, team.id)
+    else:
+        region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+        if not region:
+            logger.warning(
+                "Skipping product sync for team %s: region %s not found",
+                team.id,
+                region_id,
+            )
+            return []
+        region_keys = get_team_region_litellm_keys(
+            db, team_id=team.id, region_id=region_id
+        )
+        keys_by_region = {region: region_keys}
+
+    if not keys_by_region:
+        logger.warning(
+            "Skipping product sync for team %s: no regions with keys found",
+            team.id,
+        )
+        return []
+
+    for region, keys in keys_by_region.items():
+        litellm_service = LiteLLMService(
+            api_url=region.litellm_api_url, api_key=region.litellm_api_key
+        )
+        lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+        try:
+            await litellm_service.update_team_budget(
+                team_id=lite_team_id,
+                max_budget=max_max_spend,
+                budget_duration=budget_duration,
+            )
+        except Exception as e:
+            sync_errors.append(
+                f"Failed to update team {team.id} budget in region {region.name}: {str(e)}"
+            )
+
+        for key in keys:
+            try:
+                key_spend_cap = (
+                    db.query(DBSpendCap.max_budget)
+                    .filter(
+                        DBSpendCap.scope == "key",
+                        DBSpendCap.region_id == region.id,
+                        DBSpendCap.key_id == key.id,
+                    )
+                    .scalar()
+                )
+                effective_key_budget = (
+                    float(key_spend_cap) if key_spend_cap is not None else max_max_spend
+                )
+                await litellm_service.set_key_restrictions(
+                    litellm_token=key.litellm_token,
+                    duration=budget_duration,
+                    budget_duration=budget_duration,
+                    budget_amount=effective_key_budget,
+                    rpm_limit=max_rpm_limit,
+                    spend=None,
+                )
+            except Exception as e:
+                sync_errors.append(
+                    f"Failed to update key {key.id} in LiteLLM: {str(e)}"
+                )
+
+    limit_service.set_team_limits(team)
+    if payment_record_id:
+        payment_record = (
+            db.query(DBPeriodicPayment)
+            .filter(DBPeriodicPayment.id == payment_record_id)
             .first()
         )
-        if not existing_association:
-            logger.error(f"Product {product_id} not found for team {customer_id}")
-            return
-
-        # Verify that the subscription is no longer active in Stripe before removing
-        try:
-            stripe_subscriptions = await get_subscribed_products_for_customer(
-                customer_id
-            )
-            for stripe_subscription_id, stripe_product_id in stripe_subscriptions:
-                if stripe_product_id == product_id:
-                    logger.warning(
-                        f"Product {product_id} is still active in Stripe subscription {stripe_subscription_id}. Not removing from team {customer_id}"
-                    )
-                    return
-        except Exception as stripe_error:
-            logger.error(
-                f"Error checking Stripe subscription status for customer {customer_id}: {str(stripe_error)}"
-            )
-            # If we can't check Stripe status, we should not remove the product to be safe
-            logger.warning(
-                f"Unable to verify Stripe subscription status. Not removing product {product_id} from team {customer_id}"
-            )
-            return
-
-        # Remove the product association
-        db.delete(existing_association)
-        limit_service = LimitService(db)
-        limit_service.set_team_limits(team)
-
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error removing product from team: {str(e)}")
-        raise e
+        if payment_record:
+            if sync_errors:
+                payment_record.sync_status = "sync_failed"
+                payment_record.error_log = "\n".join(sync_errors)
+            else:
+                payment_record.sync_status = "success"
+    db.commit()
+    return sync_errors
 
 
 async def reconcile_team_keys(
@@ -1622,9 +1568,6 @@ async def monitor_teams(db: Session):
     """
     logger.info("Monitoring teams")
     try:
-        purged_events = purge_old_processed_stripe_events(db)
-        if purged_events:
-            logger.info("Purged %s old processed Stripe events", purged_events)
         # Get all non-deleted teams
         teams = db.query(DBTeam).filter(DBTeam.deleted_at.is_(None)).all()
         current_time = datetime.now(UTC)

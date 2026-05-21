@@ -325,17 +325,6 @@ class DBPeriodicPayment(Base):
     team = relationship("DBTeam")
 
 
-class DBStripeProcessedEvent(Base):
-    __tablename__ = "stripe_processed_events"
-
-    id = Column(Integer, primary_key=True, index=True)
-    stripe_event_id = Column(String, unique=True, nullable=False, index=True)
-    event_type = Column(String, nullable=False)
-    created_at = Column(
-        DateTime(timezone=True), default=func.now(), nullable=False, index=True
-    )
-
-
 class DBPeriodicBudgetLedgerEntry(Base):
     __tablename__ = "periodic_budget_ledger_entries"
 
