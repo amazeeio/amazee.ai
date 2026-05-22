@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -52,6 +52,23 @@ def _active_entries(
         )
         .with_for_update()
         .order_by(
+            # Consume subscriptions before top-ups/rollovers so that
+            # supplementary top-up budget is preserved for carry-over.
+            case(
+                (
+                    DBPeriodicBudgetLedgerEntry.entry_type == ENTRY_TYPE_SUBSCRIPTION,
+                    0,
+                ),
+                (
+                    DBPeriodicBudgetLedgerEntry.entry_type == ENTRY_TYPE_TOPUP,
+                    1,
+                ),
+                (
+                    DBPeriodicBudgetLedgerEntry.entry_type == ENTRY_TYPE_TOPUP_ROLLOVER,
+                    2,
+                ),
+                else_=3,
+            ),
             DBPeriodicBudgetLedgerEntry.purchased_at.asc(),
             DBPeriodicBudgetLedgerEntry.id.asc(),
         )
