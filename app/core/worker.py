@@ -533,7 +533,6 @@ async def _sync_periodic_ledger_for_period(
     if team.budget_type != BudgetType.PERIODIC:
         return
 
-    snapshot_total_spend = 0.0
     try:
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
