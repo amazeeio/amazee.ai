@@ -148,6 +148,11 @@ def test_update_users_marketing_updates_by_email(
     assert len(data) == 2
     assert all(u["receive_marketing_updates"] is True for u in data)
     mock_upsert_contacts_marketable_status.assert_awaited_once()
+    args, _ = mock_upsert_contacts_marketable_status.await_args
+    assert args[0] == [
+        ("marketing@example.com", True),
+        ("marketing@example.com", True),
+    ]
 
 
 def test_delete_user(client, admin_token, test_user):

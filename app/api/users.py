@@ -541,10 +541,7 @@ async def update_users_marketing_updates_by_email(
     hubspot = HubSpotService()
     try:
         await hubspot.upsert_contacts_marketable_status(
-            [
-                (user.email, user.receive_marketing_updates)
-                for user in users
-            ]
+            [(normalized_email, user.receive_marketing_updates) for user in users]
         )
     except HTTPException:
         logger.exception("HubSpot sync failed for users marketing-updates by email")
