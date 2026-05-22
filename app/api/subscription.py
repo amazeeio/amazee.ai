@@ -69,8 +69,10 @@ def _write_audit_log(
         logger.error("Failed to write audit log: %s", exc)
         try:
             db.rollback()
-        except Exception:
-            pass
+        except Exception as rollback_exc:
+            logger.warning(
+                "Failed to rollback audit log transaction: %s", rollback_exc
+            )
 
 
 @router.post("/cycle", response_model=SubscriptionCycleResponse)
