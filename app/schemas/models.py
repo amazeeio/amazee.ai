@@ -486,8 +486,18 @@ class TeamSpendResponse(BaseModel):
     budget_duration: Optional[str] = None
     budget_reset_at: Optional[datetime] = None
     period_start: Optional[datetime] = None
+    periodic_budget: Optional["PeriodicTeamBudgetView"] = None
     key_count: int
     keys: List[SpendKeyItem]
+
+
+class PeriodicTeamBudgetView(BaseModel):
+    purchased_budget_cents: int
+    purchased_budget: float
+    remaining_budget_cents: int
+    remaining_budget: float
+    configured_max_budget_cents: int
+    configured_max_budget: float
 
 
 class UserSpendResponse(BaseModel):

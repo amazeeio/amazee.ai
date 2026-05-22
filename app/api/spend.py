@@ -13,6 +13,7 @@ from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
 from app.core.litellm_user_sync import team_role_for_litellm
 from app.core.roles import UserRole
 from app.core.team_service import get_team_region_litellm_keys
+from app.core.periodic_budget_ledger_service import compute_active_topup_remaining
 from app.core.security import (
     get_current_user_from_auth,
     get_private_ai_access,
@@ -43,6 +44,7 @@ from app.schemas.models import (
     TeamSpendHistoryPeriodItem,
     TeamSpendHistoryResponse,
     TeamSpendResponse,
+    PeriodicTeamBudgetView,
     UserSpendResponse,
 )
 from app.services.litellm import LiteLLMService
@@ -883,6 +885,42 @@ async def get_team_spend(
         team_budget_reset_at, team_budget_duration
     )
 
+    periodic_budget_view = None
+    if is_periodic:
+        now = datetime.now(UTC)
+        sub_remaining_cents = 0
+        # Use ledger-driven periodic status semantics for user-facing budget numbers.
+        from app.db.models import DBPeriodicBudgetLedgerEntry
+
+        sub_rows = (
+            db.query(DBPeriodicBudgetLedgerEntry)
+            .filter(
+                DBPeriodicBudgetLedgerEntry.team_id == team_id,
+                DBPeriodicBudgetLedgerEntry.region_id == region_id,
+                DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+                DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+                (
+                    DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                    | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+                ),
+            )
+            .all()
+        )
+        for row in sub_rows:
+            sub_remaining_cents += max(0, row.amount_cents - row.consumed_cents)
+        topup_remaining_cents = compute_active_topup_remaining(
+            db, team_id=team_id, region_id=region_id
+        )
+        remaining_cents = sub_remaining_cents + topup_remaining_cents
+        periodic_budget_view = PeriodicTeamBudgetView(
+            purchased_budget_cents=remaining_cents,
+            purchased_budget=round(remaining_cents / 100.0, 4),
+            remaining_budget_cents=remaining_cents,
+            remaining_budget=round(remaining_cents / 100.0, 4),
+            configured_max_budget_cents=int(round(total_budget * 100)),
+            configured_max_budget=round(total_budget, 4),
+        )
+
     return TeamSpendResponse(
         region_id=region_id,
         region_name=region.name,
@@ -896,6 +934,7 @@ async def get_team_spend(
         budget_duration=team_budget_duration,
         budget_reset_at=team_budget_reset_at,
         period_start=team_period_start,
+        periodic_budget=periodic_budget_view,
         key_count=len(items),
         keys=items,
     )
