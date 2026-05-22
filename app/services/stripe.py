@@ -1,18 +1,20 @@
 import logging
 import os
 
-import stripe
+import stripe as stripe_sdk
 from fastapi import HTTPException, status
 
 from app.db.models import DBTeam
 
 logger = logging.getLogger(__name__)
-stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+# Backward-compatible alias for tests and existing patch targets.
+stripe = stripe_sdk
+stripe_sdk.api_key = os.getenv("STRIPE_SECRET_KEY")
 
 
 async def create_portal_session(stripe_customer_id: str, return_url: str) -> str:
     try:
-        portal_session = stripe.billing_portal.Session.create(
+        portal_session = stripe_sdk.billing_portal.Session.create(
             customer=stripe_customer_id, return_url=return_url
         )
         return portal_session.url
@@ -29,7 +31,7 @@ async def create_stripe_customer(team: DBTeam) -> str:
         if team.stripe_customer_id:
             return team.stripe_customer_id
 
-        customer = stripe.Customer.create(
+        customer = stripe_sdk.Customer.create(
             email=team.admin_email,
             name=team.name,
             metadata={"team_id": team.id, "team_name": team.name},
@@ -48,7 +50,7 @@ async def create_zero_rated_stripe_subscription(
 ) -> str:
     try:
         if not price_id:
-            prices = stripe.Price.list(product=product_id, active=True)
+            prices = stripe_sdk.Price.list(product=product_id, active=True)
             if not prices.data:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -61,14 +63,14 @@ async def create_zero_rated_stripe_subscription(
                 )
             price_id = prices.data[0].id
 
-        price = stripe.Price.retrieve(price_id)
+        price = stripe_sdk.Price.retrieve(price_id)
         if price.unit_amount != 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Product {product_id} is not free. Price amount: {price.unit_amount} {price.currency}",
             )
 
-        subscription = stripe.Subscription.create(
+        subscription = stripe_sdk.Subscription.create(
             customer=customer_id,
             items=[{"price": price_id}],
             payment_behavior="allow_incomplete",
@@ -81,7 +83,7 @@ async def create_zero_rated_stripe_subscription(
         return subscription.id
     except HTTPException:
         raise
-    except stripe.error.StripeError as e:
+    except stripe_sdk.error.StripeError as e:
         logger.error(f"Stripe error creating subscription: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -97,7 +99,7 @@ async def create_zero_rated_stripe_subscription(
 
 async def get_subscribed_products_for_customer(customer_id: str) -> list[(str, str)]:
     try:
-        items = stripe.Subscription.list(
+        items = stripe_sdk.Subscription.list(
             customer=customer_id, expand=["data.plan.product"]
         )
     except Exception as e:
@@ -122,7 +124,7 @@ async def get_subscribed_products_for_customer(customer_id: str) -> list[(str, s
 
 async def cancel_subscription(subscription_id: str):
     try:
-        stripe.Subscription.cancel(subscription_id)
+        stripe_sdk.Subscription.cancel(subscription_id)
     except Exception as e:
         logger.error(f"Failed to cancel subscription {subscription_id}, {str(e)}")
         raise HTTPException(
@@ -132,14 +134,14 @@ async def cancel_subscription(subscription_id: str):
 
 
 async def get_customer_from_pi(payment_intent: str) -> str:
-    payment_intent = stripe.PaymentIntent.retrieve(payment_intent)
+    payment_intent = stripe_sdk.PaymentIntent.retrieve(payment_intent)
     logger.info("Payment intent is:\n%s", payment_intent)
     return payment_intent.customer
 
 
 async def get_pricing_table_secret(customer_id: str) -> str:
     try:
-        session = stripe.CustomerSession.create(
+        session = stripe_sdk.CustomerSession.create(
             customer=customer_id, components={"pricing_table": {"enabled": True}}
         )
         return session.client_secret
