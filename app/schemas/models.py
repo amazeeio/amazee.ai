@@ -250,6 +250,80 @@ class PublicRegionModels(BaseModel):
     models: List[PublicModelSummary]
 
 
+class BedrockMissingModel(BaseModel):
+    """A model that exists upstream at a hyperscaler but isn't deployed to one of our LiteLLM regions.
+
+    Provider-agnostic: the same shape is reused for AWS Bedrock today and is
+    intended to cover Google Vertex / Azure Foundry once those endpoints exist.
+    """
+
+    model_id: str = Field(
+        ...,
+        description=(
+            "Upstream provider model identifier, e.g. "
+            "'anthropic.claude-opus-4-1-20250805-v1:0' for Bedrock."
+        ),
+    )
+    model_name: str
+    provider_name: str
+
+    model_config = ConfigDict(populate_by_name=True, protected_namespaces=())
+
+
+class ProviderRegionMissingModels(BaseModel):
+    """Per-region-group summary of models we haven't deployed yet.
+
+    For AWS Bedrock the ``region_group`` is a market code (US/EU/AU) and
+    ``upstream_region`` is the AWS region name (e.g. ``us-east-1``).  For other
+    providers these will carry the equivalent provider-native concepts.
+    """
+
+    region_group: str = Field(
+        ...,
+        description=(
+            "Provider-native region grouping. For AWS this is the market code "
+            "('US' / 'EU' / 'AU')."
+        ),
+    )
+    upstream_region: str = Field(
+        ...,
+        description=(
+            "Provider-native region used to look up upstream availability "
+            "(e.g. 'us-east-1' for Bedrock, 'us-central1' for Vertex)."
+        ),
+    )
+    regions: List[str] = Field(
+        default_factory=list,
+        description=(
+            "DBRegion names whose deployed models contributed to the "
+            "'configured' set for this region group."
+        ),
+    )
+    available_model_count: int
+    configured_model_count: int
+    missing_model_count: int
+    missing_models: List[BedrockMissingModel]
+
+
+class ProviderMissingModelsReport(BaseModel):
+    """Full report returned by /models/missing/{provider}."""
+
+    provider: str = Field(
+        ...,
+        description="Hyperscaler being inspected: 'aws', 'google', or 'azure'.",
+    )
+    generated_at: datetime
+    models_url: str
+    is_authenticated: bool = Field(
+        ...,
+        description=(
+            "Whether the caller authenticated. Authenticated admins also "
+            "include private regions in 'configured'."
+        ),
+    )
+    region_groups: List[ProviderRegionMissingModels]
+
+
 class PrivateAIKeyBase(BaseModel):
     id: int
     database_name: Optional[str] = None

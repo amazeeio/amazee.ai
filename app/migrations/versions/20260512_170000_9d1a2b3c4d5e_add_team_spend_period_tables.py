@@ -178,29 +178,48 @@ def downgrade() -> None:
     op.drop_index(
         op.f("ix_team_spend_period_keys_team_spend_period_id"),
         table_name="team_spend_period_keys",
+        if_exists=True,
     )
     op.drop_index(
-        op.f("ix_team_spend_period_keys_id"), table_name="team_spend_period_keys"
+        op.f("ix_team_spend_period_keys_id"),
+        table_name="team_spend_period_keys",
+        if_exists=True,
     )
-    op.drop_table("team_spend_period_keys")
+    op.drop_table("team_spend_period_keys", if_exists=True)
 
     op.drop_index(
-        op.f("ix_team_spend_periods_stripe_event_id"), table_name="team_spend_periods"
+        op.f("ix_team_spend_periods_stripe_event_id"),
+        table_name="team_spend_periods",
+        if_exists=True,
     )
     op.drop_index(
-        op.f("ix_team_spend_periods_period_end"), table_name="team_spend_periods"
+        op.f("ix_team_spend_periods_period_end"),
+        table_name="team_spend_periods",
+        if_exists=True,
     )
     op.drop_index(
-        op.f("ix_team_spend_periods_period_start"), table_name="team_spend_periods"
+        op.f("ix_team_spend_periods_period_start"),
+        table_name="team_spend_periods",
+        if_exists=True,
     )
     op.drop_index(
-        op.f("ix_team_spend_periods_budget_type"), table_name="team_spend_periods"
+        op.f("ix_team_spend_periods_budget_type"),
+        table_name="team_spend_periods",
+        if_exists=True,
     )
     op.drop_index(
-        op.f("ix_team_spend_periods_region_id"), table_name="team_spend_periods"
+        op.f("ix_team_spend_periods_region_id"),
+        table_name="team_spend_periods",
+        if_exists=True,
     )
     op.drop_index(
-        op.f("ix_team_spend_periods_team_id"), table_name="team_spend_periods"
+        op.f("ix_team_spend_periods_team_id"),
+        table_name="team_spend_periods",
+        if_exists=True,
     )
-    op.drop_index(op.f("ix_team_spend_periods_id"), table_name="team_spend_periods")
-    op.drop_table("team_spend_periods")
+    op.drop_index(
+        op.f("ix_team_spend_periods_id"),
+        table_name="team_spend_periods",
+        if_exists=True,
+    )
+    op.drop_table("team_spend_periods", if_exists=True)
