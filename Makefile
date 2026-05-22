@@ -1,4 +1,4 @@
-.PHONY: backend-test backend-test-build test-clean test-network test-postgres frontend-test frontend-test-build migration-create migration-upgrade migration-downgrade migration-stamp
+.PHONY: backend-test backend-test-build test-clean test-teardown test-network test-postgres frontend-test frontend-test-build migration-create migration-upgrade migration-downgrade migration-stamp
 
 # Default target
 all: backend-test
@@ -12,20 +12,26 @@ backend-test-build:
 	docker build -t amazee-backend-test -f Dockerfile.test .
 
 # Start PostgreSQL container for testing
-test-postgres: test-clean test-network
+test-postgres: test-network
 	docker run -d \
 		--name amazee-test-postgres \
 		--network amazeeai_default \
 		-e POSTGRES_USER=postgres \
 		-e POSTGRES_PASSWORD=postgres \
 		-e POSTGRES_DB=postgres_service \
-		-p 5432:5432 \
 		pgvector/pgvector:pg16 && \
 	sleep 5
 
+# Teardown: stop and remove test containers, network, and image
+test-teardown:
+	docker stop amazee-test-postgres 2>/dev/null || true
+	docker rm amazee-test-postgres 2>/dev/null || true
+	docker network rm amazeeai_default 2>/dev/null || true
+	docker rmi amazee-backend-test 2>/dev/null || true
+
 # Run backend tests for a specific regex
 # Usage: make backend-test-regex regex="test_pattern"
-backend-test-regex: test-clean backend-test-build test-postgres
+backend-test-regex: backend-test-build test-postgres
 	@if [ -z "$(regex)" ]; then \
 		echo "Error: regex parameter is required. Usage: make backend-test-regex regex=\"test_pattern\""; \
 		exit 1; \
@@ -45,9 +51,10 @@ backend-test-regex: test-clean backend-test-build test-postgres
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
 		amazee-backend-test pytest -vv -k "$(regex)"
+	$(MAKE) test-teardown
 
 # Run backend tests in a new container
-backend-test: test-clean backend-test-build test-postgres
+backend-test: backend-test-build test-postgres
 	docker run --rm \
 		--network amazeeai_default \
 		-e DATABASE_URL="postgresql://postgres:postgres@amazee-test-postgres/postgres_service" \
@@ -63,9 +70,10 @@ backend-test: test-clean backend-test-build test-postgres
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
 		amazee-backend-test
+	$(MAKE) test-teardown
 
 # Run backend tests with coverage report
-backend-test-cov: test-clean backend-test-build test-postgres
+backend-test-cov: backend-test-build test-postgres
 	docker run --rm \
 		--network amazeeai_default \
 		-e DATABASE_URL="postgresql://postgres:postgres@amazee-test-postgres/postgres_service" \
@@ -81,6 +89,7 @@ backend-test-cov: test-clean backend-test-build test-postgres
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
 		amazee-backend-test pytest -v --cov=app tests/
+	$(MAKE) test-teardown
 
 # Build the frontend test container
 frontend-test-build:
