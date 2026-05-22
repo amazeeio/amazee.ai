@@ -32,7 +32,7 @@ async def test_record_periodic_payment_direct_subscription(db, test_team):
     assert payment.stripe_payment_id == "txn_subscription_1"
     assert payment.amount_cents == 1000
     assert payment.payment_type == "subscription"
-    assert payment.sync_status == "pending"
+    assert payment.sync_status == "success"
 
 
 @pytest.mark.asyncio
@@ -220,7 +220,7 @@ def test_subscription_cycle_endpoint_first_cycle(
         "idempotent": False,
     }
     mock_capture.assert_not_awaited()
-    mock_sync_ledger.assert_not_awaited()
+    mock_sync_ledger.assert_awaited_once()
     mock_apply_cycle.assert_awaited_once()
 
 

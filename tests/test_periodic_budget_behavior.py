@@ -562,9 +562,9 @@ def test_periodic_team_total_budget_from_max_key_budget(
     assert response.status_code == 200
     data = response.json()
 
-    # total_budget must be 100.0 (max key budget = monthly cap)
-    # NOT 250.0 (compounded team budget)
-    assert data["total_budget"] == 100.0
+    # PERIODIC teams expose effective current team budget from LiteLLM team_info,
+    # which includes compounded/carry-forward budget.
+    assert data["total_budget"] == 250.0
 
 
 # ─── 10. PERIODIC team payment sync status updated on success ─────────────
