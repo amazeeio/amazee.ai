@@ -533,14 +533,25 @@ async def _sync_periodic_ledger_for_period(
     if team.budget_type != BudgetType.PERIODIC:
         return
 
-    snapshot = await fetch_team_spend_snapshot_for_region(
-        db=db, team=team, region=region
-    )
-    snapshot_total_spend = (
-        snapshot.get("total_spend", 0.0)
-        if isinstance(snapshot, dict)
-        else getattr(snapshot, "total_spend", 0.0)
-    )
+    snapshot_total_spend = 0.0
+    try:
+        litellm_service = LiteLLMService(
+            api_url=region.litellm_api_url, api_key=region.litellm_api_key
+        )
+        lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+        team_info_resp = await litellm_service.get_team_info(lite_team_id)
+        team_info = team_info_resp.get("team_info", team_info_resp)
+        snapshot_total_spend = float(team_info.get("spend", 0.0) or 0.0)
+    except Exception:
+        snapshot = await fetch_team_spend_snapshot_for_region(
+            db=db, team=team, region=region
+        )
+        snapshot_total_spend = (
+            snapshot.get("total_spend", 0.0)
+            if isinstance(snapshot, dict)
+            else getattr(snapshot, "total_spend", 0.0)
+        )
+
     spend_cents = int(round(float(snapshot_total_spend) * 100))
     allocate_period_spend_fifo(
         db, team_id=team.id, region_id=region.id, spend_cents=spend_cents
