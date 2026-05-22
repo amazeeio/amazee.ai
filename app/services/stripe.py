@@ -1,12 +1,13 @@
+import importlib
 import logging
 import os
 
-import stripe as stripe_sdk
 from fastapi import HTTPException, status
 
 from app.db.models import DBTeam
 
 logger = logging.getLogger(__name__)
+stripe_sdk = importlib.import_module("stripe")
 # Backward-compatible alias for tests and existing patch targets.
 stripe = stripe_sdk
 stripe_sdk.api_key = os.getenv("STRIPE_SECRET_KEY")
