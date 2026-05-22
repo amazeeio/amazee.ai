@@ -148,17 +148,16 @@ async def subscription_cycle(
                 source_event_id=request.transaction_id,
             )
 
-        if not is_first_cycle:
-            await _sync_periodic_ledger_for_period(
-                db=db,
-                team=team,
-                region=region,
-                period_start=period_start,
-                period_end=period_end,
-                amount_cents=request.budget_cents,
-                source_payment_id=None,
-                source_invoice_id=request.transaction_id,
-            )
+        await _sync_periodic_ledger_for_period(
+            db=db,
+            team=team,
+            region=region,
+            period_start=period_start,
+            period_end=period_end,
+            amount_cents=request.budget_cents,
+            source_payment_id=None,
+            source_invoice_id=request.transaction_id,
+        )
 
         sync_errors = await apply_billing_cycle_for_team(
             db=db,

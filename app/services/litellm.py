@@ -448,6 +448,52 @@ class LiteLLMService:
                 detail=f"Failed to get LiteLLM team info: {error_msg}",
             )
 
+    async def get_spend_logs(
+        self,
+        *,
+        team_id: Optional[str] = None,
+        api_key: Optional[str] = None,
+        request_id: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """Get spend logs from LiteLLM proxy."""
+        params: dict[str, str | int] = {"limit": max(1, min(limit, 500))}
+        if team_id:
+            params["team_id"] = team_id
+        if api_key:
+            params["api_key"] = api_key
+        if request_id:
+            params["request_id"] = request_id
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.api_url}/spend/logs",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    params=params,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                return payload if isinstance(payload, list) else []
+        except httpx.HTTPStatusError as e:
+            error_msg = str(e)
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get LiteLLM spend logs: {error_msg}",
+            )
+
     async def get_model_info(self) -> dict:
         """Get LiteLLM model info for this region."""
         try:

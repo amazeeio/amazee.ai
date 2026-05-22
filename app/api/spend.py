@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi import Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy.orm import aliased
 
 from app.core.config import settings
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
@@ -22,7 +21,6 @@ from app.core.security import (
 from app.db.database import get_db
 from app.db.models import (
     DBPeriodicPayment,
-    DBPeriodicBudgetLedgerEntry,
     DBPoolPurchase,
     DBPrivateAIKey,
     DBRegion,
@@ -191,26 +189,11 @@ async def get_team_spend_history(
 
     periodic_transactions: list[TeamPeriodicTransactionItem] = []
     if team.budget_type == BudgetType.PERIODIC:
-        latest_ledger = aliased(DBPeriodicBudgetLedgerEntry)
-        latest_payment_ids_subq = (
-            db.query(
-                latest_ledger.source_payment_id.label("source_payment_id"),
-                func.max(latest_ledger.id).label("latest_ledger_id"),
-            )
-            .filter(
-                latest_ledger.region_id == region_id,
-                latest_ledger.team_id == team_id,
-                latest_ledger.source_payment_id.isnot(None),
-            )
-            .group_by(latest_ledger.source_payment_id)
-            .subquery()
-        )
+        # Show all periodic purchases for the team (subscription + topup),
+        # independent of whether a region-scoped ledger entry has already
+        # linked source_payment_id for that payment.
         periodic_rows = (
             db.query(DBPeriodicPayment)
-            .join(
-                latest_payment_ids_subq,
-                latest_payment_ids_subq.c.source_payment_id == DBPeriodicPayment.id,
-            )
             .filter(DBPeriodicPayment.team_id == team_id)
             .order_by(
                 DBPeriodicPayment.payment_date.desc(),
@@ -869,14 +852,12 @@ async def get_team_spend(
     )
     if configured_team_cap is not None and team.requires_pool_purchase_gate:
         total_budget = round(configured_team_cap, 4)
-    elif is_periodic and litellm_fetch_ok and items:
-        # For PERIODIC teams, team_info["max_budget"] is the compounded value
-        # (accumulated_spend + monthly_cap). Derive the actual monthly cap from
-        # the per-key max_budget which is always set to the product cap.
-        # Only apply when we got data from LiteLLM directly (not the DB fallback).
-        key_budgets = [k.max_budget for k in items if k.max_budget is not None]
-        if key_budgets:
-            total_budget = round(max(key_budgets), 4)
+    elif is_periodic and litellm_fetch_ok:
+        # For PERIODIC teams, display the effective current team budget as seen by
+        # LiteLLM (includes active subscription carry + top-ups), not per-key cap.
+        max_budget = team_info.get("max_budget")
+        if max_budget is not None:
+            total_budget = round(float(max_budget or 0.0), 4)
     key_cap_map = _get_key_spend_cap_map(
         db,
         region_id=region_id,
