@@ -22,7 +22,10 @@ import {
 } from "@/components/ui/table";
 import { TableFilters, FilterField } from "@/components/ui/table-filters";
 import { useTeams } from "@/hooks/use-teams";
+import { Region } from "@/types/region";
 import { Team } from "@/types/team";
+import { get } from "@/utils/api";
+import { useQuery } from "@tanstack/react-query";
 import { AddUserToTeamDialog } from "./_components/add-user-to-team-dialog";
 import { CreateTeamDialog } from "./_components/create-team-dialog";
 import { CreateUserInTeamDialog } from "./_components/create-user-in-team-dialog";
@@ -58,6 +61,14 @@ export default function TeamsPage() {
 
   // Use centralized hook
   const { teams, isLoading: isLoadingTeams } = useTeams(includeDeleted);
+
+  const { data: regions = [] } = useQuery<Region[]>({
+    queryKey: ["regions"],
+    queryFn: async () => {
+      const response = await get("/regions");
+      return response.json();
+    },
+  });
 
   // Filtered and sorted teams
   const filteredAndSortedTeams = useMemo(() => {
@@ -373,6 +384,7 @@ export default function TeamsPage() {
                           setSelectedTeamId(id);
                           setIsSubscribingToProduct(true);
                         }}
+                        regions={regions}
                       />
                     </Fragment>
                   ))
