@@ -911,12 +911,15 @@ async def get_team_spend(
         topup_remaining_cents = compute_active_topup_remaining(
             db, team_id=team_id, region_id=region_id
         )
-        remaining_cents = sub_remaining_cents + topup_remaining_cents
+        purchased_cents = sub_remaining_cents + topup_remaining_cents
+        purchased_dollars = purchased_cents / 100.0
+        live_remaining_dollars = max(0.0, purchased_dollars - float(total_spend or 0.0))
+        live_remaining_cents = int(round(live_remaining_dollars * 100))
         periodic_budget_view = PeriodicTeamBudgetView(
-            purchased_budget_cents=remaining_cents,
-            purchased_budget=round(remaining_cents / 100.0, 4),
-            remaining_budget_cents=remaining_cents,
-            remaining_budget=round(remaining_cents / 100.0, 4),
+            purchased_budget_cents=purchased_cents,
+            purchased_budget=round(purchased_dollars, 4),
+            remaining_budget_cents=live_remaining_cents,
+            remaining_budget=round(live_remaining_dollars, 4),
             configured_max_budget_cents=int(round(total_budget * 100)),
             configured_max_budget=round(total_budget, 4),
         )
