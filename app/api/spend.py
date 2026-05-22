@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi import Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import aliased
 
 from app.core.config import settings
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
@@ -22,6 +23,7 @@ from app.core.security import (
 from app.db.database import get_db
 from app.db.models import (
     DBPeriodicPayment,
+    DBPeriodicBudgetLedgerEntry,
     DBPoolPurchase,
     DBPrivateAIKey,
     DBRegion,
@@ -191,11 +193,26 @@ async def get_team_spend_history(
 
     periodic_transactions: list[TeamPeriodicTransactionItem] = []
     if team.budget_type == BudgetType.PERIODIC:
-        # Show all periodic purchases for the team (subscription + topup),
-        # independent of whether a region-scoped ledger entry has already
-        # linked source_payment_id for that payment.
+        latest_ledger = aliased(DBPeriodicBudgetLedgerEntry)
+        latest_payment_ids_subq = (
+            db.query(
+                latest_ledger.source_payment_id.label("source_payment_id"),
+                func.max(latest_ledger.id).label("latest_ledger_id"),
+            )
+            .filter(
+                latest_ledger.region_id == region_id,
+                latest_ledger.team_id == team_id,
+                latest_ledger.source_payment_id.isnot(None),
+            )
+            .group_by(latest_ledger.source_payment_id)
+            .subquery()
+        )
         periodic_rows = (
             db.query(DBPeriodicPayment)
+            .join(
+                latest_payment_ids_subq,
+                latest_payment_ids_subq.c.source_payment_id == DBPeriodicPayment.id,
+            )
             .filter(DBPeriodicPayment.team_id == team_id)
             .order_by(
                 DBPeriodicPayment.payment_date.desc(),

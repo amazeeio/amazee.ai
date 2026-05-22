@@ -301,7 +301,7 @@ async def _record_periodic_payment_direct(
                 currency=currency.lower(),
                 payment_type=payment_type,
                 status="completed",
-                sync_status="pending",
+                sync_status="success",
                 payment_date=datetime.now(UTC),
             )
             db.add(payment_record)

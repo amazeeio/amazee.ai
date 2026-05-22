@@ -148,6 +148,15 @@ async def subscription_cycle(
                 source_event_id=request.transaction_id,
             )
 
+        payment_id = await _record_periodic_payment_direct(
+            db,
+            team_id=team.id,
+            transaction_id=request.transaction_id,
+            amount_cents=request.budget_cents,
+            currency="usd",
+            payment_type="subscription",
+        )
+
         await _sync_periodic_ledger_for_period(
             db=db,
             team=team,
@@ -155,7 +164,7 @@ async def subscription_cycle(
             period_start=period_start,
             period_end=period_end,
             amount_cents=request.budget_cents,
-            source_payment_id=None,
+            source_payment_id=payment_id,
             source_invoice_id=request.transaction_id,
         )
 
@@ -167,15 +176,6 @@ async def subscription_cycle(
             period_start=period_start,
             period_end=period_end,
             source_payment_id=None,
-        )
-
-        payment_id = await _record_periodic_payment_direct(
-            db,
-            team_id=team.id,
-            transaction_id=request.transaction_id,
-            amount_cents=request.budget_cents,
-            currency="usd",
-            payment_type="subscription",
         )
 
         _write_audit_log(
