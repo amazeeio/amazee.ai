@@ -463,9 +463,12 @@ def apply_restore(config, dump_dir):
                         short_msg = sanitize_error(msg.strip().split("\n")[0][:150], config)
                         # Fail fast on critical DDL (CREATE/ALTER TABLE, CREATE TYPE, etc.)
                         # Allow non-critical statements (COMMENT, GRANT, SET, ALTER OWNER) to warn-and-continue
-                        non_critical_prefixes = ("COMMENT ", "GRANT ", "REVOKE ", "SET ", "ALTER OWNER", "SELECT ")
+                        non_critical_prefixes = ("COMMENT ", "GRANT ", "REVOKE ", "SET ", "SELECT ")
                         block_upper = ddl_block.lstrip().upper()
-                        is_non_critical = any(block_upper.startswith(p) for p in non_critical_prefixes)
+                        is_non_critical = (
+                            any(block_upper.startswith(p) for p in non_critical_prefixes)
+                            or " OWNER TO " in block_upper
+                        )
                         if is_non_critical:
                             print(f"  Warning: {short_msg}")
                             warnings += 1
