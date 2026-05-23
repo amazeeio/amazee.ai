@@ -376,8 +376,13 @@ async def _run_cycle_from_stripe_event(
     if getattr(sub_meta, "regionId", None):
         try:
             region_id = int(sub_meta["regionId"])
-        except (TypeError, ValueError):
-            pass
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "Invalid regionId in subscription metadata for customer_id=%s: %r (%s)",
+                customer_id,
+                sub_meta.get("regionId"),
+                exc,
+            )
 
     # Fallback: fetch subscription from Stripe API
     if not region_id and subscription_id:
