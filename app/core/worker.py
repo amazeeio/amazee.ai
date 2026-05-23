@@ -24,13 +24,26 @@ from app.core.team_service import (
     get_team_region_litellm_keys,
     soft_delete_team,
 )
+from app.db.database import get_db
 from app.core.limit_service import LimitService
 from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitedResource
 import logging
 from collections import defaultdict
 
 # get_token_restrictions is now available through LimitService
-from app.services.stripe import get_subscribed_products_for_customer
+from app.services.stripe import (
+    get_subscribed_products_for_customer,
+    get_product_id_from_subscription,
+    get_product_id_from_session,
+    stripe_sdk,
+    KNOWN_EVENTS,
+    SUBSCRIPTION_SUCCESS_EVENTS,
+    INVOICE_SUCCESS_EVENTS,
+    SESSION_SUCCESS_EVENTS,
+    SESSION_FAILURE_EVENTS,
+    SUBSCRIPTION_FAILURE_EVENTS,
+    INVOICE_FAILURE_EVENTS,
+)
 from prometheus_client import Gauge, Counter, Summary
 from typing import Dict, List, Optional
 from app.core.security import create_access_token
@@ -318,6 +331,316 @@ async def _record_periodic_payment_direct(
         db.rollback()
         logger.error(f"Failed to record periodic payment: {str(e)}")
         return None
+
+
+async def _run_cycle_from_stripe_event(
+    *,
+    db: Session,
+    event_id: str | None,
+    customer_id: str,
+    event_object,
+) -> None:
+    """Run the /cycle pipeline for an invoice.paid Stripe event.
+
+    Extracts team_id, region_id, and budget_cents from the Stripe payload
+    using the same resolution logic as the /cycle endpoint, then calls
+    the same worker functions.
+    """
+    # --- Resolve team ---
+    team = db.query(DBTeam).filter(DBTeam.stripe_customer_id == customer_id).first()
+    if not team:
+        logger.warning("No team found for customer_id=%s", customer_id)
+        return
+    if team.budget_type != BudgetType.PERIODIC:
+        logger.info("Skipping invoice.paid: team %s is not PERIODIC", team.id)
+        return
+
+    # --- Resolve region ---
+    # Try subscription metadata from invoice parent first (no API call needed),
+    # then try Stripe API, then fall back to DBTeamRegion
+    region_id: int | None = None
+    subscription_id = getattr(event_object, "subscription", None)
+    sub_meta: dict = {}
+
+    # Check parent.subscription_details on the invoice object
+    if hasattr(event_object, "parent"):
+        try:
+            details = event_object.parent.subscription_details
+            subscription_id = getattr(details, "subscription", subscription_id)
+            sub_meta = getattr(details, "metadata", {}) or {}
+        except AttributeError:
+            pass
+
+    if getattr(sub_meta, "regionId", None):
+        try:
+            region_id = int(sub_meta["regionId"])
+        except (TypeError, ValueError):
+            pass
+
+    # Fallback: fetch subscription from Stripe API
+    if not region_id and subscription_id:
+        try:
+            sub = stripe_sdk.Subscription.retrieve(subscription_id)
+            meta = getattr(sub, "metadata", {}) or {}
+            if getattr(meta, "regionId", None):
+                region_id = int(meta["regionId"])
+        except Exception as exc:
+            logger.warning(
+                "Failed to retrieve subscription %s: %s", subscription_id, exc
+            )
+
+    if not region_id:
+        team_regions = (
+            db.query(DBTeamRegion).filter(DBTeamRegion.team_id == team.id).all()
+        )
+        if len(team_regions) != 1:
+            logger.error(
+                "Cannot resolve region for team %s: found %s region(s), expected 1",
+                team.id,
+                len(team_regions),
+            )
+            return
+        region_id = team_regions[0].region_id
+
+    region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+    if not region:
+        logger.error("Region %s not found for team %s", region_id, team.id)
+        return
+
+    # --- Resolve budget ---
+    amount_paid = int(getattr(event_object, "amount_paid", 0) or 0)
+    budget_cents = amount_paid
+
+    if budget_cents == 0 and subscription_id:
+        # Free plan — look up product budget from DB
+        try:
+            product_id = await get_product_id_from_subscription(subscription_id)
+            product = db.query(DBProduct).filter(DBProduct.id == product_id).first()
+            if product and product.max_budget_per_key:
+                budget_cents = int(round(product.max_budget_per_key * 100))
+        except Exception:
+            pass
+
+    # --- Transaction ID for idempotency ---
+    transaction_id = getattr(event_object, "id", None) or event_id
+
+    # --- Idempotency check (same as /cycle) ---
+    existing = (
+        db.query(DBPeriodicPayment)
+        .filter(DBPeriodicPayment.stripe_payment_id == transaction_id)
+        .first()
+    )
+    if existing and existing.sync_status == "success":
+        logger.info(
+            "Webhook invoice.paid idempotent skip: transaction_id=%s",
+            transaction_id,
+        )
+        return
+
+    # --- Run the same /cycle pipeline ---
+    period_start = datetime.now(UTC)
+    period_end = period_start + timedelta(days=31)
+
+    is_first_cycle = (
+        not db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team.id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+        )
+        .first()
+    )
+
+    try:
+        if not is_first_cycle:
+            await capture_periodic_team_spend_for_period(
+                db=db,
+                team=team,
+                region=region,
+                period_start=period_start,
+                period_end=period_end,
+                source_event_id=event_id,
+            )
+
+        payment_id = await _record_periodic_payment_direct(
+            db,
+            team_id=team.id,
+            transaction_id=transaction_id,
+            amount_cents=budget_cents,
+            currency=getattr(event_object, "currency", "usd") or "usd",
+            payment_type="subscription",
+        )
+
+        await _sync_periodic_ledger_for_period(
+            db=db,
+            team=team,
+            region=region,
+            period_start=period_start,
+            period_end=period_end,
+            amount_cents=budget_cents,
+            source_payment_id=payment_id,
+            source_invoice_id=transaction_id,
+        )
+
+        sync_errors = await apply_billing_cycle_for_team(
+            db=db,
+            team_id=team.id,
+            budget_cents=budget_cents,
+            region_id=region.id,
+            period_start=period_start,
+            period_end=period_end,
+            source_payment_id=payment_id,
+        )
+
+        logger.info(
+            "Webhook invoice.paid cycle complete: team=%s invoice=%s budget=%s errors=%s",
+            team.id,
+            transaction_id,
+            budget_cents,
+            len(sync_errors),
+        )
+    except Exception as exc:
+        logger.error(
+            "Webhook invoice.paid cycle failed: team=%s invoice=%s error=%s",
+            team.id,
+            transaction_id,
+            exc,
+            exc_info=True,
+        )
+
+
+async def handle_stripe_event_background(event):
+    """Background task to handle Stripe webhook events.
+
+    Creates its own database session to avoid using the request-scoped session.
+    """
+    db = next(get_db())
+    try:
+        event_type = event.type
+        if event_type not in KNOWN_EVENTS:
+            logger.info("Unknown event type: %s", event_type)
+            return
+
+        event_object = event.data.object
+        event_id = getattr(event, "id", None)
+        customer_id = event_object.customer
+        if not customer_id:
+            logger.warning("No customer ID found in event, cannot complete processing")
+            return
+
+        # --- Success events ---
+        if event_type in INVOICE_SUCCESS_EVENTS:
+            # Use the /cycle pipeline for invoice.paid — same as MOAD subscription.cycle
+            await _run_cycle_from_stripe_event(
+                db=db,
+                event_id=event_id,
+                customer_id=customer_id,
+                event_object=event_object,
+            )
+
+        elif event_type in SUBSCRIPTION_SUCCESS_EVENTS:
+            product_id = await get_product_id_from_subscription(event_object.id)
+            start_date = datetime.fromtimestamp(event_object.start_date, tz=UTC)
+            await apply_product_for_team(db, customer_id, product_id, start_date)
+
+        elif event_type in SESSION_SUCCESS_EVENTS:
+            subscription = getattr(event_object, "subscription", None)
+            if subscription:
+                product_id = await get_product_id_from_subscription(subscription)
+                await apply_product_for_team(
+                    db, customer_id, product_id, datetime.now(UTC)
+                )
+            else:
+                metadata = getattr(event_object, "metadata", {})
+                if metadata and metadata.get("ai_budget_increase"):
+                    team = (
+                        db.query(DBTeam)
+                        .filter(DBTeam.stripe_customer_id == customer_id)
+                        .first()
+                    )
+                    if team and team.products:
+                        product_id = team.products[0].id
+                        await apply_product_for_team(
+                            db,
+                            customer_id,
+                            product_id,
+                            datetime.now(UTC),
+                        )
+
+        # --- Failure events ---
+        elif event_type in SESSION_FAILURE_EVENTS:
+            product_id = await get_product_id_from_session(event_object.id)
+            await remove_product_from_team(db, customer_id, product_id)
+
+        elif event_type in SUBSCRIPTION_FAILURE_EVENTS:
+            product_id = await get_product_id_from_subscription(event_object.id)
+            await remove_product_from_team(db, customer_id, product_id)
+
+        elif event_type in INVOICE_FAILURE_EVENTS:
+            subscription = getattr(event_object, "subscription", None)
+            if not subscription and hasattr(event_object, "parent"):
+                try:
+                    subscription = event_object.parent.subscription_details.subscription
+                except AttributeError:
+                    logger.debug(
+                        "Invoice event missing parent.subscription_details.subscription"
+                    )
+
+            if subscription:
+                product_id = await get_product_id_from_subscription(subscription)
+                await remove_product_from_team(db, customer_id, product_id)
+
+    except Exception as exc:
+        logger.error("Error in background event handler: %s", exc, exc_info=True)
+    finally:
+        db.close()
+
+
+async def remove_product_from_team(db: Session, customer_id: str, product_id: str):
+    """Remove a product association from a team after verifying Stripe subscription is gone."""
+    try:
+        team = db.query(DBTeam).filter(DBTeam.stripe_customer_id == customer_id).first()
+        product = db.query(DBProduct).filter(DBProduct.id == product_id).first()
+
+        if not team or not product:
+            logger.error(
+                "Team or product not found: customer=%s product=%s",
+                customer_id,
+                product_id,
+            )
+            return
+
+        existing = (
+            db.query(DBTeamProduct)
+            .filter(
+                DBTeamProduct.team_id == team.id, DBTeamProduct.product_id == product.id
+            )
+            .first()
+        )
+        if not existing:
+            return
+
+        # Verify subscription is no longer active in Stripe
+        try:
+            stripe_subs = await get_subscribed_products_for_customer(customer_id)
+            for _, stripe_product_id in stripe_subs:
+                if stripe_product_id == product_id:
+                    logger.warning(
+                        "Product %s still active in Stripe for customer %s. Not removing.",
+                        product_id,
+                        customer_id,
+                    )
+                    return
+        except Exception as exc:
+            logger.error("Cannot verify Stripe status for %s: %s", customer_id, exc)
+            return
+
+        db.delete(existing)
+        limit_service = LimitService(db)
+        limit_service.set_team_limits(team)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error("Error removing product from team: %s", exc)
 
 
 async def capture_periodic_team_spend_for_invoice(

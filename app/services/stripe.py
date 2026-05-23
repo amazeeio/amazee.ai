@@ -12,6 +12,31 @@ stripe_sdk = importlib.import_module("stripe")
 stripe = stripe_sdk
 stripe_sdk.api_key = os.getenv("STRIPE_SECRET_KEY")
 
+# Stripe webhook event type constants
+INVOICE_SUCCESS_EVENTS = ["invoice.paid"]
+SUBSCRIPTION_SUCCESS_EVENTS = [
+    "customer.subscription.resumed",
+    "customer.subscription.created",
+]
+SESSION_SUCCESS_EVENTS = ["checkout.session.completed"]
+SESSION_FAILURE_EVENTS = [
+    "checkout.session.async_payment_failed",
+    "checkout.session.expired",
+]
+SUBSCRIPTION_FAILURE_EVENTS = [
+    "customer.subscription.deleted",
+    "customer.subscription.paused",
+]
+INVOICE_FAILURE_EVENTS = ["invoice.payment_failed"]
+
+SUCCESS_EVENTS = (
+    INVOICE_SUCCESS_EVENTS + SUBSCRIPTION_SUCCESS_EVENTS + SESSION_SUCCESS_EVENTS
+)
+FAILURE_EVENTS = (
+    SESSION_FAILURE_EVENTS + SUBSCRIPTION_FAILURE_EVENTS + INVOICE_FAILURE_EVENTS
+)
+KNOWN_EVENTS = SUCCESS_EVENTS + FAILURE_EVENTS
+
 
 async def create_portal_session(stripe_customer_id: str, return_url: str) -> str:
     try:
@@ -98,6 +123,25 @@ async def create_zero_rated_stripe_subscription(
         )
 
 
+async def get_product_id_from_subscription(subscription_id: str) -> str:
+    """Get the Stripe product ID from a subscription."""
+    subscription_items = stripe_sdk.SubscriptionItem.list(
+        subscription=subscription_id, expand=["data.price.product"]
+    )
+    if not subscription_items.data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No items found in subscription",
+        )
+    return subscription_items.data[0].price.product.id
+
+
+async def get_product_id_from_session(session_id: str) -> str:
+    """Get the Stripe product ID from a checkout session."""
+    line_items = stripe_sdk.checkout.Session.list_line_items(session_id)
+    return line_items.data[0].price.product
+
+
 async def get_subscribed_products_for_customer(customer_id: str) -> list[(str, str)]:
     try:
         items = stripe_sdk.Subscription.list(
@@ -138,6 +182,29 @@ async def get_customer_from_pi(payment_intent: str) -> str:
     payment_intent = stripe_sdk.PaymentIntent.retrieve(payment_intent)
     logger.info("Payment intent is:\n%s", payment_intent)
     return payment_intent.customer
+
+
+def decode_stripe_event(payload: bytes, signature: str, webhook_secret: str):
+    """Decode and verify a Stripe webhook event.
+
+    Returns the parsed Stripe event object.
+    """
+    try:
+        event = stripe_sdk.Webhook.construct_event(payload, signature, webhook_secret)
+        logger.info("Decoded event of type: %s", event.type)
+        return event
+    except stripe_sdk.error.SignatureVerificationError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid payload"
+        )
+    except Exception as exc:
+        logger.error("Error decoding Stripe event: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error processing webhook",
+        )
 
 
 async def get_pricing_table_secret(customer_id: str) -> str:

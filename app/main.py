@@ -18,6 +18,7 @@ from app.api import (
     subscription,
     teams,
     users,
+    webhooks,
 )
 from app.core.config import settings
 from app.middleware.audit import AuditLogMiddleware
@@ -177,6 +178,7 @@ app.include_router(public.protected_router, tags=["models"])
 app.include_router(audit.router, prefix="/audit", tags=["audit"])
 app.include_router(teams.router, prefix="/teams", tags=["teams"])
 app.include_router(billing.router, prefix="/billing", tags=["billing"])
+app.include_router(webhooks.router, prefix="/billing", tags=["webhooks"])
 app.include_router(
     subscription.router, prefix="/billing/subscription", tags=["billing"]
 )
