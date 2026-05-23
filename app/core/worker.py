@@ -418,8 +418,12 @@ async def _run_cycle_from_stripe_event(
             product = db.query(DBProduct).filter(DBProduct.id == product_id).first()
             if product and product.max_budget_per_key:
                 budget_cents = int(round(product.max_budget_per_key * 100))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Failed to resolve free-plan product budget for subscription %s: %s",
+                subscription_id,
+                exc,
+            )
 
     # --- Transaction ID for idempotency ---
     transaction_id = getattr(event_object, "id", None) or event_id
