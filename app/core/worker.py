@@ -369,7 +369,9 @@ async def _run_cycle_from_stripe_event(
             subscription_id = getattr(details, "subscription", subscription_id)
             sub_meta = getattr(details, "metadata", {}) or {}
         except AttributeError:
-            pass
+            logger.debug(
+                "Invoice parent.subscription_details not available; continuing with fallback region resolution"
+            )
 
     if getattr(sub_meta, "regionId", None):
         try:
