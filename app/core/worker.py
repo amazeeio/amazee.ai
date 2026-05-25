@@ -137,6 +137,66 @@ hard_delete_teams_duration = Summary(
 active_team_labels = set()
 
 
+def _parse_client_reference_ids(
+    client_reference_id: str | None,
+) -> tuple[int, int] | None:
+    """Parse Stripe pricing table client_reference_id in '<team_id>-<region_id>' form."""
+    if not client_reference_id:
+        return None
+    parts = client_reference_id.split("-", 1)
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[0]), int(parts[1])
+    except (TypeError, ValueError):
+        return None
+
+
+async def _backfill_subscription_metadata_from_checkout_session(
+    db: Session, event_object
+) -> None:
+    """Backfill Stripe subscription metadata using checkout session client_reference_id."""
+    subscription_id = getattr(event_object, "subscription", None)
+    if not subscription_id:
+        return
+
+    parsed = _parse_client_reference_ids(
+        getattr(event_object, "client_reference_id", None)
+    )
+    if not parsed:
+        return
+    team_id, region_id = parsed
+
+    customer_id = getattr(event_object, "customer", None)
+    if customer_id:
+        team = db.query(DBTeam).filter(DBTeam.stripe_customer_id == customer_id).first()
+        if team and team.id != team_id:
+            logger.warning(
+                "Skipping subscription metadata backfill: client_reference_id team=%s does not match customer team=%s",
+                team_id,
+                team.id,
+            )
+            return
+
+    try:
+        stripe_sdk.Subscription.modify(
+            subscription_id,
+            metadata={"teamId": str(team_id), "regionId": str(region_id)},
+        )
+        logger.info(
+            "Backfilled subscription metadata for sub=%s teamId=%s regionId=%s",
+            subscription_id,
+            team_id,
+            region_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to backfill subscription metadata for sub=%s: %s",
+            subscription_id,
+            exc,
+        )
+
+
 def set_team_and_user_limits(db: Session, team: DBTeam):
     """
     Set limits for a team and all users in the team.
@@ -373,7 +433,7 @@ async def _run_cycle_from_stripe_event(
                 "Invoice parent.subscription_details not available; continuing with fallback region resolution"
             )
 
-    if getattr(sub_meta, "regionId", None):
+    if sub_meta.get("regionId"):
         try:
             region_id = int(sub_meta["regionId"])
         except (TypeError, ValueError) as exc:
@@ -389,7 +449,7 @@ async def _run_cycle_from_stripe_event(
         try:
             sub = stripe_sdk.Subscription.retrieve(subscription_id)
             meta = getattr(sub, "metadata", {}) or {}
-            if getattr(meta, "regionId", None):
+            if meta.get("regionId"):
                 region_id = int(meta["regionId"])
         except Exception as exc:
             logger.warning(
@@ -554,6 +614,9 @@ async def handle_stripe_event_background(event):
             await apply_product_for_team(db, customer_id, product_id, start_date)
 
         elif event_type in SESSION_SUCCESS_EVENTS:
+            await _backfill_subscription_metadata_from_checkout_session(
+                db, event_object
+            )
             subscription = getattr(event_object, "subscription", None)
             if subscription:
                 product_id = await get_product_id_from_subscription(subscription)

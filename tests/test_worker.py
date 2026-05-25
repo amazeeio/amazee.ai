@@ -22,6 +22,9 @@ from app.core.worker import (
     active_team_labels,
     reconcile_team_keys,
     _sync_periodic_ledger_for_invoice,
+    _parse_client_reference_ids,
+    _backfill_subscription_metadata_from_checkout_session,
+    handle_stripe_event_background,
 )
 from app.core.periodic_budget_ledger_service import add_topup_entry
 from app.core.team_service import get_team_keys_by_region
@@ -33,7 +36,72 @@ from app.schemas.limits import (
     LimitType,
     LimitedResource,
 )
-from unittest.mock import AsyncMock, patch, Mock, call
+from unittest.mock import ANY, AsyncMock, patch, Mock, call
+from types import SimpleNamespace
+
+
+def test_parse_client_reference_ids():
+    assert _parse_client_reference_ids("668-1") == (668, 1)
+    assert _parse_client_reference_ids("bad") is None
+    assert _parse_client_reference_ids("668-x") is None
+    assert _parse_client_reference_ids(None) is None
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.stripe_sdk.Subscription.modify")
+async def test_backfill_subscription_metadata_from_checkout_session(
+    mock_modify, db, test_team
+):
+    test_team.stripe_customer_id = "cus_checkout_backfill"
+    db.commit()
+
+    event_object = SimpleNamespace(
+        subscription="sub_test_123",
+        customer="cus_checkout_backfill",
+        client_reference_id=f"{test_team.id}-7",
+    )
+
+    await _backfill_subscription_metadata_from_checkout_session(db, event_object)
+
+    mock_modify.assert_called_once_with(
+        "sub_test_123",
+        metadata={"teamId": str(test_team.id), "regionId": "7"},
+    )
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.apply_product_for_team", new_callable=AsyncMock)
+@patch("app.core.worker.get_product_id_from_subscription", new_callable=AsyncMock)
+@patch(
+    "app.core.worker._backfill_subscription_metadata_from_checkout_session",
+    new_callable=AsyncMock,
+)
+async def test_handle_checkout_session_completed_calls_backfill(
+    mock_backfill,
+    mock_get_product,
+    mock_apply_product,
+    db,
+    test_team,
+):
+    test_team.stripe_customer_id = "cus_checkout_completed"
+    db.commit()
+
+    mock_get_product.return_value = "prod_test_123"
+    event_object = SimpleNamespace(
+        customer="cus_checkout_completed",
+        subscription="sub_checkout_123",
+        metadata={},
+        client_reference_id=f"{test_team.id}-1",
+    )
+    event = SimpleNamespace(
+        type="checkout.session.completed",
+        id="evt_checkout_123",
+        data=SimpleNamespace(object=event_object),
+    )
+
+    await handle_stripe_event_background(event)
+
+    mock_backfill.assert_awaited_once_with(ANY, event_object)
 
 
 @pytest.mark.asyncio
