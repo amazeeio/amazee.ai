@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, func, and_
 from app.db.models import (
     DBTeam,
+    DBAuditLog,
     DBProduct,
     DBTeamProduct,
     DBPrivateAIKey,
@@ -1515,14 +1516,14 @@ async def monitor_teams(db: Session):
 @hard_delete_teams_duration.time()
 async def hard_delete_expired_teams(db: Session):
     """
-    Hard deletion job for teams that have been soft-deleted for 60+ days.
+    Hard deletion job for teams that have been soft-deleted for 90+ days.
     Cascades deletion to all related resources (keys, users, limits, metrics, etc.).
     Runs less frequently than monitor_teams (daily at 3 AM).
     """
     logger.info("Starting hard delete job for expired teams")
     try:
-        # Calculate cutoff date (60 days ago)
-        cutoff_date = datetime.now(UTC) - timedelta(days=60)
+        # Calculate cutoff date (90 days ago — GDPR data retention requirement)
+        cutoff_date = datetime.now(UTC) - timedelta(days=90)
 
         # Query all teams that have been soft-deleted for 60+ days
         teams_to_delete = (
@@ -1610,7 +1611,27 @@ async def hard_delete_expired_teams(db: Session):
                 db.query(DBTeamRegion).filter(DBTeamRegion.team_id == team.id).delete()
                 logger.info(f"Deleted region associations for team {team.id}")
 
-                # 6. Delete the team itself (DBTeamMetrics will be auto-deleted via cascade)
+                # 6. Write audit log before deleting the team record
+                hard_delete_time = datetime.now(UTC)
+                audit_log = DBAuditLog(
+                    timestamp=hard_delete_time,
+                    user_id=None,
+                    event_type="WORKER",
+                    resource_type="team",
+                    resource_id=str(team.id),
+                    action="team.hard_delete",
+                    details={
+                        "team_name": team.name,
+                        "soft_deleted_at": team.deleted_at.isoformat()
+                        if team.deleted_at
+                        else None,
+                        "hard_deleted_at": hard_delete_time.isoformat(),
+                    },
+                    request_source=None,
+                )
+                db.add(audit_log)
+
+                # 7. Delete the team itself (DBTeamMetrics will be auto-deleted via cascade)
                 db.delete(team)
 
                 # Commit after each team to avoid rolling back everything on error

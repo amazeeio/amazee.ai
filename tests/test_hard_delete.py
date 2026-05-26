@@ -21,17 +21,17 @@ from tests.conftest import soft_delete_team_for_test
 
 @patch("app.core.worker.LiteLLMService")
 @pytest.mark.asyncio
-async def test_hard_delete_teams_older_than_60_days(
+async def test_hard_delete_teams_older_than_90_days(
     mock_litellm, db: Session, test_team, test_region
 ):
     """
-    Given: A team that was soft-deleted 61 days ago
+    Given: A team that was soft-deleted 91 days ago
     When: Running the hard delete job
     Then: Should permanently delete the team and all related resources
     """
-    # Soft delete the team 61 days ago
+    # Soft delete the team 91 days ago
     soft_delete_team_for_test(
-        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=61)
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
     )
 
     # Create related resources
@@ -77,7 +77,7 @@ async def test_hard_delete_teams_older_than_60_days(
 @pytest.mark.asyncio
 async def test_hard_delete_preserves_recent_soft_deletes(db: Session, test_team):
     """
-    Given: A team that was soft-deleted 30 days ago (less than 60 days)
+    Given: A team that was soft-deleted 30 days ago (less than 90 days)
     When: Running the hard delete job
     Then: Should NOT delete the team (still within grace period)
     """
@@ -99,15 +99,15 @@ async def test_hard_delete_preserves_recent_soft_deletes(db: Session, test_team)
 
 @patch("app.core.worker.LiteLLMService")
 @pytest.mark.asyncio
-async def test_hard_delete_exactly_60_days(mock_litellm, db: Session, test_team):
+async def test_hard_delete_exactly_90_days(mock_litellm, db: Session, test_team):
     """
-    Given: A team that was soft-deleted exactly 60 days ago
+    Given: A team that was soft-deleted exactly 90 days ago
     When: Running the hard delete job
     Then: Should permanently delete the team (inclusive boundary)
     """
-    # Soft delete the team exactly 60 days ago
+    # Soft delete the team exactly 90 days ago
     soft_delete_team_for_test(
-        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=60)
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=90)
     )
 
     team_id = test_team.id
@@ -124,7 +124,7 @@ async def test_hard_delete_exactly_60_days(mock_litellm, db: Session, test_team)
 @pytest.mark.asyncio
 async def test_hard_delete_cascades_team_metrics(mock_litellm, db: Session, test_team):
     """
-    Given: A team with metrics that was soft-deleted 61 days ago
+    Given: A team with metrics that was soft-deleted 91 days ago
     When: Running the hard delete job
     Then: Should delete the team metrics
     """
@@ -137,9 +137,9 @@ async def test_hard_delete_cascades_team_metrics(mock_litellm, db: Session, test
     )
     db.add(metrics)
 
-    # Soft delete the team 61 days ago
+    # Soft delete the team 91 days ago
     soft_delete_team_for_test(
-        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=61)
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
     )
 
     team_id = test_team.id
@@ -160,7 +160,7 @@ async def test_hard_delete_cascades_limited_resources(
     mock_litellm, db: Session, test_team
 ):
     """
-    Given: A team with limited resources that was soft-deleted 61 days ago
+    Given: A team with limited resources that was soft-deleted 91 days ago
     When: Running the hard delete job
     Then: Should delete all team and user limited resources
     """
@@ -195,9 +195,9 @@ async def test_hard_delete_cascades_limited_resources(
     )
     db.add(user_resource)
 
-    # Soft delete the team 61 days ago
+    # Soft delete the team 91 days ago
     soft_delete_team_for_test(
-        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=61)
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
     )
 
     team_id = test_team.id
@@ -234,7 +234,7 @@ async def test_hard_delete_cascades_product_associations(
     mock_litellm, db: Session, test_team
 ):
     """
-    Given: A team with product associations that was soft-deleted 61 days ago
+    Given: A team with product associations that was soft-deleted 91 days ago
     When: Running the hard delete job
     Then: Should delete the team-product associations
     """
@@ -246,9 +246,9 @@ async def test_hard_delete_cascades_product_associations(
     team_product = DBTeamProduct(team_id=test_team.id, product_id=product.id)
     db.add(team_product)
 
-    # Soft delete the team 61 days ago
+    # Soft delete the team 91 days ago
     soft_delete_team_for_test(
-        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=61)
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
     )
 
     team_id = test_team.id
@@ -275,15 +275,15 @@ async def test_hard_delete_cascades_region_associations(
     mock_litellm, db: Session, test_team, test_region
 ):
     """
-    Given: A team with region associations that was soft-deleted 61 days ago
+    Given: A team with region associations that was soft-deleted 91 days ago
     When: Running the hard delete job
     Then: Should delete the team-region associations
     """
     # test_region fixture already auto-associates active teams to public regions
 
-    # Soft delete the team 61 days ago
+    # Soft delete the team 91 days ago
     soft_delete_team_for_test(
-        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=61)
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
     )
 
     team_id = test_team.id
@@ -306,7 +306,7 @@ async def test_hard_delete_calls_litellm_for_all_keys(
     mock_litellm, db: Session, test_team, test_region
 ):
     """
-    Given: A team with multiple keys that was soft-deleted 61 days ago
+    Given: A team with multiple keys that was soft-deleted 91 days ago
     When: Running the hard delete job
     Then: Should call LiteLLM delete for each key
     """
@@ -325,9 +325,9 @@ async def test_hard_delete_calls_litellm_for_all_keys(
     )
     db.add_all([key1, key2])
 
-    # Soft delete the team 61 days ago
+    # Soft delete the team 91 days ago
     soft_delete_team_for_test(
-        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=61)
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
     )
 
     # Mock LiteLLM service
@@ -362,9 +362,9 @@ async def test_hard_delete_continues_on_litellm_error(
     )
     db.add(key)
 
-    # Soft delete the team 61 days ago
+    # Soft delete the team 91 days ago
     soft_delete_team_for_test(
-        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=61)
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
     )
 
     team_id = test_team.id
@@ -415,9 +415,9 @@ async def test_hard_delete_deletes_user_owned_keys(
     )
     db.add(user_key)
 
-    # Soft delete the team 61 days ago
+    # Soft delete the team 91 days ago
     soft_delete_team_for_test(
-        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=61)
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
     )
 
     mock_service = AsyncMock()
@@ -444,7 +444,7 @@ async def test_hard_delete_deletes_user_owned_keys(
 @pytest.mark.asyncio
 async def test_hard_delete_multiple_teams(mock_litellm, db: Session, test_region):
     """
-    Given: Multiple teams that were soft-deleted over 60 days ago
+    Given: Multiple teams that were soft-deleted over 90 days ago
     When: Running the hard delete job
     Then: Should delete all eligible teams
     """
@@ -457,10 +457,10 @@ async def test_hard_delete_multiple_teams(mock_litellm, db: Session, test_region
 
     # Soft delete teams with different timestamps
     soft_delete_team_for_test(
-        db, team1, deleted_at=datetime.now(UTC) - timedelta(days=65)
+        db, team1, deleted_at=datetime.now(UTC) - timedelta(days=95)
     )
     soft_delete_team_for_test(
-        db, team2, deleted_at=datetime.now(UTC) - timedelta(days=70)
+        db, team2, deleted_at=datetime.now(UTC) - timedelta(days=100)
     )
     soft_delete_team_for_test(
         db, team3, deleted_at=datetime.now(UTC) - timedelta(days=30)
@@ -513,9 +513,9 @@ async def test_hard_delete_rollback_on_error(mock_litellm, db: Session, test_tea
     When: An error occurs during deletion
     Then: Should rollback the transaction for that team
     """
-    # Soft delete the team 61 days ago
+    # Soft delete the team 91 days ago
     soft_delete_team_for_test(
-        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=61)
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
     )
 
     team_id = test_team.id

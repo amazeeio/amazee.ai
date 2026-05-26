@@ -95,8 +95,10 @@ async def get_current_user_from_auth(
                 db.query(DBUser).filter(DBUser.id == request.state.user["id"]).first()
             )
             if user:
+                _check_user_team_not_suspended(user)
                 return user
         else:
+            _check_user_team_not_suspended(request.state.user)
             return request.state.user
 
     if not access_token and not authorization:
@@ -124,7 +126,10 @@ async def get_current_user_from_auth(
             # Update last used timestamp
             db_token.last_used_at = datetime.now(UTC)
             db.commit()
+            _check_user_team_not_suspended(db_token.owner)
             return db_token.owner
+    except HTTPException:
+        raise
     except Exception:
         pass
 
@@ -135,12 +140,33 @@ async def get_current_user_from_auth(
         )
         user = await get_current_user(credentials=credentials, db=db)
         if user:
+            _check_user_team_not_suspended(user)
             return user
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+def _check_user_team_not_suspended(user: DBUser) -> None:
+    """Raise 403 if the user's team has been soft-deleted.
+
+    System admins are excluded from this check so they retain access to the
+    admin interface even when their own team is soft-deleted.
+    """
+    if (
+        not user.is_admin
+        and user.team_id is not None
+        and user.team is not None
+        and user.team.deleted_at is not None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your organization has been suspended. Please contact support.",
         )
 
 
