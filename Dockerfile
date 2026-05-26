@@ -16,27 +16,10 @@ COPY scripts scripts/
 
 ENV PYTHONPATH=/app
 
-# ---------- backend ----------
-# FastAPI service. This is the default target so existing
-# `docker build .` / Lagoon builds keep working unchanged.
-FROM base AS backend
-
-# Copy Lagoon environment variables
-COPY .lagoon.env .
-
-# Script to initialize the database and start the server
-RUN mkdir -p /app/logs && \
-    chown -R 1000:1000 /app/logs && \
-    chmod 775 /app/logs
-
-COPY backend-start.sh .
-RUN chmod +x /app/backend-start.sh
-
-CMD ["/app/backend-start.sh"]
-
 # ---------- cli ----------
 # CLI / migration / DB-restore pod. Adds postgres client tooling
 # (matched to pgvector/pgvector:pg16 server) and the usual CLI niceties.
+# Built explicitly via `--target cli` (or compose `target: cli`).
 FROM base AS cli
 
 ENV LAGOON=cli
@@ -61,3 +44,21 @@ RUN echo "[ -f /lagoon/entrypoints/80-shell-timeout.sh ] && source /lagoon/entry
 
 CMD ["/bin/docker-sleep"]
 
+# ---------- backend ----------
+# FastAPI service. Kept as the LAST stage so a bare `docker build .`
+# (no --target) builds the backend image, preserving pre-refactor
+# behaviour for CI scripts, IDE integrations, and ad-hoc dev builds.
+FROM base AS backend
+
+# Copy Lagoon environment variables
+COPY .lagoon.env .
+
+# Script to initialize the database and start the server
+RUN mkdir -p /app/logs && \
+    chown -R 1000:1000 /app/logs && \
+    chmod 775 /app/logs
+
+COPY backend-start.sh .
+RUN chmod +x /app/backend-start.sh
+
+CMD ["/app/backend-start.sh"]
