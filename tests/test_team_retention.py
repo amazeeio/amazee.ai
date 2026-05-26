@@ -472,7 +472,9 @@ def test_get_team_denies_deleted_access_for_non_admin(
     """
     Given: A soft-deleted team in the database and a non-admin user
     When: Getting the team with include_deleted=true parameter
-    Then: Should return 404 Not Found (team appears to not exist)
+    Then: Should return 403 Forbidden — auth layer rejects suspended-team users
+          before the endpoint is even reached (not 404, because the check is
+          in get_current_user_from_auth which runs first)
     """
     # Soft delete the team
     db.query(DBTeam).filter(DBTeam.id == test_team.id).update(
@@ -486,8 +488,8 @@ def test_get_team_denies_deleted_access_for_non_admin(
     )
 
     assert (
-        response.status_code == 404
-    )  # Should be not found for non-admin (team appears to not exist)
+        response.status_code == 403
+    )  # Auth layer suspends team users before endpoint logic runs
 
 
 def test_teams_with_products_never_deleted(db: Session, test_team):

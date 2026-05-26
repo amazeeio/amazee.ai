@@ -13,6 +13,11 @@ from app.db.models import (
     DBLimitedResource,
     DBTeamRegion,
     DBRegion,
+    DBAPIToken,
+    DBUserAdminRegion,
+    DBAuditLog,
+    DBSpendCap,
+    DBUserSpendCache,
 )
 from app.schemas.limits import ResourceType, UnitType, OwnerType, LimitType, LimitSource
 from app.core.worker import hard_delete_expired_teams
@@ -533,3 +538,219 @@ async def test_hard_delete_rollback_on_error(mock_litellm, db: Session, test_tea
     db.query(DBTeam).filter(DBTeam.id == team_id).first()
     # Team might be deleted or might not be, depending on where error occurred
     # The important thing is that the job didn't crash
+
+
+@patch("app.core.worker.LiteLLMService")
+@pytest.mark.asyncio
+async def test_hard_delete_removes_api_tokens(mock_litellm, db: Session, test_team):
+    """
+    Given: A team whose users have API tokens (portal auth tokens)
+    When: Running the hard delete job
+    Then: Those API tokens should be deleted before users are removed
+    """
+    user = DBUser(email="apitoken@example.com", team_id=test_team.id)
+    db.add(user)
+    db.commit()
+
+    api_token = DBAPIToken(name="my-token", token="tok-abc123", user_id=user.id)
+    db.add(api_token)
+
+    soft_delete_team_for_test(
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
+    )
+
+    await hard_delete_expired_teams(db)
+
+    remaining = db.query(DBAPIToken).filter(DBAPIToken.token == "tok-abc123").first()
+    assert remaining is None
+
+
+@patch("app.core.worker.LiteLLMService")
+@pytest.mark.asyncio
+async def test_hard_delete_removes_user_admin_regions(
+    mock_litellm, db: Session, test_team, test_region
+):
+    """
+    Given: A team whose users have admin-region rows
+    When: Running the hard delete job
+    Then: Those rows should be deleted before users are removed
+    """
+    user = DBUser(email="adminregion@example.com", team_id=test_team.id)
+    db.add(user)
+    db.commit()
+
+    admin_region = DBUserAdminRegion(user_id=user.id, region_id=test_region.id)
+    db.add(admin_region)
+    user_id = user.id
+
+    soft_delete_team_for_test(
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
+    )
+
+    await hard_delete_expired_teams(db)
+
+    remaining = (
+        db.query(DBUserAdminRegion).filter(DBUserAdminRegion.user_id == user_id).first()
+    )
+    assert remaining is None
+
+
+@patch("app.core.worker.LiteLLMService")
+@pytest.mark.asyncio
+async def test_hard_delete_nulls_audit_log_user_id(
+    mock_litellm, db: Session, test_team
+):
+    """
+    Given: A team whose users authored audit log entries
+    When: Running the hard delete job
+    Then: Those audit log rows should be preserved but user_id set to NULL
+    """
+    user = DBUser(email="auditlog@example.com", team_id=test_team.id)
+    db.add(user)
+    db.commit()
+
+    log = DBAuditLog(
+        timestamp=datetime.now(UTC),
+        user_id=user.id,
+        event_type="API",
+        resource_type="key",
+        resource_id="1",
+        action="key.create",
+        details={},
+        request_source="frontend",
+    )
+    db.add(log)
+    db.commit()
+    log_id = log.id
+
+    soft_delete_team_for_test(
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
+    )
+
+    await hard_delete_expired_teams(db)
+
+    # Row should still exist (preserve audit history)
+    surviving_log = db.query(DBAuditLog).filter(DBAuditLog.id == log_id).first()
+    assert surviving_log is not None
+    # But user_id should now be NULL
+    assert surviving_log.user_id is None
+
+
+@patch("app.core.worker.LiteLLMService")
+@pytest.mark.asyncio
+async def test_hard_delete_removes_spend_caps(
+    mock_litellm, db: Session, test_team, test_region
+):
+    """
+    Given: A team with spend caps (team-scoped and user-scoped)
+    When: Running the hard delete job
+    Then: All spend caps associated with the team should be deleted
+    """
+    user = DBUser(email="spenccap@example.com", team_id=test_team.id)
+    db.add(user)
+    db.commit()
+
+    team_cap = DBSpendCap(
+        scope="team",
+        region_id=test_region.id,
+        team_id=test_team.id,
+        max_budget=50.0,
+    )
+    user_cap = DBSpendCap(
+        scope="team_member",
+        region_id=test_region.id,
+        team_id=test_team.id,
+        user_id=user.id,
+        max_budget=10.0,
+    )
+    db.add_all([team_cap, user_cap])
+
+    soft_delete_team_for_test(
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
+    )
+
+    await hard_delete_expired_teams(db)
+
+    remaining = db.query(DBSpendCap).filter(DBSpendCap.team_id == test_team.id).all()
+    assert len(remaining) == 0
+
+
+@patch("app.core.worker.LiteLLMService")
+@pytest.mark.asyncio
+async def test_hard_delete_removes_key_spend_caps(
+    mock_litellm, db: Session, test_team, test_region
+):
+    """
+    Given: A team with keys that have key-scoped spend caps
+    When: Running the hard delete job
+    Then: Key spend caps should be deleted before the keys are removed
+    """
+    user = DBUser(email="keycap@example.com", team_id=test_team.id)
+    db.add(user)
+    db.commit()
+
+    key = DBPrivateAIKey(
+        name="capped-key",
+        litellm_token="tok-capped",
+        team_id=test_team.id,
+        region_id=test_region.id,
+    )
+    db.add(key)
+    db.commit()
+    key_id = key.id
+
+    key_cap = DBSpendCap(
+        scope="key",
+        region_id=test_region.id,
+        team_id=test_team.id,
+        key_id=key.id,
+        max_budget=5.0,
+    )
+    db.add(key_cap)
+
+    soft_delete_team_for_test(
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
+    )
+
+    mock_service = AsyncMock()
+    mock_litellm.return_value = mock_service
+
+    await hard_delete_expired_teams(db)
+
+    remaining = db.query(DBSpendCap).filter(DBSpendCap.key_id == key_id).first()
+    assert remaining is None
+
+
+@patch("app.core.worker.LiteLLMService")
+@pytest.mark.asyncio
+async def test_hard_delete_removes_user_spend_cache(
+    mock_litellm, db: Session, test_team
+):
+    """
+    Given: A team whose user emails appear in the spend cache
+    When: Running the hard delete job
+    Then: The spend cache rows for those emails should be deleted
+    """
+    user = DBUser(email="cache@example.com", team_id=test_team.id)
+    db.add(user)
+    db.commit()
+
+    cache_entry = DBUserSpendCache(
+        normalized_email="cache@example.com",
+        response_data={"spend": 1.23},
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    db.add(cache_entry)
+
+    soft_delete_team_for_test(
+        db, test_team, deleted_at=datetime.now(UTC) - timedelta(days=91)
+    )
+
+    await hard_delete_expired_teams(db)
+
+    remaining = (
+        db.query(DBUserSpendCache)
+        .filter(DBUserSpendCache.normalized_email == "cache@example.com")
+        .first()
+    )
+    assert remaining is None

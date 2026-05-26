@@ -1,6 +1,6 @@
 from datetime import datetime, UTC, timedelta
 from sqlalchemy.orm import Session
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, or_, update as sa_update
 from app.db.models import (
     DBTeam,
     DBAuditLog,
@@ -14,6 +14,10 @@ from app.db.models import (
     DBTeamRegion,
     DBPoolPurchase,
     DBPeriodicPayment,
+    DBAPIToken,
+    DBUserAdminRegion,
+    DBSpendCap,
+    DBUserSpendCache,
 )
 from app.schemas.models import BudgetType
 from app.db.database import get_db
@@ -1547,6 +1551,13 @@ async def hard_delete_expired_teams(db: Session):
                     .all()
                 )
 
+                # Also capture emails now (needed for user_spend_cache cleanup)
+                team_user_emails = (
+                    db.execute(select(DBUser.email).filter(DBUser.team_id == team.id))
+                    .scalars()
+                    .all()
+                )
+
                 # 1. Delete team and user limited resources
                 db.query(DBLimitedResource).filter(
                     DBLimitedResource.owner_type == OwnerType.TEAM,
@@ -1588,6 +1599,33 @@ async def hard_delete_expired_teams(db: Session):
                         )
 
                 # Delete keys from database
+                # Collect key IDs first so we can clean up spend_caps that reference them
+                team_key_ids = (
+                    db.execute(
+                        select(DBPrivateAIKey.id).filter(
+                            or_(
+                                DBPrivateAIKey.team_id == team.id,
+                                DBPrivateAIKey.owner_id.in_(team_user_ids),
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+
+                # Delete spend_caps before keys/users/team to avoid FK violations:
+                # spend_caps.key_id → ai_tokens.id (no ondelete)
+                # spend_caps.user_id → users.id (no ondelete)
+                # spend_caps.team_id → teams.id (no ondelete)
+                db.query(DBSpendCap).filter(
+                    or_(
+                        DBSpendCap.team_id == team.id,
+                        DBSpendCap.user_id.in_(team_user_ids),
+                        DBSpendCap.key_id.in_(team_key_ids),
+                    )
+                ).delete(synchronize_session=False)
+                logger.info(f"Deleted spend caps for team {team.id}")
+
                 total_keys = sum(len(keys) for keys in keys_by_region.values())
                 db.query(DBPrivateAIKey).filter(
                     (DBPrivateAIKey.team_id == team.id)
@@ -1596,6 +1634,48 @@ async def hard_delete_expired_teams(db: Session):
                 logger.info(
                     f"Deleted {total_keys} keys from database for team {team.id}"
                 )
+
+                # 3. Clean up remaining FK references to users before deleting them.
+                #    These tables have FKs to users.id with no ondelete rule, so
+                #    PostgreSQL would raise a FK violation without explicit cleanup.
+
+                # api_tokens.user_id → users.id (no ondelete)
+                if team_user_ids:
+                    db.query(DBAPIToken).filter(
+                        DBAPIToken.user_id.in_(team_user_ids)
+                    ).delete(synchronize_session=False)
+                    logger.info(f"Deleted API tokens for users of team {team.id}")
+
+                # user_admin_regions.user_id → users.id (no ondelete, PK)
+                if team_user_ids:
+                    db.query(DBUserAdminRegion).filter(
+                        DBUserAdminRegion.user_id.in_(team_user_ids)
+                    ).delete(synchronize_session=False)
+                    logger.info(
+                        f"Deleted admin-region rows for users of team {team.id}"
+                    )
+
+                # audit_logs.user_id → users.id (nullable, no ondelete)
+                # Preserve audit history; just null out the user reference.
+                if team_user_ids:
+                    db.execute(
+                        sa_update(DBAuditLog)
+                        .where(DBAuditLog.user_id.in_(team_user_ids))
+                        .values(user_id=None)
+                    )
+                    logger.info(
+                        f"Nulled user_id in audit logs for users of team {team.id}"
+                    )
+
+                # user_spend_cache is keyed by normalized_email (no FK, string column)
+                # Clean up stale cache rows so they don't linger indefinitely.
+                if team_user_emails:
+                    db.query(DBUserSpendCache).filter(
+                        DBUserSpendCache.normalized_email.in_(team_user_emails)
+                    ).delete(synchronize_session=False)
+                    logger.info(
+                        f"Deleted spend cache entries for users of team {team.id}"
+                    )
 
                 # 3. Delete users in the team
                 db.query(DBUser).filter(DBUser.team_id == team.id).delete()
