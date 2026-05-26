@@ -106,7 +106,7 @@ jobs:
               -H "Content-Type: application/json" \
               -d "$payload")
             if ! echo "$response" | jq -e '.ok' > /dev/null 2>&1; then
-              echo "::error::Slack API error: $response"
+              echo "::error::Slack API error: $response" >&2
               return 1
             fi
             echo "$response"
