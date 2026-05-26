@@ -140,7 +140,7 @@ jobs:
                 }
               ]
             }')
-          header_response=$(slack_post "$header_payload")
+          header_response=$(slack_post "$header_payload") || exit 1
           thread_ts=$(echo "$header_response" | jq -r '.ts')
 
           # Send each summary chunk as a threaded reply
