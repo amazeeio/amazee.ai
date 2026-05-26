@@ -96,18 +96,17 @@ async def get_current_user_from_auth(
     if request and hasattr(request.state, "user") and request.state.user is not None:
         # If we have a dict from middleware, load the full user object
         if isinstance(request.state.user, dict):
-            user = (
-                db.query(DBUser)
-                .filter(DBUser.id == request.state.user["id"])
-                .options(joinedload(DBUser.team))
-                .first()
-            )
+            user = _get_user_with_team(db, request.state.user["id"])
             if user:
                 _check_user_team_not_suspended(user)
                 return user
         else:
-            _check_user_team_not_suspended(request.state.user)
-            return request.state.user
+            user_id = getattr(request.state.user, "id", None)
+            if user_id is not None:
+                user = _get_user_with_team(db, user_id)
+                if user:
+                    _check_user_team_not_suspended(user)
+                    return user
 
     if not access_token and not authorization:
         raise HTTPException(
@@ -138,8 +137,8 @@ async def get_current_user_from_auth(
         if db_token:
             # Update last used timestamp
             db_token.last_used_at = datetime.now(UTC)
-            db.commit()
             _check_user_team_not_suspended(db_token.owner)
+            db.commit()
             return db_token.owner
     except HTTPException:
         raise
@@ -181,6 +180,15 @@ def _check_user_team_not_suspended(user: DBUser) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Your organization has been suspended. Please contact support.",
         )
+
+
+def _get_user_with_team(db: Session, user_id: int) -> Optional[DBUser]:
+    return (
+        db.query(DBUser)
+        .filter(DBUser.id == user_id)
+        .options(joinedload(DBUser.team))
+        .first()
+    )
 
 
 async def get_role_min_system_admin(

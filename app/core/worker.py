@@ -52,6 +52,7 @@ from app.core.spend_period_service import (
     fetch_team_spend_snapshot_for_region,
     upsert_team_spend_period,
 )
+from app.core.email import normalize_email_for_lookup
 
 logger = logging.getLogger(__name__)
 
@@ -1670,8 +1671,14 @@ async def hard_delete_expired_teams(db: Session):
                 # user_spend_cache is keyed by normalized_email (no FK, string column)
                 # Clean up stale cache rows so they don't linger indefinitely.
                 if team_user_emails:
+                    normalized_team_user_emails = {
+                        normalize_email_for_lookup(email)
+                        for email in team_user_emails
+                    }
                     db.query(DBUserSpendCache).filter(
-                        DBUserSpendCache.normalized_email.in_(team_user_emails)
+                        DBUserSpendCache.normalized_email.in_(
+                            normalized_team_user_emails
+                        )
                     ).delete(synchronize_session=False)
                     logger.info(
                         f"Deleted spend cache entries for users of team {team.id}"

@@ -1304,6 +1304,43 @@ async def test_restore_reprovisions_litellm_team_and_users(
     assert mock_service.add_team_member.call_count == 2
 
 
+@patch("app.core.team_service.LiteLLMService")
+@pytest.mark.asyncio
+async def test_restore_skips_user_reprovision_when_team_create_fails(
+    mock_litellm_class, db: Session, test_team, test_region
+):
+    user1 = DBUser(email="u1@example.com", team_id=test_team.id, is_active=False)
+    user2 = DBUser(email="u2@example.com", team_id=test_team.id, is_active=False)
+    db.add_all([user1, user2])
+    db.commit()
+
+    existing = (
+        db.query(DBTeamRegion)
+        .filter(
+            DBTeamRegion.team_id == test_team.id,
+            DBTeamRegion.region_id == test_region.id,
+        )
+        .first()
+    )
+    if not existing:
+        db.add(DBTeamRegion(team_id=test_team.id, region_id=test_region.id))
+        db.commit()
+
+    test_team.deleted_at = datetime.now(UTC)
+    db.commit()
+
+    mock_service = AsyncMock()
+    mock_service.create_team.side_effect = RuntimeError("boom")
+    mock_litellm_class.return_value = mock_service
+
+    result = await restore_soft_deleted_team(db, test_team)
+
+    assert result["litellm_warnings"] == [test_region.name]
+    mock_service.create_team.assert_called_once()
+    mock_service.create_user.assert_not_called()
+    mock_service.add_team_member.assert_not_called()
+
+
 # ── Orphan detection tests ────────────────────────────────────────────────────
 
 

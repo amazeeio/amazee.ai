@@ -244,6 +244,7 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> dict:
                     f"Failed to re-provision LiteLLM team in region {region.name}: {str(team_error)}"
                 )
                 region_failed = True
+                continue
 
             # Ensure each user exists in LiteLLM and is a member of the team (idempotent)
             for user in team_users:

@@ -723,7 +723,7 @@ async def test_hard_delete_removes_key_spend_caps(
 
 @patch("app.core.worker.LiteLLMService")
 @pytest.mark.asyncio
-async def test_hard_delete_removes_user_spend_cache(
+async def test_hard_delete_removes_user_spend_cache_for_normalized_email(
     mock_litellm, db: Session, test_team
 ):
     """
@@ -731,7 +731,7 @@ async def test_hard_delete_removes_user_spend_cache(
     When: Running the hard delete job
     Then: The spend cache rows for those emails should be deleted
     """
-    user = DBUser(email="cache@example.com", team_id=test_team.id)
+    user = DBUser(email="Cache+tag@Example.com", team_id=test_team.id)
     db.add(user)
     db.commit()
 
