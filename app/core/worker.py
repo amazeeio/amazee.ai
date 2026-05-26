@@ -456,23 +456,36 @@ async def _run_cycle_from_stripe_event(
                 "Failed to retrieve subscription %s: %s", subscription_id, exc
             )
 
-    if not region_id:
+    target_regions: list[DBRegion] = []
+    if region_id:
+        region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+        if not region:
+            logger.error("Region %s not found for team %s", region_id, team.id)
+            return
+        target_regions = [region]
+    else:
+        # Runtime safety fallback for legacy subscriptions without metadata:
+        # apply the same subscription cycle budget across all team regions,
+        # matching pre-PR webhook behavior.
         team_regions = (
             db.query(DBTeamRegion).filter(DBTeamRegion.team_id == team.id).all()
         )
-        if len(team_regions) != 1:
-            logger.error(
-                "Cannot resolve region for team %s: found %s region(s), expected 1",
-                team.id,
-                len(team_regions),
-            )
+        if not team_regions:
+            logger.error("Cannot resolve any region for team %s", team.id)
             return
-        region_id = team_regions[0].region_id
-
-    region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
-    if not region:
-        logger.error("Region %s not found for team %s", region_id, team.id)
-        return
+        region_ids = [tr.region_id for tr in team_regions]
+        target_regions = db.query(DBRegion).filter(DBRegion.id.in_(region_ids)).all()
+        if not target_regions:
+            logger.error("No valid regions found for team %s", team.id)
+            return
+        logger.warning(
+            "Missing regionId metadata for team=%s customer=%s subscription=%s; "
+            "falling back to all team regions (%s)",
+            team.id,
+            customer_id,
+            subscription_id,
+            len(target_regions),
+        )
 
     # --- Resolve budget ---
     amount_paid = int(getattr(event_object, "amount_paid", 0) or 0)
@@ -523,14 +536,15 @@ async def _run_cycle_from_stripe_event(
 
     try:
         if not is_first_cycle:
-            await capture_periodic_team_spend_for_period(
-                db=db,
-                team=team,
-                region=region,
-                period_start=period_start,
-                period_end=period_end,
-                source_event_id=event_id,
-            )
+            for region in target_regions:
+                await capture_periodic_team_spend_for_period(
+                    db=db,
+                    team=team,
+                    region=region,
+                    period_start=period_start,
+                    period_end=period_end,
+                    source_event_id=event_id,
+                )
 
         payment_id = await _record_periodic_payment_direct(
             db,
@@ -541,26 +555,29 @@ async def _run_cycle_from_stripe_event(
             payment_type="subscription",
         )
 
-        await _sync_periodic_ledger_for_period(
-            db=db,
-            team=team,
-            region=region,
-            period_start=period_start,
-            period_end=period_end,
-            amount_cents=budget_cents,
-            source_payment_id=payment_id,
-            source_invoice_id=transaction_id,
-        )
+        sync_errors: list[str] = []
+        for region in target_regions:
+            await _sync_periodic_ledger_for_period(
+                db=db,
+                team=team,
+                region=region,
+                period_start=period_start,
+                period_end=period_end,
+                amount_cents=budget_cents,
+                source_payment_id=payment_id,
+                source_invoice_id=transaction_id,
+            )
 
-        sync_errors = await apply_billing_cycle_for_team(
-            db=db,
-            team_id=team.id,
-            budget_cents=budget_cents,
-            region_id=region.id,
-            period_start=period_start,
-            period_end=period_end,
-            source_payment_id=payment_id,
-        )
+            region_errors = await apply_billing_cycle_for_team(
+                db=db,
+                team_id=team.id,
+                budget_cents=budget_cents,
+                region_id=region.id,
+                period_start=period_start,
+                period_end=period_end,
+                source_payment_id=payment_id,
+            )
+            sync_errors.extend(region_errors)
 
         logger.info(
             "Webhook invoice.paid cycle complete: team=%s invoice=%s budget=%s errors=%s",
