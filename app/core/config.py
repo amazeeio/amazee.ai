@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     DEDICATED_DEFAULT_SERVICE_KEYS: float | None = None
     DEDICATED_DEFAULT_VECTOR_DB_COUNT: float | None = None
     DEDICATED_DEFAULT_RPM_PER_KEY: float | None = None
+    REDIS_URL: str = os.getenv(
+        "REDIS_URL",
+        f"redis://{os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', '6379')}/0",
+    )
+    RATE_LIMIT_VALIDATE_EMAIL: int = int(os.getenv("RATE_LIMIT_VALIDATE_EMAIL", "5"))
 
     # URL of the upstream Amazon Bedrock model catalog used by /models/missing.
     # Defaults to the community-maintained mirror used by the k0rdent-clusters tooling.

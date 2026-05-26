@@ -1,6 +1,5 @@
 from unittest.mock import patch
 
-
 @patch("httpx.AsyncClient")
 def test_create_key_force_user_keys_enabled(
     mock_client_class,
@@ -78,7 +77,6 @@ def test_create_key_force_user_keys_enabled(
 
     assert found_generate_call
 
-
 @patch("httpx.AsyncClient")
 def test_create_token_force_user_keys_enabled(
     mock_client_class,
@@ -121,7 +119,6 @@ def test_create_token_force_user_keys_enabled(
     # The API returns LiteLLMToken model which has owner_id
     assert data["owner_id"] == user_id
     assert data["team_id"] is None
-
 
 @patch("httpx.AsyncClient")
 def test_create_vector_db_force_user_keys_enabled(

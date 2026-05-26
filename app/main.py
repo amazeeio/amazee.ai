@@ -1,6 +1,7 @@
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import UTC
 
 from app.__version__ import __version__
 from app.api import (
@@ -18,17 +19,24 @@ from app.api import (
     teams,
     users,
 )
+from app.core.locking import release_lock, try_acquire_lock
 from app.core.config import settings
+from app.core.worker import hard_delete_expired_teams, monitor_teams
+from app.db.database import get_db
 from app.middleware.audit import AuditLogMiddleware
 from app.middleware.auth import AuthMiddleware
 from app.middleware.caching import CacheControlMiddleware
 from app.middleware.prometheus import PrometheusMiddleware
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
+from fastapi_limiter import FastAPILimiter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
+from redis.asyncio import Redis as AsyncRedis
 from starlette.middleware.base import BaseHTTPMiddleware
 
 # Set timezone environment variable to prevent tzlocal warning
@@ -52,8 +60,128 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Initialize rate limiter
+    await FastAPILimiter.init(
+        redis=AsyncRedis.from_url(settings.REDIS_URL, decode_responses=True)
+    )
+
+    # Create scheduler
+    scheduler = AsyncIOScheduler()
+
+    async def monitor_teams_job():
+        lock_name = "monitor_teams"
+        lock_acquired = False
+
+        try:
+            # Try to acquire the lock using a dedicated short-lived session
+            lock_db = next(get_db())
+            try:
+                lock_acquired = try_acquire_lock(lock_name, lock_db, lock_timeout=10)
+            finally:
+                lock_db.close()
+
+            if lock_acquired:
+                logger.info("Acquired monitor_teams lock, executing job")
+                job_db = next(get_db())
+                try:
+                    await monitor_teams(job_db)
+                except Exception as e:
+                    job_db.rollback()
+                    logger.error(f"Error in monitor_teams background task: {str(e)}")
+                finally:
+                    job_db.close()
+            else:
+                logger.info("Another process has the monitor_teams lock, skipping execution")
+        except Exception as e:
+            logger.error(f"Error in monitor_teams job: {str(e)}")
+        finally:
+            # Always release the lock when it was acquired, using a separate session
+            if lock_acquired:
+                release_db = next(get_db())
+                try:
+                    release_lock(lock_name, release_db)
+                except Exception as release_error:
+                    logger.error(f"Error releasing lock: {str(release_error)}")
+                finally:
+                    release_db.close()
+
+    # Set schedule based on environment
+    if settings.ENV_SUFFIX == "local":
+        cron_trigger = CronTrigger(minute='*/10', timezone=UTC, jitter=180)
+    else:
+        # Run every hour in other environments with jitter
+        cron_trigger = CronTrigger(hour='*', minute=0, timezone=UTC, jitter=60)
+
+    scheduler.add_job(
+        monitor_teams_job,
+        trigger=cron_trigger,
+        id='monitor_teams',
+        replace_existing=True
+    )
+
+    # Hard delete job for teams that have been soft-deleted for 60+ days
+    async def hard_delete_teams_job():
+        lock_name = "hard_delete_teams"
+        lock_acquired = False
+
+        try:
+            # Try to acquire the lock using a dedicated short-lived session
+            lock_db = next(get_db())
+            try:
+                lock_acquired = try_acquire_lock(lock_name, lock_db, lock_timeout=10)
+            finally:
+                lock_db.close()
+
+            if lock_acquired:
+                logger.info("Acquired hard_delete_teams lock, executing job")
+                job_db = next(get_db())
+                try:
+                    await hard_delete_expired_teams(job_db)
+                except Exception as e:
+                    job_db.rollback()
+                    logger.error(f"Error in hard_delete_expired_teams background task: {str(e)}")
+                finally:
+                    job_db.close()
+            else:
+                logger.info("Another process has the hard_delete_teams lock, skipping execution")
+        except Exception as e:
+            logger.error(f"Error in hard_delete_teams job: {str(e)}")
+        finally:
+            # Always release the lock when it was acquired, using a separate session
+            if lock_acquired:
+                release_db = next(get_db())
+                try:
+                    release_lock(lock_name, release_db)
+                except Exception as release_error:
+                    logger.error(f"Error releasing lock: {str(release_error)}")
+                finally:
+                    release_db.close()
+
+    # Set schedule based on environment for hard delete job
+    if settings.ENV_SUFFIX == "local":
+        # In local env, run every hour at :30 for testing
+        hard_delete_trigger = CronTrigger(hour='*', minute=30, timezone=UTC)
+    else:
+        # In production, run daily at 3 AM
+        hard_delete_trigger = CronTrigger(hour=3, minute=0, timezone=UTC)
+
+    scheduler.add_job(
+        hard_delete_teams_job,
+        trigger=hard_delete_trigger,
+        id='hard_delete_teams',
+        replace_existing=True
+    )
+
+    # Start the scheduler
+    scheduler.start()
+
     yield
 
+    # Shutdown the rate limiter
+    await FastAPILimiter.close()
+
+    # Shutdown the scheduler
+    scheduler.shutdown()
 
 app = FastAPI(
     title="Private AI Keys as a Service",

@@ -6,6 +6,7 @@ import time
 import uuid
 from datetime import datetime
 import email_validator
+from fastapi_limiter.depends import RateLimiter
 
 from typing import Optional, List, Union
 
@@ -14,6 +15,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from urllib.parse import urlparse
 from jose import JWTError, jwt
+
+from app.api.teams import register_team
+from app.api.users import _create_user_in_db, get_user_by_email
+from app.api.private_ai_keys import create_private_ai_key
 
 from app.core.config import settings
 from app.core.dependencies import get_limit_service
@@ -59,20 +64,14 @@ from app.schemas.models import (
     BudgetType,
 )
 
-from app.api.teams import register_team
-from app.api.users import _create_user_in_db, get_user_by_email
-from app.api.private_ai_keys import create_private_ai_key
-
 auth_logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["auth"])
 
-
 def get_cookie_domain():
     """Extract domain from COOKIE_DOMAIN or LAGOON_ROUTES for cookie settings."""
     # First check for explicit cookie domain setting
-    cookie_domain = os.getenv("COOKIE_DOMAIN")
-    if cookie_domain:
+    if (cookie_domain := os.getenv("COOKIE_DOMAIN")):
         return cookie_domain
 
     # Fall back to extracting from LAGOON_ROUTES
@@ -141,7 +140,6 @@ def create_and_set_access_token(
     access_token = create_access_token(data={"sub": user_email.lower()})
 
     # Get cookie domain from LAGOON_ROUTES
-    cookie_domain = get_cookie_domain()
 
     # Set cookie expiration based on user role
     # System administrators get 8 hours (28800 seconds), regular users get 30 minutes (1800 seconds)
@@ -160,7 +158,7 @@ def create_and_set_access_token(
     }
 
     # Only set domain if we got one from LAGOON_ROUTES
-    if cookie_domain:
+    if (cookie_domain := get_cookie_domain()):
         cookie_settings["domain"] = cookie_domain
 
     # Set cookie with appropriate settings
@@ -467,6 +465,9 @@ async def validate_email(
     email_data: Optional[EmailValidation] = None,
     email: Optional[str] = Form(None),
     db: Session = Depends(get_db),
+    _: None = Depends(
+        RateLimiter(times=settings.RATE_LIMIT_VALIDATE_EMAIL, seconds=60)
+    ),
 ):
     """
     Validate an email address and generate a validation code.
