@@ -938,7 +938,10 @@ async def test_restore_soft_deleted_team_integration(
     mock_litellm_class.return_value = mock_service
 
     # Call the function
-    await restore_soft_deleted_team(db, test_team)
+    result = await restore_soft_deleted_team(db, test_team)
+
+    # Verify no LiteLLM provisioning failures
+    assert result["litellm_warnings"] == []
 
     # Verify team was restored
     db.refresh(test_team)

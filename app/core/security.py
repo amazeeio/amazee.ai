@@ -8,7 +8,7 @@ import logging
 
 from app.core.config import settings
 from app.db.database import get_db
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 from app.db.models import DBUser, DBAPIToken
 from app.core.rbac import (
@@ -74,7 +74,12 @@ async def get_current_user(
         raise credentials_exception
 
     email: str = payload.get("sub")
-    user = db.query(DBUser).filter(func.lower(DBUser.email) == email.lower()).first()
+    user = (
+        db.query(DBUser)
+        .filter(func.lower(DBUser.email) == email.lower())
+        .options(joinedload(DBUser.team))
+        .first()
+    )
     if user is None:
         raise credentials_exception
     return user
@@ -92,7 +97,10 @@ async def get_current_user_from_auth(
         # If we have a dict from middleware, load the full user object
         if isinstance(request.state.user, dict):
             user = (
-                db.query(DBUser).filter(DBUser.id == request.state.user["id"]).first()
+                db.query(DBUser)
+                .filter(DBUser.id == request.state.user["id"])
+                .options(joinedload(DBUser.team))
+                .first()
             )
             if user:
                 _check_user_team_not_suspended(user)
@@ -121,7 +129,12 @@ async def get_current_user_from_auth(
 
     # First try API token validation since it's simpler
     try:
-        db_token = db.query(DBAPIToken).filter(DBAPIToken.token == token_to_try).first()
+        db_token = (
+            db.query(DBAPIToken)
+            .filter(DBAPIToken.token == token_to_try)
+            .options(joinedload(DBAPIToken.owner).joinedload(DBUser.team))
+            .first()
+        )
         if db_token:
             # Update last used timestamp
             db_token.last_used_at = datetime.now(UTC)
