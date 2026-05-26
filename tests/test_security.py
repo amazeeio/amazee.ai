@@ -58,6 +58,7 @@ class TestSecurityFunctions:
 
         assert exc_info.value.status_code == 403
         assert "Not authorized to perform this action" in str(exc_info.value.detail)
+
     @pytest.mark.asyncio
     async def test_check_sales_or_higher_team_user_denied(self):
         """

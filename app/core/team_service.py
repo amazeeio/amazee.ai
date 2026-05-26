@@ -271,9 +271,11 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> dict:
                 f"Failed to re-provision LiteLLM team/users in region {region.name}: {str(region_error)}"
             )
             region_failed = True
-
-        if region_failed:
-            failed_regions.append(region.name)
+        finally:
+            # `continue` inside the inner try skips code after the try/except block,
+            # so use finally to ensure failed regions are always recorded.
+            if region_failed:
+                failed_regions.append(region.name)
 
     # Un-expire all keys for the team in LiteLLM
     try:

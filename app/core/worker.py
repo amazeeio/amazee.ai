@@ -1672,8 +1672,7 @@ async def hard_delete_expired_teams(db: Session):
                 # Clean up stale cache rows so they don't linger indefinitely.
                 if team_user_emails:
                     normalized_team_user_emails = {
-                        normalize_email_for_lookup(email)
-                        for email in team_user_emails
+                        normalize_email_for_lookup(email) for email in team_user_emails
                     }
                     db.query(DBUserSpendCache).filter(
                         DBUserSpendCache.normalized_email.in_(

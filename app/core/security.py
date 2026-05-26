@@ -9,7 +9,7 @@ import logging
 from app.core.config import settings
 from app.db.database import get_db
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func
+from sqlalchemy import func, inspect as sa_inspect
 from app.db.models import DBUser, DBAPIToken
 from app.core.rbac import (
     require_system_admin,
@@ -101,7 +101,14 @@ async def get_current_user_from_auth(
                 _check_user_team_not_suspended(user)
                 return user
         else:
-            user_id = getattr(request.state.user, "id", None)
+            # The object may be detached from its original session (e.g. loaded
+            # by AuthMiddleware then committed/expired). Use SQLAlchemy inspect
+            # to read the PK from the identity map without touching the DB.
+            try:
+                identity = sa_inspect(request.state.user).identity
+                user_id = identity[0] if identity else None
+            except Exception:
+                user_id = None
             if user_id is not None:
                 user = _get_user_with_team(db, user_id)
                 if user:
