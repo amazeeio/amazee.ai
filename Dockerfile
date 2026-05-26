@@ -51,7 +51,6 @@ RUN apk add --no-cache \
         postgresql16-client \
         procps \
         unzip \
-    && rm -rf /var/cache/apk/* \
     && ln -s /usr/lib/ssh/sftp-server /usr/local/bin/sftp-server \
     && mkdir -p /home/.ssh \
     && fix-permissions /home/
