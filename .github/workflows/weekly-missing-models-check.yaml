@@ -101,7 +101,7 @@ jobs:
           slack_post() {
             local payload="$1"
             local response
-            response=$(curl -s -X POST https://slack.com/api/chat.postMessage \
+            response=$(curl -sS -X POST https://slack.com/api/chat.postMessage \
               -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
               -H "Content-Type: application/json" \
               -d "$payload")
