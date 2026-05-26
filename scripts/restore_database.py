@@ -3,11 +3,16 @@
 Restore a PostgreSQL database from a Lagoon backup (.tar.gz).
 
 Lagoon backups are .tar.gz files containing a pg_dump directory-format archive:
-  .tar.gz -> .tar -> (*.dat files, restore.sql, toc.dat)
+  .tar.gz -> .tar -> directory with (*.dat files, toc.dat, restore.sql)
 
-The restore.sql contains $$PATH$$ placeholders for .dat file paths. This script
-extracts the archive, replaces $$PATH$$, and streams data via COPY FROM STDIN
-(since server-side COPY FROM file requires superuser privileges).
+This script:
+  1. (Optionally) takes a pre-restore safety backup with `pg_dump -Fc`.
+  2. Drops and recreates the target database via `dropdb` / `createdb`.
+  3. Extracts the .tar.gz (and the nested .tar) to a temp directory.
+  4. Applies the dump with `pg_restore -Fd --no-owner --no-privileges`.
+
+Requires the postgres client tools (pg_dump, pg_restore, dropdb, createdb,
+psql) on PATH. In Lagoon these are provided by the `cli` container image.
 
 IMPORTANT: Only use this with backups from trusted sources (e.g. Lagoon).
 
@@ -18,22 +23,24 @@ Usage:
 import argparse
 import os
 import pathlib
-import re
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
-from urllib.parse import urlparse
-
-import psycopg2
-from psycopg2 import sql
-from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+from urllib.parse import unquote, urlparse
 
 
-def sanitize_error(msg, config):
-    """Remove sensitive data (password) from error messages."""
-    if config.get("password"):
-        msg = msg.replace(config["password"], "****")
+REQUIRED_TOOLS = ("pg_dump", "pg_restore", "dropdb", "createdb", "psql")
+
+
+def sanitize(msg, config):
+    """Remove sensitive data (password) from messages."""
+    if not msg:
+        return msg
+    pw = config.get("password")
+    if pw:
+        msg = msg.replace(pw, "****")
     return msg
 
 
@@ -43,262 +50,109 @@ def get_db_config():
         "DATABASE_URL", "postgres://postgres:postgres@postgres:5432/postgres_service"
     )
     parsed = urlparse(database_url)
+    db_name = unquote(parsed.path or "").removeprefix("/")
     return {
         "host": parsed.hostname,
         "port": parsed.port or 5432,
-        "user": parsed.username,
-        "password": parsed.password,
-        "database": parsed.path.lstrip("/"),
+        "user": unquote(parsed.username) if parsed.username is not None else None,
+        "password": unquote(parsed.password) if parsed.password is not None else None,
+        "database": db_name,
     }
 
 
-def connect_to_maintenance_db(config):
-    """Connect to the 'postgres' maintenance database (not the target DB)."""
-    conn = psycopg2.connect(
-        host=config["host"],
-        port=config["port"],
-        user=config["user"],
-        password=config["password"],
-        dbname="postgres",
-        connect_timeout=10,
-    )
-    conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
-    return conn
+def pg_env(config):
+    """Build an environment dict with libpq connection variables set."""
+    env = os.environ.copy()
+    if config.get("host"):
+        env["PGHOST"] = str(config["host"])
+    if config.get("port"):
+        env["PGPORT"] = str(config["port"])
+    if config.get("user"):
+        env["PGUSER"] = str(config["user"])
+    if config.get("password"):
+        env["PGPASSWORD"] = str(config["password"])
+    # libpq picks up these on its own; no need to pass them as CLI flags.
+    return env
 
 
-def connect_to_target_db(config):
-    """Connect to the target database."""
-    return psycopg2.connect(
-        host=config["host"],
-        port=config["port"],
-        user=config["user"],
-        password=config["password"],
-        dbname=config["database"],
-        connect_timeout=10,
-    )
+def check_required_tools():
+    """Verify all required postgres client tools are on PATH."""
+    missing = [t for t in REQUIRED_TOOLS if shutil.which(t) is None]
+    if missing:
+        print(f"Error: Required postgres client tool(s) not found: {', '.join(missing)}")
+        print("  This script must run in an environment with postgres client tools")
+        print("  installed (e.g. the Lagoon `cli` container).")
+        sys.exit(1)
+
+
+def run_pg_tool(cmd, config, *, capture=True, check=True):
+    """Run a postgres client command, returning the CompletedProcess.
+
+    Stderr is captured (and sanitized) so passwords don't leak into logs.
+    """
+    try:
+        result = subprocess.run(
+            cmd,
+            env=pg_env(config),
+            stdout=subprocess.PIPE if capture else None,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as e:
+        raise SystemExit(f"Error: {sanitize(str(e), config)}")
+
+    if not capture and result.stderr:
+        sys.stderr.write(sanitize(result.stderr, config))
+
+    if check and result.returncode != 0:
+        stderr = sanitize((result.stderr or "").strip(), config)
+        raise subprocess.CalledProcessError(
+            result.returncode, cmd, output=result.stdout, stderr=stderr
+        )
+    return result
 
 
 def backup_current_database(config, backup_path):
-    """Create a best-effort dump (schema + data) of the current database as a safety net.
+    """Run `pg_dump -Fc` against the current database as a safety net.
 
-    Dumps public-schema objects: tables (columns, defaults, NOT NULL),
-    constraints (PK, unique, FK, check), indexes, sequences, views, functions,
-    triggers, and data via COPY TO STDOUT.
+    Custom format (-Fc) is compact, supports selective restore via pg_restore,
+    and faithfully captures everything pg_dump can capture (schemas, tables,
+    indexes, views, functions, triggers, sequences, types, extensions, ACLs,
+    RLS policies, etc).
 
-    NOT included: extensions, custom types/enums/domains, roles, grants/ACLs,
-    RLS policies, non-public schemas, tablespaces, or publication/subscription
-    config. For a fully faithful backup, use pg_dump externally.
-
-    The output is replayable with psql for the common case but may require
-    manual adjustment for databases using the above features.
+    Replay with:  pg_restore -d "$DATABASE_URL" --clean <this_file>.dump
     """
-    print(f"  Backing up current database to file: {os.path.basename(backup_path)}")
+    print("  Backing up current database to a local dump file")
 
-    conn = connect_to_target_db(config)
+    # Open with restrictive permissions before pg_dump writes to it.
+    fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.close(fd)
+
+    cmd = [
+        "pg_dump",
+        "--format=custom",
+        "--file", backup_path,
+        "--dbname", config["database"],
+    ]
     try:
-        cur = conn.cursor()
+        run_pg_tool(cmd, config)
+    except subprocess.CalledProcessError as e:
+        # Clean up the empty/partial file so we don't leave noise behind.
+        try:
+            os.unlink(backup_path)
+        except OSError as cleanup_err:
+            # Best-effort cleanup only: preserve original pg_dump failure path.
+            print(f"  Warning: could not remove partial backup file: {cleanup_err}", file=sys.stderr)
+        raise SystemExit(f"  pg_dump failed: {e.stderr or e}")
 
-        # Open with restrictive permissions (binary mode required for copy_expert)
-        fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write("-- Pre-restore safety backup\n")
-            f.write("-- Generated by restore_database.py\n")
-            f.write("-- Replay with: psql $DATABASE_URL < this_file.sql\n\n")
-
-            # --- Sequences (must come before tables for DEFAULT references) ---
-            cur.execute(
-                "SELECT sequence_name FROM information_schema.sequences "
-                "WHERE sequence_schema = 'public' ORDER BY sequence_name;"
-            )
-            sequences = [row[0] for row in cur.fetchall()]
-            for seq in sequences:
-                cur.execute(
-                    "SELECT last_value, is_called FROM pg_sequences "
-                    "WHERE schemaname = 'public' AND sequencename = %s;",
-                    (seq,),
-                )
-                row = cur.fetchone()
-                f.write(f'CREATE SEQUENCE IF NOT EXISTS "{seq}";\n')
-                if row and row[0] is not None:
-                    is_called = "true" if row[1] else "false"
-                    f.write(f"SELECT setval('\"{seq}\"', {row[0]}, {is_called});\n")
-                f.write("\n")
-
-            # --- Tables (full DDL from pg_catalog) ---
-            cur.execute(
-                "SELECT tablename FROM pg_tables "
-                "WHERE schemaname = 'public' ORDER BY tablename;"
-            )
-            tables = [row[0] for row in cur.fetchall()]
-
-            for table in tables:
-                # Get column definitions including proper types and defaults
-                cur.execute("""
-                    SELECT
-                        a.attname,
-                        pg_catalog.format_type(a.atttypid, a.atttypmod),
-                        a.attnotnull,
-                        pg_catalog.pg_get_expr(d.adbin, d.adrelid)
-                    FROM pg_catalog.pg_attribute a
-                    LEFT JOIN pg_catalog.pg_attrdef d
-                        ON d.adrelid = a.attrelid AND d.adnum = a.attnum
-                    WHERE a.attrelid = %s::regclass
-                        AND a.attnum > 0
-                        AND NOT a.attisdropped
-                    ORDER BY a.attnum;
-                """, (f'public."{table}"',))
-                columns = cur.fetchall()
-
-                col_defs = []
-                for col_name, col_type, not_null, default in columns:
-                    parts = [f'    "{col_name}" {col_type}']
-                    if default:
-                        parts.append(f"DEFAULT {default}")
-                    if not_null:
-                        parts.append("NOT NULL")
-                    col_defs.append(" ".join(parts))
-
-                f.write(f'CREATE TABLE IF NOT EXISTS "{table}" (\n')
-                f.write(",\n".join(col_defs))
-                f.write("\n);\n\n")
-
-            # --- Primary keys and unique constraints ---
-            cur.execute("""
-                SELECT
-                    conname,
-                    conrelid::regclass::text,
-                    pg_catalog.pg_get_constraintdef(oid)
-                FROM pg_catalog.pg_constraint
-                WHERE connamespace = 'public'::regnamespace
-                    AND contype IN ('p', 'u')
-                ORDER BY conrelid::regclass::text, conname;
-            """)
-            for con_name, table_name, con_def in cur.fetchall():
-                f.write(f'ALTER TABLE {table_name} ADD CONSTRAINT "{con_name}" {con_def};\n')
-            f.write("\n")
-
-            # --- Foreign keys ---
-            cur.execute("""
-                SELECT
-                    conname,
-                    conrelid::regclass::text,
-                    pg_catalog.pg_get_constraintdef(oid)
-                FROM pg_catalog.pg_constraint
-                WHERE connamespace = 'public'::regnamespace
-                    AND contype = 'f'
-                ORDER BY conrelid::regclass::text, conname;
-            """)
-            for con_name, table_name, con_def in cur.fetchall():
-                f.write(f'ALTER TABLE {table_name} ADD CONSTRAINT "{con_name}" {con_def};\n')
-            f.write("\n")
-
-            # --- Check constraints (excluding system-generated NOT NULL checks) ---
-            cur.execute("""
-                SELECT
-                    conname,
-                    conrelid::regclass::text,
-                    pg_catalog.pg_get_constraintdef(oid)
-                FROM pg_catalog.pg_constraint
-                WHERE connamespace = 'public'::regnamespace
-                    AND contype = 'c'
-                ORDER BY conrelid::regclass::text, conname;
-            """)
-            for con_name, table_name, con_def in cur.fetchall():
-                f.write(f'ALTER TABLE {table_name} ADD CONSTRAINT "{con_name}" {con_def};\n')
-            f.write("\n")
-
-            # --- Indexes (excluding those backing constraints) ---
-            cur.execute("""
-                SELECT pg_catalog.pg_get_indexdef(i.indexrelid)
-                FROM pg_catalog.pg_index i
-                JOIN pg_catalog.pg_class c ON c.oid = i.indexrelid
-                JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                WHERE n.nspname = 'public'
-                    AND NOT i.indisprimary
-                    AND NOT EXISTS (
-                        SELECT 1 FROM pg_catalog.pg_constraint con
-                        WHERE con.conindid = i.indexrelid
-                    )
-                ORDER BY c.relname;
-            """)
-            for (index_def,) in cur.fetchall():
-                f.write(f"{index_def};\n")
-            f.write("\n")
-
-            # --- Views ---
-            cur.execute(
-                "SELECT viewname, definition FROM pg_views "
-                "WHERE schemaname = 'public' ORDER BY viewname;"
-            )
-            for view_name, view_def in cur.fetchall():
-                f.write(f'CREATE OR REPLACE VIEW "{view_name}" AS\n{view_def}\n\n')
-
-            # --- Functions ---
-            cur.execute("""
-                SELECT pg_catalog.pg_get_functiondef(p.oid)
-                FROM pg_catalog.pg_proc p
-                JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
-                WHERE n.nspname = 'public'
-                ORDER BY p.proname;
-            """)
-            for (func_def,) in cur.fetchall():
-                f.write(f"{func_def};\n\n")
-
-            # --- Triggers ---
-            cur.execute("""
-                SELECT pg_catalog.pg_get_triggerdef(t.oid)
-                FROM pg_catalog.pg_trigger t
-                JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
-                JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                WHERE n.nspname = 'public'
-                    AND NOT t.tgisinternal
-                ORDER BY c.relname, t.tgname;
-            """)
-            for (trig_def,) in cur.fetchall():
-                f.write(f"{trig_def};\n")
-            f.write("\n")
-
-            # --- Table data via COPY ---
-            for table in tables:
-                copy_out = sql.SQL("COPY {} TO STDOUT").format(
-                    sql.Identifier(table)
-                )
-                f.write(f'COPY "{table}" FROM stdin;\n')
-                cur.copy_expert(copy_out.as_string(conn), f)
-                f.write("\\.\n\n")
-
-            # --- Sequence ownership (link sequences to columns) ---
-            cur.execute("""
-                SELECT
-                    s.relname,
-                    t.relname,
-                    a.attname
-                FROM pg_catalog.pg_class s
-                JOIN pg_catalog.pg_namespace n ON n.oid = s.relnamespace
-                JOIN pg_catalog.pg_depend d ON d.objid = s.oid
-                JOIN pg_catalog.pg_class t ON t.oid = d.refobjid
-                JOIN pg_catalog.pg_attribute a
-                    ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid
-                WHERE s.relkind = 'S'
-                    AND n.nspname = 'public'
-                    AND d.deptype = 'a'
-                ORDER BY s.relname;
-            """)
-            for seq_name, table_name, col_name in cur.fetchall():
-                f.write(
-                    f'ALTER SEQUENCE "{seq_name}" OWNED BY "{table_name}"."{col_name}";\n'
-                )
-            f.write("\n")
-
-        print(f"  Backup complete ({len(tables)} tables, {len(sequences)} sequences)")
-    finally:
-        conn.close()
-
+    size_mb = os.path.getsize(backup_path) / (1024 * 1024)
+    print(f"  Backup complete ({size_mb:.1f} MB)")
     return backup_path
 
 
 def drop_and_recreate_database(config):
-    """Drop the target database and recreate it empty."""
+    """Drop the target database (forcing connections closed) and recreate it."""
     db_name = config["database"]
 
     if db_name == "postgres":
@@ -307,24 +161,22 @@ def drop_and_recreate_database(config):
             "Set DATABASE_URL to point to a different target database."
         )
 
-    conn = connect_to_maintenance_db(config)
-    cur = conn.cursor()
-
-    print("  Terminating existing connections to target database...")
-    cur.execute(
-        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-        "WHERE datname = %s AND pid <> pg_backend_pid();",
-        (db_name,),
-    )
-
-    print("  Dropping target database if it exists...")
-    cur.execute(sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(db_name)))
+    print("  Dropping target database (forcing existing connections closed)...")
+    # --force terminates active connections (PostgreSQL 13+).
+    try:
+        run_pg_tool(
+            ["dropdb", "--if-exists", "--force", db_name],
+            config,
+        )
+    except subprocess.CalledProcessError as e:
+        raise SystemExit(f"  dropdb failed: {e.stderr or e}")
 
     print("  Creating target database...")
-    cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db_name)))
+    try:
+        run_pg_tool(["createdb", db_name], config)
+    except subprocess.CalledProcessError as e:
+        raise SystemExit(f"  createdb failed: {e.stderr or e}")
 
-    cur.close()
-    conn.close()
     print("  Database recreated.")
 
 
@@ -333,8 +185,10 @@ def safe_extract_tar(tar, extract_dir):
     extract_path = pathlib.Path(extract_dir).resolve()
     safe_members = []
     for member in tar.getmembers():
-        if member.issym() or member.islnk():
-            raise ValueError(f"Link entries are not allowed in archive: {member.name}")
+        if not (member.isreg() or member.isdir()):
+            raise ValueError(
+                f"Only regular files/directories are allowed in archive: {member.name}"
+            )
         member_path = (extract_path / member.name).resolve()
         if not member_path.is_relative_to(extract_path):
             raise ValueError(f"Path traversal detected in archive: {member.name}")
@@ -342,181 +196,85 @@ def safe_extract_tar(tar, extract_dir):
     tar.extractall(path=extract_dir, members=safe_members)
 
 
-def extract_backup(backup_path, extract_dir):
-    """Extract .tar.gz backup to a directory.
+def _find_dump_dir(root):
+    """Locate a pg_dump directory-format dump under `root`.
 
-    Returns the path to the directory containing restore.sql and .dat files.
-    Raises SystemExit if restore.sql cannot be found.
+    A directory-format dump is a directory containing a `toc.dat` file (and
+    typically a number of `*.dat` files). We accept either `root` itself or
+    a single-level subdirectory.
+    """
+    if os.path.isfile(os.path.join(root, "toc.dat")):
+        return root
+    for entry in os.listdir(root):
+        sub = os.path.join(root, entry)
+        if os.path.isdir(sub) and os.path.isfile(os.path.join(sub, "toc.dat")):
+            return sub
+    return None
+
+
+def extract_backup(backup_path, extract_dir):
+    """Extract .tar.gz (and any nested .tar) to `extract_dir`.
+
+    Returns the path to the directory containing `toc.dat` (the pg_dump
+    directory-format archive root). Exits if it cannot be located.
     """
     print(f"  Extracting {backup_path}...")
 
     with tarfile.open(backup_path, "r:gz") as tar:
         safe_extract_tar(tar, extract_dir)
 
-    # The .tar.gz may contain a nested .tar, or directly the dump files
-    contents = os.listdir(extract_dir)
-    for item in contents:
-        item_path = os.path.join(extract_dir, item)
-        if item.endswith(".tar") and tarfile.is_tarfile(item_path):
+    # The .tar.gz typically contains a nested .tar; unwrap it if present.
+    for entry in os.listdir(extract_dir):
+        entry_path = os.path.join(extract_dir, entry)
+        if entry.endswith(".tar") and tarfile.is_tarfile(entry_path):
             nested_dir = os.path.join(extract_dir, "dump")
             os.makedirs(nested_dir, exist_ok=True)
-            with tarfile.open(item_path, "r:") as tar:
+            with tarfile.open(entry_path, "r:") as tar:
                 safe_extract_tar(tar, nested_dir)
-            contents = os.listdir(nested_dir)
-            # Check nested dir and its subdirectories
-            if "restore.sql" in contents:
-                return nested_dir
-            for sub in contents:
-                sub_path = os.path.join(nested_dir, sub)
-                if os.path.isdir(sub_path) and "restore.sql" in os.listdir(sub_path):
-                    return sub_path
-            print("  Error: Could not locate restore.sql in nested archive.")
-            print(f"  Nested contents: {contents}")
+            dump_dir = _find_dump_dir(nested_dir)
+            if dump_dir:
+                return dump_dir
+            print("  Error: Could not locate toc.dat in nested archive.")
+            print(f"  Nested contents: {os.listdir(nested_dir)}")
             sys.exit(1)
 
-    # Check if restore.sql is directly in the extract dir
-    if "restore.sql" in contents:
-        return extract_dir
+    dump_dir = _find_dump_dir(extract_dir)
+    if dump_dir:
+        return dump_dir
 
-    # Look one level deeper
-    for item in contents:
-        item_path = os.path.join(extract_dir, item)
-        if os.path.isdir(item_path) and "restore.sql" in os.listdir(item_path):
-            return item_path
-
-    print("  Error: Could not locate restore.sql in archive.")
-    print(f"  Top-level contents: {contents}")
+    print("  Error: Could not locate toc.dat in archive.")
+    print(f"  Top-level contents: {os.listdir(extract_dir)}")
     sys.exit(1)
 
 
 def apply_restore(config, dump_dir):
-    """Apply the database restore from the extracted dump directory.
+    """Apply the database restore from a pg_dump directory-format archive.
 
-    Strategy:
-      1. Parse restore.sql to separate DDL/schema statements from COPY commands.
-      2. Execute DDL statements directly.
-      3. For COPY ... FROM '$$PATH$$/xxx.dat' statements, convert to
-         COPY ... FROM STDIN and stream the .dat file contents. This avoids
-         requiring superuser privileges on the database.
+    Uses `pg_restore -Fd --no-owner --no-privileges` so the restore runs as
+    the current connection user without requiring superuser privileges or
+    the original owner roles to exist. `--exit-on-error` makes pg_restore
+    fail fast on the first error rather than logging warnings and pressing on.
     """
-    restore_sql_path = os.path.join(dump_dir, "restore.sql")
-
-    if not os.path.exists(restore_sql_path):
-        print(f"  Error: restore.sql not found in {dump_dir}")
-        sys.exit(1)
-
-    with open(restore_sql_path, "r") as f:
-        content = f.read()
-
-    # Sanity check
-    if "PostgreSQL database dump" not in content[:500]:
-        print("  Warning: restore.sql does not look like a pg_dump file.")
-        print(f"  Header: {content[:100]}")
-
-    abs_dump_dir = os.path.abspath(dump_dir)
-
-    # Remove empty COPY ... FROM stdin blocks (tables with no data):
-    #   COPY public.table (...) FROM stdin;
-    #   \.
-    content = re.sub(
-        r"^COPY\s+.+?\s+FROM\s+stdin;\s*\n\\\.\s*\n",
-        "",
-        content,
-        flags=re.MULTILINE,
-    )
-
-    # Pattern matching COPY ... FROM '$$PATH$$/filename.dat';
-    copy_file_pattern = re.compile(
-        r"^(COPY\s+\S+\s*\([^)]*\))\s+FROM\s+'\$\$PATH\$\$/([^']+)';?\s*$",
-        re.MULTILINE,
-    )
-
-    # Split content into segments: (text_before, copy_stmt, dat_filename, text_after, ...)
-    # We process sequentially: run DDL, then when we hit a COPY-from-file, stream it.
-    segments = copy_file_pattern.split(content)
-    # split gives: [before, group1, group2, between, group1, group2, ..., after]
-    # groups come in pairs: (copy_prefix, dat_filename)
-
-    conn = connect_to_target_db(config)
-    conn.autocommit = True
-    cur = conn.cursor()
-
-    applied = 0
-    data_loaded = 0
-    warnings = 0
-
+    cmd = [
+        "pg_restore",
+        "--format=directory",
+        "--no-owner",
+        "--no-privileges",
+        "--exit-on-error",
+        "--dbname", config["database"],
+        dump_dir,
+    ]
     try:
-        i = 0
-        while i < len(segments):
-            if i % 3 == 0:
-                # This is a DDL/non-COPY text segment
-                ddl_block = segments[i].strip()
-                if ddl_block:
-                    # Execute line by line for statements, but we need to handle
-                    # multi-line statements. Use psycopg2's execute which handles
-                    # multiple statements in one call when separated by semicolons.
-                    try:
-                        cur.execute(ddl_block)
-                        applied += 1
-                    except psycopg2.Error as e:
-                        msg = e.pgerror or (e.diag.message_primary if e.diag else None) or str(e)
-                        short_msg = sanitize_error(msg.strip().split("\n")[0][:150], config)
-                        # Fail fast on critical DDL (CREATE/ALTER TABLE, CREATE TYPE, etc.)
-                        # Allow non-critical statements (COMMENT, GRANT, SET, ALTER OWNER) to warn-and-continue
-                        non_critical_prefixes = ("COMMENT ", "GRANT ", "REVOKE ", "SET ", "SELECT ")
-                        block_upper = ddl_block.lstrip().upper()
-                        is_non_critical = (
-                            any(block_upper.startswith(p) for p in non_critical_prefixes)
-                            or " OWNER TO " in block_upper
-                        )
-                        if is_non_critical:
-                            print(f"  Warning: {short_msg}")
-                            warnings += 1
-                        else:
-                            print(f"  Error (fatal): {short_msg}")
-                            raise SystemExit(
-                                "Critical DDL statement failed. Restore aborted. "
-                                "The database has been dropped and is now empty. "
-                                "Re-run the restore or recover from the safety backup."
-                            )
-                i += 1
-            else:
-                # This is a COPY group: segments[i] = copy_prefix, segments[i+1] = dat_filename
-                copy_prefix = segments[i]
-                dat_filename = segments[i + 1]
-                dat_path = os.path.join(abs_dump_dir, dat_filename)
+        run_pg_tool(cmd, config, capture=False)
+    except subprocess.CalledProcessError as e:
+        raise SystemExit(
+            f"  pg_restore failed: {e.stderr or e}\n"
+            "  The database has been dropped and is now empty. "
+            "Re-run the restore or recover from the safety backup with:\n"
+            "    pg_restore -d \"$DATABASE_URL\" --clean <safety_backup>.dump"
+        )
 
-                # Validate dat file path stays within dump directory
-                resolved_dat = pathlib.Path(dat_path).resolve()
-                if not resolved_dat.is_relative_to(pathlib.Path(abs_dump_dir).resolve()):
-                    print(f"  Error: Path traversal in restore.sql: {dat_filename}")
-                    warnings += 1
-                    i += 2
-                    continue
-
-                if os.path.exists(dat_path):
-                    # Convert to COPY ... FROM STDIN and stream the file
-                    copy_stdin_sql = f"{copy_prefix} FROM STDIN"
-                    try:
-                        with open(dat_path, "rb") as dat_f:
-                            cur.copy_expert(copy_stdin_sql, dat_f)
-                        data_loaded += 1
-                    except psycopg2.Error as e:
-                        msg = sanitize_error(str(e).strip().split("\n")[0][:150], config)
-                        print(f"  Warning ({dat_filename}): {msg}")
-                        warnings += 1
-                else:
-                    print(f"  Warning: Data file not found: {dat_filename}")
-                    warnings += 1
-
-                i += 2
-
-        print(f"  Restore complete: {applied} DDL sections, {data_loaded} tables loaded, {warnings} warnings.")
-    finally:
-        cur.close()
-        conn.close()
-
-    return warnings
+    print("  Restore complete.")
 
 
 def check_disk_space(path, required_mb=500):
@@ -527,6 +285,11 @@ def check_disk_space(path, required_mb=500):
         print(f"  Warning: Only {available_mb:.0f}MB available at {path} (recommend >= {required_mb}MB)")
         return False
     return True
+
+
+def _presence(value):
+    """Display whether a connection field is set without logging its value."""
+    return "(set)" if value else "(not set)"
 
 
 def main():
@@ -558,6 +321,8 @@ def main():
         help="Skip confirmation prompt",
     )
     args = parser.parse_args()
+
+    check_required_tools()
 
     # Validate backup file exists and is .tar.gz
     if not os.path.exists(args.backup_file):
@@ -598,9 +363,9 @@ def main():
 
     print("\nDatabase restore configuration:")
     print(f"  Backup file : {args.backup_file}")
-    print("  Target host : [redacted]")
-    print("  Target DB   : [redacted]")
-    print("  User        : [redacted]")
+    print(f"  Target host : {_presence(config.get('host'))}")
+    print(f"  Target DB   : {_presence(config.get('database'))}")
+    print(f"  User        : {_presence(config.get('user'))}")
     print()
 
     if not args.yes:
@@ -624,7 +389,7 @@ def main():
             backup_dir = args.backup_dir or os.path.dirname(os.path.abspath(args.backup_file))
             os.makedirs(backup_dir, exist_ok=True)
             safety_backup_path = os.path.join(
-                backup_dir, f"{config['database']}_pre_restore.sql"
+                backup_dir, f"{config['database']}_pre_restore.dump"
             )
             # Avoid overwriting an existing backup
             if os.path.exists(safety_backup_path):
@@ -637,8 +402,8 @@ def main():
             try:
                 backup_current_database(config, safety_backup_path)
                 print("  Safety backup created successfully.")
-            except Exception as e:
-                print(f"  Could not backup current database: {sanitize_error(str(e), config)}")
+            except SystemExit as exc:
+                print(f"  {exc}", file=sys.stderr)
                 if args.yes:
                     print("  Error: Cannot proceed without safety backup in non-interactive mode.")
                     print("  Use --no-backup to explicitly skip the safety backup.")
@@ -656,9 +421,9 @@ def main():
         os.makedirs(extract_dir, exist_ok=True)
         dump_dir = extract_backup(args.backup_file, extract_dir)
         dump_contents = os.listdir(dump_dir)
-        dat_count = sum(1 for f in dump_contents if f.endswith(".dat"))
+        dat_count = sum(1 for f in dump_contents if f.endswith(".dat") and f != "toc.dat")
         print(f"  Dump directory: {dump_dir}")
-        print(f"  Found: restore.sql + {dat_count} data files")
+        print(f"  Found: toc.dat + {dat_count} data files")
 
         # Step 3: Drop and recreate the database
         print("\n[3/4] Dropping and recreating database...")
@@ -666,13 +431,9 @@ def main():
 
         # Step 4: Apply the restore
         print("\n[4/4] Applying database restore...")
-        warning_count = apply_restore(config, dump_dir)
+        apply_restore(config, dump_dir)
 
-        if warning_count > 0:
-            print(f"\nRestore completed with {warning_count} warning(s).")
-            sys.exit(2)
-        else:
-            print("\nRestore complete!")
+        print("\nRestore complete!")
 
     finally:
         # Clean up temp extraction directory
