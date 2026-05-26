@@ -21,6 +21,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: backend
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres/postgres_service
       AMAZEEAI_JWT_SECRET: ${AMAZEEAI_JWT_SECRET}
@@ -35,6 +36,22 @@ services:
         condition: service_healthy
     labels:
       lagoon.type: python
+
+  cli:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: cli
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres/postgres_service
+    volumes:
+      - ./app:/app/app
+      - ./scripts:/app/scripts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    labels:
+      lagoon.type: cli
 
   frontend:
     build:
