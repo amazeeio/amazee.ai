@@ -523,6 +523,9 @@ async def _run_cycle_from_stripe_event(
 
     # --- Run the same /cycle pipeline ---
     period_start = datetime.now(UTC)
+    # Safety-net: Stripe cycles are 30d. The 31d budget_duration on LiteLLM
+    # auto-expires budget if a webhook is missed. On cancellation, Stripe sends
+    # customer.subscription.deleted which handles explicit cleanup.
     period_end = period_start + timedelta(days=31)
 
     is_first_cycle = (
@@ -1067,12 +1070,12 @@ async def apply_billing_cycle_for_team(
             )
             return sync_errors
 
-        team.last_payment = period_start
-        db.commit()
-
         limit_service = LimitService(db)
         _, _, max_rpm_limit = limit_service.get_token_restrictions(team.id)
         per_region_budget = budget_cents / 100.0
+        # Safety-net: Stripe cycles are 30d. The 31d budget_duration on LiteLLM
+        # auto-expires budget if a webhook is missed. On cancellation, Stripe sends
+        # customer.subscription.deleted which handles explicit cleanup.
         budget_duration = "31d"
         keys = get_team_region_litellm_keys(db, team_id=team.id, region_id=region.id)
 
@@ -1197,6 +1200,11 @@ async def apply_billing_cycle_for_team(
                 else:
                     payment_record.sync_status = "success"
 
+        # Only stamp last_payment after successful sync to avoid marking
+        # teams as "recently paid" when LiteLLM sync failed.
+        if not sync_errors:
+            team.last_payment = period_start
+
         db.commit()
         return sync_errors
     except Exception as e:
@@ -1239,7 +1247,6 @@ async def apply_product_for_team(
         logger.error(f"Product not found for ID: {product_id}")
         return []
 
-    team.last_payment = start_date
     existing_association = (
         db.query(DBTeamProduct)
         .filter(
@@ -1253,6 +1260,8 @@ async def apply_product_for_team(
 
     if team.budget_type == BudgetType.PERIODIC:
         period_start = start_date
+        # Safety-net: Stripe cycles are 30d. The 31d budget_duration on LiteLLM
+        # auto-expires budget if a webhook is missed.
         period_end = start_date + timedelta(days=31)
         budget_cents = int(round((product.max_budget_per_key or 0.0) * 100))
         if region_id is not None:
@@ -1269,6 +1278,8 @@ async def apply_product_for_team(
         keys_by_region = get_team_keys_by_region(db, team.id)
         if not keys_by_region:
             set_team_and_user_limits(db, team)
+            team.last_payment = start_date
+            db.commit()
             return []
 
         all_errors: list[str] = []
@@ -1314,6 +1325,8 @@ async def apply_product_for_team(
             "Skipping product sync for team %s: no regions with keys found",
             team.id,
         )
+        team.last_payment = start_date
+        db.commit()
         return []
 
     for region, keys in keys_by_region.items():
@@ -1372,6 +1385,11 @@ async def apply_product_for_team(
                 payment_record.error_log = "\n".join(sync_errors)
             else:
                 payment_record.sync_status = "success"
+
+    # Stamp last_payment after successful sync for non-PERIODIC teams.
+    # PERIODIC teams have last_payment set inside apply_billing_cycle_for_team.
+    if not sync_errors:
+        team.last_payment = start_date
     db.commit()
     return sync_errors
 

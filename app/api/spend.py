@@ -930,6 +930,14 @@ async def get_team_spend(
         )
         purchased_cents = sub_remaining_cents + topup_remaining_cents
         purchased_dollars = purchased_cents / 100.0
+        # live_remaining = purchased - total_spend
+        #
+        # INVARIANT: This formula is correct ONLY because consumed_cents
+        # is incremented at cycle-close (by allocate_period_spend_fifo)
+        # while LiteLLM's total_spend is simultaneously reset on the same
+        # call. The two therefore never reflect the same dollars at the
+        # same time. If mid-cycle allocation is ever introduced, this will
+        # silently double-count that spend.
         live_remaining_dollars = max(0.0, purchased_dollars - float(total_spend or 0.0))
         live_remaining_cents = int(round(live_remaining_dollars * 100))
         periodic_budget_view = PeriodicTeamBudgetView(

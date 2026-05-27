@@ -293,6 +293,8 @@ We follow a structured branching and deployment process to ensure stability acro
 - `ENV_SUFFIX`: Naming suffix to differentiate resources from different environments. Defaults to `dev`.
 - `SES_REGION`: Optional, defaults to eu-central-1
 - `DYNAMODB_REGION`: Optional, defaults to eu-central-2
+- `MOAD_API_KEY`: API key for MOAD service authentication
+- `PERIODIC_TOPUP_EXPIRY_DAYS`: Days before periodic top-up budget expires (default: 365)
 
 ### Frontend
 - `NEXT_PUBLIC_API_URL`: Backend API URL

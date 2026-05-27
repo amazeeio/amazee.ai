@@ -10,11 +10,12 @@ from fastapi import (
     Response,
     status,
 )
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.worker import handle_stripe_event_background
 from app.db.database import get_db
-from app.db.models import DBSystemSecret
+from app.db.models import DBStripeProcessedEvent, DBSystemSecret
 from app.services.stripe import decode_stripe_event
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,28 @@ async def handle_events(
         signature = request.headers.get("stripe-signature")
 
         event = decode_stripe_event(payload, signature, webhook_secret)
+
+        # Claim-row idempotency: insert the event ID before dispatching
+        # the background task. If a duplicate webhook arrives concurrently,
+        # the UniqueViolation on stripe_event_id means the event is already
+        # being processed — return 200 immediately (Stripe doesn't retry on 200).
+        event_id = event.get("id")
+        event_type = event.get("type", "unknown")
+        if event_id:
+            try:
+                db.add(
+                    DBStripeProcessedEvent(
+                        stripe_event_id=event_id, event_type=event_type
+                    )
+                )
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                logger.info("Webhook event already claimed: event_id=%s", event_id)
+                return Response(
+                    status_code=status.HTTP_200_OK,
+                    content="Webhook already processed",
+                )
 
         # Process in the background — use the request-scoped event object
         # and let the background task create its own DB session.

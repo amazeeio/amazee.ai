@@ -126,6 +126,9 @@ async def subscription_cycle(
         )
 
     period_start = datetime.now(UTC)
+    # Safety-net: Stripe cycles are 30d. The 31d budget_duration on LiteLLM
+    # auto-expires budget if a webhook is missed. On cancellation, Stripe sends
+    # customer.subscription.deleted which handles explicit cleanup.
     period_end = period_start + timedelta(days=31)
 
     is_first_cycle = (
@@ -285,6 +288,7 @@ async def subscription_deactivate(
             await litellm_service.update_team_budget(
                 team_id=lite_team_id,
                 max_budget=0.0,
+                # Safety-net 31d: auto-expires if webhook is missed.
                 budget_duration="31d",
             )
         except Exception as exc:
@@ -299,6 +303,7 @@ async def subscription_deactivate(
             try:
                 await litellm_service.set_key_restrictions(
                     litellm_token=key.litellm_token,
+                    # Safety-net 31d: auto-expires if webhook is missed.
                     duration="31d",
                     budget_duration="31d",
                     budget_amount=0.0,

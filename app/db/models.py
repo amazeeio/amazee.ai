@@ -298,6 +298,24 @@ class DBPoolPurchase(Base):
     region = relationship("DBRegion")
 
 
+class DBStripeProcessedEvent(Base):
+    """Pre-processing claim row for Stripe webhook idempotency.
+
+    Inserted before dispatching background processing. If a duplicate
+    webhook arrives, the UniqueViolation on stripe_event_id signals that
+    the event is already being handled.
+    """
+
+    __tablename__ = "stripe_processed_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    stripe_event_id = Column(String, unique=True, nullable=False, index=True)
+    event_type = Column(String, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=func.now(), nullable=False, index=True
+    )
+
+
 class DBPeriodicPayment(Base):
     """
     Stores periodic team payments (subscriptions and top-ups).
