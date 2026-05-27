@@ -624,6 +624,7 @@ class TeamCreate(TeamBase):
     hide_public_regions: bool = False
     budget_type: BudgetType = BudgetType.PERIODIC
     require_purchase_for_requests: bool = True
+    region_id: int
 
 
 class TeamUpdate(BaseModel):
@@ -653,6 +654,7 @@ class Team(TeamBase):
     last_payment: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
     retention_warning_sent_at: Optional[datetime] = None
+    region_id: Optional[int] = None
     products: List[Product] = []
     allowed_regions: List[RegionSummaryResponse] = []
     model_config = ConfigDict(from_attributes=True)

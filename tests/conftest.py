@@ -103,6 +103,13 @@ def admin_token(client, test_admin):
 
 @pytest.fixture
 def test_team(db):
+    # Ensure there is a region to assign to the team
+    region = (
+        db.query(DBRegion)
+        .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
+        .first()
+    )
+
     team = DBTeam(
         name="Test Team",
         admin_email="testteam@example.com",
@@ -111,17 +118,13 @@ def test_team(db):
         is_active=True,
         created_at=datetime.now(UTC),
         budget_type="periodic",
+        region_id=region.id if region else None,
     )
     db.add(team)
     db.commit()
     db.refresh(team)
 
-    existing_public_regions = (
-        db.query(DBRegion)
-        .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
-        .all()
-    )
-    for region in existing_public_regions:
+    if region:
         exists = (
             db.query(DBTeamRegion)
             .filter(
@@ -131,7 +134,7 @@ def test_team(db):
         )
         if not exists:
             db.add(DBTeamRegion(team_id=team.id, region_id=region.id))
-    db.commit()
+        db.commit()
     return team
 
 
@@ -254,6 +257,7 @@ def test_region(db):
     db.commit()
     db.refresh(region)
 
+    # Associate any existing teams that don't yet have a region with this one.
     teams = (
         db.query(DBTeam)
         .filter(
@@ -273,6 +277,8 @@ def test_region(db):
         )
         if not exists:
             db.add(DBTeamRegion(team_id=team.id, region_id=region.id))
+        if not team.region_id:
+            team.region_id = region.id
     db.commit()
     return region
 
