@@ -20,7 +20,9 @@ def upgrade():
     # 1. Add nullable region_id column
     op.add_column(
         "teams",
-        sa.Column("region_id", sa.Integer(), sa.ForeignKey("regions.id"), nullable=True),
+        sa.Column(
+            "region_id", sa.Integer(), sa.ForeignKey("regions.id"), nullable=True
+        ),
     )
 
     # 2. Backfill from team_regions: prefer non-dedicated regions, then any region

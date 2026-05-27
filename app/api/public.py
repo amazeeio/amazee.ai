@@ -739,7 +739,7 @@ def _normalize_bedrock_provider_id(
 
     normalized = provider_model_id.split("/", 1)[1]
     if normalized.startswith(provider_prefix):
-        normalized = normalized[len(provider_prefix):]
+        normalized = normalized[len(provider_prefix) :]
     return normalized
 
 
@@ -778,9 +778,7 @@ async def _collect_region_bedrock_models(
         if not isinstance(item, dict):
             continue
         params = item.get("litellm_params") or {}
-        provider_model_id = (
-            params.get("model") if isinstance(params, dict) else None
-        )
+        provider_model_id = params.get("model") if isinstance(params, dict) else None
         if not isinstance(provider_model_id, str) or not provider_model_id:
             continue
 
@@ -900,8 +898,7 @@ async def list_missing_provider_models(
         raise HTTPException(
             status_code=404,
             detail=(
-                f"Unknown provider '{provider}'. "
-                f"Supported: {sorted(_KNOWN_PROVIDERS)}"
+                f"Unknown provider '{provider}'. Supported: {sorted(_KNOWN_PROVIDERS)}"
             ),
         )
 

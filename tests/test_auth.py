@@ -366,8 +366,10 @@ def test_sign_in_new_user_success(client, mock_dynamodb, test_region):
         "ttl": 1234567890,
     }
 
-    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock), \
-         patch("app.core.litellm_user_sync.LiteLLMService") as mock_sync_litellm:
+    with (
+        patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock),
+        patch("app.core.litellm_user_sync.LiteLLMService") as mock_sync_litellm,
+    ):
         mock_sync_litellm.return_value = AsyncMock()
         response = client.post(
             "/auth/sign-in", json={"username": email, "verification_code": code}
@@ -792,8 +794,10 @@ def test_sign_in_new_user_cookie_expiration(client, mock_dynamodb, test_region):
         "ttl": 1234567890,
     }
 
-    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock), \
-         patch("app.core.litellm_user_sync.LiteLLMService") as mock_sync_litellm:
+    with (
+        patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock),
+        patch("app.core.litellm_user_sync.LiteLLMService") as mock_sync_litellm,
+    ):
         mock_sync_litellm.return_value = AsyncMock()
         response = client.post(
             "/auth/sign-in", json={"username": email, "verification_code": code}

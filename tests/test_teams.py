@@ -40,9 +40,7 @@ def test_dbteam_budget_type_defaults_to_periodic(db):
 
 def test_register_team(client, admin_token, test_region):
     """Test registering a new team"""
-    with patch(
-        "app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock
-    ):
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
         response = client.post(
             "/teams/",
             json={
@@ -71,9 +69,7 @@ def test_register_team(client, admin_token, test_region):
 def test_register_and_update_team_hide_public_regions(client, admin_token, test_region):
     """Test registering and updating a team with hide_public_regions"""
     # Register team with hide_public_regions=True
-    with patch(
-        "app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock
-    ):
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
         response = client.post(
             "/teams/",
             json={
@@ -252,17 +248,13 @@ def test_register_team_creates_single_region_association(
     assert response.status_code == 201
     team_id = response.json()["id"]
 
-    associations = (
-        db.query(DBTeamRegion).filter(DBTeamRegion.team_id == team_id).all()
-    )
+    associations = db.query(DBTeamRegion).filter(DBTeamRegion.team_id == team_id).all()
     assert len(associations) == 1
     assert response.json()["region_id"] == test_region.id
 
 
 def test_register_team_allows_purchase_gate_override(client, admin_token, test_region):
-    with patch(
-        "app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock
-    ):
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
         response = client.post(
             "/teams/",
             json={
@@ -327,7 +319,9 @@ def test_register_team_duplicate_admin_email(client, db, admin_token, test_regio
     assert response.json()["detail"] == "Email already registered"
 
 
-def test_register_team_duplicate_admin_email_case_insensitive(client, db, admin_token, test_region):
+def test_register_team_duplicate_admin_email_case_insensitive(
+    client, db, admin_token, test_region
+):
     """
     Given a team with admin_email "existing@example.com" exists
     When registering a new team with admin_email "EXISTING@EXAMPLE.COM"
@@ -439,7 +433,9 @@ def test_register_team_duplicate_name(client, db, admin_token, test_region):
     assert response.json()["detail"] == "Team name already exists"
 
 
-def test_register_team_duplicate_name_case_insensitive(client, db, admin_token, test_region):
+def test_register_team_duplicate_name_case_insensitive(
+    client, db, admin_token, test_region
+):
     """
     Given a team with name "Existing Team" exists
     When registering a new team with name "existing team"
@@ -1909,9 +1905,7 @@ def test_register_team_creates_default_limits(client, db, admin_token, test_regi
     setup_default_limits(db)
 
     # Register a new team
-    with patch(
-        "app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock
-    ):
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
         response = client.post(
             "/teams/",
             json={
@@ -1983,7 +1977,9 @@ def test_register_team_creates_default_limits(client, db, admin_token, test_regi
     assert rpm_limit.max_value == 500.0  # DEFAULT_RPM_PER_KEY
 
 
-def test_register_team_does_not_create_limits_when_disabled(client, db, admin_token, test_region):
+def test_register_team_does_not_create_limits_when_disabled(
+    client, db, admin_token, test_region
+):
     """
     Given: ENABLE_LIMITS is set to false
     When: A new team is created
@@ -1996,9 +1992,7 @@ def test_register_team_does_not_create_limits_when_disabled(client, db, admin_to
     settings.ENABLE_LIMITS = False
 
     # Register a new team
-    with patch(
-        "app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock
-    ):
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
         response = client.post(
             "/teams/",
             json={

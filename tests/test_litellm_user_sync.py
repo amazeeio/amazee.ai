@@ -11,7 +11,9 @@ from app.db.models import DBUser
 
 @patch("app.core.litellm_user_sync.LiteLLMService")
 @pytest.mark.asyncio
-async def test_sync_create_user_skips_trial_users(mock_litellm, db, test_team, test_region):
+async def test_sync_create_user_skips_trial_users(
+    mock_litellm, db, test_team, test_region
+):
     user = DBUser(email="trial-1775630556-f9c2b8a9@example.com", team_id=test_team.id)
     db.add(user)
     db.commit()
