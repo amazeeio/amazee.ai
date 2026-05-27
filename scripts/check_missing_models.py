@@ -75,7 +75,9 @@ def save_state(state_file: Path, state: dict[str, Any]) -> None:
     state_file.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 
 
-def build_diff(report: dict[str, Any], previous_state: dict[str, Any]) -> dict[str, Any]:
+def build_diff(
+    report: dict[str, Any], previous_state: dict[str, Any]
+) -> dict[str, Any]:
     """Compute per-region-group ``new_missing`` vs. ``previous_state`` plus
     the next state to persist.
 
@@ -158,7 +160,9 @@ def write_github_outputs(diff: dict[str, Any]) -> None:
         return
     summary = diff["slack_summary"] or "No new missing models detected."
     with open(output_path, "a", encoding="utf-8") as handle:
-        handle.write(f"has_new_missing={'true' if diff['has_new_missing'] else 'false'}\n")
+        handle.write(
+            f"has_new_missing={'true' if diff['has_new_missing'] else 'false'}\n"
+        )
         handle.write(f"state_changed={'true' if diff['state_changed'] else 'false'}\n")
         handle.write(f"provider={diff.get('provider', '')}\n")
         # JSON-encoded so newlines/quotes are safe to interpolate into a Slack payload.

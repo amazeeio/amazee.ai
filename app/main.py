@@ -107,9 +107,14 @@ default_origins = [
     "http://localhost:8800",
 ]
 lagoon_routes = os.getenv("LAGOON_ROUTES", "").split(",")
+frontend_routes = os.getenv("FRONTEND_ROUTE", "").split(",")
 allowed_origins = default_origins + [
     route.strip() for route in lagoon_routes if route.strip()
 ]
+for route in frontend_routes:
+    route = route.strip()
+    if route:
+        allowed_origins.append(route)
 
 # Add HTTPS redirect middleware first
 app.add_middleware(HTTPSRedirectMiddleware)
@@ -256,17 +261,14 @@ def custom_openapi():
                     del operation["parameters"]
 
             # Remove security from non-protected endpoints
-            if (
-                path_name
-                in [
-                    "/auth/login",
-                    "/auth/register",
-                    "/health",
-                    "/auth/generate-trial-access",
-                    "/public/models",
-                    "/public/models/",
-                ]
-            ):
+            if path_name in [
+                "/auth/login",
+                "/auth/register",
+                "/health",
+                "/auth/generate-trial-access",
+                "/public/models",
+                "/public/models/",
+            ]:
                 if "security" in operation:
                     del operation["security"]
 
