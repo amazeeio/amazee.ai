@@ -1,6 +1,7 @@
 import logging
 import os
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from app.__version__ import __version__
 from app.api import (
@@ -106,15 +107,22 @@ default_origins = [
     "http://localhost:3001",
     "http://localhost:8800",
 ]
+
+
+def _normalize_origin(url: str) -> str:
+    parsed = urlparse(url.strip())
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    return origin.rstrip("/")
+
+
 lagoon_routes = os.getenv("LAGOON_ROUTES", "").split(",")
 frontend_routes = os.getenv("FRONTEND_ROUTE", "").split(",")
 allowed_origins = default_origins + [
-    route.strip() for route in lagoon_routes if route.strip()
+    _normalize_origin(route) for route in lagoon_routes if route.strip()
 ]
 for route in frontend_routes:
-    route = route.strip()
-    if route:
-        allowed_origins.append(route)
+    if route.strip():
+        allowed_origins.append(_normalize_origin(route))
 
 # Add HTTPS redirect middleware first
 app.add_middleware(HTTPSRedirectMiddleware)
