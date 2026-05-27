@@ -111,6 +111,9 @@ default_origins = [
 
 def _normalize_origin(url: str) -> str:
     parsed = urlparse(url.strip())
+    if not parsed.scheme or not parsed.netloc:
+        logger.warning("Skipping malformed origin (missing scheme/host): %r", url.strip())
+        return ""
     origin = f"{parsed.scheme}://{parsed.netloc}"
     return origin.rstrip("/")
 
