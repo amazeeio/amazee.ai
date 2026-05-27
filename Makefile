@@ -12,7 +12,7 @@ backend-test-build:
 	docker build -t amazee-backend-test -f Dockerfile.test .
 
 # Start PostgreSQL container for testing
-test-postgres: test-clean test-network
+test-postgres: test-network
 	docker run -d \
 		--name amazee-test-postgres \
 		--network amazeeai_default \
