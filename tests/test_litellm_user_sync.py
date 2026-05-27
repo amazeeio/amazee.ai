@@ -29,6 +29,9 @@ async def test_sync_create_user_skips_trial_users(
 async def test_sync_create_user_calls_litellm_for_regular_users(
     mock_litellm, db, test_team, test_region
 ):
+    test_team.region_id = test_region.id
+    db.commit()
+
     user = DBUser(email="regular-user@example.com", team_id=test_team.id)
     db.add(user)
     db.commit()

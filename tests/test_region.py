@@ -791,6 +791,7 @@ def test_list_regions_team_member_does_not_see_other_team_dedicated_regions(
 
     team_region = DBTeamRegion(team_id=other_team.id, region_id=dedicated_region.id)
     db.add(team_region)
+    test_team.region_id = test_region.id
     db.commit()
 
     response = client.get(

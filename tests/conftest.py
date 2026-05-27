@@ -103,30 +103,6 @@ def admin_token(client, test_admin):
 
 @pytest.fixture
 def test_team(db):
-    # Ensure there is a public (non-dedicated) region to assign to the team.
-    region = (
-        db.query(DBRegion)
-        .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
-        .first()
-    )
-    if not region:
-        region = DBRegion(
-            name="default-test-region",
-            label="Default Test Region",
-            description="Auto-created region for test_team fixture",
-            postgres_host="amazee-test-postgres",
-            postgres_port=5432,
-            postgres_admin_user="postgres",
-            postgres_admin_password="postgres",
-            litellm_api_url="https://test-litellm.com",
-            litellm_api_key="test-litellm-key",
-            is_active=True,
-            is_dedicated=False,
-        )
-        db.add(region)
-        db.commit()
-        db.refresh(region)
-
     team = DBTeam(
         name="Test Team",
         admin_email="testteam@example.com",
@@ -135,23 +111,10 @@ def test_team(db):
         is_active=True,
         created_at=datetime.now(UTC),
         budget_type="periodic",
-        region_id=region.id,
     )
     db.add(team)
     db.commit()
     db.refresh(team)
-
-    if region:
-        exists = (
-            db.query(DBTeamRegion)
-            .filter(
-                DBTeamRegion.team_id == team.id, DBTeamRegion.region_id == region.id
-            )
-            .first()
-        )
-        if not exists:
-            db.add(DBTeamRegion(team_id=team.id, region_id=region.id))
-        db.commit()
     return team
 
 
@@ -274,7 +237,8 @@ def test_region(db):
     db.commit()
     db.refresh(region)
 
-    # Associate any existing teams that don't yet have a region with this one.
+    # Preserve historical fixture behavior: active non-dedicated teams are
+    # associated to the public test region, but team.region_id stays untouched.
     teams = (
         db.query(DBTeam)
         .filter(
@@ -294,8 +258,6 @@ def test_region(db):
         )
         if not exists:
             db.add(DBTeamRegion(team_id=team.id, region_id=region.id))
-        if not team.region_id:
-            team.region_id = region.id
     db.commit()
     return region
 

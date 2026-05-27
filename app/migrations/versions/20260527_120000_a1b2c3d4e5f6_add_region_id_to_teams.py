@@ -76,8 +76,8 @@ def upgrade():
         ).bindparams(fallback_id=fallback_id)
     )
 
-    # 4. Make NOT NULL — all rows must be populated after the backfill above.
-    op.alter_column("teams", "region_id", nullable=False)
+    # 4. Keep nullable for backward compatibility with existing code paths that
+    #    create teams before their default region is assigned.
 
 
 def downgrade():
