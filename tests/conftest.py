@@ -103,12 +103,29 @@ def admin_token(client, test_admin):
 
 @pytest.fixture
 def test_team(db):
-    # Ensure there is a region to assign to the team
+    # Ensure there is a public (non-dedicated) region to assign to the team.
     region = (
         db.query(DBRegion)
         .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
         .first()
     )
+    if not region:
+        region = DBRegion(
+            name="default-test-region",
+            label="Default Test Region",
+            description="Auto-created region for test_team fixture",
+            postgres_host="amazee-test-postgres",
+            postgres_port=5432,
+            postgres_admin_user="postgres",
+            postgres_admin_password="postgres",
+            litellm_api_url="https://test-litellm.com",
+            litellm_api_key="test-litellm-key",
+            is_active=True,
+            is_dedicated=False,
+        )
+        db.add(region)
+        db.commit()
+        db.refresh(region)
 
     team = DBTeam(
         name="Test Team",
@@ -118,7 +135,7 @@ def test_team(db):
         is_active=True,
         created_at=datetime.now(UTC),
         budget_type="periodic",
-        region_id=region.id if region else None,
+        region_id=region.id,
     )
     db.add(team)
     db.commit()

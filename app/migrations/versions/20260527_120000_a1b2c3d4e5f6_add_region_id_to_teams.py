@@ -42,18 +42,38 @@ def upgrade():
     )
 
     # 3. For teams that still have no region (zero team_regions rows),
-    #    assign the first active non-dedicated region as a safe fallback.
-    op.execute(
-        """
-        UPDATE teams
-        SET region_id = (
-            SELECT id FROM regions
-            WHERE is_active = true AND is_dedicated = false
-            ORDER BY id ASC
-            LIMIT 1
+    #    assign the first active non-dedicated region as a safe fallback
+    #    and insert a matching team_regions association row.
+    bind = op.get_bind()
+    fallback_row = bind.execute(
+        sa.text(
+            "SELECT id FROM regions"
+            " WHERE is_active = true AND is_dedicated = false"
+            " ORDER BY id ASC LIMIT 1"
         )
-        WHERE region_id IS NULL
-        """
+    ).fetchone()
+    if fallback_row is None:
+        raise RuntimeError(
+            "No active non-dedicated region found; cannot backfill teams.region_id. "
+            "Create at least one active non-dedicated region before running this migration."
+        )
+    fallback_id = fallback_row[0]
+    # Insert team_regions rows for teams that have no association yet.
+    op.execute(
+        sa.text(
+            """
+            INSERT INTO team_regions (team_id, region_id, created_at)
+            SELECT id, :fallback_id, NOW()
+            FROM teams
+            WHERE region_id IS NULL
+            ON CONFLICT DO NOTHING
+            """
+        ).bindparams(fallback_id=fallback_id)
+    )
+    op.execute(
+        sa.text(
+            "UPDATE teams SET region_id = :fallback_id WHERE region_id IS NULL"
+        ).bindparams(fallback_id=fallback_id)
     )
 
     # 4. Make NOT NULL — all rows must be populated after the backfill above.

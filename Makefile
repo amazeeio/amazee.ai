@@ -50,8 +50,7 @@ backend-test-regex: backend-test-build test-postgres
 		-e ENV_SUFFIX="test" \
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
-		amazee-backend-test pytest -vv -k "$(regex)"
-	$(MAKE) test-teardown
+		amazee-backend-test pytest -vv -k "$(regex)"; result=$$?; $(MAKE) test-teardown; exit $$result
 
 # Run backend tests in a new container
 backend-test: backend-test-build test-postgres
@@ -69,8 +68,7 @@ backend-test: backend-test-build test-postgres
 		-e ENV_SUFFIX="test" \
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
-		amazee-backend-test
-	$(MAKE) test-teardown
+		amazee-backend-test; result=$$?; $(MAKE) test-teardown; exit $$result
 
 # Run backend tests with coverage report
 backend-test-cov: backend-test-build test-postgres
@@ -88,8 +86,7 @@ backend-test-cov: backend-test-build test-postgres
 		-e ENV_SUFFIX="test" \
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
-		amazee-backend-test pytest -v --cov=app tests/
-	$(MAKE) test-teardown
+		amazee-backend-test pytest -v --cov=app tests/; result=$$?; $(MAKE) test-teardown; exit $$result
 
 # Build the frontend test container
 frontend-test-build:

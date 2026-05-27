@@ -111,7 +111,7 @@ async def register_team(
     """
     Register a new team. Requires authentication.
     """
-    # Validate region
+    # Validate region — must be active and non-dedicated
     region = (
         db.query(DBRegion)
         .filter(DBRegion.id == team.region_id, DBRegion.is_active.is_(True))
@@ -121,6 +121,11 @@ async def register_team(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid or inactive region_id: {team.region_id}",
+        )
+    if region.is_dedicated:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot register a team in a dedicated region",
         )
 
     # Check if team email already exists (case insensitive)
