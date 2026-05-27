@@ -1,4 +1,4 @@
-.PHONY: backend-test backend-test-build test-clean test-teardown test-network test-postgres frontend-test frontend-test-build migration-create migration-upgrade migration-downgrade migration-stamp
+.PHONY: backend-test backend-test-build test-clean test-network test-postgres frontend-test frontend-test-build migration-create migration-upgrade migration-downgrade migration-stamp
 
 # Default target
 all: backend-test
@@ -12,7 +12,7 @@ backend-test-build:
 	docker build -t amazee-backend-test -f Dockerfile.test .
 
 # Start PostgreSQL container for testing
-test-postgres: test-network
+test-postgres: test-clean test-network
 	docker run -d \
 		--name amazee-test-postgres \
 		--network amazeeai_default \
@@ -21,13 +21,6 @@ test-postgres: test-network
 		-e POSTGRES_DB=postgres_service \
 		pgvector/pgvector:pg16 && \
 	sleep 5
-
-# Teardown: stop and remove test containers, network, and image
-test-teardown:
-	docker stop amazee-test-postgres 2>/dev/null || true
-	docker rm amazee-test-postgres 2>/dev/null || true
-	docker network rm amazeeai_default 2>/dev/null || true
-	docker rmi amazee-backend-test 2>/dev/null || true
 
 # Run backend tests for a specific regex
 # Usage: make backend-test-regex regex="test_pattern"
@@ -52,7 +45,7 @@ backend-test-regex: backend-test-build test-postgres
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
 		amazee-backend-test pytest -vv -k "$(regex)" || status=$$?; \
-	$(MAKE) test-teardown; \
+	$(MAKE) test-clean; \
 	exit $$status
 
 # Run backend tests in a new container
@@ -73,7 +66,7 @@ backend-test: backend-test-build test-postgres
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
 		amazee-backend-test || status=$$?; \
-	$(MAKE) test-teardown; \
+	$(MAKE) test-clean; \
 	exit $$status
 
 # Run backend tests with coverage report
@@ -94,7 +87,7 @@ backend-test-cov: backend-test-build test-postgres
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
 		amazee-backend-test pytest -v --cov=app tests/ || status=$$?; \
-	$(MAKE) test-teardown; \
+	$(MAKE) test-clean; \
 	exit $$status
 
 # Build the frontend test container

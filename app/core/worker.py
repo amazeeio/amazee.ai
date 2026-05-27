@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, UTC, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, and_, or_, update as sa_update
@@ -1521,16 +1522,18 @@ async def monitor_teams(db: Session):
 @hard_delete_teams_duration.time()
 async def hard_delete_expired_teams(db: Session):
     """
-    Hard deletion job for teams that have been soft-deleted for 90+ days.
+    Hard deletion job for teams that have been soft-deleted beyond the retention period.
     Cascades deletion to all related resources (keys, users, limits, metrics, etc.).
     Runs less frequently than monitor_teams (daily at 3 AM).
     """
     logger.info("Starting hard delete job for expired teams")
     try:
-        # Calculate cutoff date (90 days ago — GDPR data retention requirement)
-        cutoff_date = datetime.now(UTC) - timedelta(days=90)
+        retention_days = max(
+            30, int(os.getenv("TEAM_HARD_DELETE_RETENTION_DAYS", "90"))
+        )
+        cutoff_date = datetime.now(UTC) - timedelta(days=retention_days)
 
-        # Query all teams that have been soft-deleted for 90+ days
+        # Query all teams that have been soft-deleted beyond the retention period
         teams_to_delete = (
             db.query(DBTeam)
             .filter(DBTeam.deleted_at.is_not(None), DBTeam.deleted_at <= cutoff_date)
