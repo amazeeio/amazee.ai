@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Features
 
+- None yet.
+
+### Fixes
+
+- None yet.
+
+## 0.2.0 - 2026-05-28
+
+### Features
+
 - **Spend Snapshots**: Store spend snapshots for historical tracking (#488)
 - **Dedicated Regions**: Add script to convert dedicated regions to public (#485)
 - **Dedicated Regions Logging**: Add detailed logging for region conversion phases (#491)
@@ -27,6 +37,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Key Creation Spend Cap**: Fix key creation and spend cap issues (#477)
 - **Spend Cap Deletion**: Pass `team_id` and `user_id` to `_delete_spend_cap` in clear key budget (#471)
 - **Key Deletion**: Add error handling and remove dependent spend caps on key deletion (#462)
+- **CORS Origins**: Exclude malformed origins from CORS allowed origins instead of appending empty entries (#532)
+- **Spend Loading**: Reuse cached regions data to avoid duplicate `/regions` requests when loading key spend (#532)
 
 ### Changed
 

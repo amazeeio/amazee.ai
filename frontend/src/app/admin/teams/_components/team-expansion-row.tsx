@@ -30,6 +30,7 @@ import {
 import { useTeams } from "@/hooks/use-teams";
 import { PrivateAIKey } from "@/types/private-ai-key";
 import { Product } from "@/types/product";
+import { Region } from "@/types/region";
 import { SpendInfo } from "@/types/spend";
 import { Team } from "@/types/team";
 import { User } from "@/types/user";
@@ -40,6 +41,7 @@ interface TeamExpansionRowProps {
   teamId: string;
   isExpanded: boolean;
   includeDeleted: boolean;
+  regions: Region[];
   onEdit: (team: Team) => void;
   onAddUser: (teamId: string) => void;
   onCreateUser: (teamId: string) => void;
@@ -50,6 +52,7 @@ export function TeamExpansionRow({
   teamId,
   isExpanded,
   includeDeleted,
+  regions,
   onEdit,
   onAddUser,
   onCreateUser,
@@ -132,7 +135,44 @@ export function TeamExpansionRow({
     queryFn: async () => {
       if (teamAIKeys.length === 0) return {};
       const spendData: Record<string, SpendInfo> = {};
+
+      // Group keys by region
+      const regionGroups = new Map<string, number[]>();
+      const noTeamKeys: PrivateAIKey[] = [];
+
       for (const key of teamAIKeys) {
+        if (key.team_id && key.region) {
+          const keyIds = regionGroups.get(key.region) || [];
+          keyIds.push(key.id);
+          regionGroups.set(key.region, keyIds);
+        } else {
+          noTeamKeys.push(key);
+        }
+      }
+
+      // Fetch spend per region+team combo
+      for (const [regionName, keyIds] of regionGroups) {
+        try {
+          const matchedRegion = regions.find((r) => r.name === regionName);
+          if (matchedRegion) {
+            const response = await get(
+              `/spend/${matchedRegion.id}/team/${teamId}`,
+            );
+            const spendInfo = await response.json();
+            for (const keyId of keyIds) {
+              spendData[keyId.toString()] = spendInfo;
+            }
+          }
+        } catch (error) {
+          console.error(
+            `Failed to fetch spend data for team ${teamId} region ${regionName}:`,
+            error,
+          );
+        }
+      }
+
+      // Fallback for keys without team_id
+      for (const key of noTeamKeys) {
         try {
           const response = await get(`/private-ai-keys/${key.id}/spend`);
           spendData[key.id.toString()] = await response.json();
@@ -140,9 +180,10 @@ export function TeamExpansionRow({
           console.error(`Failed to fetch spend data for key ${key.id}:`, error);
         }
       }
+
       return spendData;
     },
-    enabled: isExpanded && teamAIKeys.length > 0,
+    enabled: isExpanded && teamAIKeys.length > 0 && regions.length > 0,
   });
 
   const isTeamExpired = (team: Team): boolean => {

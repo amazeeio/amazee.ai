@@ -1,8 +1,10 @@
+import os
 from datetime import UTC, datetime, timedelta
 from sqlalchemy.orm import Session
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, or_, update as sa_update
 from app.db.models import (
     DBTeam,
+    DBAuditLog,
     DBProduct,
     DBTeamProduct,
     DBPrivateAIKey,
@@ -14,7 +16,10 @@ from app.db.models import (
     DBPoolPurchase,
     DBPeriodicPayment,
     DBPeriodicBudgetLedgerEntry,
+    DBAPIToken,
+    DBUserAdminRegion,
     DBSpendCap,
+    DBUserSpendCache,
 )
 from app.schemas.models import BudgetType
 from app.services.litellm import LiteLLMService
@@ -61,6 +66,7 @@ from app.core.periodic_budget_ledger_service import (
     expire_subscription_entries,
     materialize_topup_rollovers,
 )
+from app.core.email import normalize_email_for_lookup
 
 logger = logging.getLogger(__name__)
 
@@ -2205,16 +2211,18 @@ async def monitor_teams(db: Session):
 @hard_delete_teams_duration.time()
 async def hard_delete_expired_teams(db: Session):
     """
-    Hard deletion job for teams that have been soft-deleted for 60+ days.
+    Hard deletion job for teams that have been soft-deleted beyond the retention period.
     Cascades deletion to all related resources (keys, users, limits, metrics, etc.).
     Runs less frequently than monitor_teams (daily at 3 AM).
     """
     logger.info("Starting hard delete job for expired teams")
     try:
-        # Calculate cutoff date (60 days ago)
-        cutoff_date = datetime.now(UTC) - timedelta(days=60)
+        retention_days = max(
+            30, int(os.getenv("TEAM_HARD_DELETE_RETENTION_DAYS", "90"))
+        )
+        cutoff_date = datetime.now(UTC) - timedelta(days=retention_days)
 
-        # Query all teams that have been soft-deleted for 60+ days
+        # Query all teams that have been soft-deleted beyond the retention period
         teams_to_delete = (
             db.query(DBTeam)
             .filter(DBTeam.deleted_at.is_not(None), DBTeam.deleted_at <= cutoff_date)
@@ -2232,6 +2240,13 @@ async def hard_delete_expired_teams(db: Session):
                 # Get user IDs first (needed for cleaning up user resources)
                 team_user_ids = (
                     db.execute(select(DBUser.id).filter(DBUser.team_id == team.id))
+                    .scalars()
+                    .all()
+                )
+
+                # Also capture emails now (needed for user_spend_cache cleanup)
+                team_user_emails = (
+                    db.execute(select(DBUser.email).filter(DBUser.team_id == team.id))
                     .scalars()
                     .all()
                 )
@@ -2277,6 +2292,33 @@ async def hard_delete_expired_teams(db: Session):
                         )
 
                 # Delete keys from database
+                # Collect key IDs first so we can clean up spend_caps that reference them
+                team_key_ids = (
+                    db.execute(
+                        select(DBPrivateAIKey.id).filter(
+                            or_(
+                                DBPrivateAIKey.team_id == team.id,
+                                DBPrivateAIKey.owner_id.in_(team_user_ids),
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+
+                # 3. Delete spend_caps before keys/users/team to avoid FK violations:
+                #    spend_caps.key_id → ai_tokens.id (no ondelete)
+                #    spend_caps.user_id → users.id (no ondelete)
+                #    spend_caps.team_id → teams.id (no ondelete)
+                db.query(DBSpendCap).filter(
+                    or_(
+                        DBSpendCap.team_id == team.id,
+                        DBSpendCap.user_id.in_(team_user_ids),
+                        DBSpendCap.key_id.in_(team_key_ids),
+                    )
+                ).delete(synchronize_session=False)
+                logger.info(f"Deleted spend caps for team {team.id}")
+
                 total_keys = sum(len(keys) for keys in keys_by_region.values())
                 db.query(DBPrivateAIKey).filter(
                     (DBPrivateAIKey.team_id == team.id)
@@ -2286,21 +2328,88 @@ async def hard_delete_expired_teams(db: Session):
                     f"Deleted {total_keys} keys from database for team {team.id}"
                 )
 
-                # 3. Delete users in the team
+                # 4. Clean up remaining FK references to users before deleting them.
+                #    These tables have FKs to users.id with no ondelete rule, so
+                #    PostgreSQL would raise a FK violation without explicit cleanup.
+
+                # api_tokens.user_id → users.id (no ondelete)
+                if team_user_ids:
+                    db.query(DBAPIToken).filter(
+                        DBAPIToken.user_id.in_(team_user_ids)
+                    ).delete(synchronize_session=False)
+                    logger.info(f"Deleted API tokens for users of team {team.id}")
+
+                # user_admin_regions.user_id → users.id (no ondelete, PK)
+                if team_user_ids:
+                    db.query(DBUserAdminRegion).filter(
+                        DBUserAdminRegion.user_id.in_(team_user_ids)
+                    ).delete(synchronize_session=False)
+                    logger.info(
+                        f"Deleted admin-region rows for users of team {team.id}"
+                    )
+
+                # audit_logs.user_id → users.id (nullable, no ondelete)
+                # Preserve audit history; just null out the user reference.
+                if team_user_ids:
+                    db.execute(
+                        sa_update(DBAuditLog)
+                        .where(DBAuditLog.user_id.in_(team_user_ids))
+                        .values(user_id=None)
+                    )
+                    logger.info(
+                        f"Nulled user_id in audit logs for users of team {team.id}"
+                    )
+
+                # user_spend_cache is keyed by normalized_email (no FK, string column)
+                # Clean up stale cache rows so they don't linger indefinitely.
+                if team_user_emails:
+                    normalized_team_user_emails = {
+                        normalize_email_for_lookup(email) for email in team_user_emails
+                    }
+                    db.query(DBUserSpendCache).filter(
+                        DBUserSpendCache.normalized_email.in_(
+                            normalized_team_user_emails
+                        )
+                    ).delete(synchronize_session=False)
+                    logger.info(
+                        f"Deleted spend cache entries for users of team {team.id}"
+                    )
+
+                # 5. Delete users in the team
                 db.query(DBUser).filter(DBUser.team_id == team.id).delete()
                 logger.info(f"Deleted {len(team_user_ids)} users for team {team.id}")
 
-                # 4. Delete team product associations
+                # 6. Delete team product associations
                 db.query(DBTeamProduct).filter(
                     DBTeamProduct.team_id == team.id
                 ).delete()
                 logger.info(f"Deleted product associations for team {team.id}")
 
-                # 5. Delete team region associations
+                # 7. Delete team region associations
                 db.query(DBTeamRegion).filter(DBTeamRegion.team_id == team.id).delete()
                 logger.info(f"Deleted region associations for team {team.id}")
 
-                # 6. Delete the team itself (DBTeamMetrics will be auto-deleted via cascade)
+                # 8. Write audit log before deleting the team record
+                hard_delete_time = datetime.now(UTC)
+                audit_log = DBAuditLog(
+                    timestamp=hard_delete_time,
+                    user_id=None,
+                    event_type="WORKER",
+                    resource_type="team",
+                    resource_id=str(team.id),
+                    action="team.hard_delete",
+                    details={
+                        "team_name": team.name,
+                        "soft_deleted_at": team.deleted_at.isoformat()
+                        if team.deleted_at
+                        else None,
+                        "hard_deleted_at": hard_delete_time.isoformat(),
+                    },
+                    request_source=None,
+                )
+                db.add(audit_log)
+
+                # 9. Delete the team itself (DBTeamMetrics will be auto-deleted via cascade)
                 db.delete(team)
 
                 # Commit after each team to avoid rolling back everything on error

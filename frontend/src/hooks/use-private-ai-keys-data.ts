@@ -46,17 +46,63 @@ export function usePrivateAIKeysData(
   });
 
   // Query to get spend information for loaded keys
-  // Use a stable query key to avoid Rules of Hooks violations
+  // Fetches per team+region combo for keys with team_id, old endpoint for others
   const loadedSpendKeysArray = Array.from(loadedSpendKeys).sort();
   const { data: spendMap = {} } = useQuery<Record<number, SpendInfo>>({
     queryKey: ["private-ai-keys-spend", loadedSpendKeysArray],
     queryFn: async () => {
-      const spendPromises = loadedSpendKeysArray.map(async (keyId) => {
-        const response = await get(`private-ai-keys/${keyId}/spend`);
-        return [keyId, await response.json()] as [number, SpendInfo];
+      const loadedKeys = keys.filter((k) => loadedSpendKeys.has(k.id));
+
+      // Group keys by team+region combo
+      const teamRegionMap = new Map<
+        string,
+        { regionName: string; teamId: number; keyIds: number[] }
+      >();
+      const noTeamKeys: PrivateAIKey[] = [];
+
+      for (const key of loadedKeys) {
+        if (key.team_id && key.region) {
+          const comboKey = `${key.region}:${key.team_id}`;
+          if (!teamRegionMap.has(comboKey)) {
+            teamRegionMap.set(comboKey, {
+              regionName: key.region,
+              teamId: key.team_id,
+              keyIds: [],
+            });
+          }
+          teamRegionMap.get(comboKey)!.keyIds.push(key.id);
+        } else {
+          noTeamKeys.push(key);
+        }
+      }
+
+      const result: Record<number, SpendInfo> = {};
+
+      // Fetch spend per team+region combo
+      const teamSpendPromises = Array.from(teamRegionMap.values()).map(
+        async ({ regionName, teamId, keyIds }) => {
+          const matchedRegion = regions.find((r) => r.name === regionName);
+          if (matchedRegion) {
+            const response = await get(
+              `spend/${matchedRegion.id}/team/${teamId}`,
+            );
+            const spendInfo: SpendInfo = await response.json();
+            // Assign same team spend to all keys in this combo
+            for (const keyId of keyIds) {
+              result[keyId] = spendInfo;
+            }
+          }
+        },
+      );
+
+      // Fetch spend for keys without team_id using old endpoint
+      const noTeamPromises = noTeamKeys.map(async (key) => {
+        const response = await get(`private-ai-keys/${key.id}/spend`);
+        result[key.id] = await response.json();
       });
-      const spendResults = await Promise.all(spendPromises);
-      return Object.fromEntries(spendResults);
+
+      await Promise.all([...teamSpendPromises, ...noTeamPromises]);
+      return result;
     },
     enabled: loadedSpendKeysArray.length > 0,
   });

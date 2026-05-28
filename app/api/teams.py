@@ -461,10 +461,16 @@ async def restore_team(team_id: int, db: Session = Depends(get_db)):
         )
 
     # Use centralized restore function
-    await restore_soft_deleted_team(db, db_team)
+    result = await restore_soft_deleted_team(db, db_team)
 
     db.refresh(db_team)
-    return {"message": "Team restored successfully"}
+    response = {"message": "Team restored successfully"}
+    if result.get("litellm_warnings"):
+        response["warning"] = (
+            f"Team restored, but LiteLLM re-provisioning failed in regions: "
+            f"{result['litellm_warnings']}. Keys may not work until retried."
+        )
+    return response
 
 
 @router.post(

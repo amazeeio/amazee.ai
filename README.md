@@ -188,7 +188,51 @@ Limit controls and precedence:
 Note: Spend enforcement in LiteLLM is evaluated on spend updates, so the blocking request is typically the first request after crossing a cap.
 
 
-## 🗄️ How to Restore from a Database Dump
+## ♻️ Team Lifecycle & Hard Delete
+
+Teams go through a three-stage lifecycle managed by background workers.
+
+### Stages
+
+| Stage | Trigger | What happens |
+|---|---|---|
+| **Active** | Team created | Normal operation |
+| **Soft-deleted** | >76 days inactive (no API activity) + 14-day grace after warning email; or manual `POST /teams/{id}/soft-delete` | `deleted_at` set; all LiteLLM keys expired (`duration=0d`); users deactivated. POOL teams are exempt from automatic soft-delete. |
+| **Hard-deleted** | `deleted_at` is ≥ 90 days ago | All data permanently removed (GDPR requirement) |
+
+### Hard-delete cascade order
+
+When `hard_delete_expired_teams()` runs (daily at 03:00 via cron), it deletes each expired team's data in this order to respect FK constraints:
+
+1. `limited_resources` (team + user rows)
+2. LiteLLM keys (remote call, best-effort)
+3. `spend_caps` (team-, user-, and key-scoped)
+4. `ai_tokens` (private AI keys) from DB
+5. `api_tokens`, `user_admin_regions` (user FK tables — no `ON DELETE CASCADE`)
+6. `audit_logs.user_id` set to `NULL` (rows preserved for audit history)
+7. `user_spend_cache` (email-keyed stale cache)
+8. `users`
+9. `team_products`, `team_regions`
+10. Audit log entry written (`action=team.hard_delete`)
+11. `teams` (cascades `team_metrics` automatically)
+
+### Restore
+
+A soft-deleted team can be restored by a system admin via `POST /teams/{id}/restore`. The restore:
+- Clears `deleted_at` and reactivates all users
+- Re-provisions the LiteLLM team and users in every active region (idempotent)
+- Un-expires all keys in LiteLLM
+
+If LiteLLM re-provisioning fails for any region, the team is still marked restored in the DB and the response includes a `"warning"` field listing the affected regions. Check the `audit_logs` table (`action=team.restore`) for the full `litellm_failed_regions` detail.
+
+### Manual trigger
+
+```bash
+# Trigger the hard-delete job manually on the backend container
+python scripts/trigger_hard_delete_job.py
+```
+
+
 
 If you have a database dump, you can restore it into your local PostgreSQL service following these steps:
 
