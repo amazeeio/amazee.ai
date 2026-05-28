@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/tooltip";
 import { get } from "@/utils/api";
 import { useQuery } from "@tanstack/react-query";
+import { Region } from "@/types/region";
 
 interface SpendInfo {
   spend: number;
@@ -27,6 +28,7 @@ interface PrivateAIKeySpendCellProps {
   hasLiteLLMToken: boolean;
   region?: string;
   teamId?: number;
+  regions?: Region[];
 }
 
 export function PrivateAIKeySpendCell({
@@ -34,6 +36,7 @@ export function PrivateAIKeySpendCell({
   hasLiteLLMToken,
   region,
   teamId,
+  regions = [],
 }: PrivateAIKeySpendCellProps) {
   const [isLoaded, setIsLoaded] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -47,12 +50,7 @@ export function PrivateAIKeySpendCell({
     queryKey: ["private-ai-key-spend", keyId, region, teamId],
     queryFn: async () => {
       if (teamId && region) {
-        // Look up region_id from regions list
-        const regionsResponse = await get("regions");
-        const regions = await regionsResponse.json();
-        const matchedRegion = regions.find(
-          (r: { name: string }) => r.name === region,
-        );
+        const matchedRegion = regions.find((r) => r.name === region);
         if (matchedRegion) {
           const response = await get(
             `spend/${matchedRegion.id}/team/${teamId}`,
