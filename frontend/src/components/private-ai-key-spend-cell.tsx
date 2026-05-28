@@ -47,7 +47,7 @@ export function PrivateAIKeySpendCell({
     isLoading,
     refetch,
   } = useQuery<SpendInfo>({
-    queryKey: ["private-ai-key-spend", keyId, region, teamId],
+    queryKey: ["private-ai-key-spend", keyId, region, teamId, regions.map((r) => r.id)],
     queryFn: async () => {
       if (teamId && region) {
         const matchedRegion = regions.find((r) => r.name === region);
