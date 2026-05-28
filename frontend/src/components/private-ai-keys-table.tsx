@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/table";
 import { TableFilters, FilterField } from "@/components/ui/table-filters";
 import { PrivateAIKey } from "@/types/private-ai-key";
+import { Region } from "@/types/region";
 import { User } from "@/types/user";
 
 type SortField = "name" | "region" | "owner" | null;
@@ -32,6 +33,7 @@ interface PrivateAIKeysTableProps {
   isDeleting?: boolean;
   teamDetails?: Record<number, { name: string }>;
   teamMembers?: User[];
+  regions?: Region[];
 }
 
 export function PrivateAIKeysTable({
@@ -43,6 +45,7 @@ export function PrivateAIKeysTable({
   isDeleting = false,
   teamDetails = {},
   teamMembers = [],
+  regions = [],
 }: PrivateAIKeysTableProps) {
   const [showPassword, setShowPassword] = useState<
     Record<number | string, boolean>
@@ -444,6 +447,7 @@ export function PrivateAIKeysTable({
                     hasLiteLLMToken={!!key.litellm_token}
                     region={key.region}
                     teamId={key.team_id}
+                    regions={regions}
                   />
                 </TableCell>
                 {allowModification && (

@@ -112,7 +112,9 @@ default_origins = [
 def _normalize_origin(url: str) -> str:
     parsed = urlparse(url.strip())
     if not parsed.scheme or not parsed.netloc:
-        logger.warning("Skipping malformed origin (missing scheme/host): %r", url.strip())
+        logger.warning(
+            "Skipping malformed origin (missing scheme/host): %r", url.strip()
+        )
         return ""
     origin = f"{parsed.scheme}://{parsed.netloc}"
     return origin.rstrip("/")
@@ -121,11 +123,15 @@ def _normalize_origin(url: str) -> str:
 lagoon_routes = os.getenv("LAGOON_ROUTES", "").split(",")
 frontend_routes = os.getenv("FRONTEND_ROUTE", "").split(",")
 allowed_origins = default_origins + [
-    _normalize_origin(route) for route in lagoon_routes if route.strip()
+    normalized
+    for route in lagoon_routes
+    if route.strip() and (normalized := _normalize_origin(route))
 ]
 for route in frontend_routes:
     if route.strip():
-        allowed_origins.append(_normalize_origin(route))
+        normalized = _normalize_origin(route)
+        if normalized:
+            allowed_origins.append(normalized)
 
 # Add HTTPS redirect middleware first
 app.add_middleware(HTTPSRedirectMiddleware)
