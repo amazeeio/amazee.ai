@@ -399,13 +399,6 @@ class DBPeriodicBudgetLedgerEntry(Base):
             unique=True,
             postgresql_where=text("source_invoice_id IS NOT NULL"),
         ),
-        Index(
-            "uq_periodic_ledger_rollover_source_invoice_not_null",
-            "rolled_over_from_id",
-            "source_invoice_id",
-            unique=True,
-            postgresql_where=text("source_invoice_id IS NOT NULL"),
-        ),
     )
 
 

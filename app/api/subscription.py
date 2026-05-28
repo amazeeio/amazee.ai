@@ -135,6 +135,7 @@ async def subscription_cycle(
         not db.query(DBPeriodicBudgetLedgerEntry)
         .filter(
             DBPeriodicBudgetLedgerEntry.team_id == team.id,
+            DBPeriodicBudgetLedgerEntry.region_id == region.id,
             DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
         )
         .first()
@@ -178,7 +179,7 @@ async def subscription_cycle(
             region_id=request.region_id,
             period_start=period_start,
             period_end=period_end,
-            source_payment_id=None,
+            source_payment_id=payment_id,
         )
 
         _write_audit_log(

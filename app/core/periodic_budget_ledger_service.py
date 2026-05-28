@@ -281,6 +281,7 @@ def materialize_topup_rollovers(
     now = datetime.now(UTC)
     rollover_total = 0
     rollover_expiry: datetime | None = None
+    has_non_expiring_source = False
     source_entries = (
         db.query(DBPeriodicBudgetLedgerEntry)
         .filter(
@@ -302,9 +303,11 @@ def materialize_topup_rollovers(
         if remaining <= 0:
             entry.is_active = False
             continue
-        if rollover_expiry is None or (
-            entry.expires_at is not None
-            and (rollover_expiry is None or entry.expires_at > rollover_expiry)
+        if entry.expires_at is None:
+            has_non_expiring_source = True
+            rollover_expiry = None
+        elif not has_non_expiring_source and (
+            rollover_expiry is None or entry.expires_at > rollover_expiry
         ):
             rollover_expiry = entry.expires_at
 

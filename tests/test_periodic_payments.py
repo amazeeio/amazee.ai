@@ -1,13 +1,20 @@
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.core.worker import (
     _record_periodic_payment_direct,
+    _run_cycle_from_stripe_event,
     apply_billing_cycle_for_team,
 )
-from app.db.models import DBPeriodicBudgetLedgerEntry, DBPeriodicPayment, DBPrivateAIKey
+from app.db.models import (
+    DBPeriodicBudgetLedgerEntry,
+    DBPeriodicPayment,
+    DBPrivateAIKey,
+    DBRegion,
+)
 
 
 def _auth_headers() -> dict[str, str]:
@@ -222,6 +229,7 @@ def test_subscription_cycle_endpoint_first_cycle(
     mock_capture.assert_not_awaited()
     mock_sync_ledger.assert_awaited_once()
     mock_apply_cycle.assert_awaited_once()
+    assert mock_apply_cycle.await_args.kwargs["source_payment_id"] == 123
 
 
 @patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
@@ -273,6 +281,151 @@ def test_subscription_cycle_endpoint_existing_cycle_runs_snapshot_and_ledger(
     assert response.status_code == 200
     assert response.json()["payment_id"] == 456
     mock_capture.assert_awaited_once()
+    mock_sync_ledger.assert_awaited_once()
+    mock_apply_cycle.assert_awaited_once()
+
+
+@patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.api.subscription.apply_billing_cycle_for_team", new_callable=AsyncMock)
+@patch("app.api.subscription._sync_periodic_ledger_for_period", new_callable=AsyncMock)
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+def test_subscription_cycle_endpoint_first_cycle_is_region_scoped(
+    mock_capture,
+    mock_sync_ledger,
+    mock_apply_cycle,
+    mock_record_payment,
+    client,
+    db,
+    test_team,
+    test_region,
+):
+    other_region = DBRegion(
+        name="test-region-secondary",
+        label="Test Region Secondary",
+        description="Secondary region for region-scoped cycle tests",
+        postgres_host="amazee-test-postgres",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="https://test-litellm-secondary.com",
+        litellm_api_key="test-litellm-key-secondary",
+        is_active=True,
+    )
+    db.add(other_region)
+    db.commit()
+
+    # Existing subscription cycle in another region should not affect first-cycle
+    # behavior for test_region.
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=other_region.id,
+            entry_type="subscription",
+            amount_cents=10000,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC),
+            effective_period_start=datetime.now(UTC),
+            effective_period_end=datetime.now(UTC) + timedelta(days=31),
+            expires_at=datetime.now(UTC) + timedelta(days=31),
+            is_active=True,
+        )
+    )
+    db.commit()
+
+    mock_apply_cycle.return_value = []
+    mock_record_payment.return_value = 789
+
+    response = client.post(
+        "/billing/subscription/cycle",
+        headers=_auth_headers(),
+        json={
+            "transaction_id": "txn_cycle_region_scope",
+            "budget_cents": 10000,
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["payment_id"] == 789
+    mock_capture.assert_not_awaited()
+    mock_sync_ledger.assert_awaited_once()
+    mock_apply_cycle.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.capture_periodic_team_spend_for_period", new_callable=AsyncMock)
+@patch("app.core.worker._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.core.worker._sync_periodic_ledger_for_period", new_callable=AsyncMock)
+@patch("app.core.worker.apply_billing_cycle_for_team", new_callable=AsyncMock)
+async def test_webhook_cycle_first_cycle_is_region_scoped(
+    mock_apply_cycle,
+    mock_sync_ledger,
+    mock_record_payment,
+    mock_capture,
+    db,
+    test_team,
+    test_region,
+):
+    other_region = DBRegion(
+        name="test-region-third",
+        label="Test Region Third",
+        description="Third region for webhook region-scoped cycle tests",
+        postgres_host="amazee-test-postgres",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="https://test-litellm-third.com",
+        litellm_api_key="test-litellm-key-third",
+        is_active=True,
+    )
+    db.add(other_region)
+    db.commit()
+
+    test_team.stripe_customer_id = "cus_cycle_scope"
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=other_region.id,
+            entry_type="subscription",
+            amount_cents=10000,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC),
+            effective_period_start=datetime.now(UTC),
+            effective_period_end=datetime.now(UTC) + timedelta(days=31),
+            expires_at=datetime.now(UTC) + timedelta(days=31),
+            is_active=True,
+        )
+    )
+    db.commit()
+
+    mock_record_payment.return_value = 987
+    mock_apply_cycle.return_value = []
+
+    event_object = SimpleNamespace(
+        subscription="sub_region_scope",
+        amount_paid=10000,
+        id="in_region_scope",
+        currency="usd",
+        parent=SimpleNamespace(
+            subscription_details=SimpleNamespace(
+                subscription="sub_region_scope",
+                metadata={"regionId": str(test_region.id)},
+            )
+        ),
+    )
+
+    await _run_cycle_from_stripe_event(
+        db=db,
+        event_id="evt_region_scope",
+        customer_id="cus_cycle_scope",
+        event_object=event_object,
+    )
+
+    mock_capture.assert_not_awaited()
     mock_sync_ledger.assert_awaited_once()
     mock_apply_cycle.assert_awaited_once()
 

@@ -528,10 +528,12 @@ async def _run_cycle_from_stripe_event(
     # customer.subscription.deleted which handles explicit cleanup.
     period_end = period_start + timedelta(days=31)
 
+    target_region_ids = [region.id for region in target_regions]
     is_first_cycle = (
         not db.query(DBPeriodicBudgetLedgerEntry)
         .filter(
             DBPeriodicBudgetLedgerEntry.team_id == team.id,
+            DBPeriodicBudgetLedgerEntry.region_id.in_(target_region_ids),
             DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
         )
         .first()

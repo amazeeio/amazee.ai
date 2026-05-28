@@ -11,6 +11,28 @@ from app.core.periodic_budget_ledger_service import (
 from app.db.models import DBPeriodicBudgetLedgerEntry
 
 
+def _mk_ledger_entry(
+    *,
+    team_id: int,
+    region_id: int,
+    entry_type: str,
+    amount_cents: int,
+    consumed_cents: int,
+    purchased_at: datetime,
+    expires_at: datetime | None,
+) -> DBPeriodicBudgetLedgerEntry:
+    return DBPeriodicBudgetLedgerEntry(
+        team_id=team_id,
+        region_id=region_id,
+        entry_type=entry_type,
+        amount_cents=amount_cents,
+        consumed_cents=consumed_cents,
+        purchased_at=purchased_at,
+        expires_at=expires_at,
+        is_active=True,
+    )
+
+
 def test_fifo_allocation_and_rollover_materialization(db, test_team, test_region):
     now = datetime.now(UTC)
     add_topup_entry(
@@ -223,3 +245,54 @@ def test_example2_spend_exceeds_stripe_budget_topup_partially_consumed(
         db, team_id=test_team.id, region_id=test_region.id
     )
     assert remaining == 200  # $2 → new-period budget = $10 + $2 = $12
+
+
+def test_rollover_preserves_non_expiring_sources(db, test_team, test_region):
+    now = datetime.now(UTC)
+
+    # Non-expiring source and finite-expiry source should produce non-expiring rollover.
+    db.add(
+        _mk_ledger_entry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            amount_cents=500,
+            consumed_cents=100,
+            purchased_at=now - timedelta(days=15),
+            expires_at=None,
+        )
+    )
+    db.add(
+        _mk_ledger_entry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            amount_cents=400,
+            consumed_cents=0,
+            purchased_at=now - timedelta(days=10),
+            expires_at=now + timedelta(days=20),
+        )
+    )
+    db.commit()
+
+    rolled = materialize_topup_rollovers(
+        db,
+        team_id=test_team.id,
+        region_id=test_region.id,
+        source_invoice_id="in_non_expiring_rollover",
+        rollover_at=now,
+    )
+    db.commit()
+
+    assert rolled == 800
+    rollover_row = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == test_team.id,
+            DBPeriodicBudgetLedgerEntry.region_id == test_region.id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "topup_rollover",
+            DBPeriodicBudgetLedgerEntry.source_invoice_id == "in_non_expiring_rollover",
+        )
+        .one()
+    )
+    assert rollover_row.expires_at is None
