@@ -32,7 +32,6 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import datetime
 
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -43,6 +42,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db.database import engine
 from app.db.models import (
     DBPrivateAIKey,
+    DBProduct,
     DBTeam,
     DBTeamProduct,
     DBUser,
@@ -177,10 +177,13 @@ async def drop_teams(db: Session, teams: list[DBTeam], dry_run: bool = True) -> 
     # Safety check: refuse to delete teams with active Stripe products
     teams_with_products = []
     for team in teams:
-        product_count = (
-            db.query(DBTeamProduct).filter(DBTeamProduct.team_id == team.id).count()
+        active_product_count = (
+            db.query(DBTeamProduct)
+            .join(DBProduct)
+            .filter(DBTeamProduct.team_id == team.id, DBProduct.active.is_(True))
+            .count()
         )
-        if product_count > 0:
+        if active_product_count > 0:
             teams_with_products.append(team)
 
     if teams_with_products:
@@ -208,6 +211,9 @@ async def drop_teams(db: Session, teams: list[DBTeam], dry_run: bool = True) -> 
 
     print(f"\n  Done. {len(succeeded)} succeeded, {len(failed)} failed.\n")
 
+    if failed:
+        sys.exit(1)
+
     if succeeded:
         print("  📧 Next step: notify affected users to sign in to Moad with their")
         print("     amazee email to access the internal workspace and get new keys.\n")
@@ -234,6 +240,11 @@ async def main():
         help="Target specific team IDs instead of matching by email pattern.",
     )
     args = parser.parse_args()
+
+    if args.team_ids and args.email_pattern != DEFAULT_EMAIL_PATTERN:
+        logger.warning(
+            "--email-pattern is ignored when --team-ids is provided"
+        )
 
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     db = SessionLocal()

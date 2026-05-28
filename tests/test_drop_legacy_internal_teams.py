@@ -20,7 +20,8 @@ from app.db.models import (
 )
 
 # Import the functions under test — the script lives one level up from tests/
-import sys, os
+import os
+import sys
 
 sys.path.insert(
     0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts"))
@@ -169,3 +170,19 @@ async def test_drop_teams_refuses_teams_with_products(
 
     assert exc_info.value.code == 1
     mock_soft_delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("drop_legacy_internal_teams.soft_delete_team", new_callable=AsyncMock)
+async def test_drop_teams_allows_inactive_product(mock_soft_delete, db: Session):
+    """Teams with only inactive product associations should not be blocked."""
+    team = _make_team(db, name="Inactive Prod", admin_email="inact@amazee.io")
+    product = DBProduct(id="prod-inactive", name="Old Plan", active=False)
+    db.add(product)
+    db.commit()
+    db.add(DBTeamProduct(team_id=team.id, product_id=product.id))
+    db.commit()
+
+    await drop_teams(db, [team], dry_run=False)
+
+    mock_soft_delete.assert_called_once_with(db, team)
