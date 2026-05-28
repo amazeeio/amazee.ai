@@ -41,7 +41,11 @@ export function PrivateAIKeySpendCell({
   const [isLoaded, setIsLoaded] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
+  const matchedRegion =
+    teamId && region ? regions.find((r) => r.name === region) : undefined;
+
   // Query for spend data - only enabled when isLoaded is true
+  // For team keys, also wait until the region can be resolved from the regions list
   const {
     data: spendData,
     isLoading,
@@ -49,20 +53,17 @@ export function PrivateAIKeySpendCell({
   } = useQuery<SpendInfo>({
     queryKey: ["private-ai-key-spend", keyId, region, teamId, regions.map((r) => r.id)],
     queryFn: async () => {
-      if (teamId && region) {
-        const matchedRegion = regions.find((r) => r.name === region);
-        if (matchedRegion) {
-          const response = await get(
-            `spend/${matchedRegion.id}/team/${teamId}`,
-          );
-          return response.json();
-        }
+      if (teamId && region && matchedRegion) {
+        const response = await get(
+          `spend/${matchedRegion.id}/team/${teamId}`,
+        );
+        return response.json();
       }
       // Fallback for keys without team_id
       const response = await get(`private-ai-keys/${keyId}/spend`);
       return response.json();
     },
-    enabled: isLoaded,
+    enabled: isLoaded && (!(teamId && region) || !!matchedRegion),
   });
 
   const handleLoadSpend = () => {
