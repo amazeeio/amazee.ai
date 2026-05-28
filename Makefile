@@ -44,6 +44,7 @@ backend-test-regex: test-clean backend-test-build test-postgres
 		-e ENV_SUFFIX="test" \
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
+		-v $(PWD)/scripts:/app/scripts \
 		amazee-backend-test pytest -vv -k "$(regex)"
 
 # Run backend tests in a new container
@@ -62,6 +63,7 @@ backend-test: test-clean backend-test-build test-postgres
 		-e ENV_SUFFIX="test" \
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
+		-v $(PWD)/scripts:/app/scripts \
 		amazee-backend-test
 
 # Run backend tests with coverage report
@@ -80,6 +82,7 @@ backend-test-cov: test-clean backend-test-build test-postgres
 		-e ENV_SUFFIX="test" \
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
+		-v $(PWD)/scripts:/app/scripts \
 		amazee-backend-test pytest -v --cov=app tests/
 
 # Build the frontend test container
