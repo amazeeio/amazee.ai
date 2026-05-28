@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/tooltip";
 import { get } from "@/utils/api";
 import { useQuery } from "@tanstack/react-query";
+import { Region } from "@/types/region";
 
 interface SpendInfo {
   spend: number;
@@ -27,6 +28,7 @@ interface PrivateAIKeySpendCellProps {
   hasLiteLLMToken: boolean;
   region?: string;
   teamId?: number;
+  regions?: Region[];
 }
 
 export function PrivateAIKeySpendCell({
@@ -34,37 +36,34 @@ export function PrivateAIKeySpendCell({
   hasLiteLLMToken,
   region,
   teamId,
+  regions = [],
 }: PrivateAIKeySpendCellProps) {
   const [isLoaded, setIsLoaded] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
+  const matchedRegion =
+    teamId && region ? regions.find((r) => r.name === region) : undefined;
+
   // Query for spend data - only enabled when isLoaded is true
+  // For team keys, also wait until the region can be resolved from the regions list
   const {
     data: spendData,
     isLoading,
     refetch,
   } = useQuery<SpendInfo>({
-    queryKey: ["private-ai-key-spend", keyId, region, teamId],
+    queryKey: ["private-ai-key-spend", keyId, region, teamId, regions.map((r) => r.id)],
     queryFn: async () => {
-      if (teamId && region) {
-        // Look up region_id from regions list
-        const regionsResponse = await get("regions");
-        const regions = await regionsResponse.json();
-        const matchedRegion = regions.find(
-          (r: { name: string }) => r.name === region,
+      if (teamId && region && matchedRegion) {
+        const response = await get(
+          `spend/${matchedRegion.id}/team/${teamId}`,
         );
-        if (matchedRegion) {
-          const response = await get(
-            `spend/${matchedRegion.id}/team/${teamId}`,
-          );
-          return response.json();
-        }
+        return response.json();
       }
       // Fallback for keys without team_id
       const response = await get(`private-ai-keys/${keyId}/spend`);
       return response.json();
     },
-    enabled: isLoaded,
+    enabled: isLoaded && (!(teamId && region) || !!matchedRegion),
   });
 
   const handleLoadSpend = () => {

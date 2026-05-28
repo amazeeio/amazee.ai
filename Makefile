@@ -36,6 +36,7 @@ backend-test-regex: backend-test-build test-postgres
 		echo "Error: regex parameter is required. Usage: make backend-test-regex regex=\"test_pattern\""; \
 		exit 1; \
 	fi
+	@status=0; \
 	docker run --rm \
 		--network amazeeai_default \
 		-e DATABASE_URL="postgresql://postgres:postgres@amazee-test-postgres/postgres_service" \
@@ -50,10 +51,13 @@ backend-test-regex: backend-test-build test-postgres
 		-e ENV_SUFFIX="test" \
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
-		amazee-backend-test pytest -vv -k "$(regex)"; result=$$?; $(MAKE) test-teardown; exit $$result
+		amazee-backend-test pytest -vv -k "$(regex)" || status=$$?; \
+	$(MAKE) test-clean; \
+	exit $$status
 
 # Run backend tests in a new container
 backend-test: backend-test-build test-postgres
+	@status=0; \
 	docker run --rm \
 		--network amazeeai_default \
 		-e DATABASE_URL="postgresql://postgres:postgres@amazee-test-postgres/postgres_service" \
@@ -68,10 +72,13 @@ backend-test: backend-test-build test-postgres
 		-e ENV_SUFFIX="test" \
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
-		amazee-backend-test; result=$$?; $(MAKE) test-teardown; exit $$result
+		amazee-backend-test || status=$$?; \
+	$(MAKE) test-clean; \
+	exit $$status
 
 # Run backend tests with coverage report
 backend-test-cov: backend-test-build test-postgres
+	@status=0; \
 	docker run --rm \
 		--network amazeeai_default \
 		-e DATABASE_URL="postgresql://postgres:postgres@amazee-test-postgres/postgres_service" \
@@ -86,7 +93,9 @@ backend-test-cov: backend-test-build test-postgres
 		-e ENV_SUFFIX="test" \
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/tests:/app/tests \
-		amazee-backend-test pytest -v --cov=app tests/; result=$$?; $(MAKE) test-teardown; exit $$result
+		amazee-backend-test pytest -v --cov=app tests/ || status=$$?; \
+	$(MAKE) test-clean; \
+	exit $$status
 
 # Build the frontend test container
 frontend-test-build:

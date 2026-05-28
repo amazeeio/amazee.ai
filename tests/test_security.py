@@ -1,8 +1,14 @@
 import pytest
 from fastapi import HTTPException
-from app.core.security import check_sales_or_higher, get_role_min_system_admin
+from types import SimpleNamespace
+
+from app.core.security import (
+    check_sales_or_higher,
+    get_current_user_from_auth,
+    get_role_min_system_admin,
+)
 from app.core.roles import UserRole
-from app.db.models import DBUser
+from app.db.models import DBTeam, DBUser
 
 
 class TestSecurityFunctions:
@@ -100,3 +106,40 @@ class TestSecurityFunctions:
 
         assert exc_info.value.status_code == 403
         assert "Not authorized to perform this action" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_from_auth_reloads_detached_request_user(db):
+    team = DBTeam(
+        name="Suspended Team",
+        admin_email="suspended@example.com",
+        phone="1234567890",
+        billing_address="123 Test St, Test City, 12345",
+        is_active=False,
+    )
+    db.add(team)
+    db.commit()
+    db.refresh(team)
+
+    user = DBUser(
+        email="suspended-user@example.com",
+        hashed_password="hashed",
+        is_active=True,
+        is_admin=False,
+        team_id=team.id,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    team.deleted_at = user.created_at
+    db.commit()
+
+    db.expunge(user)
+    request = SimpleNamespace(state=SimpleNamespace(user=user))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_current_user_from_auth(db=db, request=request)
+
+    assert exc_info.value.status_code == 403
+    assert "suspended" in exc_info.value.detail.lower()

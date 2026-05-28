@@ -8,7 +8,14 @@ from datetime import UTC, datetime
 from typing import Dict, List, Optional
 
 from app.core.limit_service import DEFAULT_KEY_DURATION
-from app.db.models import DBPrivateAIKey, DBRegion, DBTeam, DBUser
+from app.db.models import (
+    DBAuditLog,
+    DBPrivateAIKey,
+    DBRegion,
+    DBTeam,
+    DBTeamRegion,
+    DBUser,
+)
 from app.services.litellm import LiteLLMService
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -127,7 +134,20 @@ async def soft_delete_team(
         f"Deactivated {users_deactivated} users for soft-deleted team {team.id}"
     )
 
-    # Commit the deletion and user deactivation
+    # Write audit log entry (background/worker operation — no HTTP user)
+    audit_log = DBAuditLog(
+        timestamp=current_time,
+        user_id=None,
+        event_type="WORKER",
+        resource_type="team",
+        resource_id=str(team.id),
+        action="team.soft_delete",
+        details={"team_name": team.name, "deleted_at": current_time.isoformat()},
+        request_source=None,
+    )
+    db.add(audit_log)
+
+    # Commit the deletion, user deactivation, and audit log
     db.commit()
 
     # Expire all keys in LiteLLM
@@ -162,7 +182,7 @@ async def soft_delete_team(
     logger.info(f"Successfully soft-deleted team {team.id} ({team.name})")
 
 
-async def restore_soft_deleted_team(db: Session, team: DBTeam) -> None:
+async def restore_soft_deleted_team(db: Session, team: DBTeam) -> dict:
     """
     Restore a soft-deleted team with full cascade behavior.
 
@@ -170,18 +190,92 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> None:
     - Resets team.deleted_at to null
     - Resets team.retention_warning_sent_at to null
     - Reactivates all users in the team (is_active = True)
+    - Re-provisions the LiteLLM team and its users in every allowed region
     - Un-expires all keys in LiteLLM (sets back to default duration)
 
     Args:
         db: Database session
         team: The team to restore
 
-    Note: This function commits the database changes.
+    Returns:
+        A dict with ``litellm_warnings`` (list of region names where
+        LiteLLM re-provisioning failed).  An empty list means full success.
+
+    Note: This function commits the database changes regardless of LiteLLM
+    failures so that the team is always marked as restored in the DB.
+    Callers should surface any returned warnings to admins.
     """
     if not team.deleted_at:
         raise ValueError(f"Team {team.id} is not soft-deleted and cannot be restored")
 
     logger.info(f"Restoring soft-deleted team {team.id} ({team.name})")
+
+    # Collect team users and regions up front
+    team_users = db.query(DBUser).filter(DBUser.team_id == team.id).all()
+    allowed_regions = (
+        db.query(DBRegion)
+        .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
+        .filter(DBTeamRegion.team_id == team.id, DBRegion.is_active.is_(True))
+        .all()
+    )
+
+    failed_regions: list[str] = []
+
+    # Re-provision LiteLLM: ensure team and user objects exist in each region
+    for region in allowed_regions:
+        region_failed = False
+        try:
+            litellm_service = LiteLLMService(
+                api_url=region.litellm_api_url, api_key=region.litellm_api_key
+            )
+            lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+
+            # Ensure the LiteLLM team exists (idempotent)
+            try:
+                await litellm_service.create_team(
+                    team_id=lite_team_id,
+                    team_alias=lite_team_id,
+                )
+                logger.info(
+                    f"Re-provisioned LiteLLM team {lite_team_id} in region {region.name}"
+                )
+            except Exception as team_error:
+                logger.error(
+                    f"Failed to re-provision LiteLLM team in region {region.name}: {str(team_error)}"
+                )
+                region_failed = True
+                continue
+
+            # Ensure each user exists in LiteLLM and is a member of the team (idempotent)
+            for user in team_users:
+                try:
+                    await litellm_service.create_user(
+                        user_id=str(user.id),
+                        user_email=user.email,
+                        auto_create_key=False,
+                    )
+                    await litellm_service.add_team_member(
+                        team_id=lite_team_id,
+                        user_id=str(user.id),
+                    )
+                    logger.info(
+                        f"Re-provisioned LiteLLM user {user.id} in team {lite_team_id} region {region.name}"
+                    )
+                except Exception as user_error:
+                    logger.error(
+                        f"Failed to re-provision LiteLLM user {user.id} in region {region.name}: {str(user_error)}"
+                    )
+                    region_failed = True
+        except Exception as region_error:
+            logger.error(
+                f"Failed to re-provision LiteLLM team/users in region {region.name}: {str(region_error)}"
+            )
+            region_failed = True
+        finally:
+            # `continue` inside the inner try skips code after the try/except block,
+            # so use finally to ensure failed regions are always recorded.
+            if region_failed:
+                failed_regions.append(region.name)
 
     # Un-expire all keys for the team in LiteLLM
     try:
@@ -205,21 +299,26 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> None:
                             logger.error(
                                 f"Failed to un-expire key {key.id} in LiteLLM: {str(key_error)}"
                             )
+                            if region.name not in failed_regions:
+                                failed_regions.append(region.name)
             except Exception as region_error:
                 logger.error(
                     f"Failed to un-expire keys in region {region.name}: {str(region_error)}"
                 )
+                if region.name not in failed_regions:
+                    failed_regions.append(region.name)
     except Exception as restore_error:
         logger.error(
             f"Failed to un-expire keys for team {team.id}: {str(restore_error)}"
         )
-        # Don't block restoration if key un-expiration fails
+
+    restored_at = datetime.now(UTC)
 
     # Reset deletion and warning timestamps and reactivate team
     team.deleted_at = None
     team.retention_warning_sent_at = None
     team.is_active = True
-    team.updated_at = datetime.now(UTC)
+    team.updated_at = restored_at
 
     # Reactivate all users in the team
     users_reactivated = (
@@ -229,9 +328,33 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> None:
     )
     logger.info(f"Reactivated {users_reactivated} users for restored team {team.id}")
 
+    # Write audit log entry (include any LiteLLM provisioning failures)
+    audit_log = DBAuditLog(
+        timestamp=restored_at,
+        user_id=None,
+        event_type="WORKER",
+        resource_type="team",
+        resource_id=str(team.id),
+        action="team.restore",
+        details={
+            "team_name": team.name,
+            "litellm_failed_regions": failed_regions,
+        },
+        request_source=None,
+    )
+    db.add(audit_log)
+
     db.commit()
 
-    logger.info(f"Successfully restored team {team.id} ({team.name})")
+    if failed_regions:
+        logger.warning(
+            f"Team {team.id} restored but LiteLLM re-provisioning failed in regions: {failed_regions}. "
+            f"Keys may not work until re-provisioning is retried."
+        )
+    else:
+        logger.info(f"Successfully restored team {team.id} ({team.name})")
+
+    return {"litellm_warnings": failed_regions}
 
 
 async def propagate_team_budget_to_keys(

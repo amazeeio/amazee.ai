@@ -46,6 +46,7 @@ from app.core.security import (
     get_current_user_from_auth,
     get_role_min_team_admin,
 )
+from app.core.email import normalize_email_for_lookup
 from app.core.roles import UserRole
 from app.services.litellm import LiteLLMService
 from datetime import datetime, UTC
@@ -69,14 +70,6 @@ def get_user_by_email(db: Session, email: str) -> Optional[DBUser]:
 router = APIRouter(tags=["users"])
 
 
-def _normalize_email_for_lookup(email: str) -> str:
-    parts = email.lower().rsplit("@", 1)
-    if len(parts) == 2:
-        local_part = parts[0].split("+")[0]
-        return f"{local_part}@{parts[1]}"
-    return email.lower()
-
-
 def invalidate_user_spend_cache(db: Session, email: str) -> None:
     """Delete the cached /users/spend response for *email*.
 
@@ -87,7 +80,7 @@ def invalidate_user_spend_cache(db: Session, email: str) -> None:
     This helper intentionally does not commit; callers control the transaction
     boundary so cache invalidation remains atomic with the related write.
     """
-    normalized = _normalize_email_for_lookup(email)
+    normalized = normalize_email_for_lookup(email)
     db.query(DBUserSpendCache).filter(
         DBUserSpendCache.normalized_email == normalized
     ).delete(synchronize_session=False)
@@ -105,7 +98,7 @@ def invalidate_users_spend_cache_bulk(db: Session, emails: list[str]) -> None:
     """
     if not emails:
         return
-    normalized_emails = [_normalize_email_for_lookup(e) for e in emails]
+    normalized_emails = [normalize_email_for_lookup(e) for e in emails]
     db.query(DBUserSpendCache).filter(
         DBUserSpendCache.normalized_email.in_(normalized_emails)
     ).delete(synchronize_session=False)
@@ -523,7 +516,7 @@ async def get_user_spend(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Missing or invalid email",
         )
-    normalized_email = _normalize_email_for_lookup(email)
+    normalized_email = normalize_email_for_lookup(email)
 
     cached = _get_user_spend_cache(db, normalized_email)
     if cached:
