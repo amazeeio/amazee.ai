@@ -135,6 +135,7 @@ export default function TeamAIKeysPage() {
         showOwner={true}
         teamDetails={teamDetails}
         teamMembers={teamMembers}
+        regions={regions}
       />
     </div>
   );

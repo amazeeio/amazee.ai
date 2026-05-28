@@ -179,6 +179,7 @@ export default function DashboardPage() {
         isDeleting={deleteKeyMutation.isPending}
         teamDetails={teamDetails}
         teamMembers={teamMembers}
+        regions={regions}
       />
 
       {privateAIKeys.length === 0 && (
