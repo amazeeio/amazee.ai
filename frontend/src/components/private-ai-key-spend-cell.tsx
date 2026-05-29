@@ -12,16 +12,7 @@ import {
 import { get } from "@/utils/api";
 import { useQuery } from "@tanstack/react-query";
 import { Region } from "@/types/region";
-
-interface SpendInfo {
-  spend: number;
-  expires: string;
-  created_at: string;
-  updated_at: string;
-  max_budget: number | null;
-  budget_duration: string | null;
-  budget_reset_at: string | null;
-}
+import { SpendInfo } from "@/types/spend";
 
 interface PrivateAIKeySpendCellProps {
   keyId: number;
