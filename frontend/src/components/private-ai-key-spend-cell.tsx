@@ -57,7 +57,13 @@ export function PrivateAIKeySpendCell({
         const response = await get(
           `spend/${matchedRegion.id}/team/${teamId}`,
         );
-        return response.json();
+        const data = await response.json();
+        // Map TeamSpendResponse to SpendInfo
+        return {
+          ...data,
+          spend: data.total_spend ?? 0,
+          max_budget: data.total_budget,
+        };
       }
       // Fallback for keys without team_id
       const response = await get(`private-ai-keys/${keyId}/spend`);

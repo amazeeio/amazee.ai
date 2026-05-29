@@ -158,7 +158,13 @@ export function TeamExpansionRow({
             const response = await get(
               `/spend/${matchedRegion.id}/team/${teamId}`,
             );
-            const spendInfo = await response.json();
+            const data = await response.json();
+            // Map TeamSpendResponse to SpendInfo
+            const spendInfo = {
+              ...data,
+              spend: data.total_spend ?? 0,
+              max_budget: data.total_budget,
+            };
             for (const keyId of keyIds) {
               spendData[keyId.toString()] = spendInfo;
             }
