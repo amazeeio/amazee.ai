@@ -15,6 +15,7 @@ import { PrivateAIKey } from "@/types/private-ai-key";
 import { Region } from "@/types/region";
 import { SpendInfo } from "@/types/spend";
 import { get, post } from "@/utils/api";
+import { mapTeamSpendToSpendInfo } from "@/utils/spend-mapping";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 interface UserExpansionRowProps {
@@ -91,12 +92,7 @@ export function UserExpansionRow({
               `/spend/${matchedRegion.id}/team/${teamId}`,
             );
             const data = await response.json();
-            // Map TeamSpendResponse to SpendInfo
-            const spendInfo = {
-              ...data,
-              spend: data.total_spend ?? 0,
-              max_budget: data.total_budget,
-            };
+            const spendInfo = mapTeamSpendToSpendInfo(data);
             for (const keyId of keyIds) {
               spendData[keyId.toString()] = spendInfo;
             }
