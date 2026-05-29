@@ -86,16 +86,7 @@ def test_update_user(client, admin_token, test_user):
     assert user_data["email"] == "updated@example.com"
 
 
-@patch(
-    "app.api.users.HubSpotService.upsert_contact_marketable_status",
-    new_callable=AsyncMock,
-)
-def test_update_user_marketing_updates_by_id(
-    mock_upsert_contact_marketable_status,
-    client,
-    admin_token,
-    test_user,
-):
+def test_update_user_marketing_updates_by_id(client, admin_token, test_user):
     response = client.put(
         f"/users/{test_user.id}",
         headers={"Authorization": f"Bearer {admin_token}"},
@@ -104,15 +95,14 @@ def test_update_user_marketing_updates_by_id(
     assert response.status_code == 200
     user_data = response.json()
     assert user_data["receive_marketing_updates"] is True
-    mock_upsert_contact_marketable_status.assert_awaited_once()
 
 
 @patch(
-    "app.api.users.HubSpotService.upsert_contacts_marketable_status",
+    "app.api.users.HubSpotService.create_contact_with_marketable_status",
     new_callable=AsyncMock,
 )
 def test_update_users_marketing_updates_by_email(
-    mock_upsert_contacts_marketable_status, client, admin_token, db
+    mock_create_contact_with_marketable_status, client, admin_token, db
 ):
     team = DBTeam(
         name="Marketing Team",
@@ -147,12 +137,9 @@ def test_update_users_marketing_updates_by_email(
     data = response.json()
     assert len(data) == 2
     assert all(u["receive_marketing_updates"] is True for u in data)
-    mock_upsert_contacts_marketable_status.assert_awaited_once()
-    args, _ = mock_upsert_contacts_marketable_status.await_args
-    assert args[0] == [
-        ("marketing@example.com", True),
-        ("marketing@example.com", True),
-    ]
+    mock_create_contact_with_marketable_status.assert_awaited_once_with(
+        email="marketing@example.com", enabled=True
+    )
 
 
 def test_delete_user(client, admin_token, test_user):

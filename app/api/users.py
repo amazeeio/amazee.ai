@@ -509,7 +509,7 @@ async def update_users_marketing_updates_by_email(
     payload: UserMarketingUpdatesByEmailUpdate,
     db: Session = Depends(get_db),
 ):
-    normalized_email = _normalize_email_for_lookup(payload.email)
+    normalized_email = normalize_email_for_lookup(payload.email)
 
     users = (
         db.query(DBUser)
@@ -522,6 +522,14 @@ async def update_users_marketing_updates_by_email(
         )
         .all()
     )
+    hubspot = HubSpotService()
+    try:
+        await hubspot.create_contact_with_marketable_status(
+            email=normalized_email, enabled=payload.receive_marketing_updates
+        )
+    except HTTPException:
+        logger.exception("HubSpot contact create failed for email=%s", normalized_email)
+
     if not users:
         return []
 
@@ -530,14 +538,6 @@ async def update_users_marketing_updates_by_email(
     db.commit()
     for user in users:
         db.refresh(user)
-
-    hubspot = HubSpotService()
-    try:
-        await hubspot.upsert_contacts_marketable_status(
-            [(normalized_email, user.receive_marketing_updates) for user in users]
-        )
-    except HTTPException:
-        logger.exception("HubSpot sync failed for users marketing-updates by email")
 
     return users
 
@@ -878,7 +878,6 @@ async def update_user(
             )
 
     previous_email = db_user.email
-    previous_marketing_updates = db_user.receive_marketing_updates
     for key, value in user_update.model_dump(exclude_unset=True).items():
         setattr(db_user, key, value)
 
@@ -947,21 +946,6 @@ async def update_user(
         raise
 
     db.refresh(db_user)
-
-    if (
-        user_update.receive_marketing_updates is not None
-        and user_update.receive_marketing_updates != previous_marketing_updates
-    ):
-        hubspot = HubSpotService()
-        try:
-            await hubspot.upsert_contact_marketable_status(
-                email=db_user.email, enabled=db_user.receive_marketing_updates
-            )
-        except HTTPException:
-            logger.exception(
-                "HubSpot sync failed for user marketing-updates update user_id=%s",
-                db_user.id,
-            )
 
     return db_user
 
