@@ -46,11 +46,14 @@ class Settings(BaseSettings):
     AI_TRIAL_REGION: str = os.getenv("AI_TRIAL_REGION", "eu-west-1")
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "sk_test_string")
     STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "pk_test_string")
-    WEBHOOK_SIG: str = os.getenv("WEBHOOK_SIG", "whsec_test_1234567890")
+    MOAD_API_KEY: str = os.getenv("MOAD_API_KEY", "changeme")
     ENABLE_METRICS: bool = os.getenv("ENABLE_METRICS", "false") == "true"
     PROMETHEUS_API_KEY: str = os.getenv("PROMETHEUS_API_KEY", "")
     POOL_BUDGET_EXPIRATION_DAYS: int = int(
         os.getenv("POOL_BUDGET_EXPIRATION_DAYS", "365")
+    )
+    PERIODIC_TOPUP_EXPIRY_DAYS: int = int(
+        os.getenv("PERIODIC_TOPUP_EXPIRY_DAYS", "365")
     )
     DEDICATED_DEFAULT_USER_COUNT: float | None = None
     DEDICATED_DEFAULT_SERVICE_KEYS: float | None = None
