@@ -709,31 +709,6 @@ class CheckoutSessionCreate(BaseModel):
     price_lookup_token: str
 
 
-class PricingTableSession(BaseModel):
-    client_secret: str
-    model_config = ConfigDict(from_attributes=True)
-
-
-class PricingTableCreate(BaseModel):
-    pricing_table_id: str
-    table_type: Literal["standard", "always_free", "gpt"] = "standard"
-    stripe_publishable_key: Optional[str] = (
-        None  # Optional on create, defaults to system config
-    )
-    model_config = ConfigDict(from_attributes=True)
-
-
-class PricingTableResponse(BaseModel):
-    pricing_table_id: str
-    stripe_publishable_key: str  # Always included in response
-    updated_at: datetime
-    model_config = ConfigDict(from_attributes=True)
-
-
-class PricingTablesResponse(BaseModel):
-    tables: Dict[str, PricingTableResponse | None]
-    model_config = ConfigDict(from_attributes=True)
-
 
 class SubscriptionCreate(BaseModel):
     product_id: str  # Stripe product ID

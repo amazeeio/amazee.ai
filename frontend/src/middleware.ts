@@ -22,6 +22,7 @@ export function middleware(request: NextRequest) {
   const authPaths = ["/auth/login", "/auth/register"];
 
   // Public paths that don't require authentication
+  // Keep /upgrade public while backend services/tests still emit legacy upgrade links.
   const publicPaths = [...authPaths, "/api/config", "/upgrade"];
 
   // Check if the path is public
