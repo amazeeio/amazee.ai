@@ -10,6 +10,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { get } from "@/utils/api";
+import { mapTeamSpendToSpendInfo } from "@/utils/spend-mapping";
 import { useQuery } from "@tanstack/react-query";
 import { Region } from "@/types/region";
 import { SpendInfo } from "@/types/spend";
@@ -49,12 +50,7 @@ export function PrivateAIKeySpendCell({
           `spend/${matchedRegion.id}/team/${teamId}`,
         );
         const data = await response.json();
-        // Map TeamSpendResponse to SpendInfo
-        return {
-          ...data,
-          spend: data.total_spend ?? 0,
-          max_budget: data.total_budget,
-        };
+        return mapTeamSpendToSpendInfo(data);
       }
       // Fallback for keys without team_id
       const response = await get(`private-ai-keys/${keyId}/spend`);
