@@ -524,11 +524,13 @@ async def update_users_marketing_updates_by_email(
     )
     hubspot = HubSpotService()
     try:
-        await hubspot.create_contact_with_marketable_status(
+        await hubspot.upsert_contact_marketing_updates(
             email=normalized_email, enabled=payload.receive_marketing_updates
         )
     except HTTPException:
-        logger.exception("HubSpot contact create failed for email=%s", normalized_email)
+        logger.exception(
+            "HubSpot marketing-updates sync failed for email=%s", normalized_email
+        )
 
     if not users:
         return []

@@ -98,11 +98,11 @@ def test_update_user_marketing_updates_by_id(client, admin_token, test_user):
 
 
 @patch(
-    "app.api.users.HubSpotService.create_contact_with_marketable_status",
+    "app.api.users.HubSpotService.upsert_contact_marketing_updates",
     new_callable=AsyncMock,
 )
 def test_update_users_marketing_updates_by_email(
-    mock_create_contact_with_marketable_status, client, admin_token, db
+    mock_upsert_contact_marketing_updates, client, admin_token, db
 ):
     team = DBTeam(
         name="Marketing Team",
@@ -137,7 +137,7 @@ def test_update_users_marketing_updates_by_email(
     data = response.json()
     assert len(data) == 2
     assert all(u["receive_marketing_updates"] is True for u in data)
-    mock_create_contact_with_marketable_status.assert_awaited_once_with(
+    mock_upsert_contact_marketing_updates.assert_awaited_once_with(
         email="marketing@example.com", enabled=True
     )
 

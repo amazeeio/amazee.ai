@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "pk_test_string")
     WEBHOOK_SIG: str = os.getenv("WEBHOOK_SIG", "whsec_test_1234567890")
     HUBSPOT_TOKEN: str = os.getenv("HUBSPOT_TOKEN", "")
+    HUBSPOT_MARKETING_UPDATES_PROPERTY: str = os.getenv(
+        "HUBSPOT_MARKETING_UPDATES_PROPERTY", "receive_marketing_updates"
+    )
+    HUBSPOT_MARKETING_SUBSCRIPTION_ID: str = os.getenv(
+        "HUBSPOT_MARKETING_SUBSCRIPTION_ID", "1110685904"
+    )
     ENABLE_METRICS: bool = os.getenv("ENABLE_METRICS", "false") == "true"
     PROMETHEUS_API_KEY: str = os.getenv("PROMETHEUS_API_KEY", "")
     POOL_BUDGET_EXPIRATION_DAYS: int = int(
