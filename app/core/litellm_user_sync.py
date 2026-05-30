@@ -412,15 +412,26 @@ async def sync_delete_user_across_regions(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     lite_team_id = LiteLLMService.format_team_id(region.name, resolved_team_id)
-    await _run_sync_operation(
-        operation="remove_team_member",
-        region=region,
-        user_id=db_user.id,
-        team_id=resolved_team_id,
-        action=lambda: service.remove_team_member(
-            team_id=lite_team_id, user_id=str(db_user.id)
-        ),
-    )
+    try:
+        await _run_sync_operation(
+            operation="remove_team_member",
+            region=region,
+            user_id=db_user.id,
+            team_id=resolved_team_id,
+            action=lambda: service.remove_team_member(
+                team_id=lite_team_id, user_id=str(db_user.id)
+            ),
+        )
+    except Exception:
+        _log_sync_event(
+            "warning",
+            "remove_team_member_before_delete_failed",
+            region_id=region.id,
+            region=region.name,
+            user_id=db_user.id,
+            team_id=resolved_team_id,
+            error_message="Proceeding with user deletion despite team removal failure",
+        )
     await _run_sync_operation(
         operation="delete_user",
         region=region,

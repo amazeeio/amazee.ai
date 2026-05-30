@@ -76,9 +76,13 @@ def upgrade():
         ).bindparams(fallback_id=fallback_id)
     )
 
-    # 4. Keep nullable for backward compatibility with existing code paths that
+    # 4. Create index for region_id lookups
+    op.create_index("ix_teams_region_id", "teams", ["region_id"])
+
+    # 5. Keep nullable for backward compatibility with existing code paths that
     #    create teams before their default region is assigned.
 
 
 def downgrade():
+    op.drop_index("ix_teams_region_id", table_name="teams")
     op.drop_column("teams", "region_id")
