@@ -1937,7 +1937,6 @@ def test_register_team_creates_default_limits(client, db, admin_token, test_regi
         ResourceType.USER,
         ResourceType.SERVICE_KEY,
         ResourceType.VECTOR_DB,
-        ResourceType.BUDGET,
         ResourceType.RPM,
     }
 
@@ -1965,11 +1964,6 @@ def test_register_team_creates_default_limits(client, db, admin_token, test_regi
         limit for limit in team_limits if limit.resource == ResourceType.VECTOR_DB
     )
     assert vector_db_limit.max_value == 5.0  # DEFAULT_VECTOR_DB_COUNT
-
-    budget_limit = next(
-        limit for limit in team_limits if limit.resource == ResourceType.BUDGET
-    )
-    assert budget_limit.max_value == 27.0  # DEFAULT_MAX_SPEND
 
     rpm_limit = next(
         limit for limit in team_limits if limit.resource == ResourceType.RPM

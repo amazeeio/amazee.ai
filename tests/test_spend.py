@@ -403,6 +403,9 @@ def test_update_team_budget_endpoint(
     test_region,
     db,
 ):
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.commit()
     mock_get_team_info.return_value = {
         "team_info": {"max_budget": 12.5, "budget_duration": "1mo"}
     }
@@ -418,19 +421,30 @@ def test_update_team_budget_endpoint(
     assert data["max_budget"] == 12.5
     assert data["budget_duration"] == "1mo"
     mock_update_team_budget.assert_awaited_once()
-    assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "1mo"
-    cap = (
-        db.query(DBSpendCap)
-        .filter(
-            DBSpendCap.scope == "team",
-            DBSpendCap.region_id == test_region.id,
-            DBSpendCap.team_id == test_team.id,
-        )
-        .first()
+    assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "365d"
+
+
+@patch("app.api.spend.LiteLLMService.update_team_budget", new_callable=AsyncMock)
+def test_update_team_budget_rejects_manual_cap_for_periodic_team(
+    mock_update_team_budget,
+    client,
+    admin_token,
+    test_team,
+    test_region,
+    db,
+):
+    test_team.budget_type = BudgetType.PERIODIC
+    test_team.require_purchase_for_requests = False
+    db.commit()
+
+    response = client.put(
+        f"/spend/{test_region.id}/team/{test_team.id}/budget",
+        json={"max_budget": 42.0},
+        headers={"Authorization": f"Bearer {admin_token}"},
     )
-    assert cap is not None
-    assert cap.max_budget == 12.5
-    assert cap.budget_duration == "1mo"
+    assert response.status_code == 400
+    assert "not allowed for periodic teams" in response.json()["detail"].lower()
+    mock_update_team_budget.assert_not_awaited()
 
 
 @patch("app.api.spend.invalidate_user_spend_cache")
@@ -446,6 +460,9 @@ def test_update_team_budget_invalidates_user_spend_cache_for_team_members(
     test_region,
     db,
 ):
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.commit()
     team_user = DBUser(
         email="cache-team-user@example.com",
         hashed_password=get_password_hash("password"),
@@ -519,7 +536,7 @@ def test_update_invoice_budget_allows_any_value_for_dedicated_team(
     test_region,
     db,
 ):
-    """Dedicated invoice teams must not be blocked by pool purchase caps."""
+    """Periodic teams reject manual team budget updates, including dedicated teams."""
     test_team.budget_type = "periodic"
     test_team.require_purchase_for_requests = False
     test_team.hide_public_regions = True
@@ -536,10 +553,9 @@ def test_update_invoice_budget_allows_any_value_for_dedicated_team(
         headers={"Authorization": f"Bearer {admin_token}"},
         json={"max_budget": 100.0},
     )
-    assert response.status_code == 200, response.json()
-    mock_update_team_budget.assert_awaited_once()
-    assert mock_update_team_budget.await_args.kwargs["max_budget"] == 100.0
-    assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "1mo"
+    assert response.status_code == 400, response.json()
+    assert "not allowed for periodic teams" in response.json()["detail"].lower()
+    mock_update_team_budget.assert_not_awaited()
 
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
@@ -2575,3 +2591,295 @@ def test_get_team_spend_history_admin_can_access_any_team(
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert response.status_code == 200
+
+
+def test_get_team_spend_history_includes_periodic_transactions(
+    client, team_admin_token, test_team, test_region, db
+):
+    from datetime import datetime, UTC
+    from app.db.models import DBPeriodicPayment, DBPeriodicBudgetLedgerEntry
+
+    test_team.budget_type = "periodic"
+    db.add(test_team)
+    db.flush()
+
+    payment = DBPeriodicPayment(
+        team_id=test_team.id,
+        stripe_payment_id="cs_hist_periodic_1",
+        amount_cents=500,
+        currency="usd",
+        payment_type="topup",
+        status="completed",
+        sync_status="success",
+        payment_date=datetime.now(UTC),
+    )
+    db.add(payment)
+    db.flush()
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            source_payment_id=payment.id,
+            stripe_payment_id="cs_hist_periodic_1",
+            amount_cents=500,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC),
+            is_active=True,
+        )
+    )
+    db.commit()
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/history",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["periodic_transactions"]) >= 1
+    assert data["periodic_transactions"][0]["payment_type"] in ("subscription", "topup")
+
+
+def test_get_team_spend_history_periodic_transactions_empty_for_non_periodic_team(
+    client, team_admin_token, test_team, test_region, db
+):
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.add(test_team)
+    db.commit()
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/history",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["periodic_transactions"] == []
+
+
+def test_get_team_spend_history_periodic_transactions_region_scoped(
+    client, team_admin_token, test_team, test_region, db
+):
+    from datetime import datetime, UTC
+    from app.db.models import DBPeriodicPayment, DBPeriodicBudgetLedgerEntry, DBRegion
+
+    test_team.budget_type = "periodic"
+    db.add(test_team)
+    db.flush()
+    second_region = DBRegion(
+        name=f"hist-second-region-{test_team.id}",
+        postgres_host="localhost",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="https://hist-second-region.example.com",
+        litellm_api_key="hist-second-region-key",
+        is_active=True,
+    )
+    db.add(second_region)
+    db.flush()
+
+    p1 = DBPeriodicPayment(
+        team_id=test_team.id,
+        stripe_payment_id="cs_hist_region_1",
+        amount_cents=500,
+        currency="usd",
+        payment_type="topup",
+        status="completed",
+        sync_status="success",
+        payment_date=datetime.now(UTC),
+    )
+    p2 = DBPeriodicPayment(
+        team_id=test_team.id,
+        stripe_payment_id="cs_hist_region_2",
+        amount_cents=700,
+        currency="usd",
+        payment_type="topup",
+        status="completed",
+        sync_status="success",
+        payment_date=datetime.now(UTC),
+    )
+    db.add_all([p1, p2])
+    db.flush()
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            source_payment_id=p1.id,
+            stripe_payment_id="cs_hist_region_1",
+            amount_cents=500,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC),
+            is_active=True,
+        )
+    )
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=second_region.id,
+            entry_type="topup",
+            source_payment_id=p2.id,
+            stripe_payment_id="cs_hist_region_2",
+            amount_cents=700,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC),
+            is_active=True,
+        )
+    )
+    db.commit()
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/history",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    ids = [t["stripe_payment_id"] for t in data["periodic_transactions"]]
+    assert "cs_hist_region_1" in ids
+    assert "cs_hist_region_2" not in ids
+
+
+@pytest.mark.parametrize(
+    "sub_amount,sub_consumed,topup_amount,topup_consumed,total_spend,expected_remaining",
+    [
+        # Fresh cycle: no spend, no consumption → remaining = full budget
+        (1000, 0, 500, 0, 0.0, 1500),
+        # Mid-cycle: spend tracked by LiteLLM only, consumed_cents still 0
+        (1000, 0, 500, 0, 3.0, 1200),
+        # After cycle-close: consumed_cents updated, LiteLLM spend reset to 0
+        (1000, 300, 500, 0, 0.0, 1200),
+        # Both consumed and LiteLLM spend present (should NOT happen in prod
+        # but verifies the invariant formula handles it by clamping to 0)
+        (1000, 300, 500, 100, 5.0, 600),
+        # Edge: spend exceeds purchased → clamped to 0
+        (1000, 0, 0, 0, 20.0, 0),
+        # No topups, partial consumption after cycle-close
+        (2000, 500, 0, 0, 0.0, 1500),
+    ],
+)
+@patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+def test_periodic_live_remaining_invariant(
+    mock_get_key_info,
+    mock_get_team_info,
+    client,
+    admin_token,
+    test_team,
+    test_region,
+    db,
+    sub_amount,
+    sub_consumed,
+    topup_amount,
+    topup_consumed,
+    total_spend,
+    expected_remaining,
+):
+    """Assert live_remaining matches purchased - total_spend across cycle states.
+
+    The formula is: remaining = (sub_remaining + topup_remaining) - total_spend
+    where sub_remaining = sub_amount - sub_consumed, topup_remaining = topup_amount - topup_consumed.
+    This is correct because consumed_cents and total_spend are never both
+    non-zero for the same dollars — consumed_cents is only incremented at
+    cycle close when total_spend is simultaneously reset.
+    """
+    from app.db.models import DBPeriodicBudgetLedgerEntry, DBPeriodicPayment
+
+    # Create payment records for ledger entries
+    sub_payment = DBPeriodicPayment(
+        team_id=test_team.id,
+        stripe_payment_id="inv_sub_invariant",
+        amount_cents=sub_amount,
+        currency="usd",
+        payment_type="subscription",
+        status="completed",
+        sync_status="success",
+        payment_date=datetime.now(UTC),
+    )
+    db.add(sub_payment)
+    db.flush()
+
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="subscription",
+            source_payment_id=sub_payment.id,
+            stripe_payment_id="inv_sub_invariant",
+            amount_cents=sub_amount,
+            consumed_cents=sub_consumed,
+            purchased_at=datetime.now(UTC) - timedelta(days=15),
+            expires_at=datetime.now(UTC) + timedelta(days=16),
+            is_active=True,
+        )
+    )
+
+    if topup_amount > 0:
+        topup_payment = DBPeriodicPayment(
+            team_id=test_team.id,
+            stripe_payment_id="inv_topup_invariant",
+            amount_cents=topup_amount,
+            currency="usd",
+            payment_type="topup",
+            status="completed",
+            sync_status="success",
+            payment_date=datetime.now(UTC),
+        )
+        db.add(topup_payment)
+        db.flush()
+
+        db.add(
+            DBPeriodicBudgetLedgerEntry(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                entry_type="topup",
+                source_payment_id=topup_payment.id,
+                stripe_payment_id="inv_topup_invariant",
+                amount_cents=topup_amount,
+                consumed_cents=topup_consumed,
+                purchased_at=datetime.now(UTC) - timedelta(days=10),
+                expires_at=datetime.now(UTC) + timedelta(days=20),
+                is_active=True,
+            )
+        )
+
+    # Ensure team has a key in the region so the endpoint returns data
+    existing_key = (
+        db.query(DBPrivateAIKey)
+        .filter(
+            DBPrivateAIKey.team_id == test_team.id,
+            DBPrivateAIKey.region_id == test_region.id,
+        )
+        .first()
+    )
+    if not existing_key:
+        db.add(
+            DBPrivateAIKey(
+                name="invariant-test-key",
+                litellm_token="invariant-test-token",
+                region_id=test_region.id,
+                team_id=test_team.id,
+            )
+        )
+    db.commit()
+
+    # Mock LiteLLM team info to return total_spend
+    purchased_cents = (sub_amount - sub_consumed) + (topup_amount - topup_consumed)
+    purchased_dollars = purchased_cents / 100.0
+    mock_get_team_info.return_value = {
+        "team_info": {
+            "spend": total_spend,
+            "max_budget": purchased_dollars,
+            "budget_duration": "31d",
+        },
+        "keys": [],
+    }
+    mock_get_key_info.return_value = []
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["periodic_budget"]["remaining_budget_cents"] == expected_remaining

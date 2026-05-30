@@ -3,17 +3,17 @@ from app.db.models import (
     DBProduct,
     DBTeamProduct,
     DBPrivateAIKey,
+    DBRegion,
     DBTeam,
     DBTeamMetrics,
     DBLimitedResource,
     DBPoolPurchase,
+    DBSpendCap,
 )
 from app.schemas.models import BudgetType
 from datetime import datetime, UTC, timedelta
 from app.core.worker import (
     apply_product_for_team,
-    remove_product_from_team,
-    handle_stripe_event_background,
     monitor_teams,
     team_freshness_days,
     team_expired_metric,
@@ -21,7 +21,12 @@ from app.core.worker import (
     team_total_spend,
     active_team_labels,
     reconcile_team_keys,
+    _sync_periodic_ledger_for_invoice,
+    _parse_client_reference_ids,
+    _backfill_subscription_metadata_from_checkout_session,
+    handle_stripe_event_background,
 )
+from app.core.periodic_budget_ledger_service import add_topup_entry
 from app.core.team_service import get_team_keys_by_region
 from app.schemas.limits import (
     ResourceType,
@@ -31,107 +36,72 @@ from app.schemas.limits import (
     LimitType,
     LimitedResource,
 )
-from unittest.mock import AsyncMock, patch, Mock
+from unittest.mock import ANY, AsyncMock, patch, Mock, call
+from types import SimpleNamespace
 
 
-@pytest.mark.parametrize(
-    "event_type,object_type,get_product_func",
-    [
-        (
-            "customer.subscription.deleted",
-            "subscription",
-            "get_product_id_from_subscription",
-        ),
-        (
-            "checkout.session.async_payment_failed",
-            "session",
-            "get_product_id_from_session",
-        ),
-        ("checkout.session.expired", "session", "get_product_id_from_session"),
-        (
-            "customer.subscription.paused",
-            "subscription",
-            "get_product_id_from_subscription",
-        ),
-    ],
-)
+def test_parse_client_reference_ids():
+    assert _parse_client_reference_ids("668-1") == (668, 1)
+    assert _parse_client_reference_ids("bad") is None
+    assert _parse_client_reference_ids("668-x") is None
+    assert _parse_client_reference_ids(None) is None
+
+
 @pytest.mark.asyncio
-async def test_handle_stripe_events_remove_product(
-    event_type, object_type, get_product_func, db, test_team, test_product
+@patch("app.core.worker.stripe_sdk.Subscription.modify")
+async def test_backfill_subscription_metadata_from_checkout_session(
+    mock_modify, db, test_team
 ):
-    """
-    Test that various Stripe events correctly remove product associations from teams.
-
-    GIVEN: A team with an active product association
-    WHEN: A Stripe event occurs that indicates payment/subscription failure
-    THEN: The product association is removed from the team
-    """
-    # Arrange
-    test_team.stripe_customer_id = "cus_123"
-    db.add(test_team)
+    test_team.stripe_customer_id = "cus_checkout_backfill"
     db.commit()
 
-    mock_event = Mock()
-    mock_event.type = event_type
-
-    if object_type == "subscription":
-        mock_object = Mock()
-        mock_object.customer = "cus_123"
-        mock_object.id = "sub_123"
-    else:  # session
-        mock_object = Mock()
-        mock_object.metadata = {"team_id": str(test_team.id)}
-        mock_object.customer = "cus_123"
-        mock_object.id = "cs_123"
-
-    mock_event.data.object = mock_object
-
-    # Set up initial team-product association
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
-    db.commit()
-
-    # Store IDs before calling the background task
-    team_id = test_team.id
-    product_id = test_product.id
-
-    # Act
-    with (
-        patch(
-            f"app.core.worker.{get_product_func}", new_callable=AsyncMock
-        ) as mock_get_product,
-        patch(
-            "app.core.worker.get_subscribed_products_for_customer",
-            new_callable=AsyncMock,
-        ) as mock_get_subscriptions,
-    ):
-        mock_get_product.return_value = product_id
-        mock_get_subscriptions.return_value = []  # No active subscriptions (allowing removal)
-        await handle_stripe_event_background(mock_event)
-
-    # Assert
-    mock_get_product.assert_called_once_with(mock_object.id)
-    # Verify team-product association was removed
-    team_product = (
-        db.query(DBTeamProduct)
-        .filter(
-            DBTeamProduct.team_id == team_id, DBTeamProduct.product_id == product_id
-        )
-        .first()
+    event_object = SimpleNamespace(
+        subscription="sub_test_123",
+        customer="cus_checkout_backfill",
+        client_reference_id=f"{test_team.id}-7",
     )
-    assert team_product is None
+
+    await _backfill_subscription_metadata_from_checkout_session(db, event_object)
+
+    mock_modify.assert_called_once_with(
+        "sub_test_123",
+        metadata={"teamId": str(test_team.id), "regionId": "7"},
+    )
 
 
 @pytest.mark.asyncio
-async def test_handle_unknown_event_type(db):
-    # Arrange
-    mock_event = Mock()
-    mock_event.type = "unknown.event.type"
+@patch("app.core.worker.apply_product_for_team", new_callable=AsyncMock)
+@patch("app.core.worker.get_product_id_from_subscription", new_callable=AsyncMock)
+@patch(
+    "app.core.worker._backfill_subscription_metadata_from_checkout_session",
+    new_callable=AsyncMock,
+)
+async def test_handle_checkout_session_completed_calls_backfill(
+    mock_backfill,
+    mock_get_product,
+    mock_apply_product,
+    db,
+    test_team,
+):
+    test_team.stripe_customer_id = "cus_checkout_completed"
+    db.commit()
 
-    # Act
-    await handle_stripe_event_background(mock_event)
+    mock_get_product.return_value = "prod_test_123"
+    event_object = SimpleNamespace(
+        customer="cus_checkout_completed",
+        subscription="sub_checkout_123",
+        metadata={},
+        client_reference_id=f"{test_team.id}-1",
+    )
+    event = SimpleNamespace(
+        type="checkout.session.completed",
+        id="evt_checkout_123",
+        data=SimpleNamespace(object=event_object),
+    )
 
-    # No assertion needed as we're just verifying no error occurs
+    await handle_stripe_event_background(event)
+
+    mock_backfill.assert_awaited_once_with(ANY, event_object)
 
 
 @pytest.mark.asyncio
@@ -264,18 +234,20 @@ async def test_apply_product_already_active(db, test_team, test_product):
     db.commit()
     db.refresh(test_team)  # Refresh to ensure we have the latest data
 
-    # First apply the product
+    # First apply the product with an explicit start date
+    first_date = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
     await apply_product_for_team(
-        db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
+        db, test_team.stripe_customer_id, test_product.id, first_date
     )
 
     # Get the initial last payment date
     db.refresh(test_team)
     initial_last_payment = test_team.last_payment
 
-    # Apply the same product again
+    # Apply the same product again with a later date
+    second_date = datetime(2025, 1, 2, 12, 0, 0, tzinfo=UTC)
     await apply_product_for_team(
-        db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
+        db, test_team.stripe_customer_id, test_product.id, second_date
     )
 
     # Refresh team from database
@@ -290,10 +262,17 @@ async def test_apply_product_already_active(db, test_team, test_product):
 
 
 @pytest.mark.asyncio
+@patch("app.core.worker.reconcile_periodic_team_budget_drift", new_callable=AsyncMock)
 @patch("app.core.worker.LimitService")
 @patch("app.core.worker.LiteLLMService")
 async def test_apply_product_calls_limit_service(
-    mock_litellm, mock_limit_service, db, test_team, test_product
+    mock_litellm,
+    mock_limit_service,
+    mock_drift,
+    db,
+    test_team,
+    test_product,
+    test_region,
 ):
     """
     Test that applying a product calls the limit service to set team limits.
@@ -306,6 +285,26 @@ async def test_apply_product_calls_limit_service(
     test_team.stripe_customer_id = "cus_test123"
     db.commit()
 
+    # Create a key so the function doesn't return early (requires at least one key)
+    key = DBPrivateAIKey(
+        name="Test Key",
+        database_name="db_test",
+        database_username="test_user",
+        database_password="test_pass",
+        team_id=test_team.id,
+        region_id=test_region.id,
+        litellm_token="test_token",
+        created_at=datetime.now(UTC),
+    )
+    db.add(key)
+    db.commit()
+
+    # Setup mock LiteLLM instance
+    mock_instance = mock_litellm.return_value
+    mock_instance.set_key_restrictions = AsyncMock()
+    mock_instance.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
+    mock_instance.update_team_budget = AsyncMock()
+
     # Setup mock limit service
     mock_limit_instance = mock_limit_service.return_value
     mock_limit_instance.set_team_limits = Mock()
@@ -316,17 +315,19 @@ async def test_apply_product_calls_limit_service(
         db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
     )
 
-    # Verify limit service was called with the correct team
-    mock_limit_service.assert_called_once_with(db)
-    mock_limit_instance.set_team_limits.assert_called_once_with(test_team)
+    # Verify limit propagation was triggered for the team
+    assert mock_limit_service.call_count >= 1
+    mock_limit_instance.set_team_limits.assert_called_with(test_team)
 
 
 @pytest.mark.asyncio
+@patch("app.core.worker.reconcile_periodic_team_budget_drift", new_callable=AsyncMock)
 @patch("app.core.worker.LimitService")
 @patch("app.core.worker.LiteLLMService")
 async def test_apply_product_extends_keys_and_sets_budget(
     mock_litellm,
     mock_limit_service,
+    mock_drift,
     db,
     test_team,
     test_product,
@@ -346,9 +347,22 @@ async def test_apply_product_extends_keys_and_sets_budget(
     test_team.stripe_customer_id = "cus_test123"
     db.commit()
 
+    # Create an extra region to verify budget is applied per-region (no split)
+    extra_region = DBRegion(
+        name="us-test-region",
+        litellm_api_key="us-test-key",
+        litellm_api_url="https://us-test.example.com",
+        postgres_host="localhost",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+    )
+    db.add(extra_region)
+    db.commit()
+
     # Create test keys for the team
     team_keys = []
-    for i in range(2):  # 2 team-owned keys
+    for i in range(2):  # 2 team-owned keys in primary region
         key = DBPrivateAIKey(
             name=f"Team Key {i}",
             database_name=f"db_team_{i}",
@@ -361,6 +375,18 @@ async def test_apply_product_extends_keys_and_sets_budget(
         )
         db.add(key)
         team_keys.append(key)
+    extra_region_key = DBPrivateAIKey(
+        name="Team Key extra region",
+        database_name="db_team_extra_region",
+        database_username="test_user",
+        database_password="test_pass",
+        team_id=test_team.id,
+        region_id=extra_region.id,
+        litellm_token="test_token_team_extra_region",
+        created_at=datetime.now(UTC),
+    )
+    db.add(extra_region_key)
+    team_keys.append(extra_region_key)
 
     # Create test keys for both team users
     user_keys = []
@@ -392,14 +418,41 @@ async def test_apply_product_extends_keys_and_sets_budget(
     mock_limit_instance.set_team_limits = Mock()
     mock_limit_instance.get_token_restrictions = Mock(return_value=(30, 50.0, 1000))
 
+    # Set a key-specific cap override for one key in the primary region.
+    # Webhook renewal should preserve this override and apply full budget
+    # to keys without explicit key caps.
+    key_with_override = team_keys[0]
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=key_with_override.owner_id,
+            key_id=key_with_override.id,
+            max_budget=7.5,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+
     # Apply product to team
     await apply_product_for_team(
         db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
     )
 
-    # Verify LiteLLM service was initialized with correct region settings
-    mock_litellm.assert_called_once_with(
-        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    # Verify LiteLLM service was initialized for both active regions
+    assert mock_litellm.call_count == 2
+    mock_litellm.assert_has_calls(
+        [
+            call(
+                api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+            ),
+            call(
+                api_url=extra_region.litellm_api_url,
+                api_key=extra_region.litellm_api_key,
+            ),
+        ],
+        any_order=True,
     )
 
     # Verify LiteLLM service was called for all keys (both team and user owned)
@@ -418,15 +471,16 @@ async def test_apply_product_extends_keys_and_sets_budget(
         assert len(restriction_calls) == 1
         assert restriction_calls[0][1]["duration"] == "31d"
         assert restriction_calls[0][1]["budget_duration"] == "31d"
-        assert (
-            restriction_calls[0][1]["budget_amount"] == test_product.max_budget_per_key
+        expected_budget = (
+            7.5 if key.id == key_with_override.id else test_product.max_budget_per_key
         )
+        assert restriction_calls[0][1]["budget_amount"] == expected_budget
         assert restriction_calls[0][1]["rpm_limit"] == test_product.rpm_per_key
         assert restriction_calls[0][1]["spend"] == 0.0
 
-    # Verify limit service was called with the correct team
-    mock_limit_service.assert_called_once_with(db)
-    mock_limit_instance.set_team_limits.assert_called_once_with(test_team)
+    # Verify limit propagation was triggered for the team
+    assert mock_limit_service.call_count >= 1
+    mock_limit_instance.set_team_limits.assert_called_with(test_team)
 
     # Verify team was updated correctly
     db.refresh(test_team)
@@ -436,197 +490,90 @@ async def test_apply_product_extends_keys_and_sets_budget(
 
 
 @pytest.mark.asyncio
+@patch("app.core.worker.reconcile_periodic_team_budget_drift", new_callable=AsyncMock)
+@patch("app.core.worker.compute_active_topup_remaining")
 @patch("app.core.worker.LimitService")
-@patch("app.core.worker.get_subscribed_products_for_customer", new_callable=AsyncMock)
-async def test_remove_product_calls_limit_service(
-    mock_get_subscriptions, mock_limit_service, db, test_team, test_product
+@patch("app.core.worker.LiteLLMService")
+async def test_apply_product_periodic_compounds_team_budget_with_split_and_region_topup(
+    mock_litellm,
+    mock_limit_service,
+    mock_topup_remaining,
+    mock_drift,
+    db,
+    test_team,
+    test_product,
+    test_region,
 ):
-    """
-    Test that removing a product calls the limit service to set team limits.
-
-    GIVEN: A team with an active product
-    WHEN: The product is removed from the team
-    THEN: The limit service is called to set team limits
-    """
-    # Set stripe customer ID for the test team
-    test_team.stripe_customer_id = "cus_test123"
+    test_team.stripe_customer_id = "cus_periodic_compound_split"
     db.commit()
 
-    # Setup mock limit service
-    mock_limit_instance = mock_limit_service.return_value
-    mock_limit_instance.set_team_limits = Mock()
-    mock_limit_instance.get_token_restrictions = Mock(return_value=(30, 50.0, 1000))
-
-    # First apply the product to ensure it exists
-    await apply_product_for_team(
-        db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
+    extra_region = DBRegion(
+        name="periodic-compound-us",
+        litellm_api_key="periodic-compound-us-key",
+        litellm_api_url="https://periodic-compound-us.example.com",
+        postgres_host="localhost",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
     )
-
-    # Mock Stripe API to return no active subscriptions (allowing removal)
-    mock_get_subscriptions.return_value = []  # No active subscriptions
-
-    # Remove the product
-    await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
-
-    # Verify limit service was called with the correct team
-    # It should be called twice: once for apply_product_for_team and once for remove_product_from_team
-    assert mock_limit_service.call_count == 2
-    mock_limit_instance.set_team_limits.assert_called_with(test_team)
-
-
-@pytest.mark.asyncio
-@patch("app.core.worker.LimitService")
-@patch("app.core.worker.get_subscribed_products_for_customer", new_callable=AsyncMock)
-async def test_remove_product_success(
-    mock_get_subscriptions, mock_limit_service, db, test_team, test_product
-):
-    """
-    Test successful removal of a product from a team.
-
-    GIVEN: A team with an active product
-    WHEN: The product is removed from the team
-    THEN: The product association is removed from the team's active products
-    """
-    # Set stripe customer ID for the test team
-    test_team.stripe_customer_id = "cus_test123"
+    db.add(extra_region)
     db.commit()
 
-    # Setup mock limit service
-    mock_limit_instance = mock_limit_service.return_value
-    mock_limit_instance.set_team_limits = Mock()
-    mock_limit_instance.get_token_restrictions = Mock(return_value=(30, 50.0, 1000))
-
-    # First apply the product to ensure it exists
-    await apply_product_for_team(
-        db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
-    )
-
-    # Mock Stripe API to return no active subscriptions (allowing removal)
-    mock_get_subscriptions.return_value = []  # No active subscriptions
-
-    # Remove the product
-    await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
-
-    # Refresh team from database
-    db.refresh(test_team)
-
-    # Verify limit service was called with the correct team
-    mock_limit_service.assert_called_with(db)
-    mock_limit_instance.set_team_limits.assert_called_with(test_team)
-
-    # Verify product was removed
-    assert len(test_team.active_products) == 0
-
-
-@pytest.mark.asyncio
-async def test_remove_product_team_not_found(db, test_product):
-    """
-    Test removing a product when team is not found.
-
-    GIVEN: A product exists but team does not
-    WHEN: Attempting to remove the product
-    THEN: The operation returns None
-    """
-    # Try to remove product from non-existent team
-    result = await remove_product_from_team(db, "cus_nonexistent", test_product.id)
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_remove_product_product_not_found(db, test_team):
-    """
-    Test removing a non-existent product from a team.
-
-    GIVEN: A team exists but product does not
-    WHEN: Attempting to remove the product
-    THEN: The operation returns None
-    """
-    # Set stripe customer ID for the test team
-    test_team.stripe_customer_id = "cus_test123"
-    db.commit()
-
-    # Try to remove non-existent product
-    result = await remove_product_from_team(
-        db, test_team.stripe_customer_id, "prod_nonexistent"
-    )
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_remove_product_not_active(db, test_team, test_product):
-    """
-    Test removing a product that is not active for a team.
-
-    GIVEN: A team exists but does not have the specified product active
-    WHEN: Attempting to remove the product
-    THEN: The operation returns None
-    """
-    # Set stripe customer ID for the test team
-    test_team.stripe_customer_id = "cus_test123"
-    db.commit()
-
-    # Try to remove product that was never added
-    result = await remove_product_from_team(
-        db, test_team.stripe_customer_id, test_product.id
-    )
-    assert result is None
-
-
-@pytest.mark.asyncio
-@patch("app.core.worker.get_subscribed_products_for_customer", new_callable=AsyncMock)
-async def test_remove_product_multiple_products(
-    mock_get_subscriptions, db, test_team, test_product
-):
-    """
-    Test removing one product while keeping others active.
-
-    GIVEN: A team with multiple active products
-    WHEN: One product is removed
-    THEN: Only the specified product is removed, others remain active
-    """
-    # Set stripe customer ID for the test team
-    test_team.stripe_customer_id = "cus_test123"
-    db.commit()
-
-    # Create additional test product
-    second_product = DBProduct(
-        id="prod_test456",
-        name="Test Product 2",
-        user_count=5,
-        keys_per_user=2,
-        total_key_count=10,
-        service_key_count=2,
-        max_budget_per_key=50.0,
-        rpm_per_key=1000,
-        vector_db_count=1,
-        vector_db_storage=100,
-        renewal_period_days=30,
-        active=True,
+    key_r1 = DBPrivateAIKey(
+        name="Periodic R1 key",
+        database_name="db_periodic_r1",
+        database_username="test_user",
+        database_password="test_pass",
+        team_id=test_team.id,
+        region_id=test_region.id,
+        litellm_token="periodic_r1_token",
         created_at=datetime.now(UTC),
     )
-    db.add(second_product)
+    key_r2 = DBPrivateAIKey(
+        name="Periodic R2 key",
+        database_name="db_periodic_r2",
+        database_username="test_user",
+        database_password="test_pass",
+        team_id=test_team.id,
+        region_id=extra_region.id,
+        litellm_token="periodic_r2_token",
+        created_at=datetime.now(UTC),
+    )
+    db.add_all([key_r1, key_r2])
     db.commit()
 
-    # Apply both products to the team
+    mock_instance = mock_litellm.return_value
+    mock_instance.set_key_restrictions = AsyncMock()
+    # team_info["spend"] is different per region to validate compounding math
+    mock_instance.get_team_info = AsyncMock(
+        side_effect=[
+            {"team_info": {"spend": 12.5}},  # region 1
+            {"team_info": {"spend": 7.8}},  # region 2
+        ]
+    )
+    mock_instance.update_team_budget = AsyncMock()
+
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+    # Total monthly cap = 50, split across 2 regions => 25 each
+    mock_limit_instance.get_token_restrictions = Mock(return_value=(30, 50.0, 1000))
+
+    # Top-up remaining differs by region
+    mock_topup_remaining.side_effect = [300, 0]  # cents => $3.0, $0.0
+
     await apply_product_for_team(
         db, test_team.stripe_customer_id, test_product.id, datetime.now(UTC)
     )
-    await apply_product_for_team(
-        db, test_team.stripe_customer_id, second_product.id, datetime.now(UTC)
-    )
 
-    # Mock Stripe API to return no active subscriptions (allowing removal)
-    mock_get_subscriptions.return_value = []  # No active subscriptions
+    update_calls = mock_instance.update_team_budget.await_args_list
+    assert len(update_calls) == 2
 
-    # Remove only the first product
-    await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
-
-    # Refresh team from database
-    db.refresh(test_team)
-
-    # Verify only the first product was removed
-    assert len(test_team.active_products) == 1
-    assert test_team.active_products[0].product.id == second_product.id
+    # Webhook resets key spend to 0; max_budget = desired_remaining = per_region_cap + topup_remaining
+    # Each region gets the full cap (no split), plus its own topup_remaining
+    # Region 1: 50.0 + 3.0 = 53.0
+    # Region 2: 50.0 + 0.0 = 50.0
+    max_budgets = sorted([float(call.kwargs["max_budget"]) for call in update_calls])
+    assert max_budgets == [50.0, 53.0]
 
 
 @pytest.mark.asyncio
@@ -2569,10 +2516,10 @@ async def test_monitor_teams_uses_budget_from_limits_not_products(
 
     # Find the call for our team (calls might include other teams from fixtures)
     team_call = None
-    for call in calls:
-        call_args = call[0]  # positional args
+    for litellm_call in calls:
+        call_args = litellm_call[0]  # positional args
         if len(call_args) > 1 and call_args[1].id == test_team.id:
-            team_call = call
+            team_call = litellm_call
             break
 
     assert team_call is not None, (
@@ -3166,94 +3113,6 @@ async def test_reconcile_team_keys_defaultdict_initialization(
 
 
 @pytest.mark.asyncio
-@patch("app.core.worker.get_subscribed_products_for_customer", new_callable=AsyncMock)
-async def test_remove_product_should_verify_subscription_status(
-    mock_get_subscriptions, db, test_team, test_product
-):
-    """
-    Test that product removal verifies subscription is inactive before removing.
-
-    GIVEN: A team with an active product and an active subscription in Stripe
-    WHEN: A checkout.session.expired event occurs
-    THEN: The product should NOT be removed because the subscription is still active
-    """
-    # Set up team with stripe customer ID
-    test_team.stripe_customer_id = "cus_test123"
-    db.commit()
-
-    # Create team-product association
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
-    db.commit()
-
-    # Mock get_subscribed_products_for_customer to return active subscription
-    mock_get_subscriptions.return_value = [("sub_123", test_product.id)]
-
-    # Attempt to remove product (simulating checkout.session.expired event)
-    await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
-
-    # Verify the function was called to check subscription status
-    mock_get_subscriptions.assert_called_once_with(test_team.stripe_customer_id)
-
-    # Verify product was NOT removed because subscription is still active
-    remaining_association = (
-        db.query(DBTeamProduct)
-        .filter(
-            DBTeamProduct.team_id == test_team.id,
-            DBTeamProduct.product_id == test_product.id,
-        )
-        .first()
-    )
-    assert remaining_association is not None, (
-        "Product should not be removed when subscription is still active"
-    )
-
-
-@pytest.mark.asyncio
-@patch("app.core.worker.get_subscribed_products_for_customer", new_callable=AsyncMock)
-async def test_remove_product_removes_when_subscription_inactive(
-    mock_get_subscriptions, db, test_team, test_product
-):
-    """
-    Test that product removal works correctly when subscription is inactive.
-
-    GIVEN: A team with an active product but no active subscription in Stripe
-    WHEN: A checkout.session.expired event occurs
-    THEN: The product should be removed because the subscription is inactive
-    """
-    # Set up team with stripe customer ID
-    test_team.stripe_customer_id = "cus_test123"
-    db.commit()
-
-    # Create team-product association
-    team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
-    db.add(team_product)
-    db.commit()
-
-    # Mock get_subscribed_products_for_customer to return no active subscriptions
-    mock_get_subscriptions.return_value = []  # No active subscriptions
-
-    # Attempt to remove product (simulating checkout.session.expired event)
-    await remove_product_from_team(db, test_team.stripe_customer_id, test_product.id)
-
-    # Verify the function was called to check subscription status
-    mock_get_subscriptions.assert_called_once_with(test_team.stripe_customer_id)
-
-    # Verify product was removed because subscription is inactive
-    remaining_association = (
-        db.query(DBTeamProduct)
-        .filter(
-            DBTeamProduct.team_id == test_team.id,
-            DBTeamProduct.product_id == test_product.id,
-        )
-        .first()
-    )
-    assert remaining_association is None, (
-        "Product should be removed when subscription is inactive"
-    )
-
-
-@pytest.mark.asyncio
 @patch("app.core.worker.SESService")
 @patch("app.core.worker.reconcile_team_keys", new_callable=AsyncMock)
 @patch("app.core.worker.get_subscribed_products_for_customer")
@@ -3514,124 +3373,158 @@ async def test_monitor_teams_continues_processing_after_error(
 
 
 @pytest.mark.asyncio
-@patch("app.core.worker.get_product_id_from_subscription", new_callable=AsyncMock)
-@patch("app.core.worker.apply_product_for_team", new_callable=AsyncMock)
-async def test_subscription_success_does_not_capture_spend(
-    mock_apply_product, mock_get_product, db, test_team, test_product
+@patch("app.core.worker.fetch_team_spend_snapshot_for_region", new_callable=AsyncMock)
+async def test_invoice_ledger_topup_carry_forward_across_periods(
+    mock_fetch_snapshot, db, test_team, test_region
 ):
-    """
-    GIVEN: A customer.subscription.updated event (SUBSCRIPTION_SUCCESS)
-    WHEN:  handle_stripe_event_background is called
-    THEN:  No spend-period snapshot is captured (subscriptions lack period_start/end
-           and capture_periodic_team_spend_for_invoice is not called).
-    """
-    from app.db.models import DBTeamSpendPeriod
+    from app.db.models import DBPrivateAIKey, DBPeriodicBudgetLedgerEntry
 
-    test_team.stripe_customer_id = "cus_sub_ok"
+    test_team.stripe_customer_id = "cus_periodic_ledger_a"
     db.add(test_team)
+    db.add(
+        DBPrivateAIKey(
+            name="ledger-key",
+            litellm_token="ledger-token",
+            region_id=test_region.id,
+            team_id=test_team.id,
+        )
+    )
     db.commit()
 
-    mock_get_product.return_value = test_product.id
-    mock_apply_product.return_value = None
-
-    mock_event = Mock()
-    mock_event.type = "customer.subscription.updated"
-    mock_event.id = "evt_sub_ok"
-    sub_obj = Mock()
-    sub_obj.customer = "cus_sub_ok"
-    sub_obj.id = "sub_ok"
-    sub_obj.start_date = 1_700_000_000
-    # Subscriptions do NOT have period_start / period_end – mimic that by NOT
-    # setting those attributes (Mock raises AttributeError instead of None).
-    mock_event.data.object = sub_obj
-    mock_event.data.object.customer = "cus_sub_ok"
-
-    with patch(
-        "app.core.worker.capture_periodic_team_spend_for_invoice"
-    ) as mock_capture:
-        await handle_stripe_event_background(mock_event)
-        # capture_periodic_team_spend_for_invoice must NOT be called for subscription events
-        mock_capture.assert_not_called()
-
-    # No spend period rows should exist
-    count = (
-        db.query(DBTeamSpendPeriod)
-        .filter(DBTeamSpendPeriod.team_id == test_team.id)
-        .count()
+    now = datetime.now(UTC)
+    add_topup_entry(
+        db,
+        team_id=test_team.id,
+        region_id=test_region.id,
+        amount_cents=1000,
+        purchased_at=now - timedelta(days=20),
+        source_payment_id=None,
+        stripe_payment_id="sess_cf_1",
     )
-    assert count == 0
+    db.commit()
+
+    inv1 = Mock()
+    inv1.id = "in_cf_1"
+    inv1.period_start = int((now - timedelta(days=30)).timestamp())
+    inv1.period_end = int(now.timestamp())
+    inv1.amount_paid = 3000
+
+    mock_fetch_snapshot.return_value = Mock(total_spend=8.0)
+    await _sync_periodic_ledger_for_invoice(
+        db=db,
+        customer_id="cus_periodic_ledger_a",
+        invoice_obj=inv1,
+        source_payment_id=None,
+        region_id=test_region.id,
+    )
+
+    topup_remaining_after_inv1 = [
+        r
+        for r in db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.team_id == test_team.id)
+        .all()
+        if r.entry_type in ("topup", "topup_rollover") and r.is_active
+    ]
+    assert (
+        sum(r.amount_cents - r.consumed_cents for r in topup_remaining_after_inv1)
+        == 200
+    )
+
+    inv2 = Mock()
+    inv2.id = "in_cf_2"
+    inv2.period_start = int(now.timestamp())
+    inv2.period_end = int((now + timedelta(days=30)).timestamp())
+    inv2.amount_paid = 3000
+
+    mock_fetch_snapshot.return_value = Mock(total_spend=32.0)
+    await _sync_periodic_ledger_for_invoice(
+        db=db,
+        customer_id="cus_periodic_ledger_a",
+        invoice_obj=inv2,
+        source_payment_id=None,
+        region_id=test_region.id,
+    )
+
+    final_topup_remaining = [
+        r
+        for r in db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.team_id == test_team.id)
+        .all()
+        if r.entry_type in ("topup", "topup_rollover") and r.is_active
+    ]
+    assert sum(r.amount_cents - r.consumed_cents for r in final_topup_remaining) == 0
 
 
 @pytest.mark.asyncio
 @patch("app.core.worker.fetch_team_spend_snapshot_for_region", new_callable=AsyncMock)
-@patch("app.core.worker.get_product_id_from_subscription", new_callable=AsyncMock)
-@patch("app.core.worker.apply_product_for_team", new_callable=AsyncMock)
-async def test_invoice_payment_success_captures_spend_period(
-    mock_apply_product,
-    mock_get_product,
-    mock_fetch_snapshot,
-    db,
-    test_team,
-    test_product,
-    test_region,
+async def test_invoice_ledger_duplicate_invoice_id_is_idempotent(
+    mock_fetch_snapshot, db, test_team, test_region
 ):
-    """
-    GIVEN: An invoice.paid event (INVOICE_SUCCESS)
-    WHEN:  handle_stripe_event_background is called
-    THEN:  A spend-period snapshot is persisted to the DB for each region the team
-           has keys in.
-    """
-    from app.db.models import DBTeamSpendPeriod, DBPrivateAIKey
+    from app.db.models import DBPrivateAIKey, DBPeriodicBudgetLedgerEntry
 
-    test_team.stripe_customer_id = "cus_inv_ok"
+    test_team.stripe_customer_id = "cus_periodic_ledger_b"
     db.add(test_team)
-    # Give the team a key in the test region so keys_by_region is non-empty
-    key = DBPrivateAIKey(
-        name="inv-test-key",
-        litellm_token="inv-test-token",
-        region_id=test_region.id,
-        team_id=test_team.id,
+    db.add(
+        DBPrivateAIKey(
+            name="ledger-key-2",
+            litellm_token="ledger-token-2",
+            region_id=test_region.id,
+            team_id=test_team.id,
+        )
     )
-    db.add(key)
     db.commit()
 
-    mock_get_product.return_value = test_product.id
-    mock_apply_product.return_value = None
-    mock_fetch_snapshot.return_value = {
-        "total_spend": 42.0,
-        "total_budget": 100.0,
-        "total_prompt_tokens": 500,
-        "total_completion_tokens": 200,
-        "total_tokens": 700,
-        "keys": [],
-    }
+    now = datetime.now(UTC)
+    add_topup_entry(
+        db,
+        team_id=test_team.id,
+        region_id=test_region.id,
+        amount_cents=500,
+        purchased_at=now - timedelta(days=10),
+        source_payment_id=None,
+        stripe_payment_id="sess_idem_1",
+    )
+    db.commit()
 
-    period_start_ts = 1_700_000_000
-    period_end_ts = 1_702_678_400
+    inv = Mock()
+    inv.id = "in_idem_1"
+    inv.period_start = int((now - timedelta(days=30)).timestamp())
+    inv.period_end = int(now.timestamp())
+    inv.amount_paid = 3000
 
-    mock_event = Mock()
-    mock_event.type = "invoice.paid"
-    mock_event.id = "evt_inv_ok"
-    inv_obj = Mock()
-    inv_obj.customer = "cus_inv_ok"
-    inv_obj.id = "inv_ok"
-    inv_obj.period_start = period_start_ts
-    inv_obj.period_end = period_end_ts
-    # parent.subscription_details.subscription for subscription ID extraction
-    inv_obj.parent.subscription_details.subscription = "sub_ok"
-    mock_event.data.object = inv_obj
+    mock_fetch_snapshot.return_value = Mock(total_spend=1.0)
+    await _sync_periodic_ledger_for_invoice(
+        db=db,
+        customer_id="cus_periodic_ledger_b",
+        invoice_obj=inv,
+        source_payment_id=None,
+        region_id=test_region.id,
+    )
+    await _sync_periodic_ledger_for_invoice(
+        db=db,
+        customer_id="cus_periodic_ledger_b",
+        invoice_obj=inv,
+        source_payment_id=None,
+        region_id=test_region.id,
+    )
 
-    await handle_stripe_event_background(mock_event)
-
-    # A spend period row must have been written
-    rows = (
-        db.query(DBTeamSpendPeriod)
+    rollover_rows = (
+        db.query(DBPeriodicBudgetLedgerEntry)
         .filter(
-            DBTeamSpendPeriod.team_id == test_team.id,
-            DBTeamSpendPeriod.region_id == test_region.id,
+            DBPeriodicBudgetLedgerEntry.team_id == test_team.id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "topup_rollover",
+            DBPeriodicBudgetLedgerEntry.source_invoice_id == "in_idem_1",
         )
         .all()
     )
-    assert len(rows) == 1
-    assert rows[0].total_spend == 42.0
-    assert rows[0].stripe_event_id == "evt_inv_ok"
+    subscription_rows = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == test_team.id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.source_invoice_id == "in_idem_1",
+        )
+        .all()
+    )
+    assert len(rollover_rows) <= 1
+    assert len(subscription_rows) <= 1

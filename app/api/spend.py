@@ -4,14 +4,17 @@ import re
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import aliased
 
 from app.core.config import settings
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
 from app.core.litellm_user_sync import team_role_for_litellm
 from app.core.roles import UserRole
 from app.core.team_service import get_team_region_litellm_keys
+from app.core.periodic_budget_ledger_service import compute_active_topup_remaining
 from app.core.security import (
     get_current_user_from_auth,
     get_private_ai_access,
@@ -19,6 +22,8 @@ from app.core.security import (
 )
 from app.db.database import get_db
 from app.db.models import (
+    DBPeriodicPayment,
+    DBPeriodicBudgetLedgerEntry,
     DBPoolPurchase,
     DBPrivateAIKey,
     DBRegion,
@@ -31,14 +36,17 @@ from app.db.models import (
 from app.schemas.limits import OwnerType, ResourceType
 from app.api.users import invalidate_user_spend_cache
 from app.schemas.models import (
+    BudgetType,
     PrivateAIKeySpend,
     SpendBudgetUpdateRequest,
     SpendBudgetUpdateResponse,
     SpendKeyItem,
     TeamSpendHistoryKeyItem,
+    TeamPeriodicTransactionItem,
     TeamSpendHistoryPeriodItem,
     TeamSpendHistoryResponse,
     TeamSpendResponse,
+    PeriodicTeamBudgetView,
     UserSpendResponse,
 )
 from app.services.litellm import LiteLLMService
@@ -101,13 +109,20 @@ def _compute_period_start(
     summary="Get historical team spend by region",
     description=(
         "Returns historical spend periods from the API database for a team in a "
-        "region, including per-key spend for each period."
+        "region, including per-key spend for each period. For PERIODIC teams, "
+        "response also includes region-scoped `periodic_transactions` entries "
+        "covering Stripe renewals and top-up purchases linked to that region."
     ),
-    response_description="Team historical spend periods with per-key breakdown.",
+    response_description=(
+        "Team historical spend periods with per-key breakdown, plus periodic "
+        "transaction history for PERIODIC teams."
+    ),
 )
 async def get_team_spend_history(
     region_id: int,
     team_id: int,
+    period_limit: int = Query(default=200, ge=1, le=1000),
+    tx_limit: int = Query(default=200, ge=1, le=1000),
     current_user: DBUser = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
@@ -130,6 +145,7 @@ async def get_team_spend_history(
             DBTeamSpendPeriod.region_id == region_id,
         )
         .order_by(DBTeamSpendPeriod.period_end.desc(), DBTeamSpendPeriod.id.desc())
+        .limit(period_limit)
         .all()
     )
 
@@ -175,12 +191,58 @@ async def get_team_spend_history(
             )
         )
 
+    periodic_transactions: list[TeamPeriodicTransactionItem] = []
+    if team.budget_type == BudgetType.PERIODIC:
+        latest_ledger = aliased(DBPeriodicBudgetLedgerEntry)
+        latest_payment_ids_subq = (
+            db.query(
+                latest_ledger.source_payment_id.label("source_payment_id"),
+                func.max(latest_ledger.id).label("latest_ledger_id"),
+            )
+            .filter(
+                latest_ledger.region_id == region_id,
+                latest_ledger.team_id == team_id,
+                latest_ledger.source_payment_id.isnot(None),
+            )
+            .group_by(latest_ledger.source_payment_id)
+            .subquery()
+        )
+        periodic_rows = (
+            db.query(DBPeriodicPayment)
+            .join(
+                latest_payment_ids_subq,
+                latest_payment_ids_subq.c.source_payment_id == DBPeriodicPayment.id,
+            )
+            .filter(DBPeriodicPayment.team_id == team_id)
+            .order_by(
+                DBPeriodicPayment.payment_date.desc(),
+                DBPeriodicPayment.id.desc(),
+            )
+            .limit(tx_limit)
+            .all()
+        )
+        periodic_transactions = [
+            TeamPeriodicTransactionItem(
+                id=row.id,
+                payment_type=row.payment_type,
+                amount_cents=row.amount_cents,
+                currency=row.currency,
+                stripe_payment_id=row.stripe_payment_id,
+                payment_date=row.payment_date,
+                status=row.status,
+                sync_status=row.sync_status,
+                source="periodic_payments",
+            )
+            for row in periodic_rows
+        ]
+
     return TeamSpendHistoryResponse(
         region_id=region_id,
         region_name=region.name,
         team_id=team_id,
         team_name=team.name,
         periods=period_items,
+        periodic_transactions=periodic_transactions,
     )
 
 
@@ -809,14 +871,12 @@ async def get_team_spend(
     )
     if configured_team_cap is not None and team.requires_pool_purchase_gate:
         total_budget = round(configured_team_cap, 4)
-    elif is_periodic and litellm_fetch_ok and items:
-        # For PERIODIC teams, team_info["max_budget"] is the compounded value
-        # (accumulated_spend + monthly_cap). Derive the actual monthly cap from
-        # the per-key max_budget which is always set to the product cap.
-        # Only apply when we got data from LiteLLM directly (not the DB fallback).
-        key_budgets = [k.max_budget for k in items if k.max_budget is not None]
-        if key_budgets:
-            total_budget = round(max(key_budgets), 4)
+    elif is_periodic and litellm_fetch_ok:
+        # For PERIODIC teams, display the effective current team budget as seen by
+        # LiteLLM (includes active subscription carry + top-ups), not per-key cap.
+        max_budget = team_info.get("max_budget")
+        if max_budget is not None:
+            total_budget = round(float(max_budget or 0.0), 4)
     key_cap_map = _get_key_spend_cap_map(
         db,
         region_id=region_id,
@@ -842,6 +902,53 @@ async def get_team_spend(
         team_budget_reset_at, team_budget_duration
     )
 
+    periodic_budget_view = None
+    if is_periodic:
+        now = datetime.now(UTC)
+        sub_remaining_cents = 0
+        # Use ledger-driven periodic status semantics for user-facing budget numbers.
+        from app.db.models import DBPeriodicBudgetLedgerEntry
+
+        sub_rows = (
+            db.query(DBPeriodicBudgetLedgerEntry)
+            .filter(
+                DBPeriodicBudgetLedgerEntry.team_id == team_id,
+                DBPeriodicBudgetLedgerEntry.region_id == region_id,
+                DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+                DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+                (
+                    DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                    | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+                ),
+            )
+            .all()
+        )
+        for row in sub_rows:
+            sub_remaining_cents += max(0, row.amount_cents - row.consumed_cents)
+        topup_remaining_cents = compute_active_topup_remaining(
+            db, team_id=team_id, region_id=region_id
+        )
+        purchased_cents = sub_remaining_cents + topup_remaining_cents
+        purchased_dollars = purchased_cents / 100.0
+        # live_remaining = purchased - total_spend
+        #
+        # INVARIANT: This formula is correct ONLY because consumed_cents
+        # is incremented at cycle-close (by allocate_period_spend_fifo)
+        # while LiteLLM's total_spend is simultaneously reset on the same
+        # call. The two therefore never reflect the same dollars at the
+        # same time. If mid-cycle allocation is ever introduced, this will
+        # silently double-count that spend.
+        live_remaining_dollars = max(0.0, purchased_dollars - float(total_spend or 0.0))
+        live_remaining_cents = int(round(live_remaining_dollars * 100))
+        periodic_budget_view = PeriodicTeamBudgetView(
+            purchased_budget_cents=purchased_cents,
+            purchased_budget=round(purchased_dollars, 4),
+            remaining_budget_cents=live_remaining_cents,
+            remaining_budget=round(live_remaining_dollars, 4),
+            configured_max_budget_cents=int(round(total_budget * 100)),
+            configured_max_budget=round(total_budget, 4),
+        )
+
     return TeamSpendResponse(
         region_id=region_id,
         region_name=region.name,
@@ -855,6 +962,7 @@ async def get_team_spend(
         budget_duration=team_budget_duration,
         budget_reset_at=team_budget_reset_at,
         period_start=team_period_start,
+        periodic_budget=periodic_budget_view,
         key_count=len(items),
         keys=items,
     )
@@ -1083,7 +1191,8 @@ async def get_key_spend_alias(
         "budget controls are being finalized.\n\n"
         "Request body accepts only `max_budget`.\n"
         "`budget_duration` is computed server-side and returned in the response:\n"
-        "- PERIODIC teams: monthly (`1mo`)\n"
+        "- PERIODIC teams: manual team budget updates are rejected; use subscription "
+        "renewal and periodic top-up purchase flows.\n"
         "- POOL teams: purchase-window duration for enforcement while storing "
         "monthly-cap semantics in local spend caps."
     ),
@@ -1115,6 +1224,14 @@ async def update_team_budget(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+    if team.budget_type == BudgetType.PERIODIC and body.max_budget is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Manual team budget updates are not allowed for periodic teams. "
+                "Use subscription renewal and periodic top-up purchase flows."
+            ),
+        )
     if team.requires_pool_purchase_gate and body.max_budget is not None:
         effective_duration = _pool_budget_duration_from_last_purchase(
             db=db, team_id=team_id, region_id=region_id
