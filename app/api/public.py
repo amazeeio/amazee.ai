@@ -98,8 +98,30 @@ def _apply_profit_margin(price: float | None, margin: float) -> float | None:
     return price * (1 + margin)
 
 
-def _to_display_name(model_id: str) -> str:
-    words = re.split(r"[-_]+", model_id)
+def _to_display_name(model_id: str, aliases: list[str] | None = None) -> str:
+    """Convert a model_id to a human-friendly display name.
+
+    If aliases contain a dotted version number (e.g. "claude-4.7"), use that
+    to produce "Claude 4.7" instead of "Claude 4 7".
+    """
+    # Build a mapping of hyphenated number sequences to dotted equivalents
+    # by inspecting aliases for dotted versions.
+    dot_replacements: dict[str, str] = {}
+    if aliases:
+        for alias in aliases:
+            # Find dotted number patterns like "4.7", "3.5", "1.5.2"
+            for m in re.finditer(r"\d+(?:\.\d+)+", alias):
+                dotted = m.group(0)
+                # The equivalent hyphenated form: "4.7" -> "4-7"
+                hyphenated = dotted.replace(".", "-")
+                dot_replacements[hyphenated] = dotted
+
+    # Replace hyphenated number sequences with dotted versions before splitting
+    modified_id = model_id
+    for hyphenated, dotted in sorted(dot_replacements.items(), key=lambda x: -len(x[0])):
+        modified_id = modified_id.replace(hyphenated, dotted)
+
+    words = re.split(r"[-_]+", modified_id)
     return " ".join(
         word.upper() if word.isupper() else word.capitalize() for word in words if word
     )
@@ -291,10 +313,12 @@ def _extract_model_summary(
         supports_prompt_caching=bool(model_info.get("supports_prompt_caching")),
     )
 
+    aliases = _extract_aliases(item, model_id)
+
     return PublicModelSummary(
         model_id=model_id,
-        display_name=_to_display_name(model_id),
-        aliases=_extract_aliases(item, model_id),
+        display_name=_to_display_name(model_id, aliases),
+        aliases=aliases,
         metadata_raw=model_info.get("metadata") or item.get("metadata"),
         provider=_infer_provider(item),
         type=model_type,
