@@ -116,10 +116,15 @@ def _to_display_name(model_id: str, aliases: list[str] | None = None) -> str:
                 hyphenated = dotted.replace(".", "-")
                 dot_replacements[hyphenated] = dotted
 
-    # Replace hyphenated number sequences with dotted versions before splitting
+    # Replace hyphenated number sequences with dotted versions before splitting.
+    # Use word-boundary anchors so that e.g. "3-5" does not corrupt "123-5".
     modified_id = model_id
     for hyphenated, dotted in sorted(dot_replacements.items(), key=lambda x: -len(x[0])):
-        modified_id = modified_id.replace(hyphenated, dotted)
+        modified_id = re.sub(
+            r"(?<![0-9])" + re.escape(hyphenated) + r"(?![0-9])",
+            dotted,
+            modified_id,
+        )
 
     words = re.split(r"[-_]+", modified_id)
     return " ".join(
