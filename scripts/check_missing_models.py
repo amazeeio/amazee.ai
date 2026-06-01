@@ -182,6 +182,13 @@ def _chunk_summary(summary: str, max_length: int = SLACK_MAX_TEXT_LENGTH) -> lis
             line_buf: list[str] = []
             buf_len = 0
             for line in lines:
+                while len(line) > max_length:
+                    if line_buf:
+                        chunks.append("\n".join(line_buf))
+                        line_buf = []
+                        buf_len = 0
+                    chunks.append(line[:max_length])
+                    line = line[max_length:]
                 line_addition = len(line) + (1 if line_buf else 0)
                 if line_buf and buf_len + line_addition > max_length:
                     chunks.append("\n".join(line_buf))
