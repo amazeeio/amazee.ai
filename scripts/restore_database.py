@@ -63,13 +63,43 @@ def sanitize(msg, config):
     return msg
 
 
+def _strip_password_from_netloc(parsed):
+    """Return a netloc string with the password component removed.
+
+    Keeps the username (if any) and host[:port] intact, preserving the
+    original percent-encoding of the username so we don't double-encode
+    (`urlparse` returns raw, percent-encoded `username` / `password`).
+
+    The password is stripped because `url` / `maintenance_url` are passed
+    on argv via `--dbname`, where they would otherwise be visible in `ps`
+    / `/proc/<pid>/cmdline`. The password is supplied to libpq through
+    PGPASSWORD instead (see `pg_env`).
+    """
+    netloc = parsed.netloc
+    # Split off any userinfo ("user[:password]@host[:port]"). Use rsplit so
+    # an `@` in the password (which is illegal unencoded but defensive) is
+    # handled by taking the *last* `@` as the userinfo/host boundary.
+    if "@" not in netloc:
+        return netloc
+    userinfo, _, hostport = netloc.rpartition("@")
+    # Drop the password portion of "user:password" (if present); keep the
+    # username's original percent-encoding verbatim.
+    raw_user = userinfo.split(":", 1)[0]
+    if not raw_user:
+        return hostport
+    return f"{raw_user}@{hostport}"
+
+
 def get_db_config():
     """Parse DATABASE_URL into connection components.
 
-    The full URL is preserved (`url`) and handed to libpq via `--dbname` /
+    `url` and `maintenance_url` are handed to libpq via `--dbname` /
     `--maintenance-db` so any libpq-supported parameters (sslmode,
-    connect_timeout, host=/var/run/..., etc.) flow through unchanged. Parsed
-    fields are kept only for local needs:
+    connect_timeout, host=/var/run/..., etc.) flow through unchanged. The
+    password is stripped from these URLs before they hit argv to avoid
+    leaking the credential into `ps` / `/proc/<pid>/cmdline`; libpq picks
+    it up from PGPASSWORD via `pg_env`. Parsed fields are kept only for
+    local needs:
       - `database` for the safety guard, the dropdb/createdb target, and the
         backup filename;
       - `password` for the log-sanitizer and PGPASSWORD (so it never lands in
@@ -85,11 +115,16 @@ def get_db_config():
     )
     parsed = urlparse(database_url)
     db_name = unquote(parsed.path or "").removeprefix("/")
-    # Replace the path with `/postgres` while preserving netloc and query
-    # params (so sslmode, connect_timeout, etc. carry over).
-    maintenance_url = urlunparse(parsed._replace(path="/postgres"))
+    # Strip the password from the netloc so neither `url` nor
+    # `maintenance_url` carry the credential when passed on argv via
+    # `--dbname`. The password flows through PGPASSWORD instead.
+    safe_netloc = _strip_password_from_netloc(parsed)
+    safe_url = urlunparse(parsed._replace(netloc=safe_netloc))
+    maintenance_url = urlunparse(
+        parsed._replace(netloc=safe_netloc, path="/postgres")
+    )
     return {
-        "url": database_url,
+        "url": safe_url,
         "maintenance_url": maintenance_url,
         "host": parsed.hostname,
         "port": parsed.port or 5432,
@@ -168,9 +203,11 @@ def backup_current_database(config, backup_path):
     fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     os.close(fd)
 
-    # Pass the full DATABASE_URL via --dbname so libpq parses every param
-    # (sslmode, connect_timeout, socket host=..., etc.) instead of relying on
-    # the four fields we extracted in get_db_config().
+    # Pass the password-stripped DATABASE_URL via --dbname so libpq parses
+    # every param (sslmode, connect_timeout, socket host=..., etc.) instead
+    # of relying on the four fields we extracted in get_db_config(). The
+    # password is supplied via PGPASSWORD in pg_env() so it never appears on
+    # argv / in `ps` output.
     cmd = [
         "pg_dump",
         "--format=custom",
