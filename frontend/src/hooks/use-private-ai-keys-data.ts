@@ -3,6 +3,7 @@ import { Region } from "@/types/region";
 import { SpendInfo } from "@/types/spend";
 import { User } from "@/types/user";
 import { get } from "@/utils/api";
+import { mapTeamSpendToSpendInfo } from "@/utils/spend-mapping";
 import { useQuery } from "@tanstack/react-query";
 
 export function usePrivateAIKeysData(
@@ -45,11 +46,21 @@ export function usePrivateAIKeysData(
     },
   });
 
+  // Fetch regions
+  const { data: regions = [] } = useQuery<Region[]>({
+    queryKey: ["regions"],
+    queryFn: async () => {
+      const response = await get("regions");
+      const data = await response.json();
+      return data;
+    },
+  });
+
   // Query to get spend information for loaded keys
   // Fetches per team+region combo for keys with team_id, old endpoint for others
   const loadedSpendKeysArray = Array.from(loadedSpendKeys).sort();
   const { data: spendMap = {} } = useQuery<Record<number, SpendInfo>>({
-    queryKey: ["private-ai-keys-spend", loadedSpendKeysArray],
+    queryKey: ["private-ai-keys-spend", loadedSpendKeysArray, regions.map(r => r.id)],
     queryFn: async () => {
       const loadedKeys = keys.filter((k) => loadedSpendKeys.has(k.id));
 
@@ -86,7 +97,8 @@ export function usePrivateAIKeysData(
             const response = await get(
               `spend/${matchedRegion.id}/team/${teamId}`,
             );
-            const spendInfo: SpendInfo = await response.json();
+            const data = await response.json();
+            const spendInfo = mapTeamSpendToSpendInfo(data);
             // Assign same team spend to all keys in this combo
             for (const keyId of keyIds) {
               result[keyId] = spendInfo;
@@ -104,17 +116,7 @@ export function usePrivateAIKeysData(
       await Promise.all([...teamSpendPromises, ...noTeamPromises]);
       return result;
     },
-    enabled: loadedSpendKeysArray.length > 0,
-  });
-
-  // Fetch regions
-  const { data: regions = [] } = useQuery<Region[]>({
-    queryKey: ["regions"],
-    queryFn: async () => {
-      const response = await get("regions");
-      const data = await response.json();
-      return data;
-    },
+    enabled: loadedSpendKeysArray.length > 0 && regions.length > 0,
   });
 
   return {
