@@ -123,6 +123,7 @@ jobs:
 
       - name: Open docs issue
         if: steps.check.outputs.has_matches == 'true'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.DOCS_ISSUE_TOKEN }}
           PR_TITLE: ${{ github.event.pull_request.title }}
