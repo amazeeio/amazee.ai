@@ -149,8 +149,90 @@ Access the services at:
 - Frontend: http://localhost:3000
 - Backend API: http://localhost:8800
 
+## 💳 Limit Precedence and Key Ownership
 
-## 🗄️ How to Restore from a Database Dump
+Private key creation supports two ownership modes:
+- `owner_id`: user-owned key.
+- `team_id`: team-owned shared key.
+- `owner_id` and `team_id` are mutually exclusive.
+- If both are omitted, key ownership defaults to the current user (`owner_id=current_user.id`).
+
+Limit controls and precedence:
+- Team cap: `PUT /spend/{region_id}/team/{team_id}/budget`
+- Team member cap (user within team): `PUT /spend/{region_id}/team/{team_id}/member/{user_id}/budget`
+- Key cap: `PUT /spend/{region_id}/key/{key_id}/budget`
+- Effective enforcement is the strictest applicable gate for the request context.
+
+### Scenario A: Team cap `$5` shared across users/keys
+
+- Use team-owned keys (`team_id`) for shared team usage.
+- Create keys via `POST /private-ai-keys` with `team_id`.
+- Set the team budget cap via `PUT /spend/{region_id}/team/{team_id}/budget`.
+- All team keys/users spend from the same team budget pool until the team cap is reached.
+
+### Scenario B: User cap `$2` within a team (across that user's keys)
+
+- Use user-owned keys (`owner_id`) for keys tied to a specific user.
+- Create keys via `POST /private-ai-keys` with `owner_id`.
+- For users inside a team, set user budget with the **team-member** endpoint (not user-only endpoint).
+- Use `PUT /spend/{region_id}/team/{team_id}/member/{user_id}/budget`.
+- The member cap applies across that user's keys in the specified team.
+
+### Scenario C: Per-key cap `$2` for each key
+
+- Set key budgets directly via the key spend endpoint.
+- Use `PUT /spend/{region_id}/key/{key_id}/budget`.
+- Each key is enforced independently.
+- Team and team-member limits can still apply as additional ceilings.
+
+Note: Spend enforcement in LiteLLM is evaluated on spend updates, so the blocking request is typically the first request after crossing a cap.
+
+
+## ♻️ Team Lifecycle & Hard Delete
+
+Teams go through a three-stage lifecycle managed by background workers.
+
+### Stages
+
+| Stage | Trigger | What happens |
+|---|---|---|
+| **Active** | Team created | Normal operation |
+| **Soft-deleted** | >76 days inactive (no API activity) + 14-day grace after warning email; or manual `POST /teams/{id}/soft-delete` | `deleted_at` set; all LiteLLM keys expired (`duration=0d`); users deactivated. POOL teams are exempt from automatic soft-delete. |
+| **Hard-deleted** | `deleted_at` is ≥ 90 days ago | All data permanently removed (GDPR requirement) |
+
+### Hard-delete cascade order
+
+When `hard_delete_expired_teams()` runs (daily at 03:00 via cron), it deletes each expired team's data in this order to respect FK constraints:
+
+1. `limited_resources` (team + user rows)
+2. LiteLLM keys (remote call, best-effort)
+3. `spend_caps` (team-, user-, and key-scoped)
+4. `ai_tokens` (private AI keys) from DB
+5. `api_tokens`, `user_admin_regions` (user FK tables — no `ON DELETE CASCADE`)
+6. `audit_logs.user_id` set to `NULL` (rows preserved for audit history)
+7. `user_spend_cache` (email-keyed stale cache)
+8. `users`
+9. `team_products`, `team_regions`
+10. Audit log entry written (`action=team.hard_delete`)
+11. `teams` (cascades `team_metrics` automatically)
+
+### Restore
+
+A soft-deleted team can be restored by a system admin via `POST /teams/{id}/restore`. The restore:
+- Clears `deleted_at` and reactivates all users
+- Re-provisions the LiteLLM team and users in every active region (idempotent)
+- Un-expires all keys in LiteLLM
+
+If LiteLLM re-provisioning fails for any region, the team is still marked restored in the DB and the response includes a `"warning"` field listing the affected regions. Check the `audit_logs` table (`action=team.restore`) for the full `litellm_failed_regions` detail.
+
+### Manual trigger
+
+```bash
+# Trigger the hard-delete job manually on the backend container
+python scripts/trigger_hard_delete_job.py
+```
+
+
 
 If you have a database dump, you can restore it into your local PostgreSQL service following these steps:
 
@@ -255,6 +337,8 @@ We follow a structured branching and deployment process to ensure stability acro
 - `ENV_SUFFIX`: Naming suffix to differentiate resources from different environments. Defaults to `dev`.
 - `SES_REGION`: Optional, defaults to eu-central-1
 - `DYNAMODB_REGION`: Optional, defaults to eu-central-2
+- `MOAD_API_KEY`: API key for MOAD service authentication
+- `PERIODIC_TOPUP_EXPIRY_DAYS`: Days before periodic top-up budget expires (default: 365)
 
 ### Frontend
 - `NEXT_PUBLIC_API_URL`: Backend API URL

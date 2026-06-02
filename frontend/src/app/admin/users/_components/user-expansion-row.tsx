@@ -12,8 +12,10 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { PrivateAIKey } from "@/types/private-ai-key";
+import { Region } from "@/types/region";
 import { SpendInfo } from "@/types/spend";
 import { get, post } from "@/utils/api";
+import { mapTeamSpendToSpendInfo } from "@/utils/spend-mapping";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 interface UserExpansionRowProps {
@@ -40,6 +42,16 @@ export function UserExpansionRow({
     enabled: isExpanded,
   });
 
+  // Fetch regions for spend lookup
+  const { data: regions = [] } = useQuery<Region[]>({
+    queryKey: ["regions"],
+    queryFn: async () => {
+      const response = await get("/regions");
+      return response.json();
+    },
+    enabled: isExpanded && userAIKeys.length > 0,
+  });
+
   // Get spend data for each key
   const { data: spendMap = {} } = useQuery<Record<string, SpendInfo>>({
     queryKey: ["user-ai-keys-spend", userId, userAIKeys],
@@ -48,7 +60,53 @@ export function UserExpansionRow({
 
       const spendData: Record<string, SpendInfo> = {};
 
+      // Group keys by team+region combo
+      const teamRegionMap = new Map<
+        string,
+        { regionName: string; teamId: number; keyIds: number[] }
+      >();
+      const noTeamKeys: PrivateAIKey[] = [];
+
       for (const key of userAIKeys) {
+        if (key.team_id && key.region) {
+          const comboKey = `${key.region}:${key.team_id}`;
+          if (!teamRegionMap.has(comboKey)) {
+            teamRegionMap.set(comboKey, {
+              regionName: key.region,
+              teamId: key.team_id,
+              keyIds: [],
+            });
+          }
+          teamRegionMap.get(comboKey)!.keyIds.push(key.id);
+        } else {
+          noTeamKeys.push(key);
+        }
+      }
+
+      // Fetch spend per team+region combo
+      for (const [, { regionName, teamId, keyIds }] of teamRegionMap) {
+        try {
+          const matchedRegion = regions.find((r) => r.name === regionName);
+          if (matchedRegion) {
+            const response = await get(
+              `/spend/${matchedRegion.id}/team/${teamId}`,
+            );
+            const data = await response.json();
+            const spendInfo = mapTeamSpendToSpendInfo(data);
+            for (const keyId of keyIds) {
+              spendData[keyId.toString()] = spendInfo;
+            }
+          }
+        } catch (error) {
+          console.error(
+            `Failed to fetch spend for team ${teamId} region ${regionName}:`,
+            error,
+          );
+        }
+      }
+
+      // Fallback for keys without team_id
+      for (const key of noTeamKeys) {
         try {
           const response = await get(`/private-ai-keys/${key.id}/spend`);
           const spendInfo = await response.json();
@@ -60,7 +118,7 @@ export function UserExpansionRow({
 
       return spendData;
     },
-    enabled: isExpanded && userAIKeys.length > 0,
+    enabled: isExpanded && userAIKeys.length > 0 && regions.length > 0,
   });
 
   // Get user limits when expanded

@@ -1,6 +1,7 @@
 from sqlalchemy import (
     Boolean,
     Column,
+    Index,
     ForeignKey,
     Integer,
     String,
@@ -8,6 +9,9 @@ from sqlalchemy import (
     JSON,
     Float,
     Enum,
+    Date,
+    Text,
+    text,
 )
 from sqlalchemy.orm import relationship, declarative_base
 from datetime import datetime, UTC
@@ -53,17 +57,22 @@ class DBTeamProduct(Base):
 class DBTeamRegion(Base):
     """
     Association table for team-region relationship.
-    This model is required to implement a many-to-many relationship between teams and dedicated regions.
+    This model is required to implement a many-to-many relationship between teams and allowed regions.
     It allows:
-    - Teams to access multiple dedicated regions
-    - Dedicated regions to be used by multiple teams
+    - Teams to access multiple regions
+    - Regions to be used by multiple teams
     - Tracking when regions were associated with teams
     - Maintaining referential integrity between teams and regions
     """
 
     __tablename__ = "team_regions"
 
-    team_id = Column(Integer, ForeignKey("teams.id"), primary_key=True, nullable=False)
+    team_id = Column(
+        Integer,
+        ForeignKey("teams.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
     region_id = Column(
         Integer,
         ForeignKey("regions.id", ondelete="CASCADE"),
@@ -73,8 +82,24 @@ class DBTeamRegion(Base):
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 
-    team = relationship("DBTeam", back_populates="dedicated_regions")
+    team = relationship("DBTeam", back_populates="allowed_region_associations")
     region = relationship("DBRegion", back_populates="teams")
+
+
+class DBUserAdminRegion(Base):
+    __tablename__ = "user_admin_regions"
+
+    user_id = Column(Integer, ForeignKey("users.id"), primary_key=True, nullable=False)
+    region_id = Column(
+        Integer,
+        ForeignKey("regions.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    user = relationship("DBUser", back_populates="admin_regions")
+    region = relationship("DBRegion", back_populates="admin_users")
 
 
 class DBRegion(Base):
@@ -96,6 +121,7 @@ class DBRegion(Base):
 
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="region")
     teams = relationship("DBTeamRegion", back_populates="region")
+    admin_users = relationship("DBUserAdminRegion", back_populates="region")
 
 
 class DBAPITokenExpiryOption(Base):
@@ -140,6 +166,7 @@ class DBUser(Base):
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="owner")
     api_tokens = relationship("DBAPIToken", back_populates="owner")
     audit_logs = relationship("DBAuditLog", back_populates="user")
+    admin_regions = relationship("DBUserAdminRegion", back_populates="user")
 
 
 class DBTeam(Base):
@@ -164,6 +191,7 @@ class DBTeam(Base):
         default=BudgetType.PERIODIC,
         nullable=False,
     )
+    require_purchase_for_requests = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     stripe_customer_id = Column(String, nullable=True, unique=True, index=True)
@@ -176,7 +204,12 @@ class DBTeam(Base):
     users = relationship("DBUser", back_populates="team")
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="team")
     active_products = relationship("DBTeamProduct", back_populates="team")
-    dedicated_regions = relationship("DBTeamRegion", back_populates="team")
+    allowed_region_associations = relationship(
+        "DBTeamRegion",
+        back_populates="team",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
     metrics = relationship(
         "DBTeamMetrics", back_populates="team", uselist=False, cascade="all, delete"
     )
@@ -184,6 +217,37 @@ class DBTeam(Base):
     @property
     def products(self):
         return [tp.product for tp in self.active_products if tp.product]
+
+    @property
+    def dedicated_regions(self):
+        # Backward-compatible alias while team_regions semantics are now generic.
+        return self.allowed_region_associations
+
+    @property
+    def allowed_regions(self):
+        return [tr.region for tr in self.allowed_region_associations if tr.region]
+
+    @property
+    def is_dedicated(self) -> bool:
+        """True for dedicated teams that use private infrastructure.
+
+        Dedicated teams hide public regions (``hide_public_regions=True``) and are
+        provisioned with private infrastructure. This flag is infrastructure-scoped
+        and independent of funding behavior.
+        """
+        return bool(self.hide_public_regions)
+
+    @property
+    def requires_pool_purchase_gate(self) -> bool:
+        """Whether no-purchase traffic should be blocked for this team."""
+        budget_type_value = (
+            self.budget_type.value
+            if isinstance(self.budget_type, BudgetType)
+            else str(self.budget_type).lower()
+        )
+        return budget_type_value == BudgetType.POOL.value and bool(
+            self.require_purchase_for_requests
+        )
 
 
 class DBTeamMetrics(Base):
@@ -244,6 +308,110 @@ class DBPoolPurchase(Base):
 
     team = relationship("DBTeam")
     region = relationship("DBRegion")
+
+
+class DBStripeProcessedEvent(Base):
+    """Pre-processing claim row for Stripe webhook idempotency.
+
+    Inserted before dispatching background processing. If a duplicate
+    webhook arrives, the UniqueViolation on stripe_event_id signals that
+    the event is already being handled.
+    """
+
+    __tablename__ = "stripe_processed_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    stripe_event_id = Column(String, unique=True, nullable=False, index=True)
+    event_type = Column(String, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=func.now(), nullable=False, index=True
+    )
+
+
+class DBPeriodicPayment(Base):
+    """
+    Stores periodic team payments (subscriptions and top-ups).
+    Tracks the synchronization status with LiteLLM to handle gateway failures.
+    """
+
+    __tablename__ = "periodic_payments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    team_id = Column(
+        Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    stripe_payment_id = Column(String, unique=True, nullable=False, index=True)
+    amount_cents = Column(Integer, nullable=False)
+    currency = Column(String, nullable=False)
+    payment_type = Column(String, nullable=False)  # "subscription" or "topup"
+    status = Column(String, nullable=False)  # "pending", "completed", "failed"
+    sync_status = Column(
+        String, nullable=False, default="pending"
+    )  # "pending", "success", "sync_failed"
+    error_log = Column(Text, nullable=True)
+    payment_date = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    team = relationship("DBTeam")
+
+
+class DBPeriodicBudgetLedgerEntry(Base):
+    __tablename__ = "periodic_budget_ledger_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    team_id = Column(
+        Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    region_id = Column(
+        Integer,
+        ForeignKey("regions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    entry_type = Column(String, nullable=False, index=True)
+    source_payment_id = Column(
+        Integer, ForeignKey("periodic_payments.id", ondelete="SET NULL"), nullable=True
+    )
+    source_invoice_id = Column(String, nullable=True, index=True)
+    stripe_payment_id = Column(String, nullable=True, index=True)
+    amount_cents = Column(Integer, nullable=False)
+    consumed_cents = Column(Integer, nullable=False, default=0)
+    purchased_at = Column(DateTime(timezone=True), nullable=False)
+    effective_period_start = Column(DateTime(timezone=True), nullable=True)
+    effective_period_end = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    rolled_over_from_id = Column(
+        Integer,
+        ForeignKey("periodic_budget_ledger_entries.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    team = relationship("DBTeam")
+    region = relationship("DBRegion")
+    source_payment = relationship("DBPeriodicPayment")
+    rolled_over_from = relationship("DBPeriodicBudgetLedgerEntry", remote_side=[id])
+
+    __table_args__ = (
+        UniqueConstraint(
+            "team_id",
+            "region_id",
+            "entry_type",
+            "stripe_payment_id",
+            name="uq_periodic_ledger_topup_payment",
+        ),
+        Index(
+            "uq_periodic_ledger_subscription_invoice_not_null",
+            "team_id",
+            "region_id",
+            "entry_type",
+            "source_invoice_id",
+            unique=True,
+            postgresql_where=text("source_invoice_id IS NOT NULL"),
+        ),
+    )
 
 
 class DBPrivateAIKey(Base):
@@ -400,5 +568,160 @@ class DBLimitedResource(Base):
     __table_args__ = (
         UniqueConstraint(
             "owner_type", "owner_id", "resource", name="uq_owner_resource"
+        ),
+    )
+
+
+class DBSpendCap(Base):
+    """
+    Persisted spend cap configuration for spend endpoints.
+
+    These records mirror effective cap settings pushed to LiteLLM for:
+    - team caps
+    - team-member caps
+    - key caps
+    """
+
+    __tablename__ = "spend_caps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scope = Column(String, nullable=False, index=True)  # team, team_member, key
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=False, index=True)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    key_id = Column(Integer, ForeignKey("ai_tokens.id"), nullable=True, index=True)
+    max_budget = Column(Float, nullable=True)
+    budget_duration = Column(String, nullable=True)
+    month_anchor = Column(Date, nullable=True)
+    month_start_spend = Column(Float, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "uq_spend_caps_team_scope",
+            "region_id",
+            "team_id",
+            unique=True,
+            postgresql_where=text(
+                "scope = 'team' AND team_id IS NOT NULL AND user_id IS NULL AND key_id IS NULL"
+            ),
+            sqlite_where=text(
+                "scope = 'team' AND team_id IS NOT NULL AND user_id IS NULL AND key_id IS NULL"
+            ),
+        ),
+        Index(
+            "uq_spend_caps_team_member_scope",
+            "region_id",
+            "team_id",
+            "user_id",
+            unique=True,
+            postgresql_where=text(
+                "scope = 'team_member' AND team_id IS NOT NULL AND user_id IS NOT NULL AND key_id IS NULL"
+            ),
+            sqlite_where=text(
+                "scope = 'team_member' AND team_id IS NOT NULL AND user_id IS NOT NULL AND key_id IS NULL"
+            ),
+        ),
+        Index(
+            "uq_spend_caps_key_scope",
+            "region_id",
+            "key_id",
+            unique=True,
+            postgresql_where=text("scope = 'key' AND key_id IS NOT NULL"),
+            sqlite_where=text("scope = 'key' AND key_id IS NOT NULL"),
+        ),
+    )
+
+
+class DBTeamSpendPeriod(Base):
+    __tablename__ = "team_spend_periods"
+
+    id = Column(Integer, primary_key=True, index=True)
+    team_id = Column(
+        Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    region_id = Column(
+        Integer,
+        ForeignKey("regions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    budget_type = Column(String, nullable=False, index=True)
+    period_start = Column(DateTime(timezone=True), nullable=False, index=True)
+    period_end = Column(DateTime(timezone=True), nullable=False, index=True)
+    currency = Column(String, nullable=True)
+    total_spend = Column(Float, nullable=False, default=0.0)
+    total_budget = Column(Float, nullable=True)
+    total_prompt_tokens = Column(Integer, nullable=True)
+    total_completion_tokens = Column(Integer, nullable=True)
+    total_tokens = Column(Integer, nullable=True)
+    source = Column(String, nullable=False)
+    stripe_event_id = Column(String, nullable=True, index=True)
+    stripe_invoice_id = Column(String, nullable=True)
+    stripe_subscription_id = Column(String, nullable=True)
+    raw_payload = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    team = relationship("DBTeam")
+    region = relationship("DBRegion")
+    keys = relationship(
+        "DBTeamSpendPeriodKey",
+        back_populates="team_spend_period",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "team_id",
+            "region_id",
+            "budget_type",
+            "period_start",
+            "period_end",
+            name="uq_team_spend_period_unique_window",
+        ),
+    )
+
+
+class DBTeamSpendPeriodKey(Base):
+    __tablename__ = "team_spend_period_keys"
+
+    id = Column(Integer, primary_key=True, index=True)
+    team_spend_period_id = Column(
+        Integer,
+        ForeignKey("team_spend_periods.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    key_id = Column(
+        Integer, ForeignKey("ai_tokens.id", ondelete="SET NULL"), nullable=True
+    )
+    owner_id = Column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    key_name_snapshot = Column(String, nullable=True)
+    spend = Column(Float, nullable=False, default=0.0)
+    max_budget = Column(Float, nullable=True)
+    prompt_tokens = Column(Integer, nullable=True)
+    completion_tokens = Column(Integer, nullable=True)
+    total_tokens = Column(Integer, nullable=True)
+
+    team_spend_period = relationship("DBTeamSpendPeriod", back_populates="keys")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "team_spend_period_id",
+            "key_id",
+            name="uq_team_spend_period_key",
+        ),
+        Index(
+            "uq_team_spend_period_key_null_key_id",
+            "team_spend_period_id",
+            "owner_id",
+            "key_name_snapshot",
+            unique=True,
+            postgresql_where=text("key_id IS NULL"),
+            sqlite_where=text("key_id IS NULL"),
         ),
     )

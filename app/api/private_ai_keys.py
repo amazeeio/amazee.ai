@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from fastapi import status
@@ -9,9 +10,8 @@ from app.core.dependencies import get_limit_service
 from app.schemas.models import (
     PrivateAIKey,
     PrivateAIKeyCreate,
-    PrivateAIKeySpend,
+    PrivateAIKeySpendBasic,
     BudgetPeriodUpdate,
-    BudgetType,
     LiteLLMToken,
     VectorDBCreate,
     VectorDB,
@@ -19,7 +19,14 @@ from app.schemas.models import (
     PrivateAIKeyDetail,
 )
 from app.db.postgres import PostgresManager
-from app.db.models import DBPrivateAIKey, DBRegion, DBUser, DBTeam
+from app.db.models import (
+    DBPoolPurchase,
+    DBPrivateAIKey,
+    DBRegion,
+    DBUser,
+    DBTeam,
+    DBSpendCap,
+)
 from app.services.litellm import LiteLLMService
 from app.core.security import (
     get_current_user_from_auth,
@@ -105,8 +112,10 @@ async def create_vector_db(
     - **name**: The name for the database
 
     Optional parameters:
-    - **owner_id**: The ID of the user who will own this database (admin only)
-    - **team_id**: The ID of the team that will own this database (admin only)
+    - **owner_id**: Create a user-owned resource. Use this when the key/token
+      should belong to a specific user.
+    - **team_id**: Create a team-owned resource. Use this for shared team usage.
+    - **owner_id** and **team_id** are mutually exclusive.
 
     The response will include:
     - Database connection details (host, database name, username, password)
@@ -115,6 +124,11 @@ async def create_vector_db(
 
     Note: You must be authenticated to use this endpoint.
     Only admins can create databases for other users or teams.
+    Limit behavior:
+    - User-owned mode (`owner_id`) keeps explicit user ownership while still
+      participating in team context when the owner belongs to a team.
+    - Team-owned mode (`team_id`) is the clean shared-team model and is
+      recommended for pooled team budget workflows.
     """
     # Get ownership information
     owner_id, team_id = _validate_permissions_and_get_ownership_info(
@@ -210,8 +224,9 @@ async def create_private_ai_key(
     - **name**: The name for the private AI key
 
     Optional parameters:
-    - **owner_id**: The ID of the user who will own this key (admin only)
-    - **team_id**: The ID of the team that will own this key (admin only)
+    - **owner_id**: Create a user-owned key.
+    - **team_id**: Create a team-owned shared key.
+    - **owner_id** and **team_id** are mutually exclusive.
 
     The response will include:
     - Database connection details (host, database name, username, password)
@@ -220,6 +235,14 @@ async def create_private_ai_key(
 
     Note: You must be authenticated to use this endpoint.
     Only admins can create keys for other users or teams.
+    Ownership and limits:
+    - If both `owner_id` and `team_id` are omitted, `owner_id` defaults to the
+      current user.
+    - Team budget limits apply at team scope.
+    - Team-member budgets apply per user inside a team.
+    - Key budgets apply per key.
+    - For team workflows with shared pool budget, prefer team-owned keys
+      (`team_id`).
     """
     llm_token = None
     db_info = None
@@ -343,8 +366,9 @@ async def create_llm_token(
     - **name**: The name for the token
 
     Optional parameters:
-    - **owner_id**: The ID of the user who will own this token (admin only)
-    - **team_id**: The ID of the team that will own this token (admin only)
+    - **owner_id**: Create a user-owned token.
+    - **team_id**: Create a team-owned token.
+    - **owner_id** and **team_id** are mutually exclusive.
 
     The response will include:
     - LiteLLM API token for authentication
@@ -352,6 +376,10 @@ async def create_llm_token(
 
     Note: You must be authenticated to use this endpoint.
     Only admins can create tokens for other users or teams.
+    Limit behavior follows ownership context:
+    - Team-owned tokens are governed by team-level limits.
+    - User-owned tokens can be governed by team-member limits when the owner is
+      part of a team.
     """
     # Get ownership information
     owner_id, team_id = _validate_permissions_and_get_ownership_info(
@@ -402,17 +430,29 @@ async def create_llm_token(
             owner_id = current_user.id
             owner = current_user
 
-    # Pool budget teams use purchase_pool_budget to set the team-level
-    # max_budget in LiteLLM. Per-key limits are also set to match the team
-    # budget so that LiteLLM's dual-gate enforcement applies consistently.
+    # Pool budget teams use purchase_pool_budget to set a team-level max_budget
+    # in LiteLLM. Per-key budgets are intentionally left unset (null) so POOL
+    # teams are enforced by the team gate only.
     # Reuse the already-fetched team when team_id was provided. Fall back to
     # owner's team only when no team_id was provided.
     effective_team = team
     if effective_team is None and owner is not None and owner.team_id:
         effective_team = db.query(DBTeam).filter(DBTeam.id == owner.team_id).first()
     is_pool_team = (
-        effective_team is not None and effective_team.budget_type == BudgetType.POOL
+        effective_team is not None and effective_team.requires_pool_purchase_gate
     )
+    pool_purchased_total = None
+    if is_pool_team and effective_team is not None:
+        total_cents = (
+            db.query(func.sum(DBPoolPurchase.amount_cents))
+            .filter(
+                DBPoolPurchase.team_id == effective_team.id,
+                DBPoolPurchase.region_id == region.id,
+            )
+            .scalar()
+            or 0
+        )
+        pool_purchased_total = float(total_cents) / 100.0
 
     if (owner is not None and owner.team_id) or team_id:
         if settings.ENABLE_LIMITS and not is_pool_team:
@@ -442,6 +482,21 @@ async def create_llm_token(
             status_code=status.HTTP_404_NOT_FOUND, detail="Owner or team not found"
         )
 
+    # DB team_id follows the ownership decision (not LiteLLM scoping).
+    # force_user_keys clears team_id/team above — that must be respected.
+    # When no team was ever in the request but the owner has one, resolve it.
+    # Track whether team_id was originally provided so we don't re-introduce
+    # a team after force_user_keys cleared it.
+    _original_team_id = private_ai_key.team_id
+    db_team_id = team_id
+    if (
+        db_team_id is None
+        and _original_team_id is None
+        and owner is not None
+        and owner.team_id
+    ):
+        db_team_id = owner.team_id
+
     try:
         # Generate LiteLLM token
         litellm_service = LiteLLMService(
@@ -459,48 +514,24 @@ async def create_llm_token(
             rpm_limit=max_rpm_limit,
             apply_limits=not is_pool_team,
         )
-
-        # For POOL teams, fetch the team's current budget from LiteLLM and
-        # apply it to the newly created key so both gates have the same limit.
-        if is_pool_team:
-            try:
-                lite_team_id = LiteLLMService.format_team_id(region.name, litellm_team)
-                team_info_response = await litellm_service.get_team_info(lite_team_id)
-                # Normalize response: some variants return {"team_info": {...}}
-                if isinstance(team_info_response, dict):
-                    team_info = team_info_response.get("team_info", team_info_response)
-                else:
-                    team_info = {}
-                team_budget_raw = (
-                    team_info.get("max_budget") if isinstance(team_info, dict) else None
-                )
-                if team_budget_raw is not None:
-                    try:
-                        team_budget = float(team_budget_raw)
-                    except (TypeError, ValueError):
-                        logger.warning(
-                            f"Received non-numeric max_budget for team {lite_team_id}: {team_budget_raw}"
-                        )
-                    else:
-                        await litellm_service.update_budget(
-                            litellm_token=litellm_token,
-                            budget_duration=f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
-                            budget_amount=team_budget,
-                        )
-                        logger.info(
-                            f"Set pool key {litellm_token[:10]}... budget to ${team_budget}"
-                        )
-            except Exception as e:
-                logger.warning(
-                    f"Failed to set pool key budget (key will still work via team budget): {e}"
-                )
+        if (
+            is_pool_team
+            and pool_purchased_total is not None
+            and pool_purchased_total <= 0
+        ):
+            await litellm_service.update_key_budget(
+                litellm_token=litellm_token,
+                budget_duration="1mo",
+                max_budget=0.0,
+                clear_max_budget=False,
+            )
 
         # Create response object
         db_token = DBPrivateAIKey(
             litellm_token=litellm_token,
             litellm_api_url=region.litellm_api_url,
             owner_id=owner_id,
-            team_id=None if team_id is None else team_id,
+            team_id=db_team_id,
             name=private_ai_key.name,
             region_id=private_ai_key.region_id,
         )
@@ -777,6 +808,16 @@ async def get_private_ai_key(
         key_data.update(info_without_ownership)
 
         return PrivateAIKeyDetail.model_validate(key_data)
+    except HTTPException as e:
+        # If key was already removed in LiteLLM, keep API response usable and rely on DB data.
+        if e.status_code == status.HTTP_404_NOT_FOUND:
+            logger.warning(
+                "LiteLLM key not found for private AI key %s; returning DB-only details",
+                private_ai_key.id,
+            )
+            return PrivateAIKeyDetail.model_validate(private_ai_key.to_dict())
+        logger.error(f"Failed to get Private AI Key details: {str(e)}", exc_info=True)
+        raise
     except Exception as e:
         logger.error(f"Failed to get Private AI Key details: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -866,6 +907,9 @@ async def delete_private_ai_key(
             private_ai_key.database_name, private_ai_key.database_username
         )
 
+    # Remove dependent spend cap rows before deleting key row (FK spend_caps.key_id -> ai_tokens.id)
+    db.query(DBSpendCap).filter(DBSpendCap.key_id == private_ai_key.id).delete()
+
     # Remove the private AI key record from the application database
     db.delete(private_ai_key)
     db.commit()
@@ -873,7 +917,7 @@ async def delete_private_ai_key(
     return {"message": "Private AI Key deleted successfully"}
 
 
-@router.get("/{key_id}/spend", response_model=PrivateAIKeySpend)
+@router.get("/{key_id}/spend", response_model=PrivateAIKeySpendBasic)
 async def get_private_ai_key_spend(
     key_id: int,
     current_user=Depends(get_current_user_from_auth),
@@ -901,7 +945,23 @@ async def get_private_ai_key_spend(
         # Only set default for spend field
         spend_info = {"spend": info.get("spend", 0.0), **info}
 
-        return PrivateAIKeySpend.model_validate(spend_info)
+        return PrivateAIKeySpendBasic.model_validate(spend_info)
+    except HTTPException as e:
+        if e.status_code == status.HTTP_404_NOT_FOUND:
+            logger.warning(
+                "LiteLLM key not found for private AI key %s; returning default spend",
+                private_ai_key.id,
+            )
+            return PrivateAIKeySpendBasic.model_validate(
+                {
+                    "spend": 0.0,
+                    "created_at": private_ai_key.created_at,
+                    "updated_at": private_ai_key.updated_at,
+                    "expires": None,
+                }
+            )
+        logger.error(f"Failed to get Private AI Key spend: {str(e)}", exc_info=True)
+        raise
     except Exception as e:
         logger.error(f"Failed to get Private AI Key spend: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -959,7 +1019,7 @@ async def update_budget_period(
         # Only set default for spend field
         spend_info = {"spend": info.get("spend", 0.0), **info}
 
-        return PrivateAIKeySpend.model_validate(spend_info)
+        return PrivateAIKeySpendBasic.model_validate(spend_info)
     except Exception as e:
         logger.error(f"Failed to update budget period: {str(e)}", exc_info=True)
         raise HTTPException(

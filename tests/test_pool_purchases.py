@@ -1,11 +1,21 @@
 import time
 
-from app.db.models import DBPoolPurchase
+from app.db.models import (
+    DBLimitedResource,
+    DBPoolPurchase,
+    DBSpendCap,
+    DBPeriodicPayment,
+)
+from app.db.models import DBPeriodicBudgetLedgerEntry
 from app.db.models import DBTeamRegion
+from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
 from datetime import datetime, UTC, timedelta
 import pytest
 from unittest.mock import patch, AsyncMock
-from app.api.budgets import sync_pool_team_budgets
+from app.api.budgets import (
+    sync_pool_team_budgets,
+    sync_pool_team_monthly_caps,
+)
 
 
 @pytest.mark.skip(reason="Fixture isolation issue - passes when run with fresh DB")
@@ -138,6 +148,43 @@ def test_create_pool_purchase_duplicate_payment_id(
     assert "already exists" in response.json()["detail"]
 
 
+def test_create_pool_purchase_naive_purchased_at_does_not_fail_datetime_comparison(
+    client, admin_token, db, test_team, test_region
+):
+    """Regression test: naive purchased_at must not crash the offset-aware
+    period_start sourced from the DB (the bug fixed in #503)."""
+    test_team.budget_type = "pool"
+    db.add(
+        DBPoolPurchase(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            amount_cents=1000,
+            currency="usd",
+            purchased_at=datetime(2026, 3, 10, 10, 0, 0, tzinfo=UTC),
+            stripe_payment_id=f"pi_existing_{int(time.time() * 1000000)}",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    with patch(
+        "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
+    ) as mock_propagate:
+        mock_propagate.return_value = {"teams_updated": 1, "errors": []}
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 2000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00",
+                "stripe_payment_id": f"pi_naive_{int(time.time() * 1000000)}",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201
+
+
 def test_create_pool_purchase_non_pool_team_rejected(
     client, admin_token, db, test_team, test_region
 ):
@@ -158,6 +205,196 @@ def test_create_pool_purchase_non_pool_team_rejected(
 
     assert response.status_code == 400
     assert "pool budget type" in response.json()["detail"]
+
+
+def test_create_periodic_topup_success(client, admin_token, db, test_team, test_region):
+    test_team.budget_type = "periodic"
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 3.5}}
+        )
+        mock_instance.update_team_budget = AsyncMock()
+
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": f"cs_periodic_{int(time.time() * 1000000)}",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201
+    data = response.json()
+    assert data["team_id"] == test_team.id
+    assert data["region_id"] == test_region.id
+    assert data["amount_cents"] == 5000
+    assert data["new_total_budget_cents"] == 5350
+    assert data["budget_type"] == "periodic"
+
+    payment = (
+        db.query(DBPeriodicPayment)
+        .filter(DBPeriodicPayment.stripe_payment_id == data["stripe_payment_id"])
+        .first()
+    )
+    assert payment is not None
+    assert payment.team_id == test_team.id
+    assert payment.payment_type == "topup"
+
+    mock_instance.update_team_budget.assert_awaited_once()
+
+
+def test_create_periodic_topup_region_not_assigned_rejected(
+    client, admin_token, db, test_team, test_region
+):
+    test_team.budget_type = "periodic"
+    db.query(DBTeamRegion).filter(
+        DBTeamRegion.team_id == test_team.id,
+        DBTeamRegion.region_id == test_region.id,
+    ).delete()
+    db.commit()
+
+    response = client.post(
+        f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic",
+        json={
+            "amount_cents": 5000,
+            "currency": "usd",
+            "purchased_at": "2026-03-13T10:00:00Z",
+            "stripe_payment_id": f"cs_periodic_{int(time.time() * 1000000)}",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 400
+    assert "not assigned" in response.json()["detail"]
+
+
+def test_create_periodic_topup_duplicate_payment_id(
+    client, admin_token, db, test_team, test_region
+):
+    test_team.budget_type = "periodic"
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            source_payment_id=None,
+            source_invoice_id=None,
+            stripe_payment_id="cs_dup",
+            amount_cents=1000,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC),
+            is_active=True,
+        )
+    )
+    db.commit()
+
+    response = client.post(
+        f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic",
+        json={
+            "amount_cents": 5000,
+            "currency": "usd",
+            "purchased_at": "2026-03-13T10:00:00Z",
+            "stripe_payment_id": "cs_dup",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 409
+    assert "already exists" in response.json()["detail"]
+
+
+def test_create_periodic_topup_marks_sync_failed_on_litellm_error(
+    client, admin_token, db, test_team, test_region
+):
+    test_team.budget_type = "periodic"
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(side_effect=Exception("region down"))
+        mock_instance.update_team_budget = AsyncMock()
+
+        stripe_id = f"cs_periodic_fail_{int(time.time() * 1000000)}"
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": stripe_id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 502
+    payment = (
+        db.query(DBPeriodicPayment)
+        .filter(DBPeriodicPayment.stripe_payment_id == stripe_id)
+        .first()
+    )
+    assert payment is not None
+    assert payment.sync_status == "sync_failed"
+    assert "failed" in (payment.error_log or "").lower()
+
+
+def test_create_periodic_topup_expiry_anchors_to_last_topup_date(
+    client, admin_token, db, test_team, test_region
+):
+    test_team.budget_type = "periodic"
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 0.0}}
+        )
+        mock_instance.update_team_budget = AsyncMock()
+
+        first_payment_id = f"cs_periodic_first_{int(time.time() * 1000000)}"
+        second_payment_id = f"cs_periodic_second_{int(time.time() * 1000000)}"
+
+        response_first = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic",
+            json={
+                "amount_cents": 2000,
+                "currency": "usd",
+                "purchased_at": "2026-03-20T10:00:00Z",
+                "stripe_payment_id": first_payment_id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response_first.status_code == 201
+
+        response_second = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic",
+            json={
+                "amount_cents": 2000,
+                "currency": "usd",
+                "purchased_at": "2026-03-10T10:00:00Z",
+                "stripe_payment_id": second_payment_id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert response_second.status_code == 201
+
+    first_entry = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.stripe_payment_id == first_payment_id)
+        .first()
+    )
+    second_entry = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.stripe_payment_id == second_payment_id)
+        .first()
+    )
+    assert first_entry is not None
+    assert second_entry is not None
+    assert second_entry.expires_at == first_entry.expires_at
 
 
 def test_create_pool_purchase_team_not_found(client, admin_token, db, test_region):
@@ -193,6 +430,263 @@ def test_create_pool_purchase_region_not_found(client, admin_token, db, test_tea
     )
 
     assert response.status_code == 404
+
+
+def test_pool_purchase_propagates_team_budget_only(
+    client, admin_token, db, test_team, test_region
+):
+    """POOL purchases should update team budget only (no per-key propagation)."""
+    test_team.budget_type = "pool"
+    db.commit()
+
+    with patch(
+        "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
+    ) as mock_propagate:
+        mock_propagate.return_value = {"teams_updated": 1, "errors": []}
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": f"pi_team_only_{int(time.time() * 1000000)}",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201
+
+
+def test_pool_purchase_does_not_trigger_limit_service_background_propagation(
+    client, admin_token, db, test_team, test_region
+):
+    test_team.budget_type = "pool"
+    db.commit()
+
+    with (
+        patch(
+            "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
+        ) as mock_propagate,
+        patch(
+            "app.core.limit_service.LimitService._trigger_team_budget_propagation"
+        ) as mock_trigger,
+    ):
+        mock_propagate.return_value = {"teams_updated": 1, "errors": []}
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": f"pi_no_bg_prop_{int(time.time() * 1000000)}",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201
+    mock_trigger.assert_not_called()
+
+
+def test_pool_purchase_honors_existing_monthly_cap(
+    client, admin_token, db, test_team, test_region
+):
+    test_team.budget_type = "pool"
+    db.add(test_team)
+    db.add(
+        DBSpendCap(
+            scope="team",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            max_budget=10.0,
+            budget_duration="1mo",
+            month_start_spend=5.0,
+            month_anchor=datetime.now(UTC).date().replace(day=1),
+        )
+    )
+    db.commit()
+
+    with patch(
+        "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
+    ) as mock_propagate:
+        mock_propagate.return_value = {"teams_updated": 1, "errors": []}
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "stripe_payment_id": f"pi_monthly_pool_{int(time.time() * 1000000)}",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201
+    assert mock_propagate.await_count == 1
+    assert mock_propagate.await_args.args[2] == 15.0  # month_start_spend + monthly cap
+    assert mock_propagate.await_args.args[3] == "365d"
+    mock_propagate.assert_awaited_once()
+    assert mock_propagate.call_args.kwargs["apply_to_keys"] is False
+
+
+def test_pool_purchase_restores_team_budget_when_key_sync_fails(
+    client, admin_token, db, test_team, test_region
+):
+    test_team.budget_type = "pool"
+    db.commit()
+    payment_id = f"pi_key_sync_failure_{int(time.time() * 1000000)}"
+
+    with (
+        patch(
+            "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
+        ) as mock_propagate,
+        patch(
+            "app.api.budgets._sync_pool_key_effective_budgets", new_callable=AsyncMock
+        ) as mock_sync_keys,
+        patch(
+            "app.api.budgets.LiteLLMService.get_team_info", new_callable=AsyncMock
+        ) as mock_get_team_info,
+        patch(
+            "app.api.budgets.LiteLLMService.update_team_budget", new_callable=AsyncMock
+        ) as mock_restore_team_budget,
+    ):
+        mock_propagate.return_value = {"teams_updated": 1, "errors": []}
+        mock_sync_keys.return_value = ["Key 1: lock failed"]
+        mock_get_team_info.return_value = {
+            "team_info": {"max_budget": 0.0, "budget_duration": "365d", "spend": 0.0}
+        }
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": payment_id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 502
+    assert (
+        "Failed to update key budgets in LiteLLM after purchase"
+        in response.json()["detail"]
+    )
+    mock_restore_team_budget.assert_awaited_once_with(
+        team_id=f"{test_region.name}_{test_team.id}",
+        max_budget=0.0,
+        budget_duration="365d",
+    )
+    purchase = (
+        db.query(DBPoolPurchase)
+        .filter(DBPoolPurchase.stripe_payment_id == payment_id)
+        .first()
+    )
+    assert purchase is None
+
+
+def test_pool_purchase_preserves_operator_manual_cap_below_purchased_total(
+    client, admin_token, db, test_team, test_region
+):
+    test_team.budget_type = "pool"
+    db.add(
+        DBLimitedResource(
+            limit_type=LimitType.DATA_PLANE,
+            resource=ResourceType.BUDGET,
+            unit=UnitType.DOLLAR,
+            max_value=10.0,
+            current_value=None,
+            owner_type=OwnerType.TEAM,
+            owner_id=test_team.id,
+            limited_by=LimitSource.MANUAL,
+            set_by="admin@example.com",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    with patch(
+        "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
+    ) as mock_propagate:
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": f"pi_manual_cap_low_{int(time.time() * 1000000)}",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["new_total_budget_cents"] == 5000
+    mock_propagate.assert_awaited_once()
+    assert mock_propagate.call_args.args[2] == 10.0
+
+    limit = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == test_team.id,
+            DBLimitedResource.resource == ResourceType.BUDGET,
+        )
+        .first()
+    )
+    assert limit is not None
+    assert float(limit.max_value) == 10.0
+    assert limit.set_by == "admin@example.com"
+
+
+def test_pool_purchase_uses_purchased_total_when_operator_cap_above_purchased(
+    client, admin_token, db, test_team, test_region
+):
+    test_team.budget_type = "pool"
+    db.add(
+        DBLimitedResource(
+            limit_type=LimitType.DATA_PLANE,
+            resource=ResourceType.BUDGET,
+            unit=UnitType.DOLLAR,
+            max_value=100.0,
+            current_value=None,
+            owner_type=OwnerType.TEAM,
+            owner_id=test_team.id,
+            limited_by=LimitSource.MANUAL,
+            set_by="admin@example.com",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    with patch(
+        "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
+    ) as mock_propagate:
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": f"pi_manual_cap_high_{int(time.time() * 1000000)}",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["new_total_budget_cents"] == 5000
+    mock_propagate.assert_awaited_once()
+    assert mock_propagate.call_args.args[2] == 50.0
+
+    limit = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == test_team.id,
+            DBLimitedResource.resource == ResourceType.BUDGET,
+        )
+        .first()
+    )
+    assert limit is not None
+    assert float(limit.max_value) == 100.0
+    assert limit.set_by == "admin@example.com"
 
 
 def test_get_purchase_history(client, admin_token, db, test_team, test_region):
@@ -387,13 +881,22 @@ async def test_sync_pool_team_budgets_expires_stale_pool_team(
     """Pool teams with 365+ days since last purchase should be set to $0 budget."""
     test_team.budget_type = "pool"
     test_team.last_pool_purchase = datetime.now(UTC) - timedelta(days=366)
-    db.add(
-        DBTeamRegion(
-            team_id=test_team.id,
-            region_id=test_region.id,
-            created_at=datetime.now(UTC),
+    if (
+        db.query(DBTeamRegion)
+        .filter(
+            DBTeamRegion.team_id == test_team.id,
+            DBTeamRegion.region_id == test_region.id,
         )
-    )
+        .first()
+        is None
+    ):
+        db.add(
+            DBTeamRegion(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                created_at=datetime.now(UTC),
+            )
+        )
     db.add(
         DBPoolPurchase(
             team_id=test_team.id,
@@ -450,20 +953,38 @@ async def test_sync_pool_team_budgets_expires_all_team_regions(
 
     test_team.budget_type = "pool"
     test_team.last_pool_purchase = datetime.now(UTC) - timedelta(days=1)
-    db.add(
-        DBTeamRegion(
-            team_id=test_team.id,
-            region_id=test_region.id,
-            created_at=datetime.now(UTC),
+    if (
+        db.query(DBTeamRegion)
+        .filter(
+            DBTeamRegion.team_id == test_team.id,
+            DBTeamRegion.region_id == test_region.id,
         )
-    )
-    db.add(
-        DBTeamRegion(
-            team_id=test_team.id,
-            region_id=second_region.id,
-            created_at=datetime.now(UTC),
+        .first()
+        is None
+    ):
+        db.add(
+            DBTeamRegion(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                created_at=datetime.now(UTC),
+            )
         )
-    )
+    if (
+        db.query(DBTeamRegion)
+        .filter(
+            DBTeamRegion.team_id == test_team.id,
+            DBTeamRegion.region_id == second_region.id,
+        )
+        .first()
+        is None
+    ):
+        db.add(
+            DBTeamRegion(
+                team_id=test_team.id,
+                region_id=second_region.id,
+                created_at=datetime.now(UTC),
+            )
+        )
     db.add(
         DBPoolPurchase(
             team_id=test_team.id,
@@ -503,3 +1024,90 @@ async def test_sync_pool_team_budgets_expires_all_team_regions(
         max_budget=0.0,
         budget_duration="365d",
     )
+
+
+@pytest.mark.asyncio
+@patch("app.core.config.settings.POOL_BUDGET_EXPIRATION_DAYS", 365)
+async def test_sync_pool_team_budgets_uses_team_only_propagation(
+    db, test_team, test_region
+):
+    """Pool budget expiry should propagate team budget only."""
+    test_team.budget_type = "pool"
+    db.add(
+        DBPoolPurchase(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            amount_cents=1000,
+            currency="usd",
+            purchased_at=datetime.now(UTC) - timedelta(days=400),
+            stripe_payment_id="pi_team_only_sync",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    with patch(
+        "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
+    ) as mock_propagate:
+        mock_propagate.return_value = {"teams_updated": 1, "errors": []}
+        result = await sync_pool_team_budgets(db)
+
+    assert result["teams_updated"] == 1
+    assert mock_propagate.await_count == 1
+    assert mock_propagate.call_args.kwargs["apply_to_keys"] is False
+
+
+@pytest.mark.asyncio
+async def test_sync_pool_team_monthly_caps_rollover_updates_effective_budget(
+    db, test_team, test_region
+):
+    test_team.budget_type = "pool"
+    db.add(test_team)
+    db.add(
+        DBPoolPurchase(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            amount_cents=5000,
+            currency="usd",
+            purchased_at=datetime.now(UTC),
+            stripe_payment_id=f"pi_rollover_{int(time.time() * 1000000)}",
+            created_at=datetime.now(UTC),
+        )
+    )
+    today = datetime.now(UTC).date()
+    prev_month_anchor = (
+        datetime(today.year - 1, 12, 1, tzinfo=UTC).date()
+        if today.month == 1
+        else datetime(today.year, today.month - 1, 1, tzinfo=UTC).date()
+    )
+    cap = DBSpendCap(
+        scope="team",
+        region_id=test_region.id,
+        team_id=test_team.id,
+        max_budget=10.0,
+        budget_duration="1mo",
+        month_anchor=prev_month_anchor,
+        month_start_spend=7.0,
+    )
+    db.add(cap)
+    db.commit()
+
+    with (
+        patch(
+            "app.api.budgets.LiteLLMService.get_team_info", new_callable=AsyncMock
+        ) as mock_get_team_info,
+        patch(
+            "app.api.budgets.LiteLLMService.update_team_budget", new_callable=AsyncMock
+        ) as mock_update_team_budget,
+    ):
+        mock_get_team_info.return_value = {"team_info": {"spend": 20.0}}
+        result = await sync_pool_team_monthly_caps(db)
+
+    assert result["errors"] == []
+    assert result["teams_updated"] == 1
+    db.refresh(cap)
+    assert cap.month_anchor == today.replace(day=1)
+    assert cap.month_start_spend == 20.0
+    mock_update_team_budget.assert_awaited_once()
+    assert mock_update_team_budget.await_args.kwargs["max_budget"] == 30.0
+    assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "365d"

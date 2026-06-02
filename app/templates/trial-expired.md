@@ -2,18 +2,14 @@ Your amazee.ai trial has ended
 Hi {{name}},
 
 Your free trial of amazee.ai has ended, and we hope you've enjoyed
-building with private AI for Drupal.
+building with private AI using your amazee.ai account.
 
 Want to continue using amazee.ai?
-Select from the following subscription plans. All your configurations will remain exactly as
-they are.
+We'd love to set you up with the right plan. Reach out to us at
+[ai.support@amazee.io](mailto:ai.support@amazee.io) and we'll get you sorted.
 
-{{dashboard_url}}
-
-Not ready to sign-up just yet? That's okay! We'll be here when you're ready
-to continue your amazee.ai journey.
-
-Questions about plans or pricing? Please email ai.support@amazee.io.
+All your configurations are saved and ready to go once you're subscribed.
 
 Thanks for trying amazee.ai!
+
 The amazee.ai Team

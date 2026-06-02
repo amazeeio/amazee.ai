@@ -1,11 +1,14 @@
 from app.db.models import (
     DBRegion,
+    DBSpendCap,
     DBUser,
     DBTeam,
     DBProduct,
     DBTeamProduct,
+    DBTeamRegion,
     DBPrivateAIKey,
     DBLimitedResource,
+    DBUserAdminRegion,
     DBUserSpendCache,
 )
 from app.core.limit_service import LimitService, DEFAULT_KEYS_PER_USER
@@ -212,6 +215,94 @@ def test_create_user_by_team_admin(client, team_admin_token, test_team, db):
     assert any(u["id"] == user_data["id"] for u in team_data["users"])
 
 
+def test_assign_and_list_user_admin_regions(client, admin_token, db, test_team_user):
+    dedicated_region = DBRegion(
+        name="dedicated-user-admin-region",
+        label="Dedicated User Admin Region",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.local",
+        litellm_api_key="k",
+        is_active=True,
+        is_dedicated=True,
+    )
+    db.add(dedicated_region)
+    db.commit()
+    db.refresh(dedicated_region)
+
+    create_response = client.post(
+        f"/users/{test_team_user.id}/admin-regions/{dedicated_region.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert create_response.status_code == 200
+    assert create_response.json()["region_id"] == dedicated_region.id
+
+    list_response = client.get(
+        f"/users/{test_team_user.id}/admin-regions",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert list_response.status_code == 200
+    payload = list_response.json()
+    assert len(payload) == 1
+    assert payload[0]["region"]["name"] == "dedicated-user-admin-region"
+
+
+def test_team_user_cannot_assign_admin_regions(
+    client, team_admin_token, db, test_team_user
+):
+    dedicated_region = DBRegion(
+        name="dedicated-user-admin-forbidden",
+        label="Dedicated User Admin Forbidden",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.local",
+        litellm_api_key="k",
+        is_active=True,
+        is_dedicated=True,
+    )
+    db.add(dedicated_region)
+    db.commit()
+    db.refresh(dedicated_region)
+
+    response = client.post(
+        f"/users/{test_team_user.id}/admin-regions/{dedicated_region.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 403
+
+
+def test_remove_user_admin_region(client, admin_token, db, test_team_user):
+    dedicated_region = DBRegion(
+        name="dedicated-user-admin-remove",
+        label="Dedicated User Admin Remove",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.local",
+        litellm_api_key="k",
+        is_active=True,
+        is_dedicated=True,
+    )
+    db.add(dedicated_region)
+    db.commit()
+    db.refresh(dedicated_region)
+
+    db.add(DBUserAdminRegion(user_id=test_team_user.id, region_id=dedicated_region.id))
+    db.commit()
+
+    response = client.delete(
+        f"/users/{test_team_user.id}/admin-regions/{dedicated_region.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["message"] == "User admin-region association removed"
+
+
 @patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
 def test_get_user_spend_success_with_cache_and_normalization(
     mock_get_team_info, client, admin_token, db
@@ -246,6 +337,8 @@ def test_get_user_spend_success_with_cache_and_normalization(
     db.refresh(team)
     db.refresh(region)
     db.refresh(user)
+    db.add(DBTeamRegion(team_id=team.id, region_id=region.id))
+    db.commit()
 
     db.add(
         DBPrivateAIKey(
@@ -278,6 +371,7 @@ def test_get_user_spend_success_with_cache_and_normalization(
     assert len(data["teams"]) == 1
     assert data["teams"][0]["spend"] == 12.5
     assert data["teams"][0]["regions"][0]["status"] == "ok"
+    assert data["teams"][0]["regions"][0]["max_budget"] is None
     first_cached_at = data["cached_at"]
     assert mock_get_team_info.await_count == 1
 
@@ -345,6 +439,13 @@ def test_get_user_spend_skips_regions_without_user_keys(
     db.refresh(region_with_key)
     db.refresh(region_without_key)
     db.refresh(user)
+    db.add_all(
+        [
+            DBTeamRegion(team_id=team.id, region_id=region_with_key.id),
+            DBTeamRegion(team_id=team.id, region_id=region_without_key.id),
+        ]
+    )
+    db.commit()
 
     db.add(
         DBPrivateAIKey(
@@ -373,6 +474,153 @@ def test_get_user_spend_skips_regions_without_user_keys(
     assert len(data["teams"][0]["regions"]) == 1
     assert data["teams"][0]["regions"][0]["region_name"] == "region-a"
     assert mock_get_team_info.await_count == 1
+
+
+@patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_user_spend_includes_user_owned_keys(
+    mock_get_team_info, client, admin_token, db
+):
+    """Keys with owner_id set but team_id=NULL should still contribute to user spend."""
+    team = DBTeam(
+        name="User Key Team",
+        admin_email="userkey-team@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    region = DBRegion(
+        name="region-userkey",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.userkey",
+        litellm_api_key="ku",
+        is_active=True,
+        is_dedicated=False,
+    )
+    user = DBUser(
+        email="carol+uk@example.com",
+        hashed_password=get_password_hash("pw"),
+        is_active=True,
+        is_admin=False,
+        team=team,
+    )
+    db.add_all([team, region, user])
+    db.commit()
+    db.refresh(team)
+    db.refresh(region)
+    db.refresh(user)
+    db.add(DBTeamRegion(team_id=team.id, region_id=region.id))
+    db.commit()
+
+    # Key with owner_id but NO team_id — this is the regression case.
+    db.add(
+        DBPrivateAIKey(
+            database_name="db-userkey",
+            database_username="u-uk",
+            owner_id=user.id,
+            team_id=None,
+            region_id=region.id,
+        )
+    )
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "keys": [
+            {
+                "metadata": {"amazeeai_user_id": str(user.id)},
+                "spend": 7.25,
+            }
+        ]
+    }
+
+    response = client.get(
+        "/users/spend?email=carol@example.com",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_spend"] == 7.25
+    assert len(data["teams"]) == 1
+    assert data["teams"][0]["team_id"] == team.id
+    assert len(data["teams"][0]["regions"]) == 1
+    assert data["teams"][0]["regions"][0]["region_name"] == "region-userkey"
+    assert data["teams"][0]["regions"][0]["spend"] == 7.25
+    assert mock_get_team_info.await_count == 1
+
+
+@patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
+def test_get_user_spend_includes_team_member_region_max_budget(
+    mock_get_team_info, client, admin_token, db
+):
+    team = DBTeam(
+        name="Budget Team",
+        admin_email="budget-team@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    region = DBRegion(
+        name="region-budget",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="postgres",
+        postgres_admin_password="postgres",
+        litellm_api_url="http://litellm.budget",
+        litellm_api_key="kb",
+        is_active=True,
+        is_dedicated=False,
+    )
+    user = DBUser(
+        email="budget+member@example.com",
+        hashed_password=get_password_hash("pw"),
+        is_active=True,
+        is_admin=False,
+        team=team,
+    )
+    db.add_all([team, region, user])
+    db.commit()
+    db.refresh(team)
+    db.refresh(region)
+    db.refresh(user)
+    db.add(DBTeamRegion(team_id=team.id, region_id=region.id))
+    db.commit()
+
+    db.add(
+        DBPrivateAIKey(
+            database_name="db-budget",
+            database_username="u-budget",
+            owner_id=user.id,
+            team_id=team.id,
+            region_id=region.id,
+        )
+    )
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=region.id,
+            team_id=team.id,
+            user_id=user.id,
+            max_budget=33.5,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+
+    mock_get_team_info.return_value = {
+        "keys": [
+            {"metadata": {"amazeeai_user_id": str(user.id)}, "spend": 1.25},
+        ]
+    }
+
+    response = client.get(
+        "/users/spend?email=budget@example.com",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["teams"][0]["regions"][0]["max_budget"] == 33.5
 
 
 @patch("app.api.users.LiteLLMService.get_team_info", new_callable=AsyncMock)
@@ -409,6 +657,8 @@ def test_get_user_spend_unavailable_region_not_cached(
     db.refresh(team)
     db.refresh(region)
     db.refresh(user)
+    db.add(DBTeamRegion(team_id=team.id, region_id=region.id))
+    db.commit()
 
     db.add(
         DBPrivateAIKey(

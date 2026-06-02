@@ -72,6 +72,32 @@ class LiteLLMService:
 
         return sanitized
 
+    @staticmethod
+    def _parse_http_error(e: httpx.HTTPStatusError) -> tuple[int, str, str]:
+        status_code = (
+            e.response.status_code
+            if hasattr(e, "response") and e.response is not None
+            else status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        response_text = ""
+        error_msg = str(e)
+        if hasattr(e, "response") and e.response is not None:
+            response_text = e.response.text or ""
+            try:
+                error_msg = f"Status {e.response.status_code}: {e.response.json()}"
+            except ValueError:
+                error_msg = f"Status {e.response.status_code}: {response_text}"
+        return status_code, error_msg, response_text
+
+    @staticmethod
+    def _is_idempotent_litellm_error(
+        status_code: int, response_text: str, allowed_markers: list[str]
+    ) -> bool:
+        if status_code not in (400, 404, 409):
+            return False
+        lowered = (response_text or "").lower()
+        return any(marker in lowered for marker in allowed_markers)
+
     async def create_key(
         self,
         email: str,
@@ -212,6 +238,9 @@ class LiteLLMService:
         except httpx.HTTPStatusError as e:
             error_msg = str(e)
             logger.error(f"Error getting LiteLLM key information: {error_msg}")
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            if hasattr(e, "response") and e.response is not None:
+                status_code = e.response.status_code
             if hasattr(e, "response") and e.response is not None:
                 try:
                     error_details = e.response.json()
@@ -219,7 +248,7 @@ class LiteLLMService:
                 except ValueError:
                     error_msg = f"Status {e.response.status_code}: {e.response.text}"
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=status_code,
                 detail=f"Failed to get LiteLLM key information: {error_msg}",
             )
 
@@ -228,6 +257,7 @@ class LiteLLMService:
         litellm_token: str,
         budget_duration: str,
         budget_amount: Optional[float] = None,
+        include_max_budget: bool = False,
     ):
         """Update the budget for a LiteLLM API key"""
         try:
@@ -237,7 +267,7 @@ class LiteLLMService:
                 "budget_duration": budget_duration,
                 "duration": "365d",
             }
-            if budget_amount is not None:
+            if include_max_budget or budget_amount is not None:
                 request_data["max_budget"] = budget_amount
 
             async with httpx.AsyncClient() as client:
@@ -258,6 +288,49 @@ class LiteLLMService:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to update LiteLLM budget: {error_msg}",
+            )
+
+    async def update_key_budget(
+        self,
+        litellm_token: str,
+        budget_duration: Optional[str] = None,
+        max_budget: Optional[float] = None,
+        clear_max_budget: bool = False,
+        clear_budget_duration: bool = False,
+    ) -> None:
+        """Update budget fields for a LiteLLM key.
+
+        When clear_max_budget=True, max_budget is explicitly sent as null.
+        When clear_budget_duration=True, budget_duration is explicitly sent as null.
+        This method intentionally avoids updating key duration/expiry.
+        """
+        try:
+            request_data = {
+                "key": litellm_token,
+            }
+            if clear_budget_duration or budget_duration is not None:
+                request_data["budget_duration"] = budget_duration
+            if clear_max_budget or max_budget is not None:
+                request_data["max_budget"] = max_budget
+
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/key/update",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json=request_data,
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            error_msg = str(e)
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update LiteLLM key budget: {error_msg}",
             )
 
     async def update_key_duration(self, litellm_token: str, duration: str):
@@ -290,20 +363,29 @@ class LiteLLMService:
         budget_amount: float,
         rpm_limit: int,
         budget_duration: Optional[str] = None,
+        spend: Optional[float] = None,
     ):
-        """Set the restrictions for a LiteLLM API key"""
+        """Set the restrictions for a LiteLLM API key.
+
+        Args:
+            spend: When provided, overrides the key's spend counter
+                   (e.g. 0.0 to reset spend at billing cycle start).
+        """
         try:
+            request_data = {
+                "key": litellm_token,
+                "duration": duration,
+                "budget_duration": budget_duration,
+                "max_budget": budget_amount,
+                "rpm_limit": rpm_limit,
+            }
+            if spend is not None:
+                request_data["spend"] = spend
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{self.api_url}/key/update",
                     headers={"Authorization": f"Bearer {self.master_key}"},
-                    json={
-                        "key": litellm_token,
-                        "duration": duration,
-                        "budget_duration": budget_duration,
-                        "max_budget": budget_amount,
-                        "rpm_limit": rpm_limit,
-                    },
+                    json=request_data,
                 )
                 response.raise_for_status()
         except httpx.HTTPStatusError as e:
@@ -389,6 +471,53 @@ class LiteLLMService:
                 detail=f"Failed to get LiteLLM model info: {error_msg}",
             )
 
+    async def get_cost_margin_config(self) -> dict:
+        """Get LiteLLM provider margin configuration."""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.api_url}/config/cost_margin_config",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            error_msg = str(e)
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get LiteLLM margin config: {error_msg}",
+            )
+
+    async def get_user_info(self, user_id: str) -> dict:
+        """Get information about a LiteLLM user including spend and keys."""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.api_url}/user/info",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    params={"user_id": user_id},
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            error_msg = str(e)
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get LiteLLM user info: {error_msg}",
+            )
+
     async def create_team(
         self,
         max_budget: Optional[float] = None,
@@ -423,17 +552,7 @@ class LiteLLMService:
                 identifier = team_id or team_alias or "unknown-team"
                 logger.info(f"Created team {identifier} in LiteLLM")
         except httpx.HTTPStatusError as e:
-            error_msg = str(e)
-            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-            response_text = ""
-            if hasattr(e, "response") and e.response is not None:
-                status_code = e.response.status_code
-                response_text = e.response.text or ""
-                try:
-                    error_details = e.response.json()
-                    error_msg = f"Status {e.response.status_code}: {error_details}"
-                except ValueError:
-                    error_msg = f"Status {e.response.status_code}: {response_text}"
+            status_code, error_msg, response_text = self._parse_http_error(e)
 
             # Some LiteLLM versions return 400/409 when team already exists.
             if status_code in (400, 409) and "already" in response_text.lower():
@@ -451,6 +570,7 @@ class LiteLLMService:
         team_id: str,
         max_budget: Optional[float],
         budget_duration: Optional[str] = None,
+        model_aliases: Optional[dict[str, str]] = None,
     ):
         """Update the budget for a LiteLLM team.
 
@@ -467,6 +587,8 @@ class LiteLLMService:
             request_data["max_budget"] = max_budget
             if budget_duration:
                 request_data["budget_duration"] = budget_duration
+            if model_aliases is not None:
+                request_data["model_aliases"] = model_aliases
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -477,14 +599,325 @@ class LiteLLMService:
                 response.raise_for_status()
                 logger.info(f"Updated team {team_id} budget to {max_budget} in LiteLLM")
         except httpx.HTTPStatusError as e:
-            error_msg = str(e)
-            if hasattr(e, "response") and e.response is not None:
-                try:
-                    error_details = e.response.json()
-                    error_msg = f"Status {e.response.status_code}: {error_details}"
-                except ValueError:
-                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            _, error_msg, _ = self._parse_http_error(e)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to update LiteLLM team budget: {error_msg}",
+            )
+
+    async def get_team_model_aliases(self, team_id: str) -> dict[str, str]:
+        """Get a team's model_aliases map from LiteLLM."""
+        raw_aliases = await self._fetch_team_model_aliases(team_id)
+        if not isinstance(raw_aliases, dict):
+            return {}
+        return {
+            str(alias): str(model)
+            for alias, model in raw_aliases.items()
+            if alias is not None and model is not None
+        }
+
+    async def _fetch_team_model_aliases(self, team_id: str) -> dict | None:
+        team_info_response = await self.get_team_info(team_id)
+        team_info = team_info_response.get("team_info", team_info_response)
+
+        raw_aliases = team_info.get("model_aliases")
+        if isinstance(raw_aliases, dict):
+            return raw_aliases
+
+        model_table = team_info.get("litellm_model_table")
+        if model_table and isinstance(model_table, dict):
+            raw_aliases = model_table.get("model_aliases")
+            if isinstance(raw_aliases, dict):
+                return raw_aliases
+
+        return await self._fetch_team_model_aliases_from_list(team_id)
+
+    async def _fetch_team_model_aliases_from_list(self, team_id: str) -> dict | None:
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.api_url}/team/list",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                )
+                response.raise_for_status()
+                teams = response.json()
+                for team in teams:
+                    if team.get("team_id") == team_id:
+                        model_table = team.get("litellm_model_table")
+                        if model_table and isinstance(model_table, dict):
+                            return model_table.get("model_aliases")
+                return None
+        except httpx.HTTPStatusError as e:
+            _, error_msg, _ = self._parse_http_error(e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to list LiteLLM teams: {error_msg}",
+            )
+
+    async def create_user(
+        self,
+        user_id: str,
+        user_email: str,
+        teams: Optional[list[str]] = None,
+        auto_create_key: bool = False,
+    ) -> None:
+        """Create a LiteLLM user. Treat existing users as success."""
+        request_data: dict = {
+            "user_id": user_id,
+            "user_email": user_email,
+            "auto_create_key": auto_create_key,
+        }
+        if teams:
+            request_data["teams"] = teams
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/user/new",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json=request_data,
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            status_code, error_msg, response_text = self._parse_http_error(e)
+            if self._is_idempotent_litellm_error(
+                status_code, response_text, ["already exists", "duplicate"]
+            ):
+                logger.info(f"LiteLLM user {user_id} already exists; continuing")
+                return
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to create LiteLLM user: {error_msg}",
+            )
+
+    async def update_user(self, user_id: str, updates: dict) -> None:
+        """Update a LiteLLM user."""
+        request_data = {"user_id": user_id, **updates}
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/user/update",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json=request_data,
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            _, error_msg, _ = self._parse_http_error(e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update LiteLLM user: {error_msg}",
+            )
+
+    async def delete_user(self, user_id: str) -> None:
+        """Delete a LiteLLM user. Treat already-deleted users as success."""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/user/delete",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json={"user_ids": [user_id]},
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            status_code, error_msg, response_text = self._parse_http_error(e)
+            if self._is_idempotent_litellm_error(
+                status_code, response_text, ["not found", "does not exist"]
+            ):
+                logger.info(f"LiteLLM user {user_id} already absent; continuing")
+                return
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to delete LiteLLM user: {error_msg}",
+            )
+
+    async def add_team_member(
+        self, team_id: str, user_id: str, role: str = "user"
+    ) -> None:
+        """Add a user as a team member in LiteLLM. Treat existing membership as success."""
+        payload = {
+            "team_id": team_id,
+            "member": {"user_id": user_id, "role": role},
+        }
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/team/member_add",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json=payload,
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            status_code, error_msg, response_text = self._parse_http_error(e)
+            if self._is_idempotent_litellm_error(
+                status_code, response_text, ["already", "exists"]
+            ):
+                logger.info(
+                    f"LiteLLM team membership already exists team={team_id} user={user_id}; continuing"
+                )
+                return
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to add LiteLLM team member: {error_msg}",
+            )
+
+    async def update_team_member(
+        self,
+        team_id: str,
+        user_id: str,
+        role: str,
+        max_budget_in_team: Optional[float] = None,
+        budget_duration: Optional[str] = None,
+    ) -> None:
+        """Update a user's role/budget within a LiteLLM team.
+
+        LiteLLM's /team/member_update ignores budget_duration (issue #25509).
+        When budget_duration is provided, this method performs a two-step write:
+        1. /team/member_update  -> sets max_budget_in_team
+        2. /budget/update       -> sets budget_duration on the membership budget
+        """
+        payload = {"team_id": team_id, "user_id": user_id, "role": role}
+        if max_budget_in_team is not None:
+            payload["max_budget_in_team"] = max_budget_in_team
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/team/member_update",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json=payload,
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            status_code, error_msg, response_text = self._parse_http_error(e)
+            if self._is_idempotent_litellm_error(
+                status_code,
+                response_text,
+                ["not found", "does not exist", "not a member", "already", "no change"],
+            ):
+                logger.info(
+                    "LiteLLM member update noop team=%s user=%s; continuing",
+                    team_id,
+                    user_id,
+                )
+                if budget_duration is not None and max_budget_in_team is not None:
+                    await self._update_membership_budget_duration(
+                        team_id=team_id,
+                        user_id=user_id,
+                        max_budget=max_budget_in_team,
+                        budget_duration=budget_duration,
+                    )
+                return
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update LiteLLM team member: {error_msg}",
+            )
+
+        if budget_duration is not None and max_budget_in_team is not None:
+            await self._update_membership_budget_duration(
+                team_id=team_id,
+                user_id=user_id,
+                max_budget=max_budget_in_team,
+                budget_duration=budget_duration,
+            )
+
+    async def _update_membership_budget_duration(
+        self,
+        team_id: str,
+        user_id: str,
+        max_budget: float,
+        budget_duration: str,
+    ) -> None:
+        """Set budget_duration on a team membership's budget table.
+
+        Workaround for LiteLLM issue #25509 where /team/member_update
+        ignores budget_duration. We look up the membership budget_id
+        via /user/info, then POST it via /budget/update.
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                user_resp = await client.get(
+                    f"{self.api_url}/user/info",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    params={"user_id": user_id},
+                )
+                user_resp.raise_for_status()
+                user_data = user_resp.json()
+
+            budget_id = None
+            for team in user_data.get("teams", []):
+                if team.get("team_id") != team_id:
+                    continue
+                for membership in team.get("team_memberships", []):
+                    budget_table = membership.get("litellm_budget_table") or {}
+                    budget_id = budget_table.get("budget_id") or membership.get(
+                        "budget_id"
+                    )
+                    if budget_id:
+                        break
+                if budget_id:
+                    break
+
+            if not budget_id:
+                logger.warning(
+                    "No membership budget_id found for team=%s user=%s; "
+                    "skipping budget_duration update",
+                    team_id,
+                    user_id,
+                )
+                return
+
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{self.api_url}/budget/update",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json={
+                        "budget_id": budget_id,
+                        "max_budget": max_budget,
+                        "budget_duration": budget_duration,
+                    },
+                )
+                resp.raise_for_status()
+                logger.info(
+                    "Updated membership budget_duration=%s for team=%s user=%s",
+                    budget_duration,
+                    team_id,
+                    user_id,
+                )
+        except httpx.HTTPStatusError as e:
+            _, error_msg, _ = self._parse_http_error(e)
+            logger.error(
+                "Failed to update membership budget_duration for team=%s user=%s: %s",
+                team_id,
+                user_id,
+                error_msg,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update membership budget duration: {error_msg}",
+            )
+
+    async def remove_team_member(self, team_id: str, user_id: str) -> None:
+        """Remove a user from a LiteLLM team. Treat missing membership as success."""
+        payload = {"team_id": team_id, "user_id": user_id}
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/team/member_delete",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json=payload,
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            status_code, error_msg, response_text = self._parse_http_error(e)
+            if self._is_idempotent_litellm_error(
+                status_code,
+                response_text,
+                ["not found", "does not exist", "not a member"],
+            ):
+                logger.info(
+                    f"LiteLLM membership already absent team={team_id} user={user_id}; continuing"
+                )
+                return
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to remove LiteLLM team member: {error_msg}",
             )

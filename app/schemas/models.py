@@ -1,5 +1,5 @@
 from pydantic import BaseModel, ConfigDict, EmailStr, AfterValidator, Field
-from typing import Optional, List, ClassVar, Literal, Dict, Annotated
+from typing import Optional, List, ClassVar, Literal, Dict, Annotated, Any
 from datetime import datetime
 from sqlalchemy.orm import relationship
 from enum import Enum
@@ -193,6 +193,15 @@ class RegionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class RegionSummaryResponse(BaseModel):
+    id: int
+    name: str
+    label: Optional[str] = None
+    is_active: bool
+    is_dedicated: bool
+    model_config = ConfigDict(from_attributes=True)
+
+
 class Region(RegionBase):
     id: int
     created_at: datetime
@@ -212,6 +221,11 @@ class PublicModel(BaseModel):
 class PublicModelPricing(BaseModel):
     input_cost_per_token: Optional[float] = None
     output_cost_per_token: Optional[float] = None
+    input_cost_per_million_tokens: Optional[float] = None
+    output_cost_per_million_tokens: Optional[float] = None
+    cache_creation_input_cost_per_million_tokens: Optional[float] = None
+    cache_creation_input_cost_above_1hr_per_million_tokens: Optional[float] = None
+    cache_read_input_cost_per_million_tokens: Optional[float] = None
 
 
 class PublicModelCapabilities(BaseModel):
@@ -221,13 +235,25 @@ class PublicModelCapabilities(BaseModel):
     supports_prompt_caching: bool = False
 
 
+class PublicModelManufacturer(BaseModel):
+    name: str
+    website: Optional[str] = None
+    version: Optional[str] = None
+    release_date: Optional[str] = None
+    attribution: Optional[str] = None
+
+
 class PublicModelSummary(BaseModel):
     model_id: str
     display_name: str
+    aliases: List[str] = Field(default_factory=list)
+    metadata_raw: Optional[Any] = None
     provider: str
     type: str
     context_length: Optional[int] = None
     max_output_tokens: Optional[int] = None
+    description: str
+    manufacturer: PublicModelManufacturer
     capabilities: PublicModelCapabilities
     pricing: PublicModelPricing
 
@@ -236,6 +262,80 @@ class PublicRegionModels(BaseModel):
     region: str
     status: str
     models: List[PublicModelSummary]
+
+
+class BedrockMissingModel(BaseModel):
+    """A model that exists upstream at a hyperscaler but isn't deployed to one of our LiteLLM regions.
+
+    Provider-agnostic: the same shape is reused for AWS Bedrock today and is
+    intended to cover Google Vertex / Azure Foundry once those endpoints exist.
+    """
+
+    model_id: str = Field(
+        ...,
+        description=(
+            "Upstream provider model identifier, e.g. "
+            "'anthropic.claude-opus-4-1-20250805-v1:0' for Bedrock."
+        ),
+    )
+    model_name: str
+    provider_name: str
+
+    model_config = ConfigDict(populate_by_name=True, protected_namespaces=())
+
+
+class ProviderRegionMissingModels(BaseModel):
+    """Per-region-group summary of models we haven't deployed yet.
+
+    For AWS Bedrock the ``region_group`` is a market code (US/EU/AU) and
+    ``upstream_region`` is the AWS region name (e.g. ``us-east-1``).  For other
+    providers these will carry the equivalent provider-native concepts.
+    """
+
+    region_group: str = Field(
+        ...,
+        description=(
+            "Provider-native region grouping. For AWS this is the market code "
+            "('US' / 'EU' / 'AU')."
+        ),
+    )
+    upstream_region: str = Field(
+        ...,
+        description=(
+            "Provider-native region used to look up upstream availability "
+            "(e.g. 'us-east-1' for Bedrock, 'us-central1' for Vertex)."
+        ),
+    )
+    regions: List[str] = Field(
+        default_factory=list,
+        description=(
+            "DBRegion names whose deployed models contributed to the "
+            "'configured' set for this region group."
+        ),
+    )
+    available_model_count: int
+    configured_model_count: int
+    missing_model_count: int
+    missing_models: List[BedrockMissingModel]
+
+
+class ProviderMissingModelsReport(BaseModel):
+    """Full report returned by /models/missing/{provider}."""
+
+    provider: str = Field(
+        ...,
+        description="Hyperscaler being inspected: 'aws', 'google', or 'azure'.",
+    )
+    generated_at: datetime
+    models_url: str
+    is_authenticated: bool = Field(
+        ...,
+        description=(
+            "Whether the caller authenticated. Authenticated admins also "
+            "include private regions in 'configured'."
+        ),
+    )
+    region_groups: List[ProviderRegionMissingModels]
 
 
 class PrivateAIKeyBase(BaseModel):
@@ -256,11 +356,25 @@ class PrivateAIKeyBase(BaseModel):
 
 
 class PrivateAIKeyCreate(BaseModel):
-    region_id: int
-    name: str
+    region_id: int = Field(
+        description="Target region ID where the key and backing resources are created."
+    )
+    name: str = Field(description="Human-readable key name.")
     key_alias: Optional[str] = None
-    owner_id: Optional[int] = None
-    team_id: Optional[int] = None
+    owner_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "User-owned key mode. Set this to bind the key to a specific user. "
+            "If omitted together with team_id, owner_id defaults to the current user."
+        ),
+    )
+    team_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Team-owned key mode. Set this to create a shared team key. "
+            "Mutually exclusive with owner_id."
+        ),
+    )
 
 
 class VectorDBCreate(BaseModel):
@@ -331,6 +445,17 @@ class TokenDurationUpdate(BaseModel):
     duration: str  # e.g. "30d" for 30 days, "1y" for 1 year
 
 
+class PrivateAIKeySpendBasic(BaseModel):
+    spend: float
+    expires: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    max_budget: Optional[float] = None
+    budget_duration: Optional[str] = None
+    budget_reset_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
 class PrivateAIKeySpend(BaseModel):
     spend: float
     expires: datetime
@@ -339,7 +464,135 @@ class PrivateAIKeySpend(BaseModel):
     max_budget: Optional[float] = None
     budget_duration: Optional[str] = None
     budget_reset_at: Optional[datetime] = None
+    period_start: Optional[datetime] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
     model_config = ConfigDict(from_attributes=True)
+
+
+class SpendKeyItem(BaseModel):
+    key_id: Optional[int] = None
+    key_name: Optional[str] = None
+    owner_id: Optional[int] = None
+    team_id: Optional[int] = None
+    spend: float
+    max_budget: Optional[float] = None
+    cached_spend: Optional[float] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    budget_duration: Optional[str] = None
+    budget_reset_at: Optional[datetime] = None
+    period_start: Optional[datetime] = None
+
+
+class TeamSpendResponse(BaseModel):
+    region_id: int
+    region_name: str
+    team_id: int
+    team_name: str
+    total_spend: float
+    total_budget: float
+    total_prompt_tokens: Optional[int] = None
+    total_completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    budget_duration: Optional[str] = None
+    budget_reset_at: Optional[datetime] = None
+    period_start: Optional[datetime] = None
+    periodic_budget: Optional["PeriodicTeamBudgetView"] = None
+    key_count: int
+    keys: List[SpendKeyItem]
+
+
+class PeriodicTeamBudgetView(BaseModel):
+    purchased_budget_cents: int
+    purchased_budget: float
+    remaining_budget_cents: int
+    remaining_budget: float
+    configured_max_budget_cents: int
+    configured_max_budget: float
+
+
+class UserSpendResponse(BaseModel):
+    region_id: int
+    region_name: str
+    user_id: int
+    team_id: Optional[int] = None
+    team_name: Optional[str] = None
+    total_spend: float
+    total_prompt_tokens: Optional[int] = None
+    total_completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    key_count: int
+    keys: List[SpendKeyItem]
+
+
+class SpendBudgetUpdateRequest(BaseModel):
+    max_budget: Optional[float] = Field(default=None, ge=0)
+
+
+class SpendBudgetUpdateResponse(BaseModel):
+    scope: Literal["team", "key", "team_member"]
+    source_endpoint: str
+    region_id: int
+    region_name: str
+    team_id: Optional[int] = None
+    user_id: Optional[int] = None
+    key_id: Optional[int] = None
+    max_budget: Optional[float] = None
+    budget_duration: Optional[str] = None
+    note: Optional[str] = None
+
+
+class TeamSpendHistoryKeyItem(BaseModel):
+    key_id: Optional[int] = None
+    owner_id: Optional[int] = None
+    key_name_snapshot: Optional[str] = None
+    spend: float
+    max_budget: Optional[float] = None
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+
+
+class TeamSpendHistoryPeriodItem(BaseModel):
+    period_start: datetime
+    period_end: datetime
+    budget_type: str
+    total_spend: float
+    total_budget: Optional[float] = None
+    total_prompt_tokens: Optional[int] = None
+    total_completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+    source: str
+    stripe_event_id: Optional[str] = None
+    stripe_invoice_id: Optional[str] = None
+    stripe_subscription_id: Optional[str] = None
+    keys: List[TeamSpendHistoryKeyItem]
+
+
+class TeamSpendHistoryResponse(BaseModel):
+    region_id: int
+    region_name: str
+    team_id: int
+    team_name: str
+    periods: List[TeamSpendHistoryPeriodItem]
+    periodic_transactions: List["TeamPeriodicTransactionItem"] = Field(
+        default_factory=list
+    )
+
+
+class TeamPeriodicTransactionItem(BaseModel):
+    id: int
+    payment_type: str
+    amount_cents: int
+    currency: str
+    stripe_payment_id: str
+    payment_date: datetime
+    status: str
+    sync_status: str
+    source: str
 
 
 class LiteLLMToken(BaseModel):
@@ -409,6 +662,7 @@ class TeamCreate(TeamBase):
     force_user_keys: bool = False
     hide_public_regions: bool = False
     budget_type: BudgetType = BudgetType.PERIODIC
+    require_purchase_for_requests: bool = True
 
 
 class TeamUpdate(BaseModel):
@@ -421,6 +675,7 @@ class TeamUpdate(BaseModel):
     force_user_keys: Optional[bool] = False
     hide_public_regions: Optional[bool] = None
     budget_type: Optional[BudgetType] = None
+    require_purchase_for_requests: Optional[bool] = None
 
 
 class Team(TeamBase):
@@ -430,6 +685,7 @@ class Team(TeamBase):
     force_user_keys: Optional[bool] = False
     hide_public_regions: bool = False
     budget_type: BudgetType
+    require_purchase_for_requests: bool
     last_pool_purchase: Optional[datetime] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
@@ -437,11 +693,20 @@ class Team(TeamBase):
     deleted_at: Optional[datetime] = None
     retention_warning_sent_at: Optional[datetime] = None
     products: List[Product] = []
+    allowed_regions: List[RegionSummaryResponse] = []
     model_config = ConfigDict(from_attributes=True)
 
 
 class TeamWithUsers(Team):
     users: List[User] = []
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserAdminRegionResponse(BaseModel):
+    user_id: int
+    region_id: int
+    region: RegionSummaryResponse
+    created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -564,6 +829,17 @@ class TeamRegionBudget(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class TeamRegionModelAliasesUpdateRequest(BaseModel):
+    model_aliases: Dict[str, str] = Field(default_factory=dict)
+
+
+class TeamRegionModelAliasesResponse(BaseModel):
+    region_id: int
+    team_id: int
+    model_aliases: Dict[str, str] = Field(default_factory=dict)
+    model_config = ConfigDict(from_attributes=True)
+
+
 class PoolPurchaseRequest(BaseModel):
     amount_cents: int = Field(gt=0)
     currency: str
@@ -582,6 +858,27 @@ class PoolPurchaseResponse(BaseModel):
     created_at: datetime
     new_total_budget_cents: int
     keys_updated: int
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PeriodicTopupRequest(BaseModel):
+    amount_cents: int = Field(gt=0)
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+
+
+class PeriodicTopupResponse(BaseModel):
+    id: int
+    team_id: int
+    region_id: int
+    amount_cents: int
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+    created_at: datetime
+    new_total_budget_cents: int
+    budget_type: BudgetType = BudgetType.PERIODIC
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -619,11 +916,23 @@ class PoolRegionPurchaseHistoryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PeriodicBudgetStatusResponse(BaseModel):
+    team_id: int
+    region_id: int
+    subscription_remaining_cents: int
+    topup_remaining_cents: int
+    desired_remaining_cents: int
+    subscription_period_end: Optional[datetime] = None
+    nearest_topup_expiry: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
 class UserSpendRegion(BaseModel):
     region_id: int
     region_name: str
     spend: float
     status: str
+    max_budget: Optional[float] = None
 
 
 class UserSpendTeam(BaseModel):
@@ -633,8 +942,37 @@ class UserSpendTeam(BaseModel):
     regions: List[UserSpendRegion]
 
 
-class UserSpendResponse(BaseModel):
+class UserSpendByEmailResponse(BaseModel):
     email: str
     total_spend: float
     teams: List[UserSpendTeam]
     cached_at: datetime
+
+
+class SubscriptionCycleRequest(BaseModel):
+    transaction_id: str
+    budget_cents: int
+    team_id: int
+    region_id: int
+
+
+class SubscriptionDeactivateRequest(BaseModel):
+    transaction_id: str
+    team_id: int
+    region_id: int
+    reason: Optional[str] = None
+
+
+class SubscriptionCycleResponse(BaseModel):
+    status: str
+    team_id: int
+    payment_id: Optional[int] = None
+    budget_dollars: Optional[float] = None
+    idempotent: bool = False
+
+
+class SubscriptionDeactivateResponse(BaseModel):
+    status: str
+    team_id: int
+    payment_id: Optional[int] = None
+    idempotent: bool = False

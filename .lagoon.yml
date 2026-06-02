@@ -2,6 +2,23 @@ docker-compose-yaml: docker-compose.yml
 
 environments:
   prod:
+    cronjobs:
+      - name: monitor-teams
+        schedule: "0 * * * *"
+        command: python scripts/trigger_recon_job.py
+        service: backend
+      - name: hard-delete-teams
+        schedule: "0 3 * * *"
+        command: python scripts/trigger_hard_delete_job.py
+        service: backend
+      - name: sync-pool-budgets
+        schedule: "0 4 * * *"
+        command: python scripts/trigger_sync_pool_budgets_job.py
+        service: backend
+      - name: sync-pool-monthly-caps
+        schedule: "5 0 1 * *"
+        command: python scripts/trigger_sync_pool_monthly_caps_job.py
+        service: backend
     routes:
       - backend:
         - api.amazee.ai:
@@ -15,18 +32,39 @@ environments:
             insecure: Redirect
             hstsEnabled: true
 
+  dev:
+    cronjobs:
+      - name: monitor-teams
+        schedule: "0 * * * *"
+        command: python scripts/trigger_recon_job.py
+        service: backend
+      - name: hard-delete-teams
+        schedule: "0 3 * * *"
+        command: python scripts/trigger_hard_delete_job.py
+        service: backend
+      - name: sync-pool-budgets
+        schedule: "0 4 * * *"
+        command: python scripts/trigger_sync_pool_budgets_job.py
+        service: backend
+      - name: sync-pool-monthly-caps
+        schedule: "5 0 1 * *"
+        command: python scripts/trigger_sync_pool_monthly_caps_job.py
+        service: backend
+
 tasks:
   post-rollout:
     - run:
-        name: purge fastly
+        name: purge fastly cache
         command: |
           # Extract service ID (remove ":true" if present)
           SERVICE_ID="${LAGOON_FASTLY_SERVICE_ID%%:*}"
 
-          # Purge all cache for the service using Fastly API
-          curl -f -sS -X POST "https://api.fastly.com/service/$SERVICE_ID/purge/${LAGOON_ROUTE#*://}" \
-            -H "Fastly-Soft-Purge: 1" \
+          # Purge all cached content for the Fastly service.
+          # This covers both backend (api.amazee.ai) and frontend (dashboard.amazee.ai)
+          # and ensures HTML pages and JS chunks stay in sync after deploy.
+          curl -f -sS -X POST "https://api.fastly.com/service/$SERVICE_ID/purge_all" \
             -H "Fastly-Key: $FASTLY_TOKEN" \
+            -H "Fastly-Soft-Purge: 1" \
             -H "Accept: application/json" || { echo "Fastly purge failed! Check FASTLY_TOKEN."; exit 1; }
         service: backend
         shell: bash

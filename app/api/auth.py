@@ -309,7 +309,7 @@ async def register(request: Request, user: UserCreate, db: Session = Depends(get
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
         )
 
-    db_user = _create_user_in_db(user, db)
+    db_user = await _create_user_in_db(user, db)
     auth_logger.info(f"Successfully registered new user: {user.email}")
     return db_user
 
@@ -386,7 +386,7 @@ async def sign_in(
             team_id=team.id,
             role=UserRole.ADMIN,
         )
-        user = _create_user_in_db(user_data, db)
+        user = await _create_user_in_db(user_data, db)
 
         auth_logger.info(
             f"Successfully created new user and team for: {sign_in_data.username}"
@@ -786,11 +786,11 @@ async def generate_trial_access(
         .first()
     )
 
-    # Try region ID if region name is not found
-    if not region:
+    # Try region ID if region name is not found and the setting is numeric
+    if not region and settings.AI_TRIAL_REGION.isdigit():
         region = (
             db.query(DBRegion)
-            .filter(DBRegion.id == settings.AI_TRIAL_REGION, DBRegion.is_active)
+            .filter(DBRegion.id == int(settings.AI_TRIAL_REGION), DBRegion.is_active)
             .first()
         )
 
@@ -868,7 +868,7 @@ async def generate_trial_access(
                 team_id=team.id,
                 role=UserRole.ADMIN,
             )
-            admin_user = _create_user_in_db(admin_user_data, db)
+            admin_user = await _create_user_in_db(admin_user_data, db)
             db.commit()
             db.refresh(admin_user)
 
@@ -881,7 +881,7 @@ async def generate_trial_access(
             team_id=team.id,
             role=UserRole.USER,
         )
-        user = _create_user_in_db(user_data, db)
+        user = await _create_user_in_db(user_data, db)
         db.commit()
         db.refresh(user)
 

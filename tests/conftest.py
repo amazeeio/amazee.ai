@@ -9,7 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app.main import app
 from app.db.database import get_db
-from app.db.models import Base, DBRegion, DBUser, DBTeam, DBProduct
+from app.db.models import Base, DBRegion, DBUser, DBTeam, DBProduct, DBTeamRegion
 from app.db.init_db import init_api_token_expiry_options
 from app.core.security import get_password_hash
 from datetime import datetime, UTC, timedelta
@@ -120,6 +120,23 @@ def test_team(db):
     db.add(team)
     db.commit()
     db.refresh(team)
+
+    existing_public_regions = (
+        db.query(DBRegion)
+        .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
+        .all()
+    )
+    for region in existing_public_regions:
+        exists = (
+            db.query(DBTeamRegion)
+            .filter(
+                DBTeamRegion.team_id == team.id, DBTeamRegion.region_id == region.id
+            )
+            .first()
+        )
+        if not exists:
+            db.add(DBTeamRegion(team_id=team.id, region_id=region.id))
+    db.commit()
     return team
 
 
@@ -241,6 +258,27 @@ def test_region(db):
     db.add(region)
     db.commit()
     db.refresh(region)
+
+    teams = (
+        db.query(DBTeam)
+        .filter(
+            DBTeam.is_active.is_(True),
+            DBTeam.deleted_at.is_(None),
+            DBTeam.hide_public_regions.is_(False),
+        )
+        .all()
+    )
+    for team in teams:
+        exists = (
+            db.query(DBTeamRegion)
+            .filter(
+                DBTeamRegion.team_id == team.id, DBTeamRegion.region_id == region.id
+            )
+            .first()
+        )
+        if not exists:
+            db.add(DBTeamRegion(team_id=team.id, region_id=region.id))
+    db.commit()
     return region
 
 

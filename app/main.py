@@ -1,39 +1,38 @@
+import logging
+import os
+from contextlib import asynccontextmanager
+from urllib.parse import urlparse
+
+from app.__version__ import __version__
+from app.api import (
+    audit,
+    auth,
+    billing,
+    budgets,
+    limits,
+    pricing_tables,
+    private_ai_keys,
+    products,
+    public,
+    regions,
+    spend,
+    subscription,
+    teams,
+    users,
+    webhooks,
+)
+from app.core.config import settings
+from app.middleware.audit import AuditLogMiddleware
+from app.middleware.auth import AuthMiddleware
+from app.middleware.caching import CacheControlMiddleware
+from app.middleware.prometheus import PrometheusMiddleware
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
-from app.api import (
-    auth,
-    private_ai_keys,
-    users,
-    regions,
-    public,
-    audit,
-    teams,
-    billing,
-    products,
-    pricing_tables,
-    limits,
-    budgets,
-)
-from app.core.config import settings
-from app.db.database import get_db
-from app.middleware.audit import AuditLogMiddleware
-from app.middleware.caching import CacheControlMiddleware
-from app.middleware.prometheus import PrometheusMiddleware
-from app.middleware.auth import AuthMiddleware
-from app.core.worker import monitor_teams, hard_delete_expired_teams
-from app.core.locking import try_acquire_lock, release_lock
-from app.__version__ import __version__
-from contextlib import asynccontextmanager
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
-import os
-import logging
-from datetime import UTC
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # Set timezone environment variable to prevent tzlocal warning
 if not os.environ.get("TZ"):
@@ -56,144 +55,7 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create scheduler
-    scheduler = AsyncIOScheduler()
-
-    async def monitor_teams_job():
-        db = next(get_db())
-        lock_name = "monitor_teams"
-
-        try:
-            # Try to acquire the lock
-            if try_acquire_lock(lock_name, db, lock_timeout=10):
-                logger.info("Acquired monitor_teams lock, executing job")
-                try:
-                    await monitor_teams(db)
-                except Exception as e:
-                    logger.error(f"Error in monitor_teams background task: {str(e)}")
-                finally:
-                    # Always release the lock when done
-                    release_lock(lock_name, db)
-            else:
-                logger.info(
-                    "Another process has the monitor_teams lock, skipping execution"
-                )
-        except Exception as e:
-            logger.error(f"Error in monitor_teams job: {str(e)}")
-            # Try to release lock in case of error
-            try:
-                release_lock(lock_name, db)
-            except Exception as release_error:
-                logger.error(f"Error releasing lock: {str(release_error)}")
-        finally:
-            db.close()
-
-    # Set schedule based on environment
-    if settings.ENV_SUFFIX == "local":
-        cron_trigger = CronTrigger(minute="*/10", timezone=UTC, jitter=180)
-    else:
-        # Run every hour in other environments with jitter
-        cron_trigger = CronTrigger(hour="*", minute=0, timezone=UTC, jitter=60)
-
-    scheduler.add_job(
-        monitor_teams_job,
-        trigger=cron_trigger,
-        id="monitor_teams",
-        replace_existing=True,
-    )
-
-    # Hard delete job for teams that have been soft-deleted for 60+ days
-    async def hard_delete_teams_job():
-        db = next(get_db())
-        lock_name = "hard_delete_teams"
-
-        try:
-            # Try to acquire the lock
-            if try_acquire_lock(lock_name, db, lock_timeout=10):
-                logger.info("Acquired hard_delete_teams lock, executing job")
-                try:
-                    await hard_delete_expired_teams(db)
-                except Exception as e:
-                    logger.error(
-                        f"Error in hard_delete_expired_teams background task: {str(e)}"
-                    )
-                finally:
-                    # Always release the lock when done
-                    release_lock(lock_name, db)
-            else:
-                logger.info(
-                    "Another process has the hard_delete_teams lock, skipping execution"
-                )
-        except Exception as e:
-            logger.error(f"Error in hard_delete_teams job: {str(e)}")
-            # Try to release lock in case of error
-            try:
-                release_lock(lock_name, db)
-            except Exception as release_error:
-                logger.error(f"Error releasing lock: {str(release_error)}")
-        finally:
-            db.close()
-
-    # Set schedule based on environment for hard delete job
-    if settings.ENV_SUFFIX == "local":
-        # In local env, run every hour at :30 for testing
-        hard_delete_trigger = CronTrigger(hour="*", minute=30, timezone=UTC)
-    else:
-        # In production, run daily at 3 AM
-        hard_delete_trigger = CronTrigger(hour=3, minute=0, timezone=UTC)
-
-    scheduler.add_job(
-        hard_delete_teams_job,
-        trigger=hard_delete_trigger,
-        id="hard_delete_teams",
-        replace_existing=True,
-    )
-
-    # Sync pool team budgets job - runs daily to ensure LiteLLM budgets match purchases - spend
-    async def sync_pool_budgets_job():
-        db = next(get_db())
-        lock_name = "sync_pool_budgets"
-
-        try:
-            if try_acquire_lock(lock_name, db, lock_timeout=10):
-                logger.info("Acquired sync_pool_budgets lock, executing job")
-                try:
-                    result = await budgets.sync_pool_team_budgets(db)
-                    logger.info(
-                        f"Pool budgets sync complete: {result['teams_updated']} teams updated"
-                    )
-                except Exception as e:
-                    logger.error(f"Error in sync_pool_team_budgets: {str(e)}")
-                finally:
-                    release_lock(lock_name, db)
-            else:
-                logger.info(
-                    "Another process has the sync_pool_budgets lock, skipping execution"
-                )
-        except Exception as e:
-            logger.error(f"Error in sync_pool_budgets job: {str(e)}")
-            try:
-                release_lock(lock_name, db)
-            except Exception as release_error:
-                logger.error(f"Error releasing lock: {release_error}")
-        finally:
-            db.close()
-
-    sync_pool_trigger = CronTrigger(hour=4, minute=0, timezone=UTC)  # Run daily at 4 AM
-    scheduler.add_job(
-        sync_pool_budgets_job,
-        trigger=sync_pool_trigger,
-        id="sync_pool_budgets",
-        replace_existing=True,
-    )
-
-    # Start the scheduler
-    scheduler.start()
-
     yield
-
-    # Shutdown the scheduler
-    scheduler.shutdown()
 
 
 app = FastAPI(
@@ -247,10 +109,31 @@ default_origins = [
     "http://localhost:3001",
     "http://localhost:8800",
 ]
+
+
+def _normalize_origin(url: str) -> str:
+    parsed = urlparse(url.strip())
+    if not parsed.scheme or not parsed.netloc:
+        logger.warning(
+            "Skipping malformed origin (missing scheme/host): %r", url.strip()
+        )
+        return ""
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    return origin.rstrip("/")
+
+
 lagoon_routes = os.getenv("LAGOON_ROUTES", "").split(",")
+frontend_routes = os.getenv("FRONTEND_ROUTE", "").split(",")
 allowed_origins = default_origins + [
-    route.strip() for route in lagoon_routes if route.strip()
+    normalized
+    for route in lagoon_routes
+    if route.strip() and (normalized := _normalize_origin(route))
 ]
+for route in frontend_routes:
+    if route.strip():
+        normalized = _normalize_origin(route)
+        if normalized:
+            allowed_origins.append(normalized)
 
 # Add HTTPS redirect middleware first
 app.add_middleware(HTTPSRedirectMiddleware)
@@ -313,15 +196,21 @@ app.include_router(
 app.include_router(users.router, prefix="/users", tags=["users"])
 app.include_router(regions.router, prefix="/regions", tags=["regions"])
 app.include_router(public.router, prefix="/public", tags=["public"])
+app.include_router(public.protected_router, tags=["models"])
 app.include_router(audit.router, prefix="/audit", tags=["audit"])
 app.include_router(teams.router, prefix="/teams", tags=["teams"])
 app.include_router(billing.router, prefix="/billing", tags=["billing"])
+app.include_router(webhooks.router, prefix="/billing", tags=["webhooks"])
+app.include_router(
+    subscription.router, prefix="/billing/subscription", tags=["billing"]
+)
 app.include_router(products.router, prefix="/products", tags=["products"])
 app.include_router(
     pricing_tables.router, prefix="/pricing-tables", tags=["pricing-tables"]
 )
 app.include_router(limits.router, prefix="/limits", tags=["limits"])
 app.include_router(budgets.router, prefix="/budgets", tags=["budgets"])
+app.include_router(spend.router, prefix="/spend", tags=["spend"])
 
 
 @app.get("/", include_in_schema=False)

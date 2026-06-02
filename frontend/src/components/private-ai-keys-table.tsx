@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/table";
 import { TableFilters, FilterField } from "@/components/ui/table-filters";
 import { PrivateAIKey } from "@/types/private-ai-key";
+import { Region } from "@/types/region";
 import { User } from "@/types/user";
 
 type SortField = "name" | "region" | "owner" | null;
@@ -29,11 +30,10 @@ interface PrivateAIKeysTableProps {
   isLoading?: boolean;
   showOwner?: boolean;
   allowModification?: boolean;
-  onUpdateBudget?: (keyId: number, budgetDuration: string) => void;
   isDeleting?: boolean;
-  isUpdatingBudget?: boolean;
   teamDetails?: Record<number, { name: string }>;
   teamMembers?: User[];
+  regions?: Region[];
 }
 
 export function PrivateAIKeysTable({
@@ -42,11 +42,10 @@ export function PrivateAIKeysTable({
   isLoading = false,
   showOwner = false,
   allowModification = false,
-  onUpdateBudget,
   isDeleting = false,
-  isUpdatingBudget = false,
   teamDetails = {},
   teamMembers = [],
+  regions = [],
 }: PrivateAIKeysTableProps) {
   const [showPassword, setShowPassword] = useState<
     Record<number | string, boolean>
@@ -446,9 +445,9 @@ export function PrivateAIKeysTable({
                   <PrivateAIKeySpendCell
                     keyId={key.id}
                     hasLiteLLMToken={!!key.litellm_token}
-                    allowModification={allowModification}
-                    onUpdateBudget={onUpdateBudget}
-                    isUpdatingBudget={isUpdatingBudget}
+                    region={key.region}
+                    teamId={key.team_id}
+                    regions={regions}
                   />
                 </TableCell>
                 {allowModification && (

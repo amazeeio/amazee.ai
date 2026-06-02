@@ -1,0 +1,171 @@
+name: Weekly Missing Models Check
+
+on:
+  schedule:
+    - cron: '0 7 * * 1,4' # Every Monday and Thursday at 07:00 UTC
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: 'Override AMAZEEAI_API_URL for this run (e.g. https://api.amazee.ai)'
+        required: false
+        type: string
+      provider:
+        description: 'Limit run to a single provider (otherwise all enabled providers run).'
+        required: false
+        type: choice
+        options:
+          - all
+          - aws
+        default: all
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  check-missing-models:
+    runs-on: ubuntu-latest
+    strategy:
+      # Don't let one provider's failure abort the others.
+      fail-fast: false
+      matrix:
+        # Add 'google' and 'azure' here once the corresponding endpoints are
+        # implemented in app/api/public.py. No other workflow changes needed.
+        provider: [aws]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Skip if workflow_dispatch limited to a different provider
+        id: gate
+        run: |
+          requested="${{ github.event.inputs.provider }}"
+          if [ -n "$requested" ] && [ "$requested" != "all" ] && [ "$requested" != "${{ matrix.provider }}" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.x'
+
+      - name: Restore missing-models state cache
+        if: steps.gate.outputs.skip != 'true'
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: scripts/missing-models-state-${{ matrix.provider }}.json
+          key: missing-models-state-${{ matrix.provider }}-
+          restore-keys: |
+            missing-models-state-${{ matrix.provider }}-
+
+      - name: Compare deployed models against upstream catalog (${{ matrix.provider }})
+        id: compare
+        if: steps.gate.outputs.skip != 'true'
+        env:
+          # Repository variable; set AMAZEEAI_API_URL in repo Settings → Variables.
+          AMAZEEAI_API_URL: ${{ github.event.inputs.api_url || vars.AMAZEEAI_API_URL || 'https://api.amazee.ai' }}
+          # Required Bearer token for /models/missing/{provider}. A system-admin
+          # token additionally covers private/dedicated regions.
+          # Set this in repo Settings → Secrets → Actions as AMAZEEAI_ADMIN_TOKEN.
+          AMAZEEAI_ADMIN_TOKEN: ${{ secrets.AMAZEEAI_ADMIN_TOKEN }}
+          MISSING_MODELS_PROVIDER: ${{ matrix.provider }}
+        run: |
+          if [ -z "$AMAZEEAI_ADMIN_TOKEN" ]; then
+            echo "::error::AMAZEEAI_ADMIN_TOKEN secret is not set. Configure it in repo Settings → Secrets → Actions."
+            exit 1
+          fi
+          python scripts/check_missing_models.py
+
+      - name: Save missing-models state cache
+        if: steps.gate.outputs.skip != 'true' && steps.compare.outputs.state_changed == 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: scripts/missing-models-state-${{ matrix.provider }}.json
+          key: missing-models-state-${{ matrix.provider }}-${{ github.run_id }}
+
+      - name: Notify Slack about new missing models
+        if: steps.gate.outputs.skip != 'true' && steps.compare.outputs.has_new_missing == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
+          PROVIDER: ${{ matrix.provider }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+        run: |
+          # Helper: post to Slack and assert ok==true
+          slack_post() {
+            local payload="$1"
+            local response
+            response=$(curl -sS -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "$payload")
+            if ! echo "$response" | jq -e '.ok' > /dev/null 2>&1; then
+              echo "::error::Slack API error: $response" >&2
+              return 1
+            fi
+            echo "$response"
+          }
+
+          # Send a header message
+          header_payload=$(jq -n \
+            --arg channel "$SLACK_CHANNEL_ID" \
+            --arg provider "$PROVIDER" \
+            --arg workflow_url "$WORKFLOW_URL" \
+            --arg workflow_name "$WORKFLOW_NAME" \
+            '{
+              channel: $channel,
+              text: ":robot_face: New \($provider) models are available upstream but not yet deployed to amazee.ai.",
+              blocks: [
+                {
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: ":robot_face: *New `\($provider)` models detected*\nThe following models exist upstream but are not yet deployed to one of the amazee.ai LiteLLM regions."
+                  }
+                },
+                {
+                  type: "section",
+                  fields: [
+                    {
+                      type: "mrkdwn",
+                      text: "*Workflow:*\n<\($workflow_url)|\($workflow_name)>"
+                    }
+                  ]
+                }
+              ]
+            }')
+          header_response=$(slack_post "$header_payload") || exit 1
+          thread_ts=$(echo "$header_response" | jq -r '.ts')
+
+          # Send each summary chunk as a threaded reply
+          chunk_count=$(jq 'length' slack-summary-chunks.json)
+          for i in $(seq 0 $(( chunk_count - 1 ))); do
+            chunk=$(jq -r ".[$i]" slack-summary-chunks.json)
+            payload=$(jq -n \
+              --arg channel "$SLACK_CHANNEL_ID" \
+              --arg text "$chunk" \
+              --arg thread_ts "$thread_ts" \
+              '{
+                channel: $channel,
+                thread_ts: $thread_ts,
+                text: $text,
+                blocks: [
+                  {
+                    type: "section",
+                    text: {
+                      type: "mrkdwn",
+                      text: $text
+                    }
+                  }
+                ]
+              }')
+            slack_post "$payload" > /dev/null
+          done
+
+

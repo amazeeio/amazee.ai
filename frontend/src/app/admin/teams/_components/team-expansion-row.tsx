@@ -1,4 +1,4 @@
-import { Loader2, UserPlus, Plus } from "lucide-react";
+import { Loader2, UserPlus, Plus, Info } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,19 +21,28 @@ import {
 } from "@/components/ui/table";
 import { TableActionButtons } from "@/components/ui/table-action-buttons";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useTeams } from "@/hooks/use-teams";
 import { PrivateAIKey } from "@/types/private-ai-key";
 import { Product } from "@/types/product";
+import { Region } from "@/types/region";
 import { SpendInfo } from "@/types/spend";
 import { Team } from "@/types/team";
 import { User } from "@/types/user";
 import { get } from "@/utils/api";
+import { mapTeamSpendToSpendInfo } from "@/utils/spend-mapping";
 import { useQuery } from "@tanstack/react-query";
 
 interface TeamExpansionRowProps {
   teamId: string;
   isExpanded: boolean;
   includeDeleted: boolean;
+  regions: Region[];
   onEdit: (team: Team) => void;
   onAddUser: (teamId: string) => void;
   onCreateUser: (teamId: string) => void;
@@ -44,6 +53,7 @@ export function TeamExpansionRow({
   teamId,
   isExpanded,
   includeDeleted,
+  regions,
   onEdit,
   onAddUser,
   onCreateUser,
@@ -126,7 +136,45 @@ export function TeamExpansionRow({
     queryFn: async () => {
       if (teamAIKeys.length === 0) return {};
       const spendData: Record<string, SpendInfo> = {};
+
+      // Group keys by region
+      const regionGroups = new Map<string, number[]>();
+      const noTeamKeys: PrivateAIKey[] = [];
+
       for (const key of teamAIKeys) {
+        if (key.team_id && key.region) {
+          const keyIds = regionGroups.get(key.region) || [];
+          keyIds.push(key.id);
+          regionGroups.set(key.region, keyIds);
+        } else {
+          noTeamKeys.push(key);
+        }
+      }
+
+      // Fetch spend per region+team combo
+      for (const [regionName, keyIds] of regionGroups) {
+        try {
+          const matchedRegion = regions.find((r) => r.name === regionName);
+          if (matchedRegion) {
+            const response = await get(
+              `/spend/${matchedRegion.id}/team/${teamId}`,
+            );
+            const data = await response.json();
+            const spendInfo = mapTeamSpendToSpendInfo(data);
+            for (const keyId of keyIds) {
+              spendData[keyId.toString()] = spendInfo;
+            }
+          }
+        } catch (error) {
+          console.error(
+            `Failed to fetch spend data for team ${teamId} region ${regionName}:`,
+            error,
+          );
+        }
+      }
+
+      // Fallback for keys without team_id
+      for (const key of noTeamKeys) {
         try {
           const response = await get(`/private-ai-keys/${key.id}/spend`);
           spendData[key.id.toString()] = await response.json();
@@ -134,9 +182,10 @@ export function TeamExpansionRow({
           console.error(`Failed to fetch spend data for key ${key.id}:`, error);
         }
       }
+
       return spendData;
     },
-    enabled: isExpanded && teamAIKeys.length > 0,
+    enabled: isExpanded && teamAIKeys.length > 0 && regions.length > 0,
   });
 
   const isTeamExpired = (team: Team): boolean => {
@@ -150,6 +199,10 @@ export function TeamExpansionRow({
     if (!team.last_payment) return true;
     return new Date(team.last_payment) < thirtyDaysAgo;
   };
+
+  const teamBudgetLimit = teamLimits.find(
+    (l) => l.resource === "max_budget" && l.limit_type === "data_plane",
+  );
 
   return (
     <TableRow>
@@ -532,6 +585,19 @@ export function TeamExpansionRow({
                   </TabsContent>
                   <TabsContent value="shared-keys" className="mt-4">
                     <div className="space-y-4">
+                      {/* Team-level budget info */}
+                      <div className="flex items-center gap-2 rounded-md border bg-muted/50 p-3 text-sm">
+                        <Info className="h-4 w-4 text-muted-foreground shrink-0" />
+                        <span>
+                          <strong>Team Budget:</strong>{" "}
+                          {teamBudgetLimit
+                            ? `$${teamBudgetLimit.max_value.toFixed(2)} (${teamBudgetLimit.limited_by})`
+                            : "Not set"}{" "}
+                          — Budget is enforced at the team level and
+                          overrides individual key budgets. Edit it in the{" "}
+                          <strong>Limits</strong> tab.
+                        </span>
+                      </div>
                       {isLoadingTeamAIKeys ? (
                         <div className="flex justify-center items-center py-8">
                           <Loader2 className="h-8 w-8 animate-spin" />
@@ -547,7 +613,24 @@ export function TeamExpansionRow({
                                 <TableHead>Database</TableHead>
                                 <TableHead>Created At</TableHead>
                                 <TableHead>Spend</TableHead>
-                                <TableHead>Budget</TableHead>
+                                <TableHead>
+                                  <div className="flex items-center gap-1">
+                                    Budget (Team)
+                                    <TooltipProvider>
+                                      <Tooltip>
+                                        <TooltipTrigger>
+                                          <Info className="h-3 w-3 text-muted-foreground" />
+                                        </TooltipTrigger>
+                                        <TooltipContent>
+                                          <p>
+                                            Budget is set at team level and
+                                            overrides key-level budgets.
+                                          </p>
+                                        </TooltipContent>
+                                      </Tooltip>
+                                    </TooltipProvider>
+                                  </div>
+                                </TableHead>
                               </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -595,9 +678,10 @@ export function TeamExpansionRow({
                                       )}
                                     </TableCell>
                                     <TableCell>
-                                      {spendInfo?.max_budget ? (
+                                      {teamBudgetLimit ? (
                                         <span>
-                                          ${spendInfo.max_budget.toFixed(2)}
+                                          $
+                                          {teamBudgetLimit.max_value.toFixed(2)}
                                         </span>
                                       ) : (
                                         <span className="text-muted-foreground">

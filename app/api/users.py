@@ -1,13 +1,21 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, contains_eager
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from typing import List, Optional
 from collections import defaultdict
 
 from app.core.config import settings
+from app.core.litellm_user_sync import (
+    get_target_regions_for_user,
+    sync_add_user_to_team,
+    sync_create_user_across_regions,
+    sync_delete_user_across_regions,
+    sync_remove_user_from_team,
+    sync_update_user_team_role,
+)
 from app.core.limit_service import LimitService
 from app.db.database import get_db
 from app.core.dependencies import get_limit_service
@@ -16,17 +24,20 @@ from app.schemas.models import (
     UserUpdate,
     UserCreate,
     TeamOperation,
+    UserAdminRegionResponse,
     UserRoleUpdate,
     UserSpendRegion,
-    UserSpendResponse,
+    UserSpendByEmailResponse,
     UserSpendTeam,
 )
 from app.db.models import (
     DBPrivateAIKey,
     DBRegion,
+    DBSpendCap,
     DBTeam,
     DBTeamRegion,
     DBUser,
+    DBUserAdminRegion,
     DBUserSpendCache,
 )
 from app.core.security import (
@@ -35,12 +46,13 @@ from app.core.security import (
     get_current_user_from_auth,
     get_role_min_team_admin,
 )
+from app.core.email import normalize_email_for_lookup
 from app.core.roles import UserRole
+from app.services.litellm import LiteLLMService
 from datetime import datetime, UTC
 import logging
 import asyncio
 import httpx
-from app.services.litellm import LiteLLMService
 
 logger = logging.getLogger(__name__)
 _USER_SPEND_CACHE_TTL_SECONDS = 15 * 60
@@ -58,12 +70,39 @@ def get_user_by_email(db: Session, email: str) -> Optional[DBUser]:
 router = APIRouter(tags=["users"])
 
 
-def _normalize_email_for_lookup(email: str) -> str:
-    parts = email.lower().rsplit("@", 1)
-    if len(parts) == 2:
-        local_part = parts[0].split("+")[0]
-        return f"{local_part}@{parts[1]}"
-    return email.lower()
+def invalidate_user_spend_cache(db: Session, email: str) -> None:
+    """Delete the cached /users/spend response for *email*.
+
+    Call this whenever a write operation (budget set/clear) changes data that
+    the cache stores, so the next GET returns fresh values instead of the
+    15-minute stale snapshot.
+
+    This helper intentionally does not commit; callers control the transaction
+    boundary so cache invalidation remains atomic with the related write.
+    """
+    normalized = normalize_email_for_lookup(email)
+    db.query(DBUserSpendCache).filter(
+        DBUserSpendCache.normalized_email == normalized
+    ).delete(synchronize_session=False)
+    db.flush()
+
+
+def invalidate_users_spend_cache_bulk(db: Session, emails: list[str]) -> None:
+    """Delete cached /users/spend entries for all *emails* in a single query.
+
+    Prefer this over calling invalidate_user_spend_cache in a loop when
+    invalidating many users at once (e.g. all members of a team).
+
+    This helper intentionally does not commit; callers control the transaction
+    boundary so cache invalidation remains atomic with the related write.
+    """
+    if not emails:
+        return
+    normalized_emails = [normalize_email_for_lookup(e) for e in emails]
+    db.query(DBUserSpendCache).filter(
+        DBUserSpendCache.normalized_email.in_(normalized_emails)
+    ).delete(synchronize_session=False)
+    db.flush()
 
 
 def _is_valid_email_input(email: str) -> bool:
@@ -140,6 +179,7 @@ async def _fetch_region_spend(
     region: DBRegion,
     user_ids: set[int],
     user_emails: set[str],
+    max_budget: float | None = None,
 ) -> Optional[UserSpendRegion]:
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
     service = LiteLLMService(
@@ -168,6 +208,7 @@ async def _fetch_region_spend(
                     region_name=region.name,
                     spend=0.0,
                     status="unavailable",
+                    max_budget=max_budget,
                 )
             raise
 
@@ -196,12 +237,13 @@ async def _fetch_region_spend(
         region_name=region.name,
         spend=spend,
         status="ok",
+        max_budget=max_budget,
     )
 
 
 async def _compute_user_spend(
     normalized_email: str, db: Session
-) -> tuple[UserSpendResponse, bool]:
+) -> tuple[UserSpendByEmailResponse, bool]:
     users = (
         db.query(DBUser, DBTeam.name.label("team_name"))
         .join(DBTeam, DBUser.team_id == DBTeam.id)
@@ -226,11 +268,39 @@ async def _compute_user_spend(
         team_names[user.team_id] = team_name
 
     team_ids = list(user_ids_by_team.keys())
-    public_regions = (
-        db.query(DBRegion)
-        .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
+    # /users/spend returns a team+region projection for the target member.
+    # Team-member caps are resolved strictly from spend_caps rows scoped to
+    # (team_id, user_id, region_id). If no row exists, max_budget stays null.
+    #
+    # Normalized email lookup may theoretically return multiple users in the same team;
+    # we pick one deterministic member id per team for cap lookup to keep response shape
+    # unchanged (one team aggregate entry).
+    member_id_by_team = {
+        team_id: min(uids) for team_id, uids in user_ids_by_team.items()
+    }
+    member_caps = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == "team_member",
+            DBSpendCap.team_id.in_(team_ids),
+            DBSpendCap.user_id.in_(list(member_id_by_team.values())),
+            DBSpendCap.max_budget.isnot(None),
+        )
         .all()
     )
+    max_budget_by_team_region: dict[tuple[int, int], float] = {}
+    for cap in member_caps:
+        if cap.team_id is None or cap.region_id is None or cap.user_id is None:
+            continue
+        if member_id_by_team.get(cap.team_id) != cap.user_id:
+            continue
+        try:
+            max_budget_by_team_region[(cap.team_id, cap.region_id)] = float(
+                cap.max_budget
+            )
+        except (TypeError, ValueError):
+            continue
+
     team_regions = (
         db.query(DBTeamRegion, DBRegion)
         .join(DBRegion, DBTeamRegion.region_id == DBRegion.id)
@@ -239,8 +309,7 @@ async def _compute_user_spend(
     )
 
     regions_by_team: dict[int, dict[int, DBRegion]] = {
-        team_id: {region.id: region for region in public_regions}
-        for team_id in team_ids
+        team_id: {} for team_id in team_ids
     }
     for assoc, region in team_regions:
         regions_by_team.setdefault(assoc.team_id, {})[region.id] = region
@@ -249,25 +318,35 @@ async def _compute_user_spend(
     task_meta: list[tuple[int, str, int]] = []
     region_failures = False
 
-    all_owner_ids: set[int] = set()
-    for uid_set in user_ids_by_team.values():
-        all_owner_ids.update(uid_set)
-
     key_pair_rows = (
-        db.query(DBPrivateAIKey.team_id, DBPrivateAIKey.region_id)
+        db.query(
+            DBPrivateAIKey.team_id, DBPrivateAIKey.owner_id, DBPrivateAIKey.region_id
+        )
         .filter(
-            DBPrivateAIKey.team_id.in_(team_ids),
-            DBPrivateAIKey.owner_id.in_(all_owner_ids),
+            or_(
+                DBPrivateAIKey.team_id.in_(team_ids),
+                DBPrivateAIKey.owner_id.in_(set().union(*user_ids_by_team.values())),
+            )
         )
         .distinct()
         .all()
     )
-    key_exists_set = {(row.team_id, row.region_id) for row in key_pair_rows}
+    key_team_region_set = {(row.team_id, row.region_id) for row in key_pair_rows}
+    # Per-team set of regions with user-owned keys (team_id=NULL, owner in that team).
+    user_key_regions_by_team: dict[int, set[int]] = defaultdict(set)
+    for row in key_pair_rows:
+        if row.team_id is None and row.owner_id is not None:
+            for tid, uids in user_ids_by_team.items():
+                if row.owner_id in uids:
+                    user_key_regions_by_team[tid].add(row.region_id)
 
     for team_id in team_ids:
         team_name = team_names[team_id]
         for region in regions_by_team.get(team_id, {}).values():
-            if (team_id, region.id) not in key_exists_set:
+            if (
+                (team_id, region.id) not in key_team_region_set
+                and region.id not in user_key_regions_by_team.get(team_id, set())
+            ):
                 continue
 
             tasks.append(
@@ -277,6 +356,7 @@ async def _compute_user_spend(
                     region=region,
                     user_ids=user_ids_by_team[team_id],
                     user_emails=user_emails_by_team[team_id],
+                    max_budget=max_budget_by_team_region.get((team_id, region.id)),
                 )
             )
             task_meta.append((team_id, team_name, region.id))
@@ -310,7 +390,7 @@ async def _compute_user_spend(
             )
         )
 
-    response = UserSpendResponse(
+    response = UserSpendByEmailResponse(
         email=normalized_email,
         total_spend=total_spend,
         teams=sorted(teams, key=lambda t: t.team_id),
@@ -420,7 +500,7 @@ async def get_users_by_email(
 
 @router.get(
     "/spend",
-    response_model=UserSpendResponse,
+    response_model=UserSpendByEmailResponse,
     dependencies=[Depends(get_role_min_system_admin)],
 )
 async def get_user_spend(
@@ -436,13 +516,13 @@ async def get_user_spend(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Missing or invalid email",
         )
-    normalized_email = _normalize_email_for_lookup(email)
+    normalized_email = normalize_email_for_lookup(email)
 
     cached = _get_user_spend_cache(db, normalized_email)
     if cached:
         payload = dict(cached.response_data or {})
         payload["cached_at"] = cached.cached_at
-        return UserSpendResponse.model_validate(payload)
+        return UserSpendByEmailResponse.model_validate(payload)
 
     response, had_region_failures = await _compute_user_spend(normalized_email, db)
     if not had_region_failures:
@@ -450,6 +530,99 @@ async def get_user_spend(
         payload.pop("cached_at", None)
         _upsert_user_spend_cache(db, normalized_email, payload, response.cached_at)
     return response
+
+
+@router.get(
+    "/{user_id}/admin-regions",
+    response_model=List[UserAdminRegionResponse],
+)
+async def list_user_admin_regions(
+    user_id: int,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    db: Session = Depends(get_db),
+):
+    if not current_user.is_admin and current_user.id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action",
+        )
+    user = db.query(DBUser).filter(DBUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return (
+        db.query(DBUserAdminRegion)
+        .join(DBRegion, DBUserAdminRegion.region_id == DBRegion.id)
+        .filter(DBUserAdminRegion.user_id == user_id, DBRegion.is_dedicated.is_(True))
+        .options(contains_eager(DBUserAdminRegion.region))
+        .all()
+    )
+
+
+@router.post(
+    "/{user_id}/admin-regions/{region_id}",
+    response_model=UserAdminRegionResponse,
+    dependencies=[Depends(get_role_min_system_admin)],
+)
+async def assign_user_admin_region(
+    user_id: int,
+    region_id: int,
+    db: Session = Depends(get_db),
+):
+    user = db.query(DBUser).filter(DBUser.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+    if not region.is_dedicated:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only dedicated regions can be assigned as admin regions",
+        )
+
+    association = (
+        db.query(DBUserAdminRegion)
+        .filter(
+            DBUserAdminRegion.user_id == user_id,
+            DBUserAdminRegion.region_id == region_id,
+        )
+        .first()
+    )
+    if association:
+        return association
+
+    association = DBUserAdminRegion(user_id=user_id, region_id=region_id)
+    db.add(association)
+    db.commit()
+    db.refresh(association)
+    return association
+
+
+@router.delete(
+    "/{user_id}/admin-regions/{region_id}",
+    dependencies=[Depends(get_role_min_system_admin)],
+)
+async def remove_user_admin_region(
+    user_id: int,
+    region_id: int,
+    db: Session = Depends(get_db),
+):
+    association = (
+        db.query(DBUserAdminRegion)
+        .filter(
+            DBUserAdminRegion.user_id == user_id,
+            DBUserAdminRegion.region_id == region_id,
+        )
+        .first()
+    )
+    if not association:
+        raise HTTPException(
+            status_code=404, detail="User admin-region association not found"
+        )
+
+    db.delete(association)
+    db.commit()
+    return {"message": "User admin-region association removed"}
 
 
 @router.get(
@@ -544,10 +717,10 @@ async def create_user(
             detail="Not authorized to perform this action",
         )
 
-    return _create_user_in_db(user, db)
+    return await _create_user_in_db(user, db)
 
 
-def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
+async def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
     limit_service = get_limit_service(db)
     if settings.ENABLE_LIMITS and user.team_id is not None:
         limit_service.check_team_user_limit(user.team_id)
@@ -579,6 +752,16 @@ def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
+
+    try:
+        await sync_create_user_across_regions(
+            db=db, db_user=db_user, team_id=user.team_id
+        )
+    except Exception:
+        # Compensating action to preserve strong consistency semantics.
+        db.delete(db_user)
+        db.commit()
+        raise
 
     # Create default limits for the user
     _create_default_limits_for_user(db_user, db)
@@ -645,10 +828,74 @@ async def update_user(
                 detail="Team members cannot be made administrators",
             )
 
+    previous_email = db_user.email
     for key, value in user_update.model_dump(exclude_unset=True).items():
         setattr(db_user, key, value)
 
-    db.commit()
+    synced_regions = []
+    updated_regions = []
+    if user_update.email is not None:
+        synced_regions = get_target_regions_for_user(db, db_user.team_id)
+        for region in synced_regions:
+            service = LiteLLMService(
+                api_url=region.litellm_api_url, api_key=region.litellm_api_key
+            )
+            try:
+                await service.update_user(
+                    user_id=str(db_user.id),
+                    updates={"user_email": db_user.email},
+                )
+                updated_regions.append(region)
+            except Exception:
+                logger.exception(
+                    "Failed to sync LiteLLM user email update for user_id=%s region_id=%s",
+                    db_user.id,
+                    region.id,
+                )
+                for updated_region in updated_regions:
+                    try:
+                        rollback_service = LiteLLMService(
+                            api_url=updated_region.litellm_api_url,
+                            api_key=updated_region.litellm_api_key,
+                        )
+                        await rollback_service.update_user(
+                            user_id=str(db_user.id),
+                            updates={"user_email": previous_email},
+                        )
+                    except Exception as rollback_exc:
+                        logger.error(
+                            "Failed to rollback LiteLLM user email for user_id=%s region_id=%s: %s",
+                            db_user.id,
+                            updated_region.id,
+                            str(rollback_exc),
+                        )
+                db.rollback()
+                raise
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        # Best-effort rollback for remote side effects when DB commit fails.
+        if user_update.email is not None and previous_email != db_user.email:
+            for region in updated_regions:
+                try:
+                    service = LiteLLMService(
+                        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+                    )
+                    await service.update_user(
+                        user_id=str(db_user.id),
+                        updates={"user_email": previous_email},
+                    )
+                except Exception as rollback_exc:
+                    logger.error(
+                        "Failed to rollback LiteLLM user email for user_id=%s region_id=%s: %s",
+                        db_user.id,
+                        region.id,
+                        str(rollback_exc),
+                    )
+        raise
+
     db.refresh(db_user)
     return db_user
 
@@ -689,8 +936,27 @@ async def add_user_to_team(
 
     # Add user to team
     db_user.team_id = team_operation.team_id
-    db.commit()
-    db.refresh(db_user)
+    try:
+        db.commit()
+        db.refresh(db_user)
+    except Exception:
+        db.rollback()
+        raise
+
+    try:
+        await sync_add_user_to_team(db=db, db_user=db_user, team_id=db_team.id)
+    except Exception:
+        try:
+            db_user.team_id = None
+            db.commit()
+            db.refresh(db_user)
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Failed to revert team assignment for user %s after LiteLLM sync failure",
+                db_user.id,
+            )
+        raise
     return db_user
 
 
@@ -719,9 +985,31 @@ async def remove_user_from_team(
         )
 
     # Remove user from team
+    previous_team_id = db_user.team_id
     db_user.team_id = None
-    db.commit()
-    db.refresh(db_user)
+    try:
+        db.commit()
+        db.refresh(db_user)
+    except Exception:
+        db.rollback()
+        raise
+
+    try:
+        await sync_remove_user_from_team(
+            db=db, db_user=db_user, team_id=previous_team_id
+        )
+    except Exception:
+        try:
+            db_user.team_id = previous_team_id
+            db.commit()
+            db.refresh(db_user)
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Failed to revert team removal for user %s after LiteLLM sync failure",
+                db_user.id,
+            )
+        raise
     return db_user
 
 
@@ -741,8 +1029,21 @@ async def delete_user(
             status_code=400, detail="Cannot delete user with associated AI keys"
         )
 
+    team_id = db_user.team_id
     db.delete(db_user)
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    try:
+        await sync_delete_user_across_regions(db=db, db_user=db_user, team_id=team_id)
+    except Exception:
+        logger.exception(
+            "User %s deleted from DB but failed to sync deletion across LiteLLM regions",
+            user_id,
+        )
     return {"message": "User deleted successfully"}
 
 
@@ -789,9 +1090,37 @@ async def update_user_role(
         )
 
     # Update the role
+    previous_role = db_user.role
     db_user.role = role_update.role
     db_user.updated_at = datetime.now(UTC)
+    remote_role_synced = False
 
-    db.commit()
+    if db_user.team_id is not None:
+        try:
+            await sync_update_user_team_role(
+                db=db, db_user=db_user, team_id=db_user.team_id
+            )
+            remote_role_synced = True
+        except Exception:
+            db.rollback()
+            raise
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        if remote_role_synced and db_user.team_id is not None:
+            try:
+                db_user.role = previous_role
+                await sync_update_user_team_role(
+                    db=db, db_user=db_user, team_id=db_user.team_id
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to revert LiteLLM role sync after DB commit failure",
+                    extra={"user_id": user_id, "team_id": db_user.team_id},
+                )
+        raise
+
     db.refresh(db_user)
     return db_user

@@ -1,64 +1,62 @@
 "use client";
 
-import { Loader2, RefreshCw, Pencil } from "lucide-react";
+import { Loader2, RefreshCw, Info } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { formatTimeUntil } from "@/lib/utils";
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { get } from "@/utils/api";
+import { mapTeamSpendToSpendInfo } from "@/utils/spend-mapping";
 import { useQuery } from "@tanstack/react-query";
-
-interface SpendInfo {
-  spend: number;
-  expires: string;
-  created_at: string;
-  updated_at: string;
-  max_budget: number | null;
-  budget_duration: string | null;
-  budget_reset_at: string | null;
-}
+import { Region } from "@/types/region";
+import { SpendInfo } from "@/types/spend";
 
 interface PrivateAIKeySpendCellProps {
   keyId: number;
   hasLiteLLMToken: boolean;
-  allowModification?: boolean;
-  onUpdateBudget?: (keyId: number, budgetDuration: string) => void;
-  isUpdatingBudget?: boolean;
+  region?: string;
+  teamId?: number;
+  regions?: Region[];
 }
 
 export function PrivateAIKeySpendCell({
   keyId,
   hasLiteLLMToken,
-  allowModification = false,
-  onUpdateBudget,
-  isUpdatingBudget = false,
+  region,
+  teamId,
+  regions = [],
 }: PrivateAIKeySpendCellProps) {
   const [isLoaded, setIsLoaded] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [openBudgetDialog, setOpenBudgetDialog] = useState(false);
+
+  const matchedRegion =
+    teamId && region ? regions.find((r) => r.name === region) : undefined;
 
   // Query for spend data - only enabled when isLoaded is true
+  // For team keys, also wait until the region can be resolved from the regions list
   const {
     data: spendData,
     isLoading,
     refetch,
   } = useQuery<SpendInfo>({
-    queryKey: ["private-ai-key-spend", keyId],
+    queryKey: ["private-ai-key-spend", keyId, region, teamId, regions.map((r) => r.id)],
     queryFn: async () => {
+      if (teamId && region && matchedRegion) {
+        const response = await get(
+          `spend/${matchedRegion.id}/team/${teamId}`,
+        );
+        const data = await response.json();
+        return mapTeamSpendToSpendInfo(data);
+      }
+      // Fallback for keys without team_id
       const response = await get(`private-ai-keys/${keyId}/spend`);
       return response.json();
     },
-    enabled: isLoaded,
+    enabled: isLoaded && (!(teamId && region) || !!matchedRegion),
   });
 
   const handleLoadSpend = () => {
@@ -123,81 +121,46 @@ export function PrivateAIKeySpendCell({
         <span className="text-sm font-medium">
           ${spendData.spend.toFixed(2)}
         </span>
-        <span className="text-xs text-muted-foreground">
-          {spendData.max_budget !== null
-            ? `/ $${spendData.max_budget.toFixed(2)}`
-            : "(No budget)"}
-        </span>
+        {spendData.max_budget != null && (
+          <span className="text-sm text-muted-foreground">
+            / ${spendData.max_budget.toFixed(2)}
+          </span>
+        )}
         <Button
           variant="ghost"
           size="icon"
           className="h-4 w-4"
           onClick={handleRefreshSpend}
           disabled={isRefreshing}
+          aria-label="Refresh spend"
         >
           {isRefreshing ? (
             <Loader2 className="h-3 w-3 animate-spin" />
           ) : (
             <RefreshCw className="h-3 w-3" />
           )}
+          <span className="sr-only">Refresh spend</span>
         </Button>
-      </div>
-      <span className="text-xs text-muted-foreground">
-        {spendData.budget_duration || "No budget period"}
-        {spendData.budget_reset_at &&
-          ` • Resets ${formatTimeUntil(spendData.budget_reset_at)}`}
-        {allowModification && onUpdateBudget && (
-          <Dialog open={openBudgetDialog} onOpenChange={setOpenBudgetDialog}>
-            <DialogTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-4 w-4 ml-1">
-                <Pencil className="h-3 w-3" />
-              </Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Update Budget Period</DialogTitle>
-                <DialogDescription>
-                  Set the budget period for this key. Examples: &quot;30d&quot;
-                  (30 days), &quot;24h&quot; (24 hours), &quot;60m&quot; (60
-                  minutes)
-                </DialogDescription>
-              </DialogHeader>
-              <div className="grid gap-4 py-4">
-                <div className="grid gap-2">
-                  <Label htmlFor="budget-duration">Budget Period</Label>
-                  <Input
-                    id="budget-duration"
-                    defaultValue={spendData.budget_duration || ""}
-                    placeholder="e.g. 30d"
-                  />
-                </div>
-              </div>
-              <DialogFooter>
-                <Button
-                  onClick={() => {
-                    const input = document.getElementById(
-                      "budget-duration",
-                    ) as HTMLInputElement;
-                    if (input) {
-                      onUpdateBudget(keyId, input.value);
-                    }
-                  }}
-                  disabled={isUpdatingBudget}
-                >
-                  {isUpdatingBudget ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Updating...
-                    </>
-                  ) : (
-                    "Update"
-                  )}
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+        {spendData.max_budget != null && (
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger>
+                <Info className="h-3 w-3 text-muted-foreground" />
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>This is a shared team budget.</p>
+                <p>All keys in the team share this budget.</p>
+                <p>To change it, edit the team&apos;s limits.</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         )}
-      </span>
+      </div>
+      {spendData.max_budget != null && (
+        <span className="text-xs text-muted-foreground">
+          Team budget — shared across all keys
+        </span>
+      )}
     </div>
   );
 }

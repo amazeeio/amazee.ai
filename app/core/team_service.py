@@ -3,18 +3,54 @@ Team service for centralized team operations including soft-delete and restore.
 """
 
 import logging
-from datetime import datetime, UTC
-from typing import Dict, List, Optional
 from collections import defaultdict
-from sqlalchemy.orm import Session
-from sqlalchemy import select
+from datetime import UTC, datetime
+from typing import Dict, List, Optional
 
-from app.db.models import DBTeam, DBUser, DBPrivateAIKey, DBRegion
-from app.services.litellm import LiteLLMService
 from app.core.limit_service import DEFAULT_KEY_DURATION
-
+from app.db.models import (
+    DBAuditLog,
+    DBPrivateAIKey,
+    DBRegion,
+    DBTeam,
+    DBTeamRegion,
+    DBUser,
+)
+from app.services.litellm import LiteLLMService
+from sqlalchemy import or_, select
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+
+
+def get_team_region_litellm_keys(
+    db: Session,
+    *,
+    team_id: int,
+    region_id: int,
+    key_id: int | None = None,
+    user_id: int | None = None,
+) -> List[DBPrivateAIKey]:
+    """Return team keys in a region that have LiteLLM tokens."""
+    team_user_ids = (
+        db.execute(select(DBUser.id).filter(DBUser.team_id == team_id)).scalars().all()
+    )
+    ownership_filter = DBPrivateAIKey.team_id == team_id
+    if team_user_ids:
+        ownership_filter = or_(
+            DBPrivateAIKey.team_id == team_id,
+            DBPrivateAIKey.owner_id.in_(team_user_ids),
+        )
+    query = db.query(DBPrivateAIKey).filter(
+        DBPrivateAIKey.region_id == region_id,
+        DBPrivateAIKey.litellm_token.isnot(None),
+        ownership_filter,
+    )
+    if key_id is not None:
+        query = query.filter(DBPrivateAIKey.id == key_id)
+    if user_id is not None:
+        query = query.filter(DBPrivateAIKey.owner_id == user_id)
+    return query.all()
 
 
 def get_team_keys_by_region(
@@ -98,7 +134,20 @@ async def soft_delete_team(
         f"Deactivated {users_deactivated} users for soft-deleted team {team.id}"
     )
 
-    # Commit the deletion and user deactivation
+    # Write audit log entry (background/worker operation — no HTTP user)
+    audit_log = DBAuditLog(
+        timestamp=current_time,
+        user_id=None,
+        event_type="WORKER",
+        resource_type="team",
+        resource_id=str(team.id),
+        action="team.soft_delete",
+        details={"team_name": team.name, "deleted_at": current_time.isoformat()},
+        request_source=None,
+    )
+    db.add(audit_log)
+
+    # Commit the deletion, user deactivation, and audit log
     db.commit()
 
     # Expire all keys in LiteLLM
@@ -133,7 +182,7 @@ async def soft_delete_team(
     logger.info(f"Successfully soft-deleted team {team.id} ({team.name})")
 
 
-async def restore_soft_deleted_team(db: Session, team: DBTeam) -> None:
+async def restore_soft_deleted_team(db: Session, team: DBTeam) -> dict:
     """
     Restore a soft-deleted team with full cascade behavior.
 
@@ -141,18 +190,92 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> None:
     - Resets team.deleted_at to null
     - Resets team.retention_warning_sent_at to null
     - Reactivates all users in the team (is_active = True)
+    - Re-provisions the LiteLLM team and its users in every allowed region
     - Un-expires all keys in LiteLLM (sets back to default duration)
 
     Args:
         db: Database session
         team: The team to restore
 
-    Note: This function commits the database changes.
+    Returns:
+        A dict with ``litellm_warnings`` (list of region names where
+        LiteLLM re-provisioning failed).  An empty list means full success.
+
+    Note: This function commits the database changes regardless of LiteLLM
+    failures so that the team is always marked as restored in the DB.
+    Callers should surface any returned warnings to admins.
     """
     if not team.deleted_at:
         raise ValueError(f"Team {team.id} is not soft-deleted and cannot be restored")
 
     logger.info(f"Restoring soft-deleted team {team.id} ({team.name})")
+
+    # Collect team users and regions up front
+    team_users = db.query(DBUser).filter(DBUser.team_id == team.id).all()
+    allowed_regions = (
+        db.query(DBRegion)
+        .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
+        .filter(DBTeamRegion.team_id == team.id, DBRegion.is_active.is_(True))
+        .all()
+    )
+
+    failed_regions: list[str] = []
+
+    # Re-provision LiteLLM: ensure team and user objects exist in each region
+    for region in allowed_regions:
+        region_failed = False
+        try:
+            litellm_service = LiteLLMService(
+                api_url=region.litellm_api_url, api_key=region.litellm_api_key
+            )
+            lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+
+            # Ensure the LiteLLM team exists (idempotent)
+            try:
+                await litellm_service.create_team(
+                    team_id=lite_team_id,
+                    team_alias=lite_team_id,
+                )
+                logger.info(
+                    f"Re-provisioned LiteLLM team {lite_team_id} in region {region.name}"
+                )
+            except Exception as team_error:
+                logger.error(
+                    f"Failed to re-provision LiteLLM team in region {region.name}: {str(team_error)}"
+                )
+                region_failed = True
+                continue
+
+            # Ensure each user exists in LiteLLM and is a member of the team (idempotent)
+            for user in team_users:
+                try:
+                    await litellm_service.create_user(
+                        user_id=str(user.id),
+                        user_email=user.email,
+                        auto_create_key=False,
+                    )
+                    await litellm_service.add_team_member(
+                        team_id=lite_team_id,
+                        user_id=str(user.id),
+                    )
+                    logger.info(
+                        f"Re-provisioned LiteLLM user {user.id} in team {lite_team_id} region {region.name}"
+                    )
+                except Exception as user_error:
+                    logger.error(
+                        f"Failed to re-provision LiteLLM user {user.id} in region {region.name}: {str(user_error)}"
+                    )
+                    region_failed = True
+        except Exception as region_error:
+            logger.error(
+                f"Failed to re-provision LiteLLM team/users in region {region.name}: {str(region_error)}"
+            )
+            region_failed = True
+        finally:
+            # `continue` inside the inner try skips code after the try/except block,
+            # so use finally to ensure failed regions are always recorded.
+            if region_failed:
+                failed_regions.append(region.name)
 
     # Un-expire all keys for the team in LiteLLM
     try:
@@ -176,21 +299,26 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> None:
                             logger.error(
                                 f"Failed to un-expire key {key.id} in LiteLLM: {str(key_error)}"
                             )
+                            if region.name not in failed_regions:
+                                failed_regions.append(region.name)
             except Exception as region_error:
                 logger.error(
                     f"Failed to un-expire keys in region {region.name}: {str(region_error)}"
                 )
+                if region.name not in failed_regions:
+                    failed_regions.append(region.name)
     except Exception as restore_error:
         logger.error(
             f"Failed to un-expire keys for team {team.id}: {str(restore_error)}"
         )
-        # Don't block restoration if key un-expiration fails
+
+    restored_at = datetime.now(UTC)
 
     # Reset deletion and warning timestamps and reactivate team
     team.deleted_at = None
     team.retention_warning_sent_at = None
     team.is_active = True
-    team.updated_at = datetime.now(UTC)
+    team.updated_at = restored_at
 
     # Reactivate all users in the team
     users_reactivated = (
@@ -200,9 +328,33 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> None:
     )
     logger.info(f"Reactivated {users_reactivated} users for restored team {team.id}")
 
+    # Write audit log entry (include any LiteLLM provisioning failures)
+    audit_log = DBAuditLog(
+        timestamp=restored_at,
+        user_id=None,
+        event_type="WORKER",
+        resource_type="team",
+        resource_id=str(team.id),
+        action="team.restore",
+        details={
+            "team_name": team.name,
+            "litellm_failed_regions": failed_regions,
+        },
+        request_source=None,
+    )
+    db.add(audit_log)
+
     db.commit()
 
-    logger.info(f"Successfully restored team {team.id} ({team.name})")
+    if failed_regions:
+        logger.warning(
+            f"Team {team.id} restored but LiteLLM re-provisioning failed in regions: {failed_regions}. "
+            f"Keys may not work until re-provisioning is retried."
+        )
+    else:
+        logger.info(f"Successfully restored team {team.id} ({team.name})")
+
+    return {"litellm_warnings": failed_regions}
 
 
 async def propagate_team_budget_to_keys(
@@ -211,13 +363,15 @@ async def propagate_team_budget_to_keys(
     budget_amount: float,
     budget_duration: str,
     region_id: Optional[int] = None,
+    update_key_limits: bool = True,
+    apply_to_keys: bool = True,
 ) -> dict:
     """
-    Propagate a team budget limit change to the LiteLLM team and all its keys.
+    Propagate a team budget limit change to the LiteLLM team and optionally its keys.
 
-    This function updates the LiteLLM team max_budget (shared ceiling) and all
-    keys (both user-owned and team-owned) with the new budget amount when a
-    team's budget limit is changed.
+    This function updates the LiteLLM team max_budget (shared ceiling), and
+    optionally updates all keys (both user-owned and team-owned) with the new
+    budget amount when a team's budget limit is changed.
 
     Args:
         db: Database session
@@ -227,6 +381,11 @@ async def propagate_team_budget_to_keys(
         region_id: Optional region ID to restrict updates to a single region.
             When provided the LiteLLM team for that region is updated even if
             the team currently has no keys there.
+        update_key_limits: When True, also update each key max_budget. For
+            POOL budgets this should be False so per-key overrides remain
+            independent from shared team budget.
+        apply_to_keys: Whether to propagate budget updates to keys in addition
+            to the team budget.
 
     Returns:
         dict with "teams_updated" (number of LiteLLM teams successfully updated)
@@ -256,27 +415,54 @@ async def propagate_team_budget_to_keys(
                     "teams_updated": 0,
                     "errors": [f"Region {region_id} not found"],
                 }
-            team_user_ids = (
-                db.execute(select(DBUser.id).filter(DBUser.team_id == team_id))
-                .scalars()
-                .all()
-            )
-            region_keys = [
-                key
-                for key in (
-                    db.query(DBPrivateAIKey)
-                    .filter(
-                        (DBPrivateAIKey.owner_id.in_(team_user_ids))
-                        | (DBPrivateAIKey.team_id == team_id),
-                        DBPrivateAIKey.region_id == region_id,
-                    )
+            if apply_to_keys:
+                team_user_ids = (
+                    db.execute(select(DBUser.id).filter(DBUser.team_id == team_id))
+                    .scalars()
                     .all()
                 )
-                if key.litellm_token
-            ]
+                region_keys = [
+                    key
+                    for key in (
+                        db.query(DBPrivateAIKey)
+                        .filter(
+                            (DBPrivateAIKey.owner_id.in_(team_user_ids))
+                            | (DBPrivateAIKey.team_id == team_id),
+                            DBPrivateAIKey.region_id == region_id,
+                        )
+                        .all()
+                    )
+                    if key.litellm_token
+                ]
+            else:
+                region_keys = []
             keys_by_region: Dict[DBRegion, List[DBPrivateAIKey]] = {region: region_keys}
         else:
-            keys_by_region = get_team_keys_by_region(db, team_id)
+            if apply_to_keys:
+                keys_by_region = get_team_keys_by_region(db, team_id)
+            else:
+                # Only need the distinct regions; skip loading all key objects.
+                team_user_ids = (
+                    db.execute(select(DBUser.id).filter(DBUser.team_id == team_id))
+                    .scalars()
+                    .all()
+                )
+                region_ids = (
+                    db.execute(
+                        select(DBPrivateAIKey.region_id)
+                        .filter(
+                            (DBPrivateAIKey.owner_id.in_(team_user_ids))
+                            | (DBPrivateAIKey.team_id == team_id),
+                            DBPrivateAIKey.litellm_token.isnot(None),
+                            DBPrivateAIKey.region_id.isnot(None),
+                        )
+                        .distinct()
+                    )
+                    .scalars()
+                    .all()
+                )
+                regions = db.query(DBRegion).filter(DBRegion.id.in_(region_ids)).all()
+                keys_by_region = {r: [] for r in regions}
 
         # Update team budget and keys for each region
         for region_obj, keys in keys_by_region.items():
@@ -304,22 +490,23 @@ async def propagate_team_budget_to_keys(
                     f"Failed to update team {team_id} budget in region {region_obj.name}: {str(team_error)}"
                 )
 
-            # Update each key's budget via LiteLLM
-            for key in keys:
-                try:
-                    await litellm_service.update_budget(
-                        litellm_token=key.litellm_token,
-                        budget_duration=budget_duration,
-                        budget_amount=budget_amount,
-                    )
-                    logger.info(
-                        f"Updated key {key.id} budget to {budget_amount} in LiteLLM after team budget limit change"
-                    )
-                except Exception as key_error:
-                    errors.append(f"Key {key.id}: {str(key_error)}")
-                    logger.error(
-                        f"Failed to update key {key.id} budget in LiteLLM: {str(key_error)}"
-                    )
+            if update_key_limits and apply_to_keys:
+                # Update each key's budget via LiteLLM.
+                for key in keys:
+                    try:
+                        await litellm_service.update_budget(
+                            litellm_token=key.litellm_token,
+                            budget_duration=budget_duration,
+                            budget_amount=budget_amount,
+                        )
+                        logger.info(
+                            f"Updated key {key.id} budget to {budget_amount} in LiteLLM after team budget limit change"
+                        )
+                    except Exception as key_error:
+                        errors.append(f"Key {key.id}: {str(key_error)}")
+                        logger.error(
+                            f"Failed to update key {key.id} budget in LiteLLM: {str(key_error)}"
+                        )
     except Exception as propagation_error:
         errors.append(str(propagation_error))
         logger.error(
