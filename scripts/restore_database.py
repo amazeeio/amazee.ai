@@ -7,12 +7,22 @@ Lagoon backups are .tar.gz files containing a pg_dump directory-format archive:
 
 This script:
   1. (Optionally) takes a pre-restore safety backup with `pg_dump -Fc`.
-  2. Drops and recreates the target database via `dropdb` / `createdb`.
-  3. Extracts the .tar.gz (and the nested .tar) to a temp directory.
-  4. Applies the dump with `pg_restore -Fd --no-owner --no-privileges`.
+  2. Extracts the .tar.gz (and the nested .tar) to a temp directory.
+  3. Applies the dump with
+     `pg_restore -Fd --create --clean --if-exists --no-owner --no-privileges
+                 --no-tablespaces --exit-on-error`
+     connected to the `postgres` maintenance database. `--create --clean`
+     replays the source DB's own `CREATE DATABASE` from `toc.dat`, so the
+     target is recreated with the source's encoding and collation rather
+     than the cluster's defaults. `--no-owner` and `--no-tablespaces` strip
+     out OWNER/TABLESPACE clauses so the restore does not depend on the
+     source's roles or tablespaces existing on the target cluster.
 
-Requires the postgres client tools (pg_dump, pg_restore, dropdb, createdb,
-psql) on PATH. In Lagoon these are provided by the `cli` container image.
+Requires the postgres client tools (pg_dump, pg_restore, psql) on PATH. In
+Lagoon these are provided by the `cli` container image.
+
+The connecting role needs CREATEDB (to recreate the target database) and
+must be able to connect to the `postgres` maintenance database.
 
 IMPORTANT: Only use this with backups from trusted sources (e.g. Lagoon).
 
@@ -28,30 +38,59 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse, urlunparse
 
 
-REQUIRED_TOOLS = ("pg_dump", "pg_restore", "dropdb", "createdb", "psql")
+REQUIRED_TOOLS = ("pg_dump", "pg_restore", "psql")
 
 
 def sanitize(msg, config):
-    """Remove sensitive data (password) from messages."""
+    """Remove sensitive data (password) from messages.
+
+    The password may appear verbatim (from PGPASSWORD-style logs) or
+    URL-encoded inside the DATABASE_URL that we now pass on argv via
+    `--dbname` / `--maintenance-db`. Strip both forms.
+    """
     if not msg:
         return msg
+    msg = str(msg)
     pw = config.get("password")
     if pw:
         msg = msg.replace(pw, "****")
+        encoded_pw = quote(pw, safe="")
+        if encoded_pw and encoded_pw != pw:
+            msg = msg.replace(encoded_pw, "****")
     return msg
 
 
 def get_db_config():
-    """Parse DATABASE_URL into connection components."""
+    """Parse DATABASE_URL into connection components.
+
+    The full URL is preserved (`url`) and handed to libpq via `--dbname` /
+    `--maintenance-db` so any libpq-supported parameters (sslmode,
+    connect_timeout, host=/var/run/..., etc.) flow through unchanged. Parsed
+    fields are kept only for local needs:
+      - `database` for the safety guard, the dropdb/createdb target, and the
+        backup filename;
+      - `password` for the log-sanitizer and PGPASSWORD (so it never lands in
+        argv);
+      - `host` / `user` for the diagnostic presence printout.
+
+    Also derives `maintenance_url`, a URL with the path swapped to
+    `/postgres`, so `dropdb`/`createdb` can connect to a different database
+    than the one being dropped/created while inheriting all other params.
+    """
     database_url = os.getenv(
         "DATABASE_URL", "postgres://postgres:postgres@postgres:5432/postgres_service"
     )
     parsed = urlparse(database_url)
     db_name = unquote(parsed.path or "").removeprefix("/")
+    # Replace the path with `/postgres` while preserving netloc and query
+    # params (so sslmode, connect_timeout, etc. carry over).
+    maintenance_url = urlunparse(parsed._replace(path="/postgres"))
     return {
+        "url": database_url,
+        "maintenance_url": maintenance_url,
         "host": parsed.hostname,
         "port": parsed.port or 5432,
         "user": unquote(parsed.username) if parsed.username is not None else None,
@@ -61,17 +100,17 @@ def get_db_config():
 
 
 def pg_env(config):
-    """Build an environment dict with libpq connection variables set."""
+    """Build an environment dict with PGPASSWORD set.
+
+    All other connection parameters are passed via the libpq URL on the
+    command line (`--dbname` / `--maintenance-db`), so libpq parses any
+    extra params (sslmode, connect_timeout, socket host=..., etc.) verbatim.
+    PGPASSWORD is kept in the environment rather than the URL to avoid
+    leaking the password into argv / process listings.
+    """
     env = os.environ.copy()
-    if config.get("host"):
-        env["PGHOST"] = str(config["host"])
-    if config.get("port"):
-        env["PGPORT"] = str(config["port"])
-    if config.get("user"):
-        env["PGUSER"] = str(config["user"])
     if config.get("password"):
         env["PGPASSWORD"] = str(config["password"])
-    # libpq picks up these on its own; no need to pass them as CLI flags.
     return env
 
 
@@ -129,11 +168,14 @@ def backup_current_database(config, backup_path):
     fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     os.close(fd)
 
+    # Pass the full DATABASE_URL via --dbname so libpq parses every param
+    # (sslmode, connect_timeout, socket host=..., etc.) instead of relying on
+    # the four fields we extracted in get_db_config().
     cmd = [
         "pg_dump",
         "--format=custom",
         "--file", backup_path,
-        "--dbname", config["database"],
+        "--dbname", config["url"],
     ]
     try:
         run_pg_tool(cmd, config)
@@ -144,40 +186,11 @@ def backup_current_database(config, backup_path):
         except OSError as cleanup_err:
             # Best-effort cleanup only: preserve original pg_dump failure path.
             print(f"  Warning: could not remove partial backup file: {cleanup_err}", file=sys.stderr)
-        raise SystemExit(f"  pg_dump failed: {e.stderr or e}")
+        raise SystemExit(f"  pg_dump failed: {sanitize(e.stderr or e, config)}")
 
     size_mb = os.path.getsize(backup_path) / (1024 * 1024)
     print(f"  Backup complete ({size_mb:.1f} MB)")
     return backup_path
-
-
-def drop_and_recreate_database(config):
-    """Drop the target database (forcing connections closed) and recreate it."""
-    db_name = config["database"]
-
-    if db_name == "postgres":
-        raise SystemExit(
-            "Error: Cannot drop the 'postgres' maintenance database. "
-            "Set DATABASE_URL to point to a different target database."
-        )
-
-    print("  Dropping target database (forcing existing connections closed)...")
-    # --force terminates active connections (PostgreSQL 13+).
-    try:
-        run_pg_tool(
-            ["dropdb", "--if-exists", "--force", db_name],
-            config,
-        )
-    except subprocess.CalledProcessError as e:
-        raise SystemExit(f"  dropdb failed: {e.stderr or e}")
-
-    print("  Creating target database...")
-    try:
-        run_pg_tool(["createdb", db_name], config)
-    except subprocess.CalledProcessError as e:
-        raise SystemExit(f"  createdb failed: {e.stderr or e}")
-
-    print("  Database recreated.")
 
 
 def safe_extract_tar(tar, extract_dir):
@@ -250,28 +263,67 @@ def extract_backup(backup_path, extract_dir):
 def apply_restore(config, dump_dir):
     """Apply the database restore from a pg_dump directory-format archive.
 
-    Uses `pg_restore -Fd --no-owner --no-privileges` so the restore runs as
-    the current connection user without requiring superuser privileges or
-    the original owner roles to exist. `--exit-on-error` makes pg_restore
-    fail fast on the first error rather than logging warnings and pressing on.
+    Connects to the `postgres` maintenance DB and lets pg_restore itself
+    drop and recreate the target with the source's recorded metadata
+    (encoding, collation, locale provider) replayed from `toc.dat`.
+
+    Flag rationale:
+      --create / --clean / --if-exists
+          Replay the source's `CREATE DATABASE` (preserving encoding and
+          collation, fixing the cluster-defaults correctness gap that a
+          plain `createdb` would introduce). `--clean --if-exists` makes
+          the preceding `DROP DATABASE` idempotent so re-running the
+          script is safe even when the target does not exist.
+      --no-owner / --no-privileges
+          Skip OWNER and GRANT clauses (both for the database itself and
+          for objects inside it), so the restore does not require the
+          source's roles to exist on the target cluster. The restoring
+          role takes ownership.
+      --no-tablespaces
+          Strip TABLESPACE clauses, so the restore does not require the
+          source's tablespaces to exist on the target cluster (the DB
+          and its objects land in the default tablespace).
+      --exit-on-error
+          Fail fast on the first error rather than logging warnings and
+          continuing with a half-restored database.
     """
+    db_name = config["database"]
+
+    # Refuse to wipe the maintenance DB. (`pg_restore --clean --create`
+    # would happily DROP DATABASE postgres if asked.)
+    if db_name == "postgres":
+        raise SystemExit(
+            "Error: Cannot restore over the 'postgres' maintenance database. "
+            "Set DATABASE_URL to point to a different target database."
+        )
+
     cmd = [
         "pg_restore",
         "--format=directory",
+        "--create",
+        "--clean",
+        "--if-exists",
         "--no-owner",
         "--no-privileges",
+        "--no-tablespaces",
         "--exit-on-error",
-        "--dbname", config["database"],
+        # Connect to the maintenance DB so pg_restore can drop/create the
+        # target. `maintenance_url` carries every libpq param from the
+        # configured DATABASE_URL (sslmode, connect_timeout, etc.).
+        "--dbname", config["maintenance_url"],
         dump_dir,
     ]
     try:
         run_pg_tool(cmd, config, capture=False)
     except subprocess.CalledProcessError as e:
         raise SystemExit(
-            f"  pg_restore failed: {e.stderr or e}\n"
-            "  The database has been dropped and is now empty. "
-            "Re-run the restore or recover from the safety backup with:\n"
-            "    pg_restore -d \"$DATABASE_URL\" --clean <safety_backup>.dump"
+            f"  pg_restore failed: {sanitize(e.stderr or e, config)}\n"
+            "  The target database may have been dropped or partially "
+            "restored. Recover from the safety backup with:\n"
+            "    pg_restore --clean --create --if-exists --no-owner "
+            "--no-privileges \\\n"
+            "      -d \"<maintenance DATABASE_URL, path=/postgres>\" "
+            "<safety_backup>.dump"
         )
 
     print("  Restore complete.")
@@ -385,7 +437,7 @@ def main():
     try:
         # Step 1: Backup current database (unless skipped)
         if not args.no_backup:
-            print("\n[1/4] Backing up current database...")
+            print("\n[1/3] Backing up current database...")
             backup_dir = args.backup_dir or os.path.dirname(os.path.abspath(args.backup_file))
             os.makedirs(backup_dir, exist_ok=True)
             safety_backup_path = os.path.join(
@@ -413,10 +465,10 @@ def main():
                     print("Aborted.")
                     sys.exit(0)
         else:
-            print("\n[1/4] Skipping backup (--no-backup)")
+            print("\n[1/3] Skipping backup (--no-backup)")
 
         # Step 2: Extract the backup archive
-        print("\n[2/4] Extracting backup archive...")
+        print("\n[2/3] Extracting backup archive...")
         extract_dir = os.path.join(tmpdir, "extracted")
         os.makedirs(extract_dir, exist_ok=True)
         dump_dir = extract_backup(args.backup_file, extract_dir)
@@ -425,12 +477,10 @@ def main():
         print(f"  Dump directory: {dump_dir}")
         print(f"  Found: toc.dat + {dat_count} data files")
 
-        # Step 3: Drop and recreate the database
-        print("\n[3/4] Dropping and recreating database...")
-        drop_and_recreate_database(config)
-
-        # Step 4: Apply the restore
-        print("\n[4/4] Applying database restore...")
+        # Step 3: Apply the restore. pg_restore --create --clean handles
+        # the drop/recreate so the target DB is rebuilt with the source's
+        # encoding/collation rather than cluster defaults.
+        print("\n[3/3] Applying database restore...")
         apply_restore(config, dump_dir)
 
         print("\nRestore complete!")
