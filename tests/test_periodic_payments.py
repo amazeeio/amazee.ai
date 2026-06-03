@@ -16,7 +16,6 @@ from app.db.models import (
     DBPrivateAIKey,
     DBRegion,
     DBTeam,
-    DBPoolPurchase,
 )
 from app.schemas.models import BudgetType
 
@@ -625,9 +624,7 @@ def test_pool_subscription_cycle_endpoint_rejected_for_unsupported_type(
 @patch("app.core.worker._record_periodic_payment_direct", new_callable=AsyncMock)
 @patch("app.core.worker.apply_billing_cycle_for_team", new_callable=AsyncMock)
 @patch("app.core.worker._sync_periodic_ledger_for_period", new_callable=AsyncMock)
-@patch(
-    "app.core.worker.capture_periodic_team_spend_for_period", new_callable=AsyncMock
-)
+@patch("app.core.worker.capture_periodic_team_spend_for_period", new_callable=AsyncMock)
 async def test_pool_team_invoice_paid_not_skipped(
     mock_capture_period,
     mock_sync_ledger,
@@ -719,7 +716,11 @@ async def test_pool_team_billing_cycle_uses_31d_and_resets_spend(
     db.add(key)
     db.commit()
 
-    mock_limit_service.return_value.get_token_restrictions.return_value = (31, 30.0, 500)
+    mock_limit_service.return_value.get_token_restrictions.return_value = (
+        31,
+        30.0,
+        500,
+    )
     mock_get_keys.return_value = [key]
 
     mock_litellm = mock_litellm_class.return_value

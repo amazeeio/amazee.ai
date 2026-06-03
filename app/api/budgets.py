@@ -68,7 +68,8 @@ async def get_periodic_budget_status(
         raise HTTPException(status_code=404, detail="Team not found")
     if team.budget_type not in (BudgetType.PERIODIC, BudgetType.POOL):
         raise HTTPException(
-            status_code=400, detail="Endpoint is only valid for subscription-managed teams"
+            status_code=400,
+            detail="Endpoint is only valid for subscription-managed teams",
         )
     region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
     if not region:
