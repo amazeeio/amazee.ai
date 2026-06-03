@@ -2,10 +2,8 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.security import get_role_min_system_admin
 from app.core.team_service import get_team_region_litellm_keys
 from app.core.worker import (
@@ -33,15 +31,6 @@ from app.services.litellm import LiteLLMService
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-_security = HTTPBearer()
-
-
-def _verify_moad_api_key(
-    credentials: HTTPAuthorizationCredentials = Depends(_security),
-):
-    if credentials.credentials != settings.MOAD_API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    return credentials.credentials
 
 
 def _write_audit_log(
@@ -237,11 +226,14 @@ async def subscription_cycle(
         raise HTTPException(status_code=500, detail=f"Subscription cycle failed: {exc}")
 
 
-@router.post("/deactivate", response_model=SubscriptionDeactivateResponse)
+@router.post(
+    "/deactivate",
+    response_model=SubscriptionDeactivateResponse,
+    dependencies=[Depends(get_role_min_system_admin)],
+)
 async def subscription_deactivate(
     request: SubscriptionDeactivateRequest,
     db: Session = Depends(get_db),
-    _: str = Depends(_verify_moad_api_key),
 ):
     logger.info("subscription.deactivate called: %s", request.model_dump())
 
