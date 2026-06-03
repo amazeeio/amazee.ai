@@ -66,9 +66,10 @@ async def get_periodic_budget_status(
     team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
-    if team.budget_type != BudgetType.PERIODIC:
+    if team.budget_type not in (BudgetType.PERIODIC, BudgetType.POOL):
         raise HTTPException(
-            status_code=400, detail="Endpoint is only valid for PERIODIC teams"
+            status_code=400,
+            detail="Endpoint is only valid for subscription-managed teams",
         )
     region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
     if not region:
@@ -598,17 +599,19 @@ async def purchase_pool_budget(
     "/region/{region_id}/teams/{team_id}/purchase/periodic",
     response_model=PeriodicTopupResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Create PERIODIC top-up purchase",
+    summary="Create subscription-managed top-up purchase",
     description=(
-        "Create a region-scoped top-up for PERIODIC teams.\n\n"
-        "- Valid only for PERIODIC teams.\n"
+        "Create a region-scoped top-up for subscription-managed teams.\n\n"
+        "- Valid for PERIODIC and POOL teams.\n"
         "- Target region must be assigned to the team.\n"
         "- Idempotency is enforced by `stripe_payment_id` (duplicate => 409).\n"
         "- Compounding is region-scoped: `max_budget = current_spend + desired_remaining`.\n"
         "- On LiteLLM sync failure, request fails (502), payment is marked `sync_failed`, and "
         "no allocatable top-up ledger balance is retained for that failed API purchase."
     ),
-    response_description="Created PERIODIC top-up and updated the target region budget.",
+    response_description=(
+        "Created subscription-managed top-up and updated the target region budget."
+    ),
     dependencies=[Depends(get_role_min_system_admin)],
 )
 async def create_periodic_topup(
@@ -622,10 +625,10 @@ async def create_periodic_topup(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
         )
-    if team.budget_type != BudgetType.PERIODIC:
+    if team.budget_type not in (BudgetType.PERIODIC, BudgetType.POOL):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Endpoint is only valid for PERIODIC teams",
+            detail="Endpoint is only valid for subscription-managed teams",
         )
     return await purchase_periodic_topup(
         region_id=region_id,

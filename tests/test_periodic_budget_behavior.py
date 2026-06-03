@@ -1,14 +1,15 @@
 """
 Tests for PERIODIC team budget behaviour introduced by the
-"Spend API: align duration budget for PERIODIC teams with Stripe webhooks" PR.
+"Spend API: align duration budget for PERIODIC teams with Stripe webhooks" PR,
+extended to cover POOL subscription teams (AI-398).
 
 Key behaviours under test:
 1. PERIODIC teams use a fixed 31-day budget duration (not days_left_in_period)
-2. POOL teams still use days_left_in_period
+2. POOL subscription teams use 31d duration (same as PERIODIC, via billing cycle)
 3. PERIODIC teams compound max_budget = accumulated_spend + monthly_cap
 4. Compounding falls back to flat cap when get_team_info fails
 5. PERIODIC teams reset key spend to 0 on each webhook
-6. POOL teams do NOT reset key spend
+6. POOL subscription teams reset key spend to 0 on cycle (same as PERIODIC)
 7. Spend API: PERIODIC teams derive total_spend from sum of key spends
 8. Spend API: PERIODIC teams derive total_budget from max(key budgets)
 """
@@ -130,14 +131,14 @@ async def test_periodic_team_uses_31d_duration(
     assert team_call.kwargs["budget_duration"] == "31d"
 
 
-# ─── 2. POOL teams use days_left_in_period duration ───────────────────────
+# ─── 2. POOL subscription teams use 31d duration (same as PERIODIC) ──────
 
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.worker.get_team_keys_by_region")
 @patch("app.core.worker.LimitService")
-async def test_pool_team_uses_days_left_duration(
+async def test_pool_subscription_team_uses_31d_duration(
     mock_limit_service,
     mock_get_keys,
     mock_litellm_class,
@@ -145,12 +146,12 @@ async def test_pool_team_uses_days_left_duration(
     test_product,
     test_region,
 ):
-    """POOL teams must use days_left_in_period from the limit service."""
+    """POOL subscription teams go through apply_billing_cycle_for_team and
+    therefore use the same fixed 31d budget_duration as PERIODIC teams."""
     team = _make_pool_team(db, "Pool Duration Team", region=test_region)
     team.stripe_customer_id = "cus_pool_duration"
     db.commit()
 
-    # Limit service says 20 days left
     mock_limit_service.return_value.get_token_restrictions.return_value = (
         20,
         100.0,
@@ -167,7 +168,7 @@ async def test_pool_team_uses_days_left_duration(
     )
 
     team_call = mock_litellm.update_team_budget.await_args
-    assert team_call.kwargs["budget_duration"] == "20d"
+    assert team_call.kwargs["budget_duration"] == "31d"
 
 
 # ─── 3. PERIODIC teams compound max_budget ────────────────────────────────
@@ -330,14 +331,14 @@ async def test_periodic_team_resets_key_spend_to_zero(
         assert call.kwargs["spend"] == 0.0
 
 
-# ─── 6. POOL teams do NOT reset key spend ─────────────────────────────────
+# ─── 6. POOL subscription teams reset key spend to 0 on cycle ─────────────
 
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.worker.get_team_keys_by_region")
 @patch("app.core.worker.LimitService")
-async def test_pool_team_does_not_reset_key_spend(
+async def test_pool_subscription_team_resets_key_spend(
     mock_limit_service,
     mock_get_keys,
     mock_litellm_class,
@@ -345,8 +346,8 @@ async def test_pool_team_does_not_reset_key_spend(
     test_product,
     test_region,
 ):
-    """POOL teams must pass spend=None to set_key_restrictions so that
-    existing key spend counters are preserved across budget updates."""
+    """POOL subscription teams go through apply_billing_cycle_for_team and
+    therefore reset key spend to 0.0 on each cycle, just like PERIODIC teams."""
     team = _make_pool_team(db, "Pool No Reset Team", region=test_region)
     team.stripe_customer_id = "cus_pool_no_reset"
     db.commit()
@@ -369,10 +370,10 @@ async def test_pool_team_does_not_reset_key_spend(
         db, "cus_pool_no_reset", test_product.id, datetime.now(UTC)
     )
 
-    # Every key must have been called with spend=None (not reset)
+    # Every key must have been called with spend=0.0 (reset on cycle)
     assert mock_litellm.set_key_restrictions.call_count == 2
     for call in mock_litellm.set_key_restrictions.call_args_list:
-        assert call.kwargs["spend"] is None
+        assert call.kwargs["spend"] == 0.0
 
 
 # ─── 7. Spend API: PERIODIC team total_spend = sum of key spends ──────────

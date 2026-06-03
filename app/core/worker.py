@@ -74,6 +74,10 @@ FIRST_EMAIL_DAYS_LEFT = 7
 SECOND_EMAIL_DAYS_LEFT = 5
 TRIAL_OVER_DAYS = 30
 
+# Budget types that support subscription cycles (PERIODIC and POOL).
+# Used to gate cycle/ledger/drift functions that were originally PERIODIC-only.
+SUBSCRIPTION_BUDGET_TYPES = frozenset({BudgetType.PERIODIC, BudgetType.POOL})
+
 # Prometheus metrics
 team_freshness_days = Gauge(
     "team_freshness_days",
@@ -417,8 +421,12 @@ async def _run_cycle_from_stripe_event(
     if not team:
         logger.warning("No team found for customer_id=%s", customer_id)
         return
-    if team.budget_type != BudgetType.PERIODIC:
-        logger.info("Skipping invoice.paid: team %s is not PERIODIC", team.id)
+    if team.budget_type not in SUBSCRIPTION_BUDGET_TYPES:
+        logger.info(
+            "Skipping invoice.paid: team %s budget_type=%s does not support subscription cycles",
+            team.id,
+            team.budget_type,
+        )
         return
 
     # --- Resolve region ---
@@ -759,7 +767,7 @@ async def capture_periodic_team_spend_for_invoice(
             "Skipping spend period capture: no team for customer_id=%s", customer_id
         )
         return
-    if team.budget_type != BudgetType.PERIODIC:
+    if team.budget_type not in SUBSCRIPTION_BUDGET_TYPES:
         return
 
     period_start_ts = getattr(invoice_obj, "period_start", None)
@@ -835,7 +843,7 @@ async def capture_periodic_team_spend_for_period(
     period_end: datetime,
     source_event_id: str | None,
 ) -> None:
-    if team.budget_type != BudgetType.PERIODIC:
+    if team.budget_type not in SUBSCRIPTION_BUDGET_TYPES:
         return
 
     try:
@@ -879,7 +887,7 @@ async def _sync_periodic_ledger_for_invoice(
     # spend snapshot per billing period; therefore consumed_cents is eventually
     # consistent between invoices, not a live spend counter.
     team = db.query(DBTeam).filter(DBTeam.stripe_customer_id == customer_id).first()
-    if not team or team.budget_type != BudgetType.PERIODIC:
+    if not team or team.budget_type not in SUBSCRIPTION_BUDGET_TYPES:
         return
 
     period_start_ts = getattr(invoice_obj, "period_start", None)
@@ -955,7 +963,7 @@ async def _sync_periodic_ledger_for_period(
     source_payment_id: int | None,
     source_invoice_id: str | None,
 ) -> None:
-    if team.budget_type != BudgetType.PERIODIC:
+    if team.budget_type not in SUBSCRIPTION_BUDGET_TYPES:
         return
 
     try:
@@ -1006,7 +1014,7 @@ async def _sync_periodic_ledger_for_period(
 async def reconcile_periodic_team_budget_drift(
     *, db: Session, team: DBTeam, region: DBRegion
 ) -> BudgetDriftResult | None:
-    if team.budget_type != BudgetType.PERIODIC:
+    if team.budget_type not in SUBSCRIPTION_BUDGET_TYPES:
         return None
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
@@ -1066,8 +1074,10 @@ async def apply_billing_cycle_for_team(
         if not team:
             logger.error(f"Team not found for team ID: {team_id}")
             return sync_errors
-        if team.budget_type != BudgetType.PERIODIC:
-            raise ValueError(f"Team {team_id} is not PERIODIC")
+        if team.budget_type not in SUBSCRIPTION_BUDGET_TYPES:
+            raise ValueError(
+                f"Team {team_id} budget_type={team.budget_type} does not support subscription cycles"
+            )
 
         region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
         if not region:
@@ -1266,7 +1276,7 @@ async def apply_product_for_team(
         db.add(DBTeamProduct(team_id=team.id, product_id=product.id))
     db.commit()
 
-    if team.budget_type == BudgetType.PERIODIC:
+    if team.budget_type in SUBSCRIPTION_BUDGET_TYPES:
         period_start = start_date
         # Safety-net: Stripe cycles are 30d. The 31d budget_duration on LiteLLM
         # auto-expires budget if a webhook is missed.
