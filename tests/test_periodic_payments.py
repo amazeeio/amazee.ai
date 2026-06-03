@@ -8,13 +8,16 @@ from app.core.worker import (
     _record_periodic_payment_direct,
     _run_cycle_from_stripe_event,
     apply_billing_cycle_for_team,
+    reconcile_periodic_team_budget_drift,
 )
 from app.db.models import (
     DBPeriodicBudgetLedgerEntry,
     DBPeriodicPayment,
     DBPrivateAIKey,
     DBRegion,
+    DBTeam,
 )
+from app.schemas.models import BudgetType
 
 
 def _auth_headers() -> dict[str, str]:
@@ -536,3 +539,209 @@ def test_subscription_deactivate_endpoint_idempotent(client, db, test_team):
     assert response.status_code == 200
     assert response.json()["idempotent"] is True
     assert response.json()["payment_id"] == payment.id
+
+
+# ─── POOL team subscription cycle tests ──────────────────────────────────────
+
+
+def _make_pool_team(db, name="Pool Sub Team"):
+    """Create a POOL team with a stripe_customer_id."""
+    team = DBTeam(
+        name=name,
+        admin_email=f"{name.lower().replace(' ', '_')}@example.com",
+        is_active=True,
+        budget_type=BudgetType.POOL,
+        require_purchase_for_requests=True,
+        stripe_customer_id=f"cus_pool_{name.replace(' ', '_').lower()}",
+    )
+    db.add(team)
+    db.commit()
+    db.refresh(team)
+    return team
+
+
+@patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.api.subscription.apply_billing_cycle_for_team", new_callable=AsyncMock)
+@patch("app.api.subscription._sync_periodic_ledger_for_period", new_callable=AsyncMock)
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+def test_pool_subscription_cycle_endpoint_accepted(
+    mock_capture,
+    mock_sync_ledger,
+    mock_apply_cycle,
+    mock_record_payment,
+    client,
+    db,
+    test_region,
+):
+    """The /cycle endpoint must accept POOL teams (previously rejected with 400)."""
+    pool_team = _make_pool_team(db, "Pool Cycle Accept")
+    mock_apply_cycle.return_value = []
+    mock_record_payment.return_value = 500
+
+    response = client.post(
+        "/billing/subscription/cycle",
+        headers=_auth_headers(),
+        json={
+            "transaction_id": "txn_pool_cycle_1",
+            "budget_cents": 3000,
+            "team_id": pool_team.id,
+            "region_id": test_region.id,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ok"
+    assert data["team_id"] == pool_team.id
+    assert data["budget_dollars"] == 30.0
+    mock_apply_cycle.assert_awaited_once()
+
+
+def test_pool_subscription_cycle_endpoint_returns_404_for_unknown_team(
+    client, db, test_region
+):
+    """The /cycle endpoint returns 404 when the requested team does not exist."""
+    response = client.post(
+        "/billing/subscription/cycle",
+        headers=_auth_headers(),
+        json={
+            "transaction_id": "txn_bad_team",
+            "budget_cents": 1000,
+            "team_id": 999999,
+            "region_id": test_region.id,
+        },
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.core.worker.apply_billing_cycle_for_team", new_callable=AsyncMock)
+@patch("app.core.worker._sync_periodic_ledger_for_period", new_callable=AsyncMock)
+@patch("app.core.worker.capture_periodic_team_spend_for_period", new_callable=AsyncMock)
+async def test_pool_team_invoice_paid_not_skipped(
+    mock_capture_period,
+    mock_sync_ledger,
+    mock_apply_cycle,
+    mock_record_payment,
+    db,
+    test_region,
+):
+    """POOL teams must NOT be skipped on invoice.paid — _run_cycle_from_stripe_event
+    must proceed through the billing cycle for POOL teams."""
+    pool_team = _make_pool_team(db, "Pool Invoice Team")
+    mock_apply_cycle.return_value = []
+    mock_record_payment.return_value = 501
+
+    event_object = SimpleNamespace(
+        id="inv_pool_1",
+        subscription="sub_pool_1",
+        amount_paid=3000,
+        period_start=1700000000,
+        period_end=1702678400,
+        parent=SimpleNamespace(
+            subscription_details=SimpleNamespace(
+                subscription="sub_pool_1",
+                metadata={"regionId": str(test_region.id)},
+            )
+        ),
+    )
+
+    await _run_cycle_from_stripe_event(
+        db=db,
+        event_id="evt_pool_invoice",
+        customer_id=pool_team.stripe_customer_id,
+        event_object=event_object,
+    )
+
+    mock_apply_cycle.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LiteLLMService")
+async def test_pool_team_drift_reconciliation_returns_result(
+    mock_litellm_class,
+    db,
+    test_region,
+):
+    """reconcile_periodic_team_budget_drift must return a BudgetDriftResult for
+    POOL teams (previously returned None)."""
+    pool_team = _make_pool_team(db, "Pool Drift Team")
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 10.0, "max_budget": 30.0}}
+    )
+
+    region = db.query(DBRegion).filter(DBRegion.id == test_region.id).first()
+    result = await reconcile_periodic_team_budget_drift(
+        db=db, team=pool_team, region=region
+    )
+
+    assert result is not None
+    # max_budget=30, spend=10, no active ledger entries → expected = 10 + 0 + 0 = 10
+    # drift = actual(30) - expected(10) = 20 dollars = 2000 cents
+    assert result.actual_max_budget_cents == 3000
+    assert result.expected_max_budget_cents == 1000
+    assert result.drift_cents == 2000
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.get_team_region_litellm_keys")
+@patch("app.core.worker.LimitService")
+async def test_pool_team_billing_cycle_uses_31d_and_resets_spend(
+    mock_limit_service,
+    mock_get_keys,
+    mock_litellm_class,
+    db,
+    test_region,
+):
+    """apply_billing_cycle_for_team must work for POOL teams, using 31d duration
+    and resetting key spend to 0.0, exactly like PERIODIC teams."""
+    pool_team = _make_pool_team(db, "Pool Cycle Direct")
+
+    key = DBPrivateAIKey(
+        name="pool-cycle-key",
+        litellm_token="pool-cycle-token",
+        region_id=test_region.id,
+        team_id=pool_team.id,
+    )
+    db.add(key)
+    db.commit()
+
+    mock_limit_service.return_value.get_token_restrictions.return_value = (
+        31,
+        30.0,
+        500,
+    )
+    mock_get_keys.return_value = [key]
+
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 5.0, "max_budget": 30.0}}
+    )
+
+    now = datetime.now(UTC)
+    errors = await apply_billing_cycle_for_team(
+        db=db,
+        team_id=pool_team.id,
+        budget_cents=3000,
+        region_id=test_region.id,
+        period_start=now,
+        period_end=now + timedelta(days=31),
+    )
+
+    assert errors == []
+    team_call = mock_litellm.update_team_budget.await_args
+    assert team_call.kwargs["budget_duration"] == "31d"
+    assert team_call.kwargs["max_budget"] == 30.0
+
+    key_call = mock_litellm.set_key_restrictions.await_args
+    assert key_call.kwargs["spend"] == 0.0
+    assert key_call.kwargs["budget_duration"] == "31d"

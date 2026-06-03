@@ -120,9 +120,7 @@ def get_db_config():
     # `--dbname`. The password flows through PGPASSWORD instead.
     safe_netloc = _strip_password_from_netloc(parsed)
     safe_url = urlunparse(parsed._replace(netloc=safe_netloc))
-    maintenance_url = urlunparse(
-        parsed._replace(netloc=safe_netloc, path="/postgres")
-    )
+    maintenance_url = urlunparse(parsed._replace(netloc=safe_netloc, path="/postgres"))
     return {
         "url": safe_url,
         "maintenance_url": maintenance_url,
@@ -153,7 +151,9 @@ def check_required_tools():
     """Verify all required postgres client tools are on PATH."""
     missing = [t for t in REQUIRED_TOOLS if shutil.which(t) is None]
     if missing:
-        print(f"Error: Required postgres client tool(s) not found: {', '.join(missing)}")
+        print(
+            f"Error: Required postgres client tool(s) not found: {', '.join(missing)}"
+        )
         print("  This script must run in an environment with postgres client tools")
         print("  installed (e.g. the Lagoon `cli` container).")
         sys.exit(1)
@@ -211,8 +211,10 @@ def backup_current_database(config, backup_path):
     cmd = [
         "pg_dump",
         "--format=custom",
-        "--file", backup_path,
-        "--dbname", config["url"],
+        "--file",
+        backup_path,
+        "--dbname",
+        config["url"],
     ]
     try:
         run_pg_tool(cmd, config)
@@ -222,7 +224,10 @@ def backup_current_database(config, backup_path):
             os.unlink(backup_path)
         except OSError as cleanup_err:
             # Best-effort cleanup only: preserve original pg_dump failure path.
-            print(f"  Warning: could not remove partial backup file: {cleanup_err}", file=sys.stderr)
+            print(
+                f"  Warning: could not remove partial backup file: {cleanup_err}",
+                file=sys.stderr,
+            )
         raise SystemExit(f"  pg_dump failed: {sanitize(e.stderr or e, config)}")
 
     size_mb = os.path.getsize(backup_path) / (1024 * 1024)
@@ -347,7 +352,8 @@ def apply_restore(config, dump_dir):
         # Connect to the maintenance DB so pg_restore can drop/create the
         # target. `maintenance_url` carries every libpq param from the
         # configured DATABASE_URL (sslmode, connect_timeout, etc.).
-        "--dbname", config["maintenance_url"],
+        "--dbname",
+        config["maintenance_url"],
         dump_dir,
     ]
     try:
@@ -359,7 +365,7 @@ def apply_restore(config, dump_dir):
             "restored. Recover from the safety backup with:\n"
             "    pg_restore --clean --create --if-exists --no-owner "
             "--no-privileges \\\n"
-            "      -d \"<maintenance DATABASE_URL, path=/postgres>\" "
+            '      -d "<maintenance DATABASE_URL, path=/postgres>" '
             "<safety_backup>.dump"
         )
 
@@ -371,7 +377,9 @@ def check_disk_space(path, required_mb=500):
     stat = os.statvfs(path)
     available_mb = (stat.f_bavail * stat.f_frsize) / (1024 * 1024)
     if available_mb < required_mb:
-        print(f"  Warning: Only {available_mb:.0f}MB available at {path} (recommend >= {required_mb}MB)")
+        print(
+            f"  Warning: Only {available_mb:.0f}MB available at {path} (recommend >= {required_mb}MB)"
+        )
         return False
     return True
 
@@ -405,7 +413,8 @@ def main():
         help="Directory to extract the backup into (default: system temp directory)",
     )
     parser.add_argument(
-        "--yes", "-y",
+        "--yes",
+        "-y",
         action="store_true",
         help="Skip confirmation prompt",
     )
@@ -463,7 +472,9 @@ def main():
             print("A safety backup of the current database will be created first.")
         else:
             print("No safety backup will be created (--no-backup specified).")
-        response = input("\nAre you sure you want to proceed? [yes/no]: ").strip().lower()
+        response = (
+            input("\nAre you sure you want to proceed? [yes/no]: ").strip().lower()
+        )
         if response not in ("yes", "y"):
             print("Aborted.")
             sys.exit(0)
@@ -475,7 +486,9 @@ def main():
         # Step 1: Backup current database (unless skipped)
         if not args.no_backup:
             print("\n[1/3] Backing up current database...")
-            backup_dir = args.backup_dir or os.path.dirname(os.path.abspath(args.backup_file))
+            backup_dir = args.backup_dir or os.path.dirname(
+                os.path.abspath(args.backup_file)
+            )
             os.makedirs(backup_dir, exist_ok=True)
             safety_backup_path = os.path.join(
                 backup_dir, f"{config['database']}_pre_restore.dump"
@@ -494,10 +507,14 @@ def main():
             except SystemExit as exc:
                 print(f"  {exc}", file=sys.stderr)
                 if args.yes:
-                    print("  Error: Cannot proceed without safety backup in non-interactive mode.")
+                    print(
+                        "  Error: Cannot proceed without safety backup in non-interactive mode."
+                    )
                     print("  Use --no-backup to explicitly skip the safety backup.")
                     sys.exit(1)
-                response = input("  Continue without backup? [yes/no]: ").strip().lower()
+                response = (
+                    input("  Continue without backup? [yes/no]: ").strip().lower()
+                )
                 if response not in ("yes", "y"):
                     print("Aborted.")
                     sys.exit(0)
@@ -510,7 +527,9 @@ def main():
         os.makedirs(extract_dir, exist_ok=True)
         dump_dir = extract_backup(args.backup_file, extract_dir)
         dump_contents = os.listdir(dump_dir)
-        dat_count = sum(1 for f in dump_contents if f.endswith(".dat") and f != "toc.dat")
+        dat_count = sum(
+            1 for f in dump_contents if f.endswith(".dat") and f != "toc.dat"
+        )
         print(f"  Dump directory: {dump_dir}")
         print(f"  Found: toc.dat + {dat_count} data files")
 
