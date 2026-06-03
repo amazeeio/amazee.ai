@@ -113,10 +113,10 @@ async def subscription_cycle(
     team = db.query(DBTeam).filter(DBTeam.id == request.team_id).first()
     if not team:
         raise HTTPException(status_code=404, detail=f"Team {request.team_id} not found")
-    if team.budget_type != BudgetType.PERIODIC:
+    if team.budget_type not in (BudgetType.PERIODIC, BudgetType.POOL):
         raise HTTPException(
             status_code=400,
-            detail=f"Team {request.team_id} is not a PERIODIC team",
+            detail=f"Team {request.team_id} does not support subscription cycles",
         )
 
     region = db.query(DBRegion).filter(DBRegion.id == request.region_id).first()

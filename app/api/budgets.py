@@ -66,9 +66,9 @@ async def get_periodic_budget_status(
     team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
-    if team.budget_type != BudgetType.PERIODIC:
+    if team.budget_type not in (BudgetType.PERIODIC, BudgetType.POOL):
         raise HTTPException(
-            status_code=400, detail="Endpoint is only valid for PERIODIC teams"
+            status_code=400, detail="Endpoint is only valid for subscription-managed teams"
         )
     region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
     if not region:
@@ -622,10 +622,10 @@ async def create_periodic_topup(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
         )
-    if team.budget_type != BudgetType.PERIODIC:
+    if team.budget_type not in (BudgetType.PERIODIC, BudgetType.POOL):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Endpoint is only valid for PERIODIC teams",
+            detail="Endpoint is only valid for subscription-managed teams",
         )
     return await purchase_periodic_topup(
         region_id=region_id,
