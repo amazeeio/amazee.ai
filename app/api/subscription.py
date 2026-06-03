@@ -116,7 +116,10 @@ async def subscription_cycle(
     if team.budget_type not in (BudgetType.PERIODIC, BudgetType.POOL):
         raise HTTPException(
             status_code=400,
-            detail=f"Team {request.team_id} does not support subscription cycles",
+            detail=(
+                f"Team {request.team_id} budget_type={team.budget_type} "
+                "does not support subscription cycles"
+            ),
         )
 
     region = db.query(DBRegion).filter(DBRegion.id == request.region_id).first()

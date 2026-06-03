@@ -600,13 +600,10 @@ def test_pool_subscription_cycle_endpoint_accepted(
     mock_apply_cycle.assert_awaited_once()
 
 
-def test_pool_subscription_cycle_endpoint_rejected_for_unsupported_type(
+def test_pool_subscription_cycle_endpoint_returns_404_for_unknown_team(
     client, db, test_region
 ):
-    """The /cycle endpoint must reject teams with budget types other than PERIODIC or POOL."""
-    # Force a team that has an unexpected type (simulate by patching the guard path)
-    # We test this via a PERIODIC team to ensure the guard error message changed.
-    # The simplest check: a non-existent team still returns 404, not 400.
+    """The /cycle endpoint returns 404 when the requested team does not exist."""
     response = client.post(
         "/billing/subscription/cycle",
         headers=_auth_headers(),
