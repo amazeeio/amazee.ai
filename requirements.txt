@@ -16,7 +16,7 @@ boto3==1.43.10
 markdown==3.10.2
 email-validator==2.3.0
 prometheus-client==0.25.0
-prometheus-fastapi-instrumentator==7.1.0
+prometheus-fastapi-instrumentator==8.0.0
 stripe==15.1.0
 six==1.17.0
 httpx==0.28.1
