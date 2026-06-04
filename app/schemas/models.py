@@ -68,12 +68,22 @@ class User(UserBase):
     audit_logs: ClassVar = relationship("AuditLog", back_populates="user")
 
 
+class APITokenExpiryOption(BaseModel):
+    id: int
+    name: str
+    slug: str
+    days: Optional[int] = None
+    is_active: bool
+    model_config = ConfigDict(from_attributes=True)
+
+
 class APITokenBase(BaseModel):
     name: str
 
 
 class APITokenCreate(APITokenBase):
     user_id: Optional[int] = None
+    expiry: Optional[str] = "forever"
 
 
 class APIToken(APITokenBase):
@@ -81,6 +91,8 @@ class APIToken(APITokenBase):
     token: str
     created_at: datetime
     last_used_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    expiry_option: str
     user_id: int
     model_config = ConfigDict(from_attributes=True)
 
@@ -89,6 +101,8 @@ class APITokenResponse(APITokenBase):
     id: int
     created_at: datetime
     last_used_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    expiry_option: str
     user_id: int
     model_config = ConfigDict(from_attributes=True)
 

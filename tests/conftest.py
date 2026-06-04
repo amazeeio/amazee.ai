@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from app.main import app
 from app.db.database import get_db
 from app.db.models import Base, DBRegion, DBUser, DBTeam, DBProduct, DBTeamRegion
+from app.db.init_db import init_api_token_expiry_options
 from app.core.security import get_password_hash
 from datetime import datetime, UTC, timedelta
 from unittest.mock import patch, MagicMock, Mock, AsyncMock
@@ -33,6 +34,10 @@ def db():
 
     # Create a new session for the test
     db = TestingSessionLocal()
+
+    # Initialize default data
+    init_api_token_expiry_options(db=db)
+
     try:
         yield db
     finally:

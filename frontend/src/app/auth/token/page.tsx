@@ -1,7 +1,7 @@
 "use client";
 
 import { Loader2, X } from "lucide-react";
-import { useState, useEffect, useCallback } from "react";
+import { useState } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,41 +11,66 @@ import { useToast } from "@/hooks/use-toast";
 import { get, post, del } from "@/utils/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
 interface APIToken {
   id: string;
   name: string;
   token: string;
   created_at: string;
   last_used_at?: string;
+  expires_at?: string;
+  expiry_option: string;
+}
+
+interface ExpiryOption {
+  id: number;
+  name: string;
+  slug: string;
+  days: number | null;
 }
 
 export default function APITokensPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [newTokenName, setNewTokenName] = useState("");
+  const [selectedExpiry, setSelectedExpiry] = useState("forever");
   const [showNewToken, setShowNewToken] = useState<APIToken | null>(null);
-  const [tokens, setTokens] = useState<APIToken[]>([]);
 
-  const { isLoading: queryLoading } = useQuery({
+  const { data: expiryOptions } = useQuery({
+    queryKey: ["expiry-options"],
+    queryFn: async () => {
+      const response = await get("/auth/token/expiry-options");
+      return response.json() as Promise<ExpiryOption[]>;
+    },
+  });
+
+  const { isLoading: tokensLoading, data: tokens = [] } = useQuery({
     queryKey: ["tokens"],
     queryFn: async () => {
       const response = await get("/auth/token");
       const data = await response.json();
-      return data;
+      return data as APIToken[];
     },
   });
 
   const createMutation = useMutation({
-    mutationFn: async (name: string) => {
-      const response = await post("/auth/token", { name });
+    mutationFn: async (payload: { name: string; expiry: string }) => {
+      const response = await post("/auth/token", payload);
       const data = await response.json();
       return data;
     },
     onSuccess: (newToken) => {
       queryClient.invalidateQueries({ queryKey: ["tokens"] });
-      queryClient.refetchQueries({ queryKey: ["tokens"], exact: true });
       setShowNewToken(newToken);
       setNewTokenName("");
+      setSelectedExpiry("forever");
       toast({
         title: "Success",
         description: "Token created successfully",
@@ -66,7 +91,6 @@ export default function APITokensPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["tokens"] });
-      queryClient.refetchQueries({ queryKey: ["tokens"], exact: true });
       toast({
         title: "Success",
         description: "Token deleted successfully",
@@ -81,50 +105,17 @@ export default function APITokensPage() {
     },
   });
 
-  const fetchTokens = useCallback(async () => {
-    try {
-      const response = await get("auth/token", { credentials: "include" });
-      const data = await response.json();
-      setTokens(data);
-    } catch (error) {
-      console.error("Error fetching tokens:", error);
-      toast({
-        title: "Error",
-        description: "Failed to fetch tokens",
-        variant: "destructive",
-      });
-    }
-  }, [toast, setTokens]);
-
   const handleCreateToken = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!newTokenName.trim()) return;
-    createMutation.mutate(newTokenName);
+    createMutation.mutate({ name: newTokenName, expiry: selectedExpiry });
   };
 
   const handleDeleteToken = async (tokenId: string) => {
-    try {
-      await del("/auth/token/" + tokenId, { credentials: "include" });
-      setTokens(tokens.filter((token) => token.id !== tokenId));
-      toast({
-        title: "Success",
-        description: "Token deleted successfully",
-      });
-    } catch (error) {
-      console.error("Error deleting token:", error);
-      toast({
-        title: "Error",
-        description: "Failed to delete token",
-        variant: "destructive",
-      });
-    }
+    deleteMutation.mutate(tokenId);
   };
 
-  useEffect(() => {
-    void fetchTokens();
-  }, [fetchTokens]);
-
-  if (queryLoading) {
+  if (tokensLoading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <Loader2 className="h-8 w-8 animate-spin" />
@@ -144,14 +135,42 @@ export default function APITokensPage() {
           <CardTitle>Create New Token</CardTitle>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleCreateToken} className="flex gap-4">
-            <Input
-              type="text"
-              value={newTokenName}
-              onChange={(e) => setNewTokenName(e.target.value)}
-              placeholder="Token name"
-              className="max-w-sm"
-            />
+          <form onSubmit={handleCreateToken} className="flex gap-4 items-end">
+            <div className="grid gap-2 flex-1 max-w-sm">
+              <label htmlFor="token-name" className="text-sm font-medium">
+                Token Name
+              </label>
+              <Input
+                id="token-name"
+                type="text"
+                value={newTokenName}
+                onChange={(e) => setNewTokenName(e.target.value)}
+                placeholder="Token name"
+              />
+            </div>
+            <div className="grid gap-2 w-[200px]">
+              <label htmlFor="expiry" className="text-sm font-medium">
+                Expiration
+              </label>
+              <Select
+                value={selectedExpiry}
+                onValueChange={setSelectedExpiry}
+              >
+                <SelectTrigger id="expiry">
+                  <SelectValue placeholder="Select expiry" />
+                </SelectTrigger>
+                <SelectContent>
+                  {expiryOptions?.map((opt) => (
+                    <SelectItem key={opt.slug} value={opt.slug}>
+                      {opt.name}
+                    </SelectItem>
+                  ))}
+                  {(!expiryOptions || expiryOptions.length === 0) && (
+                    <SelectItem value="forever">forever</SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
             <Button
               type="submit"
               disabled={createMutation.isPending || !newTokenName.trim()}
@@ -201,17 +220,29 @@ export default function APITokensPage() {
           <Card key={token.id}>
             <CardContent className="pt-6">
               <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-lg font-medium">{token.name}</h3>
-                  <div className="text-sm text-muted-foreground space-y-1">
-                    <p>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 flex-1">
+                  <div>
+                    <h3 className="text-lg font-medium">{token.name}</h3>
+                    <p className="text-xs text-muted-foreground">
                       Created: {new Date(token.created_at).toLocaleDateString()}
                     </p>
+                  </div>
+                  <div className="flex flex-col justify-center">
+                    <p className="text-sm font-medium">Expires</p>
+                    <p className="text-xs text-muted-foreground">
+                      {token.expires_at
+                        ? new Date(token.expires_at).toLocaleDateString()
+                        : "Never"}
+                    </p>
+                  </div>
+                  <div className="flex flex-col justify-center">
                     {token.last_used_at && (
-                      <p>
-                        Last used:{" "}
-                        {new Date(token.last_used_at).toLocaleDateString()}
-                      </p>
+                      <>
+                        <p className="text-sm font-medium">Last used</p>
+                        <p className="text-xs text-muted-foreground">
+                          {new Date(token.last_used_at).toLocaleDateString()}
+                        </p>
+                      </>
                     )}
                   </div>
                 </div>

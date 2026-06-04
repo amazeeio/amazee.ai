@@ -124,6 +124,16 @@ class DBRegion(Base):
     admin_users = relationship("DBUserAdminRegion", back_populates="region")
 
 
+class DBAPITokenExpiryOption(Base):
+    __tablename__ = "api_token_expiry_options"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    slug = Column(String, unique=True, index=True, nullable=False)
+    days = Column(Integer, nullable=True)  # None for forever
+    is_active = Column(Boolean, nullable=False, default=True)
+
+
 class DBAPIToken(Base):
     __tablename__ = "api_tokens"
 
@@ -132,6 +142,8 @@ class DBAPIToken(Base):
     token = Column(String, unique=True, index=True)
     created_at = Column(DateTime(timezone=True), default=func.now())
     last_used_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    expiry_option = Column(String, default="forever", nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"))
 
     owner = relationship("DBUser", back_populates="api_tokens")

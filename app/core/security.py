@@ -142,6 +142,14 @@ async def get_current_user_from_auth(
             .first()
         )
         if db_token:
+            # Check if token is expired
+            if db_token.expires_at and db_token.expires_at < datetime.now(UTC):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="API token has expired",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+
             # Update last used timestamp
             db_token.last_used_at = datetime.now(UTC)
             _check_user_team_not_suspended(db_token.owner)
@@ -150,7 +158,9 @@ async def get_current_user_from_auth(
     except HTTPException:
         raise
     except Exception:
-        pass
+        logger.exception(
+            "Unexpected error during API token validation; falling back to JWT validation"
+        )
 
     # If API token validation fails, try JWT validation
     try:
