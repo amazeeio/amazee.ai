@@ -177,26 +177,47 @@ def _extract_release_date(model_id: str, model_info: dict[str, Any]) -> str | No
     return None
 
 
-def _infer_manufacturer(model_id: str, item: dict[str, Any]) -> PublicModelManufacturer:
+_MANUFACTURER_RULES: list[dict[str, str | None]] = [
+    {"keyword": "claude", "name": "Anthropic", "website": "https://www.anthropic.com"},
+    {"keyword": "gemini", "name": "Google", "website": "https://deepmind.google/models"},
+    {"keyword": "gemma", "name": "Google", "website": "https://deepmind.google/models"},
+    {"keyword": "gpt", "name": "OpenAI", "website": "https://openai.com"},
+    {"keyword": "mistral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "pixtral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "mixtral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "ministral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "devstral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "magistral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "deepseek", "name": "DeepSeek", "website": "https://www.deepseek.com"},
+    {"keyword": "llama", "name": "Meta", "website": "https://ai.meta.com/llama"},
+    {"keyword": "kimi", "name": "Moonshot", "website": "https://www.moonshot.cn"},
+    {"keyword": "qwen", "name": "Alibaba", "website": "https://www.alibabacloud.com/en/solutions/generative-ai/qwen"},
+    {"keyword": "titan", "name": "Amazon", "website": "https://aws.amazon.com/bedrock/titan"},
+    # Provider-based fallbacks (must be last — match on provider string only)
+    {"keyword": "openai", "name": "OpenAI", "website": "https://openai.com"},
+    {"keyword": "anthropic", "name": "Anthropic", "website": "https://www.anthropic.com"},
+    {"keyword": "google", "name": "Google", "website": "https://deepmind.google/models"},
+    {"keyword": "meta", "name": "Meta", "website": "https://ai.meta.com/llama"},
+]
+
+
+def _infer_manufacturer(model_id: str, item: dict[str, Any]) -> PublicModelManufacturer | None:
     model_info = item.get("model_info", {})
     provider = str(model_info.get("litellm_provider") or "").lower()
     normalized_model_id = model_id.lower()
 
-    if normalized_model_id.startswith("gpt-") or "openai" in provider:
-        name = "OpenAI"
-        website = "https://openai.com"
-    elif normalized_model_id.startswith("claude-") or "anthropic" in provider:
-        name = "Anthropic"
-        website = "https://www.anthropic.com"
-    elif normalized_model_id.startswith("gemini-") or "google" in provider:
-        name = "Google"
-        website = "https://deepmind.google/models"
-    elif normalized_model_id.startswith("llama-") or "meta" in provider:
-        name = "Meta"
-        website = "https://ai.meta.com/llama"
-    else:
-        name = "Unknown"
-        website = None
+    name: str | None = None
+    website: str | None = None
+
+    for rule in _MANUFACTURER_RULES:
+        keyword = str(rule["keyword"])
+        if keyword in normalized_model_id or keyword in provider:
+            name = rule["name"]
+            website = rule["website"]
+            break
+
+    if name is None:
+        return None
 
     version = (
         model_info.get("version")

@@ -239,7 +239,7 @@ class PublicModelSummary(BaseModel):
     context_length: Optional[int] = None
     max_output_tokens: Optional[int] = None
     description: str
-    manufacturer: PublicModelManufacturer
+    manufacturer: Optional[PublicModelManufacturer] = None
     capabilities: PublicModelCapabilities
     pricing: PublicModelPricing
 
