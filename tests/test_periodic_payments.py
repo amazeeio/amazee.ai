@@ -20,10 +20,6 @@ from app.db.models import (
 from app.schemas.models import BudgetType
 
 
-def _auth_headers() -> dict[str, str]:
-    return {"Authorization": "Bearer changeme"}
-
-
 @pytest.mark.asyncio
 async def test_record_periodic_payment_direct_subscription(db, test_team):
     record_id = await _record_periodic_payment_direct(
@@ -204,6 +200,7 @@ def test_subscription_cycle_endpoint_first_cycle(
     mock_apply_cycle,
     mock_record_payment,
     client,
+    admin_token,
     test_team,
     test_region,
 ):
@@ -212,7 +209,7 @@ def test_subscription_cycle_endpoint_first_cycle(
 
     response = client.post(
         "/billing/subscription/cycle",
-        headers=_auth_headers(),
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "transaction_id": "txn_cycle_first",
             "budget_cents": 10000,
@@ -248,6 +245,7 @@ def test_subscription_cycle_endpoint_existing_cycle_runs_snapshot_and_ledger(
     mock_apply_cycle,
     mock_record_payment,
     client,
+    admin_token,
     db,
     test_team,
     test_region,
@@ -272,7 +270,7 @@ def test_subscription_cycle_endpoint_existing_cycle_runs_snapshot_and_ledger(
 
     response = client.post(
         "/billing/subscription/cycle",
-        headers=_auth_headers(),
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "transaction_id": "txn_cycle_repeat",
             "budget_cents": 10000,
@@ -301,6 +299,7 @@ def test_subscription_cycle_endpoint_first_cycle_is_region_scoped(
     mock_apply_cycle,
     mock_record_payment,
     client,
+    admin_token,
     db,
     test_team,
     test_region,
@@ -343,7 +342,7 @@ def test_subscription_cycle_endpoint_first_cycle_is_region_scoped(
 
     response = client.post(
         "/billing/subscription/cycle",
-        headers=_auth_headers(),
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "transaction_id": "txn_cycle_region_scope",
             "budget_cents": 10000,
@@ -433,7 +432,7 @@ async def test_webhook_cycle_first_cycle_is_region_scoped(
     mock_apply_cycle.assert_awaited_once()
 
 
-def test_subscription_cycle_endpoint_idempotent(client, db, test_team):
+def test_subscription_cycle_endpoint_idempotent(client, admin_token, db, test_team):
     payment = DBPeriodicPayment(
         team_id=test_team.id,
         stripe_payment_id="txn_cycle_done",
@@ -449,7 +448,7 @@ def test_subscription_cycle_endpoint_idempotent(client, db, test_team):
 
     response = client.post(
         "/billing/subscription/cycle",
-        headers=_auth_headers(),
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "transaction_id": "txn_cycle_done",
             "budget_cents": 10000,
@@ -469,6 +468,7 @@ def test_subscription_deactivate_endpoint_success(
     mock_litellm_class,
     mock_record_payment,
     client,
+    admin_token,
     db,
     test_team,
     test_region,
@@ -490,7 +490,7 @@ def test_subscription_deactivate_endpoint_success(
 
     response = client.post(
         "/billing/subscription/deactivate",
-        headers=_auth_headers(),
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "transaction_id": "txn_deactivate_1",
             "team_id": test_team.id,
@@ -512,7 +512,7 @@ def test_subscription_deactivate_endpoint_success(
     assert mock_litellm.set_key_restrictions.await_args.kwargs["budget_amount"] == 0.0
 
 
-def test_subscription_deactivate_endpoint_idempotent(client, db, test_team):
+def test_subscription_deactivate_endpoint_idempotent(client, admin_token, db, test_team):
     payment = DBPeriodicPayment(
         team_id=test_team.id,
         stripe_payment_id="txn_deactivate_done",
@@ -528,7 +528,7 @@ def test_subscription_deactivate_endpoint_idempotent(client, db, test_team):
 
     response = client.post(
         "/billing/subscription/deactivate",
-        headers=_auth_headers(),
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "transaction_id": "txn_deactivate_done",
             "team_id": test_team.id,
@@ -573,6 +573,7 @@ def test_pool_subscription_cycle_endpoint_accepted(
     mock_apply_cycle,
     mock_record_payment,
     client,
+    admin_token,
     db,
     test_region,
 ):
@@ -583,7 +584,7 @@ def test_pool_subscription_cycle_endpoint_accepted(
 
     response = client.post(
         "/billing/subscription/cycle",
-        headers=_auth_headers(),
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "transaction_id": "txn_pool_cycle_1",
             "budget_cents": 3000,
@@ -601,12 +602,12 @@ def test_pool_subscription_cycle_endpoint_accepted(
 
 
 def test_pool_subscription_cycle_endpoint_returns_404_for_unknown_team(
-    client, db, test_region
+    client, admin_token, db, test_region
 ):
     """The /cycle endpoint returns 404 when the requested team does not exist."""
     response = client.post(
         "/billing/subscription/cycle",
-        headers=_auth_headers(),
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={
             "transaction_id": "txn_bad_team",
             "budget_cents": 1000,
