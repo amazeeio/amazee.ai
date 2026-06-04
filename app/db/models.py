@@ -131,7 +131,7 @@ class DBAPITokenExpiryOption(Base):
     name = Column(String, nullable=False)
     slug = Column(String, unique=True, index=True, nullable=False)
     days = Column(Integer, nullable=True)  # None for forever
-    is_active = Column(Boolean, default=True)
+    is_active = Column(Boolean, nullable=False, default=True)
 
 
 class DBAPIToken(Base):
