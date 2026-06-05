@@ -1148,17 +1148,26 @@ async def get_key_spend_alias(
     try:
         data = await service.get_key_info(key.litellm_token)
         info = data.get("info", {})
-        configured_key_cap = _get_spend_cap_max_budget(
-            db,
-            scope="key",
-            region_id=region_id,
-            team_id=key.team_id,
-            user_id=key.owner_id,
-            key_id=key.id,
+        configured_key_cap_row = (
+            db.query(DBSpendCap.max_budget)
+            .filter(
+                DBSpendCap.scope == "key",
+                DBSpendCap.region_id == region_id,
+                DBSpendCap.team_id == key.team_id,
+                DBSpendCap.user_id == key.owner_id,
+                DBSpendCap.key_id == key.id,
+            )
+            .first()
         )
-        if configured_key_cap is not None:
-            info = dict(info)
-            info["max_budget"] = round(configured_key_cap, 4)
+        configured_key_cap = (
+            float(configured_key_cap_row[0])
+            if configured_key_cap_row and configured_key_cap_row[0] is not None
+            else None
+        )
+        info = dict(info)
+        info["max_budget"] = (
+            round(configured_key_cap, 4) if configured_key_cap is not None else None
+        )
         budget_reset_at = (
             datetime.fromisoformat(info["budget_reset_at"])
             if info.get("budget_reset_at")

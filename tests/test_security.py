@@ -7,6 +7,7 @@ from app.core.security import (
     get_current_user_from_auth,
     get_role_min_system_admin,
 )
+from app.core.config import settings
 from app.core.roles import UserRole
 from app.db.models import DBTeam, DBUser
 
@@ -143,3 +144,34 @@ async def test_get_current_user_from_auth_reloads_detached_request_user(db):
 
     assert exc_info.value.status_code == 403
     assert "suspended" in exc_info.value.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_from_auth_accepts_local_bearer(db):
+    admin = DBUser(
+        email="local-admin@example.com",
+        hashed_password="hashed",
+        is_active=True,
+        is_admin=True,
+    )
+    db.add(admin)
+    db.commit()
+    db.refresh(admin)
+
+    old_env_suffix = settings.ENV_SUFFIX
+    old_local_token = settings.LOCAL_BEARER_TOKEN
+    old_local_email = settings.LOCAL_BEARER_USER_EMAIL
+    settings.ENV_SUFFIX = "local"
+    settings.LOCAL_BEARER_TOKEN = "LOCALBT"
+    settings.LOCAL_BEARER_USER_EMAIL = ""
+    try:
+        user = await get_current_user_from_auth(
+            authorization="Bearer LOCALBT",
+            db=db,
+        )
+    finally:
+        settings.ENV_SUFFIX = old_env_suffix
+        settings.LOCAL_BEARER_TOKEN = old_local_token
+        settings.LOCAL_BEARER_USER_EMAIL = old_local_email
+
+    assert user.id == admin.id

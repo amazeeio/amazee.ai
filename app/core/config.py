@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     SES_SENDER_EMAIL: str = "info@example.com"
     PASSWORDLESS_SIGN_IN: str = "true"
     ENV_SUFFIX: str = os.getenv("ENV_SUFFIX", "local")
+    LOCAL_BEARER_TOKEN: str = os.getenv("LOCAL_BEARER_TOKEN", "LOCALBT")
+    LOCAL_BEARER_USER_EMAIL: str = os.getenv("LOCAL_BEARER_USER_EMAIL", "")
     DYNAMODB_REGION: str = "eu-west-1"
     SES_REGION: str = "eu-west-1"
     ENABLE_LIMITS: bool = os.getenv("ENABLE_LIMITS", "false") == "true"

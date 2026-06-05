@@ -160,7 +160,7 @@ def test_key_spend_alias(
     assert response.status_code == 200
     data = response.json()
     assert data["spend"] == 10.5
-    assert data["max_budget"] == 100.0
+    assert data["max_budget"] is None
     assert data["prompt_tokens"] == 1200
     assert data["completion_tokens"] == 300
     assert data["total_tokens"] == 1500
@@ -222,7 +222,8 @@ def test_key_spend_alias_uses_configured_cap_for_no_purchase_pool_team(
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert response.status_code == 200
-    assert response.json()["max_budget"] == 11.0
+    data = response.json()
+    assert data["max_budget"] == 11.0
 
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
