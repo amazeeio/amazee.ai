@@ -6,21 +6,19 @@ import sys
 # Add the parent directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import alembic.config
 import alembic.command
-import asyncio
+import alembic.config
 import glob
 from sqlalchemy import inspect
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.core.config import settings
+from app.core.limit_service import setup_default_limits
+from app.core.security import get_password_hash
 from app.db.database import engine
 from app.db.models import Base, DBUser
-from app.core.config import settings
-from app.core.security import get_password_hash
 from app.services.ses import SESService
-from app.services.stripe import setup_stripe_webhook
-from app.api.billing import BILLING_WEBHOOK_KEY, BILLING_WEBHOOK_ROUTE
 from scripts.migrate_pricing_tables import migrate_pricing_tables
-from app.core.limit_service import setup_default_limits
 
 
 def verify_schema_matches_models() -> None:
@@ -52,7 +50,6 @@ def verify_schema_matches_models() -> None:
 
 
 def init_database() -> Session:
-    # Check if database is empty (no tables exist)
     inspector = inspect(engine)
     existing_tables = inspector.get_table_names()
     print(f"Existing tables: {existing_tables}")
@@ -69,17 +66,12 @@ def init_database() -> Session:
 
     if not existing_tables:
         print("No tables found - creating database schema from models...")
-        # Create all tables from models
         Base.metadata.create_all(bind=engine)
         print("Database tables created successfully!")
         alembic.command.stamp(alembic_cfg, "head")
         print("Stamped alembic version for future migrations")
     else:
         print("Tables already exist - running migrations...")
-
-        # Always move forward in migration history.
-        # Backward re-stamping/replay can trigger duplicate DDL in partially
-        # migrated databases and break rollout readiness.
         alembic.command.upgrade(alembic_cfg, "head")
         print("Database migrations completed successfully!")
 
@@ -87,7 +79,6 @@ def init_database() -> Session:
     verify_schema_matches_models()
     print("Schema verification passed!")
 
-    # Create initial admin user if none exists
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     db = SessionLocal()
 
@@ -116,35 +107,15 @@ def init_database() -> Session:
         return db
 
 
-def init_webhooks(db: Session):
-    # Only set up Stripe webhook in specific environments
-    env_suffix = os.getenv("ENV_SUFFIX", "").lower()
-    if env_suffix in ["dev", "main", "prod"]:
-        try:
-            # Set up Stripe webhook
-            print("Setting up Stripe Billing webhook...")
-            asyncio.run(
-                setup_stripe_webhook(BILLING_WEBHOOK_KEY, BILLING_WEBHOOK_ROUTE, db)
-            )
-            print("Stripe Billing webhook set up successfully")
-        except Exception as e:
-            print(f"Warning: Failed to set up Stripe Billing webhook: {str(e)}")
-    else:
-        print(f"Skipping Stripe webhook setup for environment: {env_suffix}")
-
-
 def init_ses_templates():
     if os.getenv("PASSWORDLESS_SIGN_IN", "").lower() == "true":
-        # Initialize SES templates
         print("Initializing SES email templates...")
         ses_service = SESService()
         templates_dir = os.path.join(
             os.path.dirname(__file__), "..", "app", "templates"
         )
 
-        # Get all .md files in the templates directory
         template_files = glob.glob(os.path.join(templates_dir, "*.md"))
-
         for template_file in template_files:
             template_name = os.path.splitext(os.path.basename(template_file))[0]
             if ses_service.create_or_update_template(template_name):
@@ -191,7 +162,6 @@ def main():
         )
         print(f"Main route: {settings.main_route}")
         db = init_database()
-        init_webhooks(db)
         init_ses_templates()
         init_pricing_table_migration(db)
         init_default_limits(db)

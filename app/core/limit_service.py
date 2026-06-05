@@ -26,6 +26,7 @@ from fastapi import HTTPException, status
 from prometheus_client import Counter
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
+from app.schemas.models import BudgetType
 
 # Shared executor for budget propagation to avoid creating too many threads
 _budget_propagation_executor = None
@@ -813,6 +814,12 @@ class LimitService:
 
         # Process each resource type
         for resource_type in all_resources:
+            if (
+                resource_type == ResourceType.BUDGET
+                and team.budget_type == BudgetType.PERIODIC
+            ):
+                continue  # Budget is set directly from payload for PERIODIC teams
+
             # Skip if manual limit already exists
             existing_limit = limit_map.get(resource_type, None)
             if existing_limit and existing_limit.limited_by == LimitSource.MANUAL:

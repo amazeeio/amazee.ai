@@ -1,20 +1,21 @@
 """
 Tests for PERIODIC team budget behaviour introduced by the
-"Spend API: align duration budget for PERIODIC teams with Stripe webhooks" PR.
+"Spend API: align duration budget for PERIODIC teams with Stripe webhooks" PR,
+extended to cover POOL subscription teams (AI-398).
 
 Key behaviours under test:
 1. PERIODIC teams use a fixed 31-day budget duration (not days_left_in_period)
-2. POOL teams still use days_left_in_period
+2. POOL subscription teams use 31d duration (same as PERIODIC, via billing cycle)
 3. PERIODIC teams compound max_budget = accumulated_spend + monthly_cap
 4. Compounding falls back to flat cap when get_team_info fails
 5. PERIODIC teams reset key spend to 0 on each webhook
-6. POOL teams do NOT reset key spend
+6. POOL subscription teams reset key spend to 0 on cycle (same as PERIODIC)
 7. Spend API: PERIODIC teams derive total_spend from sum of key spends
 8. Spend API: PERIODIC teams derive total_budget from max(key budgets)
 """
 
 import pytest
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timedelta
 from unittest.mock import patch, AsyncMock
 
 from app.db.models import (
@@ -24,10 +25,25 @@ from app.db.models import (
     DBPeriodicPayment,
 )
 from app.schemas.models import BudgetType
-from app.core.worker import apply_product_for_team
+from app.core.worker import apply_billing_cycle_for_team, apply_product_for_team
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────
+
+
+async def _apply_periodic_cycle(
+    db, team, region, *, budget_cents=10000, payment_id=None
+):
+    now = datetime.now(UTC)
+    return await apply_billing_cycle_for_team(
+        db=db,
+        team_id=team.id,
+        budget_cents=budget_cents,
+        region_id=region.id,
+        period_start=now,
+        period_end=now + timedelta(days=31),
+        source_payment_id=payment_id,
+    )
 
 
 def _make_pool_team(db, name="Pool Team", with_purchase=True, region=None):
@@ -108,23 +124,21 @@ async def test_periodic_team_uses_31d_duration(
     mock_litellm.update_team_budget = AsyncMock()
     mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
 
-    await apply_product_for_team(
-        db, "cus_periodic_31d", test_product.id, datetime.now(UTC)
-    )
+    await _apply_periodic_cycle(db, test_team, test_region)
 
     # Team-level budget must use 31d
     team_call = mock_litellm.update_team_budget.await_args
     assert team_call.kwargs["budget_duration"] == "31d"
 
 
-# ─── 2. POOL teams use days_left_in_period duration ───────────────────────
+# ─── 2. POOL subscription teams use 31d duration (same as PERIODIC) ──────
 
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.worker.get_team_keys_by_region")
 @patch("app.core.worker.LimitService")
-async def test_pool_team_uses_days_left_duration(
+async def test_pool_subscription_team_uses_31d_duration(
     mock_limit_service,
     mock_get_keys,
     mock_litellm_class,
@@ -132,12 +146,12 @@ async def test_pool_team_uses_days_left_duration(
     test_product,
     test_region,
 ):
-    """POOL teams must use days_left_in_period from the limit service."""
+    """POOL subscription teams go through apply_billing_cycle_for_team and
+    therefore use the same fixed 31d budget_duration as PERIODIC teams."""
     team = _make_pool_team(db, "Pool Duration Team", region=test_region)
     team.stripe_customer_id = "cus_pool_duration"
     db.commit()
 
-    # Limit service says 20 days left
     mock_limit_service.return_value.get_token_restrictions.return_value = (
         20,
         100.0,
@@ -154,7 +168,7 @@ async def test_pool_team_uses_days_left_duration(
     )
 
     team_call = mock_litellm.update_team_budget.await_args
-    assert team_call.kwargs["budget_duration"] == "20d"
+    assert team_call.kwargs["budget_duration"] == "31d"
 
 
 # ─── 3. PERIODIC teams compound max_budget ────────────────────────────────
@@ -173,7 +187,7 @@ async def test_periodic_team_compounds_max_budget(
     test_product,
     test_region,
 ):
-    """PERIODIC teams must compound: max_budget = accumulated_spend + monthly_cap."""
+    """PERIODIC webhook resets key spend to 0; max_budget = desired_remaining = monthly_cap + topup."""
     test_team.stripe_customer_id = "cus_compound"
     db.commit()
 
@@ -193,11 +207,12 @@ async def test_periodic_team_compounds_max_budget(
     # Team has already spent 37.50 in prior periods
     mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 37.50}})
 
-    await apply_product_for_team(db, "cus_compound", test_product.id, datetime.now(UTC))
+    await _apply_periodic_cycle(db, test_team, test_region)
 
-    # max_budget must be 37.50 (accumulated) + 100.0 (cap) = 137.50
+    # Webhook resets key spend to 0; max_budget = desired_remaining = cap + topup = 100.0 + 0.0
+    # (get_team_info is called to detect region availability but spend is not used in the formula)
     team_call = mock_litellm.update_team_budget.await_args
-    assert team_call.kwargs["max_budget"] == 137.50
+    assert team_call.kwargs["max_budget"] == 100.0
 
 
 # ─── 4. Compounding falls back to flat cap when get_team_info fails ───────
@@ -261,9 +276,7 @@ async def test_periodic_compounding_stops_on_get_team_info_failure(
     db.add(payment)
     db.commit()
 
-    await apply_product_for_team(
-        db, "cus_fallback", test_product.id, datetime.now(UTC), payment.id
-    )
+    await _apply_periodic_cycle(db, test_team, test_region, payment_id=payment.id)
 
     # Must NOT have called update_team_budget or set_key_restrictions
     mock_litellm.update_team_budget.assert_not_awaited()
@@ -310,9 +323,7 @@ async def test_periodic_team_resets_key_spend_to_zero(
     mock_litellm.set_key_restrictions = AsyncMock()
     mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 0.0}})
 
-    await apply_product_for_team(
-        db, "cus_spend_reset", test_product.id, datetime.now(UTC)
-    )
+    await _apply_periodic_cycle(db, test_team, test_region, budget_cents=5000)
 
     # Every key must have been called with spend=0.0
     assert mock_litellm.set_key_restrictions.call_count == 2
@@ -320,14 +331,14 @@ async def test_periodic_team_resets_key_spend_to_zero(
         assert call.kwargs["spend"] == 0.0
 
 
-# ─── 6. POOL teams do NOT reset key spend ─────────────────────────────────
+# ─── 6. POOL subscription teams reset key spend to 0 on cycle ─────────────
 
 
 @pytest.mark.asyncio
 @patch("app.core.worker.LiteLLMService")
 @patch("app.core.worker.get_team_keys_by_region")
 @patch("app.core.worker.LimitService")
-async def test_pool_team_does_not_reset_key_spend(
+async def test_pool_subscription_team_resets_key_spend(
     mock_limit_service,
     mock_get_keys,
     mock_litellm_class,
@@ -335,8 +346,8 @@ async def test_pool_team_does_not_reset_key_spend(
     test_product,
     test_region,
 ):
-    """POOL teams must pass spend=None to set_key_restrictions so that
-    existing key spend counters are preserved across budget updates."""
+    """POOL subscription teams go through apply_billing_cycle_for_team and
+    therefore reset key spend to 0.0 on each cycle, just like PERIODIC teams."""
     team = _make_pool_team(db, "Pool No Reset Team", region=test_region)
     team.stripe_customer_id = "cus_pool_no_reset"
     db.commit()
@@ -359,10 +370,10 @@ async def test_pool_team_does_not_reset_key_spend(
         db, "cus_pool_no_reset", test_product.id, datetime.now(UTC)
     )
 
-    # Every key must have been called with spend=None (not reset)
+    # Every key must have been called with spend=0.0 (reset on cycle)
     assert mock_litellm.set_key_restrictions.call_count == 2
     for call in mock_litellm.set_key_restrictions.call_args_list:
-        assert call.kwargs["spend"] is None
+        assert call.kwargs["spend"] == 0.0
 
 
 # ─── 7. Spend API: PERIODIC team total_spend = sum of key spends ──────────
@@ -552,9 +563,9 @@ def test_periodic_team_total_budget_from_max_key_budget(
     assert response.status_code == 200
     data = response.json()
 
-    # total_budget must be 100.0 (max key budget = monthly cap)
-    # NOT 250.0 (compounded team budget)
-    assert data["total_budget"] == 100.0
+    # PERIODIC teams expose effective current team budget from LiteLLM team_info,
+    # which includes compounded/carry-forward budget.
+    assert data["total_budget"] == 250.0
 
 
 # ─── 10. PERIODIC team payment sync status updated on success ─────────────
@@ -603,9 +614,7 @@ async def test_periodic_payment_sync_status_updated_on_success(
     db.add(payment)
     db.commit()
 
-    await apply_product_for_team(
-        db, "cus_sync_success", test_product.id, datetime.now(UTC), payment.id
-    )
+    await _apply_periodic_cycle(db, test_team, test_region, payment_id=payment.id)
 
     db.refresh(payment)
     assert payment.sync_status == "success"
@@ -664,13 +673,7 @@ async def test_periodic_payment_sync_status_updated_on_key_failure(
     db.add(payment)
     db.commit()
 
-    await apply_product_for_team(
-        db,
-        "cus_sync_partial_fail",
-        test_product.id,
-        datetime.now(UTC),
-        payment.id,
-    )
+    await _apply_periodic_cycle(db, test_team, test_region, payment_id=payment.id)
 
     db.refresh(payment)
     assert payment.sync_status == "sync_failed"

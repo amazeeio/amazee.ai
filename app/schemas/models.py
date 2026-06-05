@@ -494,8 +494,18 @@ class TeamSpendResponse(BaseModel):
     budget_duration: Optional[str] = None
     budget_reset_at: Optional[datetime] = None
     period_start: Optional[datetime] = None
+    periodic_budget: Optional["PeriodicTeamBudgetView"] = None
     key_count: int
     keys: List[SpendKeyItem]
+
+
+class PeriodicTeamBudgetView(BaseModel):
+    purchased_budget_cents: int
+    purchased_budget: float
+    remaining_budget_cents: int
+    remaining_budget: float
+    configured_max_budget_cents: int
+    configured_max_budget: float
 
 
 class UserSpendResponse(BaseModel):
@@ -562,6 +572,21 @@ class TeamSpendHistoryResponse(BaseModel):
     team_id: int
     team_name: str
     periods: List[TeamSpendHistoryPeriodItem]
+    periodic_transactions: List["TeamPeriodicTransactionItem"] = Field(
+        default_factory=list
+    )
+
+
+class TeamPeriodicTransactionItem(BaseModel):
+    id: int
+    payment_type: str
+    amount_cents: int
+    currency: str
+    stripe_payment_id: str
+    payment_date: datetime
+    status: str
+    sync_status: str
+    source: str
 
 
 class LiteLLMToken(BaseModel):
@@ -830,6 +855,27 @@ class PoolPurchaseResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PeriodicTopupRequest(BaseModel):
+    amount_cents: int = Field(gt=0)
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+
+
+class PeriodicTopupResponse(BaseModel):
+    id: int
+    team_id: int
+    region_id: int
+    amount_cents: int
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+    created_at: datetime
+    new_total_budget_cents: int
+    budget_type: BudgetType = BudgetType.PERIODIC
+    model_config = ConfigDict(from_attributes=True)
+
+
 class PoolPurchaseHistoryItem(BaseModel):
     id: int
     amount_cents: int
@@ -864,6 +910,17 @@ class PoolRegionPurchaseHistoryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PeriodicBudgetStatusResponse(BaseModel):
+    team_id: int
+    region_id: int
+    subscription_remaining_cents: int
+    topup_remaining_cents: int
+    desired_remaining_cents: int
+    subscription_period_end: Optional[datetime] = None
+    nearest_topup_expiry: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
 class UserSpendRegion(BaseModel):
     region_id: int
     region_name: str
@@ -884,3 +941,32 @@ class UserSpendByEmailResponse(BaseModel):
     total_spend: float
     teams: List[UserSpendTeam]
     cached_at: datetime
+
+
+class SubscriptionCycleRequest(BaseModel):
+    transaction_id: str
+    budget_cents: int
+    team_id: int
+    region_id: int
+
+
+class SubscriptionDeactivateRequest(BaseModel):
+    transaction_id: str
+    team_id: int
+    region_id: int
+    reason: Optional[str] = None
+
+
+class SubscriptionCycleResponse(BaseModel):
+    status: str
+    team_id: int
+    payment_id: Optional[int] = None
+    budget_dollars: Optional[float] = None
+    idempotent: bool = False
+
+
+class SubscriptionDeactivateResponse(BaseModel):
+    status: str
+    team_id: int
+    payment_id: Optional[int] = None
+    idempotent: bool = False
