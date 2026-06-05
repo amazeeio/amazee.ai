@@ -472,8 +472,8 @@ class SpendKeyItem(BaseModel):
     max_budget: Optional[float] = Field(
         default=None,
         description=(
-            "Effective key max budget shown by /spend list endpoints. "
-            "Usually sourced from LiteLLM, but DB spend-cap overrides may apply."
+            "Key spend cap from Amazee AI DB (spend_caps) for this key. "
+            "Returns null when no key-level cap is configured."
         ),
     )
     cached_spend: Optional[float] = None

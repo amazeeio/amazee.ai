@@ -725,8 +725,8 @@ def _find_db_key_id_for_litellm_key(
     description=(
         "Returns aggregated spend for a team in a region, including per-key spend, "
         "token usage fields, and effective budget totals. "
-        "For each key in `keys[]`, `max_budget` is the effective key budget from "
-        "LiteLLM, overridden by a DB key spend cap when a key-level cap exists."
+        "For each key in `keys[]`, `max_budget` is the DB key spend cap only and "
+        "returns `null` when no key-level cap exists."
     ),
     response_description="Team spend summary and per-key breakdown.",
 )
@@ -879,8 +879,11 @@ async def get_team_spend(
         key_ids=[item.key_id for item in items if item.key_id is not None],
     )
     for item in items:
-        if item.key_id is not None and item.key_id in key_cap_map:
-            item.max_budget = round(key_cap_map[item.key_id], 4)
+        item.max_budget = (
+            round(key_cap_map[item.key_id], 4)
+            if item.key_id is not None and item.key_id in key_cap_map
+            else None
+        )
 
     # Compute period_start for each key from budget_reset_at + budget_duration.
     team_budget_duration = None
@@ -973,9 +976,8 @@ async def get_team_spend(
     summary="Get user spend by region",
     description=(
         "Returns aggregated spend for a user in a region, including per-key spend "
-        "and token usage fields. For each key in `keys[]`, `max_budget` is the "
-        "effective key budget from LiteLLM, overridden by a DB key spend cap when "
-        "present; otherwise, it falls back to team-member spend cap when configured."
+        "and token usage fields. For each key in `keys[]`, `max_budget` is the DB "
+        "key spend cap only and returns `null` when no key-level cap exists."
     ),
     response_description="User spend summary and per-key breakdown.",
 )
@@ -1066,23 +1068,17 @@ async def get_user_spend(
             total_tokens,
         ) = _sum_optional_token_values(items)
 
-    member_cap = _get_spend_cap_max_budget(
-        db,
-        scope="team_member",
-        region_id=region_id,
-        team_id=target_user.team_id,
-        user_id=user_id,
-    )
     key_cap_map = _get_key_spend_cap_map(
         db,
         region_id=region_id,
         key_ids=[item.key_id for item in items if item.key_id is not None],
     )
     for item in items:
-        if item.key_id is not None and item.key_id in key_cap_map:
-            item.max_budget = round(key_cap_map[item.key_id], 4)
-        elif member_cap is not None:
-            item.max_budget = round(member_cap, 4)
+        item.max_budget = (
+            round(key_cap_map[item.key_id], 4)
+            if item.key_id is not None and item.key_id in key_cap_map
+            else None
+        )
         item.period_start = _compute_period_start(
             item.budget_reset_at, item.budget_duration
         )

@@ -80,6 +80,7 @@ def test_get_team_spend_by_region(
     assert data["total_completion_tokens"] == 60
     assert data["total_tokens"] == 220
     assert data["key_count"] == 2
+    assert all(key["max_budget"] is None for key in data["keys"])
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
@@ -122,6 +123,7 @@ def test_get_user_spend_by_region(
     assert data["keys"][0]["prompt_tokens"] == 200
     assert data["keys"][0]["completion_tokens"] == 50
     assert data["keys"][0]["total_tokens"] == 250
+    assert data["keys"][0]["max_budget"] is None
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
@@ -296,7 +298,7 @@ def test_get_team_spend_uses_configured_caps_for_no_purchase_pool_team(
 
 
 @patch("app.api.spend.LiteLLMService.get_user_info", new_callable=AsyncMock)
-def test_get_user_spend_uses_member_or_key_cap_for_no_purchase_pool_team(
+def test_get_user_spend_exposes_only_db_key_cap_for_no_purchase_pool_team(
     mock_get_user_info, client, admin_token, test_team, test_region, db
 ):
     test_team.budget_type = BudgetType.POOL
@@ -390,7 +392,7 @@ def test_get_user_spend_uses_member_or_key_cap_for_no_purchase_pool_team(
     data = response.json()
     max_budget_by_name = {k["key_name"]: k["max_budget"] for k in data["keys"]}
     assert max_budget_by_name[key_with_key_cap.name] == 11.0
-    assert max_budget_by_name[key_with_member_cap.name] == 7.0
+    assert max_budget_by_name[key_with_member_cap.name] is None
 
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
@@ -1953,10 +1955,10 @@ def test_get_team_spend_uses_db_key_cap_for_pool_team_after_purchase(
 
 
 @patch("app.api.spend.LiteLLMService.get_user_info", new_callable=AsyncMock)
-def test_get_user_spend_db_key_cap_beats_member_cap_beats_litellm_for_periodic_team(
+def test_get_user_spend_db_key_cap_beats_non_key_caps_for_periodic_team(
     mock_get_user_info, client, admin_token, test_team, test_region, db
 ):
-    """For a periodic team, DB key cap > DB member cap > LiteLLM-reported value."""
+    """For a periodic team, only DB key cap is exposed; non-key caps are null."""
     test_team.budget_type = "periodic"
     test_team.require_purchase_for_requests = False
     db.add(test_team)
@@ -2020,7 +2022,7 @@ def test_get_user_spend_db_key_cap_beats_member_cap_beats_litellm_for_periodic_t
     )
     db.commit()
 
-    # LiteLLM reports values that should all be overridden by DB caps
+    # LiteLLM reports values that should be ignored unless a DB key cap exists
     mock_get_user_info.return_value = {
         "user_info": {"spend": 0.5},
         "keys": [
@@ -2054,19 +2056,18 @@ def test_get_user_spend_db_key_cap_beats_member_cap_beats_litellm_for_periodic_t
     assert response.status_code == 200
     data = response.json()
     max_budget_by_name = {k["key_name"]: k["max_budget"] for k in data["keys"]}
-    # DB key cap wins over member cap and LiteLLM
+    # DB key cap wins
     assert max_budget_by_name[key_with_key_cap.name] == 9.0
-    # DB member cap wins over LiteLLM when no key cap is present
-    assert max_budget_by_name[key_with_member_cap.name] == 5.0
-    # DB member cap also applied to key that has no explicit key cap
-    assert max_budget_by_name[key_with_litellm_only.name] == 5.0
+    # No DB key cap => null (member cap/LiteLLM are not surfaced)
+    assert max_budget_by_name[key_with_member_cap.name] is None
+    assert max_budget_by_name[key_with_litellm_only.name] is None
 
 
 @patch("app.api.spend.LiteLLMService.get_user_info", new_callable=AsyncMock)
-def test_get_user_spend_db_key_cap_beats_member_cap_beats_litellm_for_purchased_pool_team(
+def test_get_user_spend_db_key_cap_beats_non_key_caps_for_purchased_pool_team(
     mock_get_user_info, client, admin_token, test_team, test_region, db
 ):
-    """For a POOL team with a purchase, DB key cap > DB member cap > LiteLLM-reported value."""
+    """For a POOL team with a purchase, only DB key cap is exposed; non-key caps are null."""
     test_team.budget_type = BudgetType.POOL
     test_team.require_purchase_for_requests = True
     db.add(test_team)
@@ -2134,7 +2135,7 @@ def test_get_user_spend_db_key_cap_beats_member_cap_beats_litellm_for_purchased_
     )
     db.commit()
 
-    # LiteLLM reports values that should be overridden by DB caps
+    # LiteLLM reports values that should be ignored unless a DB key cap exists
     mock_get_user_info.return_value = {
         "user_info": {"spend": 1.0},
         "keys": [
@@ -2160,10 +2161,10 @@ def test_get_user_spend_db_key_cap_beats_member_cap_beats_litellm_for_purchased_
     assert response.status_code == 200
     data = response.json()
     max_budget_by_name = {k["key_name"]: k["max_budget"] for k in data["keys"]}
-    # DB key cap wins over both member cap and LiteLLM after purchase
+    # DB key cap wins
     assert max_budget_by_name[key_with_key_cap.name] == 12.0
-    # DB member cap wins over LiteLLM after purchase
-    assert max_budget_by_name[key_with_member_cap.name] == 8.0
+    # No DB key cap => null (member cap/LiteLLM are not surfaced)
+    assert max_budget_by_name[key_with_member_cap.name] is None
 
 
 # ── _compute_period_start unit tests ─────────────────────────────────
