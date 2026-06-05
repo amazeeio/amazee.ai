@@ -937,13 +937,32 @@ async def get_private_ai_key_spend(
     litellm_service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
+    configured_key_cap = (
+        db.query(DBSpendCap.max_budget)
+        .filter(
+            DBSpendCap.scope == "key",
+            DBSpendCap.region_id == private_ai_key.region_id,
+            DBSpendCap.team_id == private_ai_key.team_id,
+            DBSpendCap.user_id == private_ai_key.owner_id,
+            DBSpendCap.key_id == private_ai_key.id,
+        )
+        .scalar()
+    )
 
     try:
         data = await litellm_service.get_key_info(private_ai_key.litellm_token)
         info = data.get("info", {})
 
-        # Only set default for spend field
-        spend_info = {"spend": info.get("spend", 0.0), **info}
+        # Only set default for spend field; key max_budget comes from DB spend cap.
+        spend_info = {
+            "spend": info.get("spend", 0.0),
+            **info,
+            "max_budget": (
+                round(float(configured_key_cap), 4)
+                if configured_key_cap is not None
+                else None
+            ),
+        }
 
         return PrivateAIKeySpendBasic.model_validate(spend_info)
     except HTTPException as e:
@@ -958,6 +977,11 @@ async def get_private_ai_key_spend(
                     "created_at": private_ai_key.created_at,
                     "updated_at": private_ai_key.updated_at,
                     "expires": None,
+                    "max_budget": (
+                        round(float(configured_key_cap), 4)
+                        if configured_key_cap is not None
+                        else None
+                    ),
                 }
             )
         logger.error(f"Failed to get Private AI Key spend: {str(e)}", exc_info=True)
