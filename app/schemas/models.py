@@ -447,7 +447,13 @@ class PrivateAIKeySpend(BaseModel):
     expires: datetime
     created_at: datetime
     updated_at: datetime
-    max_budget: Optional[float] = None
+    max_budget: Optional[float] = Field(
+        default=None,
+        description=(
+            "Key spend cap from Amazee AI DB (spend_caps) for this key. "
+            "Returns null when no key-level cap is configured."
+        ),
+    )
     budget_duration: Optional[str] = None
     budget_reset_at: Optional[datetime] = None
     period_start: Optional[datetime] = None
@@ -463,7 +469,13 @@ class SpendKeyItem(BaseModel):
     owner_id: Optional[int] = None
     team_id: Optional[int] = None
     spend: float
-    max_budget: Optional[float] = None
+    max_budget: Optional[float] = Field(
+        default=None,
+        description=(
+            "Effective key max budget shown by /spend list endpoints. "
+            "Usually sourced from LiteLLM, but DB spend-cap overrides may apply."
+        ),
+    )
     cached_spend: Optional[float] = None
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None

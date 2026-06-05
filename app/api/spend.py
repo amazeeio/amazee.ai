@@ -724,7 +724,9 @@ def _find_db_key_id_for_litellm_key(
     summary="Get team spend by region",
     description=(
         "Returns aggregated spend for a team in a region, including per-key spend, "
-        "token usage fields, and effective budget totals."
+        "token usage fields, and effective budget totals. "
+        "For each key in `keys[]`, `max_budget` is the effective key budget from "
+        "LiteLLM, overridden by a DB key spend cap when a key-level cap exists."
     ),
     response_description="Team spend summary and per-key breakdown.",
 )
@@ -971,7 +973,9 @@ async def get_team_spend(
     summary="Get user spend by region",
     description=(
         "Returns aggregated spend for a user in a region, including per-key spend "
-        "and token usage fields."
+        "and token usage fields. For each key in `keys[]`, `max_budget` is the "
+        "effective key budget from LiteLLM, overridden by a DB key spend cap when "
+        "present; otherwise, it falls back to team-member spend cap when configured."
     ),
     response_description="User spend summary and per-key breakdown.",
 )
@@ -1103,7 +1107,9 @@ async def get_user_spend(
     response_model=PrivateAIKeySpend,
     summary="Get key spend by region",
     description=(
-        "Returns spend and budget metadata for a specific key in the specified region."
+        "Returns spend and budget metadata for a specific key in the specified region. "
+        "In this endpoint, `max_budget` is the DB key spend cap only (Amazee AI source "
+        "of truth) and returns `null` when no key-level cap exists."
     ),
     response_description="Key spend record with budget metadata and token usage.",
 )
