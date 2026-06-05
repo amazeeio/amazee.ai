@@ -75,7 +75,7 @@ def test_get_team_spend_by_region(
     assert data["team_id"] == test_team.id
     assert data["region_id"] == test_region.id
     assert data["total_spend"] == 20.0
-    assert data["total_budget"] == 75.0
+    assert data["total_budget"] == 0.0
     assert data["total_prompt_tokens"] == 160
     assert data["total_completion_tokens"] == 60
     assert data["total_tokens"] == 220

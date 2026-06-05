@@ -871,12 +871,6 @@ async def get_team_spend(
     )
     if configured_team_cap is not None and team.requires_pool_purchase_gate:
         total_budget = round(configured_team_cap, 4)
-    elif is_periodic and litellm_fetch_ok:
-        # For PERIODIC teams, display the effective current team budget as seen by
-        # LiteLLM (includes active subscription carry + top-ups), not per-key cap.
-        max_budget = team_info.get("max_budget")
-        if max_budget is not None:
-            total_budget = round(float(max_budget or 0.0), 4)
     key_cap_map = _get_key_spend_cap_map(
         db,
         region_id=region_id,
@@ -930,6 +924,9 @@ async def get_team_spend(
         )
         purchased_cents = sub_remaining_cents + topup_remaining_cents
         purchased_dollars = purchased_cents / 100.0
+        # For PERIODIC teams, report the clean current-cycle budget from ledger + topups,
+        # independent of LiteLLM's accumulated max_budget.
+        total_budget = round(purchased_dollars, 4)
         # live_remaining = purchased - total_spend
         #
         # INVARIANT: This formula is correct ONLY because consumed_cents
