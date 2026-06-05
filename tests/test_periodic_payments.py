@@ -123,6 +123,7 @@ async def test_apply_billing_cycle_for_team_updates_sync_status_success(
     mock_litellm.update_team_budget.assert_awaited_once()
     assert mock_litellm.update_team_budget.await_args.kwargs["budget_duration"] == "31d"
     assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 100.0
+    assert mock_litellm.update_team_budget.await_args.kwargs["spend"] == 0.0
     mock_litellm.set_key_restrictions.assert_awaited_once()
     assert mock_litellm.set_key_restrictions.await_args.kwargs["budget_amount"] == 100.0
     assert mock_litellm.set_key_restrictions.await_args.kwargs["spend"] == 0.0
@@ -512,7 +513,9 @@ def test_subscription_deactivate_endpoint_success(
     assert mock_litellm.set_key_restrictions.await_args.kwargs["budget_amount"] == 0.0
 
 
-def test_subscription_deactivate_endpoint_idempotent(client, admin_token, db, test_team):
+def test_subscription_deactivate_endpoint_idempotent(
+    client, admin_token, db, test_team
+):
     payment = DBPeriodicPayment(
         team_id=test_team.id,
         stripe_payment_id="txn_deactivate_done",

@@ -1132,6 +1132,7 @@ async def apply_billing_cycle_for_team(
                     team_id=lite_team_id,
                     max_budget=team_max_budget,
                     budget_duration=budget_duration,
+                    spend=0.0,
                 )
                 logger.info(
                     "Updated team %s budget to %s (duration=%s) in region %s",

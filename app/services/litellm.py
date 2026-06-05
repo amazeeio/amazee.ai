@@ -570,6 +570,7 @@ class LiteLLMService:
         team_id: str,
         max_budget: Optional[float],
         budget_duration: Optional[str] = None,
+        spend: Optional[float] = None,
         model_aliases: Optional[dict[str, str]] = None,
     ):
         """Update the budget for a LiteLLM team.
@@ -587,6 +588,8 @@ class LiteLLMService:
             request_data["max_budget"] = max_budget
             if budget_duration:
                 request_data["budget_duration"] = budget_duration
+            if spend is not None:
+                request_data["spend"] = spend
             if model_aliases is not None:
                 request_data["model_aliases"] = model_aliases
 
