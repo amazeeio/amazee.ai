@@ -51,8 +51,8 @@ class Settings(BaseSettings):
     HUBSPOT_MARKETING_UPDATES_PROPERTY: str = os.getenv(
         "HUBSPOT_MARKETING_UPDATES_PROPERTY", "receive_marketing_updates"
     )
-    HUBSPOT_MARKETING_SUBSCRIPTION_ID: str = os.getenv(
-        "HUBSPOT_MARKETING_SUBSCRIPTION_ID", "1110685904"
+    HUBSPOT_MARKETING_SUBSCRIPTION_ID: str | None = os.getenv(
+        "HUBSPOT_MARKETING_SUBSCRIPTION_ID"
     )
     MOAD_API_KEY: str = os.getenv("MOAD_API_KEY", "changeme")
     ENABLE_METRICS: bool = os.getenv("ENABLE_METRICS", "false") == "true"

@@ -509,6 +509,12 @@ async def update_users_marketing_updates_by_email(
     payload: UserMarketingUpdatesByEmailUpdate,
     db: Session = Depends(get_db),
 ):
+    if not settings.HUBSPOT_MARKETING_SUBSCRIPTION_ID:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="HubSpot marketing subscription is not configured",
+        )
+
     normalized_email = normalize_email_for_lookup(payload.email)
 
     users = (

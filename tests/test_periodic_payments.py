@@ -512,7 +512,9 @@ def test_subscription_deactivate_endpoint_success(
     assert mock_litellm.set_key_restrictions.await_args.kwargs["budget_amount"] == 0.0
 
 
-def test_subscription_deactivate_endpoint_idempotent(client, admin_token, db, test_team):
+def test_subscription_deactivate_endpoint_idempotent(
+    client, admin_token, db, test_team
+):
     payment = DBPeriodicPayment(
         team_id=test_team.id,
         stripe_payment_id="txn_deactivate_done",

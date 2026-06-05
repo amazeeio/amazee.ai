@@ -116,6 +116,11 @@ class HubSpotService:
     async def _update_email_subscription(
         self, email: str, enabled: bool, client: httpx.AsyncClient
     ) -> None:
+        if not self.marketing_subscription_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="HubSpot marketing subscription is not configured",
+            )
         response = await client.put(
             f"{self.BASE_URL}{self.EMAIL_SUBSCRIPTION_PATH.format(email=email)}",
             headers=self._headers(),

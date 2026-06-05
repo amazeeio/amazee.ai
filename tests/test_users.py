@@ -128,11 +128,12 @@ def test_update_users_marketing_updates_by_email(
     db.add_all([team, u1, u2])
     db.commit()
 
-    response = client.put(
-        "/users/by-email/marketing-updates",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={"email": "marketing@example.com", "receive_marketing_updates": True},
-    )
+    with patch.object(settings, "HUBSPOT_MARKETING_SUBSCRIPTION_ID", "1110685904"):
+        response = client.put(
+            "/users/by-email/marketing-updates",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"email": "marketing@example.com", "receive_marketing_updates": True},
+        )
     assert response.status_code == 200
     data = response.json()
     assert len(data) == 2
@@ -140,6 +141,27 @@ def test_update_users_marketing_updates_by_email(
     mock_upsert_contact_marketing_updates.assert_awaited_once_with(
         email="marketing@example.com", enabled=True
     )
+
+
+@patch(
+    "app.api.users.HubSpotService.upsert_contact_marketing_updates",
+    new_callable=AsyncMock,
+)
+def test_update_users_marketing_updates_by_email_returns_404_when_subscription_missing(
+    mock_upsert_contact_marketing_updates, client, admin_token
+):
+    with patch.object(settings, "HUBSPOT_MARKETING_SUBSCRIPTION_ID", None):
+        response = client.put(
+            "/users/by-email/marketing-updates",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"email": "marketing@example.com", "receive_marketing_updates": True},
+        )
+
+    assert response.status_code == 404
+    assert (
+        response.json()["detail"] == "HubSpot marketing subscription is not configured"
+    )
+    mock_upsert_contact_marketing_updates.assert_not_awaited()
 
 
 def test_delete_user(client, admin_token, test_user):

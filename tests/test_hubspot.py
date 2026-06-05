@@ -28,7 +28,9 @@ def _make_async_client(*responses) -> AsyncMock:
 
 @pytest.fixture
 def service() -> HubSpotService:
-    return HubSpotService(token="test-token")
+    svc = HubSpotService(token="test-token")
+    svc.marketing_subscription_id = "1110685904"
+    return svc
 
 
 @pytest.mark.asyncio
@@ -131,3 +133,20 @@ async def test_subscription_update_error_raises_502(service):
                 "user@example.com", enabled=True
             )
     assert exc_info.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_missing_subscription_id_raises_404_and_skips_request(service):
+    mock_client = _make_async_client(_make_response(200, {"results": [{"id": "42"}]}))
+    mock_client.patch.return_value = _make_response(200, {})
+
+    service.marketing_subscription_id = None
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        with pytest.raises(HTTPException) as exc_info:
+            await service.upsert_contact_marketing_updates(
+                "user@example.com", enabled=True
+            )
+
+    assert exc_info.value.status_code == 404
+    assert mock_client.put.call_count == 0
