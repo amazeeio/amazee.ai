@@ -1104,11 +1104,14 @@ async def apply_billing_cycle_for_team(
 
         team_max_budget = per_region_budget
         current_team_spend = 0.0
+        current_team_max_budget: float | None = None
         if keys:
             try:
                 team_info_resp = await litellm_service.get_team_info(lite_team_id)
                 team_info = team_info_resp.get("team_info", team_info_resp)
                 current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
+                if team_info.get("max_budget") is not None:
+                    current_team_max_budget = float(team_info.get("max_budget") or 0.0)
                 topup_remaining_cents = compute_active_topup_remaining(
                     db, team_id=team.id, region_id=region.id
                 )
@@ -1131,10 +1134,17 @@ async def apply_billing_cycle_for_team(
 
         if not sync_errors:
             try:
-                team_max_budget_cents = int(round(team_max_budget * 100))
+                overage_baseline_budget = (
+                    current_team_max_budget
+                    if current_team_max_budget is not None
+                    else team_max_budget
+                )
+                overage_baseline_budget_cents = int(
+                    round(overage_baseline_budget * 100)
+                )
                 current_team_spend_cents = int(round(current_team_spend * 100))
                 carryover_spend_cents = max(
-                    0, current_team_spend_cents - team_max_budget_cents
+                    0, current_team_spend_cents - overage_baseline_budget_cents
                 )
                 carryover_spend = carryover_spend_cents / 100.0
                 await litellm_service.update_team_budget(
