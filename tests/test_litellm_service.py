@@ -714,6 +714,7 @@ def test_update_team_budget_includes_model_aliases(
             team_id="team-1",
             max_budget=10.0,
             budget_duration="1mo",
+            spend=0.0,
             model_aliases={"gpt-4": "azure/gpt-4-turbo-2024-04-09"},
         )
     )
@@ -725,6 +726,7 @@ def test_update_team_budget_includes_model_aliases(
             "team_id": "team-1",
             "max_budget": 10.0,
             "budget_duration": "1mo",
+            "spend": 0.0,
             "model_aliases": {"gpt-4": "azure/gpt-4-turbo-2024-04-09"},
         },
     )
