@@ -35,6 +35,7 @@ import { SpendInfo } from "@/types/spend";
 import { Team } from "@/types/team";
 import { User } from "@/types/user";
 import { get } from "@/utils/api";
+import { mapTeamSpendToSpendInfo } from "@/utils/spend-mapping";
 import { useQuery } from "@tanstack/react-query";
 
 interface TeamExpansionRowProps {
@@ -158,7 +159,8 @@ export function TeamExpansionRow({
             const response = await get(
               `/spend/${matchedRegion.id}/team/${teamId}`,
             );
-            const spendInfo = await response.json();
+            const data = await response.json();
+            const spendInfo = mapTeamSpendToSpendInfo(data);
             for (const keyId of keyIds) {
               spendData[keyId.toString()] = spendInfo;
             }

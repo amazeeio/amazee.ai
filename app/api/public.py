@@ -98,8 +98,37 @@ def _apply_profit_margin(price: float | None, margin: float) -> float | None:
     return price * (1 + margin)
 
 
-def _to_display_name(model_id: str) -> str:
-    words = re.split(r"[-_]+", model_id)
+def _to_display_name(model_id: str, aliases: list[str] | None = None) -> str:
+    """Convert a model_id to a human-friendly display name.
+
+    If aliases contain a dotted version number (e.g. "claude-4.7"), use that
+    to produce "Claude 4.7" instead of "Claude 4 7".
+    """
+    # Build a mapping of hyphenated number sequences to dotted equivalents
+    # by inspecting aliases for dotted versions.
+    dot_replacements: dict[str, str] = {}
+    if aliases:
+        for alias in aliases:
+            # Find dotted number patterns like "4.7", "3.5", "1.5.2"
+            for m in re.finditer(r"\d+(?:\.\d+)+", alias):
+                dotted = m.group(0)
+                # The equivalent hyphenated form: "4.7" -> "4-7"
+                hyphenated = dotted.replace(".", "-")
+                dot_replacements[hyphenated] = dotted
+
+    # Replace hyphenated number sequences with dotted versions before splitting.
+    # Use word-boundary anchors so that e.g. "3-5" does not corrupt "123-5".
+    modified_id = model_id
+    for hyphenated, dotted in sorted(
+        dot_replacements.items(), key=lambda x: -len(x[0])
+    ):
+        modified_id = re.sub(
+            r"(?<![0-9])" + re.escape(hyphenated) + r"(?![0-9])",
+            dotted,
+            modified_id,
+        )
+
+    words = re.split(r"[-_]+", modified_id)
     return " ".join(
         word.upper() if word.isupper() else word.capitalize() for word in words if word
     )
@@ -148,26 +177,47 @@ def _extract_release_date(model_id: str, model_info: dict[str, Any]) -> str | No
     return None
 
 
-def _infer_manufacturer(model_id: str, item: dict[str, Any]) -> PublicModelManufacturer:
+_MANUFACTURER_RULES: list[dict[str, str | None]] = [
+    {"keyword": "claude", "name": "Anthropic", "website": "https://www.anthropic.com"},
+    {"keyword": "gemini", "name": "Google", "website": "https://deepmind.google/models"},
+    {"keyword": "gemma", "name": "Google", "website": "https://deepmind.google/models"},
+    {"keyword": "gpt", "name": "OpenAI", "website": "https://openai.com"},
+    {"keyword": "mistral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "pixtral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "mixtral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "ministral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "devstral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "magistral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "deepseek", "name": "DeepSeek", "website": "https://www.deepseek.com"},
+    {"keyword": "llama", "name": "Meta", "website": "https://ai.meta.com/llama"},
+    {"keyword": "kimi", "name": "Moonshot", "website": "https://www.moonshot.cn"},
+    {"keyword": "qwen", "name": "Alibaba", "website": "https://www.alibabacloud.com/en/solutions/generative-ai/qwen"},
+    {"keyword": "titan", "name": "Amazon", "website": "https://aws.amazon.com/bedrock/titan"},
+    # Provider-based fallbacks (must be last — match on provider string only)
+    {"keyword": "openai", "name": "OpenAI", "website": "https://openai.com"},
+    {"keyword": "anthropic", "name": "Anthropic", "website": "https://www.anthropic.com"},
+    {"keyword": "google", "name": "Google", "website": "https://deepmind.google/models"},
+    {"keyword": "meta", "name": "Meta", "website": "https://ai.meta.com/llama"},
+]
+
+
+def _infer_manufacturer(model_id: str, item: dict[str, Any]) -> PublicModelManufacturer | None:
     model_info = item.get("model_info", {})
     provider = str(model_info.get("litellm_provider") or "").lower()
     normalized_model_id = model_id.lower()
 
-    if normalized_model_id.startswith("gpt-") or "openai" in provider:
-        name = "OpenAI"
-        website = "https://openai.com"
-    elif normalized_model_id.startswith("claude-") or "anthropic" in provider:
-        name = "Anthropic"
-        website = "https://www.anthropic.com"
-    elif normalized_model_id.startswith("gemini-") or "google" in provider:
-        name = "Google"
-        website = "https://deepmind.google/models"
-    elif normalized_model_id.startswith("llama-") or "meta" in provider:
-        name = "Meta"
-        website = "https://ai.meta.com/llama"
-    else:
-        name = "Unknown"
-        website = None
+    name: str | None = None
+    website: str | None = None
+
+    for rule in _MANUFACTURER_RULES:
+        keyword = str(rule["keyword"])
+        if keyword in normalized_model_id or keyword in provider:
+            name = rule["name"]
+            website = rule["website"]
+            break
+
+    if name is None:
+        return None
 
     version = (
         model_info.get("version")
@@ -291,10 +341,12 @@ def _extract_model_summary(
         supports_prompt_caching=bool(model_info.get("supports_prompt_caching")),
     )
 
+    aliases = _extract_aliases(item, model_id)
+
     return PublicModelSummary(
         model_id=model_id,
-        display_name=_to_display_name(model_id),
-        aliases=_extract_aliases(item, model_id),
+        display_name=_to_display_name(model_id, aliases),
+        aliases=aliases,
         metadata_raw=model_info.get("metadata") or item.get("metadata"),
         provider=_infer_provider(item),
         type=model_type,
