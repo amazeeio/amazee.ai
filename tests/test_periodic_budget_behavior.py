@@ -209,10 +209,10 @@ async def test_periodic_team_compounds_max_budget(
 
     await _apply_periodic_cycle(db, test_team, test_region)
 
-    # Webhook resets key spend to 0; max_budget = desired_remaining = cap + topup = 100.0 + 0.0
-    # (get_team_info is called to detect region availability but spend is not used in the formula)
+    # Projection uses current team spend + effective remaining.
+    # 37.5 + 100.0 = 137.5
     team_call = mock_litellm.update_team_budget.await_args
-    assert team_call.kwargs["max_budget"] == 100.0
+    assert team_call.kwargs["max_budget"] == 137.5
 
 
 # ─── 4. Compounding falls back to flat cap when get_team_info fails ───────

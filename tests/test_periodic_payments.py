@@ -184,7 +184,7 @@ async def test_apply_billing_cycle_for_team_carries_over_spend_overage(
 
     assert errors == []
     mock_litellm.update_team_budget.assert_awaited_once()
-    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 1.0
+    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 2.4
     assert "spend" not in mock_litellm.update_team_budget.await_args.kwargs
 
 
@@ -244,9 +244,8 @@ async def test_apply_billing_cycle_for_team_carries_over_against_current_litellm
 
     assert errors == []
     mock_litellm.update_team_budget.assert_awaited_once()
-    # Cycle compounds on top of current LiteLLM budget:
-    # current $1.0 + incoming cycle $2.0 = $3.0.
-    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 3.0
+    # Projection uses current spend + remaining budget.
+    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 3.4
     assert "spend" not in mock_litellm.update_team_budget.await_args.kwargs
 
 
@@ -1015,4 +1014,4 @@ async def test_pool_team_billing_cycle_uses_31d_and_resets_spend(
 
     key_call = mock_litellm.set_key_restrictions.await_args
     assert key_call.kwargs["spend"] == 0.0
-    assert key_call.kwargs["budget_duration"] is None
+    assert key_call.kwargs["budget_duration"] == "31d"

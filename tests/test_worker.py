@@ -568,12 +568,11 @@ async def test_apply_product_periodic_compounds_team_budget_with_split_and_regio
     update_calls = mock_instance.update_team_budget.await_args_list
     assert len(update_calls) == 2
 
-    # Webhook resets key spend to 0; max_budget = desired_remaining = per_region_cap + topup_remaining
-    # Each region gets the full cap (no split), plus its own topup_remaining
-    # Region 1: 50.0 + 3.0 = 53.0
-    # Region 2: 50.0 + 0.0 = 50.0
+    # Projection uses current team spend + effective_remaining.
+    # Region 1: 12.5 + (50.0 + 3.0) = 65.5
+    # Region 2: 7.8 + (50.0 + 0.0) = 57.8
     max_budgets = sorted([float(call.kwargs["max_budget"]) for call in update_calls])
-    assert max_budgets == [50.0, 53.0]
+    assert max_budgets == [57.8, 65.5]
 
 
 @pytest.mark.asyncio

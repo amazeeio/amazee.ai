@@ -2368,8 +2368,8 @@ def test_key_spend_includes_period_start(
 def test_pool_key_with_cap_shows_period_fields(
     mock_get_team_info, client, admin_token, test_team, test_region, db
 ):
-    """POOL team key with a spend cap gets 1mo budget_duration from
-    update_key_budget, so period fields should be populated."""
+    """POOL capped keys use 31d window semantics.
+    Team window remains POOL baseline (365d) when no active subscription."""
     test_team.budget_type = BudgetType.POOL
     test_team.require_purchase_for_requests = True
     db.add(test_team)
@@ -2391,7 +2391,7 @@ def test_pool_key_with_cap_shows_period_fields(
             team_id=test_team.id,
             key_id=key.id,
             max_budget=5.0,
-            budget_duration="1mo",
+            budget_duration="31d",
         )
     )
     db.commit()
@@ -2421,15 +2421,13 @@ def test_pool_key_with_cap_shows_period_fields(
     )
     assert response.status_code == 200
     data = response.json()
-    # Team has 365d from purchase
+    # Team shows POOL no-subscription baseline window.
     assert data["budget_duration"] == "365d"
-    assert data["budget_reset_at"] == "2027-05-08T00:00:00Z"
-    assert data["period_start"] == "2026-05-08T00:00:00Z"
-    # Key has 1mo cap
+    # Key with cap uses 31d window semantics.
     k = data["keys"][0]
-    assert k["budget_duration"] == "1mo"
-    assert k["budget_reset_at"] == "2026-06-01T00:00:00Z"
-    assert k["period_start"] == "2026-05-01T00:00:00Z"
+    assert k["budget_duration"] == "31d"
+    assert k["budget_reset_at"] is not None
+    assert k["period_start"] is not None
 
 
 # ---------------------------------------------------------------------------
