@@ -726,7 +726,10 @@ def _find_db_key_id_for_litellm_key(
         "Returns aggregated spend for a team in a region, including per-key spend, "
         "token usage fields, and effective budget totals. "
         "For each key in `keys[]`, `max_budget` is the DB key spend cap only and "
-        "returns `null` when no key-level cap exists."
+        "returns `null` when no key-level cap exists. "
+        "Also returns period-scoped fields (`period_spend`, `period_budget`). "
+        "`periodic_budget` is structured for PERIODIC teams and a numeric current-cycle "
+        "subscription amount for POOL teams with active subscription (otherwise null)."
     ),
     response_description="Team spend summary and per-key breakdown.",
 )
