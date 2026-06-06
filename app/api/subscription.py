@@ -304,6 +304,21 @@ async def subscription_deactivate(
                 source_event_id=request.transaction_id,
             )
 
+        # Deactivation immediately ends active subscription windows.
+        active_sub_rows = (
+            db.query(DBPeriodicBudgetLedgerEntry)
+            .filter(
+                DBPeriodicBudgetLedgerEntry.team_id == team.id,
+                DBPeriodicBudgetLedgerEntry.region_id == region.id,
+                DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+                DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            )
+            .all()
+        )
+        for row in active_sub_rows:
+            row.is_active = False
+        db.flush()
+
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url,
             api_key=region.litellm_api_key,
@@ -313,7 +328,7 @@ async def subscription_deactivate(
             compute_active_topup_remaining(db, team_id=team.id, region_id=region.id)
             / 100.0
         )
-        topup_budget_duration = f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
+        topup_budget_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
 
         try:
             await litellm_service.update_team_budget(

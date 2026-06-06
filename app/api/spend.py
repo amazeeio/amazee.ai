@@ -902,6 +902,65 @@ async def get_team_spend(
         team_budget_reset_at, team_budget_duration
     )
 
+    # For subscription-managed POOL teams, expose cycle window semantics from
+    # Amazee DB ledger truth instead of LiteLLM counters.
+    if team.budget_type == BudgetType.POOL:
+        now = datetime.now(UTC)
+        active_subscription = (
+            db.query(DBPeriodicBudgetLedgerEntry)
+            .filter(
+                DBPeriodicBudgetLedgerEntry.team_id == team_id,
+                DBPeriodicBudgetLedgerEntry.region_id == region_id,
+                DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+                DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+                DBPeriodicBudgetLedgerEntry.effective_period_start.isnot(None),
+                DBPeriodicBudgetLedgerEntry.effective_period_end.isnot(None),
+                DBPeriodicBudgetLedgerEntry.effective_period_end > now,
+            )
+            .order_by(
+                DBPeriodicBudgetLedgerEntry.effective_period_end.desc(),
+                DBPeriodicBudgetLedgerEntry.id.desc(),
+            )
+            .first()
+        )
+        if active_subscription is not None:
+            team_budget_duration = "31d"
+            team_budget_reset_at = active_subscription.effective_period_end
+            team_period_start = active_subscription.effective_period_start
+        else:
+            active_topup = (
+                db.query(DBPeriodicBudgetLedgerEntry)
+                .filter(
+                    DBPeriodicBudgetLedgerEntry.team_id == team_id,
+                    DBPeriodicBudgetLedgerEntry.region_id == region_id,
+                    DBPeriodicBudgetLedgerEntry.entry_type.in_(
+                        ["topup", "topup_rollover"]
+                    ),
+                    DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+                    (
+                        DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                        | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+                    ),
+                )
+                .order_by(
+                    DBPeriodicBudgetLedgerEntry.purchased_at.desc(),
+                    DBPeriodicBudgetLedgerEntry.id.desc(),
+                )
+                .first()
+            )
+            pool_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+            team_budget_duration = pool_duration
+            if active_topup is not None and active_topup.purchased_at is not None:
+                anchor = active_topup.purchased_at
+            else:
+                anchor = team.created_at or now
+            if anchor.tzinfo is None:
+                anchor = anchor.replace(tzinfo=UTC)
+            team_period_start = anchor
+            team_budget_reset_at = anchor + timedelta(
+                days=settings.POOL_BUDGET_EXPIRATION_DAYS
+            )
+
     # Current period spend should reflect this period only (sum of per-key spends).
     period_spend = round(sum(float(item.spend or 0.0) for item in items), 4)
 
@@ -909,8 +968,6 @@ async def get_team_spend(
     now = datetime.now(UTC)
     sub_remaining_cents = 0
     # Use ledger-driven periodic status semantics for user-facing budget numbers.
-    from app.db.models import DBPeriodicBudgetLedgerEntry
-
     sub_rows = (
         db.query(DBPeriodicBudgetLedgerEntry)
         .filter(
