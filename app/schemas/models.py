@@ -501,7 +501,7 @@ class TeamSpendResponse(BaseModel):
     budget_duration: Optional[str] = None
     budget_reset_at: Optional[datetime] = None
     period_start: Optional[datetime] = None
-    periodic_budget: Optional["PeriodicTeamBudgetView"] = None
+    periodic_budget: Optional["PeriodicTeamBudgetView | float"] = None
     key_count: int
     keys: List[SpendKeyItem]
 

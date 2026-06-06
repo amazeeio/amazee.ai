@@ -886,6 +886,9 @@ async def get_team_spend(
             else None
         )
 
+    # Current period spend should reflect this period only (sum of per-key spends).
+    period_spend = round(sum(float(item.spend or 0.0) for item in items), 4)
+
     # Compute period_start for each key from budget_reset_at + budget_duration.
     team_budget_duration = None
     team_budget_reset_at = None
@@ -927,6 +930,9 @@ async def get_team_spend(
             team_budget_duration = "31d"
             team_budget_reset_at = active_subscription.effective_period_end
             team_period_start = active_subscription.effective_period_start
+            # For POOL teams, expose only current-cycle subscription amount.
+            sub_cycle_budget_cents = int(active_subscription.amount_cents or 0)
+            periodic_budget_view = round(sub_cycle_budget_cents / 100.0, 4)
         else:
             active_topup = (
                 db.query(DBPeriodicBudgetLedgerEntry)
@@ -961,10 +967,8 @@ async def get_team_spend(
                 days=settings.POOL_BUDGET_EXPIRATION_DAYS
             )
 
-    # Current period spend should reflect this period only (sum of per-key spends).
-    period_spend = round(sum(float(item.spend or 0.0) for item in items), 4)
-
-    periodic_budget_view = None
+    if team.budget_type != BudgetType.POOL:
+        periodic_budget_view = None
     now = datetime.now(UTC)
     sub_remaining_cents = 0
     # Use ledger-driven periodic status semantics for user-facing budget numbers.
