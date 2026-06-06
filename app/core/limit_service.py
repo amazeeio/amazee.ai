@@ -825,12 +825,13 @@ class LimitService:
             if existing_limit and existing_limit.limited_by == LimitSource.MANUAL:
                 continue
 
-            # POOL team budget is purchase-driven and should not be reset by the
-            # periodic limit reconciliation once it has been set.
+            # POOL team budget is purchase-driven and synchronized via
+            # billing/purchase flows. Limit reconciliation must never create or
+            # overwrite TEAM.BUDGET for POOL teams, otherwise it can clobber the
+            # projected LiteLLM team budget after a cycle.
             if (
                 resource_type == ResourceType.BUDGET
                 and team.requires_pool_purchase_gate
-                and existing_limit is not None
             ):
                 continue
 

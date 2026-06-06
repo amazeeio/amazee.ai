@@ -1009,8 +1009,10 @@ async def test_pool_team_billing_cycle_uses_31d_and_resets_spend(
     assert errors == []
     team_call = mock_litellm.update_team_budget.await_args
     assert team_call.kwargs["budget_duration"] == "31d"
-    assert team_call.kwargs["max_budget"] == 60.0
+    # Team spend is non-resettable in LiteLLM, so projected max_budget is:
+    # current_spend + current_cycle_remaining = 5.0 + 30.0
+    assert team_call.kwargs["max_budget"] == 35.0
 
     key_call = mock_litellm.set_key_restrictions.await_args
     assert key_call.kwargs["spend"] == 0.0
-    assert key_call.kwargs["budget_duration"] == "31d"
+    assert key_call.kwargs["budget_duration"] is None
