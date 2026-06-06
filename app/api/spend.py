@@ -1029,15 +1029,64 @@ async def get_team_spend(
     if period_budget is None:
         period_budget = total_budget
 
-    # POOL teams are enforced at team level; uncapped keys should display the
-    # same active period window as the team to avoid confusing drift from
-    # stale per-key LiteLLM metadata (e.g. legacy 1mo windows).
+    # POOL key window display semantics:
+    # - uncapped keys: same as team window
+    # - capped keys: 31d windows; follow cycle when active subscription exists,
+    #   otherwise anchor to last deactivation or team creation.
     if team.budget_type == BudgetType.POOL:
+        now = datetime.now(UTC)
+        active_subscription_for_pool = (
+            db.query(DBPeriodicBudgetLedgerEntry)
+            .filter(
+                DBPeriodicBudgetLedgerEntry.team_id == team.id,
+                DBPeriodicBudgetLedgerEntry.region_id == region_id,
+                DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+                DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+                DBPeriodicBudgetLedgerEntry.effective_period_start.isnot(None),
+                DBPeriodicBudgetLedgerEntry.effective_period_end.isnot(None),
+                DBPeriodicBudgetLedgerEntry.effective_period_end > now,
+            )
+            .order_by(
+                DBPeriodicBudgetLedgerEntry.effective_period_end.desc(),
+                DBPeriodicBudgetLedgerEntry.id.desc(),
+            )
+            .first()
+        )
+        last_deactivation = (
+            db.query(DBPeriodicPayment.payment_date)
+            .filter(
+                DBPeriodicPayment.team_id == team.id,
+                DBPeriodicPayment.payment_type == "deactivation",
+                DBPeriodicPayment.status == "completed",
+            )
+            .order_by(DBPeriodicPayment.payment_date.desc())
+            .first()
+        )
+        capped_anchor = (
+            (last_deactivation[0] if last_deactivation else None)
+            or team.created_at
+            or now
+        )
+        if capped_anchor.tzinfo is None:
+            capped_anchor = capped_anchor.replace(tzinfo=UTC)
         for item in items:
             if item.max_budget is None:
                 item.budget_duration = team_budget_duration
                 item.budget_reset_at = team_budget_reset_at
                 item.period_start = team_period_start
+            else:
+                if active_subscription_for_pool is not None:
+                    item.budget_duration = "31d"
+                    item.budget_reset_at = (
+                        active_subscription_for_pool.effective_period_end
+                    )
+                    item.period_start = (
+                        active_subscription_for_pool.effective_period_start
+                    )
+                else:
+                    item.budget_duration = "31d"
+                    item.period_start = capped_anchor
+                    item.budget_reset_at = capped_anchor + timedelta(days=31)
 
     return TeamSpendResponse(
         region_id=region_id,
@@ -1267,7 +1316,10 @@ async def get_key_spend_alias(
             budget_reset_at, info.get("budget_duration")
         )
 
-        # For POOL teams, uncapped keys should expose team-aligned window semantics.
+        # For POOL teams, keys expose team/cycle aligned window semantics:
+        # - active subscription => 31d cycle window
+        # - no active subscription => uncapped key follows team 365d window,
+        #   capped key follows 31d window anchored to deactivation or team creation.
         team_for_key = (
             db.query(DBTeam)
             .filter(DBTeam.id == key.team_id, DBTeam.deleted_at.is_(None))
@@ -1275,11 +1327,7 @@ async def get_key_spend_alias(
             if key.team_id is not None
             else None
         )
-        if (
-            team_for_key is not None
-            and team_for_key.budget_type == BudgetType.POOL
-            and configured_key_cap is None
-        ):
+        if team_for_key is not None and team_for_key.budget_type == BudgetType.POOL:
             now = datetime.now(UTC)
             active_subscription = (
                 db.query(DBPeriodicBudgetLedgerEntry)
@@ -1303,40 +1351,32 @@ async def get_key_spend_alias(
                 budget_reset_at = active_subscription.effective_period_end
                 period_start = active_subscription.effective_period_start
             else:
-                active_topup = (
-                    db.query(DBPeriodicBudgetLedgerEntry)
-                    .filter(
-                        DBPeriodicBudgetLedgerEntry.team_id == team_for_key.id,
-                        DBPeriodicBudgetLedgerEntry.region_id == region_id,
-                        DBPeriodicBudgetLedgerEntry.entry_type.in_(
-                            ["topup", "topup_rollover"]
-                        ),
-                        DBPeriodicBudgetLedgerEntry.is_active.is_(True),
-                        (
-                            DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
-                            | (DBPeriodicBudgetLedgerEntry.expires_at > now)
-                        ),
+                if configured_key_cap is None:
+                    duration_days = settings.POOL_BUDGET_EXPIRATION_DAYS
+                    info["budget_duration"] = f"{duration_days}d"
+                    anchor = team_for_key.created_at or now
+                else:
+                    duration_days = 31
+                    info["budget_duration"] = "31d"
+                    last_deactivation = (
+                        db.query(DBPeriodicPayment.payment_date)
+                        .filter(
+                            DBPeriodicPayment.team_id == team_for_key.id,
+                            DBPeriodicPayment.payment_type == "deactivation",
+                            DBPeriodicPayment.status == "completed",
+                        )
+                        .order_by(DBPeriodicPayment.payment_date.desc())
+                        .first()
                     )
-                    .order_by(
-                        DBPeriodicBudgetLedgerEntry.purchased_at.desc(),
-                        DBPeriodicBudgetLedgerEntry.id.desc(),
+                    anchor = (
+                        (last_deactivation[0] if last_deactivation else None)
+                        or team_for_key.created_at
+                        or now
                     )
-                    .first()
-                )
-                pool_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
-                info["budget_duration"] = pool_duration
-                anchor = (
-                    active_topup.purchased_at
-                    if active_topup is not None
-                    and active_topup.purchased_at is not None
-                    else (team_for_key.created_at or now)
-                )
                 if anchor.tzinfo is None:
                     anchor = anchor.replace(tzinfo=UTC)
                 period_start = anchor
-                budget_reset_at = anchor + timedelta(
-                    days=settings.POOL_BUDGET_EXPIRATION_DAYS
-                )
+                budget_reset_at = anchor + timedelta(days=duration_days)
         return PrivateAIKeySpend.model_validate(
             {
                 "spend": info.get("spend", 0.0),
@@ -1811,7 +1851,29 @@ async def update_key_budget(
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
+    # Key cap windows for POOL teams are 31d (not calendar-month 1mo).
+    # Cap amount changes should not re-anchor/reset duration once set.
     effective_duration = _effective_monthly_budget_duration(body.max_budget)
+    configured_key_cap_existing = _get_spend_cap_max_budget(
+        db,
+        scope="key",
+        region_id=region_id,
+        team_id=key.team_id,
+        user_id=key.owner_id,
+        key_id=key_id,
+    )
+    if (
+        team_for_budget_check is not None
+        and team_for_budget_check.budget_type == BudgetType.POOL
+    ):
+        if body.max_budget is None:
+            effective_duration = None
+        elif configured_key_cap_existing is None:
+            effective_duration = "31d"
+        else:
+            # Preserve existing key duration anchor when only cap value changes.
+            effective_duration = None
+
     # For purchase-gated POOL teams with no purchases, skip the initial key
     # budget update (which would be immediately overridden) to avoid a brief
     # unlocked window. The lock call below will hard-set max_budget=0 directly.
@@ -1841,6 +1903,23 @@ async def update_key_budget(
         key_id=key.id,
         purchased_budget=purchased_budget,
     )
+    existing_key_cap_row = (
+        db.query(DBSpendCap)
+        .filter(
+            DBSpendCap.scope == "key",
+            DBSpendCap.region_id == region_id,
+            DBSpendCap.team_id == key.team_id,
+            DBSpendCap.user_id == key.owner_id,
+            DBSpendCap.key_id == key_id,
+        )
+        .first()
+    )
+    cap_duration_to_store = (
+        effective_duration
+        if effective_duration is not None
+        else (existing_key_cap_row.budget_duration if existing_key_cap_row else None)
+    )
+
     _upsert_spend_cap(
         db,
         scope="key",
@@ -1849,7 +1928,7 @@ async def update_key_budget(
         user_id=key.owner_id,
         key_id=key_id,
         max_budget=body.max_budget,
-        budget_duration=effective_duration,
+        budget_duration=cap_duration_to_store,
     )
     _invalidate_key_related_user_spend_cache(db, key)
     configured_key_cap = _get_spend_cap_max_budget(

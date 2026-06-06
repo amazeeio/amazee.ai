@@ -20,6 +20,7 @@ from app.db.models import (
     DBPeriodicBudgetLedgerEntry,
     DBPeriodicPayment,
     DBRegion,
+    DBSpendCap,
     DBTeam,
 )
 from app.schemas.models import (
@@ -347,14 +348,35 @@ async def subscription_deactivate(
         keys = get_team_region_litellm_keys(db, team_id=team.id, region_id=region.id)
         for key in keys:
             try:
-                await litellm_service.set_key_restrictions(
-                    litellm_token=key.litellm_token,
-                    duration=topup_budget_duration,
-                    budget_duration=topup_budget_duration,
-                    budget_amount=topup_remaining_dollars,
-                    rpm_limit=None,
-                    spend=0.0,
+                key_cap = (
+                    db.query(DBSpendCap.max_budget)
+                    .filter(
+                        DBSpendCap.scope == "key",
+                        DBSpendCap.region_id == region.id,
+                        DBSpendCap.key_id == key.id,
+                        DBSpendCap.max_budget.isnot(None),
+                    )
+                    .first()
                 )
+                has_key_cap = key_cap is not None and key_cap[0] is not None
+                if has_key_cap:
+                    await litellm_service.set_key_restrictions(
+                        litellm_token=key.litellm_token,
+                        duration="31d",
+                        budget_duration="31d",
+                        budget_amount=float(key_cap[0]),
+                        rpm_limit=None,
+                        spend=0.0,
+                    )
+                else:
+                    await litellm_service.set_key_restrictions(
+                        litellm_token=key.litellm_token,
+                        duration=topup_budget_duration,
+                        budget_duration=topup_budget_duration,
+                        budget_amount=topup_remaining_dollars,
+                        rpm_limit=None,
+                        spend=0.0,
+                    )
             except Exception as exc:
                 logger.error(
                     "Failed to update LiteLLM deactivation key budget for key %s: %s",
