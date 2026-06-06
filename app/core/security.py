@@ -124,6 +124,7 @@ async def get_current_user_from_auth(
 
     # Try JWT token first
     token_to_try = access_token
+    used_authorization_header = authorization is not None
     if authorization:
         parts = authorization.split()
         if len(parts) != 2 or parts[0].lower() != "bearer":
@@ -134,7 +135,8 @@ async def get_current_user_from_auth(
         token_to_try = parts[1]
 
     if (
-        settings.ENV_SUFFIX == "local"
+        used_authorization_header
+        and settings.ENV_SUFFIX == "local"
         and settings.LOCAL_BEARER_TOKEN
         and token_to_try == settings.LOCAL_BEARER_TOKEN
     ):

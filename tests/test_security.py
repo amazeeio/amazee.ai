@@ -175,3 +175,34 @@ async def test_get_current_user_from_auth_accepts_local_bearer(db):
         settings.LOCAL_BEARER_USER_EMAIL = old_local_email
 
     assert user.id == admin.id
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_from_auth_does_not_accept_local_bearer_from_cookie(db):
+    admin = DBUser(
+        email="local-cookie-admin@example.com",
+        hashed_password="hashed",
+        is_active=True,
+        is_admin=True,
+    )
+    db.add(admin)
+    db.commit()
+
+    old_env_suffix = settings.ENV_SUFFIX
+    old_local_token = settings.LOCAL_BEARER_TOKEN
+    old_local_email = settings.LOCAL_BEARER_USER_EMAIL
+    settings.ENV_SUFFIX = "local"
+    settings.LOCAL_BEARER_TOKEN = "LOCALBT"
+    settings.LOCAL_BEARER_USER_EMAIL = ""
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            await get_current_user_from_auth(
+                access_token="LOCALBT",
+                db=db,
+            )
+    finally:
+        settings.ENV_SUFFIX = old_env_suffix
+        settings.LOCAL_BEARER_TOKEN = old_local_token
+        settings.LOCAL_BEARER_USER_EMAIL = old_local_email
+
+    assert exc_info.value.status_code == 401

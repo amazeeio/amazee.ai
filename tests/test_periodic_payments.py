@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.core.config import settings
 from app.core.worker import (
     _record_periodic_payment_direct,
     _run_cycle_from_stripe_event,
@@ -629,13 +630,15 @@ def test_subscription_deactivate_endpoint_success(
     mock_litellm.update_team_budget.assert_awaited_once()
     assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 0.0
     assert (
-        mock_litellm.update_team_budget.await_args.kwargs["budget_duration"] == "365d"
+        mock_litellm.update_team_budget.await_args.kwargs["budget_duration"]
+        == f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
     )
     assert mock_litellm.update_team_budget.await_args.kwargs["spend"] == 0.0
     mock_litellm.set_key_restrictions.assert_awaited_once()
     assert mock_litellm.set_key_restrictions.await_args.kwargs["budget_amount"] == 0.0
     assert (
-        mock_litellm.set_key_restrictions.await_args.kwargs["budget_duration"] == "365d"
+        mock_litellm.set_key_restrictions.await_args.kwargs["budget_duration"]
+        == f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
     )
     assert mock_litellm.set_key_restrictions.await_args.kwargs["spend"] == 0.0
 
@@ -700,13 +703,15 @@ def test_subscription_deactivate_preserves_active_topup_budget(
     mock_litellm.update_team_budget.assert_awaited_once()
     assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 4.0
     assert (
-        mock_litellm.update_team_budget.await_args.kwargs["budget_duration"] == "365d"
+        mock_litellm.update_team_budget.await_args.kwargs["budget_duration"]
+        == f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
     )
     assert mock_litellm.update_team_budget.await_args.kwargs["spend"] == 0.0
     mock_litellm.set_key_restrictions.assert_awaited_once()
     assert mock_litellm.set_key_restrictions.await_args.kwargs["budget_amount"] == 4.0
     assert (
-        mock_litellm.set_key_restrictions.await_args.kwargs["budget_duration"] == "365d"
+        mock_litellm.set_key_restrictions.await_args.kwargs["budget_duration"]
+        == f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
     )
     assert mock_litellm.set_key_restrictions.await_args.kwargs["spend"] == 0.0
 
