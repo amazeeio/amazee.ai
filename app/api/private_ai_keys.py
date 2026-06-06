@@ -521,7 +521,7 @@ async def create_llm_token(
         ):
             await litellm_service.update_key_budget(
                 litellm_token=litellm_token,
-                budget_duration="1mo",
+                budget_duration=f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
                 max_budget=0.0,
                 clear_max_budget=False,
             )

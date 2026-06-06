@@ -888,6 +888,7 @@ async def get_team_spend(
 
     # Current period spend should reflect this period only (sum of per-key spends).
     period_spend = round(sum(float(item.spend or 0.0) for item in items), 4)
+    periodic_budget_view = None
 
     # Compute period_start for each key from budget_reset_at + budget_duration.
     team_budget_duration = None
@@ -1253,6 +1254,7 @@ async def get_key_spend_alias(
         info["max_budget"] = (
             round(configured_key_cap, 4) if configured_key_cap is not None else None
         )
+
         budget_reset_at = (
             datetime.fromisoformat(info["budget_reset_at"])
             if info.get("budget_reset_at")
@@ -1261,6 +1263,77 @@ async def get_key_spend_alias(
         period_start = _compute_period_start(
             budget_reset_at, info.get("budget_duration")
         )
+
+        # For POOL teams, uncapped keys should expose team-aligned window semantics.
+        team_for_key = (
+            db.query(DBTeam)
+            .filter(DBTeam.id == key.team_id, DBTeam.deleted_at.is_(None))
+            .first()
+            if key.team_id is not None
+            else None
+        )
+        if (
+            team_for_key is not None
+            and team_for_key.budget_type == BudgetType.POOL
+            and configured_key_cap is None
+        ):
+            now = datetime.now(UTC)
+            active_subscription = (
+                db.query(DBPeriodicBudgetLedgerEntry)
+                .filter(
+                    DBPeriodicBudgetLedgerEntry.team_id == team_for_key.id,
+                    DBPeriodicBudgetLedgerEntry.region_id == region_id,
+                    DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+                    DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+                    DBPeriodicBudgetLedgerEntry.effective_period_start.isnot(None),
+                    DBPeriodicBudgetLedgerEntry.effective_period_end.isnot(None),
+                    DBPeriodicBudgetLedgerEntry.effective_period_end > now,
+                )
+                .order_by(
+                    DBPeriodicBudgetLedgerEntry.effective_period_end.desc(),
+                    DBPeriodicBudgetLedgerEntry.id.desc(),
+                )
+                .first()
+            )
+            if active_subscription is not None:
+                info["budget_duration"] = "31d"
+                budget_reset_at = active_subscription.effective_period_end
+                period_start = active_subscription.effective_period_start
+            else:
+                active_topup = (
+                    db.query(DBPeriodicBudgetLedgerEntry)
+                    .filter(
+                        DBPeriodicBudgetLedgerEntry.team_id == team_for_key.id,
+                        DBPeriodicBudgetLedgerEntry.region_id == region_id,
+                        DBPeriodicBudgetLedgerEntry.entry_type.in_(
+                            ["topup", "topup_rollover"]
+                        ),
+                        DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+                        (
+                            DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                            | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+                        ),
+                    )
+                    .order_by(
+                        DBPeriodicBudgetLedgerEntry.purchased_at.desc(),
+                        DBPeriodicBudgetLedgerEntry.id.desc(),
+                    )
+                    .first()
+                )
+                pool_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+                info["budget_duration"] = pool_duration
+                anchor = (
+                    active_topup.purchased_at
+                    if active_topup is not None
+                    and active_topup.purchased_at is not None
+                    else (team_for_key.created_at or now)
+                )
+                if anchor.tzinfo is None:
+                    anchor = anchor.replace(tzinfo=UTC)
+                period_start = anchor
+                budget_reset_at = anchor + timedelta(
+                    days=settings.POOL_BUDGET_EXPIRATION_DAYS
+                )
         return PrivateAIKeySpend.model_validate(
             {
                 "spend": info.get("spend", 0.0),
