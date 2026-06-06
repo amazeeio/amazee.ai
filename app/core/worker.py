@@ -1237,9 +1237,13 @@ async def apply_billing_cycle_for_team(
                         await litellm_service.set_key_restrictions(
                             litellm_token=key.litellm_token,
                             duration=budget_duration,
-                            budget_duration=key_cap_duration
-                            if key_spend_cap is not None
-                            else None,
+                            # Keep POOL key windows aligned with team cycle window
+                            # even when no explicit key cap exists.
+                            budget_duration=(
+                                key_cap_duration
+                                if key_spend_cap is not None
+                                else budget_duration
+                            ),
                             budget_amount=(
                                 float(key_spend_cap)
                                 if key_spend_cap is not None

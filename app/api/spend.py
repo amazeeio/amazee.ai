@@ -1025,6 +1025,16 @@ async def get_team_spend(
     if period_budget is None:
         period_budget = total_budget
 
+    # POOL teams are enforced at team level; uncapped keys should display the
+    # same active period window as the team to avoid confusing drift from
+    # stale per-key LiteLLM metadata (e.g. legacy 1mo windows).
+    if team.budget_type == BudgetType.POOL:
+        for item in items:
+            if item.max_budget is None:
+                item.budget_duration = team_budget_duration
+                item.budget_reset_at = team_budget_reset_at
+                item.period_start = team_period_start
+
     return TeamSpendResponse(
         region_id=region_id,
         region_name=region.name,
