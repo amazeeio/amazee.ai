@@ -122,6 +122,13 @@ async def get_current_user_from_auth(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # FastAPI dependency defaults (Cookie/Header) may be passed when this
+    # function is called directly in tests; normalize non-string placeholders.
+    if not isinstance(access_token, str):
+        access_token = None
+    if not isinstance(authorization, str):
+        authorization = None
+
     # Try JWT token first
     token_to_try = access_token
     used_authorization_header = authorization is not None
