@@ -753,6 +753,7 @@ async def get_team_spend(
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
     items: list[SpendKeyItem] = []
     total_budget = 0.0
+    period_budget: float | None = None
     total_prompt_tokens = None
     total_completion_tokens = None
     total_tokens = None
@@ -901,37 +902,42 @@ async def get_team_spend(
         team_budget_reset_at, team_budget_duration
     )
 
-    periodic_budget_view = None
-    if is_periodic:
-        now = datetime.now(UTC)
-        sub_remaining_cents = 0
-        # Use ledger-driven periodic status semantics for user-facing budget numbers.
-        from app.db.models import DBPeriodicBudgetLedgerEntry
+    # Current period spend should reflect this period only (sum of per-key spends).
+    period_spend = round(sum(float(item.spend or 0.0) for item in items), 4)
 
-        sub_rows = (
-            db.query(DBPeriodicBudgetLedgerEntry)
-            .filter(
-                DBPeriodicBudgetLedgerEntry.team_id == team_id,
-                DBPeriodicBudgetLedgerEntry.region_id == region_id,
-                DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
-                DBPeriodicBudgetLedgerEntry.is_active.is_(True),
-                (
-                    DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
-                    | (DBPeriodicBudgetLedgerEntry.expires_at > now)
-                ),
-            )
-            .all()
+    periodic_budget_view = None
+    now = datetime.now(UTC)
+    sub_remaining_cents = 0
+    # Use ledger-driven periodic status semantics for user-facing budget numbers.
+    from app.db.models import DBPeriodicBudgetLedgerEntry
+
+    sub_rows = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team_id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+            ),
         )
-        for row in sub_rows:
-            sub_remaining_cents += max(0, row.amount_cents - row.consumed_cents)
-        topup_remaining_cents = compute_active_topup_remaining(
-            db, team_id=team_id, region_id=region_id
-        )
-        purchased_cents = sub_remaining_cents + topup_remaining_cents
-        purchased_dollars = purchased_cents / 100.0
+        .all()
+    )
+    for row in sub_rows:
+        sub_remaining_cents += max(0, row.amount_cents - row.consumed_cents)
+    topup_remaining_cents = compute_active_topup_remaining(
+        db, team_id=team_id, region_id=region_id
+    )
+    purchased_cents = sub_remaining_cents + topup_remaining_cents
+    purchased_dollars = purchased_cents / 100.0
+
+    if is_periodic:
         # For PERIODIC teams, report the clean current-cycle budget from ledger + topups,
         # independent of LiteLLM's accumulated max_budget.
         total_budget = round(purchased_dollars, 4)
+        period_budget = total_budget
         # live_remaining = purchased - total_spend
         #
         # INVARIANT: This formula is correct ONLY because consumed_cents
@@ -950,6 +956,13 @@ async def get_team_spend(
             configured_max_budget_cents=int(round(total_budget * 100)),
             configured_max_budget=round(total_budget, 4),
         )
+    elif team.budget_type == BudgetType.POOL:
+        # For subscription-managed POOL teams, expose a clean period budget from
+        # ledger balances (subscription + top-up), not LiteLLM projection ceilings.
+        period_budget = round(purchased_dollars, 4)
+
+    if period_budget is None:
+        period_budget = total_budget
 
     return TeamSpendResponse(
         region_id=region_id,
@@ -958,6 +971,8 @@ async def get_team_spend(
         team_name=team.name,
         total_spend=total_spend,
         total_budget=total_budget,
+        period_spend=period_spend,
+        period_budget=period_budget,
         total_prompt_tokens=total_prompt_tokens,
         total_completion_tokens=total_completion_tokens,
         total_tokens=total_tokens,

@@ -492,6 +492,9 @@ class TeamSpendResponse(BaseModel):
     team_name: str
     total_spend: float
     total_budget: float
+    # Current-period values (may differ from total_* when provider counters are cumulative)
+    period_spend: Optional[float] = None
+    period_budget: Optional[float] = None
     total_prompt_tokens: Optional[int] = None
     total_completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
