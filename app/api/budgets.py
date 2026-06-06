@@ -317,6 +317,56 @@ async def purchase_pool_budget(
             detail="A purchase with this stripe_payment_id already exists",
         )
 
+    # NOTE: For subscription-managed POOL teams, top-up must be additive to
+    # subscription remaining budget and consumed after subscription funds.
+    # Reuse the periodic top-up ledger flow as the single budget source of truth.
+    periodic_resp = await purchase_periodic_topup(
+        region_id=region_id,
+        team=team,
+        purchase=PeriodicTopupRequest(
+            amount_cents=purchase.amount_cents,
+            currency=purchase.currency,
+            purchased_at=purchase.purchased_at,
+            stripe_payment_id=purchase.stripe_payment_id,
+        ),
+        db=db,
+    )
+
+    # Keep POOL purchase audit/history log for operators.
+    purchase_record = DBPoolPurchase(
+        team_id=team_id,
+        region_id=region_id,
+        amount_cents=purchase.amount_cents,
+        currency=purchase.currency,
+        purchased_at=purchase.purchased_at,
+        stripe_payment_id=purchase.stripe_payment_id,
+        created_at=datetime.now(UTC),
+    )
+    try:
+        db.add(purchase_record)
+        db.commit()
+        db.refresh(purchase_record)
+    except IntegrityError:
+        db.rollback()
+        purchase_record = (
+            db.query(DBPoolPurchase)
+            .filter(DBPoolPurchase.stripe_payment_id == purchase.stripe_payment_id)
+            .first()
+        )
+
+    return PoolPurchaseResponse(
+        id=purchase_record.id,
+        team_id=team_id,
+        region_id=region_id,
+        amount_cents=purchase.amount_cents,
+        currency=purchase.currency,
+        purchased_at=purchase.purchased_at,
+        stripe_payment_id=purchase.stripe_payment_id,
+        created_at=purchase_record.created_at,
+        new_total_budget_cents=periodic_resp.new_total_budget_cents,
+        keys_updated=0,
+    )
+
     # Compute the closing POOL period window using the state BEFORE the new
     # purchase is recorded (latest_purchase_at must be queried before the insert).
     latest_purchase_at = (
