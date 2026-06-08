@@ -1,7 +1,9 @@
 """Tests for the /models/missing/{provider} endpoint family."""
 
+import json
 from datetime import datetime, UTC
 from unittest.mock import AsyncMock, patch
+from urllib.error import URLError
 
 import httpx
 
@@ -419,3 +421,234 @@ def test_missing_aws_cache_control_is_not_publicly_cacheable(client, db):
         response.headers["Cache-Control"]
         == "no-store, no-cache, must-revalidate, private"
     )
+
+
+# ---------------------------------------------------------------------------
+# Alias-based matching
+# ---------------------------------------------------------------------------
+
+
+def _upstream_catalog_with_qwen():
+    """Upstream catalog containing a model that is deployed under a short alias."""
+    return [
+        {
+            "modelId": "qwen.qwen3-32b-v1:0",
+            "modelName": "Qwen3 32B (dense)",
+            "providerName": "Qwen",
+            "regions": ["us-east-1", "eu-central-1"],
+            "modelLifecycle": {"status": "ACTIVE"},
+            "modelCard": {
+                "modelCardUrl": "https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-qwen-qwen3-32b.html"
+            },
+        },
+        {
+            "modelId": "anthropic.claude-opus-4-7",
+            "modelName": "Claude Opus 4.7",
+            "providerName": "Anthropic",
+            "regions": ["us-east-1"],
+            "modelLifecycle": {"status": "ACTIVE"},
+        },
+    ]
+
+
+def _model_info_with_aliases(provider_id, model_name, model_key):
+    """Build a fake LiteLLM model_info payload with model_info fields that produce aliases."""
+    return {
+        "data": [
+            {
+                "model_name": model_name,
+                "litellm_params": {"model": provider_id},
+                "model_info": {
+                    "litellm_provider": "bedrock",
+                    "key": model_key,
+                    "model": model_key,
+                },
+            }
+        ]
+    }
+
+
+def test_missing_aws_alias_match_excludes_model(client, db):
+    """A model deployed under a short name whose aliases contain the upstream ID is not missing."""
+    _clear_bedrock_catalog_cache()
+    _make_public_region(db, "us-east-1", suffix="alias-us")
+    admin, password = _make_admin_user(db, email="alias-admin@example.com")
+    token = _get_token(client, admin.email, password)
+
+    # Model deployed as "bedrock/us.qwen3-32b" with model_info containing
+    # the full upstream ID "qwen.qwen3-32b-v1:0" which _extract_aliases picks up.
+    deployed = _model_info_with_aliases(
+        provider_id="bedrock/us.qwen3-32b",
+        model_name="qwen3-32b",
+        model_key="qwen.qwen3-32b-v1:0",
+    )
+
+    with (
+        patch("app.api.public.LiteLLMService") as mock_service_cls,
+        _patch_catalog_fetch(_upstream_catalog_with_qwen()),
+    ):
+        mock_service_cls.return_value.get_model_info = AsyncMock(return_value=deployed)
+        response = client.get(AWS_PATH, headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    by_group = {g["region_group"]: g for g in response.json()["region_groups"]}
+    us = by_group["US"]
+    missing_ids = {m["model_id"] for m in us["missing_models"]}
+    # qwen.qwen3-32b-v1:0 should NOT be missing because the alias matches.
+    assert "qwen.qwen3-32b-v1:0" not in missing_ids
+    # anthropic.claude-opus-4-7 IS missing since it's not deployed.
+    assert "anthropic.claude-opus-4-7" in missing_ids
+
+
+# ---------------------------------------------------------------------------
+# Script-level tests (check_missing_models.py)
+# ---------------------------------------------------------------------------
+
+
+def test_build_diff_uses_model_card_urls_for_slack_hyperlinks():
+    """build_diff enriches Slack output with hyperlinks from model_card_urls lookup."""
+    import runpy
+    from pathlib import Path
+
+    _module = runpy.run_path(
+        str(Path(__file__).resolve().parent.parent / "scripts" / "check_missing_models.py")
+    )
+    build_diff = _module["build_diff"]
+
+    report = {
+        "provider": "aws",
+        "generated_at": "2025-01-01T00:00:00Z",
+        "models_url": "https://example.com/models.json",
+        "is_authenticated": True,
+        "region_groups": [
+            {
+                "region_group": "US",
+                "upstream_region": "us-east-1",
+                "regions": ["us-east-1"],
+                "available_model_count": 2,
+                "configured_model_count": 0,
+                "missing_model_count": 2,
+                "missing_models": [
+                    {
+                        "model_id": "qwen.qwen3-32b-v1:0",
+                        "model_name": "Qwen3 32B (dense)",
+                        "provider_name": "Qwen",
+                    },
+                    {
+                        "model_id": "anthropic.claude-opus-4-7",
+                        "model_name": "Claude Opus 4.7",
+                        "provider_name": "Anthropic",
+                    },
+                ],
+            }
+        ],
+    }
+
+    model_card_urls = {
+        "qwen.qwen3-32b-v1:0": "https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-qwen-qwen3-32b.html",
+    }
+
+    diff = build_diff(report, {"region_groups": {}}, model_card_urls)
+    summary = diff["slack_summary"]
+
+    # Qwen should have a Slack hyperlink
+    assert "<https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-qwen-qwen3-32b.html|Qwen3 32B (dense)>" in summary
+    # Claude should be plain text (no URL available)
+    assert "(Anthropic / Claude Opus 4.7)" in summary
+
+
+def test_build_diff_works_without_model_card_urls():
+    """build_diff falls back to plain text when no model_card_urls provided."""
+    import runpy
+    from pathlib import Path
+
+    _module = runpy.run_path(
+        str(Path(__file__).resolve().parent.parent / "scripts" / "check_missing_models.py")
+    )
+    build_diff = _module["build_diff"]
+
+    report = {
+        "provider": "aws",
+        "generated_at": "2025-01-01T00:00:00Z",
+        "models_url": "https://example.com/models.json",
+        "is_authenticated": True,
+        "region_groups": [
+            {
+                "region_group": "US",
+                "upstream_region": "us-east-1",
+                "regions": ["us-east-1"],
+                "available_model_count": 1,
+                "configured_model_count": 0,
+                "missing_model_count": 1,
+                "missing_models": [
+                    {
+                        "model_id": "qwen.qwen3-32b-v1:0",
+                        "model_name": "Qwen3 32B (dense)",
+                        "provider_name": "Qwen",
+                    },
+                ],
+            }
+        ],
+    }
+
+    # No model_card_urls passed
+    diff = build_diff(report, {"region_groups": {}})
+    summary = diff["slack_summary"]
+    assert "(Qwen / Qwen3 32B (dense))" in summary
+    # No hyperlinks
+    assert "<http" not in summary
+
+
+def test_fetch_model_card_urls_parses_catalog():
+    """fetch_model_card_urls extracts modelCardUrl from the upstream catalog."""
+    import runpy
+    from pathlib import Path
+    from unittest.mock import patch as mock_patch
+    from io import BytesIO
+
+    _module = runpy.run_path(
+        str(Path(__file__).resolve().parent.parent / "scripts" / "check_missing_models.py")
+    )
+    fetch_model_card_urls = _module["fetch_model_card_urls"]
+
+    catalog = json.dumps([
+        {
+            "modelId": "qwen.qwen3-32b-v1:0",
+            "modelCard": {
+                "modelCardUrl": "https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-qwen-qwen3-32b.html"
+            },
+        },
+        {
+            "modelId": "anthropic.claude-opus-4-7",
+            "modelCard": None,
+        },
+        {
+            "modelId": "meta.llama3-1-70b-instruct-v1:0",
+        },
+    ]).encode()
+
+    with mock_patch("urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.return_value.__enter__ = lambda s: BytesIO(catalog)
+        mock_urlopen.return_value.__exit__ = lambda s, *a: None
+        urls = fetch_model_card_urls("https://example.com/models.json")
+
+    assert urls == {
+        "qwen.qwen3-32b-v1:0": "https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-qwen-qwen3-32b.html",
+    }
+
+
+def test_fetch_model_card_urls_returns_empty_on_failure():
+    """fetch_model_card_urls returns {} on network errors."""
+    import runpy
+    from pathlib import Path
+    from unittest.mock import patch as mock_patch
+
+    _module = runpy.run_path(
+        str(Path(__file__).resolve().parent.parent / "scripts" / "check_missing_models.py")
+    )
+    fetch_model_card_urls = _module["fetch_model_card_urls"]
+
+    with mock_patch("urllib.request.urlopen", side_effect=URLError("boom")):
+        urls = fetch_model_card_urls("https://example.com/models.json")
+
+    assert urls == {}
