@@ -178,6 +178,62 @@ def _compute_pool_monthly_effective_budget(
     )
 
 
+def _pool_available_budget_for_team_region(
+    db: Session, team_id: int, region_id: int
+) -> float:
+    """Available POOL budget from active subscription + active top-ups."""
+    now = datetime.now(UTC)
+    sub_remaining_expr = (
+        DBPeriodicBudgetLedgerEntry.amount_cents
+        - DBPeriodicBudgetLedgerEntry.consumed_cents
+    )
+    sub_remaining_cents = (
+        db.query(func.coalesce(func.sum(sub_remaining_expr), 0))
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team_id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            DBPeriodicBudgetLedgerEntry.consumed_cents
+            < DBPeriodicBudgetLedgerEntry.amount_cents,
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+            ),
+        )
+        .scalar()
+        or 0
+    )
+    topup_remaining_cents = compute_active_topup_remaining(
+        db, team_id=team_id, region_id=region_id
+    )
+    return round(
+        float(int(sub_remaining_cents) + int(topup_remaining_cents)) / 100.0, 4
+    )
+
+
+def _pool_team_budget_duration_for_enforcement(
+    db: Session, team_id: int, region_id: int
+) -> str:
+    now = datetime.now(UTC)
+    active_subscription = (
+        db.query(DBPeriodicBudgetLedgerEntry.id)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team_id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            DBPeriodicBudgetLedgerEntry.effective_period_start.isnot(None),
+            DBPeriodicBudgetLedgerEntry.effective_period_end.isnot(None),
+            DBPeriodicBudgetLedgerEntry.effective_period_end > now,
+        )
+        .first()
+    )
+    if active_subscription is not None:
+        return PERIODIC_BUDGET_DURATION
+    return _pool_budget_duration_from_last_purchase(db, team_id, region_id)
+
+
 async def _sync_pool_key_effective_budgets(
     db: Session, *, team_id: int, region: DBRegion, purchased_total: float
 ) -> list[str]:
@@ -725,7 +781,9 @@ async def sync_pool_team_monthly_caps(db: Session) -> dict:
     Re-anchor POOL monthly caps at month boundaries.
 
     For POOL teams with monthly caps, LiteLLM team max_budget is set to:
-    min(total_purchased_365d, month_start_spend + monthly_cap).
+    min(available_remaining_budget, month_start_spend + monthly_cap),
+    where available_remaining_budget = active subscription remaining +
+    active top-up remaining.
     """
     monthly_caps = (
         db.query(DBSpendCap)
@@ -760,26 +818,18 @@ async def sync_pool_team_monthly_caps(db: Session) -> dict:
             lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
             team_info = (await service.get_team_info(lite_team_id)).get("team_info", {})
             month_start_spend = round(float(team_info.get("spend", 0.0) or 0.0), 4)
-            total_purchased = (
-                (
-                    db.query(func.sum(DBPoolPurchase.amount_cents))
-                    .filter(
-                        DBPoolPurchase.team_id == team.id,
-                        DBPoolPurchase.region_id == region.id,
-                    )
-                    .scalar()
-                )
-                or 0
-            ) / 100.0
+            available_budget = _pool_available_budget_for_team_region(
+                db, team.id, region.id
+            )
             effective_budget = _compute_pool_monthly_effective_budget(
-                purchased_total=float(total_purchased),
+                purchased_total=float(available_budget),
                 month_start_spend=month_start_spend,
                 monthly_cap=float(cap.max_budget or 0.0),
             )
             await service.update_team_budget(
                 team_id=lite_team_id,
                 max_budget=effective_budget,
-                budget_duration=_pool_budget_duration_from_last_purchase(
+                budget_duration=_pool_team_budget_duration_for_enforcement(
                     db=db, team_id=team.id, region_id=region.id
                 ),
             )
