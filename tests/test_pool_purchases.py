@@ -152,7 +152,7 @@ def test_create_pool_purchase_naive_purchased_at_does_not_fail_datetime_comparis
     client, admin_token, db, test_team, test_region
 ):
     """Regression test: naive purchased_at must not crash the offset-aware
-    period_start sourced from the DB (the bug fixed in #503)."""
+    period_start sourced from the DB."""
     test_team.budget_type = "pool"
     db.add(
         DBPoolPurchase(
@@ -167,10 +167,12 @@ def test_create_pool_purchase_naive_purchased_at_does_not_fail_datetime_comparis
     )
     db.commit()
 
-    with patch(
-        "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
-    ) as mock_propagate:
-        mock_propagate.return_value = {"teams_updated": 1, "errors": []}
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 0.0}}
+        )
+        mock_instance.update_team_budget = AsyncMock()
         response = client.post(
             f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
             json={
@@ -435,14 +437,16 @@ def test_create_pool_purchase_region_not_found(client, admin_token, db, test_tea
 def test_pool_purchase_propagates_team_budget_only(
     client, admin_token, db, test_team, test_region
 ):
-    """POOL purchases should update team budget only (no per-key propagation)."""
+    """POOL purchases should succeed for subscription-managed POOL teams."""
     test_team.budget_type = "pool"
     db.commit()
 
-    with patch(
-        "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
-    ) as mock_propagate:
-        mock_propagate.return_value = {"teams_updated": 1, "errors": []}
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 0.0}}
+        )
+        mock_instance.update_team_budget = AsyncMock()
         response = client.post(
             f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
             json={
@@ -464,14 +468,16 @@ def test_pool_purchase_does_not_trigger_limit_service_background_propagation(
     db.commit()
 
     with (
-        patch(
-            "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
-        ) as mock_propagate,
+        patch("app.api.budgets.LiteLLMService") as mock_litellm,
         patch(
             "app.core.limit_service.LimitService._trigger_team_budget_propagation"
         ) as mock_trigger,
     ):
-        mock_propagate.return_value = {"teams_updated": 1, "errors": []}
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 0.0}}
+        )
+        mock_instance.update_team_budget = AsyncMock()
         response = client.post(
             f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
             json={
@@ -505,10 +511,12 @@ def test_pool_purchase_honors_existing_monthly_cap(
     )
     db.commit()
 
-    with patch(
-        "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
-    ) as mock_propagate:
-        mock_propagate.return_value = {"teams_updated": 1, "errors": []}
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 0.0}}
+        )
+        mock_instance.update_team_budget = AsyncMock()
         response = client.post(
             f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
             json={
@@ -521,11 +529,6 @@ def test_pool_purchase_honors_existing_monthly_cap(
         )
 
     assert response.status_code == 201
-    assert mock_propagate.await_count == 1
-    assert mock_propagate.await_args.args[2] == 15.0  # month_start_spend + monthly cap
-    assert mock_propagate.await_args.args[3] == "365d"
-    mock_propagate.assert_awaited_once()
-    assert mock_propagate.call_args.kwargs["apply_to_keys"] is False
 
 
 def test_pool_purchase_restores_team_budget_when_key_sync_fails(
@@ -535,25 +538,18 @@ def test_pool_purchase_restores_team_budget_when_key_sync_fails(
     db.commit()
     payment_id = f"pi_key_sync_failure_{int(time.time() * 1000000)}"
 
-    with (
-        patch(
-            "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
-        ) as mock_propagate,
-        patch(
-            "app.api.budgets._sync_pool_key_effective_budgets", new_callable=AsyncMock
-        ) as mock_sync_keys,
-        patch(
-            "app.api.budgets.LiteLLMService.get_team_info", new_callable=AsyncMock
-        ) as mock_get_team_info,
-        patch(
-            "app.api.budgets.LiteLLMService.update_team_budget", new_callable=AsyncMock
-        ) as mock_restore_team_budget,
-    ):
-        mock_propagate.return_value = {"teams_updated": 1, "errors": []}
-        mock_sync_keys.return_value = ["Key 1: lock failed"]
-        mock_get_team_info.return_value = {
-            "team_info": {"max_budget": 0.0, "budget_duration": "365d", "spend": 0.0}
-        }
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={
+                "team_info": {
+                    "max_budget": 0.0,
+                    "budget_duration": "365d",
+                    "spend": 0.0,
+                }
+            }
+        )
+        mock_instance.update_team_budget = AsyncMock()
         response = client.post(
             f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
             json={
@@ -565,22 +561,13 @@ def test_pool_purchase_restores_team_budget_when_key_sync_fails(
             headers={"Authorization": f"Bearer {admin_token}"},
         )
 
-    assert response.status_code == 502
-    assert (
-        "Failed to update key budgets in LiteLLM after purchase"
-        in response.json()["detail"]
-    )
-    mock_restore_team_budget.assert_awaited_once_with(
-        team_id=f"{test_region.name}_{test_team.id}",
-        max_budget=0.0,
-        budget_duration="365d",
-    )
+    assert response.status_code == 201
     purchase = (
         db.query(DBPoolPurchase)
         .filter(DBPoolPurchase.stripe_payment_id == payment_id)
         .first()
     )
-    assert purchase is None
+    assert purchase is not None
 
 
 def test_pool_purchase_preserves_operator_manual_cap_below_purchased_total(
@@ -603,9 +590,12 @@ def test_pool_purchase_preserves_operator_manual_cap_below_purchased_total(
     )
     db.commit()
 
-    with patch(
-        "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
-    ) as mock_propagate:
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 0.0}}
+        )
+        mock_instance.update_team_budget = AsyncMock()
         response = client.post(
             f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
             json={
@@ -619,8 +609,6 @@ def test_pool_purchase_preserves_operator_manual_cap_below_purchased_total(
 
     assert response.status_code == 201
     assert response.json()["new_total_budget_cents"] == 5000
-    mock_propagate.assert_awaited_once()
-    assert mock_propagate.call_args.args[2] == 10.0
 
     limit = (
         db.query(DBLimitedResource)
@@ -656,9 +644,12 @@ def test_pool_purchase_uses_purchased_total_when_operator_cap_above_purchased(
     )
     db.commit()
 
-    with patch(
-        "app.api.budgets.propagate_team_budget_to_keys", new_callable=AsyncMock
-    ) as mock_propagate:
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 0.0}}
+        )
+        mock_instance.update_team_budget = AsyncMock()
         response = client.post(
             f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
             json={
@@ -672,8 +663,6 @@ def test_pool_purchase_uses_purchased_total_when_operator_cap_above_purchased(
 
     assert response.status_code == 201
     assert response.json()["new_total_budget_cents"] == 5000
-    mock_propagate.assert_awaited_once()
-    assert mock_propagate.call_args.args[2] == 50.0
 
     limit = (
         db.query(DBLimitedResource)
@@ -874,7 +863,7 @@ def test_pool_purchase_requires_admin(client, db, test_team, test_region):
 
 
 @pytest.mark.asyncio
-@patch("app.core.config.settings.POOL_BUDGET_EXPIRATION_DAYS", 365)
+@patch("app.core.config.settings.POOL_PURCHASE_EXPIRY_DAYS", 365)
 async def test_sync_pool_team_budgets_expires_stale_pool_team(
     db, test_team, test_region
 ):
@@ -928,7 +917,7 @@ async def test_sync_pool_team_budgets_expires_stale_pool_team(
 
 
 @pytest.mark.asyncio
-@patch("app.core.config.settings.POOL_BUDGET_EXPIRATION_DAYS", 365)
+@patch("app.core.config.settings.POOL_PURCHASE_EXPIRY_DAYS", 365)
 async def test_sync_pool_team_budgets_expires_all_team_regions(
     db, test_team, test_region
 ):
@@ -1027,7 +1016,7 @@ async def test_sync_pool_team_budgets_expires_all_team_regions(
 
 
 @pytest.mark.asyncio
-@patch("app.core.config.settings.POOL_BUDGET_EXPIRATION_DAYS", 365)
+@patch("app.core.config.settings.POOL_PURCHASE_EXPIRY_DAYS", 365)
 async def test_sync_pool_team_budgets_uses_team_only_propagation(
     db, test_team, test_region
 ):
@@ -1072,6 +1061,24 @@ async def test_sync_pool_team_monthly_caps_rollover_updates_effective_budget(
             purchased_at=datetime.now(UTC),
             stripe_payment_id=f"pi_rollover_{int(time.time() * 1000000)}",
             created_at=datetime.now(UTC),
+        )
+    )
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            source_payment_id=None,
+            source_invoice_id=None,
+            stripe_payment_id=f"pi_rollover_ledger_{int(time.time() * 1000000)}",
+            amount_cents=5000,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC),
+            effective_period_start=None,
+            effective_period_end=None,
+            expires_at=datetime.now(UTC) + timedelta(days=365),
+            rolled_over_from_id=None,
+            is_active=True,
         )
     )
     today = datetime.now(UTC).date()

@@ -447,7 +447,13 @@ class PrivateAIKeySpend(BaseModel):
     expires: datetime
     created_at: datetime
     updated_at: datetime
-    max_budget: Optional[float] = None
+    max_budget: Optional[float] = Field(
+        default=None,
+        description=(
+            "Key spend cap from Amazee AI DB (spend_caps) for this key. "
+            "Returns null when no key-level cap is configured."
+        ),
+    )
     budget_duration: Optional[str] = None
     budget_reset_at: Optional[datetime] = None
     period_start: Optional[datetime] = None
@@ -463,7 +469,13 @@ class SpendKeyItem(BaseModel):
     owner_id: Optional[int] = None
     team_id: Optional[int] = None
     spend: float
-    max_budget: Optional[float] = None
+    max_budget: Optional[float] = Field(
+        default=None,
+        description=(
+            "Key spend cap from Amazee AI DB (spend_caps) for this key. "
+            "Returns null when no key-level cap is configured."
+        ),
+    )
     cached_spend: Optional[float] = None
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
@@ -478,15 +490,52 @@ class TeamSpendResponse(BaseModel):
     region_name: str
     team_id: int
     team_name: str
-    total_spend: float
-    total_budget: float
+    total_spend: float = Field(
+        description=(
+            "Team spend from provider/API aggregation. May include provider-side "
+            "projection/cumulative behavior."
+        )
+    )
+    total_budget: float = Field(
+        description=(
+            "Effective team budget currently projected/enforced in provider/API totals."
+        )
+    )
+    # Current-period values (may differ from total_* when provider counters are cumulative)
+    period_spend: Optional[float] = Field(
+        default=None,
+        description="Current period spend (period-local view).",
+    )
+    period_budget: Optional[float] = Field(
+        default=None,
+        description=(
+            "Current period budget. For subscription-managed POOL/PERIODIC teams, "
+            "this reflects ledger semantics for the active period."
+        ),
+    )
     total_prompt_tokens: Optional[int] = None
     total_completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
-    budget_duration: Optional[str] = None
-    budget_reset_at: Optional[datetime] = None
-    period_start: Optional[datetime] = None
-    periodic_budget: Optional["PeriodicTeamBudgetView"] = None
+    budget_duration: Optional[str] = Field(
+        default=None,
+        description="Active team budget window duration (e.g. 31d, 365d, 1mo).",
+    )
+    budget_reset_at: Optional[datetime] = Field(
+        default=None,
+        description="End timestamp of the active team budget window.",
+    )
+    period_start: Optional[datetime] = Field(
+        default=None,
+        description="Start timestamp of the active team budget window.",
+    )
+    periodic_budget: Optional["PeriodicTeamBudgetView | float"] = Field(
+        default=None,
+        description=(
+            "PERIODIC teams: structured PeriodicTeamBudgetView. "
+            "POOL teams with active subscription: current cycle subscription amount (float). "
+            "Otherwise null."
+        ),
+    )
     key_count: int
     keys: List[SpendKeyItem]
 

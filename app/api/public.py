@@ -179,7 +179,11 @@ def _extract_release_date(model_id: str, model_info: dict[str, Any]) -> str | No
 
 _MANUFACTURER_RULES: list[dict[str, str | None]] = [
     {"keyword": "claude", "name": "Anthropic", "website": "https://www.anthropic.com"},
-    {"keyword": "gemini", "name": "Google", "website": "https://deepmind.google/models"},
+    {
+        "keyword": "gemini",
+        "name": "Google",
+        "website": "https://deepmind.google/models",
+    },
     {"keyword": "gemma", "name": "Google", "website": "https://deepmind.google/models"},
     {"keyword": "gpt", "name": "OpenAI", "website": "https://openai.com"},
     {"keyword": "mistral", "name": "Mistral AI", "website": "https://mistral.ai"},
@@ -191,17 +195,35 @@ _MANUFACTURER_RULES: list[dict[str, str | None]] = [
     {"keyword": "deepseek", "name": "DeepSeek", "website": "https://www.deepseek.com"},
     {"keyword": "llama", "name": "Meta", "website": "https://ai.meta.com/llama"},
     {"keyword": "kimi", "name": "Moonshot", "website": "https://www.moonshot.cn"},
-    {"keyword": "qwen", "name": "Alibaba", "website": "https://www.alibabacloud.com/en/solutions/generative-ai/qwen"},
-    {"keyword": "titan", "name": "Amazon", "website": "https://aws.amazon.com/bedrock/titan"},
+    {
+        "keyword": "qwen",
+        "name": "Alibaba",
+        "website": "https://www.alibabacloud.com/en/solutions/generative-ai/qwen",
+    },
+    {
+        "keyword": "titan",
+        "name": "Amazon",
+        "website": "https://aws.amazon.com/bedrock/titan",
+    },
     # Provider-based fallbacks (must be last — match on provider string only)
     {"keyword": "openai", "name": "OpenAI", "website": "https://openai.com"},
-    {"keyword": "anthropic", "name": "Anthropic", "website": "https://www.anthropic.com"},
-    {"keyword": "google", "name": "Google", "website": "https://deepmind.google/models"},
+    {
+        "keyword": "anthropic",
+        "name": "Anthropic",
+        "website": "https://www.anthropic.com",
+    },
+    {
+        "keyword": "google",
+        "name": "Google",
+        "website": "https://deepmind.google/models",
+    },
     {"keyword": "meta", "name": "Meta", "website": "https://ai.meta.com/llama"},
 ]
 
 
-def _infer_manufacturer(model_id: str, item: dict[str, Any]) -> PublicModelManufacturer | None:
+def _infer_manufacturer(
+    model_id: str, item: dict[str, Any]
+) -> PublicModelManufacturer | None:
     model_info = item.get("model_info", {})
     provider = str(model_info.get("litellm_provider") or "").lower()
     normalized_model_id = model_id.lower()

@@ -1104,61 +1104,90 @@ async def apply_billing_cycle_for_team(
 
         team_max_budget = per_region_budget
         current_team_spend = 0.0
-        current_team_max_budget: float | None = None
-        if keys:
-            try:
-                team_info_resp = await litellm_service.get_team_info(lite_team_id)
-                team_info = team_info_resp.get("team_info", team_info_resp)
-                current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
-                if team_info.get("max_budget") is not None:
-                    current_team_max_budget = float(team_info.get("max_budget") or 0.0)
-                topup_remaining_cents = compute_active_topup_remaining(
-                    db, team_id=team.id, region_id=region.id
+        try:
+            team_info_resp = await litellm_service.get_team_info(lite_team_id)
+            team_info = team_info_resp.get("team_info", team_info_resp)
+            current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
+
+            # DB ledger is the source of truth for actual remaining budget.
+            now_utc = datetime.now(UTC)
+            active_subscriptions = (
+                db.query(DBPeriodicBudgetLedgerEntry)
+                .filter(
+                    DBPeriodicBudgetLedgerEntry.team_id == team.id,
+                    DBPeriodicBudgetLedgerEntry.region_id == region.id,
+                    DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+                    DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+                    (
+                        DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                        | (DBPeriodicBudgetLedgerEntry.expires_at > now_utc)
+                    ),
                 )
-                topup_remaining_dollars = topup_remaining_cents / 100.0
-                team_max_budget = per_region_budget + topup_remaining_dollars
-                logger.info(
-                    "Compounding team %s budget: cap=%s + topup=%s = %s",
-                    team.id,
-                    per_region_budget,
-                    topup_remaining_dollars,
-                    team_max_budget,
+                .all()
+            )
+            sub_remaining_cents = 0
+            for row in active_subscriptions:
+                sub_remaining_cents += max(0, row.amount_cents - row.consumed_cents)
+            topup_remaining_cents = compute_active_topup_remaining(
+                db, team_id=team.id, region_id=region.id
+            )
+            # Normal path: ledger is synced before this call.
+            # Safety fallback for direct/test invocations where ledger sync did not run.
+            if sub_remaining_cents == 0 and budget_cents > 0:
+                sub_remaining_cents = budget_cents
+            real_remaining_dollars = (
+                sub_remaining_cents + topup_remaining_cents
+            ) / 100.0
+
+            # Optional operator team cap (DBSpendCap) constrains enforcement only.
+            team_cap = (
+                db.query(DBSpendCap.max_budget)
+                .filter(
+                    DBSpendCap.scope == "team",
+                    DBSpendCap.region_id == region.id,
+                    DBSpendCap.team_id == team.id,
                 )
-            except Exception as e:
-                error_msg = (
-                    f"Failed to read team spend for compounding "
-                    f"(team {team.id}, region {region.name}): {e}"
-                )
-                logger.error(error_msg)
-                sync_errors.append(error_msg)
+                .scalar()
+            )
+            effective_remaining_dollars = (
+                min(real_remaining_dollars, float(team_cap))
+                if team_cap is not None
+                else real_remaining_dollars
+            )
+            effective_remaining_dollars = max(0.0, effective_remaining_dollars)
+
+            # LiteLLM team spend is non-resettable. Project max_budget as:
+            # current_litellm_spend + effective_remaining_budget.
+            team_max_budget = current_team_spend + effective_remaining_dollars
+            logger.info(
+                "Projected team %s budget: litellm_spend=%s + effective_remaining=%s (real_remaining=%s, team_cap=%s) => %s",
+                team.id,
+                current_team_spend,
+                effective_remaining_dollars,
+                real_remaining_dollars,
+                team_cap,
+                team_max_budget,
+            )
+        except Exception as e:
+            error_msg = (
+                f"Failed to read team spend / project budget "
+                f"(team {team.id}, region {region.name}): {e}"
+            )
+            logger.error(error_msg)
+            sync_errors.append(error_msg)
 
         if not sync_errors:
             try:
-                overage_baseline_budget = (
-                    current_team_max_budget
-                    if current_team_max_budget is not None
-                    else team_max_budget
-                )
-                overage_baseline_budget_cents = int(
-                    round(overage_baseline_budget * 100)
-                )
-                current_team_spend_cents = int(round(current_team_spend * 100))
-                carryover_spend_cents = max(
-                    0, current_team_spend_cents - overage_baseline_budget_cents
-                )
-                carryover_spend = carryover_spend_cents / 100.0
                 await litellm_service.update_team_budget(
                     team_id=lite_team_id,
                     max_budget=team_max_budget,
                     budget_duration=budget_duration,
-                    spend=carryover_spend,
                 )
                 logger.info(
-                    "Updated team %s budget to %s (duration=%s, carryover_spend=%s) in region %s",
+                    "Updated team %s budget to %s (duration=%s) in region %s",
                     team.id,
                     team_max_budget,
                     budget_duration,
-                    carryover_spend,
                     region.name,
                 )
                 if keys:
@@ -1190,35 +1219,69 @@ async def apply_billing_cycle_for_team(
         if not sync_errors:
             for key in keys:
                 try:
-                    key_spend_cap = (
-                        db.query(DBSpendCap.max_budget)
+                    key_cap_row = (
+                        db.query(DBSpendCap.max_budget, DBSpendCap.budget_duration)
                         .filter(
                             DBSpendCap.scope == "key",
                             DBSpendCap.region_id == region.id,
                             DBSpendCap.key_id == key.id,
                         )
-                        .scalar()
+                        .first()
                     )
-                    effective_key_budget = (
-                        float(key_spend_cap)
-                        if key_spend_cap is not None
-                        else per_region_budget
-                    )
-                    await litellm_service.set_key_restrictions(
-                        litellm_token=key.litellm_token,
-                        duration=budget_duration,
-                        budget_duration=budget_duration,
-                        budget_amount=effective_key_budget,
-                        rpm_limit=max_rpm_limit,
-                        spend=0.0,
-                    )
-                    logger.info(
-                        "Updated key %s limits in LiteLLM: duration=%s, budget=%s, rpm=%s, spend_reset=True",
-                        key.id,
-                        budget_duration,
-                        effective_key_budget,
-                        max_rpm_limit,
-                    )
+                    key_spend_cap = key_cap_row[0] if key_cap_row else None
+                    key_cap_duration = key_cap_row[1] if key_cap_row else None
+
+                    if team.requires_pool_purchase_gate:
+                        # POOL: key max_budget must be set only when an explicit key cap exists.
+                        # Otherwise keep key max_budget null and enforce at team level.
+                        await litellm_service.set_key_restrictions(
+                            litellm_token=key.litellm_token,
+                            duration=budget_duration,
+                            # Keep POOL key windows aligned with team cycle window
+                            # even when no explicit key cap exists.
+                            budget_duration=(
+                                # POOL key caps use 31d windows aligned with cycle semantics.
+                                budget_duration
+                                if key_spend_cap is not None
+                                else budget_duration
+                            ),
+                            budget_amount=(
+                                float(key_spend_cap)
+                                if key_spend_cap is not None
+                                else None
+                            ),
+                            rpm_limit=max_rpm_limit,
+                            spend=0.0,
+                        )
+                        logger.info(
+                            "Updated POOL key %s limits in LiteLLM: duration=%s, key_cap=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
+                            key.id,
+                            budget_duration,
+                            key_spend_cap,
+                            key_cap_duration,
+                            max_rpm_limit,
+                        )
+                    else:
+                        effective_key_budget = (
+                            float(key_spend_cap)
+                            if key_spend_cap is not None
+                            else per_region_budget
+                        )
+                        await litellm_service.set_key_restrictions(
+                            litellm_token=key.litellm_token,
+                            duration=budget_duration,
+                            budget_duration=budget_duration,
+                            budget_amount=effective_key_budget,
+                            rpm_limit=max_rpm_limit,
+                            spend=0.0,
+                        )
+                        logger.info(
+                            "Updated key %s limits in LiteLLM: duration=%s, budget=%s, rpm=%s, spend_reset=True",
+                            key.id,
+                            budget_duration,
+                            effective_key_budget,
+                            max_rpm_limit,
+                        )
                 except Exception as e:
                     error_msg = f"Failed to update key {key.id} in LiteLLM: {str(e)}"
                     logger.error(error_msg)

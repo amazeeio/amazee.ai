@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     SES_SENDER_EMAIL: str = "info@example.com"
     PASSWORDLESS_SIGN_IN: str = "true"
     ENV_SUFFIX: str = os.getenv("ENV_SUFFIX", "local")
+    LOCAL_BEARER_TOKEN: str = os.getenv("LOCAL_BEARER_TOKEN", "")
+    LOCAL_BEARER_USER_EMAIL: str = os.getenv("LOCAL_BEARER_USER_EMAIL", "")
     DYNAMODB_REGION: str = "eu-west-1"
     SES_REGION: str = "eu-west-1"
     ENABLE_LIMITS: bool = os.getenv("ENABLE_LIMITS", "false") == "true"
@@ -49,9 +51,7 @@ class Settings(BaseSettings):
     MOAD_API_KEY: str = os.getenv("MOAD_API_KEY", "changeme")
     ENABLE_METRICS: bool = os.getenv("ENABLE_METRICS", "false") == "true"
     PROMETHEUS_API_KEY: str = os.getenv("PROMETHEUS_API_KEY", "")
-    POOL_BUDGET_EXPIRATION_DAYS: int = int(
-        os.getenv("POOL_BUDGET_EXPIRATION_DAYS", "365")
-    )
+    POOL_PURCHASE_EXPIRY_DAYS: int = int(os.getenv("POOL_PURCHASE_EXPIRY_DAYS", "365"))
     PERIODIC_TOPUP_EXPIRY_DAYS: int = int(
         os.getenv("PERIODIC_TOPUP_EXPIRY_DAYS", "365")
     )

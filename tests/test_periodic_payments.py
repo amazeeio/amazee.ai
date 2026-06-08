@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.core.config import settings
 from app.core.worker import (
     _record_periodic_payment_direct,
     _run_cycle_from_stripe_event,
@@ -123,7 +124,7 @@ async def test_apply_billing_cycle_for_team_updates_sync_status_success(
     mock_litellm.update_team_budget.assert_awaited_once()
     assert mock_litellm.update_team_budget.await_args.kwargs["budget_duration"] == "31d"
     assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 100.0
-    assert mock_litellm.update_team_budget.await_args.kwargs["spend"] == 0.0
+    assert "spend" not in mock_litellm.update_team_budget.await_args.kwargs
     mock_litellm.set_key_restrictions.assert_awaited_once()
     assert mock_litellm.set_key_restrictions.await_args.kwargs["budget_amount"] == 100.0
     assert mock_litellm.set_key_restrictions.await_args.kwargs["spend"] == 0.0
@@ -184,8 +185,8 @@ async def test_apply_billing_cycle_for_team_carries_over_spend_overage(
 
     assert errors == []
     mock_litellm.update_team_budget.assert_awaited_once()
-    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 1.0
-    assert mock_litellm.update_team_budget.await_args.kwargs["spend"] == 0.4
+    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 2.4
+    assert "spend" not in mock_litellm.update_team_budget.await_args.kwargs
 
 
 @pytest.mark.asyncio
@@ -244,10 +245,9 @@ async def test_apply_billing_cycle_for_team_carries_over_against_current_litellm
 
     assert errors == []
     mock_litellm.update_team_budget.assert_awaited_once()
-    # Incoming cycle budget becomes $2.0, but carryover is computed from current
-    # LiteLLM budget ($1.0), so overage remains $0.4.
-    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 2.0
-    assert mock_litellm.update_team_budget.await_args.kwargs["spend"] == 0.4
+    # Projection uses current spend + remaining budget.
+    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 3.4
+    assert "spend" not in mock_litellm.update_team_budget.await_args.kwargs
 
 
 @pytest.mark.asyncio
@@ -606,6 +606,9 @@ def test_subscription_deactivate_endpoint_success(
 
     mock_record_payment.return_value = 321
     mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 7.0, "max_budget": 20.0}}
+    )
     mock_litellm.update_team_budget = AsyncMock()
     mock_litellm.set_key_restrictions = AsyncMock()
 
@@ -628,15 +631,17 @@ def test_subscription_deactivate_endpoint_success(
         "idempotent": False,
     }
     mock_litellm.update_team_budget.assert_awaited_once()
-    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 0.0
+    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 7.0
     assert (
-        mock_litellm.update_team_budget.await_args.kwargs["budget_duration"] == "365d"
+        mock_litellm.update_team_budget.await_args.kwargs["budget_duration"]
+        == f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
     )
     assert mock_litellm.update_team_budget.await_args.kwargs["spend"] == 0.0
     mock_litellm.set_key_restrictions.assert_awaited_once()
     assert mock_litellm.set_key_restrictions.await_args.kwargs["budget_amount"] == 0.0
     assert (
-        mock_litellm.set_key_restrictions.await_args.kwargs["budget_duration"] == "365d"
+        mock_litellm.set_key_restrictions.await_args.kwargs["budget_duration"]
+        == f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
     )
     assert mock_litellm.set_key_restrictions.await_args.kwargs["spend"] == 0.0
 
@@ -682,6 +687,9 @@ def test_subscription_deactivate_preserves_active_topup_budget(
 
     mock_record_payment.return_value = 654
     mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 6.0, "max_budget": 22.0}}
+    )
     mock_litellm.update_team_budget = AsyncMock()
     mock_litellm.set_key_restrictions = AsyncMock()
 
@@ -699,15 +707,17 @@ def test_subscription_deactivate_preserves_active_topup_budget(
     assert response.status_code == 200
     assert response.json()["payment_id"] == 654
     mock_litellm.update_team_budget.assert_awaited_once()
-    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 4.0
+    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 10.0
     assert (
-        mock_litellm.update_team_budget.await_args.kwargs["budget_duration"] == "365d"
+        mock_litellm.update_team_budget.await_args.kwargs["budget_duration"]
+        == f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
     )
     assert mock_litellm.update_team_budget.await_args.kwargs["spend"] == 0.0
     mock_litellm.set_key_restrictions.assert_awaited_once()
     assert mock_litellm.set_key_restrictions.await_args.kwargs["budget_amount"] == 4.0
     assert (
-        mock_litellm.set_key_restrictions.await_args.kwargs["budget_duration"] == "365d"
+        mock_litellm.set_key_restrictions.await_args.kwargs["budget_duration"]
+        == f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
     )
     assert mock_litellm.set_key_restrictions.await_args.kwargs["spend"] == 0.0
 
@@ -1009,7 +1019,9 @@ async def test_pool_team_billing_cycle_uses_31d_and_resets_spend(
     assert errors == []
     team_call = mock_litellm.update_team_budget.await_args
     assert team_call.kwargs["budget_duration"] == "31d"
-    assert team_call.kwargs["max_budget"] == 30.0
+    # Team spend is non-resettable in LiteLLM, so projected max_budget is:
+    # current_spend + current_cycle_remaining = 5.0 + 30.0
+    assert team_call.kwargs["max_budget"] == 35.0
 
     key_call = mock_litellm.set_key_restrictions.await_args
     assert key_call.kwargs["spend"] == 0.0

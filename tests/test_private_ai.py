@@ -625,7 +625,7 @@ def test_view_spend_as_read_only_user(
     assert data["expires"] == "2024-12-31T23:59:59Z"
     assert data["created_at"] == "2024-01-01T00:00:00Z"
     assert data["updated_at"] == "2024-01-02T00:00:00Z"
-    assert data["max_budget"] == 100.0
+    assert data["max_budget"] is None
     assert data["budget_duration"] == "monthly"
     assert data["budget_reset_at"] == "2024-02-01T00:00:00Z"
 
@@ -953,11 +953,67 @@ def test_view_spend_with_extra_fields(
     assert data["expires"] == "2024-12-31T23:59:59Z"
     assert data["created_at"] == "2024-01-01T00:00:00Z"
     assert data["updated_at"] == "2024-01-02T00:00:00Z"
-    assert data["max_budget"] == 100.0
+    assert data["max_budget"] is None
     assert data["budget_duration"] == "monthly"
     assert data["budget_reset_at"] == "2024-02-01T00:00:00Z"
 
     # Clean up the test key
+    db.delete(test_key)
+    db.commit()
+
+
+@patch("httpx.AsyncClient")
+def test_view_spend_uses_db_key_spend_cap_max_budget(
+    mock_client_class,
+    client,
+    team_read_only_token,
+    test_region,
+    db,
+    test_team_read_only,
+    mock_httpx_get_client,
+):
+    """Key max_budget on /private-ai-keys/{id}/spend comes from DB spend_caps."""
+    mock_client_class.return_value = mock_httpx_get_client
+
+    test_key = DBPrivateAIKey(
+        database_name="test-db-spend-cap",
+        name="Test Key with Spend Cap",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="test-token-spend-cap",
+        litellm_api_url="https://test-litellm.com",
+        owner_id=test_team_read_only.id,
+        team_id=test_team_read_only.team_id,
+        region_id=test_region.id,
+    )
+    db.add(test_key)
+    db.commit()
+    db.refresh(test_key)
+
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_key.team_id,
+            user_id=test_key.owner_id,
+            key_id=test_key.id,
+            max_budget=42.0,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+
+    response = client.get(
+        f"/private-ai-keys/{test_key.id}/spend",
+        headers={"Authorization": f"Bearer {team_read_only_token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["max_budget"] == 42.0
+
+    db.query(DBSpendCap).filter(DBSpendCap.key_id == test_key.id).delete()
     db.delete(test_key)
     db.commit()
 

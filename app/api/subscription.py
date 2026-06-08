@@ -20,6 +20,7 @@ from app.db.models import (
     DBPeriodicBudgetLedgerEntry,
     DBPeriodicPayment,
     DBRegion,
+    DBSpendCap,
     DBTeam,
 )
 from app.schemas.models import (
@@ -304,6 +305,21 @@ async def subscription_deactivate(
                 source_event_id=request.transaction_id,
             )
 
+        # Deactivation immediately ends active subscription windows.
+        active_sub_rows = (
+            db.query(DBPeriodicBudgetLedgerEntry)
+            .filter(
+                DBPeriodicBudgetLedgerEntry.team_id == team.id,
+                DBPeriodicBudgetLedgerEntry.region_id == region.id,
+                DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+                DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            )
+            .all()
+        )
+        for row in active_sub_rows:
+            row.is_active = False
+        db.flush()
+
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url,
             api_key=region.litellm_api_key,
@@ -313,12 +329,30 @@ async def subscription_deactivate(
             compute_active_topup_remaining(db, team_id=team.id, region_id=region.id)
             / 100.0
         )
-        topup_budget_duration = f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
+        if team.budget_type == BudgetType.PERIODIC:
+            topup_budget_duration = f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
+        else:
+            topup_budget_duration = f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
+
+        projected_team_max_budget = topup_remaining_dollars
+        try:
+            team_info_resp = await litellm_service.get_team_info(lite_team_id)
+            team_info = team_info_resp.get("team_info", team_info_resp)
+            current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
+            # LiteLLM team spend is non-resettable. Keep current spend as baseline
+            # so remaining headroom stays requestable after deactivation.
+            projected_team_max_budget = current_team_spend + topup_remaining_dollars
+        except Exception as exc:
+            logger.warning(
+                "Failed to read LiteLLM team spend for deactivation projection (team %s): %s",
+                team.id,
+                exc,
+            )
 
         try:
             await litellm_service.update_team_budget(
                 team_id=lite_team_id,
-                max_budget=topup_remaining_dollars,
+                max_budget=projected_team_max_budget,
                 budget_duration=topup_budget_duration,
                 spend=0.0,
             )
@@ -332,14 +366,35 @@ async def subscription_deactivate(
         keys = get_team_region_litellm_keys(db, team_id=team.id, region_id=region.id)
         for key in keys:
             try:
-                await litellm_service.set_key_restrictions(
-                    litellm_token=key.litellm_token,
-                    duration=topup_budget_duration,
-                    budget_duration=topup_budget_duration,
-                    budget_amount=topup_remaining_dollars,
-                    rpm_limit=None,
-                    spend=0.0,
+                key_cap = (
+                    db.query(DBSpendCap.max_budget)
+                    .filter(
+                        DBSpendCap.scope == "key",
+                        DBSpendCap.region_id == region.id,
+                        DBSpendCap.key_id == key.id,
+                        DBSpendCap.max_budget.isnot(None),
+                    )
+                    .first()
                 )
+                has_key_cap = key_cap is not None and key_cap[0] is not None
+                if has_key_cap:
+                    await litellm_service.set_key_restrictions(
+                        litellm_token=key.litellm_token,
+                        duration="31d",
+                        budget_duration="31d",
+                        budget_amount=float(key_cap[0]),
+                        rpm_limit=None,
+                        spend=0.0,
+                    )
+                else:
+                    await litellm_service.set_key_restrictions(
+                        litellm_token=key.litellm_token,
+                        duration=topup_budget_duration,
+                        budget_duration=topup_budget_duration,
+                        budget_amount=topup_remaining_dollars,
+                        rpm_limit=None,
+                        spend=0.0,
+                    )
             except Exception as exc:
                 logger.error(
                     "Failed to update LiteLLM deactivation key budget for key %s: %s",
