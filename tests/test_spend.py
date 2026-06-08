@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.security import get_password_hash
 from app.db.models import (
     BudgetType,
+    DBPeriodicBudgetLedgerEntry,
     DBPoolPurchase,
     DBPrivateAIKey,
     DBRegion,
@@ -697,6 +698,24 @@ def test_update_pool_team_budget_uses_pool_duration(
             created_at=datetime.now(UTC),
         )
     )
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            source_payment_id=None,
+            source_invoice_id=None,
+            stripe_payment_id=f"pool-team-duration-ledger-{test_team.id}-{test_region.id}",
+            amount_cents=5000,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC),
+            effective_period_start=None,
+            effective_period_end=None,
+            expires_at=datetime.now(UTC) + timedelta(days=365),
+            rolled_over_from_id=None,
+            is_active=True,
+        )
+    )
     db.commit()
     mock_get_team_info.return_value = {
         "team_info": {"max_budget": 12.5, "budget_duration": "365d"}
@@ -747,6 +766,24 @@ def test_clear_pool_team_budget_uses_remaining_duration_from_last_purchase(
             purchased_at=datetime.now(UTC) - timedelta(days=10),
             stripe_payment_id=f"clear-pool-remaining-{test_team.id}-{test_region.id}",
             created_at=datetime.now(UTC),
+        )
+    )
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            source_payment_id=None,
+            source_invoice_id=None,
+            stripe_payment_id=f"clear-pool-remaining-ledger-{test_team.id}-{test_region.id}",
+            amount_cents=5000,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC) - timedelta(days=10),
+            effective_period_start=None,
+            effective_period_end=None,
+            expires_at=datetime.now(UTC) + timedelta(days=355),
+            rolled_over_from_id=None,
+            is_active=True,
         )
     )
     db.commit()
@@ -1762,6 +1799,24 @@ def test_clear_team_budget_endpoint_pool_restores_purchases(
             purchased_at=datetime.now(UTC),
             stripe_payment_id=f"clear-pool-{test_team.id}-{test_region.id}",
             created_at=datetime.now(UTC),
+        )
+    )
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            source_payment_id=None,
+            source_invoice_id=None,
+            stripe_payment_id=f"clear-pool-ledger-{test_team.id}-{test_region.id}",
+            amount_cents=5000,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC),
+            effective_period_start=None,
+            effective_period_end=None,
+            expires_at=datetime.now(UTC) + timedelta(days=365),
+            rolled_over_from_id=None,
+            is_active=True,
         )
     )
     db.commit()

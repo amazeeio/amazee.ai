@@ -1063,6 +1063,24 @@ async def test_sync_pool_team_monthly_caps_rollover_updates_effective_budget(
             created_at=datetime.now(UTC),
         )
     )
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            source_payment_id=None,
+            source_invoice_id=None,
+            stripe_payment_id=f"pi_rollover_ledger_{int(time.time() * 1000000)}",
+            amount_cents=5000,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC),
+            effective_period_start=None,
+            effective_period_end=None,
+            expires_at=datetime.now(UTC) + timedelta(days=365),
+            rolled_over_from_id=None,
+            is_active=True,
+        )
+    )
     today = datetime.now(UTC).date()
     prev_month_anchor = (
         datetime(today.year - 1, 12, 1, tzinfo=UTC).date()
