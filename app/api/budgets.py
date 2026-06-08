@@ -312,6 +312,23 @@ async def purchase_pool_budget(
             detail="A purchase with this stripe_payment_id already exists",
         )
 
+    # Stage the POOL audit row before the ledger/LiteLLM sync so both are
+    # committed atomically inside purchase_periodic_topup(). Without this,
+    # a crash between the two separate commits would leave the budget live
+    # but the DBPoolPurchase history row missing, and a retry would be blocked
+    # by the ledger's duplicate stripe_payment_id guard.
+    purchase_record = DBPoolPurchase(
+        team_id=team_id,
+        region_id=region_id,
+        amount_cents=purchase.amount_cents,
+        currency=purchase.currency,
+        purchased_at=purchase.purchased_at,
+        stripe_payment_id=purchase.stripe_payment_id,
+        created_at=datetime.now(UTC),
+    )
+    db.add(purchase_record)
+    db.flush()  # joins the open transaction; commit happens inside purchase_periodic_topup
+
     # NOTE: For subscription-managed POOL teams, top-up must be additive to
     # subscription remaining budget and consumed after subscription funds.
     # Reuse the periodic top-up ledger flow as the single budget source of truth.
@@ -326,28 +343,7 @@ async def purchase_pool_budget(
         ),
         db=db,
     )
-
-    # Keep POOL purchase audit/history log for operators.
-    purchase_record = DBPoolPurchase(
-        team_id=team_id,
-        region_id=region_id,
-        amount_cents=purchase.amount_cents,
-        currency=purchase.currency,
-        purchased_at=purchase.purchased_at,
-        stripe_payment_id=purchase.stripe_payment_id,
-        created_at=datetime.now(UTC),
-    )
-    try:
-        db.add(purchase_record)
-        db.commit()
-        db.refresh(purchase_record)
-    except IntegrityError:
-        db.rollback()
-        purchase_record = (
-            db.query(DBPoolPurchase)
-            .filter(DBPoolPurchase.stripe_payment_id == purchase.stripe_payment_id)
-            .first()
-        )
+    db.refresh(purchase_record)  # pick up DB-generated fields after inner commit
 
     return PoolPurchaseResponse(
         id=purchase_record.id,
