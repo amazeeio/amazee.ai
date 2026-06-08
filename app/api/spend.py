@@ -299,7 +299,7 @@ def _effective_team_budget_duration(
     if max_budget is None:
         return None
     if team.requires_pool_purchase_gate:
-        return f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+        return f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
     return MONTHLY_BUDGET_DURATION
 
 
@@ -500,13 +500,13 @@ def _pool_budget_duration_from_last_purchase(
         .scalar()
     )
     if latest_purchase_at is None:
-        return f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+        return f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
     if latest_purchase_at.tzinfo is None:
         latest_purchase = latest_purchase_at.replace(tzinfo=UTC)
     else:
         latest_purchase = latest_purchase_at
     days_since_last_purchase = (datetime.now(UTC) - latest_purchase).days
-    days_left = max(0, settings.POOL_BUDGET_EXPIRATION_DAYS - days_since_last_purchase)
+    days_left = max(0, settings.POOL_PURCHASE_EXPIRY_DAYS - days_since_last_purchase)
     return f"{days_left}d"
 
 
@@ -958,7 +958,7 @@ async def get_team_spend(
                 )
                 .first()
             )
-            pool_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+            pool_duration = f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
             team_budget_duration = pool_duration
             if active_topup is not None and active_topup.purchased_at is not None:
                 anchor = active_topup.purchased_at
@@ -968,7 +968,7 @@ async def get_team_spend(
                 anchor = anchor.replace(tzinfo=UTC)
             team_period_start = anchor
             team_budget_reset_at = anchor + timedelta(
-                days=settings.POOL_BUDGET_EXPIRATION_DAYS
+                days=settings.POOL_PURCHASE_EXPIRY_DAYS
             )
 
     if team.budget_type != BudgetType.POOL:
@@ -1352,7 +1352,7 @@ async def get_key_spend_alias(
                 period_start = active_subscription.effective_period_start
             else:
                 if configured_key_cap is None:
-                    duration_days = settings.POOL_BUDGET_EXPIRATION_DAYS
+                    duration_days = settings.POOL_PURCHASE_EXPIRY_DAYS
                     info["budget_duration"] = f"{duration_days}d"
                     anchor = team_for_key.created_at or now
                 else:

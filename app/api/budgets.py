@@ -158,13 +158,13 @@ def _pool_budget_duration_from_last_purchase(
         .scalar()
     )
     if latest_purchase_at is None:
-        return f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+        return f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
     if latest_purchase_at.tzinfo is None:
         latest_purchase = latest_purchase_at.replace(tzinfo=UTC)
     else:
         latest_purchase = latest_purchase_at
     days_since_last_purchase = (datetime.now(UTC) - latest_purchase).days
-    days_left = max(0, settings.POOL_BUDGET_EXPIRATION_DAYS - days_since_last_purchase)
+    days_left = max(0, settings.POOL_PURCHASE_EXPIRY_DAYS - days_since_last_purchase)
     return f"{days_left}d"
 
 
@@ -625,7 +625,7 @@ async def sync_pool_team_budgets(db: Session) -> dict:
     Expire pool team budgets after the configured number of days.
 
     This cron job sets max_budget to $0 for pool teams whose last purchase
-    was more than POOL_BUDGET_EXPIRATION_DAYS ago. Any remaining budget is
+    was more than POOL_PURCHASE_EXPIRY_DAYS ago. Any remaining budget is
     lost after this period. Defaults to 365 days.
 
     Returns summary of updates made.
@@ -666,7 +666,7 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                 last_purchase = latest_purchase_at
 
             days_since_last_purchase = (datetime.now(UTC) - last_purchase).days
-            if days_since_last_purchase < settings.POOL_BUDGET_EXPIRATION_DAYS:
+            if days_since_last_purchase < settings.POOL_PURCHASE_EXPIRY_DAYS:
                 all_regions_expired = False
             else:
                 expired_region_ids.append(region_id)
@@ -682,7 +682,7 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                     db,
                     team.id,
                     0.0,
-                    f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
+                    f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
                     region_id=rid,
                     update_key_limits=False,
                     apply_to_keys=False,
@@ -693,7 +693,7 @@ async def sync_pool_team_budgets(db: Session) -> dict:
             if team_had_any_update:
                 total_updated += 1
                 logger.info(
-                    f"Pool team {team.id} budget expired in all regions ({settings.POOL_BUDGET_EXPIRATION_DAYS}d passed), set to $0"
+                    f"Pool team {team.id} budget expired in all regions ({settings.POOL_PURCHASE_EXPIRY_DAYS}d passed), set to $0"
                 )
         else:
             # Only some regions expired - update only those regions
@@ -703,7 +703,7 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                     db,
                     team.id,
                     0.0,
-                    f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
+                    f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
                     region_id=rid,
                     update_key_limits=False,
                     apply_to_keys=False,
@@ -712,7 +712,7 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                 if result["teams_updated"] > 0:
                     team_had_any_update = True
                     logger.info(
-                        f"Pool team {team.id} budget expired in region {rid} ({settings.POOL_BUDGET_EXPIRATION_DAYS}d passed), set to $0"
+                        f"Pool team {team.id} budget expired in region {rid} ({settings.POOL_PURCHASE_EXPIRY_DAYS}d passed), set to $0"
                     )
             if team_had_any_update:
                 total_updated += 1

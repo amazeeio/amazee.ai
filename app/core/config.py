@@ -51,9 +51,7 @@ class Settings(BaseSettings):
     MOAD_API_KEY: str = os.getenv("MOAD_API_KEY", "changeme")
     ENABLE_METRICS: bool = os.getenv("ENABLE_METRICS", "false") == "true"
     PROMETHEUS_API_KEY: str = os.getenv("PROMETHEUS_API_KEY", "")
-    POOL_BUDGET_EXPIRATION_DAYS: int = int(
-        os.getenv("POOL_BUDGET_EXPIRATION_DAYS", "365")
-    )
+    POOL_PURCHASE_EXPIRY_DAYS: int = int(os.getenv("POOL_PURCHASE_EXPIRY_DAYS", "365"))
     PERIODIC_TOPUP_EXPIRY_DAYS: int = int(
         os.getenv("PERIODIC_TOPUP_EXPIRY_DAYS", "365")
     )

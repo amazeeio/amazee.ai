@@ -548,7 +548,7 @@ class LimitService:
         apply_to_keys = not team.requires_pool_purchase_gate
         update_key_limits = not team.requires_pool_purchase_gate
         if not apply_to_keys:
-            budget_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+            budget_duration = f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
         else:
             # For periodic teams, keep duration aligned with token restrictions.
             days_left, _, _ = self.get_token_restrictions(team_id)

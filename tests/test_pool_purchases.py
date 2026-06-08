@@ -863,7 +863,7 @@ def test_pool_purchase_requires_admin(client, db, test_team, test_region):
 
 
 @pytest.mark.asyncio
-@patch("app.core.config.settings.POOL_BUDGET_EXPIRATION_DAYS", 365)
+@patch("app.core.config.settings.POOL_PURCHASE_EXPIRY_DAYS", 365)
 async def test_sync_pool_team_budgets_expires_stale_pool_team(
     db, test_team, test_region
 ):
@@ -917,7 +917,7 @@ async def test_sync_pool_team_budgets_expires_stale_pool_team(
 
 
 @pytest.mark.asyncio
-@patch("app.core.config.settings.POOL_BUDGET_EXPIRATION_DAYS", 365)
+@patch("app.core.config.settings.POOL_PURCHASE_EXPIRY_DAYS", 365)
 async def test_sync_pool_team_budgets_expires_all_team_regions(
     db, test_team, test_region
 ):
@@ -1016,7 +1016,7 @@ async def test_sync_pool_team_budgets_expires_all_team_regions(
 
 
 @pytest.mark.asyncio
-@patch("app.core.config.settings.POOL_BUDGET_EXPIRATION_DAYS", 365)
+@patch("app.core.config.settings.POOL_PURCHASE_EXPIRY_DAYS", 365)
 async def test_sync_pool_team_budgets_uses_team_only_propagation(
     db, test_team, test_region
 ):

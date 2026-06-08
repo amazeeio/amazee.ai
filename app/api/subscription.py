@@ -332,7 +332,7 @@ async def subscription_deactivate(
         if team.budget_type == BudgetType.PERIODIC:
             topup_budget_duration = f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
         else:
-            topup_budget_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+            topup_budget_duration = f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
 
         try:
             await litellm_service.update_team_budget(
