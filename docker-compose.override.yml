@@ -1,0 +1,12 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+
+  litellm_db:
+    image: pgvector/pgvector:pg16
+
+  litellm2_db:
+    image: pgvector/pgvector:pg16
+
+  litellm3_db:
+    image: pgvector/pgvector:pg16
