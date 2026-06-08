@@ -606,6 +606,9 @@ def test_subscription_deactivate_endpoint_success(
 
     mock_record_payment.return_value = 321
     mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 7.0, "max_budget": 20.0}}
+    )
     mock_litellm.update_team_budget = AsyncMock()
     mock_litellm.set_key_restrictions = AsyncMock()
 
@@ -628,7 +631,7 @@ def test_subscription_deactivate_endpoint_success(
         "idempotent": False,
     }
     mock_litellm.update_team_budget.assert_awaited_once()
-    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 0.0
+    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 7.0
     assert (
         mock_litellm.update_team_budget.await_args.kwargs["budget_duration"]
         == f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
@@ -684,6 +687,9 @@ def test_subscription_deactivate_preserves_active_topup_budget(
 
     mock_record_payment.return_value = 654
     mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 6.0, "max_budget": 22.0}}
+    )
     mock_litellm.update_team_budget = AsyncMock()
     mock_litellm.set_key_restrictions = AsyncMock()
 
@@ -701,7 +707,7 @@ def test_subscription_deactivate_preserves_active_topup_budget(
     assert response.status_code == 200
     assert response.json()["payment_id"] == 654
     mock_litellm.update_team_budget.assert_awaited_once()
-    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 4.0
+    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 10.0
     assert (
         mock_litellm.update_team_budget.await_args.kwargs["budget_duration"]
         == f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"

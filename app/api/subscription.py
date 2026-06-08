@@ -334,10 +334,25 @@ async def subscription_deactivate(
         else:
             topup_budget_duration = f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
 
+        projected_team_max_budget = topup_remaining_dollars
+        try:
+            team_info_resp = await litellm_service.get_team_info(lite_team_id)
+            team_info = team_info_resp.get("team_info", team_info_resp)
+            current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
+            # LiteLLM team spend is non-resettable. Keep current spend as baseline
+            # so remaining headroom stays requestable after deactivation.
+            projected_team_max_budget = current_team_spend + topup_remaining_dollars
+        except Exception as exc:
+            logger.warning(
+                "Failed to read LiteLLM team spend for deactivation projection (team %s): %s",
+                team.id,
+                exc,
+            )
+
         try:
             await litellm_service.update_team_budget(
                 team_id=lite_team_id,
-                max_budget=topup_remaining_dollars,
+                max_budget=projected_team_max_budget,
                 budget_duration=topup_budget_duration,
                 spend=0.0,
             )
