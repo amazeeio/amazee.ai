@@ -40,6 +40,10 @@ from app.core.periodic_budget_ledger_service import (
     add_topup_entry,
     compute_active_topup_remaining,
 )
+from app.core.pool_budget_service import (
+    pool_available_budget_for_team_region as shared_pool_available_budget_for_team_region,
+    pool_team_budget_duration_for_enforcement as shared_pool_team_budget_duration_for_enforcement,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,57 +185,13 @@ def _compute_pool_monthly_effective_budget(
 def _pool_available_budget_for_team_region(
     db: Session, team_id: int, region_id: int
 ) -> float:
-    """Available POOL budget from active subscription + active top-ups."""
-    now = datetime.now(UTC)
-    sub_remaining_expr = (
-        DBPeriodicBudgetLedgerEntry.amount_cents
-        - DBPeriodicBudgetLedgerEntry.consumed_cents
-    )
-    sub_remaining_cents = (
-        db.query(func.coalesce(func.sum(sub_remaining_expr), 0))
-        .filter(
-            DBPeriodicBudgetLedgerEntry.team_id == team_id,
-            DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
-            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
-            DBPeriodicBudgetLedgerEntry.consumed_cents
-            < DBPeriodicBudgetLedgerEntry.amount_cents,
-            (
-                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
-                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
-            ),
-        )
-        .scalar()
-        or 0
-    )
-    topup_remaining_cents = compute_active_topup_remaining(
-        db, team_id=team_id, region_id=region_id
-    )
-    return round(
-        float(int(sub_remaining_cents) + int(topup_remaining_cents)) / 100.0, 4
-    )
+    return shared_pool_available_budget_for_team_region(db, team_id, region_id)
 
 
 def _pool_team_budget_duration_for_enforcement(
     db: Session, team_id: int, region_id: int
 ) -> str:
-    now = datetime.now(UTC)
-    active_subscription = (
-        db.query(DBPeriodicBudgetLedgerEntry.id)
-        .filter(
-            DBPeriodicBudgetLedgerEntry.team_id == team_id,
-            DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
-            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
-            DBPeriodicBudgetLedgerEntry.effective_period_start.isnot(None),
-            DBPeriodicBudgetLedgerEntry.effective_period_end.isnot(None),
-            DBPeriodicBudgetLedgerEntry.effective_period_end > now,
-        )
-        .first()
-    )
-    if active_subscription is not None:
-        return PERIODIC_BUDGET_DURATION
-    return _pool_budget_duration_from_last_purchase(db, team_id, region_id)
+    return shared_pool_team_budget_duration_for_enforcement(db, team_id, region_id)
 
 
 async def _sync_pool_key_effective_budgets(

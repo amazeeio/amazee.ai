@@ -15,6 +15,10 @@ from app.core.litellm_user_sync import team_role_for_litellm
 from app.core.roles import UserRole
 from app.core.team_service import get_team_region_litellm_keys
 from app.core.periodic_budget_ledger_service import compute_active_topup_remaining
+from app.core.pool_budget_service import (
+    pool_available_budget_for_team_region as shared_pool_available_budget_for_team_region,
+    pool_team_budget_duration_for_enforcement as shared_pool_team_budget_duration_for_enforcement,
+)
 from app.core.security import (
     get_current_user_from_auth,
     get_private_ai_access,
@@ -445,42 +449,7 @@ def _pool_purchased_budget_for_team_region(
 def _pool_available_budget_for_team_region(
     db: Session, team_id: int, region_id: int
 ) -> float:
-    """
-    Source-of-truth available budget for POOL enforcement paths.
-
-    Includes active subscription remaining from periodic ledger entries plus
-    active top-up remaining. This must be used for cap enforcement/clamping
-    because subscription budget is not persisted in DBPoolPurchase.
-    """
-    now = datetime.now(UTC)
-    sub_remaining_cents_expr = (
-        DBPeriodicBudgetLedgerEntry.amount_cents
-        - DBPeriodicBudgetLedgerEntry.consumed_cents
-    )
-    subscription_remaining_cents = (
-        db.query(func.coalesce(func.sum(sub_remaining_cents_expr), 0))
-        .filter(
-            DBPeriodicBudgetLedgerEntry.team_id == team_id,
-            DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
-            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
-            DBPeriodicBudgetLedgerEntry.consumed_cents
-            < DBPeriodicBudgetLedgerEntry.amount_cents,
-            (
-                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
-                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
-            ),
-        )
-        .scalar()
-        or 0
-    )
-    topup_remaining_cents = compute_active_topup_remaining(
-        db, team_id=team_id, region_id=region_id
-    )
-    total_remaining_cents = int(subscription_remaining_cents) + int(
-        topup_remaining_cents
-    )
-    return round(float(total_remaining_cents) / 100.0, 4)
+    return shared_pool_available_budget_for_team_region(db, team_id, region_id)
 
 
 def _pool_previous_period_spend_baseline(
@@ -554,52 +523,10 @@ def _get_key_spend_cap_map(
     return {int(key_id): float(max_budget) for key_id, max_budget in rows}
 
 
-def _pool_budget_duration_from_last_purchase(
-    db: Session, team_id: int, region_id: int
-) -> str:
-    latest_purchase_at = (
-        db.query(func.max(DBPoolPurchase.purchased_at))
-        .filter(
-            DBPoolPurchase.team_id == team_id, DBPoolPurchase.region_id == region_id
-        )
-        .scalar()
-    )
-    if latest_purchase_at is None:
-        return f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
-    if latest_purchase_at.tzinfo is None:
-        latest_purchase = latest_purchase_at.replace(tzinfo=UTC)
-    else:
-        latest_purchase = latest_purchase_at
-    days_since_last_purchase = (datetime.now(UTC) - latest_purchase).days
-    days_left = max(0, settings.POOL_PURCHASE_EXPIRY_DAYS - days_since_last_purchase)
-    return f"{days_left}d"
-
-
 def _pool_team_budget_duration_for_enforcement(
     db: Session, team_id: int, region_id: int
 ) -> str:
-    """
-    POOL team budget duration for enforcement:
-    - Use 31d when an active subscription cycle window exists.
-    - Otherwise fall back to top-up purchase-window semantics.
-    """
-    now = datetime.now(UTC)
-    active_subscription = (
-        db.query(DBPeriodicBudgetLedgerEntry.id)
-        .filter(
-            DBPeriodicBudgetLedgerEntry.team_id == team_id,
-            DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
-            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
-            DBPeriodicBudgetLedgerEntry.effective_period_start.isnot(None),
-            DBPeriodicBudgetLedgerEntry.effective_period_end.isnot(None),
-            DBPeriodicBudgetLedgerEntry.effective_period_end > now,
-        )
-        .first()
-    )
-    if active_subscription is not None:
-        return "31d"
-    return _pool_budget_duration_from_last_purchase(db, team_id, region_id)
+    return shared_pool_team_budget_duration_for_enforcement(db, team_id, region_id)
 
 
 async def _enforce_pool_no_purchase_key_lock(
