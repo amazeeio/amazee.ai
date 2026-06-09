@@ -108,6 +108,7 @@ class LiteLLMService:
         max_budget: Optional[float] = DEFAULT_MAX_SPEND,
         rpm_limit: Optional[int] = DEFAULT_RPM_PER_KEY,
         apply_limits: bool = True,
+        blocked: Optional[bool] = None,
     ) -> str:
         """Create a new API key for LiteLLM"""
         try:
@@ -143,6 +144,8 @@ class LiteLLMService:
             request_data["key_alias"] = clean_alias
             request_data["metadata"] = metadata
             request_data["team_id"] = team_id
+            if blocked is not None:
+                request_data["blocked"] = blocked
 
             request_data["duration"] = "365d"  # Sets the key expiry date
             if settings.ENABLE_LIMITS and apply_limits:
@@ -297,6 +300,7 @@ class LiteLLMService:
         max_budget: Optional[float] = None,
         clear_max_budget: bool = False,
         clear_budget_duration: bool = False,
+        blocked: Optional[bool] = None,
     ) -> None:
         """Update budget fields for a LiteLLM key.
 
@@ -312,6 +316,8 @@ class LiteLLMService:
                 request_data["budget_duration"] = budget_duration
             if clear_max_budget or max_budget is not None:
                 request_data["max_budget"] = max_budget
+            if blocked is not None:
+                request_data["blocked"] = blocked
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(

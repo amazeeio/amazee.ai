@@ -1,6 +1,7 @@
 from unittest.mock import patch, Mock, AsyncMock
 from app.db.models import (
     DBPrivateAIKey,
+    DBPoolPurchase,
     DBTeam,
     DBUser,
     DBProduct,
@@ -1455,6 +1456,67 @@ def test_create_llm_token_for_pool_team_skips_per_key_limits(
     assert "budget_duration" not in call_args["json"]
     assert "max_budget" not in call_args["json"]
     assert "rpm_limit" not in call_args["json"]
+    assert call_args["json"]["blocked"] is True
+
+    key_update_calls = [
+        call
+        for call in mock_httpx_post_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/update")
+    ]
+    assert len(key_update_calls) == 1
+    assert key_update_calls[0].kwargs["json"]["blocked"] is True
+
+
+@patch("httpx.AsyncClient")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_create_llm_token_for_pool_team_with_purchase_does_not_block_key(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
+    test_team.budget_type = "pool"
+    db.add(
+        DBPoolPurchase(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            amount_cents=1000,
+            currency="usd",
+            purchased_at=datetime.now(UTC),
+            stripe_payment_id="pi_pool_existing_purchase",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+
+    mock_client_class.return_value = mock_httpx_post_client
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Pool Team Key With Budget",
+            "team_id": test_team.id,
+        },
+    )
+
+    assert response.status_code == 200
+
+    key_generate_calls = [
+        call
+        for call in mock_httpx_post_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/generate")
+        and call.kwargs.get("json", {})
+        .get("metadata", {})
+        .get("amazeeai_private_ai_key_name")
+        == "Pool Team Key With Budget"
+    ]
+    assert len(key_generate_calls) == 1
+    assert "blocked" not in key_generate_calls[0].kwargs["json"]
 
 
 def test_create_vector_db_as_system_admin(client, admin_token, test_region):

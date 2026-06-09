@@ -513,6 +513,13 @@ async def create_llm_token(
             max_budget=max_max_spend,
             rpm_limit=max_rpm_limit,
             apply_limits=not is_pool_team,
+            blocked=(
+                True
+                if is_pool_team
+                and pool_purchased_total is not None
+                and pool_purchased_total <= 0
+                else None
+            ),
         )
         if (
             is_pool_team
@@ -524,6 +531,7 @@ async def create_llm_token(
                 budget_duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
                 max_budget=0.0,
                 clear_max_budget=False,
+                blocked=True,
             )
 
         # Create response object

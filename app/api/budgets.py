@@ -237,6 +237,7 @@ async def _sync_pool_key_effective_budgets(
                         budget_duration=MONTHLY_BUDGET_DURATION,
                         max_budget=0.0,
                         clear_max_budget=False,
+                        blocked=True,
                     )
                 else:
                     configured_cap = cap_map.get(key.id)
@@ -249,6 +250,7 @@ async def _sync_pool_key_effective_budgets(
                             max_budget=None,
                             clear_max_budget=True,
                             clear_budget_duration=True,
+                            blocked=False,
                         )
                     else:
                         await service.update_key_budget(
@@ -256,6 +258,7 @@ async def _sync_pool_key_effective_budgets(
                             budget_duration=MONTHLY_BUDGET_DURATION,
                             max_budget=configured_cap,
                             clear_max_budget=False,
+                            blocked=False,
                         )
             return None
         except Exception as exc:
@@ -541,6 +544,15 @@ async def purchase_periodic_topup(
             max_budget=new_total_budget,
             budget_duration=PERIODIC_BUDGET_DURATION,
         )
+        if team.requires_pool_purchase_gate:
+            key_sync_errors = await _sync_pool_key_effective_budgets(
+                db,
+                team_id=team.id,
+                region=region,
+                purchased_total=desired_remaining,
+            )
+            if key_sync_errors:
+                raise RuntimeError("; ".join(key_sync_errors))
         payment_record.sync_status = "success"
         payment_record.error_log = None
         db.commit()
@@ -703,6 +715,16 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                     update_key_limits=False,
                     apply_to_keys=False,
                 )
+                region = db.query(DBRegion).filter(DBRegion.id == rid).first()
+                if region is not None:
+                    errors.extend(
+                        await _sync_pool_key_effective_budgets(
+                            db,
+                            team_id=team.id,
+                            region=region,
+                            purchased_total=0.0,
+                        )
+                    )
                 errors.extend(result["errors"])
                 if result["teams_updated"] > 0:
                     team_had_any_update = True
@@ -724,6 +746,16 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                     update_key_limits=False,
                     apply_to_keys=False,
                 )
+                region = db.query(DBRegion).filter(DBRegion.id == rid).first()
+                if region is not None:
+                    errors.extend(
+                        await _sync_pool_key_effective_budgets(
+                            db,
+                            team_id=team.id,
+                            region=region,
+                            purchased_total=0.0,
+                        )
+                    )
                 errors.extend(result["errors"])
                 if result["teams_updated"] > 0:
                     team_had_any_update = True
