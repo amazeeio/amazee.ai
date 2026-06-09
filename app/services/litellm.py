@@ -578,6 +578,7 @@ class LiteLLMService:
         budget_duration: Optional[str] = None,
         spend: Optional[float] = None,
         model_aliases: Optional[dict[str, str]] = None,
+        clear_budget_duration: bool = False,
     ):
         """Update the budget for a LiteLLM team.
 
@@ -594,7 +595,7 @@ class LiteLLMService:
             # Always include max_budget, even when None, so LiteLLM receives
             # JSON null when the intent is to clear the team-level budget gate.
             request_data["max_budget"] = max_budget
-            if budget_duration:
+            if clear_budget_duration or budget_duration is not None:
                 request_data["budget_duration"] = budget_duration
             if spend is not None:
                 request_data["spend"] = spend

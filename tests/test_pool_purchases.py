@@ -3,6 +3,7 @@ import time
 from app.db.models import (
     DBLimitedResource,
     DBPoolPurchase,
+    DBPrivateAIKey,
     DBSpendCap,
     DBPeriodicPayment,
 )
@@ -568,6 +569,66 @@ def test_pool_purchase_restores_team_budget_when_key_sync_fails(
         .first()
     )
     assert purchase is not None
+
+
+def test_pool_purchase_rolls_back_team_budget_when_key_sync_fails(
+    client, admin_token, db, test_team, test_region
+):
+    test_team.budget_type = "pool"
+    db.add(
+        DBPrivateAIKey(
+            litellm_token="sk-key-sync-fails",
+            team_id=test_team.id,
+            region_id=test_region.id,
+            name="blocked pool key",
+        )
+    )
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_litellm.format_team_id.side_effect = lambda region_name, team_id: (
+            f"{region_name.replace(' ', '_')}_{team_id}"
+        )
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={
+                "team_info": {
+                    "max_budget": 0.0,
+                    "budget_duration": None,
+                    "spend": 0.0,
+                }
+            }
+        )
+        mock_instance.update_team_budget = AsyncMock()
+        mock_instance.update_key_budget = AsyncMock(
+            side_effect=RuntimeError("key sync failed")
+        )
+
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": f"pi_key_sync_rollback_{int(time.time() * 1000000)}",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 502
+    assert mock_instance.update_team_budget.await_count == 2
+    first_call, rollback_call = mock_instance.update_team_budget.await_args_list
+    assert first_call.kwargs == {
+        "team_id": f"{test_region.name}_{test_team.id}",
+        "max_budget": 50.0,
+        "budget_duration": "31d",
+    }
+    assert rollback_call.kwargs == {
+        "team_id": f"{test_region.name}_{test_team.id}",
+        "max_budget": 0.0,
+        "budget_duration": None,
+        "clear_budget_duration": True,
+    }
 
 
 def test_pool_purchase_preserves_operator_manual_cap_below_purchased_total(

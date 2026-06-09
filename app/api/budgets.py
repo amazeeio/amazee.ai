@@ -509,10 +509,20 @@ async def purchase_periodic_topup(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
     lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+    previous_team_max_budget: float | None = None
+    previous_team_budget_duration: str | None = None
+    team_budget_updated = False
     try:
         team_info_resp = await service.get_team_info(lite_team_id)
         team_info = team_info_resp.get("team_info", team_info_resp)
         current_spend = float(team_info.get("spend", 0.0) or 0.0)
+        previous_max_budget_raw = team_info.get("max_budget")
+        previous_team_max_budget = (
+            float(previous_max_budget_raw)
+            if previous_max_budget_raw is not None
+            else None
+        )
+        previous_team_budget_duration = team_info.get("budget_duration")
 
         sub_remaining_cents = 0
         now_topup = datetime.now(UTC)
@@ -544,6 +554,7 @@ async def purchase_periodic_topup(
             max_budget=new_total_budget,
             budget_duration=PERIODIC_BUDGET_DURATION,
         )
+        team_budget_updated = True
         if team.requires_pool_purchase_gate:
             key_sync_errors = await _sync_pool_key_effective_budgets(
                 db,
@@ -557,6 +568,21 @@ async def purchase_periodic_topup(
         payment_record.error_log = None
         db.commit()
     except Exception as exc:
+        if team_budget_updated:
+            try:
+                await service.update_team_budget(
+                    team_id=lite_team_id,
+                    max_budget=previous_team_max_budget,
+                    budget_duration=previous_team_budget_duration,
+                    clear_budget_duration=previous_team_budget_duration is None,
+                )
+            except Exception as rollback_exc:
+                logger.error(
+                    "Failed to roll back LiteLLM team budget after top-up sync failure for team_id=%s region_id=%s: %s",
+                    team.id,
+                    region_id,
+                    str(rollback_exc),
+                )
         # Top-up purchase failed to reach LiteLLM; do not keep allocatable
         # balance in the periodic ledger for this failed API purchase.
         if topup_entry is not None:
@@ -702,6 +728,13 @@ async def sync_pool_team_budgets(db: Session) -> dict:
         if not expired_region_ids:
             continue
 
+        expired_regions = {
+            region.id: region
+            for region in db.query(DBRegion)
+            .filter(DBRegion.id.in_(expired_region_ids))
+            .all()
+        }
+
         if all_regions_expired:
             # All regions expired, propagate $0 budget to team and all keys
             team_had_any_update = False
@@ -715,7 +748,7 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                     update_key_limits=False,
                     apply_to_keys=False,
                 )
-                region = db.query(DBRegion).filter(DBRegion.id == rid).first()
+                region = expired_regions.get(rid)
                 if region is not None:
                     errors.extend(
                         await _sync_pool_key_effective_budgets(
@@ -746,7 +779,7 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                     update_key_limits=False,
                     apply_to_keys=False,
                 )
-                region = db.query(DBRegion).filter(DBRegion.id == rid).first()
+                region = expired_regions.get(rid)
                 if region is not None:
                     errors.extend(
                         await _sync_pool_key_effective_budgets(

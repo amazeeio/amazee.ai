@@ -783,6 +783,35 @@ def test_update_team_budget_includes_model_aliases(
     )
 
 
+@patch("httpx.AsyncClient")
+def test_update_team_budget_clear_budget_duration_sends_null(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    mock_client_class.return_value = mock_httpx_post_client
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.update_team_budget(
+            team_id="team-1",
+            max_budget=None,
+            budget_duration=None,
+            clear_budget_duration=True,
+        )
+    )
+
+    mock_httpx_post_client.post.assert_called_once_with(
+        f"{test_region.litellm_api_url}/team/update",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={
+            "team_id": "team-1",
+            "max_budget": None,
+            "budget_duration": None,
+        },
+    )
+
+
 def test_get_team_model_aliases_reads_team_info(test_region):
     service = LiteLLMService(
         api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
