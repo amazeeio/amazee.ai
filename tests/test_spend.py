@@ -2528,6 +2528,9 @@ def test_get_team_spend_history_returns_periods_ordered_desc(
         period_start=datetime(2026, 4, 1, tzinfo=UTC),
         period_end=datetime(2026, 5, 1, tzinfo=UTC),
         total_spend=10.0,
+        subscription_remaining_cents=600,
+        topup_remaining_cents=150,
+        desired_remaining_cents=750,
         source="test",
     )
     db.add_all([p1, p2])
@@ -2542,6 +2545,9 @@ def test_get_team_spend_history_returns_periods_ordered_desc(
     assert len(data["periods"]) == 2
     # Newest period (April→May) must come first
     assert data["periods"][0]["total_spend"] == 10.0
+    assert data["periods"][0]["subscription_remaining_cents"] == 600
+    assert data["periods"][0]["topup_remaining_cents"] == 150
+    assert data["periods"][0]["desired_remaining_cents"] == 750
     assert data["periods"][1]["total_spend"] == 5.0
 
 

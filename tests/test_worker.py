@@ -8,6 +8,7 @@ from app.db.models import (
     DBTeamMetrics,
     DBLimitedResource,
     DBPoolPurchase,
+    DBPeriodicBudgetLedgerEntry,
     DBSpendCap,
 )
 from app.schemas.models import BudgetType
@@ -22,6 +23,7 @@ from app.core.worker import (
     active_team_labels,
     reconcile_team_keys,
     _sync_periodic_ledger_for_invoice,
+    _get_snapshot_remaining_cents,
     _parse_client_reference_ids,
     _backfill_subscription_metadata_from_checkout_session,
     handle_stripe_event_background,
@@ -45,6 +47,90 @@ def test_parse_client_reference_ids():
     assert _parse_client_reference_ids("bad") is None
     assert _parse_client_reference_ids("668-x") is None
     assert _parse_client_reference_ids(None) is None
+
+
+def test_get_snapshot_remaining_cents_scopes_to_current_period(
+    db, test_team, test_region
+):
+    now = datetime.now(UTC)
+    period_start = now - timedelta(days=1)
+    period_end = now + timedelta(days=30)
+    previous_start = period_start - timedelta(days=31)
+    previous_end = period_start
+
+    db.add_all(
+        [
+            DBPeriodicBudgetLedgerEntry(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                entry_type="subscription",
+                amount_cents=100,
+                consumed_cents=40,
+                purchased_at=period_start,
+                effective_period_start=period_start,
+                effective_period_end=period_end,
+                expires_at=period_end,
+                is_active=True,
+            ),
+            DBPeriodicBudgetLedgerEntry(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                entry_type="subscription",
+                amount_cents=100,
+                consumed_cents=0,
+                purchased_at=previous_start,
+                effective_period_start=previous_start,
+                effective_period_end=previous_end,
+                expires_at=period_end,
+                is_active=True,
+            ),
+            DBPeriodicBudgetLedgerEntry(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                entry_type="topup",
+                amount_cents=50,
+                consumed_cents=10,
+                purchased_at=period_start + timedelta(hours=1),
+                expires_at=period_end,
+                is_active=True,
+            ),
+            DBPeriodicBudgetLedgerEntry(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                entry_type="topup_rollover",
+                amount_cents=30,
+                consumed_cents=5,
+                purchased_at=period_start + timedelta(hours=2),
+                expires_at=period_end,
+                is_active=True,
+            ),
+            DBPeriodicBudgetLedgerEntry(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                entry_type="topup",
+                amount_cents=70,
+                consumed_cents=20,
+                purchased_at=previous_start + timedelta(days=5),
+                expires_at=period_end,
+                is_active=True,
+            ),
+        ]
+    )
+    db.commit()
+
+    subscription_remaining_cents, topup_remaining_cents, desired_remaining_cents = (
+        _get_snapshot_remaining_cents(
+            db=db,
+            team_id=test_team.id,
+            region_id=test_region.id,
+            period_start=period_start,
+            period_end=period_end,
+        )
+    )
+
+    assert subscription_remaining_cents == 60
+    assert topup_remaining_cents == 65
+    assert desired_remaining_cents == 125
 
 
 @pytest.mark.asyncio

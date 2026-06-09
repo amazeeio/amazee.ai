@@ -600,6 +600,9 @@ class TeamSpendHistoryPeriodItem(BaseModel):
     total_prompt_tokens: Optional[int] = None
     total_completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
+    subscription_remaining_cents: Optional[int] = None
+    topup_remaining_cents: Optional[int] = None
+    desired_remaining_cents: Optional[int] = None
     source: str
     stripe_event_id: Optional[str] = None
     stripe_invoice_id: Optional[str] = None
