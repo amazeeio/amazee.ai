@@ -61,8 +61,11 @@ def _is_duplicate_stripe_payment_integrity_error(exc: IntegrityError) -> bool:
     constraint_name = (
         getattr(getattr(orig, "diag", None), "constraint_name", "") or ""
     ).lower()
+    if constraint_name:
+        return "stripe_payment_id" in constraint_name
+
     message = str(orig).lower()
-    return "stripe_payment_id" in constraint_name or "stripe_payment_id" in message
+    return "stripe_payment_id" in message
 
 
 # PERIODIC teams use a fixed 31d rolling window so LiteLLM never self-resets

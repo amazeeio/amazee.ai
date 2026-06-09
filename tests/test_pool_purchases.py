@@ -339,7 +339,10 @@ def test_create_periodic_topup_duplicate_payment_integrity_error_returns_409(
         )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "A purchase with this stripe_payment_id already exists"
+    assert (
+        response.json()["detail"]
+        == "A purchase with this stripe_payment_id already exists"
+    )
 
 
 def test_create_periodic_topup_non_stripe_integrity_error_returns_500(
@@ -353,6 +356,9 @@ def test_create_periodic_topup_non_stripe_integrity_error_returns_500(
 
         class diag:  # noqa: N801
             constraint_name = "ix_periodic_payments_team_id"
+
+        def __str__(self):
+            return "duplicate key detail includes stripe_payment_id value"
 
     with patch(
         "app.api.budgets.add_topup_entry",

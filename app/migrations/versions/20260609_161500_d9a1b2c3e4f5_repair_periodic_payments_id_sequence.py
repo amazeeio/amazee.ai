@@ -34,7 +34,8 @@ def upgrade() -> None:
     op.execute("ALTER SEQUENCE periodic_payments_id_seq OWNED BY periodic_payments.id")
     op.execute(
         "SELECT setval('periodic_payments_id_seq', "
-        "COALESCE((SELECT MAX(id) FROM periodic_payments), 0), true)"
+        "COALESCE((SELECT MAX(id) FROM periodic_payments), 1), "
+        "EXISTS (SELECT 1 FROM periodic_payments))"
     )
 
 

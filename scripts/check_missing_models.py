@@ -89,7 +89,11 @@ def fetch_model_card_urls(models_url: str, timeout: int = 60) -> dict[str, str]:
         model_card_url = (
             model_card.get("modelCardUrl") if isinstance(model_card, dict) else None
         )
-        if isinstance(model_id, str) and isinstance(model_card_url, str) and model_card_url.strip():
+        if (
+            isinstance(model_id, str)
+            and isinstance(model_card_url, str)
+            and model_card_url.strip()
+        ):
             urls[model_id] = model_card_url
 
     return urls
@@ -154,7 +158,12 @@ def build_diff(
             for model in new_missing:
                 model_card_url = model_card_urls.get(model["model_id"])
                 if model_card_url:
-                    safe_name = model['model_name'].replace("&", "&amp;").replace(">", "&gt;").replace("|", "&#124;")
+                    safe_name = (
+                        model["model_name"]
+                        .replace("&", "&amp;")
+                        .replace(">", "&gt;")
+                        .replace("|", "&#124;")
+                    )
                     section_lines.append(
                         f"• `{model['model_id']}` ({model['provider_name']} / <{model_card_url}|{safe_name}>)"
                     )
