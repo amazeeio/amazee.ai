@@ -754,28 +754,55 @@ async def remove_product_from_team(db: Session, customer_id: str, product_id: st
 
 
 def _get_snapshot_remaining_cents(
-    *, db: Session, team_id: int, region_id: int
+    *,
+    db: Session,
+    team_id: int,
+    region_id: int,
+    period_start: datetime,
+    period_end: datetime,
 ) -> tuple[int, int, int]:
     now_utc = datetime.now(UTC)
-    active_subscriptions = (
-        db.query(DBPeriodicBudgetLedgerEntry)
+    remaining_cents_expr = (
+        DBPeriodicBudgetLedgerEntry.amount_cents
+        - DBPeriodicBudgetLedgerEntry.consumed_cents
+    )
+    subscription_remaining_cents = int(
+        db.query(func.coalesce(func.sum(remaining_cents_expr), 0))
         .filter(
             DBPeriodicBudgetLedgerEntry.team_id == team_id,
             DBPeriodicBudgetLedgerEntry.region_id == region_id,
             DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
             DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            DBPeriodicBudgetLedgerEntry.consumed_cents
+            < DBPeriodicBudgetLedgerEntry.amount_cents,
+            DBPeriodicBudgetLedgerEntry.effective_period_start == period_start,
+            DBPeriodicBudgetLedgerEntry.effective_period_end == period_end,
             (
                 DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
                 | (DBPeriodicBudgetLedgerEntry.expires_at > now_utc)
             ),
         )
-        .all()
+        .scalar()
+        or 0
     )
-    subscription_remaining_cents = 0
-    for row in active_subscriptions:
-        subscription_remaining_cents += max(0, row.amount_cents - row.consumed_cents)
-    topup_remaining_cents = compute_active_topup_remaining(
-        db, team_id=team_id, region_id=region_id
+    topup_remaining_cents = int(
+        db.query(func.coalesce(func.sum(remaining_cents_expr), 0))
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team_id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"]),
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            DBPeriodicBudgetLedgerEntry.consumed_cents
+            < DBPeriodicBudgetLedgerEntry.amount_cents,
+            DBPeriodicBudgetLedgerEntry.purchased_at >= period_start,
+            DBPeriodicBudgetLedgerEntry.purchased_at < period_end,
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > now_utc)
+            ),
+        )
+        .scalar()
+        or 0
     )
     desired_remaining_cents = subscription_remaining_cents + topup_remaining_cents
     return (
@@ -839,7 +866,13 @@ async def capture_periodic_team_spend_for_invoice(
             subscription_remaining_cents,
             topup_remaining_cents,
             desired_remaining_cents,
-        ) = _get_snapshot_remaining_cents(db=db, team_id=team.id, region_id=region.id)
+        ) = _get_snapshot_remaining_cents(
+            db=db,
+            team_id=team.id,
+            region_id=region.id,
+            period_start=period_start,
+            period_end=period_end,
+        )
         upsert_team_spend_period(
             db=db,
             team=team,
@@ -896,7 +929,13 @@ async def capture_periodic_team_spend_for_period(
             subscription_remaining_cents,
             topup_remaining_cents,
             desired_remaining_cents,
-        ) = _get_snapshot_remaining_cents(db=db, team_id=team.id, region_id=region.id)
+        ) = _get_snapshot_remaining_cents(
+            db=db,
+            team_id=team.id,
+            region_id=region.id,
+            period_start=period_start,
+            period_end=period_end,
+        )
         upsert_team_spend_period(
             db=db,
             team=team,
