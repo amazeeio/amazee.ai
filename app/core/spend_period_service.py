@@ -148,6 +148,12 @@ def upsert_team_spend_period(
     desired_remaining_cents: int | None = None,
     raw_payload: dict[str, Any] | None = None,
 ) -> DBTeamSpendPeriod:
+    """Insert a spend-period snapshot for a specific team/region/window.
+
+    This function is intentionally "first write wins": if a spend period row already exists
+    for the same window, the existing row is returned unchanged (no updates to totals, keys,
+    or metadata).
+    """
     budget_type = _resolve_budget_type(team)
     row = _query_spend_period(
         db, team.id, region_id, budget_type, period_start, period_end
