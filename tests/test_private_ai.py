@@ -1464,7 +1464,7 @@ def test_create_llm_token_for_pool_team_skips_per_key_limits(
         if str(call.args[0]).endswith("/key/update")
     ]
     assert len(key_update_calls) == 1
-    assert key_update_calls[0].kwargs["json"]["blocked"] is True
+    assert "blocked" not in key_update_calls[0].kwargs["json"]
 
 
 @patch("httpx.AsyncClient")
