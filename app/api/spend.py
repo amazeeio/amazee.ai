@@ -543,7 +543,7 @@ async def _enforce_pool_no_purchase_key_lock(
 ) -> bool:
     """
     For prepaid-pool teams with no purchased budget in a region, hard-lock
-    keys by setting max_budget=0 in LiteLLM to avoid the team budget zero-edge.
+    keys in LiteLLM to avoid the team budget zero-edge.
     """
     if team is None or not team.requires_pool_purchase_gate:
         return False
@@ -573,6 +573,7 @@ async def _enforce_pool_no_purchase_key_lock(
                     budget_duration=MONTHLY_BUDGET_DURATION,
                     max_budget=0.0,
                     clear_max_budget=False,
+                    blocked=True,
                 )
             return None
         except Exception as exc:

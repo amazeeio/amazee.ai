@@ -102,6 +102,30 @@ def test_create_key_with_email_fallback(
     assert call_args.kwargs["json"]["key_alias"] == "test_at_example.com_-_key-123"
 
 
+@patch("httpx.AsyncClient")
+def test_create_key_can_create_blocked_key(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.create_key(
+            email="test@example.com",
+            name="Test Key",
+            user_id=123,
+            team_id="team-456",
+            blocked=True,
+        )
+    )
+
+    call_args = mock_httpx_post_client.post.call_args
+    assert call_args.kwargs["json"]["blocked"] is True
+
+
 @patch("app.core.config.settings.ENABLE_LIMITS", True)
 def test_create_key_with_limits_requires_non_none_values(test_region):
     """Test create_key validates required per-key limits when apply_limits is True."""
@@ -455,6 +479,33 @@ def test_update_key_budget_clear_budget_fields_send_nulls(
 
 
 @patch("httpx.AsyncClient")
+def test_update_key_budget_can_toggle_blocked(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    mock_client_class.return_value = mock_httpx_post_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.update_key_budget(
+            litellm_token="test-token",
+            blocked=False,
+        )
+    )
+
+    mock_httpx_post_client.post.assert_called_once_with(
+        f"{test_region.litellm_api_url}/key/update",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={
+            "key": "test-token",
+            "blocked": False,
+        },
+    )
+
+
+@patch("httpx.AsyncClient")
 def test_update_key_duration_success(
     mock_client_class, test_region, mock_httpx_post_client
 ):
@@ -728,6 +779,35 @@ def test_update_team_budget_includes_model_aliases(
             "budget_duration": "1mo",
             "spend": 0.0,
             "model_aliases": {"gpt-4": "azure/gpt-4-turbo-2024-04-09"},
+        },
+    )
+
+
+@patch("httpx.AsyncClient")
+def test_update_team_budget_clear_budget_duration_sends_null(
+    mock_client_class, test_region, mock_httpx_post_client
+):
+    mock_client_class.return_value = mock_httpx_post_client
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(
+        service.update_team_budget(
+            team_id="team-1",
+            max_budget=None,
+            budget_duration=None,
+            clear_budget_duration=True,
+        )
+    )
+
+    mock_httpx_post_client.post.assert_called_once_with(
+        f"{test_region.litellm_api_url}/team/update",
+        headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
+        json={
+            "team_id": "team-1",
+            "max_budget": None,
+            "budget_duration": None,
         },
     )
 
