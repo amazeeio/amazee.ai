@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from fastapi import status
@@ -20,7 +19,6 @@ from app.schemas.models import (
 )
 from app.db.postgres import PostgresManager
 from app.db.models import (
-    DBPoolPurchase,
     DBPrivateAIKey,
     DBRegion,
     DBUser,
@@ -42,6 +40,7 @@ from app.core.limit_service import (
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
 )
+from app.core.pool_budget_service import pool_available_budget_for_team_region
 
 router = APIRouter(tags=["private-ai-keys"])
 
@@ -443,16 +442,14 @@ async def create_llm_token(
     )
     pool_purchased_total = None
     if is_pool_team and effective_team is not None:
-        total_cents = (
-            db.query(func.sum(DBPoolPurchase.amount_cents))
-            .filter(
-                DBPoolPurchase.team_id == effective_team.id,
-                DBPoolPurchase.region_id == region.id,
-            )
-            .scalar()
-            or 0
+        # Use pool_available_budget_for_team_region so both subscription-cycle
+        # budget (DBPeriodicBudgetLedgerEntry) and top-up purchases
+        # (DBPoolPurchase) are considered. Without this, a key created after a
+        # subscription cycle (but before any explicit top-up) would be created
+        # as blocked=True because DBPoolPurchase is empty for cycle-only teams.
+        pool_purchased_total = pool_available_budget_for_team_region(
+            db, effective_team.id, region.id
         )
-        pool_purchased_total = float(total_cents) / 100.0
 
     if (owner is not None and owner.team_id) or team_id:
         if settings.ENABLE_LIMITS and not is_pool_team:
