@@ -1339,6 +1339,7 @@ async def apply_billing_cycle_for_team(
                             ),
                             rpm_limit=max_rpm_limit,
                             spend=0.0,
+                            blocked=False,
                         )
                         logger.info(
                             "Updated POOL key %s limits in LiteLLM: duration=%s, key_cap=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
@@ -1361,6 +1362,7 @@ async def apply_billing_cycle_for_team(
                             budget_amount=effective_key_budget,
                             rpm_limit=max_rpm_limit,
                             spend=0.0,
+                            blocked=False,
                         )
                         logger.info(
                             "Updated key %s limits in LiteLLM: duration=%s, budget=%s, rpm=%s, spend_reset=True",

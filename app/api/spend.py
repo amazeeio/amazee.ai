@@ -119,7 +119,7 @@ def _compute_period_start(
     ),
     response_description=(
         "Team historical spend periods with per-key breakdown, plus periodic "
-        "transaction history for PERIODIC teams."
+        "transaction history for PERIODIC and POOL teams."
     ),
 )
 async def get_team_spend_history(
@@ -199,7 +199,7 @@ async def get_team_spend_history(
         )
 
     periodic_transactions: list[TeamPeriodicTransactionItem] = []
-    if team.budget_type == BudgetType.PERIODIC:
+    if team.budget_type in (BudgetType.PERIODIC, BudgetType.POOL):
         latest_ledger = aliased(DBPeriodicBudgetLedgerEntry)
         latest_payment_ids_subq = (
             db.query(

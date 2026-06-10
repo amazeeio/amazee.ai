@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from fastapi import status
@@ -20,7 +19,6 @@ from app.schemas.models import (
 )
 from app.db.postgres import PostgresManager
 from app.db.models import (
-    DBPoolPurchase,
     DBPrivateAIKey,
     DBRegion,
     DBUser,
@@ -42,6 +40,7 @@ from app.core.limit_service import (
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
 )
+from app.core.pool_budget_service import pool_team_has_ever_purchased
 
 router = APIRouter(tags=["private-ai-keys"])
 
@@ -441,18 +440,11 @@ async def create_llm_token(
     is_pool_team = (
         effective_team is not None and effective_team.requires_pool_purchase_gate
     )
-    pool_purchased_total = None
+    has_pool_purchase = False
     if is_pool_team and effective_team is not None:
-        total_cents = (
-            db.query(func.sum(DBPoolPurchase.amount_cents))
-            .filter(
-                DBPoolPurchase.team_id == effective_team.id,
-                DBPoolPurchase.region_id == region.id,
-            )
-            .scalar()
-            or 0
+        has_pool_purchase = pool_team_has_ever_purchased(
+            db, effective_team.id, region.id
         )
-        pool_purchased_total = float(total_cents) / 100.0
 
     if (owner is not None and owner.team_id) or team_id:
         if settings.ENABLE_LIMITS and not is_pool_team:
@@ -513,19 +505,9 @@ async def create_llm_token(
             max_budget=max_max_spend,
             rpm_limit=max_rpm_limit,
             apply_limits=not is_pool_team,
-            blocked=(
-                True
-                if is_pool_team
-                and pool_purchased_total is not None
-                and pool_purchased_total <= 0
-                else None
-            ),
+            blocked=(True if is_pool_team and not has_pool_purchase else None),
         )
-        if (
-            is_pool_team
-            and pool_purchased_total is not None
-            and pool_purchased_total <= 0
-        ):
+        if is_pool_team and not has_pool_purchase:
             await litellm_service.update_key_budget(
                 litellm_token=litellm_token,
                 budget_duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",

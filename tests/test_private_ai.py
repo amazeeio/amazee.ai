@@ -1,6 +1,7 @@
 from unittest.mock import patch, Mock, AsyncMock
 from app.db.models import (
     DBPrivateAIKey,
+    DBPeriodicBudgetLedgerEntry,
     DBPoolPurchase,
     DBTeam,
     DBUser,
@@ -1478,16 +1479,36 @@ def test_create_llm_token_for_pool_team_with_purchase_does_not_block_key(
     test_team,
     mock_httpx_post_client,
 ):
+    """Key created after a top-up purchase must NOT be blocked.
+
+    pool_available_budget_for_team_region reads from DBPeriodicBudgetLedgerEntry
+    (topup entries), not raw DBPoolPurchase rows directly. Both rows are created
+    by purchase_periodic_topup in production, so the test must seed both.
+    """
     test_team.budget_type = "pool"
+    now = datetime.now(UTC)
     db.add(
         DBPoolPurchase(
             team_id=test_team.id,
             region_id=test_region.id,
             amount_cents=1000,
             currency="usd",
-            purchased_at=datetime.now(UTC),
+            purchased_at=now,
             stripe_payment_id="pi_pool_existing_purchase",
-            created_at=datetime.now(UTC),
+            created_at=now,
+        )
+    )
+    # The ledger entry is what pool_available_budget_for_team_region reads.
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            amount_cents=1000,
+            consumed_cents=0,
+            is_active=True,
+            purchased_at=now,
+            expires_at=None,
         )
     )
     db.commit()
@@ -1514,6 +1535,109 @@ def test_create_llm_token_for_pool_team_with_purchase_does_not_block_key(
         .get("metadata", {})
         .get("amazeeai_private_ai_key_name")
         == "Pool Team Key With Budget"
+    ]
+    assert len(key_generate_calls) == 1
+    assert "blocked" not in key_generate_calls[0].kwargs["json"]
+
+
+@patch("httpx.AsyncClient")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_create_llm_token_for_pool_team_with_subscription_cycle_does_not_block_key(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
+    """Key created after a subscription cycle (no DBPoolPurchase) must NOT be blocked.
+
+    Subscription budget lives in DBPeriodicBudgetLedgerEntry with entry_type='subscription'.
+    pool_available_budget_for_team_region includes it, so the key must come out unblocked.
+    """
+    test_team.budget_type = "pool"
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="subscription",
+            amount_cents=1000,
+            consumed_cents=0,
+            is_active=True,
+            purchased_at=datetime.now(UTC),
+            expires_at=None,
+        )
+    )
+    db.commit()
+
+    mock_client_class.return_value = mock_httpx_post_client
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Pool Team Key After Cycle",
+            "team_id": test_team.id,
+        },
+    )
+
+    assert response.status_code == 200
+
+    key_generate_calls = [
+        call
+        for call in mock_httpx_post_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/generate")
+        and call.kwargs.get("json", {})
+        .get("metadata", {})
+        .get("amazeeai_private_ai_key_name")
+        == "Pool Team Key After Cycle"
+    ]
+    assert len(key_generate_calls) == 1
+    assert "blocked" not in key_generate_calls[0].kwargs["json"]
+
+
+@patch("httpx.AsyncClient")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_create_llm_token_for_non_gated_pool_team_is_never_blocked(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
+    """Non-gated POOL teams (require_purchase_for_requests=False) must never
+    produce a blocked key regardless of budget state.
+    """
+    test_team.budget_type = "pool"
+    test_team.require_purchase_for_requests = False  # not gated
+    db.commit()
+
+    mock_client_class.return_value = mock_httpx_post_client
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Non-Gated Pool Key",
+            "team_id": test_team.id,
+        },
+    )
+
+    assert response.status_code == 200
+
+    key_generate_calls = [
+        call
+        for call in mock_httpx_post_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/generate")
+        and call.kwargs.get("json", {})
+        .get("metadata", {})
+        .get("amazeeai_private_ai_key_name")
+        == "Non-Gated Pool Key"
     ]
     assert len(key_generate_calls) == 1
     assert "blocked" not in key_generate_calls[0].kwargs["json"]
