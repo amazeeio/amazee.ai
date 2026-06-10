@@ -49,6 +49,25 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["budgets"])
 MONTHLY_BUDGET_DURATION = "1mo"
+
+
+def _is_duplicate_stripe_payment_integrity_error(exc: IntegrityError) -> bool:
+    """Return True only for unique stripe_payment_id conflicts."""
+    orig = getattr(exc, "orig", None)
+    pgcode = getattr(orig, "pgcode", None)
+    if pgcode != "23505":
+        return False
+
+    constraint_name = (
+        getattr(getattr(orig, "diag", None), "constraint_name", "") or ""
+    ).lower()
+    if constraint_name:
+        return "stripe_payment_id" in constraint_name
+
+    message = str(orig).lower()
+    return "stripe_payment_id" in message
+
+
 # PERIODIC teams use a fixed 31d rolling window so LiteLLM never self-resets
 # on a calendar boundary. Spend is reset manually on each Stripe webhook renewal.
 PERIODIC_BUDGET_DURATION = "31d"
@@ -495,11 +514,25 @@ async def purchase_periodic_topup(
                 detail="A purchase with this stripe_payment_id already exists",
             )
         db.flush()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.rollback()
+        if _is_duplicate_stripe_payment_integrity_error(exc):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A purchase with this stripe_payment_id already exists",
+            )
+
+        logger.exception(
+            "IntegrityError while recording periodic top-up",
+            extra={
+                "team_id": team.id,
+                "region_id": region_id,
+                "stripe_payment_id": purchase.stripe_payment_id,
+            },
+        )
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A purchase with this stripe_payment_id already exists",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to record periodic top-up purchase",
         )
 
     service = LiteLLMService(

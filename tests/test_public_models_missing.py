@@ -511,7 +511,11 @@ def test_build_diff_uses_model_card_urls_for_slack_hyperlinks():
     from pathlib import Path
 
     _module = runpy.run_path(
-        str(Path(__file__).resolve().parent.parent / "scripts" / "check_missing_models.py")
+        str(
+            Path(__file__).resolve().parent.parent
+            / "scripts"
+            / "check_missing_models.py"
+        )
     )
     build_diff = _module["build_diff"]
 
@@ -552,7 +556,10 @@ def test_build_diff_uses_model_card_urls_for_slack_hyperlinks():
     summary = diff["slack_summary"]
 
     # Qwen should have a Slack hyperlink
-    assert "<https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-qwen-qwen3-32b.html|Qwen3 32B (dense)>" in summary
+    assert (
+        "<https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-qwen-qwen3-32b.html|Qwen3 32B (dense)>"
+        in summary
+    )
     # Claude should be plain text (no URL available)
     assert "(Anthropic / Claude Opus 4.7)" in summary
 
@@ -563,7 +570,11 @@ def test_build_diff_works_without_model_card_urls():
     from pathlib import Path
 
     _module = runpy.run_path(
-        str(Path(__file__).resolve().parent.parent / "scripts" / "check_missing_models.py")
+        str(
+            Path(__file__).resolve().parent.parent
+            / "scripts"
+            / "check_missing_models.py"
+        )
     )
     build_diff = _module["build_diff"]
 
@@ -607,25 +618,31 @@ def test_fetch_model_card_urls_parses_catalog():
     from io import BytesIO
 
     _module = runpy.run_path(
-        str(Path(__file__).resolve().parent.parent / "scripts" / "check_missing_models.py")
+        str(
+            Path(__file__).resolve().parent.parent
+            / "scripts"
+            / "check_missing_models.py"
+        )
     )
     fetch_model_card_urls = _module["fetch_model_card_urls"]
 
-    catalog = json.dumps([
-        {
-            "modelId": "qwen.qwen3-32b-v1:0",
-            "modelCard": {
-                "modelCardUrl": "https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-qwen-qwen3-32b.html"
+    catalog = json.dumps(
+        [
+            {
+                "modelId": "qwen.qwen3-32b-v1:0",
+                "modelCard": {
+                    "modelCardUrl": "https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-qwen-qwen3-32b.html"
+                },
             },
-        },
-        {
-            "modelId": "anthropic.claude-opus-4-7",
-            "modelCard": None,
-        },
-        {
-            "modelId": "meta.llama3-1-70b-instruct-v1:0",
-        },
-    ]).encode()
+            {
+                "modelId": "anthropic.claude-opus-4-7",
+                "modelCard": None,
+            },
+            {
+                "modelId": "meta.llama3-1-70b-instruct-v1:0",
+            },
+        ]
+    ).encode()
 
     with mock_patch("urllib.request.urlopen") as mock_urlopen:
         mock_urlopen.return_value.__enter__ = lambda s: BytesIO(catalog)
@@ -644,7 +661,11 @@ def test_fetch_model_card_urls_returns_empty_on_failure():
     from unittest.mock import patch as mock_patch
 
     _module = runpy.run_path(
-        str(Path(__file__).resolve().parent.parent / "scripts" / "check_missing_models.py")
+        str(
+            Path(__file__).resolve().parent.parent
+            / "scripts"
+            / "check_missing_models.py"
+        )
     )
     fetch_model_card_urls = _module["fetch_model_card_urls"]
 

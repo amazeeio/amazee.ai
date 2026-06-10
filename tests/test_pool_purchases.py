@@ -11,6 +11,7 @@ from app.db.models import DBTeamRegion
 from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
 from datetime import datetime, UTC, timedelta
 import pytest
+from sqlalchemy.exc import IntegrityError
 from unittest.mock import patch, AsyncMock
 from app.api.budgets import (
     sync_pool_team_budgets,
@@ -308,6 +309,74 @@ def test_create_periodic_topup_duplicate_payment_id(
     )
     assert response.status_code == 409
     assert "already exists" in response.json()["detail"]
+
+
+def test_create_periodic_topup_duplicate_payment_integrity_error_returns_409(
+    client, admin_token, db, test_team, test_region
+):
+    test_team.budget_type = "periodic"
+    db.commit()
+
+    class _OrigUniqueError(Exception):
+        pgcode = "23505"
+
+        class diag:  # noqa: N801
+            constraint_name = "ix_periodic_payments_stripe_payment_id"
+
+    with patch(
+        "app.api.budgets.add_topup_entry",
+        side_effect=IntegrityError("", {}, _OrigUniqueError()),
+    ):
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": f"cs_periodic_{int(time.time() * 1000000)}",
+            },
+            headers={"Authorization": "Bearer " + admin_token},
+        )
+
+    assert response.status_code == 409
+    assert (
+        response.json()["detail"]
+        == "A purchase with this stripe_payment_id already exists"
+    )
+
+
+def test_create_periodic_topup_non_stripe_integrity_error_returns_500(
+    client, admin_token, db, test_team, test_region
+):
+    test_team.budget_type = "periodic"
+    db.commit()
+
+    class _OrigIntegrityError(Exception):
+        pgcode = "23505"
+
+        class diag:  # noqa: N801
+            constraint_name = "ix_periodic_payments_team_id"
+
+        def __str__(self):
+            return "duplicate key detail includes stripe_payment_id value"
+
+    with patch(
+        "app.api.budgets.add_topup_entry",
+        side_effect=IntegrityError("", {}, _OrigIntegrityError()),
+    ):
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": f"cs_periodic_{int(time.time() * 1000000)}",
+            },
+            headers={"Authorization": "Bearer " + admin_token},
+        )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Failed to record periodic top-up purchase"
 
 
 def test_create_periodic_topup_marks_sync_failed_on_litellm_error(
