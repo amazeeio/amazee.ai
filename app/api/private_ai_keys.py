@@ -440,17 +440,10 @@ async def create_llm_token(
     is_pool_team = (
         effective_team is not None and effective_team.requires_pool_purchase_gate
     )
-    pool_purchased_total = None
+    has_pool_purchase = False
     if is_pool_team and effective_team is not None:
-        # Use pool_team_has_ever_purchased: the block/unblock decision is purely
-        # "has this team ever paid" — not how much budget remains.  Remaining
-        # balance enforcement is handled by LiteLLM max_budget, not the blocked
-        # flag.  A team that spent all their budget should still have unblocked
-        # keys; their requests will simply fail due to max_budget=0.
-        pool_purchased_total = (
-            0.0
-            if not pool_team_has_ever_purchased(db, effective_team.id, region.id)
-            else 1.0  # sentinel: any positive value means "has purchased"
+        has_pool_purchase = pool_team_has_ever_purchased(
+            db, effective_team.id, region.id
         )
 
     if (owner is not None and owner.team_id) or team_id:
@@ -512,19 +505,9 @@ async def create_llm_token(
             max_budget=max_max_spend,
             rpm_limit=max_rpm_limit,
             apply_limits=not is_pool_team,
-            blocked=(
-                True
-                if is_pool_team
-                and pool_purchased_total is not None
-                and pool_purchased_total <= 0
-                else None
-            ),
+            blocked=(True if is_pool_team and not has_pool_purchase else None),
         )
-        if (
-            is_pool_team
-            and pool_purchased_total is not None
-            and pool_purchased_total <= 0
-        ):
+        if is_pool_team and not has_pool_purchase:
             await litellm_service.update_key_budget(
                 litellm_token=litellm_token,
                 budget_duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
