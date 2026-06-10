@@ -3613,3 +3613,20 @@ async def test_invoice_ledger_duplicate_invoice_id_is_idempotent(
     )
     assert len(rollover_rows) <= 1
     assert len(subscription_rows) <= 1
+
+    # The topup entry must not have been consumed twice.
+    # spend=100¢, topup=500¢ → at most 100¢ consumed; a second FIFO run
+    # would incorrectly add another 100¢ (200¢ total).
+    topup_entry = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == test_team.id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "topup",
+        )
+        .first()
+    )
+    assert topup_entry is not None
+    assert topup_entry.consumed_cents <= 100, (
+        f"Double-allocation detected: consumed_cents={topup_entry.consumed_cents}, "
+        "expected at most 100¢ from a single FIFO run"
+    )

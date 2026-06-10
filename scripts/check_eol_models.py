@@ -46,9 +46,7 @@ def fetch_public_models(api_url: str, timeout: int = 60) -> list[dict[str, Any]]
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.load(response)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"Invalid JSON from {url}: {exc}"
-        ) from exc
+        raise RuntimeError(f"Invalid JSON from {url}: {exc}") from exc
     except HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")[:500]
         raise RuntimeError(
@@ -183,7 +181,9 @@ def build_slack_summary(results: dict[str, list[dict[str, Any]]]) -> str:
     return "\n\n".join(sections)
 
 
-def write_github_outputs(results: dict[str, list[dict[str, Any]]], summary: str) -> None:
+def write_github_outputs(
+    results: dict[str, list[dict[str, Any]]], summary: str
+) -> None:
     """Emit $GITHUB_OUTPUT lines for the surrounding workflow."""
     output_path = os.environ.get("GITHUB_OUTPUT")
     if not output_path:

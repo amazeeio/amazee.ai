@@ -364,12 +364,18 @@ class TestFetchPublicModels:
 class TestMainWarningDaysValidation:
     def test_invalid_warning_days_returns_error(self):
         mod = _load_module()
-        with patch.dict("os.environ", {"EOL_WARNING_DAYS": "abc", "AMAZEEAI_API_URL": "https://x.example"}):
+        with patch.dict(
+            "os.environ",
+            {"EOL_WARNING_DAYS": "abc", "AMAZEEAI_API_URL": "https://x.example"},
+        ):
             exit_code = mod["main"]()
             assert exit_code == 1
 
     def test_negative_warning_days_returns_error(self):
         mod = _load_module()
-        with patch.dict("os.environ", {"EOL_WARNING_DAYS": "-5", "AMAZEEAI_API_URL": "https://x.example"}):
+        with patch.dict(
+            "os.environ",
+            {"EOL_WARNING_DAYS": "-5", "AMAZEEAI_API_URL": "https://x.example"},
+        ):
             exit_code = mod["main"]()
             assert exit_code == 1

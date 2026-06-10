@@ -16,6 +16,7 @@ from app.db.models import (
     DBPoolPurchase,
     DBPeriodicPayment,
     DBPeriodicBudgetLedgerEntry,
+    DBTeamSpendPeriod,
     DBAPIToken,
     DBUserAdminRegion,
     DBSpendCap,
@@ -962,6 +963,37 @@ async def capture_periodic_team_spend_for_period(
         )
 
 
+def _previous_period_spend_baseline_cents(
+    db: Session,
+    *,
+    team_id: int,
+    region_id: int,
+    current_period_start: datetime,
+) -> int:
+    """Return the LiteLLM total_spend (in cents) captured at the previous cycle
+    boundary — i.e. the most recent DBTeamSpendPeriod snapshot whose period_start
+    is strictly before the current one.
+
+    FIFO incremental spend = current_litellm_spend - this baseline.
+    This ensures we only allocate NEW spend (since the last cycle) against
+    active ledger entries, preventing rollovers from being consumed by
+    historical spend already settled in prior FIFO runs.
+    """
+    row = (
+        db.query(DBTeamSpendPeriod.total_spend)
+        .filter(
+            DBTeamSpendPeriod.team_id == team_id,
+            DBTeamSpendPeriod.region_id == region_id,
+            DBTeamSpendPeriod.period_start < current_period_start,
+        )
+        .order_by(DBTeamSpendPeriod.period_start.desc())
+        .first()
+    )
+    if row is None or row[0] is None:
+        return 0
+    return int(round(float(row[0]) * 100))
+
+
 async def _sync_periodic_ledger_for_invoice(
     *,
     db: Session,
@@ -1013,9 +1045,36 @@ async def _sync_periodic_ledger_for_invoice(
         else getattr(snapshot, "total_spend", 0.0)
     )
     spend_cents = int(round(float(snapshot_total_spend) * 100))
-    allocate_period_spend_fifo(
-        db, team_id=team.id, region_id=region.id, spend_cents=spend_cents
+
+    invoice_id = getattr(invoice_obj, "id", None)
+
+    # Guard FIFO against double-allocation on repeated calls with the same
+    # invoice.  add_subscription_entry and materialize_topup_rollovers are
+    # already idempotent on source_invoice_id; FIFO must be too.
+    # If a subscription entry for this invoice already exists the ledger was
+    # already settled — skip FIFO so consumed_cents are not incremented twice.
+    already_settled = bool(
+        invoice_id
+        and db.query(DBPeriodicBudgetLedgerEntry.id)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team.id,
+            DBPeriodicBudgetLedgerEntry.region_id == region.id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.source_invoice_id == invoice_id,
+        )
+        .first()
     )
+    if not already_settled:
+        spend_baseline_cents = _previous_period_spend_baseline_cents(
+            db, team_id=team.id, region_id=region.id, current_period_start=period_start
+        )
+        incremental_spend_cents = max(0, spend_cents - spend_baseline_cents)
+        allocate_period_spend_fifo(
+            db,
+            team_id=team.id,
+            region_id=region.id,
+            spend_cents=incremental_spend_cents,
+        )
     materialize_topup_rollovers(
         db,
         team_id=team.id,
@@ -1072,9 +1131,37 @@ async def _sync_periodic_ledger_for_period(
         )
 
     spend_cents = int(round(float(snapshot_total_spend) * 100))
-    allocate_period_spend_fifo(
-        db, team_id=team.id, region_id=region.id, spend_cents=spend_cents
+
+    # Guard FIFO against double-allocation on repeated calls with the same
+    # source_invoice_id (e.g. Stripe webhook replay or direct test re-invocation).
+    # add_subscription_entry is already idempotent on source_invoice_id, but
+    # that guard does not protect the FIFO step. If a subscription entry for
+    # this invoice already exists the ledger was already settled — skip FIFO.
+    already_settled = bool(
+        source_invoice_id
+        and db.query(DBPeriodicBudgetLedgerEntry.id)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team.id,
+            DBPeriodicBudgetLedgerEntry.region_id == region.id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.source_invoice_id == source_invoice_id,
+        )
+        .first()
     )
+    if not already_settled:
+        spend_baseline_cents = _previous_period_spend_baseline_cents(
+            db,
+            team_id=team.id,
+            region_id=region.id,
+            current_period_start=period_start,
+        )
+        incremental_spend_cents = max(0, spend_cents - spend_baseline_cents)
+        allocate_period_spend_fifo(
+            db,
+            team_id=team.id,
+            region_id=region.id,
+            spend_cents=incremental_spend_cents,
+        )
     materialize_topup_rollovers(
         db,
         team_id=team.id,
