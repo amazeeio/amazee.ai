@@ -1131,13 +1131,37 @@ async def _sync_periodic_ledger_for_period(
         )
 
     spend_cents = int(round(float(snapshot_total_spend) * 100))
-    spend_baseline_cents = _previous_period_spend_baseline_cents(
-        db, team_id=team.id, region_id=region.id, current_period_start=period_start
+
+    # Guard FIFO against double-allocation on repeated calls with the same
+    # source_invoice_id (e.g. Stripe webhook replay or direct test re-invocation).
+    # add_subscription_entry is already idempotent on source_invoice_id, but
+    # that guard does not protect the FIFO step. If a subscription entry for
+    # this invoice already exists the ledger was already settled — skip FIFO.
+    already_settled = bool(
+        source_invoice_id
+        and db.query(DBPeriodicBudgetLedgerEntry.id)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team.id,
+            DBPeriodicBudgetLedgerEntry.region_id == region.id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.source_invoice_id == source_invoice_id,
+        )
+        .first()
     )
-    incremental_spend_cents = max(0, spend_cents - spend_baseline_cents)
-    allocate_period_spend_fifo(
-        db, team_id=team.id, region_id=region.id, spend_cents=incremental_spend_cents
-    )
+    if not already_settled:
+        spend_baseline_cents = _previous_period_spend_baseline_cents(
+            db,
+            team_id=team.id,
+            region_id=region.id,
+            current_period_start=period_start,
+        )
+        incremental_spend_cents = max(0, spend_cents - spend_baseline_cents)
+        allocate_period_spend_fifo(
+            db,
+            team_id=team.id,
+            region_id=region.id,
+            spend_cents=incremental_spend_cents,
+        )
     materialize_topup_rollovers(
         db,
         team_id=team.id,
