@@ -370,6 +370,7 @@ class LiteLLMService:
         rpm_limit: int,
         budget_duration: Optional[str] = None,
         spend: Optional[float] = None,
+        blocked: Optional[bool] = None,
     ):
         """Set the restrictions for a LiteLLM API key.
 
@@ -387,6 +388,8 @@ class LiteLLMService:
             }
             if spend is not None:
                 request_data["spend"] = spend
+            if blocked is not None:
+                request_data["blocked"] = blocked
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     f"{self.api_url}/key/update",
