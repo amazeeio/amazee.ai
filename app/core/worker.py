@@ -62,6 +62,7 @@ from app.core.periodic_budget_ledger_service import (
     BudgetDriftResult,
     add_subscription_entry,
     allocate_period_spend_fifo,
+    already_allocated_cents,
     compute_active_topup_remaining,
     expire_subscription_entries,
     materialize_topup_rollovers,
@@ -1072,8 +1073,12 @@ async def _sync_periodic_ledger_for_period(
         )
 
     spend_cents = int(round(float(snapshot_total_spend) * 100))
+    incremental_spend_cents = max(
+        0,
+        spend_cents - already_allocated_cents(db, team_id=team.id, region_id=region.id),
+    )
     allocate_period_spend_fifo(
-        db, team_id=team.id, region_id=region.id, spend_cents=spend_cents
+        db, team_id=team.id, region_id=region.id, spend_cents=incremental_spend_cents
     )
     materialize_topup_rollovers(
         db,
