@@ -40,7 +40,7 @@ from app.core.limit_service import (
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
 )
-from app.core.pool_budget_service import pool_available_budget_for_team_region
+from app.core.pool_budget_service import pool_team_has_ever_purchased
 
 router = APIRouter(tags=["private-ai-keys"])
 
@@ -442,13 +442,15 @@ async def create_llm_token(
     )
     pool_purchased_total = None
     if is_pool_team and effective_team is not None:
-        # Use pool_available_budget_for_team_region so both subscription-cycle
-        # budget (DBPeriodicBudgetLedgerEntry) and top-up purchases
-        # (DBPoolPurchase) are considered. Without this, a key created after a
-        # subscription cycle (but before any explicit top-up) would be created
-        # as blocked=True because DBPoolPurchase is empty for cycle-only teams.
-        pool_purchased_total = pool_available_budget_for_team_region(
-            db, effective_team.id, region.id
+        # Use pool_team_has_ever_purchased: the block/unblock decision is purely
+        # "has this team ever paid" — not how much budget remains.  Remaining
+        # balance enforcement is handled by LiteLLM max_budget, not the blocked
+        # flag.  A team that spent all their budget should still have unblocked
+        # keys; their requests will simply fail due to max_budget=0.
+        pool_purchased_total = (
+            0.0
+            if not pool_team_has_ever_purchased(db, effective_team.id, region.id)
+            else 1.0  # sentinel: any positive value means "has purchased"
         )
 
     if (owner is not None and owner.team_id) or team_id:

@@ -43,6 +43,7 @@ from app.core.periodic_budget_ledger_service import (
 from app.core.pool_budget_service import (
     pool_available_budget_for_team_region as shared_pool_available_budget_for_team_region,
     pool_team_budget_duration_for_enforcement as shared_pool_team_budget_duration_for_enforcement,
+    pool_team_has_ever_purchased,
 )
 
 logger = logging.getLogger(__name__)
@@ -219,8 +220,11 @@ async def _sync_pool_key_effective_budgets(
     """
     Keep key-level effective limits coherent for POOL teams.
 
-    - purchased_total <= 0: hard-lock all team keys (max_budget=0)
-    - purchased_total > 0: restore key max_budget from spend_caps (or clear)
+    The block/unblock decision uses pool_team_has_ever_purchased: a key is
+    blocked only when the team has never had any purchase at all.  Remaining
+    balance does NOT affect the blocked flag — budget enforcement is handled
+    by LiteLLM max_budget.  `purchased_total` is still used to set max_budget
+    on the key (0 → $0 cap, >0 → clear or apply configured cap).
     """
     keys = get_team_region_litellm_keys(
         db,
@@ -229,6 +233,8 @@ async def _sync_pool_key_effective_budgets(
     )
     if not keys:
         return []
+
+    has_purchased = pool_team_has_ever_purchased(db, team_id, region.id)
 
     key_caps = (
         db.query(DBSpendCap.key_id, DBSpendCap.max_budget)
@@ -250,7 +256,8 @@ async def _sync_pool_key_effective_budgets(
     async def _sync_key_budget(key: DBPrivateAIKey) -> str | None:
         try:
             async with semaphore:
-                if purchased_total <= 0:
+                if not has_purchased:
+                    # Team has never paid — hard-lock the key.
                     await service.update_key_budget(
                         litellm_token=key.litellm_token,
                         budget_duration=MONTHLY_BUDGET_DURATION,

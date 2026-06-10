@@ -64,6 +64,40 @@ def pool_available_budget_for_team_region(
     )
 
 
+def pool_team_has_ever_purchased(db: Session, team_id: int, region_id: int) -> bool:
+    """Return True if the team has ever had at least one subscription cycle
+    (DBPeriodicBudgetLedgerEntry) or direct pool top-up (DBPoolPurchase)
+    recorded for this region, regardless of remaining balance.
+
+    This is the sole criterion for the block/unblock decision on keys:
+    - False (no purchase ever)  → key must be created/kept blocked
+    - True  (at least one purchase) → key must be unblocked, even if all
+      budget is consumed.  Actual spend enforcement is handled by LiteLLM
+      max_budget, not the blocked flag.
+    """
+    has_ledger_entry = (
+        db.query(DBPeriodicBudgetLedgerEntry.id)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team_id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+        )
+        .first()
+        is not None
+    )
+    if has_ledger_entry:
+        return True
+    has_pool_purchase = (
+        db.query(DBPoolPurchase.id)
+        .filter(
+            DBPoolPurchase.team_id == team_id,
+            DBPoolPurchase.region_id == region_id,
+        )
+        .first()
+        is not None
+    )
+    return has_pool_purchase
+
+
 def pool_team_budget_duration_for_enforcement(
     db: Session, team_id: int, region_id: int
 ) -> str:
