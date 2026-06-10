@@ -189,25 +189,6 @@ def add_topup_entry(
     return entry
 
 
-def already_allocated_cents(db: Session, *, team_id: int, region_id: int) -> int:
-    """Return the total consumed_cents already recorded across ALL ledger entries
-    (active and inactive) for this team+region.
-
-    Used by allocate_period_spend_fifo callers to compute incremental spend:
-        incremental = total_lifetime_spend - already_allocated
-    This prevents re-consuming entries that were settled in previous FIFO runs.
-    """
-    total = (
-        db.query(func.coalesce(func.sum(DBPeriodicBudgetLedgerEntry.consumed_cents), 0))
-        .filter(
-            DBPeriodicBudgetLedgerEntry.team_id == team_id,
-            DBPeriodicBudgetLedgerEntry.region_id == region_id,
-        )
-        .scalar()
-    )
-    return int(total or 0)
-
-
 def allocate_period_spend_fifo(
     db: Session, *, team_id: int, region_id: int, spend_cents: int
 ) -> AllocationResult:

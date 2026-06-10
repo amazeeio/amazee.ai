@@ -16,6 +16,7 @@ from app.db.models import (
     DBPoolPurchase,
     DBPeriodicPayment,
     DBPeriodicBudgetLedgerEntry,
+    DBTeamSpendPeriod,
     DBAPIToken,
     DBUserAdminRegion,
     DBSpendCap,
@@ -62,7 +63,6 @@ from app.core.periodic_budget_ledger_service import (
     BudgetDriftResult,
     add_subscription_entry,
     allocate_period_spend_fifo,
-    already_allocated_cents,
     compute_active_topup_remaining,
     expire_subscription_entries,
     materialize_topup_rollovers,
@@ -963,6 +963,37 @@ async def capture_periodic_team_spend_for_period(
         )
 
 
+def _previous_period_spend_baseline_cents(
+    db: Session,
+    *,
+    team_id: int,
+    region_id: int,
+    current_period_start: datetime,
+) -> int:
+    """Return the LiteLLM total_spend (in cents) captured at the previous cycle
+    boundary — i.e. the most recent DBTeamSpendPeriod snapshot whose period_start
+    is strictly before the current one.
+
+    FIFO incremental spend = current_litellm_spend - this baseline.
+    This ensures we only allocate NEW spend (since the last cycle) against
+    active ledger entries, preventing rollovers from being consumed by
+    historical spend already settled in prior FIFO runs.
+    """
+    row = (
+        db.query(DBTeamSpendPeriod.total_spend)
+        .filter(
+            DBTeamSpendPeriod.team_id == team_id,
+            DBTeamSpendPeriod.region_id == region_id,
+            DBTeamSpendPeriod.period_start < current_period_start,
+        )
+        .order_by(DBTeamSpendPeriod.period_start.desc())
+        .first()
+    )
+    if row is None or row[0] is None:
+        return 0
+    return int(round(float(row[0]) * 100))
+
+
 async def _sync_periodic_ledger_for_invoice(
     *,
     db: Session,
@@ -1014,8 +1045,12 @@ async def _sync_periodic_ledger_for_invoice(
         else getattr(snapshot, "total_spend", 0.0)
     )
     spend_cents = int(round(float(snapshot_total_spend) * 100))
+    spend_baseline_cents = _previous_period_spend_baseline_cents(
+        db, team_id=team.id, region_id=region.id, current_period_start=period_start
+    )
+    incremental_spend_cents = max(0, spend_cents - spend_baseline_cents)
     allocate_period_spend_fifo(
-        db, team_id=team.id, region_id=region.id, spend_cents=spend_cents
+        db, team_id=team.id, region_id=region.id, spend_cents=incremental_spend_cents
     )
     materialize_topup_rollovers(
         db,
@@ -1073,10 +1108,10 @@ async def _sync_periodic_ledger_for_period(
         )
 
     spend_cents = int(round(float(snapshot_total_spend) * 100))
-    incremental_spend_cents = max(
-        0,
-        spend_cents - already_allocated_cents(db, team_id=team.id, region_id=region.id),
+    spend_baseline_cents = _previous_period_spend_baseline_cents(
+        db, team_id=team.id, region_id=region.id, current_period_start=period_start
     )
+    incremental_spend_cents = max(0, spend_cents - spend_baseline_cents)
     allocate_period_spend_fifo(
         db, team_id=team.id, region_id=region.id, spend_cents=incremental_spend_cents
     )
