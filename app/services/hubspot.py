@@ -13,7 +13,8 @@ class HubSpotService:
     BASE_URL = "https://api.hubapi.com"
     CONTACTS_OBJECT_PATH = "/crm/v3/objects/contacts"
     CONTACT_SEARCH_PATH = "/crm/v3/objects/contacts/search"
-    EMAIL_SUBSCRIPTION_PATH = "/email/public/v1/subscriptions/{email}"
+    COMM_PREFS_SUBSCRIBE_PATH = "/communication-preferences/v3/subscribe"
+    COMM_PREFS_UNSUBSCRIBE_PATH = "/communication-preferences/v3/unsubscribe"
 
     def __init__(self, token: Optional[str] = None):
         self.token = token or settings.HUBSPOT_TOKEN
@@ -116,21 +117,49 @@ class HubSpotService:
     async def _update_email_subscription(
         self, email: str, enabled: bool, client: httpx.AsyncClient
     ) -> None:
+        """Subscribe or unsubscribe a contact using the v3 Communication Preferences API.
+
+        - Subscribe:   POST /communication-preferences/v3/subscribe
+        - Unsubscribe: POST /communication-preferences/v3/unsubscribe
+
+        Note: HubSpot does not allow programmatic re-subscription of a contact
+        who has previously opted out. In that case HubSpot returns a 400 VALIDATION_ERROR
+        which is logged as a warning and silently ignored — the contact property is
+        still updated so the local DB stays in sync.
+        """
         if not self.marketing_subscription_id:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="HubSpot marketing subscription is not configured",
             )
-        response = await client.put(
-            f"{self.BASE_URL}{self.EMAIL_SUBSCRIPTION_PATH.format(email=email)}",
+        path = (
+            self.COMM_PREFS_SUBSCRIBE_PATH
+            if enabled
+            else self.COMM_PREFS_UNSUBSCRIBE_PATH
+        )
+        payload = {
+            "emailAddress": email,
+            "subscriptionId": self.marketing_subscription_id,
+            "legalBasis": "LEGITIMATE_INTEREST_PQL",
+            "legalBasisExplanation": "User preference updated via amazee.ai platform",
+        }
+        response = await client.post(
+            f"{self.BASE_URL}{path}",
             headers=self._headers(),
-            json={
-                "subscriptionId": self.marketing_subscription_id,
-                "subscribed": enabled,
-            },
+            json=payload,
         )
         if response.status_code >= 400:
             request_id = response.headers.get("x-hubspot-request-id", "unknown")
+            body = response.json() if response.text else {}
+            # HubSpot blocks re-subscription of contacts who previously opted out.
+            # This is a compliance constraint, not a system error — log and continue.
+            if enabled and body.get("category") == "VALIDATION_ERROR":
+                logger.warning(
+                    "HubSpot blocked re-subscription for email=%s (previously opted out): %s",
+                    email,
+                    body.get("message", ""),
+                )
+                return
             logger.error(
                 "HubSpot subscription update failed status=%s request_id=%s body=%s",
                 response.status_code,
