@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.security import get_password_hash
 from app.db.models import (
     BudgetType,
+    DBPeriodicBudgetLedgerEntry,
     DBPoolPurchase,
     DBPrivateAIKey,
     DBRegion,
@@ -75,11 +76,12 @@ def test_get_team_spend_by_region(
     assert data["team_id"] == test_team.id
     assert data["region_id"] == test_region.id
     assert data["total_spend"] == 20.0
-    assert data["total_budget"] == 75.0
+    assert data["total_budget"] == 0.0
     assert data["total_prompt_tokens"] == 160
     assert data["total_completion_tokens"] == 60
     assert data["total_tokens"] == 220
     assert data["key_count"] == 2
+    assert all(key["max_budget"] is None for key in data["keys"])
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
@@ -122,6 +124,7 @@ def test_get_user_spend_by_region(
     assert data["keys"][0]["prompt_tokens"] == 200
     assert data["keys"][0]["completion_tokens"] == 50
     assert data["keys"][0]["total_tokens"] == 250
+    assert data["keys"][0]["max_budget"] is None
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
@@ -160,7 +163,7 @@ def test_key_spend_alias(
     assert response.status_code == 200
     data = response.json()
     assert data["spend"] == 10.5
-    assert data["max_budget"] == 100.0
+    assert data["max_budget"] is None
     assert data["prompt_tokens"] == 1200
     assert data["completion_tokens"] == 300
     assert data["total_tokens"] == 1500
@@ -222,7 +225,8 @@ def test_key_spend_alias_uses_configured_cap_for_no_purchase_pool_team(
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert response.status_code == 200
-    assert response.json()["max_budget"] == 11.0
+    data = response.json()
+    assert data["max_budget"] == 11.0
 
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
@@ -295,7 +299,7 @@ def test_get_team_spend_uses_configured_caps_for_no_purchase_pool_team(
 
 
 @patch("app.api.spend.LiteLLMService.get_user_info", new_callable=AsyncMock)
-def test_get_user_spend_uses_member_or_key_cap_for_no_purchase_pool_team(
+def test_get_user_spend_exposes_only_db_key_cap_for_no_purchase_pool_team(
     mock_get_user_info, client, admin_token, test_team, test_region, db
 ):
     test_team.budget_type = BudgetType.POOL
@@ -389,7 +393,7 @@ def test_get_user_spend_uses_member_or_key_cap_for_no_purchase_pool_team(
     data = response.json()
     max_budget_by_name = {k["key_name"]: k["max_budget"] for k in data["keys"]}
     assert max_budget_by_name[key_with_key_cap.name] == 11.0
-    assert max_budget_by_name[key_with_member_cap.name] == 7.0
+    assert max_budget_by_name[key_with_member_cap.name] is None
 
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
@@ -694,6 +698,24 @@ def test_update_pool_team_budget_uses_pool_duration(
             created_at=datetime.now(UTC),
         )
     )
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            source_payment_id=None,
+            source_invoice_id=None,
+            stripe_payment_id=f"pool-team-duration-ledger-{test_team.id}-{test_region.id}",
+            amount_cents=5000,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC),
+            effective_period_start=None,
+            effective_period_end=None,
+            expires_at=datetime.now(UTC) + timedelta(days=365),
+            rolled_over_from_id=None,
+            is_active=True,
+        )
+    )
     db.commit()
     mock_get_team_info.return_value = {
         "team_info": {"max_budget": 12.5, "budget_duration": "365d"}
@@ -744,6 +766,24 @@ def test_clear_pool_team_budget_uses_remaining_duration_from_last_purchase(
             purchased_at=datetime.now(UTC) - timedelta(days=10),
             stripe_payment_id=f"clear-pool-remaining-{test_team.id}-{test_region.id}",
             created_at=datetime.now(UTC),
+        )
+    )
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            source_payment_id=None,
+            source_invoice_id=None,
+            stripe_payment_id=f"clear-pool-remaining-ledger-{test_team.id}-{test_region.id}",
+            amount_cents=5000,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC) - timedelta(days=10),
+            effective_period_start=None,
+            effective_period_end=None,
+            expires_at=datetime.now(UTC) + timedelta(days=355),
+            rolled_over_from_id=None,
+            is_active=True,
         )
     )
     db.commit()
@@ -1761,6 +1801,24 @@ def test_clear_team_budget_endpoint_pool_restores_purchases(
             created_at=datetime.now(UTC),
         )
     )
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            source_payment_id=None,
+            source_invoice_id=None,
+            stripe_payment_id=f"clear-pool-ledger-{test_team.id}-{test_region.id}",
+            amount_cents=5000,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC),
+            effective_period_start=None,
+            effective_period_end=None,
+            expires_at=datetime.now(UTC) + timedelta(days=365),
+            rolled_over_from_id=None,
+            is_active=True,
+        )
+    )
     db.commit()
     mock_get_team_info.return_value = {
         "team_info": {"max_budget": 50.0, "budget_duration": "365d"}
@@ -1952,10 +2010,10 @@ def test_get_team_spend_uses_db_key_cap_for_pool_team_after_purchase(
 
 
 @patch("app.api.spend.LiteLLMService.get_user_info", new_callable=AsyncMock)
-def test_get_user_spend_db_key_cap_beats_member_cap_beats_litellm_for_periodic_team(
+def test_get_user_spend_db_key_cap_beats_non_key_caps_for_periodic_team(
     mock_get_user_info, client, admin_token, test_team, test_region, db
 ):
-    """For a periodic team, DB key cap > DB member cap > LiteLLM-reported value."""
+    """For a periodic team, only DB key cap is exposed; non-key caps are null."""
     test_team.budget_type = "periodic"
     test_team.require_purchase_for_requests = False
     db.add(test_team)
@@ -2019,7 +2077,7 @@ def test_get_user_spend_db_key_cap_beats_member_cap_beats_litellm_for_periodic_t
     )
     db.commit()
 
-    # LiteLLM reports values that should all be overridden by DB caps
+    # LiteLLM reports values that should be ignored unless a DB key cap exists
     mock_get_user_info.return_value = {
         "user_info": {"spend": 0.5},
         "keys": [
@@ -2053,19 +2111,18 @@ def test_get_user_spend_db_key_cap_beats_member_cap_beats_litellm_for_periodic_t
     assert response.status_code == 200
     data = response.json()
     max_budget_by_name = {k["key_name"]: k["max_budget"] for k in data["keys"]}
-    # DB key cap wins over member cap and LiteLLM
+    # DB key cap wins
     assert max_budget_by_name[key_with_key_cap.name] == 9.0
-    # DB member cap wins over LiteLLM when no key cap is present
-    assert max_budget_by_name[key_with_member_cap.name] == 5.0
-    # DB member cap also applied to key that has no explicit key cap
-    assert max_budget_by_name[key_with_litellm_only.name] == 5.0
+    # No DB key cap => null (member cap/LiteLLM are not surfaced)
+    assert max_budget_by_name[key_with_member_cap.name] is None
+    assert max_budget_by_name[key_with_litellm_only.name] is None
 
 
 @patch("app.api.spend.LiteLLMService.get_user_info", new_callable=AsyncMock)
-def test_get_user_spend_db_key_cap_beats_member_cap_beats_litellm_for_purchased_pool_team(
+def test_get_user_spend_db_key_cap_beats_non_key_caps_for_purchased_pool_team(
     mock_get_user_info, client, admin_token, test_team, test_region, db
 ):
-    """For a POOL team with a purchase, DB key cap > DB member cap > LiteLLM-reported value."""
+    """For a POOL team with a purchase, only DB key cap is exposed; non-key caps are null."""
     test_team.budget_type = BudgetType.POOL
     test_team.require_purchase_for_requests = True
     db.add(test_team)
@@ -2133,7 +2190,7 @@ def test_get_user_spend_db_key_cap_beats_member_cap_beats_litellm_for_purchased_
     )
     db.commit()
 
-    # LiteLLM reports values that should be overridden by DB caps
+    # LiteLLM reports values that should be ignored unless a DB key cap exists
     mock_get_user_info.return_value = {
         "user_info": {"spend": 1.0},
         "keys": [
@@ -2159,10 +2216,10 @@ def test_get_user_spend_db_key_cap_beats_member_cap_beats_litellm_for_purchased_
     assert response.status_code == 200
     data = response.json()
     max_budget_by_name = {k["key_name"]: k["max_budget"] for k in data["keys"]}
-    # DB key cap wins over both member cap and LiteLLM after purchase
+    # DB key cap wins
     assert max_budget_by_name[key_with_key_cap.name] == 12.0
-    # DB member cap wins over LiteLLM after purchase
-    assert max_budget_by_name[key_with_member_cap.name] == 8.0
+    # No DB key cap => null (member cap/LiteLLM are not surfaced)
+    assert max_budget_by_name[key_with_member_cap.name] is None
 
 
 # ── _compute_period_start unit tests ─────────────────────────────────
@@ -2366,8 +2423,8 @@ def test_key_spend_includes_period_start(
 def test_pool_key_with_cap_shows_period_fields(
     mock_get_team_info, client, admin_token, test_team, test_region, db
 ):
-    """POOL team key with a spend cap gets 1mo budget_duration from
-    update_key_budget, so period fields should be populated."""
+    """POOL capped keys use 31d window semantics.
+    Team window remains POOL baseline (365d) when no active subscription."""
     test_team.budget_type = BudgetType.POOL
     test_team.require_purchase_for_requests = True
     db.add(test_team)
@@ -2389,7 +2446,7 @@ def test_pool_key_with_cap_shows_period_fields(
             team_id=test_team.id,
             key_id=key.id,
             max_budget=5.0,
-            budget_duration="1mo",
+            budget_duration="31d",
         )
     )
     db.commit()
@@ -2419,15 +2476,13 @@ def test_pool_key_with_cap_shows_period_fields(
     )
     assert response.status_code == 200
     data = response.json()
-    # Team has 365d from purchase
+    # Team shows POOL no-subscription baseline window.
     assert data["budget_duration"] == "365d"
-    assert data["budget_reset_at"] == "2027-05-08T00:00:00Z"
-    assert data["period_start"] == "2026-05-08T00:00:00Z"
-    # Key has 1mo cap
+    # Key with cap uses 31d window semantics.
     k = data["keys"][0]
-    assert k["budget_duration"] == "1mo"
-    assert k["budget_reset_at"] == "2026-06-01T00:00:00Z"
-    assert k["period_start"] == "2026-05-01T00:00:00Z"
+    assert k["budget_duration"] == "31d"
+    assert k["budget_reset_at"] is not None
+    assert k["period_start"] is not None
 
 
 # ---------------------------------------------------------------------------
@@ -2473,6 +2528,9 @@ def test_get_team_spend_history_returns_periods_ordered_desc(
         period_start=datetime(2026, 4, 1, tzinfo=UTC),
         period_end=datetime(2026, 5, 1, tzinfo=UTC),
         total_spend=10.0,
+        subscription_remaining_cents=600,
+        topup_remaining_cents=150,
+        desired_remaining_cents=750,
         source="test",
     )
     db.add_all([p1, p2])
@@ -2487,6 +2545,9 @@ def test_get_team_spend_history_returns_periods_ordered_desc(
     assert len(data["periods"]) == 2
     # Newest period (April→May) must come first
     assert data["periods"][0]["total_spend"] == 10.0
+    assert data["periods"][0]["subscription_remaining_cents"] == 600
+    assert data["periods"][0]["topup_remaining_cents"] == 150
+    assert data["periods"][0]["desired_remaining_cents"] == 750
     assert data["periods"][1]["total_spend"] == 5.0
 
 

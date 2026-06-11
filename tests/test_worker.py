@@ -8,6 +8,7 @@ from app.db.models import (
     DBTeamMetrics,
     DBLimitedResource,
     DBPoolPurchase,
+    DBPeriodicBudgetLedgerEntry,
     DBSpendCap,
 )
 from app.schemas.models import BudgetType
@@ -22,6 +23,7 @@ from app.core.worker import (
     active_team_labels,
     reconcile_team_keys,
     _sync_periodic_ledger_for_invoice,
+    _get_snapshot_remaining_cents,
     _parse_client_reference_ids,
     _backfill_subscription_metadata_from_checkout_session,
     handle_stripe_event_background,
@@ -45,6 +47,90 @@ def test_parse_client_reference_ids():
     assert _parse_client_reference_ids("bad") is None
     assert _parse_client_reference_ids("668-x") is None
     assert _parse_client_reference_ids(None) is None
+
+
+def test_get_snapshot_remaining_cents_scopes_to_current_period(
+    db, test_team, test_region
+):
+    now = datetime.now(UTC)
+    period_start = now - timedelta(days=1)
+    period_end = now + timedelta(days=30)
+    previous_start = period_start - timedelta(days=31)
+    previous_end = period_start
+
+    db.add_all(
+        [
+            DBPeriodicBudgetLedgerEntry(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                entry_type="subscription",
+                amount_cents=100,
+                consumed_cents=40,
+                purchased_at=period_start,
+                effective_period_start=period_start,
+                effective_period_end=period_end,
+                expires_at=period_end,
+                is_active=True,
+            ),
+            DBPeriodicBudgetLedgerEntry(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                entry_type="subscription",
+                amount_cents=100,
+                consumed_cents=0,
+                purchased_at=previous_start,
+                effective_period_start=previous_start,
+                effective_period_end=previous_end,
+                expires_at=period_end,
+                is_active=True,
+            ),
+            DBPeriodicBudgetLedgerEntry(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                entry_type="topup",
+                amount_cents=50,
+                consumed_cents=10,
+                purchased_at=period_start + timedelta(hours=1),
+                expires_at=period_end,
+                is_active=True,
+            ),
+            DBPeriodicBudgetLedgerEntry(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                entry_type="topup_rollover",
+                amount_cents=30,
+                consumed_cents=5,
+                purchased_at=period_start + timedelta(hours=2),
+                expires_at=period_end,
+                is_active=True,
+            ),
+            DBPeriodicBudgetLedgerEntry(
+                team_id=test_team.id,
+                region_id=test_region.id,
+                entry_type="topup",
+                amount_cents=70,
+                consumed_cents=20,
+                purchased_at=previous_start + timedelta(days=5),
+                expires_at=period_end,
+                is_active=True,
+            ),
+        ]
+    )
+    db.commit()
+
+    subscription_remaining_cents, topup_remaining_cents, desired_remaining_cents = (
+        _get_snapshot_remaining_cents(
+            db=db,
+            team_id=test_team.id,
+            region_id=test_region.id,
+            period_start=period_start,
+            period_end=period_end,
+        )
+    )
+
+    assert subscription_remaining_cents == 60
+    assert topup_remaining_cents == 65
+    assert desired_remaining_cents == 125
 
 
 @pytest.mark.asyncio
@@ -568,12 +654,11 @@ async def test_apply_product_periodic_compounds_team_budget_with_split_and_regio
     update_calls = mock_instance.update_team_budget.await_args_list
     assert len(update_calls) == 2
 
-    # Webhook resets key spend to 0; max_budget = desired_remaining = per_region_cap + topup_remaining
-    # Each region gets the full cap (no split), plus its own topup_remaining
-    # Region 1: 50.0 + 3.0 = 53.0
-    # Region 2: 50.0 + 0.0 = 50.0
+    # Projection uses current team spend + effective_remaining.
+    # Region 1: 12.5 + (50.0 + 3.0) = 65.5
+    # Region 2: 7.8 + (50.0 + 0.0) = 57.8
     max_budgets = sorted([float(call.kwargs["max_budget"]) for call in update_calls])
-    assert max_budgets == [50.0, 53.0]
+    assert max_budgets == [57.8, 65.5]
 
 
 @pytest.mark.asyncio
@@ -3528,3 +3613,20 @@ async def test_invoice_ledger_duplicate_invoice_id_is_idempotent(
     )
     assert len(rollover_rows) <= 1
     assert len(subscription_rows) <= 1
+
+    # The topup entry must not have been consumed twice.
+    # spend=100¢, topup=500¢ → at most 100¢ consumed; a second FIFO run
+    # would incorrectly add another 100¢ (200¢ total).
+    topup_entry = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == test_team.id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "topup",
+        )
+        .first()
+    )
+    assert topup_entry is not None
+    assert topup_entry.consumed_cents <= 100, (
+        f"Double-allocation detected: consumed_cents={topup_entry.consumed_cents}, "
+        "expected at most 100¢ from a single FIFO run"
+    )
