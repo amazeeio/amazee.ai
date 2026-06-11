@@ -34,38 +34,26 @@ def service() -> HubSpotService:
 
 
 # ---------------------------------------------------------------------------
-# Subscribe (enabled=True) — existing contact
+# enabled=True — NO subscription API call (HubSpot defaults to SUBSCRIBED)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_upsert_existing_contact_subscribe(service):
+    """enabled=True: only search + property update. No subscribe POST call."""
     mock_client = _make_async_client(
         _make_response(200, {"results": [{"id": "42"}]}),  # search
-        _make_response(200, {"id": "1110685904", "status": "SUBSCRIBED"}),  # subscribe
     )
     mock_client.patch.return_value = _make_response(200, {})
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         await service.upsert_contact_marketing_updates("user@example.com", enabled=True)
 
-    assert mock_client.post.call_count == 2
-    # call 0 — contact search
+    # Only 1 POST — the contact search. No subscribe call.
+    assert mock_client.post.call_count == 1
     assert (
         "/crm/v3/objects/contacts/search" in mock_client.post.call_args_list[0].args[0]
     )
-    # call 1 — v3 subscribe
-    assert (
-        "/communication-preferences/v3/subscribe"
-        in mock_client.post.call_args_list[1].args[0]
-    )
-    assert mock_client.post.call_args_list[1].kwargs["json"] == {
-        "emailAddress": "user@example.com",
-        "subscriptionId": "1110685904",
-        "legalBasis": "LEGITIMATE_INTEREST_PQL",
-        "legalBasisExplanation": "User preference updated via amazee.ai platform",
-    }
-    # contact property update
     assert mock_client.patch.call_count == 1
     assert "/crm/v3/objects/contacts/42" in mock_client.patch.call_args.args[0]
     assert mock_client.patch.call_args.kwargs["json"] == {
@@ -73,8 +61,26 @@ async def test_upsert_existing_contact_subscribe(service):
     }
 
 
+@pytest.mark.asyncio
+async def test_subscribe_skips_hubspot_subscription_call(service):
+    """enabled=True never calls /v3/subscribe — HubSpot defaults to SUBSCRIBED
+    and blocks programmatic re-subscription anyway.
+    """
+    mock_client = _make_async_client(
+        _make_response(200, {"results": [{"id": "42"}]}),  # search only
+    )
+    mock_client.patch.return_value = _make_response(200, {})
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await service.upsert_contact_marketing_updates("user@example.com", enabled=True)
+
+    # Only search POST — no subscribe POST
+    assert mock_client.post.call_count == 1
+    assert mock_client.patch.call_count == 1
+
+
 # ---------------------------------------------------------------------------
-# Unsubscribe (enabled=False) — existing contact
+# enabled=False — unsubscribe IS called
 # ---------------------------------------------------------------------------
 
 
@@ -93,6 +99,7 @@ async def test_upsert_existing_contact_unsubscribe(service):
             "user@example.com", enabled=False
         )
 
+    assert mock_client.post.call_count == 2
     assert (
         "/communication-preferences/v3/unsubscribe"
         in mock_client.post.call_args_list[1].args[0]
@@ -106,13 +113,9 @@ async def test_upsert_existing_contact_unsubscribe(service):
     }
 
 
-# ---------------------------------------------------------------------------
-# New contact — create then subscribe
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
-async def test_upsert_new_contact_creates_then_subscribes(service):
+async def test_upsert_new_contact_creates_then_unsubscribes(service):
+    """enabled=False on new contact: search → create → property update → unsubscribe."""
     mock_client = _make_async_client(
         _make_response(200, {"results": []}),  # search → not found
         _make_response(201, {"id": "77"}),  # create contact
@@ -141,37 +144,6 @@ async def test_upsert_new_contact_creates_then_subscribes(service):
 
 
 # ---------------------------------------------------------------------------
-# HubSpot blocks re-subscription (previously opted out) — warning, no raise
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_resubscribe_blocked_by_hubspot_logs_warning_and_continues(service):
-    """HubSpot returns 400 VALIDATION_ERROR when re-subscribing an opted-out contact.
-    The service must log a warning and NOT raise — local DB update still proceeds.
-    """
-    mock_client = _make_async_client(
-        _make_response(200, {"results": [{"id": "42"}]}),  # search
-        _make_response(
-            400,
-            {
-                "status": "error",
-                "message": "Subscription 1110685904 for user@example.com cannot be updated because they have unsubscribed",
-                "category": "VALIDATION_ERROR",
-            },
-        ),  # subscribe blocked
-    )
-    mock_client.patch.return_value = _make_response(200, {})
-
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        # Should NOT raise
-        await service.upsert_contact_marketing_updates("user@example.com", enabled=True)
-
-    # Contact property still updated despite blocked subscription
-    assert mock_client.patch.call_count == 1
-
-
-# ---------------------------------------------------------------------------
 # Error cases
 # ---------------------------------------------------------------------------
 
@@ -191,7 +163,6 @@ async def test_search_error_raises_502(service):
 async def test_property_update_error_raises_502(service):
     mock_client = _make_async_client(
         _make_response(200, {"results": [{"id": "42"}]}),
-        _make_response(200, {"id": "1110685904", "status": "SUBSCRIBED"}),
     )
     mock_client.patch.return_value = _make_response(400, {"message": "bad request"})
 
@@ -204,8 +175,8 @@ async def test_property_update_error_raises_502(service):
 
 
 @pytest.mark.asyncio
-async def test_subscription_non_validation_error_raises_502(service):
-    """A non-VALIDATION_ERROR 400 (or 5xx) from HubSpot must still raise 502."""
+async def test_unsubscribe_server_error_raises_502(service):
+    """A 5xx from HubSpot on unsubscribe must raise 502."""
     mock_client = _make_async_client(
         _make_response(200, {"results": [{"id": "42"}]}),
         _make_response(500, {"message": "internal server error"}),
@@ -215,13 +186,14 @@ async def test_subscription_non_validation_error_raises_502(service):
     with patch("httpx.AsyncClient", return_value=mock_client):
         with pytest.raises(HTTPException) as exc_info:
             await service.upsert_contact_marketing_updates(
-                "user@example.com", enabled=True
+                "user@example.com", enabled=False
             )
     assert exc_info.value.status_code == 502
 
 
 @pytest.mark.asyncio
-async def test_missing_subscription_id_raises_404(service):
+async def test_missing_subscription_id_raises_404_only_on_unsubscribe(service):
+    """Missing subscription ID only matters when enabled=False (unsubscribe path)."""
     mock_client = _make_async_client(_make_response(200, {"results": [{"id": "42"}]}))
     mock_client.patch.return_value = _make_response(200, {})
     service.marketing_subscription_id = None
@@ -229,9 +201,9 @@ async def test_missing_subscription_id_raises_404(service):
     with patch("httpx.AsyncClient", return_value=mock_client):
         with pytest.raises(HTTPException) as exc_info:
             await service.upsert_contact_marketing_updates(
-                "user@example.com", enabled=True
+                "user@example.com", enabled=False
             )
 
     assert exc_info.value.status_code == 404
-    # subscribe/unsubscribe POST was never called (only search POST was)
+    # only search POST was called, no unsubscribe POST
     assert mock_client.post.call_count == 1

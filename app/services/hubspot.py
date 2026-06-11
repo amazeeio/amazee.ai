@@ -176,6 +176,12 @@ class HubSpotService:
 
         - If contact exists: update custom contact property + email subscription.
         - If contact does not exist: create contact first, then update both.
+
+        Note: the /v3/subscribe call is skipped when enabled=True because HubSpot
+        defaults all new contacts to SUBSCRIBED, making it a no-op. More importantly,
+        HubSpot blocks programmatic re-subscription for contacts who previously opted
+        out — so the subscribe call would fail anyway. We only call /v3/unsubscribe
+        (enabled=False) which is the only direction the API reliably supports.
         """
         async with httpx.AsyncClient(timeout=10.0) as client:
             contact_id = await self._get_contact_id_by_email(email=email, client=client)
@@ -184,6 +190,7 @@ class HubSpotService:
             await self._update_contact_marketing_property(
                 contact_id=contact_id, enabled=enabled, client=client
             )
-            await self._update_email_subscription(
-                email=email, enabled=enabled, client=client
-            )
+            if not enabled:
+                await self._update_email_subscription(
+                    email=email, enabled=enabled, client=client
+                )
