@@ -31,8 +31,8 @@ class Settings(BaseSettings):
         "/public/models/",
     ]
 
-    AWS_ACCESS_KEY_ID: str = "AKIATEST"
-    AWS_SECRET_ACCESS_KEY: str = "sk-string"
+    AWS_ACCESS_KEY_ID: str | None = None
+    AWS_SECRET_ACCESS_KEY: str | None = None
     SES_SENDER_EMAIL: str = "info@example.com"
     PASSWORDLESS_SIGN_IN: str = "true"
     ENV_SUFFIX: str = os.getenv("ENV_SUFFIX", "local")
@@ -46,9 +46,9 @@ class Settings(BaseSettings):
         "AI_TRIAL_TEAM_EMAIL", "anonymous-trial-user@example.com"
     )
     AI_TRIAL_REGION: str = os.getenv("AI_TRIAL_REGION", "eu-west-1")
-    STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "sk_test_string")
-    STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "pk_test_string")
-    WEBHOOK_SIG: str = os.getenv("WEBHOOK_SIG", "whsec_test_1234567890")
+    STRIPE_SECRET_KEY: str | None = None
+    STRIPE_PUBLISHABLE_KEY: str | None = None
+    WEBHOOK_SIG: str | None = None
     HUBSPOT_TOKEN: str = os.getenv("HUBSPOT_TOKEN", "")
     HUBSPOT_MARKETING_UPDATES_PROPERTY: str = os.getenv(
         "HUBSPOT_MARKETING_UPDATES_PROPERTY", "receive_marketing_updates"
@@ -107,6 +107,37 @@ class Settings(BaseSettings):
         self.CORS_ORIGINS.extend(
             [route.strip() for route in lagoon_routes if route.strip()]
         )
+
+        # Set development/testing fallbacks for required variables
+        if self.ENV_SUFFIX in ("local", "test", "testing"):
+            if not self.AWS_ACCESS_KEY_ID:
+                self.AWS_ACCESS_KEY_ID = "AKIATEST"
+            if not self.AWS_SECRET_ACCESS_KEY:
+                self.AWS_SECRET_ACCESS_KEY = "sk-string"
+            if not self.STRIPE_SECRET_KEY:
+                self.STRIPE_SECRET_KEY = "sk_test_string"
+            if not self.STRIPE_PUBLISHABLE_KEY:
+                self.STRIPE_PUBLISHABLE_KEY = "pk_test_string"
+            if not self.WEBHOOK_SIG:
+                self.WEBHOOK_SIG = "whsec_test_1234567890"
+
+        # Validate required production variables
+        if self.ENV_SUFFIX not in ("local", "test", "testing"):
+            missing = []
+            if not self.AWS_ACCESS_KEY_ID:
+                missing.append("AWS_ACCESS_KEY_ID")
+            if not self.AWS_SECRET_ACCESS_KEY:
+                missing.append("AWS_SECRET_ACCESS_KEY")
+            if not self.STRIPE_SECRET_KEY:
+                missing.append("STRIPE_SECRET_KEY")
+            if not self.STRIPE_PUBLISHABLE_KEY:
+                missing.append("STRIPE_PUBLISHABLE_KEY")
+            if not self.WEBHOOK_SIG:
+                missing.append("WEBHOOK_SIG")
+            if missing:
+                raise ValueError(
+                    f"Missing required production environment variables: {', '.join(missing)}"
+                )
 
 
 settings = Settings()

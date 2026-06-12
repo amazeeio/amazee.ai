@@ -1,22 +1,33 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { jwtVerify } from "jose";
 
-function isTokenExpired(token: string): boolean {
+async function isTokenValid(token: string): Promise<boolean> {
   try {
-    const payload = JSON.parse(atob(token.split(".")[1]));
-    const exp = payload.exp;
-    if (!exp) return false;
-    return Date.now() >= exp * 1000;
-  } catch {
+    // Retrieve secret key from environment (matching AMAZEEAI_JWT_SECRET)
+    let secretKey = process.env.AMAZEEAI_JWT_SECRET;
+    if (!secretKey) {
+      if (process.env.NODE_ENV !== "production") {
+        secretKey = "test-secret-key";
+      } else {
+        console.warn("AMAZEEAI_JWT_SECRET is not configured in the frontend environment.");
+        return false;
+      }
+    }
+    const secret = new TextEncoder().encode(secretKey);
+    await jwtVerify(token, secret);
     return true;
+  } catch (error) {
+    return false;
   }
 }
 
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   const token = request.cookies.get("access_token")?.value;
   const { pathname } = request.nextUrl;
 
-  const isTokenInvalid = !token || isTokenExpired(token);
+  const tokenValid = token ? await isTokenValid(token) : false;
+  const isTokenInvalid = !token || !tokenValid;
 
   // Auth paths that should redirect to dashboard when logged in
   const authPaths = ["/auth/login", "/auth/register"];
