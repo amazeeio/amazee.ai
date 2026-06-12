@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, UTC
+import hashlib
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -159,9 +160,10 @@ async def get_current_user_from_auth(
 
     # First try API token validation since it's simpler
     try:
+        hashed_token = hashlib.sha256(token_to_try.encode("utf-8")).hexdigest()
         db_token = (
             db.query(DBAPIToken)
-            .filter(DBAPIToken.token == token_to_try)
+            .filter(DBAPIToken.token == hashed_token)
             .options(joinedload(DBAPIToken.owner).joinedload(DBUser.team))
             .first()
         )

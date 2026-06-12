@@ -1,6 +1,7 @@
 import traceback
 import logging
 import secrets
+import hashlib
 import os
 import time
 import uuid
@@ -552,12 +553,17 @@ async def create_token(
         # Create token for the current user
         user_id = current_user.id
 
+    raw_token = generate_api_token()
+    hashed_token = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
     db_token = DBAPIToken(
-        name=token_create.name, token=generate_api_token(), user_id=user_id
+        name=token_create.name, token=hashed_token, user_id=user_id
     )
     db.add(db_token)
     db.commit()
     db.refresh(db_token)
+    
+    db_token.token = raw_token
     return db_token
 
 
