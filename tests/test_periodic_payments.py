@@ -788,6 +788,135 @@ def test_subscription_deactivate_captures_snapshot_before_reset(
     )
 
 
+@patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_fifo_debits_topup_on_cancellation(
+    mock_litellm_class,
+    mock_record_payment,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """
+    Regression test for: Subscription cancellation ignores in-period spend
+    when computing top-up budget.
+
+    Scenario (mirrors the ticket example):
+      - Subscription budget: $1.00  (100¢)
+      - Active top-up:       $1.68  (168¢, consumed_cents=0)
+      - LiteLLM spend:       $2.10  (210¢) — overflows subscription into top-up
+      - Previous period baseline: $0 (first period)
+
+    Expected after cancellation:
+      - FIFO allocates 210¢ of spend: 100¢ consumed by subscription entry
+        (already inactive at cancel time) then 110¢ consumed by the top-up entry
+        → top-up consumed_cents becomes 110, remaining = 168 - 110 = 58¢ ($0.58)
+      - LiteLLM max_budget = current_spend ($2.10) + topup_remaining ($0.58) = $2.68
+      - Key budget_amount = $0.58
+    """
+    period_start = datetime.now(UTC) - timedelta(days=5)
+    period_end = datetime.now(UTC) + timedelta(days=26)
+
+    # Active subscription ledger entry: $1.00
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="subscription",
+            source_payment_id=None,
+            source_invoice_id="in_fifo_test_sub",
+            stripe_payment_id=None,
+            amount_cents=100,
+            consumed_cents=0,
+            purchased_at=period_start,
+            effective_period_start=period_start,
+            effective_period_end=period_end,
+            expires_at=period_end,
+            rolled_over_from_id=None,
+            is_active=True,
+        )
+    )
+    # Active top-up entry: $1.68, not yet debited
+    topup_entry = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="topup",
+        source_payment_id=None,
+        source_invoice_id=None,
+        stripe_payment_id="pi_fifo_topup",
+        amount_cents=168,
+        consumed_cents=0,
+        purchased_at=period_start,
+        effective_period_start=None,
+        effective_period_end=None,
+        expires_at=datetime.now(UTC) + timedelta(days=30),
+        rolled_over_from_id=None,
+        is_active=True,
+    )
+    db.add(topup_entry)
+    db.add(
+        DBPrivateAIKey(
+            name="fifo-test-key",
+            litellm_token="fifo-test-token",
+            region_id=test_region.id,
+            team_id=test_team.id,
+        )
+    )
+    db.commit()
+
+    mock_record_payment.return_value = 999
+    mock_litellm = mock_litellm_class.return_value
+    # LiteLLM reports $2.10 total spend (overflows $1.00 subscription into top-up)
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 2.10, "max_budget": 5.0}}
+    )
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    response = client.post(
+        "/billing/subscription/deactivate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_fifo_cancel_test",
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+            "reason": "cancelled",
+        },
+    )
+
+    assert response.status_code == 200
+
+    # FIFO must have debited the top-up: 210¢ spend - 0¢ baseline = 210¢ incremental.
+    # Subscription entry absorbs 100¢ (then deactivated), top-up absorbs remaining 110¢.
+    db.refresh(topup_entry)
+    assert topup_entry.consumed_cents == 110, (
+        f"Top-up consumed_cents should be 110 after FIFO, got {topup_entry.consumed_cents}. "
+        "Cancellation is not debiting mid-period spend against top-up credits."
+    )
+
+    # Remaining top-up: 168 - 110 = 58¢ = $0.58
+    topup_remaining = 0.58
+    current_spend = 2.10
+    expected_max_budget = round(current_spend + topup_remaining, 2)
+
+    mock_litellm.update_team_budget.assert_awaited_once()
+    actual_max_budget = mock_litellm.update_team_budget.await_args.kwargs["max_budget"]
+    assert abs(actual_max_budget - expected_max_budget) < 0.01, (
+        f"Expected max_budget ~{expected_max_budget}, got {actual_max_budget}. "
+        "Top-up remaining is not being correctly reduced by mid-period spend."
+    )
+
+    mock_litellm.set_key_restrictions.assert_awaited_once()
+    actual_key_budget = mock_litellm.set_key_restrictions.await_args.kwargs[
+        "budget_amount"
+    ]
+    assert abs(actual_key_budget - topup_remaining) < 0.01, (
+        f"Expected key budget_amount ~{topup_remaining}, got {actual_key_budget}."
+    )
+
+
 def test_subscription_deactivate_endpoint_idempotent(
     client, admin_token, db, test_team
 ):

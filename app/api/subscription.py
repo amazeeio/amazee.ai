@@ -5,10 +5,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.periodic_budget_ledger_service import compute_active_topup_remaining
+from app.core.periodic_budget_ledger_service import (
+    allocate_period_spend_fifo,
+    compute_active_topup_remaining,
+)
 from app.core.security import get_role_min_system_admin
 from app.core.team_service import get_team_region_litellm_keys
 from app.core.worker import (
+    _previous_period_spend_baseline_cents,
     _record_periodic_payment_direct,
     _sync_periodic_ledger_for_period,
     apply_billing_cycle_for_team,
@@ -304,6 +308,45 @@ async def subscription_deactivate(
                 period_end=active_subscription_period.effective_period_end,
                 source_event_id=request.transaction_id,
             )
+            # Debit mid-period spend against top-up entries so that
+            # compute_active_topup_remaining reflects actual remaining balance.
+            # Without this, FIFO never runs on the cancel path (no invoice),
+            # and consumed_cents stays stale — leaking top-up credits.
+            try:
+                litellm_service_pre = LiteLLMService(
+                    api_url=region.litellm_api_url,
+                    api_key=region.litellm_api_key,
+                )
+                lite_team_id_pre = LiteLLMService.format_team_id(region.name, team.id)
+                team_info_pre = await litellm_service_pre.get_team_info(
+                    lite_team_id_pre
+                )
+                team_info_pre = team_info_pre.get("team_info", team_info_pre)
+                current_spend_cents = int(
+                    round(float(team_info_pre.get("spend", 0.0) or 0.0) * 100)
+                )
+                spend_baseline_cents = _previous_period_spend_baseline_cents(
+                    db,
+                    team_id=team.id,
+                    region_id=region.id,
+                    current_period_start=active_subscription_period.effective_period_start,
+                )
+                incremental_spend_cents = max(
+                    0, current_spend_cents - spend_baseline_cents
+                )
+                if incremental_spend_cents > 0:
+                    allocate_period_spend_fifo(
+                        db,
+                        team_id=team.id,
+                        region_id=region.id,
+                        spend_cents=incremental_spend_cents,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to run FIFO allocation on cancellation for team %s: %s",
+                    team.id,
+                    exc,
+                )
 
         # Deactivation immediately ends active subscription windows.
         active_sub_rows = (
