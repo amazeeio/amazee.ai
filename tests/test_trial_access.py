@@ -104,6 +104,7 @@ async def test_generate_trial_access(mock_auth_deps, db: Session):
     mock_user.is_active = True
     mock_user.role = "admin"
     mock_user.team_id = 12
+    mock_user.receive_marketing_updates = False
     mock_auth_deps["create_user"].return_value = mock_user
 
     mock_team = Mock(spec=DBTeam)
@@ -172,6 +173,7 @@ async def test_generate_trial_access_cleanup_on_key_creation_failure(
     mock_user = Mock(spec=DBUser)
     mock_user.id = 1
     mock_user.email = "trial-user@example.com"
+    mock_user.receive_marketing_updates = False
     mock_auth_deps["create_user"].return_value = mock_user
 
     mock_team = Mock(spec=DBTeam)
