@@ -347,6 +347,7 @@ async def subscription_deactivate(
                     "Failed to run FIFO allocation on cancellation for team %s: %s",
                     team.id,
                     exc,
+                    exc_info=True,
                 )
 
         # Deactivation immediately ends active subscription windows.
