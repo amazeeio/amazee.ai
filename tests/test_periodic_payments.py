@@ -788,11 +788,16 @@ def test_subscription_deactivate_captures_snapshot_before_reset(
     )
 
 
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
 @patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
 @patch("app.api.subscription.LiteLLMService")
 def test_subscription_deactivate_fifo_debits_topup_on_cancellation(
     mock_litellm_class,
     mock_record_payment,
+    mock_capture_spend,
     client,
     admin_token,
     db,
@@ -887,6 +892,17 @@ def test_subscription_deactivate_fifo_debits_topup_on_cancellation(
     )
 
     assert response.status_code == 200
+
+    # capture_periodic_team_spend_for_period must have been called before FIFO ran.
+    mock_capture_spend.assert_awaited_once()
+    assert mock_capture_spend.await_args.kwargs["team"].id == test_team.id
+    assert mock_capture_spend.await_args.kwargs["region"].id == test_region.id
+    assert mock_capture_spend.await_args.kwargs["period_start"] == period_start
+    assert mock_capture_spend.await_args.kwargs["period_end"] == period_end
+    assert (
+        mock_capture_spend.await_args.kwargs["source_event_id"]
+        == "txn_fifo_cancel_test"
+    )
 
     # FIFO must have debited the top-up: 210¢ spend - 0¢ baseline = 210¢ incremental.
     # Subscription entry absorbs 100¢ (then deactivated), top-up absorbs remaining 110¢.

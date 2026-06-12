@@ -322,9 +322,7 @@ async def subscription_deactivate(
                 team_info_resp = await litellm_service.get_team_info(lite_team_id)
                 team_info = team_info_resp.get("team_info", team_info_resp)
                 current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
-                current_spend_cents = int(
-                    round(current_team_spend * 100)
-                )
+                current_spend_cents = int(round(current_team_spend * 100))
                 spend_baseline_cents = _previous_period_spend_baseline_cents(
                     db,
                     team_id=team.id,
