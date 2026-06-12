@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, UTC
 from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from fastapi import Depends, HTTPException, status, Cookie, Header, Request
+from fastapi import Depends, HTTPException, status, Cookie, Header, Request, Path
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import logging
 
@@ -270,7 +270,8 @@ async def get_role_min_team_admin(
 
 
 async def get_role_min_specific_team_admin(
-    current_user: DBUser = Depends(get_current_user_from_auth), team_id: int = None
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    team_id: int = Path(...),
 ):
     """Check if user is admin of specific team."""
     dependency = require_team_admin()
