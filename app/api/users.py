@@ -9,7 +9,7 @@ from collections import defaultdict
 
 from app.core.config import settings
 from app.core.litellm_user_sync import (
-    get_target_regions_for_user,
+    get_team_region,
     sync_add_user_to_team,
     sync_create_user_across_regions,
     sync_delete_user_across_regions,
@@ -892,7 +892,8 @@ async def update_user(
     synced_regions = []
     updated_regions = []
     if user_update.email is not None:
-        synced_regions = get_target_regions_for_user(db, db_user.team_id)
+        region = get_team_region(db, db_user.team_id) if db_user.team_id else None
+        synced_regions = [region] if region else []
         for region in synced_regions:
             service = LiteLLMService(
                 api_url=region.litellm_api_url, api_key=region.litellm_api_key
