@@ -48,6 +48,14 @@ class Settings(BaseSettings):
     AI_TRIAL_REGION: str = os.getenv("AI_TRIAL_REGION", "eu-west-1")
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "sk_test_string")
     STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "pk_test_string")
+    WEBHOOK_SIG: str = os.getenv("WEBHOOK_SIG", "whsec_test_1234567890")
+    HUBSPOT_TOKEN: str = os.getenv("HUBSPOT_TOKEN", "")
+    HUBSPOT_MARKETING_UPDATES_PROPERTY: str = os.getenv(
+        "HUBSPOT_MARKETING_UPDATES_PROPERTY", "receive_marketing_updates"
+    )
+    HUBSPOT_MARKETING_SUBSCRIPTION_ID: str | None = os.getenv(
+        "HUBSPOT_MARKETING_SUBSCRIPTION_ID"
+    )
     MOAD_API_KEY: str = os.getenv("MOAD_API_KEY", "changeme")
     ENABLE_METRICS: bool = os.getenv("ENABLE_METRICS", "false") == "true"
     PROMETHEUS_API_KEY: str = os.getenv("PROMETHEUS_API_KEY", "")

@@ -47,12 +47,14 @@ class UserCreate(UserBase):
     password: Optional[str] = None
     team_id: Optional[int] = None
     role: Optional[str] = None
+    receive_marketing_updates: Optional[bool] = None
     model_config = ConfigDict(from_attributes=True)
 
 
 class UserUpdate(BaseModel):
     email: Optional[CaseInsensitiveEmailStr] = None
     is_admin: Optional[bool] = None
+    receive_marketing_updates: Optional[bool] = None
     current_password: Optional[str] = None
     new_password: Optional[str] = None
 
@@ -64,8 +66,14 @@ class User(UserBase):
     team_id: Optional[int] = None
     team_name: Optional[str] = None
     role: Optional[str] = None
+    receive_marketing_updates: bool = False
     model_config = ConfigDict(from_attributes=True)
     audit_logs: ClassVar = relationship("AuditLog", back_populates="user")
+
+
+class UserMarketingUpdatesByEmailUpdate(BaseModel):
+    email: CaseInsensitiveEmailStr
+    receive_marketing_updates: bool
 
 
 class APITokenBase(BaseModel):
