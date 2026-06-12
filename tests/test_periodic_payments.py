@@ -902,6 +902,7 @@ def test_subscription_deactivate_fifo_debits_topup_on_cancellation(
     expected_max_budget = round(current_spend + topup_remaining, 2)
 
     mock_litellm.update_team_budget.assert_awaited_once()
+    assert mock_litellm.get_team_info.await_count == 1
     actual_max_budget = mock_litellm.update_team_budget.await_args.kwargs["max_budget"]
     assert abs(actual_max_budget - expected_max_budget) < 0.01, (
         f"Expected max_budget ~{expected_max_budget}, got {actual_max_budget}. "

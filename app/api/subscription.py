@@ -299,6 +299,12 @@ async def subscription_deactivate(
             )
             .first()
         )
+        litellm_service = LiteLLMService(
+            api_url=region.litellm_api_url,
+            api_key=region.litellm_api_key,
+        )
+        lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+        current_team_spend: float | None = None
         if active_subscription_period:
             await capture_periodic_team_spend_for_period(
                 db=db,
@@ -313,17 +319,11 @@ async def subscription_deactivate(
             # Without this, FIFO never runs on the cancel path (no invoice),
             # and consumed_cents stays stale — leaking top-up credits.
             try:
-                litellm_service_pre = LiteLLMService(
-                    api_url=region.litellm_api_url,
-                    api_key=region.litellm_api_key,
-                )
-                lite_team_id_pre = LiteLLMService.format_team_id(region.name, team.id)
-                team_info_pre = await litellm_service_pre.get_team_info(
-                    lite_team_id_pre
-                )
-                team_info_pre = team_info_pre.get("team_info", team_info_pre)
+                team_info_resp = await litellm_service.get_team_info(lite_team_id)
+                team_info = team_info_resp.get("team_info", team_info_resp)
+                current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
                 current_spend_cents = int(
-                    round(float(team_info_pre.get("spend", 0.0) or 0.0) * 100)
+                    round(current_team_spend * 100)
                 )
                 spend_baseline_cents = _previous_period_spend_baseline_cents(
                     db,
@@ -342,6 +342,7 @@ async def subscription_deactivate(
                         spend_cents=incremental_spend_cents,
                     )
             except Exception as exc:
+                db.rollback()
                 logger.warning(
                     "Failed to run FIFO allocation on cancellation for team %s: %s",
                     team.id,
@@ -363,11 +364,6 @@ async def subscription_deactivate(
             row.is_active = False
         db.flush()
 
-        litellm_service = LiteLLMService(
-            api_url=region.litellm_api_url,
-            api_key=region.litellm_api_key,
-        )
-        lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
         topup_remaining_dollars = (
             compute_active_topup_remaining(db, team_id=team.id, region_id=region.id)
             / 100.0
@@ -378,19 +374,21 @@ async def subscription_deactivate(
             topup_budget_duration = f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
 
         projected_team_max_budget = topup_remaining_dollars
-        try:
-            team_info_resp = await litellm_service.get_team_info(lite_team_id)
-            team_info = team_info_resp.get("team_info", team_info_resp)
-            current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
+        if current_team_spend is None:
+            try:
+                team_info_resp = await litellm_service.get_team_info(lite_team_id)
+                team_info = team_info_resp.get("team_info", team_info_resp)
+                current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to read LiteLLM team spend for deactivation projection (team %s): %s",
+                    team.id,
+                    exc,
+                )
+        if current_team_spend is not None:
             # LiteLLM team spend is non-resettable. Keep current spend as baseline
             # so remaining headroom stays requestable after deactivation.
             projected_team_max_budget = current_team_spend + topup_remaining_dollars
-        except Exception as exc:
-            logger.warning(
-                "Failed to read LiteLLM team spend for deactivation projection (team %s): %s",
-                team.id,
-                exc,
-            )
 
         try:
             await litellm_service.update_team_budget(
