@@ -1,7 +1,7 @@
 """add receive_marketing_updates to users
 
 Revision ID: c4a9d8e1f2b3
-Revises: 2f7c9d1e4aab
+Revises: d9a1b2c3e4f5
 Create Date: 2026-05-20 16:00:00.000000
 """
 
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "c4a9d8e1f2b3"
-down_revision = "2f7c9d1e4aab"
+down_revision = "d9a1b2c3e4f5"
 branch_labels = None
 depends_on = None
 
