@@ -108,6 +108,19 @@ class Settings(BaseSettings):
             [route.strip() for route in lagoon_routes if route.strip()]
         )
 
+        # Set development/testing fallbacks for required variables
+        if self.ENV_SUFFIX in ("local", "test", "testing"):
+            if not self.AWS_ACCESS_KEY_ID:
+                self.AWS_ACCESS_KEY_ID = "AKIATEST"
+            if not self.AWS_SECRET_ACCESS_KEY:
+                self.AWS_SECRET_ACCESS_KEY = "sk-string"
+            if not self.STRIPE_SECRET_KEY:
+                self.STRIPE_SECRET_KEY = "sk_test_string"
+            if not self.STRIPE_PUBLISHABLE_KEY:
+                self.STRIPE_PUBLISHABLE_KEY = "pk_test_string"
+            if not self.WEBHOOK_SIG:
+                self.WEBHOOK_SIG = "whsec_test_1234567890"
+
         # Validate required production variables
         if self.ENV_SUFFIX not in ("local", "test", "testing"):
             missing = []
@@ -117,6 +130,8 @@ class Settings(BaseSettings):
                 missing.append("AWS_SECRET_ACCESS_KEY")
             if not self.STRIPE_SECRET_KEY:
                 missing.append("STRIPE_SECRET_KEY")
+            if not self.STRIPE_PUBLISHABLE_KEY:
+                missing.append("STRIPE_PUBLISHABLE_KEY")
             if not self.WEBHOOK_SIG:
                 missing.append("WEBHOOK_SIG")
             if missing:

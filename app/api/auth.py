@@ -1,7 +1,6 @@
 import traceback
 import logging
 import secrets
-import hashlib
 import os
 import time
 import uuid
@@ -554,17 +553,17 @@ async def create_token(
         user_id = current_user.id
 
     raw_token = generate_api_token()
-    hashed_token = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
-
+    hashed_token = get_password_hash(raw_token)
     db_token = DBAPIToken(
         name=token_create.name, token=hashed_token, user_id=user_id
     )
     db.add(db_token)
     db.commit()
     db.refresh(db_token)
-    
-    db_token.token = raw_token
-    return db_token
+
+    # Return the raw token only in the response — never write it back to the DB
+    response = APIToken.model_validate(db_token)
+    return response
 
 
 @router.get("/token", response_model=List[APITokenResponse])
