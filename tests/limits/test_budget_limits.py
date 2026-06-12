@@ -464,7 +464,7 @@ def test_trigger_budget_propagation_uses_pool_duration(
     """
     GIVEN: A POOL team budget update
     WHEN: _trigger_team_budget_propagation runs
-    THEN: It propagates with POOL_BUDGET_EXPIRATION_DAYS duration, not product default duration
+    THEN: It propagates with POOL_PURCHASE_EXPIRY_DAYS duration, not product default duration
     """
     from app.core.config import settings
 
@@ -486,7 +486,7 @@ def test_trigger_budget_propagation_uses_pool_duration(
     args = mock_propagate.call_args[0]
     assert args[1] == test_team.id
     assert args[2] == 42.0
-    assert args[3] == f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+    assert args[3] == f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
 
 
 def test_get_product_max_by_type_no_products(db, test_team):

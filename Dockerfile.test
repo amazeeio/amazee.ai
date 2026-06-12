@@ -9,8 +9,9 @@ COPY requirements-test.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt -r requirements-test.txt
 
-# Copy application code and tests
+# Copy application code, scripts, and tests
 COPY app/ app/
+COPY scripts/ scripts/
 COPY tests/ tests/
 
 # Set environment variables for testing

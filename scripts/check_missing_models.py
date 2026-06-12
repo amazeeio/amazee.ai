@@ -62,6 +62,43 @@ def fetch_report(
         raise RuntimeError(f"Failed to reach {url}: {exc}") from exc
 
 
+def fetch_model_card_urls(models_url: str, timeout: int = 60) -> dict[str, str]:
+    """Fetch the upstream Bedrock catalog and return a modelId -> modelCardUrl map.
+
+    Returns an empty dict on failure so that the Slack output gracefully
+    degrades to plain text (no hyperlinks).
+    """
+    if not models_url:
+        return {}
+    request = urllib.request.Request(models_url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            catalog = json.load(response)
+    except (HTTPError, URLError, ValueError):
+        return {}
+
+    if not isinstance(catalog, list):
+        return {}
+
+    urls: dict[str, str] = {}
+    for model in catalog:
+        if not isinstance(model, dict):
+            continue
+        model_id = model.get("modelId")
+        model_card = model.get("modelCard")
+        model_card_url = (
+            model_card.get("modelCardUrl") if isinstance(model_card, dict) else None
+        )
+        if (
+            isinstance(model_id, str)
+            and isinstance(model_card_url, str)
+            and model_card_url.strip()
+        ):
+            urls[model_id] = model_card_url
+
+    return urls
+
+
 def load_state(state_file: Path) -> dict[str, Any]:
     if not state_file.exists():
         return {"region_groups": {}}
@@ -79,14 +116,21 @@ def save_state(state_file: Path, state: dict[str, Any]) -> None:
 
 
 def build_diff(
-    report: dict[str, Any], previous_state: dict[str, Any]
+    report: dict[str, Any],
+    previous_state: dict[str, Any],
+    model_card_urls: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Compute per-region-group ``new_missing`` vs. ``previous_state`` plus
     the next state to persist.
 
     A model counts as "new" only when it appears in the current report and
     *did not* appear in the previous state for the same region group.
+
+    ``model_card_urls`` is an optional mapping of model_id -> documentation URL
+    used to enrich the Slack summary with hyperlinks.
     """
+    if model_card_urls is None:
+        model_card_urls = {}
     summary_sections: list[str] = []
     has_new = False
 
@@ -112,9 +156,21 @@ def build_diff(
                 f"*{group}* ({entry['upstream_region']}) — {len(new_missing)} new missing model(s)"
             ]
             for model in new_missing:
-                section_lines.append(
-                    f"• `{model['model_id']}` ({model['provider_name']} / {model['model_name']})"
-                )
+                model_card_url = model_card_urls.get(model["model_id"])
+                if model_card_url:
+                    safe_name = (
+                        model["model_name"]
+                        .replace("&", "&amp;")
+                        .replace(">", "&gt;")
+                        .replace("|", "&#124;")
+                    )
+                    section_lines.append(
+                        f"• `{model['model_id']}` ({model['provider_name']} / <{model_card_url}|{safe_name}>)"
+                    )
+                else:
+                    section_lines.append(
+                        f"• `{model['model_id']}` ({model['provider_name']} / {model['model_name']})"
+                    )
             summary_sections.append("\n".join(section_lines))
 
         diff_groups.append(
@@ -292,8 +348,12 @@ def main() -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
+    # Fetch model card URLs from the upstream catalog for Slack hyperlinks.
+    # This is best-effort; failures degrade gracefully to plain text.
+    model_card_urls = fetch_model_card_urls(report.get("models_url", ""))
+
     previous_state = load_state(state_file)
-    diff = build_diff(report, previous_state)
+    diff = build_diff(report, previous_state, model_card_urls)
     save_state(state_file, diff["next_state"])
 
     report_file.write_text(json.dumps(diff, indent=2) + "\n", encoding="utf-8")

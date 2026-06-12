@@ -548,7 +548,7 @@ class LimitService:
         apply_to_keys = not team.requires_pool_purchase_gate
         update_key_limits = not team.requires_pool_purchase_gate
         if not apply_to_keys:
-            budget_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+            budget_duration = f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
         else:
             # For periodic teams, keep duration aligned with token restrictions.
             days_left, _, _ = self.get_token_restrictions(team_id)
@@ -825,12 +825,13 @@ class LimitService:
             if existing_limit and existing_limit.limited_by == LimitSource.MANUAL:
                 continue
 
-            # POOL team budget is purchase-driven and should not be reset by the
-            # periodic limit reconciliation once it has been set.
+            # POOL team budget is purchase-driven and synchronized via
+            # billing/purchase flows. Limit reconciliation must never create or
+            # overwrite TEAM.BUDGET for POOL teams, otherwise it can clobber the
+            # projected LiteLLM team budget after a cycle.
             if (
                 resource_type == ResourceType.BUDGET
                 and team.requires_pool_purchase_gate
-                and existing_limit is not None
             ):
                 continue
 

@@ -11,7 +11,7 @@ Key behaviours under test:
 5. PERIODIC teams reset key spend to 0 on each webhook
 6. POOL subscription teams reset key spend to 0 on cycle (same as PERIODIC)
 7. Spend API: PERIODIC teams derive total_spend from sum of key spends
-8. Spend API: PERIODIC teams derive total_budget from max(key budgets)
+8. Spend API: PERIODIC teams derive total_budget from current-cycle ledger budget
 """
 
 import pytest
@@ -209,10 +209,10 @@ async def test_periodic_team_compounds_max_budget(
 
     await _apply_periodic_cycle(db, test_team, test_region)
 
-    # Webhook resets key spend to 0; max_budget = desired_remaining = cap + topup = 100.0 + 0.0
-    # (get_team_info is called to detect region availability but spend is not used in the formula)
+    # Projection uses current team spend + effective remaining.
+    # 37.5 + 100.0 = 137.5
     team_call = mock_litellm.update_team_budget.await_args
-    assert team_call.kwargs["max_budget"] == 100.0
+    assert team_call.kwargs["max_budget"] == 137.5
 
 
 # ─── 4. Compounding falls back to flat cap when get_team_info fails ───────
@@ -502,11 +502,11 @@ def test_pool_team_total_spend_uses_team_info(
     assert data["total_spend"] == 42.0
 
 
-# ─── 9. Spend API: PERIODIC team total_budget from max(key budgets) ──────
+# ─── 9. Spend API: PERIODIC team total_budget from ledger current-cycle ───
 
 
 @patch("app.api.spend.LiteLLMService.get_team_info", new_callable=AsyncMock)
-def test_periodic_team_total_budget_from_max_key_budget(
+def test_periodic_team_total_budget_from_current_cycle_ledger_budget(
     mock_get_team_info,
     client,
     admin_token,
@@ -514,9 +514,8 @@ def test_periodic_team_total_budget_from_max_key_budget(
     test_region,
     db,
 ):
-    """For PERIODIC teams without a configured_team_cap, total_budget must
-    be derived from the max per-key max_budget, NOT from team_info.max_budget
-    (which is compounded = accumulated_spend + cap)."""
+    """For PERIODIC teams, total_budget is derived from DB ledger current-cycle
+    budget (subscription+topup remaining), not from LiteLLM key/team max_budget."""
     test_team.budget_type = "periodic"
     db.add(test_team)
     db.commit()
@@ -536,8 +535,8 @@ def test_periodic_team_total_budget_from_max_key_budget(
     db.add_all([key_a, key_b])
     db.commit()
 
-    # team_info.max_budget = 250 (compounded: spend 150 + cap 100)
-    # key max_budgets: 100 and 100 → max = 100 (actual monthly cap)
+    # LiteLLM reports compounded values, but endpoint budget source for PERIODIC
+    # teams is ledger current-cycle budget.
     mock_get_team_info.return_value = {
         "team_info": {"spend": 150.0, "max_budget": 250.0},
         "keys": [
@@ -563,9 +562,9 @@ def test_periodic_team_total_budget_from_max_key_budget(
     assert response.status_code == 200
     data = response.json()
 
-    # PERIODIC teams expose effective current team budget from LiteLLM team_info,
-    # which includes compounded/carry-forward budget.
-    assert data["total_budget"] == 250.0
+    # No active periodic ledger entries were created in this fixture, so
+    # current-cycle purchased budget is 0.
+    assert data["total_budget"] == 0.0
 
 
 # ─── 10. PERIODIC team payment sync status updated on success ─────────────
