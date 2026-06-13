@@ -3,6 +3,7 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   env: {
     STRIPE_PUBLISHABLE_KEY: process.env.STRIPE_PUBLISHABLE_KEY,
+    NEXT_PUBLIC_NEW_DASHBOARD_URL: process.env.NEXT_PUBLIC_NEW_DASHBOARD_URL,
   },
   async headers() {
     return [
