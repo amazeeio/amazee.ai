@@ -47,12 +47,14 @@ class UserCreate(UserBase):
     password: Optional[str] = None
     team_id: Optional[int] = None
     role: Optional[str] = None
+    receive_marketing_updates: Optional[bool] = None
     model_config = ConfigDict(from_attributes=True)
 
 
 class UserUpdate(BaseModel):
     email: Optional[CaseInsensitiveEmailStr] = None
     is_admin: Optional[bool] = None
+    receive_marketing_updates: Optional[bool] = None
     current_password: Optional[str] = None
     new_password: Optional[str] = None
 
@@ -64,8 +66,14 @@ class User(UserBase):
     team_id: Optional[int] = None
     team_name: Optional[str] = None
     role: Optional[str] = None
+    receive_marketing_updates: bool = False
     model_config = ConfigDict(from_attributes=True)
     audit_logs: ClassVar = relationship("AuditLog", back_populates="user")
+
+
+class UserMarketingUpdatesByEmailUpdate(BaseModel):
+    email: CaseInsensitiveEmailStr
+    receive_marketing_updates: bool
 
 
 class APITokenBase(BaseModel):
@@ -239,7 +247,7 @@ class PublicModelSummary(BaseModel):
     context_length: Optional[int] = None
     max_output_tokens: Optional[int] = None
     description: str
-    manufacturer: PublicModelManufacturer
+    manufacturer: Optional[PublicModelManufacturer] = None
     capabilities: PublicModelCapabilities
     pricing: PublicModelPricing
 
@@ -447,7 +455,13 @@ class PrivateAIKeySpend(BaseModel):
     expires: datetime
     created_at: datetime
     updated_at: datetime
-    max_budget: Optional[float] = None
+    max_budget: Optional[float] = Field(
+        default=None,
+        description=(
+            "Key spend cap from Amazee AI DB (spend_caps) for this key. "
+            "Returns null when no key-level cap is configured."
+        ),
+    )
     budget_duration: Optional[str] = None
     budget_reset_at: Optional[datetime] = None
     period_start: Optional[datetime] = None
@@ -463,7 +477,13 @@ class SpendKeyItem(BaseModel):
     owner_id: Optional[int] = None
     team_id: Optional[int] = None
     spend: float
-    max_budget: Optional[float] = None
+    max_budget: Optional[float] = Field(
+        default=None,
+        description=(
+            "Key spend cap from Amazee AI DB (spend_caps) for this key. "
+            "Returns null when no key-level cap is configured."
+        ),
+    )
     cached_spend: Optional[float] = None
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
@@ -478,16 +498,63 @@ class TeamSpendResponse(BaseModel):
     region_name: str
     team_id: int
     team_name: str
-    total_spend: float
-    total_budget: float
+    total_spend: float = Field(
+        description=(
+            "Team spend from provider/API aggregation. May include provider-side "
+            "projection/cumulative behavior."
+        )
+    )
+    total_budget: float = Field(
+        description=(
+            "Effective team budget currently projected/enforced in provider/API totals."
+        )
+    )
+    # Current-period values (may differ from total_* when provider counters are cumulative)
+    period_spend: Optional[float] = Field(
+        default=None,
+        description="Current period spend (period-local view).",
+    )
+    period_budget: Optional[float] = Field(
+        default=None,
+        description=(
+            "Current period budget. For subscription-managed POOL/PERIODIC teams, "
+            "this reflects ledger semantics for the active period."
+        ),
+    )
     total_prompt_tokens: Optional[int] = None
     total_completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
-    budget_duration: Optional[str] = None
-    budget_reset_at: Optional[datetime] = None
-    period_start: Optional[datetime] = None
+    budget_duration: Optional[str] = Field(
+        default=None,
+        description="Active team budget window duration (e.g. 31d, 365d, 1mo).",
+    )
+    budget_reset_at: Optional[datetime] = Field(
+        default=None,
+        description="End timestamp of the active team budget window.",
+    )
+    period_start: Optional[datetime] = Field(
+        default=None,
+        description="Start timestamp of the active team budget window.",
+    )
+    periodic_budget: Optional["PeriodicTeamBudgetView | float"] = Field(
+        default=None,
+        description=(
+            "PERIODIC teams: structured PeriodicTeamBudgetView. "
+            "POOL teams with active subscription: current cycle subscription amount (float). "
+            "Otherwise null."
+        ),
+    )
     key_count: int
     keys: List[SpendKeyItem]
+
+
+class PeriodicTeamBudgetView(BaseModel):
+    purchased_budget_cents: int
+    purchased_budget: float
+    remaining_budget_cents: int
+    remaining_budget: float
+    configured_max_budget_cents: int
+    configured_max_budget: float
 
 
 class UserSpendResponse(BaseModel):
@@ -541,6 +608,9 @@ class TeamSpendHistoryPeriodItem(BaseModel):
     total_prompt_tokens: Optional[int] = None
     total_completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
+    subscription_remaining_cents: Optional[int] = None
+    topup_remaining_cents: Optional[int] = None
+    desired_remaining_cents: Optional[int] = None
     source: str
     stripe_event_id: Optional[str] = None
     stripe_invoice_id: Optional[str] = None
@@ -554,6 +624,21 @@ class TeamSpendHistoryResponse(BaseModel):
     team_id: int
     team_name: str
     periods: List[TeamSpendHistoryPeriodItem]
+    periodic_transactions: List["TeamPeriodicTransactionItem"] = Field(
+        default_factory=list
+    )
+
+
+class TeamPeriodicTransactionItem(BaseModel):
+    id: int
+    payment_type: str
+    amount_cents: int
+    currency: str
+    stripe_payment_id: str
+    payment_date: datetime
+    status: str
+    sync_status: str
+    source: str
 
 
 class LiteLLMToken(BaseModel):
@@ -822,6 +907,27 @@ class PoolPurchaseResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PeriodicTopupRequest(BaseModel):
+    amount_cents: int = Field(gt=0)
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+
+
+class PeriodicTopupResponse(BaseModel):
+    id: int
+    team_id: int
+    region_id: int
+    amount_cents: int
+    currency: str
+    purchased_at: datetime
+    stripe_payment_id: str
+    created_at: datetime
+    new_total_budget_cents: int
+    budget_type: BudgetType = BudgetType.PERIODIC
+    model_config = ConfigDict(from_attributes=True)
+
+
 class PoolPurchaseHistoryItem(BaseModel):
     id: int
     amount_cents: int
@@ -856,6 +962,17 @@ class PoolRegionPurchaseHistoryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PeriodicBudgetStatusResponse(BaseModel):
+    team_id: int
+    region_id: int
+    subscription_remaining_cents: int
+    topup_remaining_cents: int
+    desired_remaining_cents: int
+    subscription_period_end: Optional[datetime] = None
+    nearest_topup_expiry: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
 class UserSpendRegion(BaseModel):
     region_id: int
     region_name: str
@@ -876,3 +993,32 @@ class UserSpendByEmailResponse(BaseModel):
     total_spend: float
     teams: List[UserSpendTeam]
     cached_at: datetime
+
+
+class SubscriptionCycleRequest(BaseModel):
+    transaction_id: str
+    budget_cents: int
+    team_id: int
+    region_id: int
+
+
+class SubscriptionDeactivateRequest(BaseModel):
+    transaction_id: str
+    team_id: int
+    region_id: int
+    reason: Optional[str] = None
+
+
+class SubscriptionCycleResponse(BaseModel):
+    status: str
+    team_id: int
+    payment_id: Optional[int] = None
+    budget_dollars: Optional[float] = None
+    idempotent: bool = False
+
+
+class SubscriptionDeactivateResponse(BaseModel):
+    status: str
+    team_id: int
+    payment_id: Optional[int] = None
+    idempotent: bool = False

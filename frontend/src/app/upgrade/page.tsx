@@ -3,16 +3,18 @@
 import { Loader2, AlertCircle } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import Script from "next/script";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent } from "@/components/ui/card";
 import { useUpgrade } from "@/stores/use-upgrade";
+import { getWithToken } from "@/utils/api";
 
 declare module "react" {
   interface HTMLAttributes<T> extends AriaAttributes, DOMAttributes<T> {
     "pricing-table-id"?: string;
     "publishable-key"?: string;
     "customer-session-client-secret"?: string;
+    "client-reference-id"?: string;
   }
 }
 
@@ -32,6 +34,10 @@ export default function PricingTokenPage() {
   const searchParams = useSearchParams();
   const token = searchParams?.get("token");
   const initializedRef = useRef<string | null>(null);
+  const [teamRegions, setTeamRegions] = useState<
+    Array<{ id: number; name: string; label?: string | null }>
+  >([]);
+  const [selectedRegionId, setSelectedRegionId] = useState<number | null>(null);
 
   // Use the upgrade store
   const {
@@ -61,6 +67,23 @@ export default function PricingTokenPage() {
       initializedRef.current = null;
     }
   }, [token, initializeUpgrade, reset]);
+
+  useEffect(() => {
+    const fetchTeamRegions = async () => {
+      if (!token || !user?.team_id) return;
+      const response = await getWithToken(`/teams/${user.team_id}`, token);
+      const data = await response.json();
+      const regions = data.allowed_regions ?? [];
+      setTeamRegions(regions);
+      if (!selectedRegionId && regions[0]?.id) {
+        setSelectedRegionId(regions[0].id);
+      }
+    };
+
+    fetchTeamRegions().catch((err) => {
+      console.error("Error fetching team regions:", err);
+    });
+  }, [token, user?.team_id, selectedRegionId]);
 
   // Loading state
   if (isValidatingToken || isConfigLoading() || loading) {
@@ -120,6 +143,10 @@ export default function PricingTokenPage() {
 
   // Get Stripe form properties
   const stripeFormProps = getStripeFormProps();
+  const clientReferenceId =
+    user?.team_id && selectedRegionId
+      ? `${user.team_id}-${selectedRegionId}`
+      : null;
 
   // Success state - show pricing table
   return (
@@ -141,11 +168,34 @@ export default function PricingTokenPage() {
 
         {stripeFormProps ? (
           <div className="bg-white rounded-lg shadow-sm p-2">
+            {teamRegions.length > 1 && (
+              <div className="mb-4 max-w-md">
+                <label
+                  htmlFor="region-select"
+                  className="block text-sm font-medium text-gray-700 mb-1"
+                >
+                  Region
+                </label>
+                <select
+                  id="region-select"
+                  value={selectedRegionId ?? ""}
+                  onChange={(e) => setSelectedRegionId(Number(e.target.value))}
+                  className="w-full border border-gray-300 rounded-md px-3 py-2"
+                >
+                  {teamRegions.map((region) => (
+                    <option key={region.id} value={region.id}>
+                      {region.label || region.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             {/* @ts-expect-error - Stripe pricing table is a custom element */}
             <stripe-pricing-table
               pricing-table-id={stripeFormProps.pricingTableId}
               publishable-key={stripeFormProps.publishableKey}
               customer-session-client-secret={stripeFormProps.clientSecret}
+              client-reference-id={clientReferenceId ?? undefined}
             />
           </div>
         ) : (

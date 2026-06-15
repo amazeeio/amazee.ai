@@ -3,7 +3,6 @@ import asyncio
 from datetime import UTC, date, datetime
 
 from app.core.config import settings
-from app.core.limit_service import LimitService
 from app.core.security import get_role_min_system_admin
 from app.core.team_service import (
     get_team_region_litellm_keys,
@@ -12,34 +11,138 @@ from app.core.team_service import (
 from app.db.database import get_db
 from app.db.models import (
     DBLimitedResource,
+    DBPeriodicPayment,
     DBPoolPurchase,
     DBPrivateAIKey,
     DBRegion,
     DBSpendCap,
     DBTeam,
+    DBTeamRegion,
+    DBPeriodicBudgetLedgerEntry,
 )
-from app.schemas.limits import LimitSource, LimitType, OwnerType, ResourceType, UnitType
+from app.schemas.limits import LimitSource, OwnerType, ResourceType
 from app.schemas.models import (
     BudgetType,
     PoolPurchaseHistoryResponse,
     PoolPurchaseRequest,
     PoolPurchaseResponse,
     PoolRegionPurchaseHistoryResponse,
+    PeriodicBudgetStatusResponse,
+    PeriodicTopupRequest,
+    PeriodicTopupResponse,
 )
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.services.litellm import LiteLLMService
-from app.core.spend_period_service import (
-    fetch_team_spend_snapshot_for_region,
-    upsert_team_spend_period,
+from app.core.periodic_budget_ledger_service import (
+    add_topup_entry,
+    compute_active_topup_remaining,
+)
+from app.core.pool_budget_service import (
+    pool_available_budget_for_team_region as shared_pool_available_budget_for_team_region,
+    pool_team_budget_duration_for_enforcement as shared_pool_team_budget_duration_for_enforcement,
+    pool_team_has_ever_purchased,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["budgets"])
 MONTHLY_BUDGET_DURATION = "1mo"
+
+
+def _is_duplicate_stripe_payment_integrity_error(exc: IntegrityError) -> bool:
+    """Return True only for unique stripe_payment_id conflicts."""
+    orig = getattr(exc, "orig", None)
+    pgcode = getattr(orig, "pgcode", None)
+    if pgcode != "23505":
+        return False
+
+    constraint_name = (
+        getattr(getattr(orig, "diag", None), "constraint_name", "") or ""
+    ).lower()
+    if constraint_name:
+        return "stripe_payment_id" in constraint_name
+
+    message = str(orig).lower()
+    return "stripe_payment_id" in message
+
+
+# PERIODIC teams use a fixed 31d rolling window so LiteLLM never self-resets
+# on a calendar boundary. Spend is reset manually on each Stripe webhook renewal.
+PERIODIC_BUDGET_DURATION = "31d"
+
+
+@router.get(
+    "/region/{region_id}/teams/{team_id}/periodic-status",
+    response_model=PeriodicBudgetStatusResponse,
+    dependencies=[Depends(get_role_min_system_admin)],
+)
+async def get_periodic_budget_status(
+    region_id: int, team_id: int, db: Session = Depends(get_db)
+):
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    if team.budget_type not in (BudgetType.PERIODIC, BudgetType.POOL):
+        raise HTTPException(
+            status_code=400,
+            detail="Endpoint is only valid for subscription-managed teams",
+        )
+    region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+
+    now = datetime.now(UTC)
+    sub_remaining = 0
+    subscription_period_end = None
+    active_subscriptions = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team_id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+            ),
+        )
+        .all()
+    )
+    for row in active_subscriptions:
+        sub_remaining += max(0, row.amount_cents - row.consumed_cents)
+        if row.effective_period_end and (
+            subscription_period_end is None
+            or row.effective_period_end > subscription_period_end
+        ):
+            subscription_period_end = row.effective_period_end
+
+    nearest_topup_expiry = (
+        db.query(func.min(DBPeriodicBudgetLedgerEntry.expires_at))
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team_id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"]),
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            DBPeriodicBudgetLedgerEntry.expires_at.isnot(None),
+            DBPeriodicBudgetLedgerEntry.expires_at > now,
+        )
+        .scalar()
+    )
+    topup_remaining = compute_active_topup_remaining(
+        db, team_id=team_id, region_id=region_id
+    )
+    return PeriodicBudgetStatusResponse(
+        team_id=team_id,
+        region_id=region_id,
+        subscription_remaining_cents=sub_remaining,
+        topup_remaining_cents=topup_remaining,
+        desired_remaining_cents=sub_remaining + topup_remaining,
+        subscription_period_end=subscription_period_end,
+        nearest_topup_expiry=nearest_topup_expiry,
+    )
 
 
 def _get_operator_manual_team_budget_limit(db: Session, team_id: int) -> float | None:
@@ -79,13 +182,13 @@ def _pool_budget_duration_from_last_purchase(
         .scalar()
     )
     if latest_purchase_at is None:
-        return f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+        return f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
     if latest_purchase_at.tzinfo is None:
         latest_purchase = latest_purchase_at.replace(tzinfo=UTC)
     else:
         latest_purchase = latest_purchase_at
     days_since_last_purchase = (datetime.now(UTC) - latest_purchase).days
-    days_left = max(0, settings.POOL_BUDGET_EXPIRATION_DAYS - days_since_last_purchase)
+    days_left = max(0, settings.POOL_PURCHASE_EXPIRY_DAYS - days_since_last_purchase)
     return f"{days_left}d"
 
 
@@ -99,14 +202,29 @@ def _compute_pool_monthly_effective_budget(
     )
 
 
+def _pool_available_budget_for_team_region(
+    db: Session, team_id: int, region_id: int
+) -> float:
+    return shared_pool_available_budget_for_team_region(db, team_id, region_id)
+
+
+def _pool_team_budget_duration_for_enforcement(
+    db: Session, team_id: int, region_id: int
+) -> str:
+    return shared_pool_team_budget_duration_for_enforcement(db, team_id, region_id)
+
+
 async def _sync_pool_key_effective_budgets(
     db: Session, *, team_id: int, region: DBRegion, purchased_total: float
 ) -> list[str]:
     """
     Keep key-level effective limits coherent for POOL teams.
 
-    - purchased_total <= 0: hard-lock all team keys (max_budget=0)
-    - purchased_total > 0: restore key max_budget from spend_caps (or clear)
+    The block/unblock decision uses pool_team_has_ever_purchased: a key is
+    blocked only when the team has never had any purchase at all.  Remaining
+    balance does NOT affect the blocked flag — budget enforcement is handled
+    by LiteLLM max_budget.  `purchased_total` is still used to set max_budget
+    on the key (0 → $0 cap, >0 → clear or apply configured cap).
     """
     keys = get_team_region_litellm_keys(
         db,
@@ -115,6 +233,8 @@ async def _sync_pool_key_effective_budgets(
     )
     if not keys:
         return []
+
+    has_purchased = pool_team_has_ever_purchased(db, team_id, region.id)
 
     key_caps = (
         db.query(DBSpendCap.key_id, DBSpendCap.max_budget)
@@ -136,12 +256,14 @@ async def _sync_pool_key_effective_budgets(
     async def _sync_key_budget(key: DBPrivateAIKey) -> str | None:
         try:
             async with semaphore:
-                if purchased_total <= 0:
+                if not has_purchased:
+                    # Team has never paid — hard-lock the key.
                     await service.update_key_budget(
                         litellm_token=key.litellm_token,
                         budget_duration=MONTHLY_BUDGET_DURATION,
                         max_budget=0.0,
                         clear_max_budget=False,
+                        blocked=True,
                     )
                 else:
                     configured_cap = cap_map.get(key.id)
@@ -154,6 +276,7 @@ async def _sync_pool_key_effective_budgets(
                             max_budget=None,
                             clear_max_budget=True,
                             clear_budget_duration=True,
+                            blocked=False,
                         )
                     else:
                         await service.update_key_budget(
@@ -161,6 +284,7 @@ async def _sync_pool_key_effective_budgets(
                             budget_duration=MONTHLY_BUDGET_DURATION,
                             max_budget=configured_cap,
                             clear_max_budget=False,
+                            blocked=False,
                         )
             return None
         except Exception as exc:
@@ -177,6 +301,14 @@ async def _sync_pool_key_effective_budgets(
     "/region/{region_id}/teams/{team_id}/purchase",
     response_model=PoolPurchaseResponse,
     status_code=status.HTTP_201_CREATED,
+    summary="Create POOL purchase",
+    description=(
+        "Create a region-scoped purchase for POOL teams.\n\n"
+        "- Valid only for purchase-gated POOL teams.\n"
+        "- Idempotency is enforced by `stripe_payment_id` (duplicate => 409).\n"
+        "- On LiteLLM sync failure, request fails and no successful budget update is applied."
+    ),
+    response_description="Created POOL purchase and updated effective team budget for the region.",
     dependencies=[Depends(get_role_min_system_admin)],
 )
 async def purchase_pool_budget(
@@ -220,286 +352,336 @@ async def purchase_pool_budget(
     )
 
     if existing_purchase:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A purchase with this stripe_payment_id already exists",
+        # Allow retry when the prior attempt failed to sync to LiteLLM.
+        # Check whether the downstream DBPeriodicPayment ended in sync_failed;
+        # if so, the budget was never actually applied and the operator should
+        # be able to resubmit with the same stripe_payment_id.
+        matching_payment = (
+            db.query(DBPeriodicPayment)
+            .filter(DBPeriodicPayment.stripe_payment_id == purchase.stripe_payment_id)
+            .first()
         )
+        if matching_payment is None:
+            # No downstream payment record exists — this implies the purchase
+            # row was created but the payment was never recorded (e.g. a crash
+            # before purchase_periodic_topup ran). Treat as a retryable state
+            # only if the DBPoolPurchase has no corresponding budget allocation;
+            # to be safe, raise 409 so an operator can explicitly investigate
+            # rather than silently allowing a potentially duplicate allocation.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "A purchase with this stripe_payment_id already exists "
+                    "but has no payment record — investigate before retrying"
+                ),
+            )
+        if matching_payment.sync_status != "sync_failed":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A purchase with this stripe_payment_id already exists",
+            )
+        # Prior attempt was sync_failed — clean up the stale records so the
+        # full purchase flow runs fresh and commits atomically.
+        db.delete(matching_payment)
+        db.delete(existing_purchase)
+        db.flush()
 
-    # Compute the closing POOL period window using the state BEFORE the new
-    # purchase is recorded (latest_purchase_at must be queried before the insert).
-    latest_purchase_at = (
-        db.query(func.max(DBPoolPurchase.purchased_at))
-        .filter(
-            DBPoolPurchase.team_id == team_id, DBPoolPurchase.region_id == region_id
-        )
-        .scalar()
-    )
-    period_start = latest_purchase_at or team.created_at or purchase.purchased_at
-    period_end = purchase.purchased_at
-
-    # Ensure period_start is offset-aware before comparing with period_end.
-    # DB-sourced datetimes (DBPoolPurchase.purchased_at, DBTeam.created_at)
-    # are offset-naive while the request payload carries offset-aware ISO strings.
-    if period_start is not None and period_start.tzinfo is None:
-        period_start = period_start.replace(tzinfo=UTC)
-    if period_end is not None and period_end.tzinfo is None:
-        period_end = period_end.replace(tzinfo=UTC)
-
-    # Insert the purchase record and flush BEFORE any external calls so that
-    # stripe_payment_id uniqueness is enforced in the DB before side effects.
-    # Concurrent duplicate requests will fail here rather than wasting an
-    # external LiteLLM round-trip.
+    # Stage the POOL audit row before the ledger/LiteLLM sync so both are
+    # committed atomically inside purchase_periodic_topup(). Without this,
+    # a crash between the two separate commits would leave the budget live
+    # but the DBPoolPurchase history row missing, and a retry would be blocked
+    # by the ledger's duplicate stripe_payment_id guard.
     purchase_record = DBPoolPurchase(
         team_id=team_id,
         region_id=region_id,
         amount_cents=purchase.amount_cents,
         currency=purchase.currency,
-        purchased_at=period_end,
+        purchased_at=purchase.purchased_at,
         stripe_payment_id=purchase.stripe_payment_id,
         created_at=datetime.now(UTC),
     )
     db.add(purchase_record)
+    db.flush()  # joins the open transaction; commit happens inside purchase_periodic_topup
 
-    team.last_pool_purchase = period_end
-
-    try:
-        db.flush()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A purchase with this stripe_payment_id already exists",
-        )
-
-    # Capture spend for the closing POOL period BEFORE mutating budget state.
-    # Uses the pre-computed period window (before the insert above).
-    if period_start and period_end and period_end > period_start:
-        try:
-            snapshot = await fetch_team_spend_snapshot_for_region(
-                db=db,
-                team=team,
-                region=region,
-            )
-            upsert_team_spend_period(
-                db=db,
-                team=team,
-                region_id=region_id,
-                period_start=period_start,
-                period_end=period_end,
-                source="pool_purchase_litellm_sync",
-                snapshot=snapshot,
-                stripe_invoice_id=purchase.stripe_payment_id,
-                raw_payload={
-                    "trigger": "pool_purchase",
-                    "amount_cents": purchase.amount_cents,
-                    "currency": purchase.currency,
-                },
-            )
-        except Exception as exc:
-            logger.error(
-                "Failed to capture POOL spend period for team_id=%s region_id=%s before purchase: %s",
-                team_id,
-                region_id,
-                str(exc),
-            )
-            # Do not block purchases if snapshot capture fails (e.g. transient
-            # LiteLLM DNS/network issues in tests or degraded environments).
-            # Budget update/purchase recording remains the primary operation.
-
-    amount_dollars = purchase.amount_cents / 100.0
-    service = LiteLLMService(
-        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    # NOTE: For subscription-managed POOL teams, top-up must be additive to
+    # subscription remaining budget and consumed after subscription funds.
+    # Reuse the periodic top-up ledger flow as the single budget source of truth.
+    periodic_resp = await purchase_periodic_topup(
+        region_id=region_id,
+        team=team,
+        purchase=PeriodicTopupRequest(
+            amount_cents=purchase.amount_cents,
+            currency=purchase.currency,
+            purchased_at=purchase.purchased_at,
+            stripe_payment_id=purchase.stripe_payment_id,
+        ),
+        db=db,
     )
-    lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-    previous_team_info: dict | None = None
-    previous_max_budget = None
-    previous_budget_duration = None
-    try:
-        previous_team_info_resp = await service.get_team_info(lite_team_id)
-        previous_team_info = previous_team_info_resp.get(
-            "team_info", previous_team_info_resp
-        )
-        previous_max_budget = previous_team_info.get("max_budget")
-        previous_budget_duration = previous_team_info.get("budget_duration")
-    except Exception as exc:
-        logger.warning(
-            "Unable to snapshot existing LiteLLM team budget for rollback (team_id=%s region_id=%s): %s",
-            team_id,
-            region_id,
-            str(exc),
-        )
-
-    total_purchased_cents = (
-        db.query(func.sum(DBPoolPurchase.amount_cents))
-        .filter(
-            DBPoolPurchase.team_id == team_id, DBPoolPurchase.region_id == region_id
-        )
-        .scalar()
-        or 0
-    )
-    total_purchased_dollars = total_purchased_cents / 100.0
-
-    # LiteLLM's max_budget is a ceiling: requests are rejected when
-    # spend >= max_budget.  Spend is tracked independently by LiteLLM and
-    # never subtracted from max_budget.  Therefore the correct value is the
-    # cumulative total of all purchases — NOT "purchases minus spend".
-    new_total_budget = total_purchased_dollars
-    operator_manual_cap = _get_operator_manual_team_budget_limit(db, team_id)
-    effective_team_budget = (
-        min(operator_manual_cap, new_total_budget)
-        if operator_manual_cap is not None
-        else new_total_budget
-    )
-
-    monthly_cap = (
-        db.query(DBSpendCap)
-        .filter(
-            DBSpendCap.scope == "team",
-            DBSpendCap.team_id == team_id,
-            DBSpendCap.region_id == region_id,
-            DBSpendCap.budget_duration == MONTHLY_BUDGET_DURATION,
-            DBSpendCap.max_budget.isnot(None),
-        )
-        .first()
-    )
-    if monthly_cap is not None:
-        if monthly_cap.month_start_spend is None:
-            if previous_team_info is None:
-                previous_team_info_resp = await service.get_team_info(lite_team_id)
-                previous_team_info = previous_team_info_resp.get(
-                    "team_info", previous_team_info_resp
-                )
-            monthly_cap.month_start_spend = round(
-                float(previous_team_info.get("spend", 0.0) or 0.0), 4
-            )
-            monthly_cap.month_anchor = _current_month_anchor()
-            db.add(monthly_cap)
-            db.flush()
-        effective_team_budget = min(
-            effective_team_budget,
-            _compute_pool_monthly_effective_budget(
-                purchased_total=new_total_budget,
-                month_start_spend=float(monthly_cap.month_start_spend or 0.0),
-                monthly_cap=float(monthly_cap.max_budget or 0.0),
-            ),
-        )
-
-    # Persist purchase-managed team budget only when there is no operator
-    # manual cap. Operator caps are intentionally preserved.
-    limit_service = LimitService(db)
-    if operator_manual_cap is None:
-        limit_service.set_limit(
-            owner_type=OwnerType.TEAM,
-            owner_id=team_id,
-            resource_type=ResourceType.BUDGET,
-            limit_type=LimitType.DATA_PLANE,
-            unit=UnitType.DOLLAR,
-            max_value=new_total_budget,
-            current_value=None,
-            limited_by=LimitSource.MANUAL,
-            set_by="pool_purchase",
-            commit=False,
-            trigger_propagation=False,
-        )
-
-    try:
-        propagation_result = await propagate_team_budget_to_keys(
-            db,
-            team_id,
-            effective_team_budget,
-            _pool_budget_duration_from_last_purchase(
-                db=db, team_id=team_id, region_id=region_id
-            ),
-            region_id=region_id,
-            update_key_limits=False,
-            apply_to_keys=False,
-        )
-        if isinstance(propagation_result, dict) and propagation_result.get("errors"):
-            db.rollback()
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=(
-                    "Failed to update team budget in LiteLLM: "
-                    + "; ".join(propagation_result["errors"])
-                ),
-            )
-        key_sync_errors = await _sync_pool_key_effective_budgets(
-            db,
-            team_id=team_id,
-            region=region,
-            purchased_total=new_total_budget,
-        )
-        if key_sync_errors:
-            db.rollback()
-            rollback_error: str | None = None
-            if previous_team_info is not None:
-                try:
-                    await service.update_team_budget(
-                        team_id=lite_team_id,
-                        max_budget=previous_max_budget,
-                        budget_duration=previous_budget_duration,
-                    )
-                except Exception as exc:
-                    rollback_error = str(exc)
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=(
-                    "Failed to update key budgets in LiteLLM after purchase: "
-                    + "; ".join(key_sync_errors)
-                    + (
-                        (
-                            ". Also failed to restore previous LiteLLM team budget; "
-                            "manual reconciliation is required: " + rollback_error
-                        )
-                        if rollback_error
-                        else ""
-                    )
-                    + (
-                        ". Previous LiteLLM team budget snapshot was unavailable; manual reconciliation may be required."
-                        if previous_team_info is None
-                        else ""
-                    )
-                ),
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Failed to propagate budget to keys: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update team budget in LiteLLM: {str(e)}",
-        )
-
-    try:
-        db.commit()
-        db.refresh(purchase_record)
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A purchase with this stripe_payment_id already exists",
-        )
-
-    logger.info(
-        f"Pool purchase recorded for team {team_id}: "
-        f"${amount_dollars:.2f} added, purchased total: ${new_total_budget:.2f}, "
-        f"effective team budget: ${effective_team_budget:.2f}, "
-        f"operator manual cap: "
-        f"{f'${operator_manual_cap:.2f}' if operator_manual_cap is not None else 'none'}"
-    )
+    db.refresh(purchase_record)  # pick up DB-generated fields after inner commit
 
     return PoolPurchaseResponse(
         id=purchase_record.id,
         team_id=team_id,
         region_id=region_id,
-        amount_cents=purchase_record.amount_cents,
-        currency=purchase_record.currency,
-        purchased_at=purchase_record.purchased_at,
-        stripe_payment_id=purchase_record.stripe_payment_id,
+        amount_cents=purchase.amount_cents,
+        currency=purchase.currency,
+        purchased_at=purchase.purchased_at,
+        stripe_payment_id=purchase.stripe_payment_id,
         created_at=purchase_record.created_at,
-        new_total_budget_cents=int(new_total_budget * 100),
+        new_total_budget_cents=periodic_resp.new_total_budget_cents,
         keys_updated=0,
+    )
+
+
+@router.post(
+    "/region/{region_id}/teams/{team_id}/purchase/periodic",
+    response_model=PeriodicTopupResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create subscription-managed top-up purchase",
+    description=(
+        "Create a region-scoped top-up for subscription-managed teams.\n\n"
+        "- Valid for PERIODIC and POOL teams.\n"
+        "- Target region must be assigned to the team.\n"
+        "- Idempotency is enforced by `stripe_payment_id` (duplicate => 409).\n"
+        "- Compounding is region-scoped: `max_budget = current_spend + desired_remaining`.\n"
+        "- On LiteLLM sync failure, request fails (502), payment is marked `sync_failed`, and "
+        "no allocatable top-up ledger balance is retained for that failed API purchase."
+    ),
+    response_description=(
+        "Created subscription-managed top-up and updated the target region budget."
+    ),
+    dependencies=[Depends(get_role_min_system_admin)],
+)
+async def create_periodic_topup(
+    region_id: int,
+    team_id: int,
+    purchase: PeriodicTopupRequest,
+    db: Session = Depends(get_db),
+):
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if not team:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Team not found"
+        )
+    if team.budget_type not in (BudgetType.PERIODIC, BudgetType.POOL):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Endpoint is only valid for subscription-managed teams",
+        )
+    return await purchase_periodic_topup(
+        region_id=region_id,
+        team=team,
+        purchase=purchase,
+        db=db,
+    )
+
+
+async def purchase_periodic_topup(
+    *, region_id: int, team: DBTeam, purchase: PeriodicTopupRequest, db: Session
+) -> PeriodicTopupResponse:
+    region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+    if not region:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
+        )
+    team_region = (
+        db.query(DBTeamRegion)
+        .filter(DBTeamRegion.team_id == team.id, DBTeamRegion.region_id == region_id)
+        .first()
+    )
+    if team_region is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Region is not assigned to this team",
+        )
+
+    existing_topup = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team.id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "topup",
+            DBPeriodicBudgetLedgerEntry.stripe_payment_id == purchase.stripe_payment_id,
+        )
+        .first()
+    )
+    if existing_topup:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A purchase with this stripe_payment_id already exists",
+        )
+
+    try:
+        # Reuse an existing payment record if a prior webhook already created one
+        # for this stripe_payment_id (e.g. checkout.session.completed fired before
+        # this API call). Without this check a second DBPeriodicPayment row would be
+        # committed for the same Stripe payment, creating a duplicate audit entry.
+        existing_payment = (
+            db.query(DBPeriodicPayment)
+            .filter(DBPeriodicPayment.stripe_payment_id == purchase.stripe_payment_id)
+            .first()
+        )
+        if existing_payment is not None:
+            payment_record = existing_payment
+            payment_record.sync_status = "sync_failed"
+        else:
+            payment_record = DBPeriodicPayment(
+                team_id=team.id,
+                stripe_payment_id=purchase.stripe_payment_id,
+                amount_cents=purchase.amount_cents,
+                currency=purchase.currency.lower(),
+                payment_type="topup",
+                status="completed",
+                sync_status="sync_failed",
+                payment_date=purchase.purchased_at,
+            )
+            db.add(payment_record)
+        db.flush()
+
+        topup_entry = add_topup_entry(
+            db,
+            team_id=team.id,
+            region_id=region_id,
+            amount_cents=purchase.amount_cents,
+            purchased_at=purchase.purchased_at,
+            source_payment_id=payment_record.id,
+            stripe_payment_id=purchase.stripe_payment_id,
+        )
+        if topup_entry is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A purchase with this stripe_payment_id already exists",
+            )
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        if _is_duplicate_stripe_payment_integrity_error(exc):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A purchase with this stripe_payment_id already exists",
+            )
+
+        logger.exception(
+            "IntegrityError while recording periodic top-up",
+            extra={
+                "team_id": team.id,
+                "region_id": region_id,
+                "stripe_payment_id": purchase.stripe_payment_id,
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to record periodic top-up purchase",
+        )
+
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+    previous_team_max_budget: float | None = None
+    previous_team_budget_duration: str | None = None
+    team_budget_updated = False
+    try:
+        team_info_resp = await service.get_team_info(lite_team_id)
+        team_info = team_info_resp.get("team_info", team_info_resp)
+        current_spend = float(team_info.get("spend", 0.0) or 0.0)
+        previous_max_budget_raw = team_info.get("max_budget")
+        previous_team_max_budget = (
+            float(previous_max_budget_raw)
+            if previous_max_budget_raw is not None
+            else None
+        )
+        previous_team_budget_duration = team_info.get("budget_duration")
+
+        sub_remaining_cents = 0
+        now_topup = datetime.now(UTC)
+        active_subscriptions = (
+            db.query(DBPeriodicBudgetLedgerEntry)
+            .filter(
+                DBPeriodicBudgetLedgerEntry.team_id == team.id,
+                DBPeriodicBudgetLedgerEntry.region_id == region_id,
+                DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+                DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+                (
+                    DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                    | (DBPeriodicBudgetLedgerEntry.expires_at > now_topup)
+                ),
+            )
+            .all()
+        )
+        for row in active_subscriptions:
+            sub_remaining_cents += max(0, row.amount_cents - row.consumed_cents)
+
+        topup_remaining_cents = compute_active_topup_remaining(
+            db, team_id=team.id, region_id=region_id
+        )
+        desired_remaining = (sub_remaining_cents + topup_remaining_cents) / 100.0
+        new_total_budget = round(current_spend + desired_remaining, 4)
+
+        await service.update_team_budget(
+            team_id=lite_team_id,
+            max_budget=new_total_budget,
+            budget_duration=PERIODIC_BUDGET_DURATION,
+        )
+        team_budget_updated = True
+        if team.requires_pool_purchase_gate:
+            key_sync_errors = await _sync_pool_key_effective_budgets(
+                db,
+                team_id=team.id,
+                region=region,
+                purchased_total=desired_remaining,
+            )
+            if key_sync_errors:
+                raise RuntimeError("; ".join(key_sync_errors))
+        payment_record.sync_status = "success"
+        payment_record.error_log = None
+        db.commit()
+    except Exception as exc:
+        if team_budget_updated:
+            try:
+                await service.update_team_budget(
+                    team_id=lite_team_id,
+                    max_budget=previous_team_max_budget,
+                    budget_duration=previous_team_budget_duration,
+                    clear_budget_duration=previous_team_budget_duration is None,
+                )
+            except Exception as rollback_exc:
+                logger.error(
+                    "Failed to roll back LiteLLM team budget after top-up sync failure for team_id=%s region_id=%s: %s",
+                    team.id,
+                    region_id,
+                    str(rollback_exc),
+                )
+        # Top-up purchase failed to reach LiteLLM; do not keep allocatable
+        # balance in the periodic ledger for this failed API purchase.
+        if topup_entry is not None:
+            # Keep audit visibility but ensure failed top-up cannot contribute
+            # to future allocatable balance.
+            topup_entry.is_active = False
+            topup_entry.consumed_cents = topup_entry.amount_cents
+            db.add(topup_entry)
+            db.flush()
+        payment_record.sync_status = "sync_failed"
+        payment_record.error_log = (
+            f"Periodic top-up sync failed for region_id={region_id}: {str(exc)}"
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to update team budget in LiteLLM",
+        )
+    db.refresh(topup_entry)
+
+    return PeriodicTopupResponse(
+        id=topup_entry.id,
+        team_id=team.id,
+        region_id=region_id,
+        amount_cents=topup_entry.amount_cents,
+        currency=purchase.currency,
+        purchased_at=topup_entry.purchased_at,
+        stripe_payment_id=topup_entry.stripe_payment_id or purchase.stripe_payment_id,
+        created_at=topup_entry.created_at,
+        new_total_budget_cents=int(new_total_budget * 100),
     )
 
 
@@ -566,7 +748,7 @@ async def sync_pool_team_budgets(db: Session) -> dict:
     Expire pool team budgets after the configured number of days.
 
     This cron job sets max_budget to $0 for pool teams whose last purchase
-    was more than POOL_BUDGET_EXPIRATION_DAYS ago. Any remaining budget is
+    was more than POOL_PURCHASE_EXPIRY_DAYS ago. Any remaining budget is
     lost after this period. Defaults to 365 days.
 
     Returns summary of updates made.
@@ -607,13 +789,20 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                 last_purchase = latest_purchase_at
 
             days_since_last_purchase = (datetime.now(UTC) - last_purchase).days
-            if days_since_last_purchase < settings.POOL_BUDGET_EXPIRATION_DAYS:
+            if days_since_last_purchase < settings.POOL_PURCHASE_EXPIRY_DAYS:
                 all_regions_expired = False
             else:
                 expired_region_ids.append(region_id)
 
         if not expired_region_ids:
             continue
+
+        expired_regions = {
+            region.id: region
+            for region in db.query(DBRegion)
+            .filter(DBRegion.id.in_(expired_region_ids))
+            .all()
+        }
 
         if all_regions_expired:
             # All regions expired, propagate $0 budget to team and all keys
@@ -623,18 +812,28 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                     db,
                     team.id,
                     0.0,
-                    f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
+                    f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
                     region_id=rid,
                     update_key_limits=False,
                     apply_to_keys=False,
                 )
+                region = expired_regions.get(rid)
+                if region is not None:
+                    errors.extend(
+                        await _sync_pool_key_effective_budgets(
+                            db,
+                            team_id=team.id,
+                            region=region,
+                            purchased_total=0.0,
+                        )
+                    )
                 errors.extend(result["errors"])
                 if result["teams_updated"] > 0:
                     team_had_any_update = True
             if team_had_any_update:
                 total_updated += 1
                 logger.info(
-                    f"Pool team {team.id} budget expired in all regions ({settings.POOL_BUDGET_EXPIRATION_DAYS}d passed), set to $0"
+                    f"Pool team {team.id} budget expired in all regions ({settings.POOL_PURCHASE_EXPIRY_DAYS}d passed), set to $0"
                 )
         else:
             # Only some regions expired - update only those regions
@@ -644,16 +843,26 @@ async def sync_pool_team_budgets(db: Session) -> dict:
                     db,
                     team.id,
                     0.0,
-                    f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d",
+                    f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
                     region_id=rid,
                     update_key_limits=False,
                     apply_to_keys=False,
                 )
+                region = expired_regions.get(rid)
+                if region is not None:
+                    errors.extend(
+                        await _sync_pool_key_effective_budgets(
+                            db,
+                            team_id=team.id,
+                            region=region,
+                            purchased_total=0.0,
+                        )
+                    )
                 errors.extend(result["errors"])
                 if result["teams_updated"] > 0:
                     team_had_any_update = True
                     logger.info(
-                        f"Pool team {team.id} budget expired in region {rid} ({settings.POOL_BUDGET_EXPIRATION_DAYS}d passed), set to $0"
+                        f"Pool team {team.id} budget expired in region {rid} ({settings.POOL_PURCHASE_EXPIRY_DAYS}d passed), set to $0"
                     )
             if team_had_any_update:
                 total_updated += 1
@@ -666,7 +875,9 @@ async def sync_pool_team_monthly_caps(db: Session) -> dict:
     Re-anchor POOL monthly caps at month boundaries.
 
     For POOL teams with monthly caps, LiteLLM team max_budget is set to:
-    min(total_purchased_365d, month_start_spend + monthly_cap).
+    min(available_remaining_budget, month_start_spend + monthly_cap),
+    where available_remaining_budget = active subscription remaining +
+    active top-up remaining.
     """
     monthly_caps = (
         db.query(DBSpendCap)
@@ -701,26 +912,18 @@ async def sync_pool_team_monthly_caps(db: Session) -> dict:
             lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
             team_info = (await service.get_team_info(lite_team_id)).get("team_info", {})
             month_start_spend = round(float(team_info.get("spend", 0.0) or 0.0), 4)
-            total_purchased = (
-                (
-                    db.query(func.sum(DBPoolPurchase.amount_cents))
-                    .filter(
-                        DBPoolPurchase.team_id == team.id,
-                        DBPoolPurchase.region_id == region.id,
-                    )
-                    .scalar()
-                )
-                or 0
-            ) / 100.0
+            available_budget = _pool_available_budget_for_team_region(
+                db, team.id, region.id
+            )
             effective_budget = _compute_pool_monthly_effective_budget(
-                purchased_total=float(total_purchased),
+                purchased_total=float(available_budget),
                 month_start_spend=month_start_spend,
                 monthly_cap=float(cap.max_budget or 0.0),
             )
             await service.update_team_budget(
                 team_id=lite_team_id,
                 max_budget=effective_budget,
-                budget_duration=_pool_budget_duration_from_last_purchase(
+                budget_duration=_pool_team_budget_duration_for_enforcement(
                     db=db, team_id=team.id, region_id=region.id
                 ),
             )

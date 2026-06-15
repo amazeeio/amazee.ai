@@ -147,6 +147,9 @@ class DBUser(Base):
     is_admin = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), default=func.now())
     role = Column(String, default="user")  # user, admin, key_creator, read_only
+    receive_marketing_updates = Column(
+        Boolean, default=False, nullable=False, server_default=text("false")
+    )
     team_id = Column(Integer, ForeignKey("teams.id", name="fk_user_team"))
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -298,6 +301,24 @@ class DBPoolPurchase(Base):
     region = relationship("DBRegion")
 
 
+class DBStripeProcessedEvent(Base):
+    """Pre-processing claim row for Stripe webhook idempotency.
+
+    Inserted before dispatching background processing. If a duplicate
+    webhook arrives, the UniqueViolation on stripe_event_id signals that
+    the event is already being handled.
+    """
+
+    __tablename__ = "stripe_processed_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    stripe_event_id = Column(String, unique=True, nullable=False, index=True)
+    event_type = Column(String, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=func.now(), nullable=False, index=True
+    )
+
+
 class DBPeriodicPayment(Base):
     """
     Stores periodic team payments (subscriptions and top-ups).
@@ -323,6 +344,65 @@ class DBPeriodicPayment(Base):
     created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
 
     team = relationship("DBTeam")
+
+
+class DBPeriodicBudgetLedgerEntry(Base):
+    __tablename__ = "periodic_budget_ledger_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    team_id = Column(
+        Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    region_id = Column(
+        Integer,
+        ForeignKey("regions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    entry_type = Column(String, nullable=False, index=True)
+    source_payment_id = Column(
+        Integer, ForeignKey("periodic_payments.id", ondelete="SET NULL"), nullable=True
+    )
+    source_invoice_id = Column(String, nullable=True, index=True)
+    stripe_payment_id = Column(String, nullable=True, index=True)
+    amount_cents = Column(Integer, nullable=False)
+    consumed_cents = Column(Integer, nullable=False, default=0)
+    purchased_at = Column(DateTime(timezone=True), nullable=False)
+    effective_period_start = Column(DateTime(timezone=True), nullable=True)
+    effective_period_end = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    rolled_over_from_id = Column(
+        Integer,
+        ForeignKey("periodic_budget_ledger_entries.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    team = relationship("DBTeam")
+    region = relationship("DBRegion")
+    source_payment = relationship("DBPeriodicPayment")
+    rolled_over_from = relationship("DBPeriodicBudgetLedgerEntry", remote_side=[id])
+
+    __table_args__ = (
+        UniqueConstraint(
+            "team_id",
+            "region_id",
+            "entry_type",
+            "stripe_payment_id",
+            name="uq_periodic_ledger_topup_payment",
+        ),
+        Index(
+            "uq_periodic_ledger_subscription_invoice_not_null",
+            "team_id",
+            "region_id",
+            "entry_type",
+            "source_invoice_id",
+            unique=True,
+            postgresql_where=text("source_invoice_id IS NOT NULL"),
+        ),
+    )
 
 
 class DBPrivateAIKey(Base):
@@ -567,6 +647,9 @@ class DBTeamSpendPeriod(Base):
     total_prompt_tokens = Column(Integer, nullable=True)
     total_completion_tokens = Column(Integer, nullable=True)
     total_tokens = Column(Integer, nullable=True)
+    subscription_remaining_cents = Column(Integer, nullable=True)
+    topup_remaining_cents = Column(Integer, nullable=True)
+    desired_remaining_cents = Column(Integer, nullable=True)
     source = Column(String, nullable=False)
     stripe_event_id = Column(String, nullable=True, index=True)
     stripe_invoice_id = Column(String, nullable=True)

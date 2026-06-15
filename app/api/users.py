@@ -29,6 +29,7 @@ from app.schemas.models import (
     UserSpendRegion,
     UserSpendByEmailResponse,
     UserSpendTeam,
+    UserMarketingUpdatesByEmailUpdate,
 )
 from app.db.models import (
     DBPrivateAIKey,
@@ -46,8 +47,10 @@ from app.core.security import (
     get_current_user_from_auth,
     get_role_min_team_admin,
 )
+from app.core.email import normalize_email_for_lookup
 from app.core.roles import UserRole
 from app.services.litellm import LiteLLMService
+from app.services.hubspot import HubSpotService
 from datetime import datetime, UTC
 import logging
 import asyncio
@@ -69,14 +72,6 @@ def get_user_by_email(db: Session, email: str) -> Optional[DBUser]:
 router = APIRouter(tags=["users"])
 
 
-def _normalize_email_for_lookup(email: str) -> str:
-    parts = email.lower().rsplit("@", 1)
-    if len(parts) == 2:
-        local_part = parts[0].split("+")[0]
-        return f"{local_part}@{parts[1]}"
-    return email.lower()
-
-
 def invalidate_user_spend_cache(db: Session, email: str) -> None:
     """Delete the cached /users/spend response for *email*.
 
@@ -87,7 +82,7 @@ def invalidate_user_spend_cache(db: Session, email: str) -> None:
     This helper intentionally does not commit; callers control the transaction
     boundary so cache invalidation remains atomic with the related write.
     """
-    normalized = _normalize_email_for_lookup(email)
+    normalized = normalize_email_for_lookup(email)
     db.query(DBUserSpendCache).filter(
         DBUserSpendCache.normalized_email == normalized
     ).delete(synchronize_session=False)
@@ -105,7 +100,7 @@ def invalidate_users_spend_cache_bulk(db: Session, emails: list[str]) -> None:
     """
     if not emails:
         return
-    normalized_emails = [_normalize_email_for_lookup(e) for e in emails]
+    normalized_emails = [normalize_email_for_lookup(e) for e in emails]
     db.query(DBUserSpendCache).filter(
         DBUserSpendCache.normalized_email.in_(normalized_emails)
     ).delete(synchronize_session=False)
@@ -505,6 +500,56 @@ async def get_users_by_email(
     return result
 
 
+@router.put(
+    "/by-email/marketing-updates",
+    response_model=List[User],
+    dependencies=[Depends(get_role_min_system_admin)],
+)
+async def update_users_marketing_updates_by_email(
+    payload: UserMarketingUpdatesByEmailUpdate,
+    db: Session = Depends(get_db),
+):
+    if not settings.HUBSPOT_MARKETING_SUBSCRIPTION_ID:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="HubSpot marketing subscription is not configured",
+        )
+
+    normalized_email = normalize_email_for_lookup(payload.email)
+
+    users = (
+        db.query(DBUser)
+        .outerjoin(DBTeam, DBUser.team_id == DBTeam.id)
+        .filter(
+            func.regexp_replace(func.lower(DBUser.email), r"\+[^@]*@", "@")
+            == normalized_email,
+            DBUser.is_active.is_(True),
+            (DBUser.team_id.is_(None)) | (DBTeam.deleted_at.is_(None)),
+        )
+        .all()
+    )
+    hubspot = HubSpotService()
+    try:
+        await hubspot.upsert_contact_marketing_updates(
+            email=normalized_email, enabled=payload.receive_marketing_updates
+        )
+    except HTTPException:
+        logger.exception(
+            "HubSpot marketing-updates sync failed for email=%s", normalized_email
+        )
+
+    if not users:
+        return []
+
+    for user in users:
+        user.receive_marketing_updates = payload.receive_marketing_updates
+    db.commit()
+    for user in users:
+        db.refresh(user)
+
+    return users
+
+
 @router.get(
     "/spend",
     response_model=UserSpendByEmailResponse,
@@ -523,7 +568,7 @@ async def get_user_spend(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Missing or invalid email",
         )
-    normalized_email = _normalize_email_for_lookup(email)
+    normalized_email = normalize_email_for_lookup(email)
 
     cached = _get_user_spend_cache(db, normalized_email)
     if cached:
@@ -754,6 +799,11 @@ async def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
         is_admin=False,  # Users are created as non-admin by default
         team_id=user.team_id,
         role=user.role,
+        receive_marketing_updates=(
+            user.receive_marketing_updates
+            if user.receive_marketing_updates is not None
+            else False
+        ),
     )
 
     db.add(db_user)
@@ -904,6 +954,7 @@ async def update_user(
         raise
 
     db.refresh(db_user)
+
     return db_user
 
 

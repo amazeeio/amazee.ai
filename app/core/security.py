@@ -8,8 +8,8 @@ import logging
 
 from app.core.config import settings
 from app.db.database import get_db
-from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func, inspect as sa_inspect
 from app.db.models import DBUser, DBAPIToken
 from app.core.rbac import (
     require_system_admin,
@@ -74,7 +74,12 @@ async def get_current_user(
         raise credentials_exception
 
     email: str = payload.get("sub")
-    user = db.query(DBUser).filter(func.lower(DBUser.email) == email.lower()).first()
+    user = (
+        db.query(DBUser)
+        .filter(func.lower(DBUser.email) == email.lower())
+        .options(joinedload(DBUser.team))
+        .first()
+    )
     if user is None:
         raise credentials_exception
     return user
@@ -91,13 +96,24 @@ async def get_current_user_from_auth(
     if request and hasattr(request.state, "user") and request.state.user is not None:
         # If we have a dict from middleware, load the full user object
         if isinstance(request.state.user, dict):
-            user = (
-                db.query(DBUser).filter(DBUser.id == request.state.user["id"]).first()
-            )
+            user = _get_user_with_team(db, request.state.user["id"])
             if user:
+                _check_user_team_not_suspended(user)
                 return user
         else:
-            return request.state.user
+            # The object may be detached from its original session (e.g. loaded
+            # by AuthMiddleware then committed/expired). Use SQLAlchemy inspect
+            # to read the PK from the identity map without touching the DB.
+            try:
+                identity = sa_inspect(request.state.user).identity
+                user_id = identity[0] if identity else None
+            except Exception:
+                user_id = None
+            if user_id is not None:
+                user = _get_user_with_team(db, user_id)
+                if user:
+                    _check_user_team_not_suspended(user)
+                    return user
 
     if not access_token and not authorization:
         raise HTTPException(
@@ -106,8 +122,16 @@ async def get_current_user_from_auth(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # FastAPI dependency defaults (Cookie/Header) may be passed when this
+    # function is called directly in tests; normalize non-string placeholders.
+    if not isinstance(access_token, str):
+        access_token = None
+    if not isinstance(authorization, str):
+        authorization = None
+
     # Try JWT token first
     token_to_try = access_token
+    used_authorization_header = authorization is not None
     if authorization:
         parts = authorization.split()
         if len(parts) != 2 or parts[0].lower() != "bearer":
@@ -117,14 +141,38 @@ async def get_current_user_from_auth(
             )
         token_to_try = parts[1]
 
+    if (
+        used_authorization_header
+        and settings.ENV_SUFFIX == "local"
+        and settings.LOCAL_BEARER_TOKEN
+        and token_to_try == settings.LOCAL_BEARER_TOKEN
+    ):
+        local_user = _get_local_bearer_user(db)
+        if local_user:
+            _check_user_team_not_suspended(local_user)
+            return local_user
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Local bearer token is configured but no active local user exists",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     # First try API token validation since it's simpler
     try:
-        db_token = db.query(DBAPIToken).filter(DBAPIToken.token == token_to_try).first()
+        db_token = (
+            db.query(DBAPIToken)
+            .filter(DBAPIToken.token == token_to_try)
+            .options(joinedload(DBAPIToken.owner).joinedload(DBUser.team))
+            .first()
+        )
         if db_token:
             # Update last used timestamp
             db_token.last_used_at = datetime.now(UTC)
+            _check_user_team_not_suspended(db_token.owner)
             db.commit()
             return db_token.owner
+    except HTTPException:
+        raise
     except Exception:
         pass
 
@@ -135,13 +183,74 @@ async def get_current_user_from_auth(
         )
         user = await get_current_user(credentials=credentials, db=db)
         if user:
+            _check_user_team_not_suspended(user)
             return user
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+def _check_user_team_not_suspended(user: DBUser) -> None:
+    """Raise 403 if the user's team has been soft-deleted.
+
+    System admins are excluded from this check so they retain access to the
+    admin interface even when their own team is soft-deleted.
+    """
+    if (
+        not user.is_admin
+        and user.team_id is not None
+        and user.team is not None
+        and user.team.deleted_at is not None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your organization has been suspended. Please contact support.",
+        )
+
+
+def _get_user_with_team(db: Session, user_id: int) -> Optional[DBUser]:
+    return (
+        db.query(DBUser)
+        .filter(DBUser.id == user_id)
+        .options(joinedload(DBUser.team))
+        .first()
+    )
+
+
+def _get_local_bearer_user(db: Session) -> Optional[DBUser]:
+    if settings.LOCAL_BEARER_USER_EMAIL:
+        preferred_user = (
+            db.query(DBUser)
+            .filter(
+                func.lower(DBUser.email) == settings.LOCAL_BEARER_USER_EMAIL.lower(),
+                DBUser.is_active.is_(True),
+            )
+            .options(joinedload(DBUser.team))
+            .first()
+        )
+        if preferred_user:
+            return preferred_user
+
+    admin_user = (
+        db.query(DBUser)
+        .filter(DBUser.is_admin.is_(True), DBUser.is_active.is_(True))
+        .options(joinedload(DBUser.team))
+        .first()
+    )
+    if admin_user:
+        return admin_user
+
+    return (
+        db.query(DBUser)
+        .filter(DBUser.is_active.is_(True))
+        .options(joinedload(DBUser.team))
+        .first()
+    )
 
 
 async def get_role_min_system_admin(

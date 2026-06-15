@@ -26,6 +26,7 @@ from fastapi import HTTPException, status
 from prometheus_client import Counter
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
+from app.schemas.models import BudgetType
 
 # Shared executor for budget propagation to avoid creating too many threads
 _budget_propagation_executor = None
@@ -547,7 +548,7 @@ class LimitService:
         apply_to_keys = not team.requires_pool_purchase_gate
         update_key_limits = not team.requires_pool_purchase_gate
         if not apply_to_keys:
-            budget_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+            budget_duration = f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
         else:
             # For periodic teams, keep duration aligned with token restrictions.
             days_left, _, _ = self.get_token_restrictions(team_id)
@@ -813,17 +814,24 @@ class LimitService:
 
         # Process each resource type
         for resource_type in all_resources:
+            if (
+                resource_type == ResourceType.BUDGET
+                and team.budget_type == BudgetType.PERIODIC
+            ):
+                continue  # Budget is set directly from payload for PERIODIC teams
+
             # Skip if manual limit already exists
             existing_limit = limit_map.get(resource_type, None)
             if existing_limit and existing_limit.limited_by == LimitSource.MANUAL:
                 continue
 
-            # POOL team budget is purchase-driven and should not be reset by the
-            # periodic limit reconciliation once it has been set.
+            # POOL team budget is purchase-driven and synchronized via
+            # billing/purchase flows. Limit reconciliation must never create or
+            # overwrite TEAM.BUDGET for POOL teams, otherwise it can clobber the
+            # projected LiteLLM team budget after a cycle.
             if (
                 resource_type == ResourceType.BUDGET
                 and team.requires_pool_purchase_gate
-                and existing_limit is not None
             ):
                 continue
 

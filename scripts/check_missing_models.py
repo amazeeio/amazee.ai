@@ -29,6 +29,9 @@ from urllib.error import HTTPError, URLError
 DEFAULT_API_URL = "https://api.amazee.ai"
 DEFAULT_PROVIDER = "aws"
 SCRIPTS_DIR = Path(__file__).resolve().parent
+# Slack Block Kit section.text.text supports up to 3000 characters.
+# Keep some headroom so chunked summaries remain safely within the field limit.
+SLACK_MAX_TEXT_LENGTH = 2900
 
 
 def _default_state_file(provider: str) -> Path:
@@ -59,6 +62,43 @@ def fetch_report(
         raise RuntimeError(f"Failed to reach {url}: {exc}") from exc
 
 
+def fetch_model_card_urls(models_url: str, timeout: int = 60) -> dict[str, str]:
+    """Fetch the upstream Bedrock catalog and return a modelId -> modelCardUrl map.
+
+    Returns an empty dict on failure so that the Slack output gracefully
+    degrades to plain text (no hyperlinks).
+    """
+    if not models_url:
+        return {}
+    request = urllib.request.Request(models_url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            catalog = json.load(response)
+    except (HTTPError, URLError, ValueError):
+        return {}
+
+    if not isinstance(catalog, list):
+        return {}
+
+    urls: dict[str, str] = {}
+    for model in catalog:
+        if not isinstance(model, dict):
+            continue
+        model_id = model.get("modelId")
+        model_card = model.get("modelCard")
+        model_card_url = (
+            model_card.get("modelCardUrl") if isinstance(model_card, dict) else None
+        )
+        if (
+            isinstance(model_id, str)
+            and isinstance(model_card_url, str)
+            and model_card_url.strip()
+        ):
+            urls[model_id] = model_card_url
+
+    return urls
+
+
 def load_state(state_file: Path) -> dict[str, Any]:
     if not state_file.exists():
         return {"region_groups": {}}
@@ -76,14 +116,21 @@ def save_state(state_file: Path, state: dict[str, Any]) -> None:
 
 
 def build_diff(
-    report: dict[str, Any], previous_state: dict[str, Any]
+    report: dict[str, Any],
+    previous_state: dict[str, Any],
+    model_card_urls: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Compute per-region-group ``new_missing`` vs. ``previous_state`` plus
     the next state to persist.
 
     A model counts as "new" only when it appears in the current report and
     *did not* appear in the previous state for the same region group.
+
+    ``model_card_urls`` is an optional mapping of model_id -> documentation URL
+    used to enrich the Slack summary with hyperlinks.
     """
+    if model_card_urls is None:
+        model_card_urls = {}
     summary_sections: list[str] = []
     has_new = False
 
@@ -109,9 +156,21 @@ def build_diff(
                 f"*{group}* ({entry['upstream_region']}) — {len(new_missing)} new missing model(s)"
             ]
             for model in new_missing:
-                section_lines.append(
-                    f"• `{model['model_id']}` ({model['provider_name']} / {model['model_name']})"
-                )
+                model_card_url = model_card_urls.get(model["model_id"])
+                if model_card_url:
+                    safe_name = (
+                        model["model_name"]
+                        .replace("&", "&amp;")
+                        .replace(">", "&gt;")
+                        .replace("|", "&#124;")
+                    )
+                    section_lines.append(
+                        f"• `{model['model_id']}` ({model['provider_name']} / <{model_card_url}|{safe_name}>)"
+                    )
+                else:
+                    section_lines.append(
+                        f"• `{model['model_id']}` ({model['provider_name']} / {model['model_name']})"
+                    )
             summary_sections.append("\n".join(section_lines))
 
         diff_groups.append(
@@ -153,20 +212,91 @@ def build_diff(
     }
 
 
+def _chunk_summary(summary: str, max_length: int = SLACK_MAX_TEXT_LENGTH) -> list[str]:
+    """Split the Slack summary into chunks that each fit within Slack's text block limit.
+
+    Splits on section boundaries (double newlines) to keep region-group sections intact.
+    """
+    if not summary:
+        return []
+    if len(summary) <= max_length:
+        return [summary]
+
+    sections = summary.split("\n\n")
+    chunks: list[str] = []
+    current_parts: list[str] = []
+    current_len = 0
+
+    for section in sections:
+        # Guard: if a single section exceeds max_length, split by lines.
+        if len(section) > max_length:
+            if current_parts:
+                chunks.append("\n\n".join(current_parts))
+                current_parts = []
+                current_len = 0
+            lines = section.split("\n")
+            line_buf: list[str] = []
+            buf_len = 0
+            for line in lines:
+                while len(line) > max_length:
+                    if line_buf:
+                        chunks.append("\n".join(line_buf))
+                        line_buf = []
+                        buf_len = 0
+                    chunks.append(line[:max_length])
+                    line = line[max_length:]
+                line_addition = len(line) + (1 if line_buf else 0)
+                if line_buf and buf_len + line_addition > max_length:
+                    chunks.append("\n".join(line_buf))
+                    line_buf = [line]
+                    buf_len = len(line)
+                else:
+                    line_buf.append(line)
+                    buf_len += line_addition
+            if line_buf:
+                chunks.append("\n".join(line_buf))
+            continue
+        addition = len(section) + (2 if current_parts else 0)  # +2 for "\n\n" join
+        if current_parts and current_len + addition > max_length:
+            chunks.append("\n\n".join(current_parts))
+            current_parts = [section]
+            current_len = len(section)
+        else:
+            current_parts.append(section)
+            current_len += addition
+
+    if current_parts:
+        chunks.append("\n\n".join(current_parts))
+
+    return chunks
+
+
 def write_github_outputs(diff: dict[str, Any]) -> None:
-    """Emit ``$GITHUB_OUTPUT`` lines so the surrounding workflow can branch."""
+    """Emit ``$GITHUB_OUTPUT`` lines so the surrounding workflow can branch.
+
+    Also writes chunked summaries to a JSON file for the workflow to iterate over
+    when sending multiple Slack messages.
+    """
     output_path = os.environ.get("GITHUB_OUTPUT")
     if not output_path:
         return
-    summary = diff["slack_summary"] or "No new missing models detected."
+    chunks = _chunk_summary(diff["slack_summary"])
+    if not chunks:
+        chunks = ["No new missing models detected."]
+
+    # Write chunks to a file the workflow can read with jq.
+    chunks_file = Path("slack-summary-chunks.json")
+    chunks_file.write_text(json.dumps(chunks, indent=2) + "\n", encoding="utf-8")
+
     with open(output_path, "a", encoding="utf-8") as handle:
         handle.write(
             f"has_new_missing={'true' if diff['has_new_missing'] else 'false'}\n"
         )
         handle.write(f"state_changed={'true' if diff['state_changed'] else 'false'}\n")
         handle.write(f"provider={diff.get('provider', '')}\n")
-        # JSON-encoded so newlines/quotes are safe to interpolate into a Slack payload.
-        handle.write(f"summary_json={json.dumps(summary)}\n")
+        handle.write(f"summary_chunk_count={len(chunks)}\n")
+        # Keep summary_json as the first chunk for backward compat.
+        handle.write(f"summary_json={json.dumps(chunks[0])}\n")
 
 
 def main() -> int:
@@ -218,8 +348,12 @@ def main() -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
+    # Fetch model card URLs from the upstream catalog for Slack hyperlinks.
+    # This is best-effort; failures degrade gracefully to plain text.
+    model_card_urls = fetch_model_card_urls(report.get("models_url", ""))
+
     previous_state = load_state(state_file)
-    diff = build_diff(report, previous_state)
+    diff = build_diff(report, previous_state, model_card_urls)
     save_state(state_file, diff["next_state"])
 
     report_file.write_text(json.dumps(diff, indent=2) + "\n", encoding="utf-8")

@@ -9,11 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Features
 
-- None yet.
+- **Pool Team Subscriptions**: Add periodic top-up support for pool teams (#562)
+- **Budget Ledger**: Track subscription-driven budget allocations and ledger entries (#562)
+- **Marketing Updates**: Allow users to update marketing preferences by email (#562)
 
 ### Fixes
 
-- None yet.
+- **Stripe Processing**: Harden event handling and idempotency for budget and subscription flows (#562)
+- **Budget Enforcement**: Block requests from zero-budget pool teams/keys and tighten budget validation (#562)
 
 ## 0.2.0 - 2026-05-28
 
