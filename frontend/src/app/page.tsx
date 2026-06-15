@@ -27,8 +27,7 @@ export default function Home() {
         <div className="relative z-20 mt-auto">
           <blockquote className="space-y-2">
             <p className="text-lg">
-              &ldquo;Our new dashboard brings a faster, more powerful experience
-              — built from the ground up to serve you better.&rdquo;
+             Faster, more powerful, and rebuilt from the ground up: our new dashboard is engineered to serve you better.
             </p>
           </blockquote>
         </div>
