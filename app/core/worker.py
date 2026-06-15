@@ -385,7 +385,7 @@ async def _record_periodic_payment_direct(
                 currency=currency.lower(),
                 payment_type=payment_type,
                 status="completed",
-                sync_status="success",
+                sync_status="pending",
                 payment_date=datetime.now(UTC),
             )
             db.add(payment_record)
@@ -555,6 +555,7 @@ async def _run_cycle_from_stripe_event(
     )
 
     try:
+        payment_id: Optional[int] = None
         if not is_first_cycle:
             for region in target_regions:
                 await capture_periodic_team_spend_for_period(
@@ -599,6 +600,20 @@ async def _run_cycle_from_stripe_event(
             )
             sync_errors.extend(region_errors)
 
+        # Full pipeline succeeded — promote the payment record to success.
+        # This must happen after apply_billing_cycle_for_team so that any
+        # retry via /cycle or the webhook path does not skip a partially-applied
+        # cycle (the idempotency guard at line 532 only skips on "success").
+        if payment_id:
+            payment_record = (
+                db.query(DBPeriodicPayment)
+                .filter(DBPeriodicPayment.id == payment_id)
+                .first()
+            )
+            if payment_record:
+                payment_record.sync_status = "success"
+                db.commit()
+
         logger.info(
             "Webhook invoice.paid cycle complete: team=%s invoice=%s budget=%s errors=%s",
             team.id,
@@ -614,6 +629,20 @@ async def _run_cycle_from_stripe_event(
             exc,
             exc_info=True,
         )
+        # Mark the payment record as sync_failed so retries are not blocked
+        # by the idempotency guard (which only skips on "success").
+        if payment_id:
+            try:
+                payment_record = (
+                    db.query(DBPeriodicPayment)
+                    .filter(DBPeriodicPayment.id == payment_id)
+                    .first()
+                )
+                if payment_record and payment_record.sync_status == "pending":
+                    payment_record.sync_status = "sync_failed"
+                    db.commit()
+            except Exception:
+                db.rollback()
 
 
 async def handle_stripe_event_background(event):

@@ -352,10 +352,26 @@ async def purchase_pool_budget(
     )
 
     if existing_purchase:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A purchase with this stripe_payment_id already exists",
+        # Allow retry when the prior attempt failed to sync to LiteLLM.
+        # Check whether the downstream DBPeriodicPayment ended in sync_failed;
+        # if so, the budget was never actually applied and the operator should
+        # be able to resubmit with the same stripe_payment_id.
+        matching_payment = (
+            db.query(DBPeriodicPayment)
+            .filter(DBPeriodicPayment.stripe_payment_id == purchase.stripe_payment_id)
+            .first()
         )
+        if matching_payment and matching_payment.sync_status != "sync_failed":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A purchase with this stripe_payment_id already exists",
+            )
+        # Prior attempt was sync_failed — clean up the stale records so the
+        # full purchase flow runs fresh and commits atomically.
+        if matching_payment:
+            db.delete(matching_payment)
+        db.delete(existing_purchase)
+        db.flush()
 
     # Stage the POOL audit row before the ledger/LiteLLM sync so both are
     # committed atomically inside purchase_periodic_topup(). Without this,
