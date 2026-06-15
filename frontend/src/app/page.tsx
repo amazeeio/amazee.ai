@@ -63,10 +63,10 @@ export default function Home() {
           <p className="text-xs text-center text-muted-foreground">
             If you have any issues, please contact{" "}
             <a
-              href="mailto:support@amazee.io"
+              href="mailto:ai.support@amazee.io"
               className="underline underline-offset-4 hover:text-primary"
             >
-              support@amazee.io
+              ai.support@amazee.io
             </a>
           </p>
         </div>
