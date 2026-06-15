@@ -50,6 +50,7 @@ backend-test-regex: backend-test-build test-postgres
 		-e TESTING="1" \
 		-e ENV_SUFFIX="test" \
 		-v $(PWD)/app:/app/app \
+		-v $(PWD)/scripts:/app/scripts \
 		-v $(PWD)/tests:/app/tests \
 		amazee-backend-test pytest -vv -k "$(regex)" || status=$$?; \
 	$(MAKE) test-clean; \
@@ -71,6 +72,7 @@ backend-test: backend-test-build test-postgres
 		-e TESTING="1" \
 		-e ENV_SUFFIX="test" \
 		-v $(PWD)/app:/app/app \
+		-v $(PWD)/scripts:/app/scripts \
 		-v $(PWD)/tests:/app/tests \
 		amazee-backend-test || status=$$?; \
 	$(MAKE) test-clean; \
@@ -92,6 +94,7 @@ backend-test-cov: backend-test-build test-postgres
 		-e TESTING="1" \
 		-e ENV_SUFFIX="test" \
 		-v $(PWD)/app:/app/app \
+		-v $(PWD)/scripts:/app/scripts \
 		-v $(PWD)/tests:/app/tests \
 		amazee-backend-test pytest -v --cov=app tests/ || status=$$?; \
 	$(MAKE) test-clean; \

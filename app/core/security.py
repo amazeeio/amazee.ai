@@ -122,8 +122,16 @@ async def get_current_user_from_auth(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # FastAPI dependency defaults (Cookie/Header) may be passed when this
+    # function is called directly in tests; normalize non-string placeholders.
+    if not isinstance(access_token, str):
+        access_token = None
+    if not isinstance(authorization, str):
+        authorization = None
+
     # Try JWT token first
     token_to_try = access_token
+    used_authorization_header = authorization is not None
     if authorization:
         parts = authorization.split()
         if len(parts) != 2 or parts[0].lower() != "bearer":
@@ -132,6 +140,22 @@ async def get_current_user_from_auth(
                 detail="Invalid authorization header format. Use 'Bearer <token>'",
             )
         token_to_try = parts[1]
+
+    if (
+        used_authorization_header
+        and settings.ENV_SUFFIX == "local"
+        and settings.LOCAL_BEARER_TOKEN
+        and token_to_try == settings.LOCAL_BEARER_TOKEN
+    ):
+        local_user = _get_local_bearer_user(db)
+        if local_user:
+            _check_user_team_not_suspended(local_user)
+            return local_user
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Local bearer token is configured but no active local user exists",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     # First try API token validation since it's simpler
     try:
@@ -193,6 +217,37 @@ def _get_user_with_team(db: Session, user_id: int) -> Optional[DBUser]:
     return (
         db.query(DBUser)
         .filter(DBUser.id == user_id)
+        .options(joinedload(DBUser.team))
+        .first()
+    )
+
+
+def _get_local_bearer_user(db: Session) -> Optional[DBUser]:
+    if settings.LOCAL_BEARER_USER_EMAIL:
+        preferred_user = (
+            db.query(DBUser)
+            .filter(
+                func.lower(DBUser.email) == settings.LOCAL_BEARER_USER_EMAIL.lower(),
+                DBUser.is_active.is_(True),
+            )
+            .options(joinedload(DBUser.team))
+            .first()
+        )
+        if preferred_user:
+            return preferred_user
+
+    admin_user = (
+        db.query(DBUser)
+        .filter(DBUser.is_admin.is_(True), DBUser.is_active.is_(True))
+        .options(joinedload(DBUser.team))
+        .first()
+    )
+    if admin_user:
+        return admin_user
+
+    return (
+        db.query(DBUser)
+        .filter(DBUser.is_active.is_(True))
         .options(joinedload(DBUser.team))
         .first()
     )

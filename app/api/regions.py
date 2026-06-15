@@ -365,7 +365,7 @@ async def _associate_team_with_region(
     # PERIODIC teams start at DEFAULT_MAX_SPEND.
     max_budget = 0.0 if team.requires_pool_purchase_gate else DEFAULT_MAX_SPEND
     budget_duration = (
-        f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+        f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
         if team.requires_pool_purchase_gate
         else None
     )
