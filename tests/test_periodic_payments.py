@@ -39,7 +39,9 @@ async def test_record_periodic_payment_direct_subscription(db, test_team):
     assert payment.stripe_payment_id == "txn_subscription_1"
     assert payment.amount_cents == 1000
     assert payment.payment_type == "subscription"
-    assert payment.sync_status == "success"
+    assert (
+        payment.sync_status == "pending"
+    )  # promoted to "success" only after the full pipeline completes
 
 
 @pytest.mark.asyncio

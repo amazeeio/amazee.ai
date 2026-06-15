@@ -352,10 +352,39 @@ async def purchase_pool_budget(
     )
 
     if existing_purchase:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A purchase with this stripe_payment_id already exists",
+        # Allow retry when the prior attempt failed to sync to LiteLLM.
+        # Check whether the downstream DBPeriodicPayment ended in sync_failed;
+        # if so, the budget was never actually applied and the operator should
+        # be able to resubmit with the same stripe_payment_id.
+        matching_payment = (
+            db.query(DBPeriodicPayment)
+            .filter(DBPeriodicPayment.stripe_payment_id == purchase.stripe_payment_id)
+            .first()
         )
+        if matching_payment is None:
+            # No downstream payment record exists — this implies the purchase
+            # row was created but the payment was never recorded (e.g. a crash
+            # before purchase_periodic_topup ran). Treat as a retryable state
+            # only if the DBPoolPurchase has no corresponding budget allocation;
+            # to be safe, raise 409 so an operator can explicitly investigate
+            # rather than silently allowing a potentially duplicate allocation.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "A purchase with this stripe_payment_id already exists "
+                    "but has no payment record — investigate before retrying"
+                ),
+            )
+        if matching_payment.sync_status != "sync_failed":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A purchase with this stripe_payment_id already exists",
+            )
+        # Prior attempt was sync_failed — clean up the stale records so the
+        # full purchase flow runs fresh and commits atomically.
+        db.delete(matching_payment)
+        db.delete(existing_purchase)
+        db.flush()
 
     # Stage the POOL audit row before the ledger/LiteLLM sync so both are
     # committed atomically inside purchase_periodic_topup(). Without this,
