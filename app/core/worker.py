@@ -641,8 +641,15 @@ async def _run_cycle_from_stripe_event(
                 if payment_record and payment_record.sync_status == "pending":
                     payment_record.sync_status = "sync_failed"
                     db.commit()
-            except Exception:
+            except Exception as commit_exc:
                 db.rollback()
+                logger.warning(
+                    "Failed to mark payment %s as sync_failed during error recovery: %s"
+                    " — record may be stuck in 'pending' and will block retries for stripe_payment_id=%s",
+                    payment_id,
+                    commit_exc,
+                    transaction_id,
+                )
 
 
 async def handle_stripe_event_background(event):
