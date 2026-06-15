@@ -49,7 +49,7 @@ export default function Home() {
 
           {NEW_DASHBOARD_URL ? (
             <Button asChild size="lg" className="w-full">
-              <a href={NEW_DASHBOARD_URL} rel="noopener noreferrer">
+              <a href={NEW_DASHBOARD_URL} target="_blank" rel="noopener noreferrer">
                 Go to the new dashboard
                 <ArrowRight className="ml-2 h-4 w-4" />
               </a>
