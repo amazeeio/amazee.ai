@@ -120,6 +120,10 @@ make test-clean
    docker-compose up -d
    ```
 
+   Local Compose automatically picks up `docker-compose.override.yml`, which
+   swaps the Postgres services to the pgvector image so private AI key creation
+   can run locally without changing Lagoon deployment config.
+
 2. View logs for all services:
    ```bash
    docker-compose logs -f

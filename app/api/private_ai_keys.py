@@ -1,5 +1,4 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from fastapi import status
@@ -20,7 +19,6 @@ from app.schemas.models import (
 )
 from app.db.postgres import PostgresManager
 from app.db.models import (
-    DBPoolPurchase,
     DBPrivateAIKey,
     DBRegion,
     DBUser,
@@ -42,6 +40,7 @@ from app.core.limit_service import (
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
 )
+from app.core.pool_budget_service import pool_team_has_ever_purchased
 
 router = APIRouter(tags=["private-ai-keys"])
 
@@ -441,18 +440,11 @@ async def create_llm_token(
     is_pool_team = (
         effective_team is not None and effective_team.requires_pool_purchase_gate
     )
-    pool_purchased_total = None
+    has_pool_purchase = False
     if is_pool_team and effective_team is not None:
-        total_cents = (
-            db.query(func.sum(DBPoolPurchase.amount_cents))
-            .filter(
-                DBPoolPurchase.team_id == effective_team.id,
-                DBPoolPurchase.region_id == region.id,
-            )
-            .scalar()
-            or 0
+        has_pool_purchase = pool_team_has_ever_purchased(
+            db, effective_team.id, region.id
         )
-        pool_purchased_total = float(total_cents) / 100.0
 
     if (owner is not None and owner.team_id) or team_id:
         if settings.ENABLE_LIMITS and not is_pool_team:
@@ -513,15 +505,12 @@ async def create_llm_token(
             max_budget=max_max_spend,
             rpm_limit=max_rpm_limit,
             apply_limits=not is_pool_team,
+            blocked=(True if is_pool_team and not has_pool_purchase else None),
         )
-        if (
-            is_pool_team
-            and pool_purchased_total is not None
-            and pool_purchased_total <= 0
-        ):
+        if is_pool_team and not has_pool_purchase:
             await litellm_service.update_key_budget(
                 litellm_token=litellm_token,
-                budget_duration="1mo",
+                budget_duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
                 max_budget=0.0,
                 clear_max_budget=False,
             )
@@ -937,13 +926,32 @@ async def get_private_ai_key_spend(
     litellm_service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
+    configured_key_cap = (
+        db.query(DBSpendCap.max_budget)
+        .filter(
+            DBSpendCap.scope == "key",
+            DBSpendCap.region_id == private_ai_key.region_id,
+            DBSpendCap.team_id == private_ai_key.team_id,
+            DBSpendCap.user_id == private_ai_key.owner_id,
+            DBSpendCap.key_id == private_ai_key.id,
+        )
+        .scalar()
+    )
 
     try:
         data = await litellm_service.get_key_info(private_ai_key.litellm_token)
         info = data.get("info", {})
 
-        # Only set default for spend field
-        spend_info = {"spend": info.get("spend", 0.0), **info}
+        # Only set default for spend field; key max_budget comes from DB spend cap.
+        spend_info = {
+            "spend": info.get("spend", 0.0),
+            **info,
+            "max_budget": (
+                round(float(configured_key_cap), 4)
+                if configured_key_cap is not None
+                else None
+            ),
+        }
 
         return PrivateAIKeySpendBasic.model_validate(spend_info)
     except HTTPException as e:
@@ -958,6 +966,11 @@ async def get_private_ai_key_spend(
                     "created_at": private_ai_key.created_at,
                     "updated_at": private_ai_key.updated_at,
                     "expires": None,
+                    "max_budget": (
+                        round(float(configured_key_cap), 4)
+                        if configured_key_cap is not None
+                        else None
+                    ),
                 }
             )
         logger.error(f"Failed to get Private AI Key spend: {str(e)}", exc_info=True)

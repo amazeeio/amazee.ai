@@ -49,6 +49,9 @@ def test_upsert_team_spend_period_creates_parent_and_keys(
         source="test",
         snapshot=snapshot,
         stripe_event_id="evt_1",
+        subscription_remaining_cents=120,
+        topup_remaining_cents=30,
+        desired_remaining_cents=150,
     )
     db.commit()
 
@@ -64,6 +67,9 @@ def test_upsert_team_spend_period_creates_parent_and_keys(
     )
     assert row is not None
     assert row.total_spend == 12.34
+    assert row.subscription_remaining_cents == 120
+    assert row.topup_remaining_cents == 30
+    assert row.desired_remaining_cents == 150
 
     keys = (
         db.query(DBTeamSpendPeriodKey)
@@ -73,7 +79,7 @@ def test_upsert_team_spend_period_creates_parent_and_keys(
     assert len(keys) == 2
 
 
-def test_upsert_team_spend_period_is_idempotent_for_same_window(
+def test_upsert_team_spend_period_keeps_original_snapshot_for_same_window(
     db, test_team, test_region
 ):
     period_start = datetime(2026, 4, 1, tzinfo=UTC)
@@ -113,4 +119,4 @@ def test_upsert_team_spend_period_is_idempotent_for_same_window(
         .all()
     )
     assert len(rows) == 1
-    assert rows[0].total_spend == 7.0
+    assert rows[0].total_spend == 5.0

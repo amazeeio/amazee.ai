@@ -16,6 +16,7 @@ from app.db.models import (
     DBPoolPurchase,
     DBPeriodicPayment,
     DBPeriodicBudgetLedgerEntry,
+    DBTeamSpendPeriod,
     DBAPIToken,
     DBUserAdminRegion,
     DBSpendCap,
@@ -753,6 +754,65 @@ async def remove_product_from_team(db: Session, customer_id: str, product_id: st
         logger.error("Error removing product from team: %s", exc)
 
 
+def _get_snapshot_remaining_cents(
+    *,
+    db: Session,
+    team_id: int,
+    region_id: int,
+    period_start: datetime,
+    period_end: datetime,
+) -> tuple[int, int, int]:
+    now_utc = datetime.now(UTC)
+    remaining_cents_expr = (
+        DBPeriodicBudgetLedgerEntry.amount_cents
+        - DBPeriodicBudgetLedgerEntry.consumed_cents
+    )
+    subscription_remaining_cents = int(
+        db.query(func.coalesce(func.sum(remaining_cents_expr), 0))
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team_id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            DBPeriodicBudgetLedgerEntry.consumed_cents
+            < DBPeriodicBudgetLedgerEntry.amount_cents,
+            DBPeriodicBudgetLedgerEntry.effective_period_start == period_start,
+            DBPeriodicBudgetLedgerEntry.effective_period_end == period_end,
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > now_utc)
+            ),
+        )
+        .scalar()
+        or 0
+    )
+    topup_remaining_cents = int(
+        db.query(func.coalesce(func.sum(remaining_cents_expr), 0))
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team_id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"]),
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            DBPeriodicBudgetLedgerEntry.consumed_cents
+            < DBPeriodicBudgetLedgerEntry.amount_cents,
+            DBPeriodicBudgetLedgerEntry.purchased_at >= period_start,
+            DBPeriodicBudgetLedgerEntry.purchased_at < period_end,
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > now_utc)
+            ),
+        )
+        .scalar()
+        or 0
+    )
+    desired_remaining_cents = subscription_remaining_cents + topup_remaining_cents
+    return (
+        subscription_remaining_cents,
+        topup_remaining_cents,
+        desired_remaining_cents,
+    )
+
+
 async def capture_periodic_team_spend_for_invoice(
     *,
     db: Session,
@@ -803,6 +863,17 @@ async def capture_periodic_team_spend_for_invoice(
             team=team,
             region=region,
         )
+        (
+            subscription_remaining_cents,
+            topup_remaining_cents,
+            desired_remaining_cents,
+        ) = _get_snapshot_remaining_cents(
+            db=db,
+            team_id=team.id,
+            region_id=region.id,
+            period_start=period_start,
+            period_end=period_end,
+        )
         upsert_team_spend_period(
             db=db,
             team=team,
@@ -822,6 +893,9 @@ async def capture_periodic_team_spend_for_invoice(
                 "subscription",
                 None,
             ),
+            subscription_remaining_cents=subscription_remaining_cents,
+            topup_remaining_cents=topup_remaining_cents,
+            desired_remaining_cents=desired_remaining_cents,
         )
         db.commit()
     except Exception as exc:
@@ -852,6 +926,17 @@ async def capture_periodic_team_spend_for_period(
             team=team,
             region=region,
         )
+        (
+            subscription_remaining_cents,
+            topup_remaining_cents,
+            desired_remaining_cents,
+        ) = _get_snapshot_remaining_cents(
+            db=db,
+            team_id=team.id,
+            region_id=region.id,
+            period_start=period_start,
+            period_end=period_end,
+        )
         upsert_team_spend_period(
             db=db,
             team=team,
@@ -863,6 +948,9 @@ async def capture_periodic_team_spend_for_period(
             stripe_event_id=source_event_id,
             stripe_invoice_id=None,
             stripe_subscription_id=None,
+            subscription_remaining_cents=subscription_remaining_cents,
+            topup_remaining_cents=topup_remaining_cents,
+            desired_remaining_cents=desired_remaining_cents,
         )
         db.commit()
     except Exception as exc:
@@ -873,6 +961,37 @@ async def capture_periodic_team_spend_for_period(
             region.id,
             str(exc),
         )
+
+
+def _previous_period_spend_baseline_cents(
+    db: Session,
+    *,
+    team_id: int,
+    region_id: int,
+    current_period_start: datetime,
+) -> int:
+    """Return the LiteLLM total_spend (in cents) captured at the previous cycle
+    boundary — i.e. the most recent DBTeamSpendPeriod snapshot whose period_start
+    is strictly before the current one.
+
+    FIFO incremental spend = current_litellm_spend - this baseline.
+    This ensures we only allocate NEW spend (since the last cycle) against
+    active ledger entries, preventing rollovers from being consumed by
+    historical spend already settled in prior FIFO runs.
+    """
+    row = (
+        db.query(DBTeamSpendPeriod.total_spend)
+        .filter(
+            DBTeamSpendPeriod.team_id == team_id,
+            DBTeamSpendPeriod.region_id == region_id,
+            DBTeamSpendPeriod.period_start < current_period_start,
+        )
+        .order_by(DBTeamSpendPeriod.period_start.desc())
+        .first()
+    )
+    if row is None or row[0] is None:
+        return 0
+    return int(round(float(row[0]) * 100))
 
 
 async def _sync_periodic_ledger_for_invoice(
@@ -926,9 +1045,36 @@ async def _sync_periodic_ledger_for_invoice(
         else getattr(snapshot, "total_spend", 0.0)
     )
     spend_cents = int(round(float(snapshot_total_spend) * 100))
-    allocate_period_spend_fifo(
-        db, team_id=team.id, region_id=region.id, spend_cents=spend_cents
+
+    invoice_id = getattr(invoice_obj, "id", None)
+
+    # Guard FIFO against double-allocation on repeated calls with the same
+    # invoice.  add_subscription_entry and materialize_topup_rollovers are
+    # already idempotent on source_invoice_id; FIFO must be too.
+    # If a subscription entry for this invoice already exists the ledger was
+    # already settled — skip FIFO so consumed_cents are not incremented twice.
+    already_settled = bool(
+        invoice_id
+        and db.query(DBPeriodicBudgetLedgerEntry.id)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team.id,
+            DBPeriodicBudgetLedgerEntry.region_id == region.id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.source_invoice_id == invoice_id,
+        )
+        .first()
     )
+    if not already_settled:
+        spend_baseline_cents = _previous_period_spend_baseline_cents(
+            db, team_id=team.id, region_id=region.id, current_period_start=period_start
+        )
+        incremental_spend_cents = max(0, spend_cents - spend_baseline_cents)
+        allocate_period_spend_fifo(
+            db,
+            team_id=team.id,
+            region_id=region.id,
+            spend_cents=incremental_spend_cents,
+        )
     materialize_topup_rollovers(
         db,
         team_id=team.id,
@@ -985,9 +1131,37 @@ async def _sync_periodic_ledger_for_period(
         )
 
     spend_cents = int(round(float(snapshot_total_spend) * 100))
-    allocate_period_spend_fifo(
-        db, team_id=team.id, region_id=region.id, spend_cents=spend_cents
+
+    # Guard FIFO against double-allocation on repeated calls with the same
+    # source_invoice_id (e.g. Stripe webhook replay or direct test re-invocation).
+    # add_subscription_entry is already idempotent on source_invoice_id, but
+    # that guard does not protect the FIFO step. If a subscription entry for
+    # this invoice already exists the ledger was already settled — skip FIFO.
+    already_settled = bool(
+        source_invoice_id
+        and db.query(DBPeriodicBudgetLedgerEntry.id)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team.id,
+            DBPeriodicBudgetLedgerEntry.region_id == region.id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.source_invoice_id == source_invoice_id,
+        )
+        .first()
     )
+    if not already_settled:
+        spend_baseline_cents = _previous_period_spend_baseline_cents(
+            db,
+            team_id=team.id,
+            region_id=region.id,
+            current_period_start=period_start,
+        )
+        incremental_spend_cents = max(0, spend_cents - spend_baseline_cents)
+        allocate_period_spend_fifo(
+            db,
+            team_id=team.id,
+            region_id=region.id,
+            spend_cents=incremental_spend_cents,
+        )
     materialize_topup_rollovers(
         db,
         team_id=team.id,
@@ -1103,28 +1277,78 @@ async def apply_billing_cycle_for_team(
         lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
 
         team_max_budget = per_region_budget
-        if keys:
-            try:
-                await litellm_service.get_team_info(lite_team_id)
-                topup_remaining_cents = compute_active_topup_remaining(
-                    db, team_id=team.id, region_id=region.id
+        current_team_spend = 0.0
+        try:
+            team_info_resp = await litellm_service.get_team_info(lite_team_id)
+            team_info = team_info_resp.get("team_info", team_info_resp)
+            current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
+
+            # DB ledger is the source of truth for actual remaining budget.
+            now_utc = datetime.now(UTC)
+            active_subscriptions = (
+                db.query(DBPeriodicBudgetLedgerEntry)
+                .filter(
+                    DBPeriodicBudgetLedgerEntry.team_id == team.id,
+                    DBPeriodicBudgetLedgerEntry.region_id == region.id,
+                    DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+                    DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+                    (
+                        DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                        | (DBPeriodicBudgetLedgerEntry.expires_at > now_utc)
+                    ),
                 )
-                topup_remaining_dollars = topup_remaining_cents / 100.0
-                team_max_budget = per_region_budget + topup_remaining_dollars
-                logger.info(
-                    "Compounding team %s budget: cap=%s + topup=%s = %s",
-                    team.id,
-                    per_region_budget,
-                    topup_remaining_dollars,
-                    team_max_budget,
+                .all()
+            )
+            sub_remaining_cents = 0
+            for row in active_subscriptions:
+                sub_remaining_cents += max(0, row.amount_cents - row.consumed_cents)
+            topup_remaining_cents = compute_active_topup_remaining(
+                db, team_id=team.id, region_id=region.id
+            )
+            # Normal path: ledger is synced before this call.
+            # Safety fallback for direct/test invocations where ledger sync did not run.
+            if sub_remaining_cents == 0 and budget_cents > 0:
+                sub_remaining_cents = budget_cents
+            real_remaining_dollars = (
+                sub_remaining_cents + topup_remaining_cents
+            ) / 100.0
+
+            # Optional operator team cap (DBSpendCap) constrains enforcement only.
+            team_cap = (
+                db.query(DBSpendCap.max_budget)
+                .filter(
+                    DBSpendCap.scope == "team",
+                    DBSpendCap.region_id == region.id,
+                    DBSpendCap.team_id == team.id,
                 )
-            except Exception as e:
-                error_msg = (
-                    f"Failed to read team spend for compounding "
-                    f"(team {team.id}, region {region.name}): {e}"
-                )
-                logger.error(error_msg)
-                sync_errors.append(error_msg)
+                .scalar()
+            )
+            effective_remaining_dollars = (
+                min(real_remaining_dollars, float(team_cap))
+                if team_cap is not None
+                else real_remaining_dollars
+            )
+            effective_remaining_dollars = max(0.0, effective_remaining_dollars)
+
+            # LiteLLM team spend is non-resettable. Project max_budget as:
+            # current_litellm_spend + effective_remaining_budget.
+            team_max_budget = current_team_spend + effective_remaining_dollars
+            logger.info(
+                "Projected team %s budget: litellm_spend=%s + effective_remaining=%s (real_remaining=%s, team_cap=%s) => %s",
+                team.id,
+                current_team_spend,
+                effective_remaining_dollars,
+                real_remaining_dollars,
+                team_cap,
+                team_max_budget,
+            )
+        except Exception as e:
+            error_msg = (
+                f"Failed to read team spend / project budget "
+                f"(team {team.id}, region {region.name}): {e}"
+            )
+            logger.error(error_msg)
+            sync_errors.append(error_msg)
 
         if not sync_errors:
             try:
@@ -1169,35 +1393,71 @@ async def apply_billing_cycle_for_team(
         if not sync_errors:
             for key in keys:
                 try:
-                    key_spend_cap = (
-                        db.query(DBSpendCap.max_budget)
+                    key_cap_row = (
+                        db.query(DBSpendCap.max_budget, DBSpendCap.budget_duration)
                         .filter(
                             DBSpendCap.scope == "key",
                             DBSpendCap.region_id == region.id,
                             DBSpendCap.key_id == key.id,
                         )
-                        .scalar()
+                        .first()
                     )
-                    effective_key_budget = (
-                        float(key_spend_cap)
-                        if key_spend_cap is not None
-                        else per_region_budget
-                    )
-                    await litellm_service.set_key_restrictions(
-                        litellm_token=key.litellm_token,
-                        duration=budget_duration,
-                        budget_duration=budget_duration,
-                        budget_amount=effective_key_budget,
-                        rpm_limit=max_rpm_limit,
-                        spend=0.0,
-                    )
-                    logger.info(
-                        "Updated key %s limits in LiteLLM: duration=%s, budget=%s, rpm=%s, spend_reset=True",
-                        key.id,
-                        budget_duration,
-                        effective_key_budget,
-                        max_rpm_limit,
-                    )
+                    key_spend_cap = key_cap_row[0] if key_cap_row else None
+                    key_cap_duration = key_cap_row[1] if key_cap_row else None
+
+                    if team.requires_pool_purchase_gate:
+                        # POOL: key max_budget must be set only when an explicit key cap exists.
+                        # Otherwise keep key max_budget null and enforce at team level.
+                        await litellm_service.set_key_restrictions(
+                            litellm_token=key.litellm_token,
+                            duration=budget_duration,
+                            # Keep POOL key windows aligned with team cycle window
+                            # even when no explicit key cap exists.
+                            budget_duration=(
+                                # POOL key caps use 31d windows aligned with cycle semantics.
+                                budget_duration
+                                if key_spend_cap is not None
+                                else budget_duration
+                            ),
+                            budget_amount=(
+                                float(key_spend_cap)
+                                if key_spend_cap is not None
+                                else None
+                            ),
+                            rpm_limit=max_rpm_limit,
+                            spend=0.0,
+                            blocked=False,
+                        )
+                        logger.info(
+                            "Updated POOL key %s limits in LiteLLM: duration=%s, key_cap=%s, key_cap_duration=%s, rpm=%s, spend_reset=True",
+                            key.id,
+                            budget_duration,
+                            key_spend_cap,
+                            key_cap_duration,
+                            max_rpm_limit,
+                        )
+                    else:
+                        effective_key_budget = (
+                            float(key_spend_cap)
+                            if key_spend_cap is not None
+                            else per_region_budget
+                        )
+                        await litellm_service.set_key_restrictions(
+                            litellm_token=key.litellm_token,
+                            duration=budget_duration,
+                            budget_duration=budget_duration,
+                            budget_amount=effective_key_budget,
+                            rpm_limit=max_rpm_limit,
+                            spend=0.0,
+                            blocked=False,
+                        )
+                        logger.info(
+                            "Updated key %s limits in LiteLLM: duration=%s, budget=%s, rpm=%s, spend_reset=True",
+                            key.id,
+                            budget_duration,
+                            effective_key_budget,
+                            max_rpm_limit,
+                        )
                 except Exception as e:
                     error_msg = f"Failed to update key {key.id} in LiteLLM: {str(e)}"
                     logger.error(error_msg)

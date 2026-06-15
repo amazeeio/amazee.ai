@@ -177,26 +177,69 @@ def _extract_release_date(model_id: str, model_info: dict[str, Any]) -> str | No
     return None
 
 
-def _infer_manufacturer(model_id: str, item: dict[str, Any]) -> PublicModelManufacturer:
+_MANUFACTURER_RULES: list[dict[str, str | None]] = [
+    {"keyword": "claude", "name": "Anthropic", "website": "https://www.anthropic.com"},
+    {
+        "keyword": "gemini",
+        "name": "Google",
+        "website": "https://deepmind.google/models",
+    },
+    {"keyword": "gemma", "name": "Google", "website": "https://deepmind.google/models"},
+    {"keyword": "gpt", "name": "OpenAI", "website": "https://openai.com"},
+    {"keyword": "mistral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "pixtral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "mixtral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "ministral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "devstral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "magistral", "name": "Mistral AI", "website": "https://mistral.ai"},
+    {"keyword": "deepseek", "name": "DeepSeek", "website": "https://www.deepseek.com"},
+    {"keyword": "llama", "name": "Meta", "website": "https://ai.meta.com/llama"},
+    {"keyword": "kimi", "name": "Moonshot", "website": "https://www.moonshot.cn"},
+    {
+        "keyword": "qwen",
+        "name": "Alibaba",
+        "website": "https://www.alibabacloud.com/en/solutions/generative-ai/qwen",
+    },
+    {
+        "keyword": "titan",
+        "name": "Amazon",
+        "website": "https://aws.amazon.com/bedrock/titan",
+    },
+    # Provider-based fallbacks (must be last — match on provider string only)
+    {"keyword": "openai", "name": "OpenAI", "website": "https://openai.com"},
+    {
+        "keyword": "anthropic",
+        "name": "Anthropic",
+        "website": "https://www.anthropic.com",
+    },
+    {
+        "keyword": "google",
+        "name": "Google",
+        "website": "https://deepmind.google/models",
+    },
+    {"keyword": "meta", "name": "Meta", "website": "https://ai.meta.com/llama"},
+]
+
+
+def _infer_manufacturer(
+    model_id: str, item: dict[str, Any]
+) -> PublicModelManufacturer | None:
     model_info = item.get("model_info", {})
     provider = str(model_info.get("litellm_provider") or "").lower()
     normalized_model_id = model_id.lower()
 
-    if normalized_model_id.startswith("gpt-") or "openai" in provider:
-        name = "OpenAI"
-        website = "https://openai.com"
-    elif normalized_model_id.startswith("claude-") or "anthropic" in provider:
-        name = "Anthropic"
-        website = "https://www.anthropic.com"
-    elif normalized_model_id.startswith("gemini-") or "google" in provider:
-        name = "Google"
-        website = "https://deepmind.google/models"
-    elif normalized_model_id.startswith("llama-") or "meta" in provider:
-        name = "Meta"
-        website = "https://ai.meta.com/llama"
-    else:
-        name = "Unknown"
-        website = None
+    name: str | None = None
+    website: str | None = None
+
+    for rule in _MANUFACTURER_RULES:
+        keyword = str(rule["keyword"])
+        if keyword in normalized_model_id or keyword in provider:
+            name = rule["name"]
+            website = rule["website"]
+            break
+
+    if name is None:
+        return None
 
     version = (
         model_info.get("version")
@@ -776,14 +819,19 @@ def _normalize_bedrock_provider_id(
 
 async def _collect_region_bedrock_models(
     region: DBRegion,
-) -> tuple[str, dict[str, set[str]]]:
-    """Return ``(region_name, {region_group: {normalized_model_id, ...}})``.
+) -> tuple[str, dict[str, set[str]], dict[str, set[str]]]:
+    """Return ``(region_name, {group: {normalized_id, ...}}, {group: {all_matchable_ids, ...}})``.
+
+    The first dict contains only the canonical normalized model IDs (used for
+    counting deployed models).  The second dict adds aliases extracted from
+    LiteLLM model metadata (used for matching against upstream catalog IDs).
 
     Failures are logged and produce empty sets so a single broken region can't
     take down the whole report.  We deliberately do NOT short-circuit when a
     region returns zero models — that's a legitimate state.
     """
     configured: dict[str, set[str]] = {group: set() for group in _AWS_REGION_GROUPS}
+    matchable: dict[str, set[str]] = {group: set() for group in _AWS_REGION_GROUPS}
 
     service = LiteLLMService(
         api_url=region.litellm_api_url,
@@ -803,7 +851,7 @@ async def _collect_region_bedrock_models(
             region.name,
             exc,
         )
-        return region.name, configured
+        return region.name, configured, matchable
 
     for item in model_info.get("data", []) or []:
         if not isinstance(item, dict):
@@ -827,8 +875,19 @@ async def _collect_region_bedrock_models(
             # double-count and hide real gaps.
             if provider_model_id.startswith(f"bedrock/{details['provider_prefix']}"):
                 configured[group].add(normalized)
+                matchable[group].add(normalized)
+                # Also add all aliases (lowercased) so that models deployed
+                # under a short name (e.g. "qwen3-32b") are matched against
+                # their full upstream Bedrock model ID
+                # (e.g. "qwen.qwen3-32b-v1:0") which appears in the aliases.
+                model_info = item.get("model_info")
+                model_info_dict = model_info if isinstance(model_info, dict) else {}
+                model_name = item.get("model_name") or model_info_dict.get("key") or ""
+                if model_name:
+                    for alias in _extract_aliases(item, model_name):
+                        matchable[group].add(alias)
 
-    return region.name, configured
+    return region.name, configured, matchable
 
 
 async def _build_aws_missing_report(
@@ -854,6 +913,9 @@ async def _build_aws_missing_report(
     configured_by_group: dict[str, set[str]] = {
         group: set() for group in _AWS_REGION_GROUPS
     }
+    matchable_by_group: dict[str, set[str]] = {
+        group: set() for group in _AWS_REGION_GROUPS
+    }
     contributing_regions_by_group: dict[str, set[str]] = {
         group: set() for group in _AWS_REGION_GROUPS
     }
@@ -862,17 +924,25 @@ async def _build_aws_missing_report(
         per_region = await asyncio.gather(
             *(_collect_region_bedrock_models(region) for region in regions)
         )
-        for region_name, region_configured in per_region:
+        for region_name, region_configured, region_matchable in per_region:
             for group, ids in region_configured.items():
                 if ids:
                     configured_by_group[group].update(ids)
+                    matchable_by_group[group].update(region_matchable[group])
                     contributing_regions_by_group[group].add(region_name)
 
     region_groups: list[ProviderRegionMissingModels] = []
     for group, details in _AWS_REGION_GROUPS.items():
         available = available_by_group[group]
         configured_ids = configured_by_group[group]
-        missing_ids = sorted(set(available) - configured_ids)
+        matchable_ids = matchable_by_group[group]
+        # Compare case-insensitively: aliases in matchable_ids are lowercased
+        # by _extract_aliases/_normalize_alias, so lowercase the upstream keys
+        # when computing the set difference.
+        matchable_lower = {mid.lower() for mid in matchable_ids}
+        missing_ids = sorted(
+            mid for mid in available if mid.lower() not in matchable_lower
+        )
         missing_models = [
             BedrockMissingModel(**available[model_id]) for model_id in missing_ids
         ]

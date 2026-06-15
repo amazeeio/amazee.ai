@@ -4,9 +4,15 @@ from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
+from app.core.periodic_budget_ledger_service import (
+    allocate_period_spend_fifo,
+    compute_active_topup_remaining,
+)
 from app.core.security import get_role_min_system_admin
 from app.core.team_service import get_team_region_litellm_keys
 from app.core.worker import (
+    _previous_period_spend_baseline_cents,
     _record_periodic_payment_direct,
     _sync_periodic_ledger_for_period,
     apply_billing_cycle_for_team,
@@ -18,6 +24,7 @@ from app.db.models import (
     DBPeriodicBudgetLedgerEntry,
     DBPeriodicPayment,
     DBRegion,
+    DBSpendCap,
     DBTeam,
 )
 from app.schemas.models import (
@@ -276,22 +283,122 @@ async def subscription_deactivate(
         )
 
     try:
+        active_subscription_period = (
+            db.query(DBPeriodicBudgetLedgerEntry)
+            .filter(
+                DBPeriodicBudgetLedgerEntry.team_id == team.id,
+                DBPeriodicBudgetLedgerEntry.region_id == region.id,
+                DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+                DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+                DBPeriodicBudgetLedgerEntry.effective_period_start.isnot(None),
+                DBPeriodicBudgetLedgerEntry.effective_period_end.isnot(None),
+            )
+            .order_by(
+                DBPeriodicBudgetLedgerEntry.effective_period_end.desc(),
+                DBPeriodicBudgetLedgerEntry.id.desc(),
+            )
+            .first()
+        )
         litellm_service = LiteLLMService(
             api_url=region.litellm_api_url,
             api_key=region.litellm_api_key,
         )
         lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+        current_team_spend: float | None = None
+        if active_subscription_period:
+            await capture_periodic_team_spend_for_period(
+                db=db,
+                team=team,
+                region=region,
+                period_start=active_subscription_period.effective_period_start,
+                period_end=active_subscription_period.effective_period_end,
+                source_event_id=request.transaction_id,
+            )
+            # Debit mid-period spend against top-up entries so that
+            # compute_active_topup_remaining reflects actual remaining balance.
+            # Without this, FIFO never runs on the cancel path (no invoice),
+            # and consumed_cents stays stale — leaking top-up credits.
+            try:
+                team_info_resp = await litellm_service.get_team_info(lite_team_id)
+                team_info = team_info_resp.get("team_info", team_info_resp)
+                current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
+                current_spend_cents = int(round(current_team_spend * 100))
+                spend_baseline_cents = _previous_period_spend_baseline_cents(
+                    db,
+                    team_id=team.id,
+                    region_id=region.id,
+                    current_period_start=active_subscription_period.effective_period_start,
+                )
+                incremental_spend_cents = max(
+                    0, current_spend_cents - spend_baseline_cents
+                )
+                if incremental_spend_cents > 0:
+                    allocate_period_spend_fifo(
+                        db,
+                        team_id=team.id,
+                        region_id=region.id,
+                        spend_cents=incremental_spend_cents,
+                    )
+            except Exception as exc:
+                db.rollback()
+                logger.warning(
+                    "Failed to run FIFO allocation on cancellation for team %s: %s",
+                    team.id,
+                    exc,
+                    exc_info=True,
+                )
+
+        # Deactivation immediately ends active subscription windows.
+        active_sub_rows = (
+            db.query(DBPeriodicBudgetLedgerEntry)
+            .filter(
+                DBPeriodicBudgetLedgerEntry.team_id == team.id,
+                DBPeriodicBudgetLedgerEntry.region_id == region.id,
+                DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+                DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            )
+            .all()
+        )
+        for row in active_sub_rows:
+            row.is_active = False
+        db.flush()
+
+        topup_remaining_dollars = (
+            compute_active_topup_remaining(db, team_id=team.id, region_id=region.id)
+            / 100.0
+        )
+        if team.budget_type == BudgetType.PERIODIC:
+            topup_budget_duration = f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
+        else:
+            topup_budget_duration = f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
+
+        projected_team_max_budget = topup_remaining_dollars
+        if current_team_spend is None:
+            try:
+                team_info_resp = await litellm_service.get_team_info(lite_team_id)
+                team_info = team_info_resp.get("team_info", team_info_resp)
+                current_team_spend = float(team_info.get("spend", 0.0) or 0.0)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to read LiteLLM team spend for deactivation projection (team %s): %s",
+                    team.id,
+                    exc,
+                )
+        if current_team_spend is not None:
+            # LiteLLM team spend is non-resettable. Keep current spend as baseline
+            # so remaining headroom stays requestable after deactivation.
+            projected_team_max_budget = current_team_spend + topup_remaining_dollars
 
         try:
             await litellm_service.update_team_budget(
                 team_id=lite_team_id,
-                max_budget=0.0,
-                # Safety-net 31d: auto-expires if webhook is missed.
-                budget_duration="31d",
+                max_budget=projected_team_max_budget,
+                budget_duration=topup_budget_duration,
+                spend=0.0,
             )
         except Exception as exc:
             logger.error(
-                "Failed to zero out LiteLLM team budget for team %s: %s",
+                "Failed to update LiteLLM deactivation budget for team %s: %s",
                 team.id,
                 exc,
             )
@@ -299,18 +406,38 @@ async def subscription_deactivate(
         keys = get_team_region_litellm_keys(db, team_id=team.id, region_id=region.id)
         for key in keys:
             try:
-                await litellm_service.set_key_restrictions(
-                    litellm_token=key.litellm_token,
-                    # Safety-net 31d: auto-expires if webhook is missed.
-                    duration="31d",
-                    budget_duration="31d",
-                    budget_amount=0.0,
-                    rpm_limit=None,
-                    spend=None,
+                key_cap = (
+                    db.query(DBSpendCap.max_budget)
+                    .filter(
+                        DBSpendCap.scope == "key",
+                        DBSpendCap.region_id == region.id,
+                        DBSpendCap.key_id == key.id,
+                        DBSpendCap.max_budget.isnot(None),
+                    )
+                    .first()
                 )
+                has_key_cap = key_cap is not None and key_cap[0] is not None
+                if has_key_cap:
+                    await litellm_service.set_key_restrictions(
+                        litellm_token=key.litellm_token,
+                        duration="31d",
+                        budget_duration="31d",
+                        budget_amount=float(key_cap[0]),
+                        rpm_limit=None,
+                        spend=0.0,
+                    )
+                else:
+                    await litellm_service.set_key_restrictions(
+                        litellm_token=key.litellm_token,
+                        duration=topup_budget_duration,
+                        budget_duration=topup_budget_duration,
+                        budget_amount=topup_remaining_dollars,
+                        rpm_limit=None,
+                        spend=0.0,
+                    )
             except Exception as exc:
                 logger.error(
-                    "Failed to zero out LiteLLM key budget for key %s: %s",
+                    "Failed to update LiteLLM deactivation key budget for key %s: %s",
                     key.id,
                     exc,
                 )

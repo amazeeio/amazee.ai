@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.core.config import settings
 from app.core.worker import (
     _record_periodic_payment_direct,
     _run_cycle_from_stripe_event,
@@ -123,10 +124,130 @@ async def test_apply_billing_cycle_for_team_updates_sync_status_success(
     mock_litellm.update_team_budget.assert_awaited_once()
     assert mock_litellm.update_team_budget.await_args.kwargs["budget_duration"] == "31d"
     assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 100.0
+    assert "spend" not in mock_litellm.update_team_budget.await_args.kwargs
     mock_litellm.set_key_restrictions.assert_awaited_once()
     assert mock_litellm.set_key_restrictions.await_args.kwargs["budget_amount"] == 100.0
     assert mock_litellm.set_key_restrictions.await_args.kwargs["spend"] == 0.0
     assert mock_litellm.set_key_restrictions.await_args.kwargs["rpm_limit"] == 1000
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.compute_active_topup_remaining", return_value=0)
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.LimitService")
+async def test_apply_billing_cycle_for_team_carries_over_spend_overage(
+    mock_limit_service,
+    mock_litellm_class,
+    _mock_topup,
+    db,
+    test_team,
+    test_region,
+):
+    key = DBPrivateAIKey(
+        name="carryover-key",
+        litellm_token="carryover-token",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    payment = DBPeriodicPayment(
+        team_id=test_team.id,
+        stripe_payment_id="pay_sync_carryover",
+        amount_cents=100,
+        currency="usd",
+        payment_type="subscription",
+        status="completed",
+        sync_status="pending",
+        payment_date=datetime.now(UTC),
+    )
+    db.add(payment)
+    db.commit()
+
+    mock_limit_service.return_value.get_token_restrictions.return_value = (
+        31,
+        999.0,
+        1000,
+    )
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(return_value={"team_info": {"spend": 1.4}})
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    errors = await apply_billing_cycle_for_team(
+        db=db,
+        team_id=test_team.id,
+        budget_cents=100,
+        region_id=test_region.id,
+        period_start=datetime.now(UTC),
+        period_end=datetime.now(UTC) + timedelta(days=31),
+        source_payment_id=payment.id,
+    )
+
+    assert errors == []
+    mock_litellm.update_team_budget.assert_awaited_once()
+    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 2.4
+    assert "spend" not in mock_litellm.update_team_budget.await_args.kwargs
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.compute_active_topup_remaining", return_value=0)
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.worker.LimitService")
+async def test_apply_billing_cycle_for_team_carries_over_against_current_litellm_budget(
+    mock_limit_service,
+    mock_litellm_class,
+    _mock_topup,
+    db,
+    test_team,
+    test_region,
+):
+    key = DBPrivateAIKey(
+        name="carryover-key-budget-change",
+        litellm_token="carryover-token-budget-change",
+        region_id=test_region.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    payment = DBPeriodicPayment(
+        team_id=test_team.id,
+        stripe_payment_id="pay_sync_carryover_budget_change",
+        amount_cents=200,
+        currency="usd",
+        payment_type="subscription",
+        status="completed",
+        sync_status="pending",
+        payment_date=datetime.now(UTC),
+    )
+    db.add(payment)
+    db.commit()
+
+    mock_limit_service.return_value.get_token_restrictions.return_value = (
+        31,
+        999.0,
+        1000,
+    )
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 1.4, "max_budget": 1.0}}
+    )
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    errors = await apply_billing_cycle_for_team(
+        db=db,
+        team_id=test_team.id,
+        budget_cents=200,
+        region_id=test_region.id,
+        period_start=datetime.now(UTC),
+        period_end=datetime.now(UTC) + timedelta(days=31),
+        source_payment_id=payment.id,
+    )
+
+    assert errors == []
+    mock_litellm.update_team_budget.assert_awaited_once()
+    # Projection uses current spend + remaining budget.
+    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 3.4
+    assert "spend" not in mock_litellm.update_team_budget.await_args.kwargs
 
 
 @pytest.mark.asyncio
@@ -485,6 +606,9 @@ def test_subscription_deactivate_endpoint_success(
 
     mock_record_payment.return_value = 321
     mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 7.0, "max_budget": 20.0}}
+    )
     mock_litellm.update_team_budget = AsyncMock()
     mock_litellm.set_key_restrictions = AsyncMock()
 
@@ -507,12 +631,312 @@ def test_subscription_deactivate_endpoint_success(
         "idempotent": False,
     }
     mock_litellm.update_team_budget.assert_awaited_once()
-    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 0.0
+    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 7.0
+    assert (
+        mock_litellm.update_team_budget.await_args.kwargs["budget_duration"]
+        == f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
+    )
+    assert mock_litellm.update_team_budget.await_args.kwargs["spend"] == 0.0
     mock_litellm.set_key_restrictions.assert_awaited_once()
     assert mock_litellm.set_key_restrictions.await_args.kwargs["budget_amount"] == 0.0
+    assert (
+        mock_litellm.set_key_restrictions.await_args.kwargs["budget_duration"]
+        == f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
+    )
+    assert mock_litellm.set_key_restrictions.await_args.kwargs["spend"] == 0.0
 
 
-def test_subscription_deactivate_endpoint_idempotent(client, admin_token, db, test_team):
+@patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_preserves_active_topup_budget(
+    mock_litellm_class,
+    mock_record_payment,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    db.add(
+        DBPrivateAIKey(
+            name="deactivate-key-topup",
+            litellm_token="deactivate-token-topup",
+            region_id=test_region.id,
+            team_id=test_team.id,
+        )
+    )
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            source_payment_id=None,
+            source_invoice_id=None,
+            stripe_payment_id="pi_topup_active_1",
+            amount_cents=500,
+            consumed_cents=100,
+            purchased_at=datetime.now(UTC) - timedelta(days=1),
+            effective_period_start=None,
+            effective_period_end=None,
+            expires_at=datetime.now(UTC) + timedelta(days=30),
+            rolled_over_from_id=None,
+            is_active=True,
+        )
+    )
+    db.commit()
+
+    mock_record_payment.return_value = 654
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 6.0, "max_budget": 22.0}}
+    )
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    response = client.post(
+        "/billing/subscription/deactivate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_deactivate_with_topup",
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+            "reason": "cancelled",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["payment_id"] == 654
+    mock_litellm.update_team_budget.assert_awaited_once()
+    assert mock_litellm.update_team_budget.await_args.kwargs["max_budget"] == 10.0
+    assert (
+        mock_litellm.update_team_budget.await_args.kwargs["budget_duration"]
+        == f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
+    )
+    assert mock_litellm.update_team_budget.await_args.kwargs["spend"] == 0.0
+    mock_litellm.set_key_restrictions.assert_awaited_once()
+    assert mock_litellm.set_key_restrictions.await_args.kwargs["budget_amount"] == 4.0
+    assert (
+        mock_litellm.set_key_restrictions.await_args.kwargs["budget_duration"]
+        == f"{settings.PERIODIC_TOPUP_EXPIRY_DAYS}d"
+    )
+    assert mock_litellm.set_key_restrictions.await_args.kwargs["spend"] == 0.0
+
+
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_captures_snapshot_before_reset(
+    mock_litellm_class,
+    mock_record_payment,
+    mock_capture_snapshot,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    period_start = datetime.now(UTC) - timedelta(days=5)
+    period_end = datetime.now(UTC) + timedelta(days=26)
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="subscription",
+            source_payment_id=None,
+            source_invoice_id="in_active_sub_1",
+            stripe_payment_id=None,
+            amount_cents=1000,
+            consumed_cents=250,
+            purchased_at=period_start,
+            effective_period_start=period_start,
+            effective_period_end=period_end,
+            expires_at=period_end,
+            rolled_over_from_id=None,
+            is_active=True,
+        )
+    )
+    db.commit()
+
+    mock_record_payment.return_value = 777
+    mock_litellm = mock_litellm_class.return_value
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    response = client.post(
+        "/billing/subscription/deactivate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_deactivate_capture_snapshot",
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+            "reason": "cancelled",
+        },
+    )
+
+    assert response.status_code == 200
+    mock_capture_snapshot.assert_awaited_once()
+    assert mock_capture_snapshot.await_args.kwargs["team"].id == test_team.id
+    assert mock_capture_snapshot.await_args.kwargs["region"].id == test_region.id
+    assert mock_capture_snapshot.await_args.kwargs["period_start"] == period_start
+    assert mock_capture_snapshot.await_args.kwargs["period_end"] == period_end
+    assert (
+        mock_capture_snapshot.await_args.kwargs["source_event_id"]
+        == "txn_deactivate_capture_snapshot"
+    )
+
+
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+@patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.api.subscription.LiteLLMService")
+def test_subscription_deactivate_fifo_debits_topup_on_cancellation(
+    mock_litellm_class,
+    mock_record_payment,
+    mock_capture_spend,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """
+    Regression test for: Subscription cancellation ignores in-period spend
+    when computing top-up budget.
+
+    Scenario (mirrors the ticket example):
+      - Subscription budget: $1.00  (100¢)
+      - Active top-up:       $1.68  (168¢, consumed_cents=0)
+      - LiteLLM spend:       $2.10  (210¢) — overflows subscription into top-up
+      - Previous period baseline: $0 (first period)
+
+    Expected after cancellation:
+      - FIFO allocates 210¢ of spend: 100¢ consumed by subscription entry
+        (already inactive at cancel time) then 110¢ consumed by the top-up entry
+        → top-up consumed_cents becomes 110, remaining = 168 - 110 = 58¢ ($0.58)
+      - LiteLLM max_budget = current_spend ($2.10) + topup_remaining ($0.58) = $2.68
+      - Key budget_amount = $0.58
+    """
+    period_start = datetime.now(UTC) - timedelta(days=5)
+    period_end = datetime.now(UTC) + timedelta(days=26)
+
+    # Active subscription ledger entry: $1.00
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="subscription",
+            source_payment_id=None,
+            source_invoice_id="in_fifo_test_sub",
+            stripe_payment_id=None,
+            amount_cents=100,
+            consumed_cents=0,
+            purchased_at=period_start,
+            effective_period_start=period_start,
+            effective_period_end=period_end,
+            expires_at=period_end,
+            rolled_over_from_id=None,
+            is_active=True,
+        )
+    )
+    # Active top-up entry: $1.68, not yet debited
+    topup_entry = DBPeriodicBudgetLedgerEntry(
+        team_id=test_team.id,
+        region_id=test_region.id,
+        entry_type="topup",
+        source_payment_id=None,
+        source_invoice_id=None,
+        stripe_payment_id="pi_fifo_topup",
+        amount_cents=168,
+        consumed_cents=0,
+        purchased_at=period_start,
+        effective_period_start=None,
+        effective_period_end=None,
+        expires_at=datetime.now(UTC) + timedelta(days=30),
+        rolled_over_from_id=None,
+        is_active=True,
+    )
+    db.add(topup_entry)
+    db.add(
+        DBPrivateAIKey(
+            name="fifo-test-key",
+            litellm_token="fifo-test-token",
+            region_id=test_region.id,
+            team_id=test_team.id,
+        )
+    )
+    db.commit()
+
+    mock_record_payment.return_value = 999
+    mock_litellm = mock_litellm_class.return_value
+    # LiteLLM reports $2.10 total spend (overflows $1.00 subscription into top-up)
+    mock_litellm.get_team_info = AsyncMock(
+        return_value={"team_info": {"spend": 2.10, "max_budget": 5.0}}
+    )
+    mock_litellm.update_team_budget = AsyncMock()
+    mock_litellm.set_key_restrictions = AsyncMock()
+
+    response = client.post(
+        "/billing/subscription/deactivate",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_fifo_cancel_test",
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+            "reason": "cancelled",
+        },
+    )
+
+    assert response.status_code == 200
+
+    # capture_periodic_team_spend_for_period must have been called before FIFO ran.
+    mock_capture_spend.assert_awaited_once()
+    assert mock_capture_spend.await_args.kwargs["team"].id == test_team.id
+    assert mock_capture_spend.await_args.kwargs["region"].id == test_region.id
+    assert mock_capture_spend.await_args.kwargs["period_start"] == period_start
+    assert mock_capture_spend.await_args.kwargs["period_end"] == period_end
+    assert (
+        mock_capture_spend.await_args.kwargs["source_event_id"]
+        == "txn_fifo_cancel_test"
+    )
+
+    # FIFO must have debited the top-up: 210¢ spend - 0¢ baseline = 210¢ incremental.
+    # Subscription entry absorbs 100¢ (then deactivated), top-up absorbs remaining 110¢.
+    db.refresh(topup_entry)
+    assert topup_entry.consumed_cents == 110, (
+        f"Top-up consumed_cents should be 110 after FIFO, got {topup_entry.consumed_cents}. "
+        "Cancellation is not debiting mid-period spend against top-up credits."
+    )
+
+    # Remaining top-up: 168 - 110 = 58¢ = $0.58
+    topup_remaining = 0.58
+    current_spend = 2.10
+    expected_max_budget = round(current_spend + topup_remaining, 2)
+
+    mock_litellm.update_team_budget.assert_awaited_once()
+    assert mock_litellm.get_team_info.await_count == 1
+    actual_max_budget = mock_litellm.update_team_budget.await_args.kwargs["max_budget"]
+    assert abs(actual_max_budget - expected_max_budget) < 0.01, (
+        f"Expected max_budget ~{expected_max_budget}, got {actual_max_budget}. "
+        "Top-up remaining is not being correctly reduced by mid-period spend."
+    )
+
+    mock_litellm.set_key_restrictions.assert_awaited_once()
+    actual_key_budget = mock_litellm.set_key_restrictions.await_args.kwargs[
+        "budget_amount"
+    ]
+    assert abs(actual_key_budget - topup_remaining) < 0.01, (
+        f"Expected key budget_amount ~{topup_remaining}, got {actual_key_budget}."
+    )
+
+
+def test_subscription_deactivate_endpoint_idempotent(
+    client, admin_token, db, test_team
+):
     payment = DBPeriodicPayment(
         team_id=test_team.id,
         stripe_payment_id="txn_deactivate_done",
@@ -741,7 +1165,9 @@ async def test_pool_team_billing_cycle_uses_31d_and_resets_spend(
     assert errors == []
     team_call = mock_litellm.update_team_budget.await_args
     assert team_call.kwargs["budget_duration"] == "31d"
-    assert team_call.kwargs["max_budget"] == 30.0
+    # Team spend is non-resettable in LiteLLM, so projected max_budget is:
+    # current_spend + current_cycle_remaining = 5.0 + 30.0
+    assert team_call.kwargs["max_budget"] == 35.0
 
     key_call = mock_litellm.set_key_restrictions.await_args
     assert key_call.kwargs["spend"] == 0.0

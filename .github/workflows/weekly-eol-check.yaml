@@ -1,0 +1,112 @@
+name: Weekly EOL Check
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Every Monday at 6am UTC
+  workflow_dispatch:
+    inputs:
+      api_url:
+        description: 'Override AMAZEEAI_API_URL for this run (e.g. https://api.amazee.ai)'
+        required: false
+        type: string
+      warning_days:
+        description: 'Number of days before EOL to warn (default: 30)'
+        required: false
+        type: string
+        default: '30'
+
+permissions:
+  contents: read
+
+jobs:
+  check-eol:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.x'
+
+      - name: Check for EOL models
+        id: eol
+        env:
+          AMAZEEAI_API_URL: ${{ github.event.inputs.api_url || vars.AMAZEEAI_API_URL || 'https://api.amazee.ai' }}
+          EOL_WARNING_DAYS: ${{ github.event.inputs.warning_days || '30' }}
+        run: python scripts/check_eol_models.py
+
+      - name: Notify Slack about EOL models
+        if: steps.eol.outputs.has_alerts == 'true'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+        run: |
+          [ -n "$SLACK_BOT_TOKEN" ] || { echo "::error::Missing SLACK_BOT_TOKEN secret."; exit 1; }
+          [ -n "$SLACK_CHANNEL_ID" ] || { echo "::error::Missing SLACK_CHANNEL_ID variable."; exit 1; }
+
+          SUMMARY=$(cat eol-summary.txt)
+          EXPIRED_COUNT="${{ steps.eol.outputs.expired_count }}"
+
+          if [ "$EXPIRED_COUNT" -gt 0 ] 2>/dev/null; then
+            ICON=":rotating_light:"
+            HEADER="Model EOL Alert"
+            URGENCY="Some models are *past* their End-of-Life date and should be removed or replaced."
+          else
+            ICON=":warning:"
+            HEADER="Model EOL Warning"
+            URGENCY="Some models are approaching their End-of-Life date."
+          fi
+
+          payload=$(jq -n \
+            --arg channel "$SLACK_CHANNEL_ID" \
+            --arg icon "$ICON" \
+            --arg header "$HEADER" \
+            --arg urgency "$URGENCY" \
+            --arg summary "$SUMMARY" \
+            --arg workflow_url "$WORKFLOW_URL" \
+            --arg workflow_name "$WORKFLOW_NAME" \
+            '{
+              channel: $channel,
+              text: "\($icon) *\($header)* — \($urgency)",
+              blocks: [
+                {
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: "\($icon) *\($header)*\n\($urgency)"
+                  }
+                },
+                {
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: $summary
+                  }
+                },
+                {
+                  type: "section",
+                  fields: [
+                    {
+                      type: "mrkdwn",
+                      text: "*Workflow:*\n<\($workflow_url)|\($workflow_name)>"
+                    }
+                  ]
+                }
+              ]
+            }')
+
+          response=$(curl -sS -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$payload")
+
+          if ! echo "$response" | jq -e '.ok' > /dev/null 2>&1; then
+            echo "::error::Slack API error: $response" >&2
+            exit 1
+          fi

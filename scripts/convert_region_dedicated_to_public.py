@@ -458,7 +458,7 @@ class RegionConversionRunner:
                 if not self.dry_run:
                     if team.requires_pool_purchase_gate:
                         max_budget = 0.0
-                        budget_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+                        budget_duration = f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
                     else:
                         max_budget = None
                         budget_duration = None
@@ -730,7 +730,7 @@ class RegionConversionRunner:
                             continue
                         if team.requires_pool_purchase_gate:
                             max_budget = 0.0
-                            budget_duration = f"{settings.POOL_BUDGET_EXPIRATION_DAYS}d"
+                            budget_duration = f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
                         else:
                             max_budget = None
                             budget_duration = None

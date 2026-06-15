@@ -147,6 +147,9 @@ class DBUser(Base):
     is_admin = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), default=func.now())
     role = Column(String, default="user")  # user, admin, key_creator, read_only
+    receive_marketing_updates = Column(
+        Boolean, default=False, nullable=False, server_default=text("false")
+    )
     team_id = Column(Integer, ForeignKey("teams.id", name="fk_user_team"))
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -644,6 +647,9 @@ class DBTeamSpendPeriod(Base):
     total_prompt_tokens = Column(Integer, nullable=True)
     total_completion_tokens = Column(Integer, nullable=True)
     total_tokens = Column(Integer, nullable=True)
+    subscription_remaining_cents = Column(Integer, nullable=True)
+    topup_remaining_cents = Column(Integer, nullable=True)
+    desired_remaining_cents = Column(Integer, nullable=True)
     source = Column(String, nullable=False)
     stripe_event_id = Column(String, nullable=True, index=True)
     stripe_invoice_id = Column(String, nullable=True)

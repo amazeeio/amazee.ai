@@ -108,7 +108,7 @@ While `PERIODIC` budgets reset automatically, `POOL` budgets are "topped up" by 
 *   **Purchase**: `POST /region/{region_id}/teams/{team_id}/purchase`
     *   Records a `PoolPurchase` record with a `stripe_payment_id` for idempotency.
     *   Updates the LiteLLM team budget to the **cumulative total** of all purchases (LiteLLM tracks spend internally).
-*   **Expiration**: `POOL` budgets typically expire after **365 days** (configured via `POOL_BUDGET_EXPIRATION_DAYS`). A cron job (`sync_pool_team_budgets`) resets the budget to `$0` if no purchases are made within this window.
+*   **Expiration**: `POOL` budgets typically expire after **365 days** (configured via `POOL_PURCHASE_EXPIRY_DAYS`). A cron job (`sync_pool_team_budgets`) resets the budget to `$0` if no purchases are made within this window.
 
 ---
 

@@ -143,12 +143,22 @@ def upsert_team_spend_period(
     stripe_event_id: str | None = None,
     stripe_invoice_id: str | None = None,
     stripe_subscription_id: str | None = None,
+    subscription_remaining_cents: int | None = None,
+    topup_remaining_cents: int | None = None,
+    desired_remaining_cents: int | None = None,
     raw_payload: dict[str, Any] | None = None,
 ) -> DBTeamSpendPeriod:
+    """Insert a spend-period snapshot for a specific team/region/window.
+
+    This function is intentionally "first write wins": if a spend period row already exists
+    for the same window, the existing row is returned unchanged (no updates to totals, keys,
+    or metadata).
+    """
     budget_type = _resolve_budget_type(team)
     row = _query_spend_period(
         db, team.id, region_id, budget_type, period_start, period_end
     )
+    is_new_row = False
     if row is None:
         new_row = DBTeamSpendPeriod(
             team_id=team.id,
@@ -166,6 +176,7 @@ def upsert_team_spend_period(
                 db.add(new_row)
                 db.flush()
             row = new_row
+            is_new_row = True
         except IntegrityError:
             # Another concurrent task inserted the same row; the savepoint was
             # rolled back, so the outer transaction is still valid – re-fetch.
@@ -179,6 +190,9 @@ def upsert_team_spend_period(
                     f"window={period_start} to {period_end})"
                 )
 
+    if not is_new_row:
+        return row
+
     row.currency = None
     row.total_spend = float(snapshot.get("total_spend", 0.0) or 0.0)
     row.total_budget = (
@@ -189,6 +203,9 @@ def upsert_team_spend_period(
     row.total_prompt_tokens = snapshot.get("total_prompt_tokens")
     row.total_completion_tokens = snapshot.get("total_completion_tokens")
     row.total_tokens = snapshot.get("total_tokens")
+    row.subscription_remaining_cents = subscription_remaining_cents
+    row.topup_remaining_cents = topup_remaining_cents
+    row.desired_remaining_cents = desired_remaining_cents
     row.source = source
     row.stripe_event_id = stripe_event_id
     row.stripe_invoice_id = stripe_invoice_id
@@ -196,10 +213,6 @@ def upsert_team_spend_period(
     row.raw_payload = raw_payload
     db.add(row)
     db.flush()
-
-    db.query(DBTeamSpendPeriodKey).filter(
-        DBTeamSpendPeriodKey.team_spend_period_id == row.id
-    ).delete()
 
     for item in snapshot.get("keys", []):
         db.add(
