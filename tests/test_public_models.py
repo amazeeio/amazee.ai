@@ -138,6 +138,7 @@ def test_public_models_pricing_numeric_values(client, db):
                         "litellm_params": {},
                         "model_info": {
                             "mode": "chat",
+                            "supports_prompt_caching": True,
                             "input_cost_per_token": 0.000005,
                             "output_cost_per_token": 0.000015,
                             "cache_creation_input_token_cost": 0.00000625,
@@ -196,6 +197,7 @@ def test_public_models_pricing_uses_litellm_global_margin(client, db):
                         "litellm_params": {},
                         "model_info": {
                             "mode": "chat",
+                            "supports_prompt_caching": True,
                             "input_cost_per_token": 0.000005,
                             "output_cost_per_token": 0.000015,
                             "cache_creation_input_token_cost": 0.00000625,
@@ -256,6 +258,7 @@ def test_public_models_pricing_falls_back_to_default_margin(client, db):
                         "litellm_params": {},
                         "model_info": {
                             "mode": "chat",
+                            "supports_prompt_caching": True,
                             "input_cost_per_token": 0.000005,
                             "output_cost_per_token": 0.000015,
                             "cache_creation_input_token_cost": 0.00000625,
@@ -381,6 +384,155 @@ def test_public_models_pricing_non_numeric_values(client, db):
         assert pricing["cache_creation_input_cost_per_million_tokens"] is None
         assert pricing["cache_creation_input_cost_above_1hr_per_million_tokens"] is None
         assert pricing["cache_read_input_cost_per_million_tokens"] is None
+
+
+def test_prompt_caching_enabled_when_supports_and_costs_present(client, db):
+    """prompt_caching_enabled is True only when supports_prompt_caching=True AND cache costs are set."""
+    _clear_public_models_cache()
+    region = DBRegion(
+        name="caching-enabled-region",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="user",
+        postgres_admin_password="pass",
+        litellm_api_url="https://litellm.example",
+        litellm_api_key="key",
+        is_active=True,
+        is_dedicated=False,
+    )
+    db.add(region)
+    db.commit()
+
+    with patch("app.api.public.LiteLLMService") as mock_service_cls:
+        mock_service = mock_service_cls.return_value
+        mock_service.get_model_info = AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        "model_name": "claude-3-sonnet",
+                        "litellm_params": {},
+                        "model_info": {
+                            "mode": "chat",
+                            "supports_prompt_caching": True,
+                            "cache_creation_input_token_cost": 0.000003,
+                            "cache_creation_input_token_cost_above_1hr": 0.000006,
+                            "cache_read_input_token_cost": 0.0000003,
+                        },
+                    }
+                ]
+            }
+        )
+        mock_service.get_cost_margin_config = AsyncMock(return_value={"values": {"global": 0.0}})
+
+        response = client.get("/public/models")
+        assert response.status_code == 200
+        data = response.json()
+        region_data = next(r for r in data if r["region"] == "caching-enabled-region")
+        model = region_data["models"][0]
+        assert model["capabilities"]["supports_prompt_caching"] is True
+        assert model["capabilities"]["prompt_caching_enabled"] is True
+        assert model["pricing"]["cache_creation_input_cost_per_million_tokens"] == pytest.approx(3.0)
+        assert model["pricing"]["cache_creation_input_cost_above_1hr_per_million_tokens"] == pytest.approx(6.0)
+        assert model["pricing"]["cache_read_input_cost_per_million_tokens"] == pytest.approx(0.3)
+
+
+def test_prompt_caching_enabled_matches_supports_prompt_caching(client, db):
+    """prompt_caching_enabled mirrors supports_prompt_caching as the best available signal."""
+    _clear_public_models_cache()
+    region = DBRegion(
+        name="caching-no-cost-region",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="user",
+        postgres_admin_password="pass",
+        litellm_api_url="https://litellm.example",
+        litellm_api_key="key",
+        is_active=True,
+        is_dedicated=False,
+    )
+    db.add(region)
+    db.commit()
+
+    with patch("app.api.public.LiteLLMService") as mock_service_cls:
+        mock_service = mock_service_cls.return_value
+        mock_service.get_model_info = AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        "model_name": "claude-3-haiku",
+                        "litellm_params": {},
+                        "model_info": {
+                            "mode": "chat",
+                            "supports_prompt_caching": True,
+                            # No cache cost fields
+                        },
+                    }
+                ]
+            }
+        )
+        mock_service.get_cost_margin_config = AsyncMock(return_value={"values": {"global": 0.0}})
+
+        response = client.get("/public/models")
+        assert response.status_code == 200
+        data = response.json()
+        region_data = next(r for r in data if r["region"] == "caching-no-cost-region")
+        model = region_data["models"][0]
+        # prompt_caching_enabled follows supports_prompt_caching
+        assert model["capabilities"]["supports_prompt_caching"] is True
+        assert model["capabilities"]["prompt_caching_enabled"] is True
+        assert model["pricing"]["cache_creation_input_cost_per_million_tokens"] is None
+        assert model["pricing"]["cache_creation_input_cost_above_1hr_per_million_tokens"] is None
+        assert model["pricing"]["cache_read_input_cost_per_million_tokens"] is None
+
+
+def test_prompt_caching_enabled_false_when_supports_false(client, db):
+    """prompt_caching_enabled is False when supports_prompt_caching is False/null, cache pricing nulled."""
+    _clear_public_models_cache()
+    region = DBRegion(
+        name="caching-unsupported-region",
+        postgres_host="host",
+        postgres_port=5432,
+        postgres_admin_user="user",
+        postgres_admin_password="pass",
+        litellm_api_url="https://litellm.example",
+        litellm_api_key="key",
+        is_active=True,
+        is_dedicated=False,
+    )
+    db.add(region)
+    db.commit()
+
+    with patch("app.api.public.LiteLLMService") as mock_service_cls:
+        mock_service = mock_service_cls.return_value
+        mock_service.get_model_info = AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        "model_name": "gpt-4o",
+                        "litellm_params": {},
+                        "model_info": {
+                            "mode": "chat",
+                            "supports_prompt_caching": False,
+                            # LiteLLM static DB might still return cache costs — should be nulled
+                            "cache_creation_input_token_cost": 0.000003,
+                            "cache_read_input_token_cost": 0.0000003,
+                        },
+                    }
+                ]
+            }
+        )
+        mock_service.get_cost_margin_config = AsyncMock(return_value={"values": {"global": 0.0}})
+
+        response = client.get("/public/models")
+        assert response.status_code == 200
+        data = response.json()
+        region_data = next(r for r in data if r["region"] == "caching-unsupported-region")
+        model = region_data["models"][0]
+        assert model["capabilities"]["supports_prompt_caching"] is False
+        assert model["capabilities"]["prompt_caching_enabled"] is False
+        assert model["pricing"]["cache_creation_input_cost_per_million_tokens"] is None
+        assert model["pricing"]["cache_creation_input_cost_above_1hr_per_million_tokens"] is None
+        assert model["pricing"]["cache_read_input_cost_per_million_tokens"] is None
 
 
 def test_public_models_uses_region_key_for_model_info(client, db):
