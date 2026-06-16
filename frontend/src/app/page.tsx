@@ -1,4 +1,5 @@
 import { ArrowRight } from "lucide-react";
+import Image from "next/image";
 import { Button } from "@/components/ui/button";
 
 const NEW_DASHBOARD_URL = process.env.NEXT_PUBLIC_NEW_DASHBOARD_URL;
@@ -36,6 +37,15 @@ export default function Home() {
       {/* Right panel */}
       <div className="lg:p-8">
         <div className="mx-auto flex w-full flex-col justify-center space-y-6 sm:w-[420px]">
+          <div className="flex justify-center">
+            <Image
+              src="/amazee-io-logo.svg"
+              alt="amazee.io"
+              width={200}
+              height={34}
+              priority
+            />
+          </div>
           <div className="flex flex-col space-y-2 text-center">
             <h1 className="text-2xl font-semibold tracking-tight">
               We&apos;ve moved! 🎉
