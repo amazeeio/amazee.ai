@@ -357,19 +357,11 @@ def _extract_model_summary(
         _safe_float(model_info.get("cache_read_input_token_cost")), profit_margin
     )
     supports_prompt_caching = bool(model_info.get("supports_prompt_caching"))
-    # prompt_caching_enabled reflects whether caching is operationally active.
-    # Ideally this would be derived from cache_control_injection_points in the
-    # LiteLLM cluster config, but that field is not exposed via the LiteLLM API.
-    # For now we use supports_prompt_caching (LiteLLM static model DB) as the
-    # best available signal. See: https://github.com/amazeeio/moad/issues/517
-    prompt_caching_enabled = supports_prompt_caching
-
     capabilities = PublicModelCapabilities(
         supports_vision=bool(model_info.get("supports_vision")),
         supports_function_calling=bool(model_info.get("supports_function_calling")),
         supports_reasoning=bool(model_info.get("supports_reasoning")),
         supports_prompt_caching=supports_prompt_caching,
-        prompt_caching_enabled=prompt_caching_enabled,
     )
 
     aliases = _extract_aliases(item, model_id)
@@ -393,13 +385,19 @@ def _extract_model_summary(
             output_cost_per_million_tokens=_per_million(output_cost_per_token),
             cache_creation_input_cost_per_million_tokens=_per_million(
                 cache_creation_input_cost_per_token
-            ) if prompt_caching_enabled else None,
+            )
+            if supports_prompt_caching
+            else None,
             cache_creation_input_cost_above_1hr_per_million_tokens=_per_million(
                 cache_creation_input_cost_above_1hr_per_token
-            ) if prompt_caching_enabled else None,
+            )
+            if supports_prompt_caching
+            else None,
             cache_read_input_cost_per_million_tokens=_per_million(
                 cache_read_input_cost_per_token
-            ) if prompt_caching_enabled else None,
+            )
+            if supports_prompt_caching
+            else None,
         ),
     )
 
