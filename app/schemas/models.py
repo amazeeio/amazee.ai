@@ -227,6 +227,7 @@ class PublicModelCapabilities(BaseModel):
     supports_function_calling: bool = False
     supports_reasoning: bool = False
     supports_prompt_caching: bool = False
+    prompt_caching_enabled: bool = False
 
 
 class PublicModelManufacturer(BaseModel):
