@@ -22,10 +22,14 @@ export function middleware(request: NextRequest) {
   const authPaths = ["/auth/login", "/auth/register"];
 
   // Public paths that don't require authentication
-  const publicPaths = [...authPaths, "/api/config", "/upgrade"];
+  const publicPaths = [...authPaths, "/api/config", "/upgrade", "/"];
 
   // Check if the path is public
-  const isPublicPath = publicPaths.some((path) => pathname.startsWith(path));
+  const isPublicPath =
+    pathname === "/" ||
+    publicPaths
+      .filter((p) => p !== "/")
+      .some((path) => pathname.startsWith(path));
 
   // Check if the path is an auth path
   const isAuthPath = authPaths.some((path) => pathname.startsWith(path));
