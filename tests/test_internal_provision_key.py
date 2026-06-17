@@ -7,10 +7,6 @@ flow.  Auth is the standard amazee.ai admin API token mechanism.
 """
 
 import os
-
-os.environ["AMAZEEAI_JWT_SECRET"] = "test-secret-key-for-tests"
-
-import pytest
 from unittest.mock import patch, AsyncMock, Mock
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
