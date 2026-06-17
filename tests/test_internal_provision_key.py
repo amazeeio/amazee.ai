@@ -7,6 +7,7 @@ flow.  Auth is the standard amazee.ai admin API token mechanism.
 """
 
 import os
+import pytest
 from unittest.mock import patch, AsyncMock, Mock
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -67,10 +68,13 @@ def admin_user(db):
 def admin_token(db, admin_user):
     from app.db.models import DBAPIToken
 
-    api_token = DBAPIToken(name="moad", token="moad-admin-token-123", user_id=admin_user.id)
+    api_token = DBAPIToken(
+        name="moad", token="moad-admin-token-123", user_id=admin_user.id
+    )
     db.add(api_token)
     db.commit()
     return api_token.token
+
 
 @pytest.fixture
 def regular_user(db):
