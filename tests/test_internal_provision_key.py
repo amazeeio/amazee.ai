@@ -64,13 +64,13 @@ def admin_user(db):
 
 
 @pytest.fixture
-def admin_token(client, admin_user):
-    response = client.post(
-        "/auth/login",
-        data={"username": admin_user.email, "password": "adminpass"},
-    )
-    return response.json()["access_token"]
+def admin_token(db, admin_user):
+    from app.db.models import DBAPIToken
 
+    api_token = DBAPIToken(name="moad", token="moad-admin-token-123", user_id=admin_user.id)
+    db.add(api_token)
+    db.commit()
+    return api_token.token
 
 @pytest.fixture
 def regular_user(db):
