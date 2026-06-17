@@ -9,6 +9,7 @@ from app.api import (
     auth,
     billing,
     budgets,
+    internal,
     limits,
     pricing_tables,
     private_ai_keys,
@@ -189,6 +190,7 @@ async def get_version():
 
 
 # Include routers
+app.include_router(internal.router, prefix="/internal", tags=["internal"])
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(
     private_ai_keys.router, prefix="/private-ai-keys", tags=["private-ai-keys"]
