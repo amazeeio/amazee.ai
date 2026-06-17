@@ -62,8 +62,17 @@ export const useConfig = create<ConfigState>((set, get) => ({
         return config;
       } catch (error) {
         console.error("Error loading configuration:", error);
+        // Fall back to build-time env values (wired via next.config env /
+        // Docker build args) so the app stays usable when /api/config is
+        // unavailable; isLoaded stays false so a later call retries.
+        const fallback: Config = {
+          NEXT_PUBLIC_API_URL:
+            process.env.NEXT_PUBLIC_API_URL || "http://localhost:8800",
+          PASSWORDLESS_SIGN_IN: process.env.PASSWORDLESS_SIGN_IN === "true",
+          STRIPE_PUBLISHABLE_KEY: process.env.STRIPE_PUBLISHABLE_KEY || "",
+        };
         set({
-          config: null,
+          config: fallback,
           loading: false,
           error:
             error instanceof Error
@@ -71,7 +80,7 @@ export const useConfig = create<ConfigState>((set, get) => ({
               : "Failed to load configuration",
           isLoaded: false,
         });
-        return null;
+        return fallback;
       } finally {
         inFlightLoad = null;
       }
