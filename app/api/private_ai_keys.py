@@ -1122,11 +1122,11 @@ async def _delegate_to_moad(
     ``POST /internal/provision-key`` (with its admin API token) to create
     the actual LiteLLM token + vector DB on this backend.
 
-    The ``{ llm, vectorDb }`` response from moad is mapped back to the
-    ``PrivateAIKey`` shape expected by the Drupal module, and the newly
-    created key is looked up in the local DB by its ``litellm_token`` so
-    that a fully populated record (including ``id``, ``team_id``, region
-    info, etc.) is returned and remains visible via ``GET /private-ai-keys``.
+    The moad response is used to extract the newly created LiteLLM token.
+    A fully populated key record (including ``id``, ``team_id``, region info,
+    etc.) is then loaded from the local DB using ``litellm_token`` so the
+    result matches the ``PrivateAIKey`` shape expected by the Drupal module
+    and remains visible via ``GET /private-ai-keys``.
     """
     if not settings.MOAD_DASHBOARD_API_URL or not settings.MOAD_DASHBOARD_API_TOKEN:
         logger.error(
