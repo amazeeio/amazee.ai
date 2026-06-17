@@ -936,3 +936,93 @@ class LiteLLMService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to remove LiteLLM team member: {error_msg}",
             )
+
+    async def add_model(self, model_id: str, litellm_params: dict) -> dict:
+        """
+        Register a new model in LiteLLM.
+        Sends POST /model/new.
+        """
+        payload = {
+            "model_name": model_id,
+            "litellm_params": litellm_params or {}
+        }
+        if "model" not in payload["litellm_params"]:
+            payload["litellm_params"]["model"] = model_id
+            
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/model/new",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json=payload,
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            _, error_msg, _ = self._parse_http_error(e)
+            logger.error("Failed to add model %s to LiteLLM: %s", model_id, error_msg)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to add LiteLLM model: {error_msg}",
+            )
+
+    async def update_model(self, model_id: str, litellm_params: dict) -> dict:
+        """
+        Update an existing model in LiteLLM.
+        Sends POST /model/update.
+        """
+        payload = {
+            "model_name": model_id,
+            "litellm_params": litellm_params or {}
+        }
+        if "model" not in payload["litellm_params"]:
+            payload["litellm_params"]["model"] = model_id
+            
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/model/update",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json=payload,
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            _, error_msg, _ = self._parse_http_error(e)
+            logger.error("Failed to update model %s in LiteLLM: %s", model_id, error_msg)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update LiteLLM model: {error_msg}",
+            )
+
+    async def delete_model(self, model_id: str) -> None:
+        """
+        Delete/deregister a model in LiteLLM.
+        Sends POST /model/delete.
+        """
+        payload = {
+            "model_name": model_id
+        }
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/model/delete",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json=payload,
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            status_code, error_msg, response_text = self._parse_http_error(e)
+            if self._is_idempotent_litellm_error(
+                status_code,
+                response_text,
+                ["not found", "does not exist", "already deleted", "not registered"],
+            ):
+                logger.info("LiteLLM model %s already absent; continuing", model_id)
+                return
+            logger.error("Failed to delete model %s from LiteLLM: %s", model_id, error_msg)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to delete LiteLLM model: {error_msg}",
+            )
+

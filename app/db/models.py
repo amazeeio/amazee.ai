@@ -719,3 +719,52 @@ class DBTeamSpendPeriodKey(Base):
             sqlite_where=text("key_id IS NULL"),
         ),
     )
+
+
+class DBModel(Base):
+    __tablename__ = "models"
+
+    id = Column(Integer, primary_key=True, index=True)
+    model_id = Column(String, nullable=False)
+    display_name = Column(String, nullable=False)
+    provider = Column(String, nullable=False)
+    type = Column(String, nullable=False)
+    context_length = Column(Integer, nullable=True)
+    max_output_tokens = Column(Integer, nullable=True)
+    description = Column(String, nullable=True)
+    real_eol = Column(DateTime(timezone=True), nullable=True)
+    override_eol = Column(DateTime(timezone=True), nullable=True)
+    is_active_globally = Column(Boolean, default=True, nullable=False)
+    litellm_params = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+
+    regions = relationship("DBModelRegion", back_populates="model", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index(
+            "ix_models_model_id",
+            "model_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+
+class DBModelRegion(Base):
+    __tablename__ = "model_regions"
+
+    model_id = Column(Integer, ForeignKey("models.id", ondelete="CASCADE"), primary_key=True, nullable=False)
+    region_id = Column(Integer, ForeignKey("regions.id", ondelete="CASCADE"), primary_key=True, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    sync_status = Column(String, default="pending", nullable=False)
+    sync_error = Column(String, nullable=True)
+    synced_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+
+    model = relationship("DBModel", back_populates="regions")
+    region = relationship("DBRegion")
+
