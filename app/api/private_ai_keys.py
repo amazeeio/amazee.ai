@@ -1110,8 +1110,8 @@ async def extend_token_life(
 
 async def _delegate_to_moad(
     private_ai_key: PrivateAIKeyCreate,
-    current_user,
-    db,
+    current_user: DBUser,
+    db: Session,
 ) -> PrivateAIKey:
     """
     Delegate key creation to the moad dashboard backend.
