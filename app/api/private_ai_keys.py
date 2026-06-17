@@ -245,7 +245,7 @@ async def create_private_ai_key(
     - For team workflows with shared pool budget, prefer team-owned keys
       (`team_id`).
 
-    Non-admin users (e.g. Drupal email/code sign-in flow) are delegated to the
+    DEFAULT (non-admin) users (e.g. Drupal email/code sign-in flow) are delegated to the
     moad dashboard backend which handles workspace and Keycloak provisioning
     before calling back via ``POST /internal/provision-key``.
     """
