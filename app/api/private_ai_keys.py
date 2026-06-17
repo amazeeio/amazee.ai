@@ -1175,9 +1175,16 @@ async def _delegate_to_moad(
             detail="Key provisioning failed.",
         )
 
-    data = response.json()
-    litellm_token = data.get("llm", {}).get("token")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        logger.error("moad provision-key returned invalid JSON: %s", response.text)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Key provisioning returned an invalid response.",
+        ) from exc
 
+    litellm_token = data.get("llm", {}).get("token")
     if not litellm_token:
         logger.error("moad provision-key response missing llm.token: %s", data)
         raise HTTPException(
