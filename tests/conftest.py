@@ -47,6 +47,19 @@ def client(db):
         yield db
 
     app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app, headers={"X-Amazee-Source": "frontend"}) as test_client:
+        yield test_client
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def drupal_client(db):
+    """Test client without X-Amazee-Source header — simulates Drupal requests."""
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()

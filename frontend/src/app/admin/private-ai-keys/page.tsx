@@ -49,7 +49,11 @@ export default function PrivateAIKeysPage() {
           : data.key_type === "llm"
             ? "/private-ai-keys/token"
             : "/private-ai-keys/vector-db";
-      const response = await post(endpoint, data);
+      const options =
+        data.key_type === "full"
+          ? { headers: { "X-Amazee-Source": "frontend" } }
+          : {};
+      const response = await post(endpoint, data, options);
       return response.json();
     },
     onSuccess: () => {

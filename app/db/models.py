@@ -150,9 +150,6 @@ class DBUser(Base):
     receive_marketing_updates = Column(
         Boolean, default=False, nullable=False, server_default=text("false")
     )
-    created_via_drupal = Column(
-        Boolean, default=False, nullable=False, server_default=text("false")
-    )
     team_id = Column(Integer, ForeignKey("teams.id", name="fk_user_team"))
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

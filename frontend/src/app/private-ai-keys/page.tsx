@@ -108,7 +108,11 @@ export default function DashboardPage() {
       } = { region_id, name };
       if (owner_id) payload.owner_id = owner_id;
       if (team_id) payload.team_id = team_id;
-      const response = await post(endpoint, payload);
+      const options =
+        key_type === "full"
+          ? { headers: { "X-Amazee-Source": "frontend" } }
+          : {};
+      const response = await post(endpoint, payload, options);
       const data = await response.json();
       return data;
     },
