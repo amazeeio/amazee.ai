@@ -23,7 +23,7 @@ services:
       dockerfile: Dockerfile
       target: backend
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres/postgres_service
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres/postgres_service}
       AMAZEEAI_JWT_SECRET: ${AMAZEEAI_JWT_SECRET}
       ENABLE_METRICS: "true"  # Enable Prometheus metrics
       AI_TRIAL_REGION: ${AI_TRIAL_REGION:-eu-west}
@@ -45,7 +45,7 @@ services:
       dockerfile: Dockerfile
       target: cli
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres/postgres_service
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres/postgres_service}
     volumes:
       - ./app:/app/app
       - ./scripts:/app/scripts
