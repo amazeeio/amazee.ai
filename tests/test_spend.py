@@ -1330,8 +1330,9 @@ def test_update_pool_key_budget_allows_setting_cap_before_first_purchase(
         json={"max_budget": 60.0},
     )
     assert response.status_code == 200, response.json()
+    # Without the no-purchase lock, the cap is applied directly to LiteLLM.
     mock_update_key_budget.assert_awaited_once()
-    assert mock_update_key_budget.await_args.kwargs["max_budget"] == 0.0
+    assert mock_update_key_budget.await_args.kwargs["max_budget"] == 60.0
     assert mock_update_key_budget.await_args.kwargs["clear_max_budget"] is False
     assert response.json()["max_budget"] == 60.0
     cap = (
@@ -1349,7 +1350,7 @@ def test_update_pool_key_budget_allows_setting_cap_before_first_purchase(
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
 @patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
-def test_update_prepaid_pool_key_budget_locks_dedicated_team_before_purchase(
+def test_update_prepaid_pool_key_budget_applies_cap_before_purchase(
     mock_update_key_budget,
     mock_get_key_info,
     client,
@@ -1393,8 +1394,9 @@ def test_update_prepaid_pool_key_budget_locks_dedicated_team_before_purchase(
         json={"max_budget": 50.0},
     )
     assert response.status_code == 200, response.json()
+    # Without the no-purchase lock, the cap is applied directly to LiteLLM.
     mock_update_key_budget.assert_awaited_once()
-    assert mock_update_key_budget.await_args.kwargs["max_budget"] == 0.0
+    assert mock_update_key_budget.await_args.kwargs["max_budget"] == 50.0
     assert mock_update_key_budget.await_args.kwargs["clear_max_budget"] is False
 
 
