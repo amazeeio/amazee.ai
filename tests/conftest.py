@@ -107,6 +107,15 @@ def test_token(client, test_user):
 
 
 @pytest.fixture
+def drupal_test_token(drupal_client, test_user):
+    """JWT for test_user obtained via drupal_client (no X-Amazee-Source header)."""
+    response = drupal_client.post(
+        "/auth/login", data={"username": test_user.email, "password": "testpassword"}
+    )
+    return response.json()["access_token"]
+
+
+@pytest.fixture
 def admin_token(client, test_admin):
     response = client.post(
         "/auth/login", data={"username": test_admin.email, "password": "adminpassword"}
