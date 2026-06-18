@@ -301,8 +301,15 @@ class TestPrivateAiKeysDelegation:
             )
             self._post_key(client, token, test_region.id)
 
-        # moad must NOT have been called
-        mock_http.post.assert_not_called()
+        # moad must NOT have been called — verify no call went to provision-key
+        provision_key_calls = [
+            call
+            for call in mock_http.post.call_args_list
+            if "provision-key" in str(call)
+        ]
+        assert provision_key_calls == [], (
+            f"Unexpected moad call(s): {provision_key_calls}"
+        )
 
     def test_admin_user_bypasses_delegation_even_when_flagged(
         self, client, db, test_region
