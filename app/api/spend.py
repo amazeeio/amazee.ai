@@ -1,5 +1,4 @@
 import logging
-import asyncio
 import re
 from datetime import UTC, date, datetime, timedelta
 
@@ -13,7 +12,6 @@ from app.core.config import settings
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
 from app.core.litellm_user_sync import team_role_for_litellm
 from app.core.roles import UserRole
-from app.core.team_service import get_team_region_litellm_keys
 from app.core.periodic_budget_ledger_service import compute_active_topup_remaining
 from app.core.pool_budget_service import (
     pool_available_budget_for_team_region as shared_pool_available_budget_for_team_region,
@@ -530,8 +528,6 @@ def _pool_team_budget_duration_for_enforcement(
     db: Session, team_id: int, region_id: int
 ) -> str:
     return shared_pool_team_budget_duration_for_enforcement(db, team_id, region_id)
-
-
 
 
 def _upsert_spend_cap(
