@@ -4,6 +4,8 @@ from typing import List, Optional
 from fastapi import status
 import logging
 
+import httpx
+
 from app.db.database import get_db
 from app.core.dependencies import get_limit_service
 from app.schemas.models import (
@@ -242,7 +244,20 @@ async def create_private_ai_key(
     - Key budgets apply per key.
     - For team workflows with shared pool budget, prefer team-owned keys
       (`team_id`).
+
+    DEFAULT (non-admin) users (e.g. Drupal email/code sign-in flow) are delegated to the
+    moad dashboard backend which handles workspace and Keycloak provisioning
+    before calling back via ``POST /internal/provision-key``.
     """
+    # --- moad delegation for regular (non-admin) users ---
+    # Only plain DEFAULT users (Drupal email/code sign-in) are delegated to
+    # moad. This requires BOTH conditions:
+    #   - role == UserRole.DEFAULT (not a team admin, key creator, etc.)
+    #   - not is_admin (system admins have role="user" by default but must
+    #     bypass delegation — they include moad's AMAZEEAI_ADMIN_API_TOKEN)
+    if current_user.role == UserRole.DEFAULT and not current_user.is_admin:
+        return await _delegate_to_moad(private_ai_key, current_user, db)
+
     llm_token = None
     db_info = None
     region = None
@@ -1091,3 +1106,108 @@ async def extend_token_life(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to extend token life: {str(e)}",
         )
+
+
+async def _delegate_to_moad(
+    private_ai_key: PrivateAIKeyCreate,
+    current_user: DBUser,
+    db: Session,
+) -> PrivateAIKey:
+    """
+    Delegate key creation to the moad dashboard backend.
+
+    Called when a regular (non-admin) user hits ``POST /private-ai-keys``
+    — the Drupal email/code sign-in workflow.  moad handles Keycloak user
+    creation, workspace provisioning, and calls back via
+    ``POST /internal/provision-key`` (with its admin API token) to create
+    the actual LiteLLM token + vector DB on this backend.
+
+    The moad response is used to extract the newly created LiteLLM token.
+    A fully populated key record (including ``id``, ``team_id``, region info,
+    etc.) is then loaded from the local DB using ``litellm_token`` so the
+    result matches the ``PrivateAIKey`` shape expected by the Drupal module
+    and remains visible via ``GET /private-ai-keys``.
+    """
+    if not settings.MOAD_DASHBOARD_API_URL or not settings.MOAD_DASHBOARD_API_TOKEN:
+        logger.error(
+            "MOAD_DASHBOARD_API_URL or MOAD_DASHBOARD_API_TOKEN is not configured"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Key provisioning service is not configured.",
+        )
+
+    payload = {
+        "email": current_user.email,
+        "appName": private_ai_key.name,
+        "regionId": private_ai_key.region_id,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{settings.MOAD_DASHBOARD_API_URL}/api/external/provision-key",
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {settings.MOAD_DASHBOARD_API_TOKEN}"
+                },
+            )
+    except httpx.RequestError as exc:
+        logger.error("Failed to reach moad for key provisioning: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Key provisioning service is unreachable.",
+        )
+
+    if response.status_code == 404:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Region not found.",
+        )
+    if response.status_code >= 400:
+        logger.error(
+            "moad returned %s for provision-key: %s",
+            response.status_code,
+            response.text,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Key provisioning failed.",
+        )
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        logger.error("moad provision-key returned invalid JSON: %s", response.text)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Key provisioning returned an invalid response.",
+        ) from exc
+
+    litellm_token = data.get("llm", {}).get("token")
+    if not litellm_token:
+        logger.error("moad provision-key response missing llm.token: %s", data)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Key provisioning returned an invalid response.",
+        )
+
+    # Look up the key that moad just created via /internal/provision-key so we
+    # return a fully populated PrivateAIKey (with id, team_id, region, etc.).
+    # This also ensures the key is visible via GET /private-ai-keys.
+    db_key = (
+        db.query(DBPrivateAIKey)
+        .filter(DBPrivateAIKey.litellm_token == litellm_token)
+        .first()
+    )
+
+    if not db_key:
+        logger.error(
+            "Could not find newly provisioned key by litellm_token after moad call"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Key provisioning failed: key not found after creation.",
+        )
+
+    return PrivateAIKey.model_validate(db_key.to_dict())
