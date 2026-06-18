@@ -251,9 +251,14 @@ async def create_private_ai_key(
     via ``POST /internal/provision-key``.
     """
     # --- moad delegation for Drupal-originated users ---
-    # Delegate to moad when the durable Drupal-origin flag is set.
-    # System admins (is_admin=True) always bypass delegation.
-    if not current_user.is_admin and current_user.created_via_drupal:
+    # Delegate to moad when the durable Drupal-origin flag is set, unless the
+    # user's role has since been elevated to team_admin or key_creator —
+    # those users should create keys directly for their team.
+    _ROLES_BYPASS_DRUPAL_DELEGATION = {UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR}
+    if (
+        current_user.created_via_drupal
+        and current_user.role not in _ROLES_BYPASS_DRUPAL_DELEGATION
+    ):
         logger.info(
             f"[drupal-attribution] delegating key creation to moad for "
             f"{current_user.email} (reason: drupal-origin flag)"
