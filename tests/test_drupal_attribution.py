@@ -106,11 +106,16 @@ def test_no_header_delegates_to_moad(
 def test_with_header_bypasses_moad(
     mock_client_cls, mock_settings, client, db, test_region
 ):
-    """A request with X-Amazee-Source: frontend must NOT be delegated."""
+    """A non-admin DEFAULT user with X-Amazee-Source header must NOT be delegated.
+
+    This specifically exercises the header bypass path, not the admin exemption.
+    """
     mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
     mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
 
-    user = _make_user(db, is_admin=True)
+    # Deliberately non-admin DEFAULT user — bypass must come from the header,
+    # not the is_admin exemption.
+    user = _make_user(db, is_admin=False)
     token = _login(client, user)
 
     mock_http = AsyncMock()
@@ -141,13 +146,14 @@ def test_with_header_bypasses_moad(
             owner_id=user.id,
             team_id=None,
         )
+        # client fixture sends X-Amazee-Source: frontend automatically
         _post_key(client, token, test_region.id)
 
-    # Direct creation path taken — moad provision-key not called
+    # Direct creation path taken via header bypass — moad not called
     provision_key_calls = [
         call for call in mock_http.post.call_args_list if "provision-key" in str(call)
     ]
-    assert provision_key_calls == []
+    assert provision_key_calls == [], f"Unexpected moad call(s): {provision_key_calls}"
     mock_llm.assert_called_once()
 
 
