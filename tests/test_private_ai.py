@@ -19,18 +19,61 @@ from app.core.limit_service import (
 )
 
 
+@patch("app.api.private_ai_keys.settings")
 @patch("httpx.AsyncClient")
 def test_create_private_ai_key(
     mock_client_class,
+    mock_settings,
     client,
     test_token,
     test_region,
     test_user,
-    mock_httpx_post_client,
+    db,
 ):
-    """Test creating a private AI key in a specific region"""
-    # Use the httpx POST client fixture
-    mock_client_class.return_value = mock_httpx_post_client
+    """Test that a DEFAULT user's key creation is delegated to moad.
+
+    The moad call is mocked. A matching DBPrivateAIKey is pre-inserted to
+    simulate moad calling back via POST /internal/provision-key.
+    """
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+
+    litellm_token = "test-private-key-123"
+
+    # Simulate the key that moad would create via /internal/provision-key
+    pre_created_key = DBPrivateAIKey(
+        name="Test AI Key",
+        litellm_token=litellm_token,
+        litellm_api_url="http://test-llm",
+        database_name="test-db",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        region_id=test_region.id,
+        team_id=None,
+        owner_id=None,
+    )
+    db.add(pre_created_key)
+    db.commit()
+    db.refresh(pre_created_key)
+
+    # Mock the httpx call to moad returning credentials
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "llm": {"apiUrl": "http://test-llm", "token": litellm_token},
+        "vectorDb": {
+            "host": "test-host",
+            "database": "test-db",
+            "username": "test-user",
+            "password": "test-pass",
+        },
+    }
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
 
     response = client.post(
         "/private-ai-keys/",
@@ -40,15 +83,35 @@ def test_create_private_ai_key(
 
     assert response.status_code == 200
     data = response.json()
-    assert data["region"] == test_region.name
-    assert data["region_label"] == test_region.label
-    assert data["litellm_token"] == "test-private-key-123"
-    assert data["owner_id"] == test_user.id
-    assert data["id"] != -1
+    assert data["litellm_token"] == litellm_token
+    assert data["id"] == pre_created_key.id
+
+    # Verify moad was called with the correct payload
+    call_kwargs = mock_client.post.call_args
+    assert "/api/external/provision-key" in call_kwargs[0][0]
+    assert call_kwargs[1]["json"]["email"] == test_user.email
+    assert call_kwargs[1]["json"]["appName"] == "Test AI Key"
+    assert call_kwargs[1]["json"]["regionId"] == test_region.id
 
 
-def test_create_private_ai_key_invalid_region(client, test_token):
-    """Test creating a private AI key with an invalid region ID"""
+@patch("app.api.private_ai_keys.settings")
+@patch("httpx.AsyncClient")
+def test_create_private_ai_key_invalid_region(
+    mock_client_class, mock_settings, client, test_token
+):
+    """Test that a DEFAULT user gets 404 when moad reports region not found."""
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+
+    mock_response = Mock()
+    mock_response.status_code = 404
+    mock_response.text = '{"error": "Region not found"}'
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
     response = client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {test_token}"},
@@ -56,7 +119,6 @@ def test_create_private_ai_key_invalid_region(client, test_token):
     )
 
     assert response.status_code == 404
-    assert "Region not found or inactive" in response.json()["detail"]
 
 
 def test_list_private_ai_keys(client, test_token, test_region, db, test_user):
@@ -2563,7 +2625,7 @@ def test_create_private_ai_key_cleanup_on_vector_db_failure(
     mock_create_db,
     mock_client_class,
     client,
-    test_token,
+    admin_token,
     test_region,
     mock_httpx_post_client,
 ):
@@ -2580,7 +2642,7 @@ def test_create_private_ai_key_cleanup_on_vector_db_failure(
 
     response = client.post(
         "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {test_token}"},
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={"region_id": test_region.id, "name": "Test AI Key"},
     )
 
@@ -2603,7 +2665,7 @@ def test_create_private_ai_key_cleanup_on_vector_db_failure(
 
     # Verify no key was stored in the database
     stored_keys = client.get(
-        "/private-ai-keys/", headers={"Authorization": f"Bearer {test_token}"}
+        "/private-ai-keys/", headers={"Authorization": f"Bearer {admin_token}"}
     ).json()
     assert len([k for k in stored_keys if k["name"] == "Test AI Key"]) == 0
 
@@ -2618,7 +2680,7 @@ def test_create_private_ai_key_cleanup_on_db_storage_failure(
     mock_create_db,
     mock_client_class,
     client,
-    test_token,
+    admin_token,
     test_region,
     mock_httpx_post_client,
 ):
@@ -2646,7 +2708,7 @@ def test_create_private_ai_key_cleanup_on_db_storage_failure(
 
     response = client.post(
         "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {test_token}"},
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={"region_id": test_region.id, "name": "Test AI Key"},
     )
 
@@ -2665,7 +2727,7 @@ def test_create_private_ai_key_cleanup_on_db_storage_failure(
 
     # Verify no key was stored in the database
     stored_keys = client.get(
-        "/private-ai-keys/", headers={"Authorization": f"Bearer {test_token}"}
+        "/private-ai-keys/", headers={"Authorization": f"Bearer {admin_token}"}
     ).json()
     assert len([k for k in stored_keys if k["name"] == "Test AI Key"]) == 0
 
@@ -2676,7 +2738,7 @@ def test_create_private_ai_key_cleanup_failure_handling(
     mock_create_db,
     mock_client_class,
     client,
-    test_token,
+    admin_token,
     test_region,
     mock_httpx_post_client,
 ):
@@ -2707,7 +2769,7 @@ def test_create_private_ai_key_cleanup_failure_handling(
 
     response = client.post(
         "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {test_token}"},
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={"region_id": test_region.id, "name": "Test AI Key"},
     )
 
@@ -2726,7 +2788,7 @@ def test_create_private_ai_key_http_exception_preservation(
     mock_create_db,
     mock_client_class,
     client,
-    test_token,
+    admin_token,
     test_region,
     mock_httpx_post_client,
 ):
@@ -2745,7 +2807,7 @@ def test_create_private_ai_key_http_exception_preservation(
 
     response = client.post(
         "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {test_token}"},
+        headers={"Authorization": f"Bearer {admin_token}"},
         json={"region_id": test_region.id, "name": "Test AI Key"},
     )
 
