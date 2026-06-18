@@ -245,17 +245,19 @@ async def create_private_ai_key(
     - For team workflows with shared pool budget, prefer team-owned keys
       (`team_id`).
 
-    DEFAULT (non-admin) users (e.g. Drupal email/code sign-in flow) are delegated to the
-    moad dashboard backend which handles workspace and Keycloak provisioning
-    before calling back via ``POST /internal/provision-key``.
+    DEFAULT (non-admin) users who completed the Drupal onboarding flow
+    (validate-email → sign-in) are delegated to the moad dashboard backend
+    which handles workspace and Keycloak provisioning before calling back
+    via ``POST /internal/provision-key``.
     """
-    # --- moad delegation for regular (non-admin) users ---
-    # Only plain DEFAULT users (Drupal email/code sign-in) are delegated to
-    # moad. This requires BOTH conditions:
-    #   - role == UserRole.DEFAULT (not a team admin, key creator, etc.)
-    #   - not is_admin (system admins have role="user" by default but must
-    #     bypass delegation — they include moad's AMAZEEAI_ADMIN_API_TOKEN)
-    if current_user.role == UserRole.DEFAULT and not current_user.is_admin:
+    # --- moad delegation for Drupal-originated users ---
+    # Delegate to moad when the durable Drupal-origin flag is set.
+    # System admins (is_admin=True) always bypass delegation.
+    if not current_user.is_admin and current_user.created_via_drupal:
+        logger.info(
+            f"[drupal-attribution] delegating key creation to moad for "
+            f"{current_user.email} (reason: drupal-origin flag)"
+        )
         return await _delegate_to_moad(private_ai_key, current_user, db)
 
     llm_token = None

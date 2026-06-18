@@ -313,6 +313,41 @@ async def register(request: Request, user: UserCreate, db: Session = Depends(get
     return db_user
 
 
+def _promote_drupal_attribution(user: DBUser, email: str, db: Session) -> None:
+    """
+    If a pending Drupal attribution marker exists for *email*, mark the user
+    record as Drupal-originated and delete the temporary marker.
+
+    This is called from the sign-in handler after a successful code
+    verification.  It is intentionally non-fatal: any failure is logged and
+    silently ignored so it never blocks authentication.
+    """
+    email = email.lower()
+    try:
+        dynamodb_service = DynamoDBService()
+        if dynamodb_service.read_drupal_pending(email):
+            if not user.created_via_drupal:
+                user.created_via_drupal = True
+                db.add(user)
+                db.commit()
+                auth_logger.info(
+                    f"[drupal-attribution] user {email} promoted to Drupal-origin"
+                )
+            else:
+                auth_logger.debug(
+                    f"[drupal-attribution] user {email} already marked as Drupal-origin"
+                )
+            dynamodb_service.delete_drupal_pending(email)
+        else:
+            auth_logger.debug(
+                f"[drupal-attribution] no pending marker for {email}; skipping promotion"
+            )
+    except Exception as exc:
+        auth_logger.warning(
+            f"[drupal-attribution] failed to promote marker for {email}: {exc}"
+        )
+
+
 @router.post("/sign-in", response_model=Token)
 async def sign_in(
     request: Request,
@@ -390,6 +425,9 @@ async def sign_in(
         auth_logger.info(
             f"Successfully created new user and team for: {sign_in_data.username}"
         )
+
+    # --- Drupal attribution: promote pending marker to durable user flag ---
+    _promote_drupal_attribution(user, sign_in_data.username, db)
 
     auth_logger.info(f"Successful sign-in for user: {sign_in_data.username}")
     return create_and_set_access_token(response, user.email, user)
@@ -511,6 +549,21 @@ async def validate_email(
         )
 
     send_validation_code(email, db)
+
+    # --- Drupal attribution ---
+    # Treat every validate-email call as the Drupal onboarding signal and
+    # record a short-lived pending marker.  sign-in will promote it to a
+    # durable user flag if it fires within the TTL window.
+    try:
+        dynamodb_service = DynamoDBService()
+        dynamodb_service.write_drupal_pending(email)
+        auth_logger.info(f"[drupal-attribution] pending marker written for {email}")
+    except Exception as exc:
+        # Non-fatal: attribution failure must never break the auth flow.
+        auth_logger.warning(
+            f"[drupal-attribution] failed to write pending marker for {email}: {exc}"
+        )
+
     return {"message": "Validation code has been generated and sent"}
 
 
