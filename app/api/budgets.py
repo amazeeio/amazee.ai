@@ -43,7 +43,6 @@ from app.core.periodic_budget_ledger_service import (
 from app.core.pool_budget_service import (
     pool_available_budget_for_team_region as shared_pool_available_budget_for_team_region,
     pool_team_budget_duration_for_enforcement as shared_pool_team_budget_duration_for_enforcement,
-    pool_team_has_ever_purchased,
 )
 
 logger = logging.getLogger(__name__)
@@ -220,11 +219,11 @@ async def _sync_pool_key_effective_budgets(
     """
     Keep key-level effective limits coherent for POOL teams.
 
-    Keys are never blocked here — blocking is driven solely by the purchase
-    gate at key-creation time (private_ai_keys.py) and unblocked as soon as
-    the team records any purchase (cycle or top-up).  `purchased_total` is
-    used to set max_budget on the key (0 → $0 cap, >0 → clear or apply
-    configured cap).
+    All callers are reached only after at least one purchase exists, so keys
+    are always unblocked here. Budget enforcement uses max_budget on the key:
+    - purchased_total > 0 → clear cap (or apply configured key cap)
+    - purchased_total == 0 (expired) → max_budget stays at team level; key
+      cap is cleared so LiteLLM falls back to the team budget of $0.
     """
     keys = get_team_region_litellm_keys(
         db,
@@ -233,8 +232,6 @@ async def _sync_pool_key_effective_budgets(
     )
     if not keys:
         return []
-
-    has_purchased = pool_team_has_ever_purchased(db, team_id, region.id)
 
     key_caps = (
         db.query(DBSpendCap.key_id, DBSpendCap.max_budget)
@@ -257,36 +254,24 @@ async def _sync_pool_key_effective_budgets(
         try:
             async with semaphore:
                 configured_cap = cap_map.get(key.id)
-                if has_purchased:
-                    # Team has at least one purchase (cycle or top-up) —
-                    # unblock and apply budget caps.
-                    if configured_cap is None:
-                        # No user-defined key cap — clear both max_budget
-                        # and budget_duration so no stale duration remains.
-                        await service.update_key_budget(
-                            litellm_token=key.litellm_token,
-                            budget_duration=None,
-                            max_budget=None,
-                            clear_max_budget=True,
-                            clear_budget_duration=True,
-                            blocked=False,
-                        )
-                    else:
-                        await service.update_key_budget(
-                            litellm_token=key.litellm_token,
-                            budget_duration=MONTHLY_BUDGET_DURATION,
-                            max_budget=configured_cap,
-                            clear_max_budget=False,
-                            blocked=False,
-                        )
+                if configured_cap is None:
+                    # No user-defined key cap — clear both max_budget
+                    # and budget_duration so no stale duration remains.
+                    await service.update_key_budget(
+                        litellm_token=key.litellm_token,
+                        budget_duration=None,
+                        max_budget=None,
+                        clear_max_budget=True,
+                        clear_budget_duration=True,
+                        blocked=False,
+                    )
                 else:
-                    # No purchase yet — enforce $0 budget via max_budget;
-                    # do NOT set blocked=True (keys stay unblocked).
                     await service.update_key_budget(
                         litellm_token=key.litellm_token,
                         budget_duration=MONTHLY_BUDGET_DURATION,
-                        max_budget=0.0,
+                        max_budget=configured_cap,
                         clear_max_budget=False,
+                        blocked=False,
                     )
             return None
         except Exception as exc:
