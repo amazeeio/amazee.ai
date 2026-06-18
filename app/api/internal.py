@@ -10,7 +10,7 @@ POST /internal/provision-key
 
 import logging
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_limit_service
@@ -49,25 +49,13 @@ async def internal_provision_key(
     """
     # Import here to avoid a circular import — internal.py and private_ai_keys.py
     # are sibling modules; deferring the import keeps the module graph clean.
-    from app.api.private_ai_keys import create_private_ai_key
+    from app.api.private_ai_keys import _create_private_ai_key
 
-    # Internal provisioning always bypasses moad delegation — construct a
-    # synthetic request that carries the bypass header.
-    bypass_request = Request(
-        scope={
-            "type": "http",
-            "method": "POST",
-            "path": "/internal/provision-key",
-            "headers": [(b"x-amazee-source", b"internal")],
-            "query_string": b"",
-        }
-    )
-
-    return await create_private_ai_key(
-        request=bypass_request,
+    return await _create_private_ai_key(
         private_ai_key=private_ai_key,
         current_user=current_user,
         user_role=UserRole.SYSTEM_ADMIN,
         db=db,
         limit_service=limit_service,
+        bypass_delegation=True,
     )

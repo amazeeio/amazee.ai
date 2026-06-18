@@ -246,20 +246,47 @@ async def create_private_ai_key(
     - For team workflows with shared pool budget, prefer team-owned keys
       (`team_id`).
 
-    DEFAULT (non-admin) users who completed the Drupal onboarding flow
-    (validate-email → sign-in) are delegated to the moad dashboard backend
-    which handles workspace and Keycloak provisioning before calling back
-    via ``POST /internal/provision-key``.
+    Requests without the `X-Amazee-Source` header from non-admin users are
+    delegated to the moad dashboard backend (Drupal onboarding flow).
+    """
+    bypass_delegation = bool(request.headers.get("X-Amazee-Source"))
+    return await _create_private_ai_key(
+        private_ai_key=private_ai_key,
+        current_user=current_user,
+        user_role=user_role,
+        db=db,
+        limit_service=limit_service,
+        bypass_delegation=bypass_delegation,
+    )
+
+
+async def _create_private_ai_key(
+    private_ai_key: PrivateAIKeyCreate,
+    current_user: DBUser,
+    user_role: UserRole,
+    db: Session,
+    limit_service: LimitService,
+    bypass_delegation: bool = False,
+) -> PrivateAIKey:
+    """
+    Internal implementation for private AI key creation.
+
+    ``bypass_delegation=True`` skips moad routing — used by internal callers
+    (``/internal/provision-key``, ``generate-trial-access``) that already
+    operate in a trusted server-side context.
     """
     # --- moad delegation ---
-    # Delegate to moad by default. Only bypass when the caller explicitly
-    # identifies itself as a trusted internal client (frontend or admin tooling)
-    # via the X-Amazee-Source header. The Drupal module never sends this header
-    # so Drupal-originated requests are always routed to moad.
-    if not request.headers.get("X-Amazee-Source"):
+    # Delegate to moad when:
+    #   - the caller has not opted out via bypass_delegation (set from the
+    #     X-Amazee-Source header by the route handler, or True for internal
+    #     callers), AND
+    #   - the user is not a system admin (admins always create keys directly).
+    # The Drupal module never sends X-Amazee-Source so its requests always
+    # reach moad.
+    if not bypass_delegation and not current_user.is_admin:
         logger.info(
             f"[drupal-attribution] delegating key creation to moad for "
-            f"{current_user.email} (reason: no X-Amazee-Source header)"
+            f"{current_user.email} (reason: no bypass header and non-admin user)"
         )
         return await _delegate_to_moad(private_ai_key, current_user, db)
 
