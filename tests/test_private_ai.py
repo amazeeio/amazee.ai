@@ -1486,8 +1486,26 @@ def test_create_llm_token_for_pool_team_skips_per_key_limits(
     test_team,
     mock_httpx_post_client,
 ):
-    """POOL teams should only get key expiry, without per-key budget/rate limits."""
+    """Gated POOL teams skip per-key budget/rate limits (apply_limits=False).
+    With a prior purchase the key must not be blocked."""
     test_team.budget_type = "pool"
+    test_team.require_purchase_for_requests = True
+    db.commit()
+    # Seed a purchase so the key is not blocked.
+    from app.db.models import DBPeriodicBudgetLedgerEntry
+    from datetime import UTC, datetime
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            amount_cents=1000,
+            consumed_cents=0,
+            is_active=True,
+            purchased_at=datetime.now(UTC),
+            expires_at=None,
+        )
+    )
     db.commit()
 
     mock_client_class.return_value = mock_httpx_post_client
@@ -1519,15 +1537,7 @@ def test_create_llm_token_for_pool_team_skips_per_key_limits(
     assert "budget_duration" not in call_args["json"]
     assert "max_budget" not in call_args["json"]
     assert "rpm_limit" not in call_args["json"]
-    assert call_args["json"]["blocked"] is True
-
-    key_update_calls = [
-        call
-        for call in mock_httpx_post_client.post.call_args_list
-        if str(call.args[0]).endswith("/key/update")
-    ]
-    assert len(key_update_calls) == 1
-    assert "blocked" not in key_update_calls[0].kwargs["json"]
+    assert "blocked" not in call_args["json"]
 
 
 @patch("httpx.AsyncClient")
