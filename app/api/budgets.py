@@ -220,11 +220,11 @@ async def _sync_pool_key_effective_budgets(
     """
     Keep key-level effective limits coherent for POOL teams.
 
-    The block/unblock decision uses pool_team_has_ever_purchased: a key is
-    blocked only when the team has never had any purchase at all.  Remaining
-    balance does NOT affect the blocked flag — budget enforcement is handled
-    by LiteLLM max_budget.  `purchased_total` is still used to set max_budget
-    on the key (0 → $0 cap, >0 → clear or apply configured cap).
+    Keys are never blocked here — blocking is driven solely by the purchase
+    gate at key-creation time (private_ai_keys.py) and unblocked as soon as
+    the team records any purchase (cycle or top-up).  `purchased_total` is
+    used to set max_budget on the key (0 → $0 cap, >0 → clear or apply
+    configured cap).
     """
     keys = get_team_region_litellm_keys(
         db,
@@ -256,17 +256,10 @@ async def _sync_pool_key_effective_budgets(
     async def _sync_key_budget(key: DBPrivateAIKey) -> str | None:
         try:
             async with semaphore:
-                if not has_purchased:
-                    # Team has never paid — hard-lock the key.
-                    await service.update_key_budget(
-                        litellm_token=key.litellm_token,
-                        budget_duration=MONTHLY_BUDGET_DURATION,
-                        max_budget=0.0,
-                        clear_max_budget=False,
-                        blocked=True,
-                    )
-                else:
-                    configured_cap = cap_map.get(key.id)
+                configured_cap = cap_map.get(key.id)
+                if has_purchased:
+                    # Team has at least one purchase (cycle or top-up) —
+                    # unblock and apply budget caps.
                     if configured_cap is None:
                         # No user-defined key cap — clear both max_budget
                         # and budget_duration so no stale duration remains.
@@ -286,6 +279,15 @@ async def _sync_pool_key_effective_budgets(
                             clear_max_budget=False,
                             blocked=False,
                         )
+                else:
+                    # No purchase yet — enforce $0 budget via max_budget;
+                    # do NOT set blocked=True (keys stay unblocked).
+                    await service.update_key_budget(
+                        litellm_token=key.litellm_token,
+                        budget_duration=MONTHLY_BUDGET_DURATION,
+                        max_budget=0.0,
+                        clear_max_budget=False,
+                    )
             return None
         except Exception as exc:
             return f"Key {key.id}: {str(exc)}"

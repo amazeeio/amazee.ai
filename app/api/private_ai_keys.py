@@ -520,7 +520,7 @@ async def create_llm_token(
             max_budget=max_max_spend,
             rpm_limit=max_rpm_limit,
             apply_limits=not is_pool_team,
-            blocked=(True if is_pool_team and not has_pool_purchase else None),
+            blocked=None,
         )
         if is_pool_team and not has_pool_purchase:
             await litellm_service.update_key_budget(

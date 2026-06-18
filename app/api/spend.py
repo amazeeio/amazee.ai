@@ -532,67 +532,6 @@ def _pool_team_budget_duration_for_enforcement(
     return shared_pool_team_budget_duration_for_enforcement(db, team_id, region_id)
 
 
-async def _enforce_pool_no_purchase_key_lock(
-    db: Session,
-    team: DBTeam | None,
-    region: DBRegion,
-    service: LiteLLMService,
-    key_id: int | None = None,
-    user_id: int | None = None,
-    purchased_budget: float | None = None,
-) -> bool:
-    """
-    For prepaid-pool teams with no purchased budget in a region, hard-lock
-    keys in LiteLLM to avoid the team budget zero-edge.
-    """
-    if team is None or not team.requires_pool_purchase_gate:
-        return False
-    if purchased_budget is None:
-        purchased_budget = _pool_available_budget_for_team_region(
-            db, team.id, region.id
-        )
-    if purchased_budget > 0:
-        return False
-    region_keys = get_team_region_litellm_keys(
-        db,
-        team_id=team.id,
-        region_id=region.id,
-        key_id=key_id,
-        user_id=user_id,
-    )
-    if not region_keys:
-        return False
-
-    semaphore = asyncio.Semaphore(10)
-
-    async def _lock_key(key: DBPrivateAIKey) -> str | None:
-        try:
-            async with semaphore:
-                await service.update_key_budget(
-                    litellm_token=key.litellm_token,
-                    budget_duration=MONTHLY_BUDGET_DURATION,
-                    max_budget=0.0,
-                    clear_max_budget=False,
-                    blocked=True,
-                )
-            return None
-        except Exception as exc:
-            return f"Key {key.id}: {str(exc)}"
-
-    errors = [
-        error
-        for error in await asyncio.gather(*[_lock_key(key) for key in region_keys])
-        if error is not None
-    ]
-    if errors:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=(
-                "Failed to enforce no-purchase key lock in LiteLLM: "
-                + "; ".join(errors)
-            ),
-        )
-    return True
 
 
 def _upsert_spend_cap(
@@ -1491,19 +1430,6 @@ async def update_team_budget(
         max_budget=effective_max_budget,
         budget_duration=effective_duration,
     )
-    if (
-        body.max_budget is not None
-        and team.requires_pool_purchase_gate
-        and available_total is not None
-        and available_total <= 0
-    ):
-        await _enforce_pool_no_purchase_key_lock(
-            db,
-            team,
-            region,
-            service,
-            purchased_budget=available_total,
-        )
     _upsert_spend_cap(
         db,
         scope="team",
@@ -1603,7 +1529,6 @@ async def update_team_member_budget(
         max_budget_in_team=body.max_budget,
         budget_duration=effective_duration,
     )
-    await _enforce_pool_no_purchase_key_lock(db, team, region, service, user_id=user_id)
     _upsert_spend_cap(
         db,
         scope="team_member",
@@ -1891,34 +1816,11 @@ async def update_key_budget(
             # Preserve existing key duration anchor when only cap value changes.
             effective_duration = None
 
-    # For purchase-gated POOL teams with no purchases, skip the initial key
-    # budget update (which would be immediately overridden) to avoid a brief
-    # unlocked window. The lock call below will hard-set max_budget=0 directly.
-    purchased_budget: float | None = None
-    skip_initial_update = False
-    if (
-        team_for_budget_check is not None
-        and team_for_budget_check.requires_pool_purchase_gate
-        and body.max_budget is not None
-    ):
-        purchased_budget = _pool_available_budget_for_team_region(
-            db, team_for_budget_check.id, region_id
-        )
-        skip_initial_update = purchased_budget <= 0
-    if not skip_initial_update:
-        await service.update_key_budget(
-            litellm_token=key.litellm_token,
-            budget_duration=effective_duration,
-            max_budget=body.max_budget,
-            clear_max_budget=body.max_budget is None,
-        )
-    lock_applied = await _enforce_pool_no_purchase_key_lock(
-        db,
-        team_for_budget_check,
-        region,
-        service,
-        key_id=key.id,
-        purchased_budget=purchased_budget,
+    await service.update_key_budget(
+        litellm_token=key.litellm_token,
+        budget_duration=effective_duration,
+        max_budget=body.max_budget,
+        clear_max_budget=body.max_budget is None,
     )
     existing_key_cap_row = (
         db.query(DBSpendCap)
@@ -1973,12 +1875,7 @@ async def update_key_budget(
             else info.get("max_budget")
         ),
         budget_duration=info.get("budget_duration"),
-        note=(
-            "If key has team_id, team/team-member budgets may take precedence during enforcement. "
-            "No-purchase prepaid-pool teams keep keys hard-locked at max_budget=0 while preserving configured caps for post-purchase restore."
-            if lock_applied
-            else "If key has team_id, team/team-member budgets may take precedence during enforcement."
-        ),
+        note="If key has team_id, team/team-member budgets may take precedence during enforcement.",
     )
 
 
