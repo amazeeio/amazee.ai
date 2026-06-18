@@ -220,10 +220,10 @@ async def _sync_pool_key_effective_budgets(
     Keep key-level effective limits coherent for POOL teams.
 
     All callers are reached only after at least one purchase exists, so keys
-    are always unblocked here. Budget enforcement uses max_budget on the key:
-    - purchased_total > 0 → clear cap (or apply configured key cap)
-    - purchased_total == 0 (expired) → max_budget stays at team level; key
-      cap is cleared so LiteLLM falls back to the team budget of $0.
+    are always unblocked here. This sync only reconciles key-level overrides:
+    - No configured key cap → clear key max_budget and budget_duration
+      so the key inherits the team budget.
+    - Configured key cap → set key max_budget to the configured value (unblocked).
     """
     keys = get_team_region_litellm_keys(
         db,
