@@ -1488,8 +1488,8 @@ def test_create_llm_token_for_pool_team_skips_per_key_limits(
 ):
     """POOL teams without the purchase gate should never have keys blocked."""
     test_team.budget_type = "pool"
-    # require_purchase_for_requests is False by default, so requires_pool_purchase_gate
-    # is False — keys must never be blocked regardless of purchase history.
+    test_team.require_purchase_for_requests = False
+    # Explicitly disable the purchase gate — keys must never be blocked regardless of purchase history.
     db.commit()
 
     mock_client_class.return_value = mock_httpx_post_client
