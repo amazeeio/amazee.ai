@@ -24,7 +24,7 @@ from app.core.limit_service import (
 def test_create_private_ai_key(
     mock_client_class,
     mock_settings,
-    client,
+    drupal_client,
     test_token,
     test_region,
     test_user,
@@ -75,7 +75,7 @@ def test_create_private_ai_key(
     mock_client.__aexit__.return_value = None
     mock_client_class.return_value = mock_client
 
-    response = client.post(
+    response = drupal_client.post(
         "/private-ai-keys/",
         headers={"Authorization": f"Bearer {test_token}"},
         json={"region_id": test_region.id, "name": "Test AI Key"},
@@ -97,7 +97,7 @@ def test_create_private_ai_key(
 @patch("app.api.private_ai_keys.settings")
 @patch("httpx.AsyncClient")
 def test_create_private_ai_key_invalid_region(
-    mock_client_class, mock_settings, client, test_token
+    mock_client_class, mock_settings, client, test_token, test_user, db
 ):
     """Test that a DEFAULT user gets 404 when moad reports region not found."""
     mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"

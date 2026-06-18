@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from fastapi import status
@@ -206,6 +206,7 @@ async def create_vector_db(
 @router.post("", response_model=PrivateAIKey)
 @router.post("/", response_model=PrivateAIKey)
 async def create_private_ai_key(
+    request: Request,
     private_ai_key: PrivateAIKeyCreate,
     current_user=Depends(get_current_user_from_auth),
     user_role: UserRole = Depends(get_private_ai_access),
@@ -250,13 +251,15 @@ async def create_private_ai_key(
     which handles workspace and Keycloak provisioning before calling back
     via ``POST /internal/provision-key``.
     """
-    # --- moad delegation for Drupal-originated users ---
-    # The flag is a one-shot: delegate once to moad, then clear it so all
-    # subsequent calls use the regular direct-creation path.
-    if current_user.created_via_drupal:
+    # --- moad delegation ---
+    # Delegate to moad by default. Only bypass when the caller explicitly
+    # identifies itself as a trusted internal client (frontend or admin tooling)
+    # via the X-Amazee-Source header. The Drupal module never sends this header
+    # so Drupal-originated requests are always routed to moad.
+    if not request.headers.get("X-Amazee-Source"):
         logger.info(
             f"[drupal-attribution] delegating key creation to moad for "
-            f"{current_user.email} (reason: drupal-origin flag)"
+            f"{current_user.email} (reason: no X-Amazee-Source header)"
         )
         return await _delegate_to_moad(private_ai_key, current_user, db)
 
@@ -1210,17 +1213,6 @@ async def _delegate_to_moad(
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Key provisioning failed: key not found after creation.",
-        )
-
-    # Clear the one-shot flag so subsequent key creation calls use the
-    # regular direct-creation path instead of re-delegating to moad.
-    if current_user.created_via_drupal:
-        current_user.created_via_drupal = False
-        db.add(current_user)
-        db.commit()
-        logger.info(
-            f"[drupal-attribution] cleared drupal-origin flag for {current_user.email} "
-            "after successful moad delegation"
         )
 
     return PrivateAIKey.model_validate(db_key.to_dict())
