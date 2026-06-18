@@ -33,12 +33,20 @@ Usage:
 import argparse
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 from urllib.parse import quote, unquote, urlparse, urlunparse
+
+
+def validate_db_name(name):
+    """Validate that a database name contains only safe identifier characters (alphanumeric, underscores, and hyphens)."""
+    if not name:
+        return False
+    return bool(re.match(r"^[a-zA-Z0-9_-]+$", name))
 
 
 REQUIRED_TOOLS = ("pg_dump", "pg_restore", "psql")
@@ -302,60 +310,128 @@ def extract_backup(backup_path, extract_dir):
     sys.exit(1)
 
 
-def apply_restore(config, dump_dir):
+def detect_database_name(dump_dir, config):
+    """Run pg_restore -l to find the database name in the TOC header."""
+    cmd = ["pg_restore", "-l", dump_dir]
+    try:
+        result = run_pg_tool(cmd, config, capture=True)
+        for line in result.stdout.splitlines():
+            stripped = line.strip()
+            if re.match(r"^;\s+dbname:", stripped):
+                return stripped.split(":", 1)[1].strip()
+    except Exception as e:
+        print(sanitize(f"  Warning: Could not detect source database name from backup: {e}", config))
+    return None
+
+
+def recreate_target_db(config):
+    """Drop and recreate the target database to ensure a clean restore without constraint errors."""
+    db_name = config["database"]
+    if not validate_db_name(db_name):
+        raise SystemExit("Error: Database name is invalid. Only alphanumeric characters and underscores are allowed.")
+
+    print("  Recreating target database...")
+
+    # 1. Terminate other connections to target database (best effort)
+    terminate_cmd = [
+        "psql",
+        "--dbname",
+        config["maintenance_url"],
+        "-v",
+        f"target_db={db_name}",
+        "-tAc",
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :'target_db' AND pid <> pg_backend_pid()",
+    ]
+    try:
+        run_pg_tool(terminate_cmd, config, check=False)
+    except subprocess.CalledProcessError:
+        warning_msg = (
+            "  Warning: Could not terminate all active connections for database (continuing)."
+        )
+        print(warning_msg)
+
+    # 2. Drop database if exists
+    drop_cmd = [
+        "psql",
+        "--dbname",
+        config["maintenance_url"],
+        "-c",
+        f'DROP DATABASE IF EXISTS "{db_name}"',
+    ]
+    try:
+        run_pg_tool(drop_cmd, config)
+    except subprocess.CalledProcessError as e:
+        raise SystemExit(sanitize(f"  Failed to drop target database: {e.stderr or e}", config))
+
+    # 3. Create database
+    create_cmd = [
+        "psql",
+        "--dbname",
+        config["maintenance_url"],
+        "-c",
+        f'CREATE DATABASE "{db_name}"',
+    ]
+    try:
+        run_pg_tool(create_cmd, config)
+    except subprocess.CalledProcessError as e:
+        raise SystemExit(sanitize(f"  Failed to create target database '{db_name}': {e.stderr or e}", config))
+
+
+def apply_restore(config, dump_dir, restore_mode="target"):
     """Apply the database restore from a pg_dump directory-format archive.
 
-    Connects to the `postgres` maintenance DB and lets pg_restore itself
-    drop and recreate the target with the source's recorded metadata
-    (encoding, collation, locale provider) replayed from `toc.dat`.
+    If restore_mode is 'as-is':
+      Connects to the `postgres` maintenance DB and lets pg_restore itself
+      drop and recreate the target with the source's recorded metadata
+      (encoding, collation, locale provider) replayed from `toc.dat`.
 
-    Flag rationale:
-      --create / --clean / --if-exists
-          Replay the source's `CREATE DATABASE` (preserving encoding and
-          collation, fixing the cluster-defaults correctness gap that a
-          plain `createdb` would introduce). `--clean --if-exists` makes
-          the preceding `DROP DATABASE` idempotent so re-running the
-          script is safe even when the target does not exist.
-      --no-owner / --no-privileges
-          Skip OWNER and GRANT clauses (both for the database itself and
-          for objects inside it), so the restore does not require the
-          source's roles to exist on the target cluster. The restoring
-          role takes ownership.
-      --no-tablespaces
-          Strip TABLESPACE clauses, so the restore does not require the
-          source's tablespaces to exist on the target cluster (the DB
-          and its objects land in the default tablespace).
-      --exit-on-error
-          Fail fast on the first error rather than logging warnings and
-          continuing with a half-restored database.
+    If restore_mode is 'target':
+      Recreates the configured local target database (to ensure it is clean
+      and avoids foreign key constraint errors) and runs pg_restore directly
+      into the target database without --create.
     """
     db_name = config["database"]
 
-    # Refuse to wipe the maintenance DB. (`pg_restore --clean --create`
-    # would happily DROP DATABASE postgres if asked.)
+    # Refuse to wipe the maintenance DB.
     if db_name == "postgres":
         raise SystemExit(
             "Error: Cannot restore over the 'postgres' maintenance database. "
             "Set DATABASE_URL to point to a different target database."
         )
 
-    cmd = [
-        "pg_restore",
-        "--format=directory",
-        "--create",
-        "--clean",
-        "--if-exists",
-        "--no-owner",
-        "--no-privileges",
-        "--no-tablespaces",
-        "--exit-on-error",
-        # Connect to the maintenance DB so pg_restore can drop/create the
-        # target. `maintenance_url` carries every libpq param from the
-        # configured DATABASE_URL (sslmode, connect_timeout, etc.).
-        "--dbname",
-        config["maintenance_url"],
-        dump_dir,
-    ]
+    if restore_mode == "as-is":
+        cmd = [
+            "pg_restore",
+            "--format=directory",
+            "--create",
+            "--clean",
+            "--if-exists",
+            "--no-owner",
+            "--no-privileges",
+            "--no-tablespaces",
+            "--exit-on-error",
+            "--dbname",
+            config["maintenance_url"],
+            dump_dir,
+        ]
+    else:
+        # Recreate the target database to ensure constraint-free restore
+        recreate_target_db(config)
+
+        cmd = [
+            "pg_restore",
+            "--format=directory",
+            "--clean",
+            "--if-exists",
+            "--no-owner",
+            "--no-privileges",
+            "--no-tablespaces",
+            "--exit-on-error",
+            "--dbname",
+            config["url"],
+            dump_dir,
+        ]
+
     try:
         run_pg_tool(cmd, config, capture=False)
     except subprocess.CalledProcessError as e:
@@ -413,6 +489,12 @@ def main():
         help="Directory to extract the backup into (default: system temp directory)",
     )
     parser.add_argument(
+        "--restore-mode",
+        choices=["target", "as-is"],
+        default="target",
+        help="Whether to restore directly into the configured local target database ('target') or recreate the original database name from the dump ('as-is')",
+    )
+    parser.add_argument(
         "--yes",
         "-y",
         action="store_true",
@@ -458,42 +540,108 @@ def main():
                 sys.exit(0)
 
     config = get_db_config()
+    target_db = config["database"]
+    if not validate_db_name(target_db):
+        print("Error: Target database name is invalid. Only alphanumeric characters and underscores are allowed.")
+        sys.exit(1)
+
+    display_host = _presence(config.get("host"))
+    display_target_db = _presence(target_db)
+    display_user = _presence(config.get("user"))
 
     print("\nDatabase restore configuration:")
     print(f"  Backup file : {args.backup_file}")
-    print(f"  Target host : {_presence(config.get('host'))}")
-    print(f"  Target DB   : {_presence(config.get('database'))}")
-    print(f"  User        : {_presence(config.get('user'))}")
+    print(f"  Target host : {display_host}")
+    print(f"  Target DB   : {display_target_db}")
+    print(f"  User        : {display_user}")
     print()
-
-    if not args.yes:
-        print("WARNING: This will DROP the existing database and restore from backup.")
-        if not args.no_backup:
-            print("A safety backup of the current database will be created first.")
-        else:
-            print("No safety backup will be created (--no-backup specified).")
-        response = (
-            input("\nAre you sure you want to proceed? [yes/no]: ").strip().lower()
-        )
-        if response not in ("yes", "y"):
-            print("Aborted.")
-            sys.exit(0)
 
     tmpdir = tempfile.mkdtemp(prefix="db_restore_", dir=args.extract_dir)
     os.chmod(tmpdir, 0o700)
 
     try:
-        # Step 1: Backup current database (unless skipped)
+        # Step 1: Extract the backup archive
+        print("\n[1/3] Extracting backup archive...")
+        extract_dir = os.path.join(tmpdir, "extracted")
+        os.makedirs(extract_dir, exist_ok=True)
+        dump_dir = extract_backup(args.backup_file, extract_dir)
+        dump_contents = os.listdir(dump_dir)
+        dat_count = sum(
+            1 for f in dump_contents if f.endswith(".dat") and f != "toc.dat"
+        )
+        print(f"  Dump directory: {dump_dir}")
+        print(f"  Found: toc.dat + {dat_count} data files")
+
+        # Detect source database name
+        source_db = detect_database_name(dump_dir, config)
+        if source_db:
+            print("  Detected source database name in backup.")
+        else:
+            print("  Could not detect source database name in backup.")
+
+        # Determine restore mode (target vs as-is)
+        restore_mode = args.restore_mode
+        if not args.yes:
+            if source_db and source_db != target_db:
+                print("\nWARNING: The backup source database name differs from your locally-configured target database.")
+                print("How would you like to restore this database?")
+                print("  1) Restore directly into the configured target database (Recommended for local dev - no .env changes needed)")
+                print("  2) Recreate and restore using the backup's original database name (Requires updating DATABASE_URL in .env)")
+                while True:
+                    choice = input("\nSelect option [1 or 2]: ").strip()
+                    if choice == "1":
+                        restore_mode = "target"
+                        break
+                    elif choice == "2":
+                        restore_mode = "as-is"
+                        break
+                    else:
+                        print("Invalid choice. Please enter 1 or 2.")
+            else:
+                print("\nWARNING: This will DROP the existing database and restore from backup.")
+                if not args.no_backup:
+                    print("A safety backup of the current database will be created first.")
+                else:
+                    print("No safety backup will be created (--no-backup specified).")
+                response = (
+                    input("\nAre you sure you want to proceed? [yes/no]: ").strip().lower()
+                )
+                if response not in ("yes", "y"):
+                    print("Aborted.")
+                    sys.exit(0)
+        else:
+            # Non-interactive mode
+            if restore_mode == "as-is":
+                print("  Non-interactive: Restoring as-is into configured target database")
+            else:
+                print("  Non-interactive: Restoring into target database")
+
+        # Validate source_db ONLY if we are actually using it in as-is mode
+        if restore_mode == "as-is" and source_db:
+            if not validate_db_name(source_db):
+                print("Error: Detected source database name is invalid for 'as-is' restore.")
+                print("Only alphanumeric characters and underscores are allowed for database names.")
+                sys.exit(1)
+
+        # Step 2: Backup current database (unless skipped)
         if not args.no_backup:
-            print("\n[1/3] Backing up current database...")
+            active_db = source_db if (restore_mode == "as-is" and source_db) else target_db
+            backup_msg = "\n[2/3] Backing up current database before restore..."
+            print(backup_msg)
             backup_dir = args.backup_dir or os.path.dirname(
                 os.path.abspath(args.backup_file)
             )
             os.makedirs(backup_dir, exist_ok=True)
+
+            # Create a temporary config for the active database to backup
+            backup_config = config.copy()
+            backup_config["database"] = active_db
+            parsed_url = urlparse(config["url"])
+            backup_config["url"] = urlunparse(parsed_url._replace(path=f"/{active_db}"))
+
             safety_backup_path = os.path.join(
-                backup_dir, f"{config['database']}_pre_restore.dump"
+                backup_dir, f"{active_db}_pre_restore.dump"
             )
-            # Avoid overwriting an existing backup
             if os.path.exists(safety_backup_path):
                 base, ext = os.path.splitext(safety_backup_path)
                 i = 1
@@ -502,8 +650,32 @@ def main():
                 safety_backup_path = f"{base}_{i}{ext}"
 
             try:
-                backup_current_database(config, safety_backup_path)
-                print("  Safety backup created successfully.")
+                # Check if the database exists before trying to backup
+                check_cmd = [
+                    "psql",
+                    "--dbname",
+                    config["maintenance_url"],
+                    "-v",
+                    f"active_db={active_db}",
+                    "-tAc",
+                    "SELECT 1 FROM pg_database WHERE datname=:'active_db'",
+                ]
+                db_exists = False
+                try:
+                    res = run_pg_tool(check_cmd, config)
+                    db_exists = (res.stdout.strip() == "1")
+                except Exception:
+                    print(
+                        "  Warning: Could not verify whether the target database exists. Assuming it does not exist and skipping safety backup.",
+                        file=sys.stderr,
+                    )
+                    db_exists = False
+
+                if db_exists:
+                    backup_current_database(backup_config, safety_backup_path)
+                    print("  Safety backup created successfully.")
+                else:
+                    print("  Skipping backup: Target database does not exist yet.")
             except SystemExit as exc:
                 print(f"  {exc}", file=sys.stderr)
                 if args.yes:
@@ -519,30 +691,17 @@ def main():
                     print("Aborted.")
                     sys.exit(0)
         else:
-            print("\n[1/3] Skipping backup (--no-backup)")
+            print("\n[2/3] Skipping backup (--no-backup)")
 
-        # Step 2: Extract the backup archive
-        print("\n[2/3] Extracting backup archive...")
-        extract_dir = os.path.join(tmpdir, "extracted")
-        os.makedirs(extract_dir, exist_ok=True)
-        dump_dir = extract_backup(args.backup_file, extract_dir)
-        dump_contents = os.listdir(dump_dir)
-        dat_count = sum(
-            1 for f in dump_contents if f.endswith(".dat") and f != "toc.dat"
-        )
-        print(f"  Dump directory: {dump_dir}")
-        print(f"  Found: toc.dat + {dat_count} data files")
-
-        # Step 3: Apply the restore. pg_restore --create --clean handles
-        # the drop/recreate so the target DB is rebuilt with the source's
-        # encoding/collation rather than cluster defaults.
+        # Step 3: Apply the restore
         print("\n[3/3] Applying database restore...")
-        apply_restore(config, dump_dir)
-
+        apply_restore(config, dump_dir, restore_mode=restore_mode)
         print("\nRestore complete!")
 
+        if restore_mode == "as-is" and source_db and source_db != target_db:
+            print("\nIMPORTANT: To connect your application to this database, update DATABASE_URL in your .env file.")
+
     finally:
-        # Clean up temp extraction directory
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
