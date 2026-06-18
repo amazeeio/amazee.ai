@@ -311,42 +311,48 @@ class TestPrivateAiKeysDelegation:
             f"Unexpected moad call(s): {provision_key_calls}"
         )
 
-    def test_admin_user_bypasses_delegation_even_when_flagged(
-        self, client, db, test_region
-    ):
-        """System admins with created_via_drupal=True must NOT be delegated."""
-        user = _make_user(db, is_admin=True, created_via_drupal=True)
-        token = self._login(client, user)
-
+    def test_flag_is_cleared_after_successful_delegation(self, client, db, test_region):
+        """After a successful moad delegation the flag must be cleared so
+        subsequent key-creation calls use the regular direct path."""
         with (
-            patch(
-                "app.api.private_ai_keys.create_llm_token", new_callable=AsyncMock
-            ) as mock_llm,
-            patch(
-                "app.api.private_ai_keys.create_vector_db", new_callable=AsyncMock
-            ) as mock_vdb,
+            patch("app.api.private_ai_keys.settings") as mock_settings,
+            patch("httpx.AsyncClient") as mock_client_cls,
         ):
-            # Provide enough of a return value to satisfy the endpoint
-            mock_llm.return_value = MagicMock(
-                litellm_token="tok",
-                litellm_api_url="http://llm",
-                owner_id=user.id,
-                team_id=None,
-            )
-            mock_vdb.return_value = MagicMock(
-                database_name="db",
+            mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+            mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+
+            user = _make_user(db, created_via_drupal=True)
+            token = self._login(client, user)
+
+            litellm_token = "cleared-flag-key"
+            pre_created_key = DBPrivateAIKey(
                 name="test-key",
-                database_host="h",
+                litellm_token=litellm_token,
+                litellm_api_url="http://test-llm",
+                database_name="db",
+                database_host="host",
                 database_username="u",
                 database_password="p",
-                owner_id=user.id,
-                team_id=None,
+                region_id=test_region.id,
             )
+            db.add(pre_created_key)
+            db.commit()
 
-            self._post_key(client, token, test_region.id)
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"llm": {"token": litellm_token}}
 
-        # Should reach the direct creation path, not moad
-        mock_llm.assert_called_once()
+            mock_http = AsyncMock()
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=False)
+            mock_http.post = AsyncMock(return_value=mock_response)
+            mock_client_cls.return_value = mock_http
+
+            response = self._post_key(client, token, test_region.id)
+
+        assert response.status_code == 200
+        db.refresh(user)
+        assert user.created_via_drupal is False
 
 
 # ---------------------------------------------------------------------------
