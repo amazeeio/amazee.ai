@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import stripe
 
 from app.core.config import settings
 from app.core.worker import (
@@ -19,6 +20,16 @@ from app.db.models import (
     DBTeam,
 )
 from app.schemas.models import BudgetType
+
+
+def _stripe_meta(data: dict) -> stripe.StripeObject:
+    """Build a real StripeObject metadata instead of a bare dict.
+
+    stripe-python v15 StripeObject no longer subclasses dict, so production
+    code reads metadata via getattr(). Test fixtures must supply the same
+    shape or they silently diverge from prod.
+    """
+    return stripe.StripeObject.construct_from(data, key="sk_test")
 
 
 @pytest.mark.asyncio
@@ -538,7 +549,7 @@ async def test_webhook_cycle_first_cycle_is_region_scoped(
         parent=SimpleNamespace(
             subscription_details=SimpleNamespace(
                 subscription="sub_region_scope",
-                metadata={"regionId": str(test_region.id)},
+                metadata=_stripe_meta({"regionId": str(test_region.id)}),
             )
         ),
     )
@@ -1072,7 +1083,7 @@ async def test_pool_team_invoice_paid_not_skipped(
         parent=SimpleNamespace(
             subscription_details=SimpleNamespace(
                 subscription="sub_pool_1",
-                metadata={"regionId": str(test_region.id)},
+                metadata=_stripe_meta({"regionId": str(test_region.id)}),
             )
         ),
     )

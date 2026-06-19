@@ -437,7 +437,7 @@ async def _run_cycle_from_stripe_event(
     # then try Stripe API, then fall back to DBTeamRegion
     region_id: int | None = None
     subscription_id = getattr(event_object, "subscription", None)
-    sub_meta: dict = {}
+    sub_meta: object = {}
 
     # Check parent.subscription_details on the invoice object
     if hasattr(event_object, "parent"):
@@ -450,16 +450,18 @@ async def _run_cycle_from_stripe_event(
                 "Invoice parent.subscription_details not available; continuing with fallback region resolution"
             )
 
-    # NOTE: getattr() not .get() — stripe-python v15 StripeObject no
-    # longer subclasses dict, so sub_meta.get() raises AttributeError.
-    if getattr(sub_meta, "regionId", None):
+    # NOTE: getattr() not .get() — stripe-python v15 StripeObject no longer
+    # subclasses dict, so sub_meta.get() raises AttributeError. Test fixtures
+    # and prod both supply StripeObject metadata here.
+    _sub_region_id = getattr(sub_meta, "regionId", None)
+    if _sub_region_id:
         try:
-            region_id = int(sub_meta["regionId"])
+            region_id = int(_sub_region_id)
         except (TypeError, ValueError) as exc:
             logger.warning(
                 "Invalid regionId in subscription metadata for customer_id=%s: %r (%s)",
                 customer_id,
-                getattr(sub_meta, "regionId", None),
+                _sub_region_id,
                 exc,
             )
 
@@ -468,8 +470,9 @@ async def _run_cycle_from_stripe_event(
         try:
             sub = stripe_sdk.Subscription.retrieve(subscription_id)
             meta = getattr(sub, "metadata", {}) or {}
-            if getattr(meta, "regionId", None):
-                region_id = int(getattr(meta, "regionId", None))
+            _meta_region_id = getattr(meta, "regionId", None)
+            if _meta_region_id:
+                region_id = int(_meta_region_id)
         except Exception as exc:
             logger.warning(
                 "Failed to retrieve subscription %s: %s", subscription_id, exc
