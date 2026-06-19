@@ -437,7 +437,7 @@ async def _run_cycle_from_stripe_event(
     # then try Stripe API, then fall back to DBTeamRegion
     region_id: int | None = None
     subscription_id = getattr(event_object, "subscription", None)
-    sub_meta: object = {}
+    sub_meta: "dict | stripe.StripeObject" = {}
 
     # Check parent.subscription_details on the invoice object
     if hasattr(event_object, "parent"):
