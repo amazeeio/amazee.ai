@@ -319,9 +319,11 @@ async def _record_periodic_payment(db: Session, event_object: any) -> Optional[i
         currency = str(raw_currency).lower() if isinstance(raw_currency, str) else "usd"
 
         # Determine payment type from metadata
+        # NOTE: getattr() not .get() — stripe-python v15 StripeObject no
+        # longer subclasses dict, so metadata.get() raises AttributeError.
         metadata = getattr(event_object, "metadata", {})
         payment_type = "subscription"
-        if metadata and metadata.get("ai_budget_increase"):
+        if metadata and getattr(metadata, "ai_budget_increase", None):
             payment_type = "topup"
 
         # Check if record already exists to avoid duplicates
@@ -448,14 +450,16 @@ async def _run_cycle_from_stripe_event(
                 "Invoice parent.subscription_details not available; continuing with fallback region resolution"
             )
 
-    if sub_meta.get("regionId"):
+    # NOTE: getattr() not .get() — stripe-python v15 StripeObject no
+    # longer subclasses dict, so sub_meta.get() raises AttributeError.
+    if getattr(sub_meta, "regionId", None):
         try:
             region_id = int(sub_meta["regionId"])
         except (TypeError, ValueError) as exc:
             logger.warning(
                 "Invalid regionId in subscription metadata for customer_id=%s: %r (%s)",
                 customer_id,
-                sub_meta.get("regionId"),
+                getattr(sub_meta, "regionId", None),
                 exc,
             )
 
@@ -464,7 +468,7 @@ async def _run_cycle_from_stripe_event(
         try:
             sub = stripe_sdk.Subscription.retrieve(subscription_id)
             meta = getattr(sub, "metadata", {}) or {}
-            if meta.get("regionId"):
+            if getattr(meta, "regionId", None):
                 region_id = int(meta["regionId"])
         except Exception as exc:
             logger.warning(
@@ -697,8 +701,9 @@ async def handle_stripe_event_background(event):
                     db, customer_id, product_id, datetime.now(UTC)
                 )
             else:
+                # getattr() not .get() — see note re: stripe-python v15.
                 metadata = getattr(event_object, "metadata", {})
-                if metadata and metadata.get("ai_budget_increase"):
+                if metadata and getattr(metadata, "ai_budget_increase", None):
                     team = (
                         db.query(DBTeam)
                         .filter(DBTeam.stripe_customer_id == customer_id)
