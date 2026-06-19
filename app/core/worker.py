@@ -469,7 +469,7 @@ async def _run_cycle_from_stripe_event(
             sub = stripe_sdk.Subscription.retrieve(subscription_id)
             meta = getattr(sub, "metadata", {}) or {}
             if getattr(meta, "regionId", None):
-                region_id = int(meta["regionId"])
+                region_id = int(getattr(meta, "regionId", None))
         except Exception as exc:
             logger.warning(
                 "Failed to retrieve subscription %s: %s", subscription_id, exc
