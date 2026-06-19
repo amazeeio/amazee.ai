@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from fastapi import status
 import logging
+
+import httpx
 
 from app.db.database import get_db
 from app.core.dependencies import get_limit_service
@@ -204,6 +206,7 @@ async def create_vector_db(
 @router.post("", response_model=PrivateAIKey)
 @router.post("/", response_model=PrivateAIKey)
 async def create_private_ai_key(
+    request: Request,
     private_ai_key: PrivateAIKeyCreate,
     current_user=Depends(get_current_user_from_auth),
     user_role: UserRole = Depends(get_private_ai_access),
@@ -242,7 +245,51 @@ async def create_private_ai_key(
     - Key budgets apply per key.
     - For team workflows with shared pool budget, prefer team-owned keys
       (`team_id`).
+
+    Requests without the `X-Amazee-Source` header from non-admin users are
+    delegated to the moad dashboard backend (Drupal onboarding flow).
     """
+    bypass_delegation = bool(request.headers.get("X-Amazee-Source"))
+    return await _create_private_ai_key(
+        private_ai_key=private_ai_key,
+        current_user=current_user,
+        user_role=user_role,
+        db=db,
+        limit_service=limit_service,
+        bypass_delegation=bypass_delegation,
+    )
+
+
+async def _create_private_ai_key(
+    private_ai_key: PrivateAIKeyCreate,
+    current_user: DBUser,
+    user_role: UserRole,
+    db: Session,
+    limit_service: LimitService,
+    bypass_delegation: bool = False,
+) -> PrivateAIKey:
+    """
+    Internal implementation for private AI key creation.
+
+    ``bypass_delegation=True`` skips moad routing — used by internal callers
+    (``/internal/provision-key``, ``generate-trial-access``) that already
+    operate in a trusted server-side context.
+    """
+    # --- moad delegation ---
+    # Delegate to moad when:
+    #   - the caller has not opted out via bypass_delegation (set from the
+    #     X-Amazee-Source header by the route handler, or True for internal
+    #     callers), AND
+    #   - the user is not a system admin (admins always create keys directly).
+    # The Drupal module never sends X-Amazee-Source so its requests always
+    # reach moad.
+    if not bypass_delegation and not current_user.is_admin:
+        logger.info(
+            f"[drupal-attribution] delegating key creation to moad for "
+            f"{current_user.email} (reason: no bypass header and non-admin user)"
+        )
+        return await _delegate_to_moad(private_ai_key, current_user, db)
+
     llm_token = None
     db_info = None
     region = None
@@ -1091,3 +1138,108 @@ async def extend_token_life(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to extend token life: {str(e)}",
         )
+
+
+async def _delegate_to_moad(
+    private_ai_key: PrivateAIKeyCreate,
+    current_user: DBUser,
+    db: Session,
+) -> PrivateAIKey:
+    """
+    Delegate key creation to the moad dashboard backend.
+
+    Called when a regular (non-admin) user hits ``POST /private-ai-keys``
+    — the Drupal email/code sign-in workflow.  moad handles Keycloak user
+    creation, workspace provisioning, and calls back via
+    ``POST /internal/provision-key`` (with its admin API token) to create
+    the actual LiteLLM token + vector DB on this backend.
+
+    The moad response is used to extract the newly created LiteLLM token.
+    A fully populated key record (including ``id``, ``team_id``, region info,
+    etc.) is then loaded from the local DB using ``litellm_token`` so the
+    result matches the ``PrivateAIKey`` shape expected by the Drupal module
+    and remains visible via ``GET /private-ai-keys``.
+    """
+    if not settings.MOAD_DASHBOARD_API_URL or not settings.MOAD_DASHBOARD_API_TOKEN:
+        logger.error(
+            "MOAD_DASHBOARD_API_URL or MOAD_DASHBOARD_API_TOKEN is not configured"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Key provisioning service is not configured.",
+        )
+
+    payload = {
+        "email": current_user.email,
+        "appName": private_ai_key.name,
+        "regionId": private_ai_key.region_id,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{settings.MOAD_DASHBOARD_API_URL}/api/external/provision-key",
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {settings.MOAD_DASHBOARD_API_TOKEN}"
+                },
+            )
+    except httpx.RequestError as exc:
+        logger.error("Failed to reach moad for key provisioning: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Key provisioning service is unreachable.",
+        )
+
+    if response.status_code == 404:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Region not found.",
+        )
+    if response.status_code >= 400:
+        logger.error(
+            "moad returned %s for provision-key: %s",
+            response.status_code,
+            response.text,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Key provisioning failed.",
+        )
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        logger.error("moad provision-key returned invalid JSON: %s", response.text)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Key provisioning returned an invalid response.",
+        ) from exc
+
+    litellm_token = data.get("llm", {}).get("token")
+    if not litellm_token:
+        logger.error("moad provision-key response missing llm.token: %s", data)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Key provisioning returned an invalid response.",
+        )
+
+    # Look up the key that moad just created via /internal/provision-key so we
+    # return a fully populated PrivateAIKey (with id, team_id, region, etc.).
+    # This also ensures the key is visible via GET /private-ai-keys.
+    db_key = (
+        db.query(DBPrivateAIKey)
+        .filter(DBPrivateAIKey.litellm_token == litellm_token)
+        .first()
+    )
+
+    if not db_key:
+        logger.error(
+            "Could not find newly provisioned key by litellm_token after moad call"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Key provisioning failed: key not found after creation.",
+        )
+
+    return PrivateAIKey.model_validate(db_key.to_dict())

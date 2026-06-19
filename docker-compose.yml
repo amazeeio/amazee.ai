@@ -27,7 +27,8 @@ services:
       AMAZEEAI_JWT_SECRET: ${AMAZEEAI_JWT_SECRET}
       ENABLE_METRICS: "true"  # Enable Prometheus metrics
       AI_TRIAL_REGION: ${AI_TRIAL_REGION:-eu-west}
-      MOAD_API_KEY: changeme
+      MOAD_DASHBOARD_API_URL: ${MOAD_DASHBOARD_API_URL:-}
+      MOAD_DASHBOARD_API_TOKEN: ${MOAD_DASHBOARD_API_TOKEN:-}
     ports:
       - "8800:8800"
     volumes:

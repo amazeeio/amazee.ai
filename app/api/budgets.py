@@ -43,7 +43,6 @@ from app.core.periodic_budget_ledger_service import (
 from app.core.pool_budget_service import (
     pool_available_budget_for_team_region as shared_pool_available_budget_for_team_region,
     pool_team_budget_duration_for_enforcement as shared_pool_team_budget_duration_for_enforcement,
-    pool_team_has_ever_purchased,
 )
 
 logger = logging.getLogger(__name__)
@@ -220,11 +219,19 @@ async def _sync_pool_key_effective_budgets(
     """
     Keep key-level effective limits coherent for POOL teams.
 
-    The block/unblock decision uses pool_team_has_ever_purchased: a key is
-    blocked only when the team has never had any purchase at all.  Remaining
-    balance does NOT affect the blocked flag — budget enforcement is handled
-    by LiteLLM max_budget.  `purchased_total` is still used to set max_budget
-    on the key (0 → $0 cap, >0 → clear or apply configured cap).
+    Two caller contexts:
+    - Purchase creation (`purchase_periodic_topup`): passes purchased_total > 0;
+      keys are unblocked and caps are cleared or applied.
+    - Budget expiry (`sync_pool_team_budgets`): passes purchased_total=0.0 after
+      the team's balance has lapsed; the team-level max_budget is already set
+      to $0 by the caller so LiteLLM enforces the spend limit at team level.
+
+    In both cases the team has at least one historical purchase record, so keys
+    are always unblocked (blocked=False). Budget enforcement is handled by
+    max_budget, not the blocked flag.
+    - No configured key cap → clear key max_budget and budget_duration
+      so the key inherits the team budget.
+    - Configured key cap → set key max_budget to the configured value.
     """
     keys = get_team_region_litellm_keys(
         db,
@@ -233,8 +240,6 @@ async def _sync_pool_key_effective_budgets(
     )
     if not keys:
         return []
-
-    has_purchased = pool_team_has_ever_purchased(db, team_id, region.id)
 
     key_caps = (
         db.query(DBSpendCap.key_id, DBSpendCap.max_budget)
@@ -256,36 +261,26 @@ async def _sync_pool_key_effective_budgets(
     async def _sync_key_budget(key: DBPrivateAIKey) -> str | None:
         try:
             async with semaphore:
-                if not has_purchased:
-                    # Team has never paid — hard-lock the key.
+                configured_cap = cap_map.get(key.id)
+                if configured_cap is None:
+                    # No user-defined key cap — clear both max_budget
+                    # and budget_duration so no stale duration remains.
+                    await service.update_key_budget(
+                        litellm_token=key.litellm_token,
+                        budget_duration=None,
+                        max_budget=None,
+                        clear_max_budget=True,
+                        clear_budget_duration=True,
+                        blocked=False,
+                    )
+                else:
                     await service.update_key_budget(
                         litellm_token=key.litellm_token,
                         budget_duration=MONTHLY_BUDGET_DURATION,
-                        max_budget=0.0,
+                        max_budget=configured_cap,
                         clear_max_budget=False,
-                        blocked=True,
+                        blocked=False,
                     )
-                else:
-                    configured_cap = cap_map.get(key.id)
-                    if configured_cap is None:
-                        # No user-defined key cap — clear both max_budget
-                        # and budget_duration so no stale duration remains.
-                        await service.update_key_budget(
-                            litellm_token=key.litellm_token,
-                            budget_duration=None,
-                            max_budget=None,
-                            clear_max_budget=True,
-                            clear_budget_duration=True,
-                            blocked=False,
-                        )
-                    else:
-                        await service.update_key_budget(
-                            litellm_token=key.litellm_token,
-                            budget_duration=MONTHLY_BUDGET_DURATION,
-                            max_budget=configured_cap,
-                            clear_max_budget=False,
-                            blocked=False,
-                        )
             return None
         except Exception as exc:
             return f"Key {key.id}: {str(exc)}"
