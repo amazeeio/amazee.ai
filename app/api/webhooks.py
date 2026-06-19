@@ -62,8 +62,12 @@ async def handle_events(
         # the background task. If a duplicate webhook arrives concurrently,
         # the UniqueViolation on stripe_event_id means the event is already
         # being processed — return 200 immediately (Stripe doesn't retry on 200).
-        event_id = event.get("id")
-        event_type = event.get("type", "unknown")
+        #
+        # NOTE: use getattr(), not event.get(). Since stripe-python v15,
+        # StripeObject no longer subclasses dict, so event.get("id") raises
+        # AttributeError("get"). The worker already uses attribute access.
+        event_id = getattr(event, "id", None)
+        event_type = getattr(event, "type", "unknown")
         if event_id:
             try:
                 db.add(
