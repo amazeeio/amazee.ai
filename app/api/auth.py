@@ -61,7 +61,6 @@ from app.schemas.models import (
 
 from app.api.teams import register_team
 from app.api.users import _create_user_in_db, get_user_by_email
-from app.api.private_ai_keys import create_private_ai_key
 
 auth_logger = logging.getLogger(__name__)
 
@@ -872,13 +871,17 @@ async def generate_trial_access(
             user_role=UserRole.ADMIN,
         )
 
-        # Call create_private_ai_key as a regular function
-        private_ai_key = await create_private_ai_key(
+        # Call _create_private_ai_key directly, bypassing moad delegation
+        # (trial access always creates keys on this backend directly).
+        from app.api.private_ai_keys import _create_private_ai_key
+
+        private_ai_key = await _create_private_ai_key(
             private_ai_key=private_ai_key_create,
             current_user=admin_user,
             user_role=UserRole.ADMIN,
             db=db,
             limit_service=limit_service,
+            bypass_delegation=True,
         )
 
         # Get the Auth Bearer Token

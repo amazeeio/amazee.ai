@@ -24,8 +24,8 @@ from app.core.limit_service import (
 def test_create_private_ai_key(
     mock_client_class,
     mock_settings,
-    client,
-    test_token,
+    drupal_client,
+    drupal_test_token,
     test_region,
     test_user,
     db,
@@ -75,9 +75,9 @@ def test_create_private_ai_key(
     mock_client.__aexit__.return_value = None
     mock_client_class.return_value = mock_client
 
-    response = client.post(
+    response = drupal_client.post(
         "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {test_token}"},
+        headers={"Authorization": f"Bearer {drupal_test_token}"},
         json={"region_id": test_region.id, "name": "Test AI Key"},
     )
 
@@ -97,9 +97,9 @@ def test_create_private_ai_key(
 @patch("app.api.private_ai_keys.settings")
 @patch("httpx.AsyncClient")
 def test_create_private_ai_key_invalid_region(
-    mock_client_class, mock_settings, client, test_token
+    mock_client_class, mock_settings, drupal_client, drupal_test_token, test_user, db
 ):
-    """Test that a DEFAULT user gets 404 when moad reports region not found."""
+    """Test that a Drupal user gets 404 when moad reports region not found."""
     mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
     mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
 
@@ -112,13 +112,17 @@ def test_create_private_ai_key_invalid_region(
     mock_client.__aexit__.return_value = None
     mock_client_class.return_value = mock_client
 
-    response = client.post(
+    response = drupal_client.post(
         "/private-ai-keys/",
-        headers={"Authorization": f"Bearer {test_token}"},
+        headers={"Authorization": f"Bearer {drupal_test_token}"},
         json={"region_id": 99999, "name": "Test Invalid Region Key"},
     )
 
     assert response.status_code == 404
+    # Verify the 404 came from moad, not from a local DB lookup
+    mock_client.post.assert_called_once()
+    call_url = mock_client.post.call_args[0][0]
+    assert "provision-key" in call_url
 
 
 def test_list_private_ai_keys(client, test_token, test_region, db, test_user):
