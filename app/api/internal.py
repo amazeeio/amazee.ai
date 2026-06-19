@@ -49,12 +49,13 @@ async def internal_provision_key(
     """
     # Import here to avoid a circular import — internal.py and private_ai_keys.py
     # are sibling modules; deferring the import keeps the module graph clean.
-    from app.api.private_ai_keys import create_private_ai_key
+    from app.api.private_ai_keys import _create_private_ai_key
 
-    return await create_private_ai_key(
+    return await _create_private_ai_key(
         private_ai_key=private_ai_key,
         current_user=current_user,
         user_role=UserRole.SYSTEM_ADMIN,
         db=db,
         limit_service=limit_service,
+        bypass_delegation=True,
     )
