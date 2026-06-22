@@ -320,12 +320,7 @@ def detect_database_name(dump_dir, config):
             if re.match(r"^;\s+dbname:", stripped):
                 return stripped.split(":", 1)[1].strip()
     except Exception as e:
-        print(
-            sanitize(
-                f"  Warning: Could not detect source database name from backup: {e}",
-                config,
-            )
-        )
+        print(sanitize(f"  Warning: Could not detect source database name from backup: {e}", config))
     return None
 
 
@@ -333,9 +328,7 @@ def recreate_target_db(config):
     """Drop and recreate the target database to ensure a clean restore without constraint errors."""
     db_name = config["database"]
     if not validate_db_name(db_name):
-        raise SystemExit(
-            "Error: Database name is invalid. Only alphanumeric characters and underscores are allowed."
-        )
+        raise SystemExit("Error: Database name is invalid. Only alphanumeric characters and underscores are allowed.")
 
     print("  Recreating target database...")
 
@@ -352,7 +345,9 @@ def recreate_target_db(config):
     try:
         run_pg_tool(terminate_cmd, config, check=False)
     except subprocess.CalledProcessError:
-        warning_msg = "  Warning: Could not terminate all active connections for database (continuing)."
+        warning_msg = (
+            "  Warning: Could not terminate all active connections for database (continuing)."
+        )
         print(warning_msg)
 
     # 2. Drop database if exists
@@ -366,9 +361,7 @@ def recreate_target_db(config):
     try:
         run_pg_tool(drop_cmd, config)
     except subprocess.CalledProcessError as e:
-        raise SystemExit(
-            sanitize(f"  Failed to drop target database: {e.stderr or e}", config)
-        )
+        raise SystemExit(sanitize(f"  Failed to drop target database: {e.stderr or e}", config))
 
     # 3. Create database
     create_cmd = [
@@ -381,12 +374,7 @@ def recreate_target_db(config):
     try:
         run_pg_tool(create_cmd, config)
     except subprocess.CalledProcessError as e:
-        raise SystemExit(
-            sanitize(
-                f"  Failed to create target database '{db_name}': {e.stderr or e}",
-                config,
-            )
-        )
+        raise SystemExit(sanitize(f"  Failed to create target database '{db_name}': {e.stderr or e}", config))
 
 
 def apply_restore(config, dump_dir, restore_mode="target"):
@@ -554,9 +542,7 @@ def main():
     config = get_db_config()
     target_db = config["database"]
     if not validate_db_name(target_db):
-        print(
-            "Error: Target database name is invalid. Only alphanumeric characters and underscores are allowed."
-        )
+        print("Error: Target database name is invalid. Only alphanumeric characters and underscores are allowed.")
         sys.exit(1)
 
     display_host = _presence(config.get("host"))
@@ -597,16 +583,10 @@ def main():
         restore_mode = args.restore_mode
         if not args.yes:
             if source_db and source_db != target_db:
-                print(
-                    "\nWARNING: The backup source database name differs from your locally-configured target database."
-                )
+                print("\nWARNING: The backup source database name differs from your locally-configured target database.")
                 print("How would you like to restore this database?")
-                print(
-                    "  1) Restore directly into the configured target database (Recommended for local dev - no .env changes needed)"
-                )
-                print(
-                    "  2) Recreate and restore using the backup's original database name (Requires updating DATABASE_URL in .env)"
-                )
+                print("  1) Restore directly into the configured target database (Recommended for local dev - no .env changes needed)")
+                print("  2) Recreate and restore using the backup's original database name (Requires updating DATABASE_URL in .env)")
                 while True:
                     choice = input("\nSelect option [1 or 2]: ").strip()
                     if choice == "1":
@@ -618,19 +598,13 @@ def main():
                     else:
                         print("Invalid choice. Please enter 1 or 2.")
             else:
-                print(
-                    "\nWARNING: This will DROP the existing database and restore from backup."
-                )
+                print("\nWARNING: This will DROP the existing database and restore from backup.")
                 if not args.no_backup:
-                    print(
-                        "A safety backup of the current database will be created first."
-                    )
+                    print("A safety backup of the current database will be created first.")
                 else:
                     print("No safety backup will be created (--no-backup specified).")
                 response = (
-                    input("\nAre you sure you want to proceed? [yes/no]: ")
-                    .strip()
-                    .lower()
+                    input("\nAre you sure you want to proceed? [yes/no]: ").strip().lower()
                 )
                 if response not in ("yes", "y"):
                     print("Aborted.")
@@ -638,28 +612,20 @@ def main():
         else:
             # Non-interactive mode
             if restore_mode == "as-is":
-                print(
-                    "  Non-interactive: Restoring as-is into configured target database"
-                )
+                print("  Non-interactive: Restoring as-is into configured target database")
             else:
                 print("  Non-interactive: Restoring into target database")
 
         # Validate source_db ONLY if we are actually using it in as-is mode
         if restore_mode == "as-is" and source_db:
             if not validate_db_name(source_db):
-                print(
-                    "Error: Detected source database name is invalid for 'as-is' restore."
-                )
-                print(
-                    "Only alphanumeric characters and underscores are allowed for database names."
-                )
+                print("Error: Detected source database name is invalid for 'as-is' restore.")
+                print("Only alphanumeric characters and underscores are allowed for database names.")
                 sys.exit(1)
 
         # Step 2: Backup current database (unless skipped)
         if not args.no_backup:
-            active_db = (
-                source_db if (restore_mode == "as-is" and source_db) else target_db
-            )
+            active_db = source_db if (restore_mode == "as-is" and source_db) else target_db
             backup_msg = "\n[2/3] Backing up current database before restore..."
             print(backup_msg)
             backup_dir = args.backup_dir or os.path.dirname(
@@ -697,7 +663,7 @@ def main():
                 db_exists = False
                 try:
                     res = run_pg_tool(check_cmd, config)
-                    db_exists = res.stdout.strip() == "1"
+                    db_exists = (res.stdout.strip() == "1")
                 except Exception:
                     print(
                         "  Warning: Could not verify whether the target database exists. Assuming it does not exist and skipping safety backup.",
@@ -733,9 +699,7 @@ def main():
         print("\nRestore complete!")
 
         if restore_mode == "as-is" and source_db and source_db != target_db:
-            print(
-                "\nIMPORTANT: To connect your application to this database, update DATABASE_URL in your .env file."
-            )
+            print("\nIMPORTANT: To connect your application to this database, update DATABASE_URL in your .env file.")
 
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
