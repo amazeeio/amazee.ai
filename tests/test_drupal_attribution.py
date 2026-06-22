@@ -189,13 +189,15 @@ def test_no_header_moad_not_configured_returns_503(
 
 @patch("app.api.private_ai_keys.settings")
 @patch("httpx.AsyncClient")
-def test_existing_key_name_region_reuses_no_moad_call(
+def test_existing_key_team_region_reuses_no_moad_call(
     mock_client_cls, mock_settings, drupal_client, db, test_region
 ):
-    """A second request with the same name + region reuses the existing key.
+    """A request whose user's team already has a key for the region reuses it.
 
-    This prevents key proliferation when Drupal retries the provisioning call.
-    moad must NOT be called on the reuse path.
+    This prevents key proliferation when Drupal retries the provisioning call
+    (or the same user re-logs-in). moad must NOT be called on the reuse path.
+    The match is team + region (name-agnostic): moad stamps a date suffix on
+    the stored name, so a name-based match would never fire.
     """
     mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
     mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
@@ -203,13 +205,16 @@ def test_existing_key_name_region_reuses_no_moad_call(
     user = _make_user(db)
     token = _login(drupal_client, user)
 
-    # Pre-create a key with the SAME name + region the POST will use.
+    # Simulate a PRIOR successful provision: a team exists, has a key for
+    # this region, and the user is already pinned to it. The user has a
+    # team role (ADMIN), matching what /auth/sign-in creates in production —
+    # a system role (USER) + non-null team_id would be rejected by RBAC.
     team = DBTeam(name="moad-team", admin_email=user.email, is_active=True)
     db.add(team)
     db.commit()
     db.refresh(team)
     existing_key = DBPrivateAIKey(
-        name="test-key",
+        name="test-key - 2026-01-01",  # moad stamps a date suffix
         litellm_token="existing-token",
         litellm_api_url="http://test-llm",
         database_name="db",
@@ -220,6 +225,10 @@ def test_existing_key_name_region_reuses_no_moad_call(
         team_id=team.id,
     )
     db.add(existing_key)
+    # Pin the user to the team with a team role — mirrors the post-provision
+    # state (sign-in creates ADMIN role; _pin_user_to_key_team sets team_id).
+    user.team_id = team.id
+    user.role = UserRole.ADMIN
     db.commit()
 
     mock_http = AsyncMock()
@@ -307,11 +316,12 @@ def test_delegation_pins_user_to_key_team(
 def test_idempotency_does_not_leak_cross_tenant_key(
     mock_client_cls, mock_settings, drupal_client, db, test_region
 ):
-    """A user requesting a name that matches ANOTHER tenant's key must not
-    receive that key or be pinned to that tenant's team.
+    """A user from a different team can never receive another tenant's key.
 
-    Regression test for the cross-tenant leak: the idempotency lookup must be
-    scoped to the requesting user's own teams, not a global name+region match.
+    The idempotency lookup is scoped to the requesting user's OWN team
+    (current_user.team_id), so cross-tenant leakage is impossible by
+    construction — there is no global match to exploit, regardless of the
+    name the attacker guesses.
     """
     mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
     mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"

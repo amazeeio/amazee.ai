@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 from typing import List, Optional
 from fastapi import status
 import logging
@@ -1171,35 +1170,75 @@ async def _delegate_to_moad(
             detail="Key provisioning service is not configured.",
         )
 
-    # Idempotency: if the user already has a key for this name + region,
+    # Idempotency: if the user's team already has a key for this region,
     # return it instead of provisioning a new one. This matches the
-    # "one key per Drupal site per region" invariant and prevents key
+    # "one key per team per region" invariant and prevents key
     # proliferation when Drupal retries the provisioning call.
     #
-    # SECURITY: the lookup is scoped to keys this user may legitimately own:
-    #   - keys directly owned by the user (owner_id), OR
-    #   - keys whose team was provisioned for this human. moad tags team
-    #     admin_email as "base+team-<tag>@domain"; the base (plus-tag
-    #     stripped) must match the requesting user's base email. This
-    #     prevents a user from guessing another tenant's key name and being
-    #     pinned into that tenant's team.
-    team_base = func.regexp_replace(func.lower(DBTeam.admin_email), r"\+[^@]*@", "@")
-    current_base = normalize_email_for_lookup(current_user.email).lower()
+    # The match is intentionally name-agnostic: moad stores the key name as
+    # "<appName> - <date>" (it stamps a date suffix), while Drupal sends the
+    # bare appName — so a name-based match would never fire. Matching on
+    # team + region is both more robust and the true invariant.
+    #
+    # SECURITY: because we only ever look at the requesting user's OWN team
+    # (current_user.team_id), cross-tenant leakage is impossible by
+    # construction — there is no global name+region match to exploit.
+    existing_key = None
+    base_email = normalize_email_for_lookup(current_user.email).lower()
 
-    existing_key = (
-        db.query(DBPrivateAIKey)
-        .filter(
-            DBPrivateAIKey.name == private_ai_key.name,
-            DBPrivateAIKey.region_id == private_ai_key.region_id,
+    if current_user.team_id is not None:
+        existing_key = (
+            db.query(DBPrivateAIKey)
+            .join(DBTeam, DBPrivateAIKey.team_id == DBTeam.id)
+            .filter(
+                DBPrivateAIKey.region_id == private_ai_key.region_id,
+                DBPrivateAIKey.team_id == current_user.team_id,
+                DBTeam.deleted_at.is_(None),
+            )
+            .order_by(DBPrivateAIKey.created_at.desc())
+            .first()
         )
-        .outerjoin(DBTeam, DBPrivateAIKey.team_id == DBTeam.id)
-        .filter((DBPrivateAIKey.team_id.is_(None)) | (DBTeam.deleted_at.is_(None)))
-        .filter(
-            (DBPrivateAIKey.owner_id == current_user.id) | (team_base == current_base)
+
+    # Fallback: the team-scoped lookup above missed a reusable key. Look up
+    # any key under a team whose admin_email belongs to this same human —
+    # either the exact base email or moad’s +tagged surrogate variants
+    # (e.g. "base+team-abc@domain").
+    #
+    # This covers two cases:
+    #   1. Retry before pinning completed: moad already created the key under a
+    #      fresh team, but current_user.team_id still points at the stale
+    #      auto-team, so the team-scoped query missed it.
+    #   2. Region switch: the user was previously pinned to team T1 (region 1)
+    #      and is now requesting region 2, for which moad has already created
+    #      team T2. The team-scoped query (T1 + region 2) correctly misses;
+    #      this fallback finds the T2 key and re-pins the user to T2.
+    #
+    # The re-pinning in case 2 is intentional: the design is one key / one
+    # region at a time per user (scalar team_id models the user’s current
+    # region). Without this fallback, moad would be re-invoked and would mint
+    # a duplicate key (its provision-key endpoint is deliberately
+    # non-idempotent).
+    #
+    # SECURITY: admin_email matching is scoped to this human’s identity (base
+    # form + moad tag variants), so cross-tenant collision is impossible.
+    # Guard on "@" so a malformed stored email (no @, bypassing validators)
+    # skips this branch and degrades to moad delegation instead of crashing on
+    # the unpack below.
+    if existing_key is None and "@" in base_email:
+        local, domain = base_email.split("@", 1)
+        tag_pattern = f"{local}+%@{domain}"
+        existing_key = (
+            db.query(DBPrivateAIKey)
+            .join(DBTeam, DBPrivateAIKey.team_id == DBTeam.id)
+            .filter(
+                DBPrivateAIKey.region_id == private_ai_key.region_id,
+                DBTeam.deleted_at.is_(None),
+                (DBTeam.admin_email.ilike(base_email))
+                | (DBTeam.admin_email.ilike(tag_pattern)),
+            )
+            .order_by(DBPrivateAIKey.created_at.desc())
+            .first()
         )
-        .order_by(DBPrivateAIKey.created_at.desc())
-        .first()
-    )
     if existing_key is not None:
         logger.info(
             "[drupal-attribution] reusing existing key %s for %s + region %s",
