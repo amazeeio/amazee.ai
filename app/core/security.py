@@ -73,7 +73,12 @@ async def get_current_user(
     except JWTError:
         raise credentials_exception
 
-    email: str = payload.get("sub")
+    raw_email: str = payload.get("sub")
+    # Normalize plus-tags so a token minted for "user+p12@" still resolves
+    # to the single canonical "user@" identity (see app/core/email.py).
+    from app.core.email import normalize_email_for_lookup
+
+    email = normalize_email_for_lookup(raw_email) if raw_email else raw_email
     user = (
         db.query(DBUser)
         .filter(func.lower(DBUser.email) == email.lower())

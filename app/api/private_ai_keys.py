@@ -27,6 +27,7 @@ from app.db.models import (
     DBTeam,
     DBSpendCap,
 )
+from app.core.email import normalize_email_for_lookup
 from app.services.litellm import LiteLLMService
 from app.core.security import (
     get_current_user_from_auth,
@@ -1169,8 +1170,37 @@ async def _delegate_to_moad(
             detail="Key provisioning service is not configured.",
         )
 
+    # Idempotency: if the user already has a key for this name + region,
+    # return it instead of provisioning a new one. This matches the
+    # "one key per Drupal site per region" invariant and prevents key
+    # proliferation when Drupal retries the provisioning call.
+    existing_key = (
+        db.query(DBPrivateAIKey)
+        .filter(
+            DBPrivateAIKey.name == private_ai_key.name,
+            DBPrivateAIKey.region_id == private_ai_key.region_id,
+        )
+        .outerjoin(DBTeam, DBPrivateAIKey.team_id == DBTeam.id)
+        .filter((DBPrivateAIKey.team_id.is_(None)) | (DBTeam.deleted_at.is_(None)))
+        .order_by(DBPrivateAIKey.created_at.desc())
+        .first()
+    )
+    if existing_key is not None:
+        logger.info(
+            "[drupal-attribution] reusing existing key %s for %s + region %s",
+            existing_key.id,
+            current_user.email,
+            private_ai_key.region_id,
+        )
+        # Ensure the user is pinned to the key's team (see note below).
+        _pin_user_to_key_team(current_user, existing_key, db)
+        return PrivateAIKey.model_validate(existing_key.to_dict())
+
+    # Send the base email (plus-tags stripped) so moad resolves the real
+    # Keycloak/MOAD identity instead of creating a new tagged surrogate.
+    base_email = normalize_email_for_lookup(current_user.email)
     payload = {
-        "email": current_user.email,
+        "email": base_email,
         "appName": private_ai_key.name,
         "regionId": private_ai_key.region_id,
     }
@@ -1242,4 +1272,34 @@ async def _delegate_to_moad(
             detail="Key provisioning failed: key not found after creation.",
         )
 
+    # Pin the Drupal user to the key's team. moad creates the key under a
+    # team (8748 in the example) that is distinct from the user's auto-team
+    # (8746). Without this, list_private_ai_keys — which scopes by
+    # user.team_id — would never see the key (the original "key never
+    # returned" bug). Once pinned, GET /private-ai-keys and GET /auth/me
+    # both resolve to the team that actually owns the key.
+    _pin_user_to_key_team(current_user, db_key, db)
+
     return PrivateAIKey.model_validate(db_key.to_dict())
+
+
+def _pin_user_to_key_team(
+    current_user: DBUser, db_key: DBPrivateAIKey, db: Session
+) -> None:
+    """
+    Pin ``current_user`` to the team that owns ``db_key``.
+
+    Idempotent: no-op when the user is already on the key's team. Skipped
+    for keys without a team (team_id is None) since there is nothing to pin.
+    """
+    if db_key.team_id is None or current_user.team_id == db_key.team_id:
+        return
+    logger.info(
+        "[drupal-attribution] pinning user %s to team %s (was %s)",
+        current_user.id,
+        db_key.team_id,
+        current_user.team_id,
+    )
+    current_user.team_id = db_key.team_id
+    db.commit()
+    db.refresh(current_user)
