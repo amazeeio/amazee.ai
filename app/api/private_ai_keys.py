@@ -1199,9 +1199,32 @@ async def _delegate_to_moad(
             .first()
         )
 
-    # Fallback for retries before pinning: look up the key under any team whose
-    # admin_email matches this user (including moad’s +tagged surrogate teams).
-    if existing_key is None:
+    # Fallback: the team-scoped lookup above missed a reusable key. Look up
+    # any key under a team whose admin_email belongs to this same human —
+    # either the exact base email or moad’s +tagged surrogate variants
+    # (e.g. "base+team-abc@domain").
+    #
+    # This covers two cases:
+    #   1. Retry before pinning completed: moad already created the key under a
+    #      fresh team, but current_user.team_id still points at the stale
+    #      auto-team, so the team-scoped query missed it.
+    #   2. Region switch: the user was previously pinned to team T1 (region 1)
+    #      and is now requesting region 2, for which moad has already created
+    #      team T2. The team-scoped query (T1 + region 2) correctly misses;
+    #      this fallback finds the T2 key and re-pins the user to T2.
+    #
+    # The re-pinning in case 2 is intentional: the design is one key / one
+    # region at a time per user (scalar team_id models the user’s current
+    # region). Without this fallback, moad would be re-invoked and would mint
+    # a duplicate key (its provision-key endpoint is deliberately
+    # non-idempotent).
+    #
+    # SECURITY: admin_email matching is scoped to this human’s identity (base
+    # form + moad tag variants), so cross-tenant collision is impossible.
+    # Guard on "@" so a malformed stored email (no @, bypassing validators)
+    # skips this branch and degrades to moad delegation instead of crashing on
+    # the unpack below.
+    if existing_key is None and "@" in base_email:
         local, domain = base_email.split("@", 1)
         tag_pattern = f"{local}+%@{domain}"
         existing_key = (
