@@ -355,7 +355,7 @@ def test_idempotency_does_not_leak_cross_tenant_key(
     mock_client_cls.return_value = mock_http
 
     # Attacker POSTs the victim's key NAME + same region.
-    response = drupal_client.post(
+    drupal_client.post(
         "/private-ai-keys",
         json={"region_id": test_region.id, "name": "secret-key"},
         headers={"Authorization": f"Bearer {attacker_token}"},

@@ -83,24 +83,16 @@ def get_user_by_email(db: Session, email: str) -> Optional[DBUser]:
     # Fast path: the two queries collapse to one when the input is already
     # normalized (no plus-tag), which is the common case.
     if normalized == raw:
-        return (
-            db.query(DBUser)
-            .filter(func.lower(DBUser.email) == normalized)
-            .first()
-        )
+        return db.query(DBUser).filter(func.lower(DBUser.email) == normalized).first()
 
     # Plus-tag input: try the normalized identity first, then fall back to the
     # exact tagged form for legacy rows.
     normalized_user = (
-        db.query(DBUser)
-        .filter(func.lower(DBUser.email) == normalized)
-        .first()
+        db.query(DBUser).filter(func.lower(DBUser.email) == normalized).first()
     )
     if normalized_user is not None:
         return normalized_user
-    return (
-        db.query(DBUser).filter(func.lower(DBUser.email) == raw).first()
-    )
+    return db.query(DBUser).filter(func.lower(DBUser.email) == raw).first()
 
 
 router = APIRouter(tags=["users"])
