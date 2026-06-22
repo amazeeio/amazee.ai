@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 from typing import List, Optional
 from fastapi import status
 import logging
@@ -1171,35 +1170,32 @@ async def _delegate_to_moad(
             detail="Key provisioning service is not configured.",
         )
 
-    # Idempotency: if the user already has a key for this name + region,
+    # Idempotency: if the user's team already has a key for this region,
     # return it instead of provisioning a new one. This matches the
-    # "one key per Drupal site per region" invariant and prevents key
+    # "one key per team per region" invariant and prevents key
     # proliferation when Drupal retries the provisioning call.
     #
-    # SECURITY: the lookup is scoped to keys this user may legitimately own:
-    #   - keys directly owned by the user (owner_id), OR
-    #   - keys whose team was provisioned for this human. moad tags team
-    #     admin_email as "base+team-<tag>@domain"; the base (plus-tag
-    #     stripped) must match the requesting user's base email. This
-    #     prevents a user from guessing another tenant's key name and being
-    #     pinned into that tenant's team.
-    team_base = func.regexp_replace(func.lower(DBTeam.admin_email), r"\+[^@]*@", "@")
-    current_base = normalize_email_for_lookup(current_user.email).lower()
-
-    existing_key = (
-        db.query(DBPrivateAIKey)
-        .filter(
-            DBPrivateAIKey.name == private_ai_key.name,
-            DBPrivateAIKey.region_id == private_ai_key.region_id,
+    # The match is intentionally name-agnostic: moad stores the key name as
+    # "<appName> - <date>" (it stamps a date suffix), while Drupal sends the
+    # bare appName — so a name-based match would never fire. Matching on
+    # team + region is both more robust and the true invariant.
+    #
+    # SECURITY: because we only ever look at the requesting user's OWN team
+    # (current_user.team_id), cross-tenant leakage is impossible by
+    # construction — there is no global name+region match to exploit.
+    existing_key = None
+    if current_user.team_id is not None:
+        existing_key = (
+            db.query(DBPrivateAIKey)
+            .filter(
+                DBPrivateAIKey.region_id == private_ai_key.region_id,
+                DBPrivateAIKey.team_id == current_user.team_id,
+            )
+            .outerjoin(DBTeam, DBPrivateAIKey.team_id == DBTeam.id)
+            .filter((DBPrivateAIKey.team_id.is_(None)) | (DBTeam.deleted_at.is_(None)))
+            .order_by(DBPrivateAIKey.created_at.desc())
+            .first()
         )
-        .outerjoin(DBTeam, DBPrivateAIKey.team_id == DBTeam.id)
-        .filter((DBPrivateAIKey.team_id.is_(None)) | (DBTeam.deleted_at.is_(None)))
-        .filter(
-            (DBPrivateAIKey.owner_id == current_user.id) | (team_base == current_base)
-        )
-        .order_by(DBPrivateAIKey.created_at.desc())
-        .first()
-    )
     if existing_key is not None:
         logger.info(
             "[drupal-attribution] reusing existing key %s for %s + region %s",
