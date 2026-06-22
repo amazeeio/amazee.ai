@@ -61,6 +61,7 @@ from app.schemas.models import (
 
 from app.api.teams import register_team
 from app.api.users import _create_user_in_db, get_user_by_email
+from app.core.email import normalize_email_for_lookup
 
 auth_logger = logging.getLogger(__name__)
 
@@ -198,7 +199,10 @@ async def login(
         )
 
     auth_logger.info(f"Login attempt for user: {login_data.username}")
-    user = get_user_by_email(db, login_data.username)
+    # Collapse plus-tags (e.g. "user+p12@") to the canonical base email so
+    # login always resolves to the single identity for the human.
+    login_username = normalize_email_for_lookup(login_data.username)
+    user = get_user_by_email(db, login_username)
     if not user or not verify_password(login_data.password, user.hashed_password):
         auth_logger.warning(f"Failed login attempt for user: {login_data.username}")
         raise HTTPException(
@@ -299,6 +303,8 @@ async def register(request: Request, user: UserCreate, db: Session = Depends(get
     After registration, you'll need to login to get an access token.
     """
     auth_logger.info(f"Registration attempt for user: {user.email}")
+    # Normalize plus-tags so registrations collapse to the canonical identity.
+    user.email = normalize_email_for_lookup(user.email)
     # Check if user with this email exists
     db_user = get_user_by_email(db, user.email)
     if db_user:
@@ -346,32 +352,33 @@ async def sign_in(
         )
 
     auth_logger.info(f"Sign-in attempt for user: {sign_in_data.username}")
+    # Collapse plus-tags to the canonical base email so OTP sign-in always
+    # resolves to the single identity for the human (Drupal enters "user+p12@").
+    sign_in_username = normalize_email_for_lookup(sign_in_data.username)
     # Verify the code using DynamoDB first
     dynamodb_service = DynamoDBService()
-    stored_code = dynamodb_service.read_validation_code(sign_in_data.username)
+    stored_code = dynamodb_service.read_validation_code(sign_in_username)
 
     if (
         not stored_code
         or stored_code.get("code").upper() != sign_in_data.verification_code.upper()
     ):
-        auth_logger.warning(
-            f"Invalid verification code for user: {sign_in_data.username}"
-        )
+        auth_logger.warning(f"Invalid verification code for user: {sign_in_username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or verification code",
         )
 
     # Get user from database after verifying the code
-    user = get_user_by_email(db, sign_in_data.username)
+    user = get_user_by_email(db, sign_in_username)
 
     # If user doesn't exist, create a new user and team
     if not user:
-        auth_logger.info(f"Creating new user and team for: {sign_in_data.username}")
+        auth_logger.info(f"Creating new user and team for: {sign_in_username}")
         # First create the team
         team_data = TeamCreate(
-            name=f"Team {sign_in_data.username}",
-            admin_email=sign_in_data.username,
+            name=f"Team {sign_in_username}",
+            admin_email=sign_in_username,
             phone="",  # Required by schema but not used for auto-created teams
             billing_address="",  # Required by schema but not used for auto-created teams
             budget_type=BudgetType.PERIODIC,
@@ -379,7 +386,7 @@ async def sign_in(
         team = await register_team(team_data, db)
 
         user_data = UserCreate(
-            email=sign_in_data.username,
+            email=sign_in_username,
             password=None,
             team_id=team.id,
             role=UserRole.ADMIN,
@@ -390,7 +397,7 @@ async def sign_in(
             f"Successfully created new user and team for: {sign_in_data.username}"
         )
 
-    auth_logger.info(f"Successful sign-in for user: {sign_in_data.username}")
+    auth_logger.info(f"Successful sign-in for user: {sign_in_username}")
     return create_and_set_access_token(response, user.email, user)
 
 
@@ -404,8 +411,10 @@ def generate_validation_token(email: str) -> str:
     Returns:
         str: The generated validation token (8 characters, alphanumeric, uppercase)
     """
-    # Ensure email is lowercased for consistency
-    email = email.lower()
+    # Normalize plus-tags to the canonical base email so the code is stored
+    # under the same key regardless of which tag variant the user typed. This
+    # must match the read path in /auth/sign-in (which also normalizes).
+    email = normalize_email_for_lookup(email)
 
     # Generate an 8-character alphanumeric code in uppercase
     code = "".join(

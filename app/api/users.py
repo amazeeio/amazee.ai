@@ -64,9 +64,16 @@ _USER_SPEND_SEMAPHORE = asyncio.Semaphore(10)
 
 def get_user_by_email(db: Session, email: str) -> Optional[DBUser]:
     """
-    Get a user by email (case-insensitive).
+    Get a user by email (case-insensitive, plus-tag insensitive).
+
+    Plus-tags (e.g. "user+p12@") are stripped to the canonical base email so
+    that all tag variants resolve to the single identity for the human. This
+    prevents identity fragmentation across Drupal, moad, and the amazee.ai API.
     """
-    return db.query(DBUser).filter(func.lower(DBUser.email) == email.lower()).first()
+    normalized = normalize_email_for_lookup(email)
+    return (
+        db.query(DBUser).filter(func.lower(DBUser.email) == normalized.lower()).first()
+    )
 
 
 router = APIRouter(tags=["users"])
