@@ -1183,9 +1183,7 @@ async def _delegate_to_moad(
     #     stripped) must match the requesting user's base email. This
     #     prevents a user from guessing another tenant's key name and being
     #     pinned into that tenant's team.
-    team_base = func.regexp_replace(
-        func.lower(DBTeam.admin_email), r"\+[^@]*@", "@"
-    )
+    team_base = func.regexp_replace(func.lower(DBTeam.admin_email), r"\+[^@]*@", "@")
     current_base = normalize_email_for_lookup(current_user.email).lower()
 
     existing_key = (
@@ -1197,8 +1195,7 @@ async def _delegate_to_moad(
         .outerjoin(DBTeam, DBPrivateAIKey.team_id == DBTeam.id)
         .filter((DBPrivateAIKey.team_id.is_(None)) | (DBTeam.deleted_at.is_(None)))
         .filter(
-            (DBPrivateAIKey.owner_id == current_user.id)
-            | (team_base == current_base)
+            (DBPrivateAIKey.owner_id == current_user.id) | (team_base == current_base)
         )
         .order_by(DBPrivateAIKey.created_at.desc())
         .first()
