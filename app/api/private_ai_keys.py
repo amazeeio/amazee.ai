@@ -1184,15 +1184,35 @@ async def _delegate_to_moad(
     # (current_user.team_id), cross-tenant leakage is impossible by
     # construction — there is no global name+region match to exploit.
     existing_key = None
+    base_email = normalize_email_for_lookup(current_user.email).lower()
+
     if current_user.team_id is not None:
         existing_key = (
             db.query(DBPrivateAIKey)
+            .join(DBTeam, DBPrivateAIKey.team_id == DBTeam.id)
             .filter(
                 DBPrivateAIKey.region_id == private_ai_key.region_id,
                 DBPrivateAIKey.team_id == current_user.team_id,
+                DBTeam.deleted_at.is_(None),
             )
-            .outerjoin(DBTeam, DBPrivateAIKey.team_id == DBTeam.id)
-            .filter((DBPrivateAIKey.team_id.is_(None)) | (DBTeam.deleted_at.is_(None)))
+            .order_by(DBPrivateAIKey.created_at.desc())
+            .first()
+        )
+
+    # Fallback for retries before pinning: look up the key under any team whose
+    # admin_email matches this user (including moad’s +tagged surrogate teams).
+    if existing_key is None:
+        local, domain = base_email.split("@", 1)
+        tag_pattern = f"{local}+%@{domain}"
+        existing_key = (
+            db.query(DBPrivateAIKey)
+            .join(DBTeam, DBPrivateAIKey.team_id == DBTeam.id)
+            .filter(
+                DBPrivateAIKey.region_id == private_ai_key.region_id,
+                DBTeam.deleted_at.is_(None),
+                (DBTeam.admin_email.ilike(base_email))
+                | (DBTeam.admin_email.ilike(tag_pattern)),
+            )
             .order_by(DBPrivateAIKey.created_at.desc())
             .first()
         )
