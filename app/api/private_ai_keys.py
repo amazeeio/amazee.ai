@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from typing import List, Optional
 from fastapi import status
 import logging
@@ -1174,6 +1175,19 @@ async def _delegate_to_moad(
     # return it instead of provisioning a new one. This matches the
     # "one key per Drupal site per region" invariant and prevents key
     # proliferation when Drupal retries the provisioning call.
+    #
+    # SECURITY: the lookup is scoped to keys this user may legitimately own:
+    #   - keys directly owned by the user (owner_id), OR
+    #   - keys whose team was provisioned for this human. moad tags team
+    #     admin_email as "base+team-<tag>@domain"; the base (plus-tag
+    #     stripped) must match the requesting user's base email. This
+    #     prevents a user from guessing another tenant's key name and being
+    #     pinned into that tenant's team.
+    team_base = func.regexp_replace(
+        func.lower(DBTeam.admin_email), r"\+[^@]*@", "@"
+    )
+    current_base = normalize_email_for_lookup(current_user.email).lower()
+
     existing_key = (
         db.query(DBPrivateAIKey)
         .filter(
@@ -1182,6 +1196,10 @@ async def _delegate_to_moad(
         )
         .outerjoin(DBTeam, DBPrivateAIKey.team_id == DBTeam.id)
         .filter((DBPrivateAIKey.team_id.is_(None)) | (DBTeam.deleted_at.is_(None)))
+        .filter(
+            (DBPrivateAIKey.owner_id == current_user.id)
+            | (team_base == current_base)
+        )
         .order_by(DBPrivateAIKey.created_at.desc())
         .first()
     )

@@ -295,3 +295,106 @@ def test_delegation_pins_user_to_key_team(
     # The user is now pinned to the key's team.
     db.refresh(user)
     assert user.team_id == moad_team.id
+
+
+# ---------------------------------------------------------------------------
+# 6. Security: a guessed name from a different tenant is NOT reused
+# ---------------------------------------------------------------------------
+
+
+@patch("app.api.private_ai_keys.settings")
+@patch("httpx.AsyncClient")
+def test_idempotency_does_not_leak_cross_tenant_key(
+    mock_client_cls, mock_settings, drupal_client, db, test_region
+):
+    """A user requesting a name that matches ANOTHER tenant's key must not
+    receive that key or be pinned to that tenant's team.
+
+    Regression test for the cross-tenant leak: the idempotency lookup must be
+    scoped to the requesting user's own teams, not a global name+region match.
+    """
+    mock_settings.MOAD_DASHBOARD_API_URL = "http://mock-moad"
+    mock_settings.MOAD_DASHBOARD_API_TOKEN = "mock-token"
+
+    # Victim tenant: a different human with their own team + key.
+    victim_team = DBTeam(
+        name="victim-team",
+        admin_email="victim+team-abc@example.com",
+        is_active=True,
+    )
+    db.add(victim_team)
+    db.commit()
+    db.refresh(victim_team)
+    victim_key = DBPrivateAIKey(
+        name="secret-key",  # the name the attacker will guess
+        litellm_token="victim-secret-token",
+        litellm_api_url="http://victim-llm",
+        database_name="db",
+        database_host="host",
+        database_username="u",
+        database_password="p",
+        region_id=test_region.id,
+        team_id=victim_team.id,
+    )
+    db.add(victim_key)
+    db.commit()
+
+    # Attacker: a different user, not a member of victim_team.
+    attacker = _make_user(db, email="attacker@example.com")
+    attacker_token = _login(drupal_client, attacker)
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    # moad returns a fresh token that resolves to NO local key — the handler
+    # will 502, but that's fine: we only assert moad was called (no reuse).
+    mock_response.json.return_value = {"llm": {"token": "attacker-fresh-token"}}
+    mock_http = AsyncMock()
+    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+    mock_http.__aexit__ = AsyncMock(return_value=False)
+    mock_http.post = AsyncMock(return_value=mock_response)
+    mock_client_cls.return_value = mock_http
+
+    # Attacker POSTs the victim's key NAME + same region.
+    response = drupal_client.post(
+        "/private-ai-keys",
+        json={"region_id": test_region.id, "name": "secret-key"},
+        headers={"Authorization": f"Bearer {attacker_token}"},
+    )
+
+    # The victim's key must NOT be reused: moad WAS called.
+    mock_http.post.assert_called()
+    # The attacker is NOT pinned to the victim's team.
+    db.refresh(attacker)
+    assert attacker.team_id != victim_team.id
+
+
+# ---------------------------------------------------------------------------
+# 7. Legacy compatibility: a stored +tag email is still found
+# ---------------------------------------------------------------------------
+
+
+def test_get_user_by_email_falls_back_to_tagged_row(db):
+    """A legacy user whose stored email contains a +tag is still lookup-able.
+
+    Regression test for the backward-compat break flagged in review:
+    normalization must not orphan pre-existing tagged rows.
+    """
+    from app.api.users import get_user_by_email
+
+    legacy = DBUser(
+        email="legacy+newsletter@example.com",
+        hashed_password=get_password_hash("testpassword"),
+        is_active=True,
+        is_admin=False,
+        role=UserRole.DEFAULT,
+    )
+    db.add(legacy)
+    db.commit()
+    db.refresh(legacy)
+
+    # Lookup with the exact tagged address finds the legacy row via the
+    # exact-match fallback (normalized lookup misses because no canonical
+    # base row exists yet).
+    found = get_user_by_email(db, "legacy+newsletter@example.com")
+    assert found is not None
+    assert found.id == legacy.id
