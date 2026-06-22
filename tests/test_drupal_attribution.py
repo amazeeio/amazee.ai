@@ -206,7 +206,9 @@ def test_existing_key_team_region_reuses_no_moad_call(
     token = _login(drupal_client, user)
 
     # Simulate a PRIOR successful provision: a team exists, has a key for
-    # this region, and the user is already pinned to it.
+    # this region, and the user is already pinned to it. The user has a
+    # team role (ADMIN), matching what /auth/sign-in creates in production —
+    # a system role (USER) + non-null team_id would be rejected by RBAC.
     team = DBTeam(name="moad-team", admin_email=user.email, is_active=True)
     db.add(team)
     db.commit()
@@ -223,9 +225,10 @@ def test_existing_key_team_region_reuses_no_moad_call(
         team_id=team.id,
     )
     db.add(existing_key)
-    # Pin the user to the team — this is what _pin_user_to_key_team does
-    # after the first provision.
+    # Pin the user to the team with a team role — mirrors the post-provision
+    # state (sign-in creates ADMIN role; _pin_user_to_key_team sets team_id).
     user.team_id = team.id
+    user.role = UserRole.ADMIN
     db.commit()
 
     mock_http = AsyncMock()
