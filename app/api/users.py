@@ -781,8 +781,14 @@ async def create_user(
     """
     Create a new user. Accessible by admin users or team admins for their own team.
     """
-    # Check if email already exists
-    db_user = get_user_by_email(db, user.email)
+    # Check if email already exists. Use an exact (case-insensitive) match here
+    # rather than the normalizing get_user_by_email(), because tagged emails such as
+    # "user+team_id@domain" (created by moad's provision-key flow) are intentionally
+    # distinct identities scoped to a specific Applications workspace team.  Normalizing
+    # would strip the tag and find the base user, incorrectly blocking creation.
+    db_user = (
+        db.query(DBUser).filter(func.lower(DBUser.email) == user.email.lower()).first()
+    )
     if db_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
