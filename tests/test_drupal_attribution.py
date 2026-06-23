@@ -214,7 +214,7 @@ def test_existing_key_team_region_reuses_no_moad_call(
     db.commit()
     db.refresh(team)
     existing_key = DBPrivateAIKey(
-        name="test-key - 2026-01-01",  # moad stamps a date suffix
+        name="test-key",  # matches what _post_key sends; moad no longer stamps a date suffix
         litellm_token="existing-token",
         litellm_api_url="http://test-llm",
         database_name="db",
