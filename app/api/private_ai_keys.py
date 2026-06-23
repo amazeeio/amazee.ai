@@ -1244,8 +1244,8 @@ async def _delegate_to_moad(
         # the same key (names match).  If the name differs the user is
         # explicitly requesting a NEW key — bypass idempotency and fall through
         # to moad so a fresh key is provisioned.
-        requested_name = (private_ai_key.name or "").strip()
-        existing_name = (existing_key.name or "").strip()
+        requested_name = (private_ai_key.name or "").strip().lower()
+        existing_name = (existing_key.name or "").strip().lower()
         is_retry = (not requested_name) or (requested_name == existing_name)
 
         if is_retry:
