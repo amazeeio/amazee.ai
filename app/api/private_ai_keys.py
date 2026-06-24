@@ -1240,15 +1240,31 @@ async def _delegate_to_moad(
             .first()
         )
     if existing_key is not None:
-        logger.info(
-            "[drupal-attribution] reusing existing key %s for %s + region %s",
-            existing_key.id,
-            current_user.email,
-            private_ai_key.region_id,
-        )
-        # Ensure the user is pinned to the key's team (see note below).
-        _pin_user_to_key_team(current_user, existing_key, db)
-        return PrivateAIKey.model_validate(existing_key.to_dict())
+        # Only treat this as an idempotent retry if the caller is asking for
+        # the same key (names match).  If the name differs the user is
+        # explicitly requesting a NEW key — bypass idempotency and fall through
+        # to moad so a fresh key is provisioned.
+        requested_name = (private_ai_key.name or "").strip().lower()
+        existing_name = (existing_key.name or "").strip().lower()
+        is_retry = (not requested_name) or (requested_name == existing_name)
+
+        if is_retry:
+            logger.info(
+                "[drupal-attribution] reusing existing key %s for %s + region %s (idempotent retry)",
+                existing_key.id,
+                current_user.email,
+                private_ai_key.region_id,
+            )
+            # Ensure the user is pinned to the key's team (see note below).
+            _pin_user_to_key_team(current_user, existing_key, db)
+            return PrivateAIKey.model_validate(existing_key.to_dict())
+        else:
+            logger.info(
+                "[drupal-attribution] user %s requested new key '%s' (existing: '%s') — bypassing idempotency",
+                current_user.email,
+                requested_name,
+                existing_name,
+            )
 
     # Send the base email (plus-tags stripped) so moad resolves the real
     # Keycloak/MOAD identity instead of creating a new tagged surrogate.
