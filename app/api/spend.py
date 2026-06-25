@@ -16,6 +16,7 @@ from app.core.periodic_budget_ledger_service import compute_active_topup_remaini
 from app.core.pool_budget_service import (
     pool_available_budget_for_team_region as shared_pool_available_budget_for_team_region,
     pool_team_budget_duration_for_enforcement as shared_pool_team_budget_duration_for_enforcement,
+    pool_team_has_ever_purchased as shared_pool_team_has_ever_purchased,
 )
 from app.core.security import (
     get_current_user_from_auth,
@@ -479,6 +480,22 @@ def _is_no_purchase_pool_team(team: DBTeam | None, db: Session, region_id: int) 
     if team is None or not team.requires_pool_purchase_gate:
         return False
     return _pool_available_budget_for_team_region(db, team.id, region_id) <= 0
+
+
+def _pool_key_budget_update_blocked_value(
+    team: DBTeam | None, db: Session, region_id: int
+) -> bool | None:
+    """Return the blocked flag to send for manual key budget edits.
+
+    POOL teams should only remain blocked before the first purchase in a region.
+    Once a purchase/subscription ledger exists, later per-key budget changes must
+    explicitly clear any stale LiteLLM blocked state.
+    """
+    if team is None or not team.requires_pool_purchase_gate:
+        return None
+    if not shared_pool_team_has_ever_purchased(db, team.id, region_id):
+        return None
+    return False
 
 
 def _get_spend_cap_max_budget(
@@ -1812,12 +1829,18 @@ async def update_key_budget(
             # Preserve existing key duration anchor when only cap value changes.
             effective_duration = None
 
-    await service.update_key_budget(
-        litellm_token=key.litellm_token,
-        budget_duration=effective_duration,
-        max_budget=body.max_budget,
-        clear_max_budget=body.max_budget is None,
+    update_kwargs = {
+        "litellm_token": key.litellm_token,
+        "budget_duration": effective_duration,
+        "max_budget": body.max_budget,
+        "clear_max_budget": body.max_budget is None,
+    }
+    blocked_value = _pool_key_budget_update_blocked_value(
+        team_for_budget_check, db, region_id
     )
+    if blocked_value is not None:
+        update_kwargs["blocked"] = blocked_value
+    await service.update_key_budget(**update_kwargs)
     existing_key_cap_row = (
         db.query(DBSpendCap)
         .filter(
@@ -1919,25 +1942,43 @@ async def clear_key_budget(
         raise HTTPException(
             status_code=404, detail="Private AI Key not found in region"
         )
+    team_for_budget_check = None
     if key.team_id is not None:
         _assert_team_budget_write_access(current_user, role, key.team_id)
+        team_for_budget_check = (
+            db.query(DBTeam)
+            .filter(DBTeam.id == key.team_id, DBTeam.deleted_at.is_(None))
+            .first()
+        )
     else:
         owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
         if not owner:
             raise HTTPException(status_code=404, detail="Key owner not found")
         _assert_user_budget_write_access(current_user, role, owner)
+        if owner.team_id is not None:
+            team_for_budget_check = (
+                db.query(DBTeam)
+                .filter(DBTeam.id == owner.team_id, DBTeam.deleted_at.is_(None))
+                .first()
+            )
 
     region = _get_region_or_404(db, region_id)
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
-    await service.update_key_budget(
-        litellm_token=key.litellm_token,
-        budget_duration=None,
-        max_budget=None,
-        clear_max_budget=True,
-        clear_budget_duration=True,
+    update_kwargs = {
+        "litellm_token": key.litellm_token,
+        "budget_duration": None,
+        "max_budget": None,
+        "clear_max_budget": True,
+        "clear_budget_duration": True,
+    }
+    blocked_value = _pool_key_budget_update_blocked_value(
+        team_for_budget_check, db, region_id
     )
+    if blocked_value is not None:
+        update_kwargs["blocked"] = blocked_value
+    await service.update_key_budget(**update_kwargs)
     _delete_spend_cap(
         db,
         scope="key",
