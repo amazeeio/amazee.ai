@@ -6,16 +6,6 @@ from app.services.stripe import stripe_sdk
 logger = logging.getLogger(__name__)
 
 
-NEW_WEBHOOK_MARKER_KEYS = (
-    "ai_subscription",
-    "ai_budget_increase",
-    "workspaceId",
-    "teamId",
-    "regionId",
-    "webhook_owner",
-)
-
-
 def _marker_value(metadata: Any, key: str):
     return getattr(metadata, key, None) if metadata else None
 
@@ -91,4 +81,5 @@ def is_moad_webhook(event: Any) -> bool:
                 subscription_id,
                 exc,
             )
+            raise
     return False

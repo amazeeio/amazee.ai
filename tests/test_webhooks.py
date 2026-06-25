@@ -263,6 +263,37 @@ def test_webhook_skips_moad_invoice_events_via_subscription_metadata(
 
 
 @patch("app.services.stripe_webhook_classification.stripe_sdk.Subscription.retrieve")
+def test_webhook_returns_500_when_invoice_ownership_cannot_be_determined(
+    mock_retrieve, client, db, webhook_secret_env
+):
+    event_id = "evt_invoice_ownership_unknown"
+    real_event = _make_real_stripe_event(event_id=event_id, event_type="invoice.paid")
+    real_event.data.object.subscription = "sub_unknown_123"
+    mock_retrieve.side_effect = Exception("stripe unavailable")
+
+    with (
+        patch("app.api.webhooks.decode_stripe_event", return_value=real_event),
+        patch(
+            "app.api.webhooks.handle_stripe_event_background", new_callable=AsyncMock
+        ) as mock_background,
+    ):
+        response = client.post(
+            "/billing/events",
+            content=b'{"id": "evt_invoice_ownership_unknown"}',
+            headers={"stripe-signature": "t=1,v1=fake"},
+        )
+
+    assert response.status_code == 500, response.text
+    mock_background.assert_not_awaited()
+    claim = (
+        db.query(DBStripeProcessedEvent)
+        .filter(DBStripeProcessedEvent.stripe_event_id == event_id)
+        .first()
+    )
+    assert claim is None, "ownership-unknown invoice events should not create claims"
+
+
+@patch("app.services.stripe_webhook_classification.stripe_sdk.Subscription.retrieve")
 def test_is_moad_webhook_returns_false_for_legacy_invoice_without_markers(
     mock_retrieve,
 ):
@@ -277,6 +308,55 @@ def test_is_moad_webhook_returns_false_for_legacy_invoice_without_markers(
     )
 
     assert is_moad_webhook(event) is False
+
+
+@patch("app.services.stripe_webhook_classification.stripe_sdk.Subscription.retrieve")
+def test_is_moad_webhook_reads_subscription_from_invoice_parent_details(
+    mock_retrieve,
+):
+    event = _make_real_stripe_event(
+        event_id="evt_parent_subscription", event_type="invoice.paid"
+    )
+    event.data.object.parent = stripe.StripeObject.construct_from(
+        {
+            "subscription_details": {
+                "subscription": "sub_parent_123",
+            }
+        },
+        key="sk_test_regression",
+    )
+    mock_retrieve.return_value = stripe.Subscription.construct_from(
+        {"id": "sub_parent_123", "metadata": {"ai_subscription": "true"}},
+        key="sk_test_regression",
+    )
+
+    assert is_moad_webhook(event) is True
+    mock_retrieve.assert_called_once_with("sub_parent_123")
+
+
+@patch("app.services.stripe_webhook_classification.stripe_sdk.Subscription.retrieve")
+def test_is_moad_webhook_reads_inline_metadata_from_invoice_parent_details(
+    mock_retrieve,
+):
+    event = _make_real_stripe_event(
+        event_id="evt_parent_inline_metadata",
+        event_type="invoice.paid",
+    )
+    event.data.object.parent = stripe.StripeObject.construct_from(
+        {
+            "subscription_details": {
+                "metadata": {
+                    "ai_budget_increase": "5000",
+                    "teamId": "42",
+                    "regionId": "7",
+                }
+            }
+        },
+        key="sk_test_regression",
+    )
+
+    assert is_moad_webhook(event) is True
+    mock_retrieve.assert_not_called()
 
 
 def test_real_stripe_metadata_is_not_dict_like():

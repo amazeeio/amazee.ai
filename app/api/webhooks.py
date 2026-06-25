@@ -10,6 +10,7 @@ from fastapi import (
     Response,
     status,
 )
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -59,7 +60,7 @@ async def handle_events(
 
         event = decode_stripe_event(payload, signature, webhook_secret)
 
-        if is_moad_webhook(event):
+        if await run_in_threadpool(is_moad_webhook, event):
             logger.info(
                 "Skipping legacy webhook processing for MOAD-owned Stripe event: event_type=%s event_id=%s",
                 getattr(event, "type", "unknown"),
