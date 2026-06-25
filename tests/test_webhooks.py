@@ -335,6 +335,32 @@ def test_is_moad_webhook_reads_subscription_from_invoice_parent_details(
 
 
 @patch("app.services.stripe_webhook_classification.stripe_sdk.Subscription.retrieve")
+def test_is_moad_webhook_unwraps_expanded_subscription_from_invoice_parent_details(
+    mock_retrieve,
+):
+    event = _make_real_stripe_event(
+        event_id="evt_parent_subscription_expanded", event_type="invoice.paid"
+    )
+    event.data.object.parent = stripe.StripeObject.construct_from(
+        {
+            "subscription_details": {
+                "subscription": {
+                    "id": "sub_parent_expanded_123",
+                }
+            }
+        },
+        key="sk_test_regression",
+    )
+    mock_retrieve.return_value = stripe.Subscription.construct_from(
+        {"id": "sub_parent_expanded_123", "metadata": {"ai_subscription": "true"}},
+        key="sk_test_regression",
+    )
+
+    assert is_moad_webhook(event) is True
+    mock_retrieve.assert_called_once_with("sub_parent_expanded_123")
+
+
+@patch("app.services.stripe_webhook_classification.stripe_sdk.Subscription.retrieve")
 def test_is_moad_webhook_reads_inline_metadata_from_invoice_parent_details(
     mock_retrieve,
 ):

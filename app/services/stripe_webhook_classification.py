@@ -29,18 +29,25 @@ def _get_event_object(event: Any):
     return getattr(data, "object", None)
 
 
+def _coerce_subscription_id(subscription_ref: Any) -> str | None:
+    if not subscription_ref:
+        return None
+    if isinstance(subscription_ref, str):
+        return subscription_ref
+    return getattr(subscription_ref, "id", None)
+
+
 def _get_subscription_id_from_invoice(event_object: Any) -> str | None:
-    subscription_id = getattr(event_object, "subscription", None)
+    subscription_id = _coerce_subscription_id(
+        getattr(event_object, "subscription", None)
+    )
     if subscription_id:
-        # Unwrap expanded Subscription objects — retrieve() expects a plain string ID
-        if not isinstance(subscription_id, str):
-            subscription_id = getattr(subscription_id, "id", None)
-        return subscription_id or None
+        return subscription_id
 
     if hasattr(event_object, "parent"):
         try:
             details = event_object.parent.subscription_details
-            return getattr(details, "subscription", None)
+            return _coerce_subscription_id(getattr(details, "subscription", None))
         except AttributeError:
             return None
     return None
