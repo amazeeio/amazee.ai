@@ -17,6 +17,7 @@ from app.core.worker import handle_stripe_event_background
 from app.db.database import get_db
 from app.db.models import DBStripeProcessedEvent, DBSystemSecret
 from app.services.stripe import decode_stripe_event
+from app.services.stripe_webhook_classification import is_moad_webhook
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["billing"])
@@ -57,6 +58,17 @@ async def handle_events(
         signature = request.headers.get("stripe-signature")
 
         event = decode_stripe_event(payload, signature, webhook_secret)
+
+        if is_moad_webhook(event):
+            logger.info(
+                "Skipping legacy webhook processing for MOAD-owned Stripe event: event_type=%s event_id=%s",
+                getattr(event, "type", "unknown"),
+                getattr(event, "id", None),
+            )
+            return Response(
+                status_code=status.HTTP_200_OK,
+                content="Webhook acknowledged by legacy endpoint",
+            )
 
         # Claim-row idempotency: insert the event ID before dispatching
         # the background task. If a duplicate webhook arrives concurrently,

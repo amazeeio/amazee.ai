@@ -22,6 +22,7 @@ import stripe
 from stripe import Event
 
 from app.db.models import DBStripeProcessedEvent
+from app.services.stripe_webhook_classification import is_moad_webhook
 
 WEBHOOK_SECRET_KEY = "stripe_webhook_secret"
 
@@ -181,6 +182,101 @@ def test_webhook_duplicate_real_event_returns_200_not_500(
         .all()
     )
     assert len(claims) == 1
+
+
+def test_webhook_skips_moad_checkout_session_events(client, db, webhook_secret_env):
+    """MOAD checkout/session budget webhooks must be ACKed but not processed here."""
+    event_id = "evt_moad_checkout_session"
+    real_event = _make_real_stripe_event(
+        event_id=event_id,
+        event_type="checkout.session.completed",
+        metadata={
+            "teamId": "42",
+            "regionId": "7",
+            "ai_budget_increase": "5000",
+        },
+    )
+
+    with (
+        patch("app.api.webhooks.decode_stripe_event", return_value=real_event),
+        patch(
+            "app.api.webhooks.handle_stripe_event_background", new_callable=AsyncMock
+        ) as mock_background,
+    ):
+        response = client.post(
+            "/billing/events",
+            content=b'{"id": "evt_moad_checkout_session"}',
+            headers={"stripe-signature": "t=1,v1=fake"},
+        )
+
+    assert response.status_code == 200, response.text
+    mock_background.assert_not_awaited()
+    claim = (
+        db.query(DBStripeProcessedEvent)
+        .filter(DBStripeProcessedEvent.stripe_event_id == event_id)
+        .first()
+    )
+    assert claim is None, "MOAD-owned events should not create legacy claims"
+
+
+@patch("app.services.stripe_webhook_classification.stripe_sdk.Subscription.retrieve")
+def test_webhook_skips_moad_invoice_events_via_subscription_metadata(
+    mock_retrieve, client, db, webhook_secret_env
+):
+    """MOAD invoice webhooks may only expose markers on the subscription."""
+    event_id = "evt_moad_invoice_paid"
+    real_event = _make_real_stripe_event(event_id=event_id, event_type="invoice.paid")
+    real_event.data.object.subscription = "sub_moad_123"
+    mock_retrieve.return_value = stripe.Subscription.construct_from(
+        {
+            "id": "sub_moad_123",
+            "metadata": {
+                "ai_subscription": "true",
+                "teamId": "42",
+                "regionId": "7",
+                "workspaceId": "ws_abc",
+            },
+        },
+        key="sk_test_regression",
+    )
+
+    with (
+        patch("app.api.webhooks.decode_stripe_event", return_value=real_event),
+        patch(
+            "app.api.webhooks.handle_stripe_event_background", new_callable=AsyncMock
+        ) as mock_background,
+    ):
+        response = client.post(
+            "/billing/events",
+            content=b'{"id": "evt_moad_invoice_paid"}',
+            headers={"stripe-signature": "t=1,v1=fake"},
+        )
+
+    assert response.status_code == 200, response.text
+    mock_background.assert_not_awaited()
+    claim = (
+        db.query(DBStripeProcessedEvent)
+        .filter(DBStripeProcessedEvent.stripe_event_id == event_id)
+        .first()
+    )
+    assert claim is None, "MOAD-owned invoice events should not create legacy claims"
+
+
+@patch("app.services.stripe_webhook_classification.stripe_sdk.Subscription.retrieve")
+def test_is_moad_webhook_returns_false_for_legacy_invoice_without_markers(
+    mock_retrieve,
+):
+    """Legacy invoice events must keep flowing through the legacy worker."""
+    event = _make_real_stripe_event(
+        event_id="evt_legacy_invoice", event_type="invoice.paid"
+    )
+    event.data.object.subscription = "sub_legacy_123"
+    mock_retrieve.return_value = stripe.Subscription.construct_from(
+        {"id": "sub_legacy_123", "metadata": {}},
+        key="sk_test_regression",
+    )
+
+    assert is_moad_webhook(event) is False
 
 
 def test_real_stripe_metadata_is_not_dict_like():
