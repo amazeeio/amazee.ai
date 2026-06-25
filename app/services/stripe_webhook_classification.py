@@ -32,7 +32,10 @@ def _get_event_object(event: Any):
 def _get_subscription_id_from_invoice(event_object: Any) -> str | None:
     subscription_id = getattr(event_object, "subscription", None)
     if subscription_id:
-        return subscription_id
+        # Unwrap expanded Subscription objects — retrieve() expects a plain string ID
+        if not isinstance(subscription_id, str):
+            subscription_id = getattr(subscription_id, "id", None)
+        return subscription_id or None
 
     if hasattr(event_object, "parent"):
         try:
