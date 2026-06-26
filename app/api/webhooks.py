@@ -41,7 +41,7 @@ async def handle_events(
         # MOAD's /cycle flow, the legacy amazee.ai webhook should acknowledge
         # any late/retried Stripe deliveries without mutating legacy billing
         # state. This buys time for manual subscription cancellation in Stripe.
-        if os.getenv(LEGACY_STRIPE_DRAIN_MODE_ENV):
+        if os.getenv(LEGACY_STRIPE_DRAIN_MODE_ENV, "").lower() in ("1", "true", "yes"):
             logger.warning(
                 "Stripe webhook drain mode enabled; acknowledging event without processing"
             )
