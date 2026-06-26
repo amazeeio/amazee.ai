@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["billing"])
 
 BILLING_WEBHOOK_KEY = "stripe_webhook_secret"
+LEGACY_STRIPE_DRAIN_MODE_ENV = "LEGACY_STRIPE_DRAIN_MODE"
 
 
 @router.post("/events")
@@ -36,6 +37,19 @@ async def handle_events(
     background task so Stripe receives a fast 200 response.
     """
     try:
+        # Temporary post-migration safety valve: once PROD billing has moved to
+        # MOAD's /cycle flow, the legacy amazee.ai webhook should acknowledge
+        # any late/retried Stripe deliveries without mutating legacy billing
+        # state. This buys time for manual subscription cancellation in Stripe.
+        if os.getenv(LEGACY_STRIPE_DRAIN_MODE_ENV, "").lower() in ("1", "true", "yes"):
+            logger.warning(
+                "Stripe webhook drain mode enabled; acknowledging event without processing"
+            )
+            return Response(
+                status_code=status.HTTP_200_OK,
+                content="Webhook acknowledged by drain mode",
+            )
+
         # Resolve webhook secret: env var takes precedence, then DB
         if os.getenv("WEBHOOK_SIG"):
             webhook_secret = os.getenv("WEBHOOK_SIG")
