@@ -64,8 +64,9 @@ def webhook_secret_env(monkeypatch):
     yield
 
 
-def test_webhook_drain_mode_returns_200_and_skips_processing(client, db, monkeypatch):
-    monkeypatch.setenv("LEGACY_STRIPE_DRAIN_MODE", "true")
+@pytest.mark.parametrize("drain_value", ["true", "1", "yes", "True", "YES"])
+def test_webhook_drain_mode_returns_200_and_skips_processing(client, db, monkeypatch, drain_value):
+    monkeypatch.setenv("LEGACY_STRIPE_DRAIN_MODE", drain_value)
 
     with (
         patch("app.api.webhooks.decode_stripe_event") as mock_decode,
