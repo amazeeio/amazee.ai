@@ -298,6 +298,7 @@ def test_system_default_budget_update_skips_pool_team_defaults(db, test_team):
     """
     pool_team = test_team
     pool_team.budget_type = "pool"
+    pool_team.require_purchase_for_requests = True
     db.add(pool_team)
 
     from app.db.models import DBTeam
@@ -353,6 +354,48 @@ def test_system_default_budget_update_skips_pool_team_defaults(db, test_team):
     )
     assert pool_budget.max_value == 0.0
     assert periodic_budget.max_value == 123.0
+
+
+def test_get_team_limits_skips_default_budget_for_purchase_gated_pool_teams(
+    db, test_team
+):
+    """
+    GIVEN: A purchase-gated POOL team with no explicit team budget row
+    WHEN: get_team_limits is called
+    THEN: The inherited system BUDGET limit is not returned or materialized
+    """
+    test_team.budget_type = "pool"
+    test_team.require_purchase_for_requests = True
+    db.add(test_team)
+    db.commit()
+
+    limit_service = LimitService(db)
+    limit_service.set_limit(
+        owner_type=OwnerType.SYSTEM,
+        owner_id=0,
+        resource_type=ResourceType.BUDGET,
+        limit_type=LimitType.DATA_PLANE,
+        unit=UnitType.DOLLAR,
+        max_value=27.0,
+        limited_by=LimitSource.DEFAULT,
+    )
+
+    team_limits = limit_service.get_team_limits(test_team)
+
+    assert not any(limit.resource == ResourceType.BUDGET for limit in team_limits)
+
+    from app.db.models import DBLimitedResource
+
+    persisted_budget_limit = (
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.TEAM,
+            DBLimitedResource.owner_id == test_team.id,
+            DBLimitedResource.resource == ResourceType.BUDGET,
+        )
+        .first()
+    )
+    assert persisted_budget_limit is None
 
 
 def test_set_team_limits_uses_dedicated_region_default_overrides(db, test_team):
