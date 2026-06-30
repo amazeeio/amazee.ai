@@ -95,6 +95,7 @@ def test_webhook_drain_mode_returns_200_and_skips_processing(client, db, monkeyp
     assert claim is None
 
 
+
 def test_webhook_endpoint_returns_200_for_real_stripe_event(
     client, db, webhook_secret_env
 ):
