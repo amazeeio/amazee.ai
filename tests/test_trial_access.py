@@ -14,7 +14,7 @@ def mock_auth_deps():
     """Fixture that bundles all auth dependency mocks."""
     with (
         patch(
-            "app.api.auth.create_private_ai_key", new_callable=AsyncMock
+            "app.api.private_ai_keys._create_private_ai_key", new_callable=AsyncMock
         ) as mock_create_key,
         patch(
             "app.api.auth.register_team", new_callable=AsyncMock
