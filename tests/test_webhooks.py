@@ -64,6 +64,38 @@ def webhook_secret_env(monkeypatch):
     yield
 
 
+@pytest.mark.parametrize("drain_value", ["true", "1", "yes", "True", "YES"])
+def test_webhook_drain_mode_returns_200_and_skips_processing(client, db, monkeypatch, drain_value):
+    monkeypatch.setenv("LEGACY_STRIPE_DRAIN_MODE", drain_value)
+
+    with (
+        patch("app.api.webhooks.decode_stripe_event") as mock_decode,
+        patch(
+            "app.api.webhooks.handle_stripe_event_background", new_callable=AsyncMock
+        ) as mock_background,
+    ):
+        response = client.post(
+            "/billing/events",
+            content=b'{"id": "evt_drain_mode"}',
+            headers={
+                "stripe-signature": "t=1,v1=fake",
+                "content-type": "application/json",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    mock_decode.assert_not_called()
+    mock_background.assert_not_awaited()
+
+    claim = (
+        db.query(DBStripeProcessedEvent)
+        .filter(DBStripeProcessedEvent.stripe_event_id == "evt_drain_mode")
+        .first()
+    )
+    assert claim is None
+
+
+
 def test_webhook_endpoint_returns_200_for_real_stripe_event(
     client, db, webhook_secret_env
 ):

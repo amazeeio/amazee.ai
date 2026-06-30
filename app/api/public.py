@@ -356,11 +356,12 @@ def _extract_model_summary(
     cache_read_input_cost_per_token = _apply_profit_margin(
         _safe_float(model_info.get("cache_read_input_token_cost")), profit_margin
     )
+    supports_prompt_caching = bool(model_info.get("supports_prompt_caching"))
     capabilities = PublicModelCapabilities(
         supports_vision=bool(model_info.get("supports_vision")),
         supports_function_calling=bool(model_info.get("supports_function_calling")),
         supports_reasoning=bool(model_info.get("supports_reasoning")),
-        supports_prompt_caching=bool(model_info.get("supports_prompt_caching")),
+        supports_prompt_caching=supports_prompt_caching,
     )
 
     aliases = _extract_aliases(item, model_id)
@@ -384,13 +385,19 @@ def _extract_model_summary(
             output_cost_per_million_tokens=_per_million(output_cost_per_token),
             cache_creation_input_cost_per_million_tokens=_per_million(
                 cache_creation_input_cost_per_token
-            ),
+            )
+            if supports_prompt_caching
+            else None,
             cache_creation_input_cost_above_1hr_per_million_tokens=_per_million(
                 cache_creation_input_cost_above_1hr_per_token
-            ),
+            )
+            if supports_prompt_caching
+            else None,
             cache_read_input_cost_per_million_tokens=_per_million(
                 cache_read_input_cost_per_token
-            ),
+            )
+            if supports_prompt_caching
+            else None,
         ),
     )
 
