@@ -59,6 +59,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_NEW_DASHBOARD_URL: ${NEXT_PUBLIC_NEW_DASHBOARD_URL:-}
     ports:
       - "3000:3000"
     command:
