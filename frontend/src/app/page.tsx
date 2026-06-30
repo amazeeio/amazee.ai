@@ -2,7 +2,7 @@ import { ArrowRight } from "lucide-react";
 import Image from "next/image";
 import { Button } from "@/components/ui/button";
 
-const NEW_DASHBOARD_URL = process.env.NEXT_PUBLIC_NEW_DASHBOARD_URL;
+const NEW_DASHBOARD_URL = process.env.NEXT_PUBLIC_NEW_DASHBOARD_URL || "https://my.amazee.io";
 
 export default function Home() {
   return (
