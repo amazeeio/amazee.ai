@@ -47,6 +47,19 @@ def client(db):
         yield db
 
     app.dependency_overrides[get_db] = override_get_db
+    with TestClient(app, headers={"X-Amazee-Source": "frontend"}) as test_client:
+        yield test_client
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def drupal_client(db):
+    """Test client without X-Amazee-Source header — simulates Drupal requests."""
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()
@@ -88,6 +101,15 @@ def test_admin(db):
 @pytest.fixture
 def test_token(client, test_user):
     response = client.post(
+        "/auth/login", data={"username": test_user.email, "password": "testpassword"}
+    )
+    return response.json()["access_token"]
+
+
+@pytest.fixture
+def drupal_test_token(drupal_client, test_user):
+    """JWT for test_user obtained via drupal_client (no X-Amazee-Source header)."""
+    response = drupal_client.post(
         "/auth/login", data={"username": test_user.email, "password": "testpassword"}
     )
     return response.json()["access_token"]

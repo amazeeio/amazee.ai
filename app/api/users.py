@@ -64,9 +64,35 @@ _USER_SPEND_SEMAPHORE = asyncio.Semaphore(10)
 
 def get_user_by_email(db: Session, email: str) -> Optional[DBUser]:
     """
-    Get a user by email (case-insensitive).
+    Get a user by email (case-insensitive, plus-tag insensitive).
+
+    Plus-tags (e.g. "user+p12@") are stripped to the canonical base email so
+    that all tag variants resolve to the single identity for the human. This
+    prevents identity fragmentation across Drupal, moad, and the amazee.ai API.
+
+    Backward compatibility: if no user matches the normalized form, fall back
+    to an exact (case-insensitive) match on the raw input. This keeps legacy
+    users whose stored email still contains a plus-tag (created before
+    normalization was enforced) login-able until their row is migrated to the
+    base form. The normalized match is preferred when both exist so new,
+    canonical identities always win over stale tagged duplicates.
     """
-    return db.query(DBUser).filter(func.lower(DBUser.email) == email.lower()).first()
+    normalized = normalize_email_for_lookup(email)
+    raw = email.lower()
+
+    # Fast path: the two queries collapse to one when the input is already
+    # normalized (no plus-tag), which is the common case.
+    if normalized == raw:
+        return db.query(DBUser).filter(func.lower(DBUser.email) == normalized).first()
+
+    # Plus-tag input: try the normalized identity first, then fall back to the
+    # exact tagged form for legacy rows.
+    normalized_user = (
+        db.query(DBUser).filter(func.lower(DBUser.email) == normalized).first()
+    )
+    if normalized_user is not None:
+        return normalized_user
+    return db.query(DBUser).filter(func.lower(DBUser.email) == raw).first()
 
 
 router = APIRouter(tags=["users"])
@@ -755,8 +781,14 @@ async def create_user(
     """
     Create a new user. Accessible by admin users or team admins for their own team.
     """
-    # Check if email already exists
-    db_user = get_user_by_email(db, user.email)
+    # Check if email already exists. Use an exact (case-insensitive) match here
+    # rather than the normalizing get_user_by_email(), because tagged emails such as
+    # "user+team_id@domain" (created by moad's provision-key flow) are intentionally
+    # distinct identities scoped to a specific Applications workspace team.  Normalizing
+    # would strip the tag and find the base user, incorrectly blocking creation.
+    db_user = (
+        db.query(DBUser).filter(func.lower(DBUser.email) == user.email.lower()).first()
+    )
     if db_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
