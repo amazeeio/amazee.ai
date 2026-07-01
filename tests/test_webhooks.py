@@ -65,7 +65,9 @@ def webhook_secret_env(monkeypatch):
 
 
 @pytest.mark.parametrize("drain_value", ["true", "1", "yes", "True", "YES"])
-def test_webhook_drain_mode_returns_200_and_skips_processing(client, db, monkeypatch, drain_value):
+def test_webhook_drain_mode_returns_200_and_skips_processing(
+    client, db, monkeypatch, drain_value
+):
     monkeypatch.setenv("LEGACY_STRIPE_DRAIN_MODE", drain_value)
 
     with (
@@ -93,7 +95,6 @@ def test_webhook_drain_mode_returns_200_and_skips_processing(client, db, monkeyp
         .first()
     )
     assert claim is None
-
 
 
 def test_webhook_endpoint_returns_200_for_real_stripe_event(
