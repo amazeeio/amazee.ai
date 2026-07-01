@@ -598,15 +598,20 @@ async def list_private_ai_keys(
     owner_id: Optional[int] = None,
     team_id: Optional[int] = None,
     search: Optional[str] = None,
+    show_all: bool = False,
     current_user=Depends(get_current_user_from_auth),
     db: Session = Depends(get_db),
 ):
     """
     List private AI keys.
     If user is admin:
-        - Returns all keys if no owner_id or team_id is provided
         - Returns keys for specific owner if owner_id is provided
         - Returns keys for specific team if team_id is provided
+        - Returns every key in the system if show_all=true is passed
+        - Otherwise (no params), returns only the admin's own keys — the
+          same safe default as any other caller. This avoids handing back
+          every secret in the database to any admin-scoped integration
+          (e.g. a management token) that calls this endpoint with no filters.
     If user is team admin:
         - Returns keys owned by users in their team AND keys owned by their team
     If user is not admin:
@@ -643,6 +648,10 @@ async def list_private_ai_keys(
                 (DBPrivateAIKey.owner_id.in_(team_user_ids))
                 | (DBPrivateAIKey.team_id == team_id)
             )
+        elif not show_all:
+            # Safe default: no filters and no explicit opt-in means "my own
+            # keys", not "every key in the system".
+            query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
     else:
         # Check if user is a team admin
         if current_user.team_id is not None:
@@ -671,10 +680,16 @@ async def list_private_ai_keys(
                     # If force_user_keys is enabled, users can only see their own keys
                     query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
                 else:
-                    # Otherwise, can see their own keys and team-owned keys
+                    # Otherwise, can see their own keys and team-owned keys.
+                    # "Team-owned" means owner_id is NULL — individually-owned
+                    # keys are only attributed to a team_id for billing/limits
+                    # and must not leak to the rest of the team.
                     query = query.filter(
                         (DBPrivateAIKey.owner_id == current_user.id)
-                        | (DBPrivateAIKey.team_id == current_user.team_id)
+                        | (
+                            (DBPrivateAIKey.team_id == current_user.team_id)
+                            & (DBPrivateAIKey.owner_id.is_(None))
+                        )
                     )
         else:
             # Regular users can only see their own keys
@@ -689,6 +704,7 @@ async def list_private_ai_keys_by_region(
     region_id: int,
     team_id: Optional[int] = None,
     user_id: Optional[int] = None,
+    show_all: bool = False,
     current_user=Depends(get_current_user_from_auth),
     db: Session = Depends(get_db),
 ):
@@ -706,6 +722,9 @@ async def list_private_ai_keys_by_region(
       parameter silently ignored. May be combined with `team_id` to further scope
       results to keys owned by that user within a particular team.
       Returns an empty list when the specified user does not exist.
+    - **show_all**: System admin only. Without it (and without team_id/user_id),
+      an admin caller gets only their own keys in this region rather than every
+      key in the region.
     """
     query = db.query(DBPrivateAIKey).outerjoin(
         DBTeam, DBPrivateAIKey.team_id == DBTeam.id
@@ -742,6 +761,11 @@ async def list_private_ai_keys_by_region(
             if user is None:
                 return []
             query = query.filter(DBPrivateAIKey.owner_id == user_id)
+
+        if team_id is None and user_id is None and not show_all:
+            # Safe default: no filters and no explicit opt-in means "my own
+            # keys in this region", not "every key in the region".
+            query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
     else:
         # Check if user is a team admin
         if current_user.team_id is not None:
@@ -770,10 +794,16 @@ async def list_private_ai_keys_by_region(
                     # If force_user_keys is enabled, users can only see their own keys
                     query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
                 else:
-                    # Otherwise, can see their own keys and team-owned keys
+                    # Otherwise, can see their own keys and team-owned keys.
+                    # "Team-owned" means owner_id is NULL — individually-owned
+                    # keys are only attributed to a team_id for billing/limits
+                    # and must not leak to the rest of the team.
                     query = query.filter(
                         (DBPrivateAIKey.owner_id == current_user.id)
-                        | (DBPrivateAIKey.team_id == current_user.team_id)
+                        | (
+                            (DBPrivateAIKey.team_id == current_user.team_id)
+                            & (DBPrivateAIKey.owner_id.is_(None))
+                        )
                     )
         else:
             # Regular users can only see their own keys
