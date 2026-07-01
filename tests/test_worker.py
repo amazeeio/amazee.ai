@@ -1,4 +1,5 @@
 import pytest
+import stripe
 from app.db.models import (
     DBProduct,
     DBTeamProduct,
@@ -176,7 +177,7 @@ async def test_handle_checkout_session_completed_calls_backfill(
     event_object = SimpleNamespace(
         customer="cus_checkout_completed",
         subscription="sub_checkout_123",
-        metadata={},
+        metadata=stripe.StripeObject.construct_from({}, key="sk_test"),
         client_reference_id=f"{test_team.id}-1",
     )
     event = SimpleNamespace(

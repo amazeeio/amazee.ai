@@ -56,7 +56,8 @@ class Settings(BaseSettings):
     HUBSPOT_MARKETING_SUBSCRIPTION_ID: str | None = os.getenv(
         "HUBSPOT_MARKETING_SUBSCRIPTION_ID"
     )
-    MOAD_API_KEY: str = os.getenv("MOAD_API_KEY", "changeme")
+    MOAD_DASHBOARD_API_URL: str = os.getenv("MOAD_DASHBOARD_API_URL", "")
+    MOAD_DASHBOARD_API_TOKEN: str = os.getenv("MOAD_DASHBOARD_API_TOKEN", "")
     ENABLE_METRICS: bool = os.getenv("ENABLE_METRICS", "false") == "true"
     PROMETHEUS_API_KEY: str = os.getenv("PROMETHEUS_API_KEY", "")
     POOL_PURCHASE_EXPIRY_DAYS: int = int(os.getenv("POOL_PURCHASE_EXPIRY_DAYS", "365"))

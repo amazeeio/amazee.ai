@@ -142,8 +142,15 @@ class LimitService:
         # Build effective limits: TEAM -> SYSTEM inheritance (no user limits in team view)
         effective_limits = {}
 
-        # Start with system defaults
+        # Start with system defaults.
+        # POOL team budgets are purchase-driven and should not inherit or
+        # materialize a default TEAM.BUDGET row from system policy.
         for limit in system_limits:
+            if (
+                limit.resource == ResourceType.BUDGET
+                and team.requires_pool_purchase_gate
+            ):
+                continue
             effective_limits[limit.resource] = limit
 
         # Override with team limits

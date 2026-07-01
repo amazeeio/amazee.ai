@@ -239,6 +239,11 @@ export function SidebarLayout({ children }: { children: React.ReactNode }) {
     return <>{children}</>;
   }
 
+  // Don't show the sidebar when the user is not authenticated
+  if (!user) {
+    return <>{children}</>;
+  }
+
   // Use sales navigation for sales users, otherwise filter regular navigation
   const filteredNavigation =
     user?.role === "sales"

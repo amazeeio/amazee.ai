@@ -319,9 +319,11 @@ async def _record_periodic_payment(db: Session, event_object: any) -> Optional[i
         currency = str(raw_currency).lower() if isinstance(raw_currency, str) else "usd"
 
         # Determine payment type from metadata
+        # NOTE: getattr() not .get() — stripe-python v15 StripeObject no
+        # longer subclasses dict, so metadata.get() raises AttributeError.
         metadata = getattr(event_object, "metadata", {})
         payment_type = "subscription"
-        if metadata and metadata.get("ai_budget_increase"):
+        if metadata and getattr(metadata, "ai_budget_increase", None):
             payment_type = "topup"
 
         # Check if record already exists to avoid duplicates
@@ -385,7 +387,7 @@ async def _record_periodic_payment_direct(
                 currency=currency.lower(),
                 payment_type=payment_type,
                 status="completed",
-                sync_status="success",
+                sync_status="pending",
                 payment_date=datetime.now(UTC),
             )
             db.add(payment_record)
@@ -435,7 +437,7 @@ async def _run_cycle_from_stripe_event(
     # then try Stripe API, then fall back to DBTeamRegion
     region_id: int | None = None
     subscription_id = getattr(event_object, "subscription", None)
-    sub_meta: dict = {}
+    sub_meta: "stripe_sdk.StripeObject | dict" = {}
 
     # Check parent.subscription_details on the invoice object
     if hasattr(event_object, "parent"):
@@ -448,14 +450,18 @@ async def _run_cycle_from_stripe_event(
                 "Invoice parent.subscription_details not available; continuing with fallback region resolution"
             )
 
-    if sub_meta.get("regionId"):
+    # NOTE: getattr() not .get() — stripe-python v15 StripeObject no longer
+    # subclasses dict, so sub_meta.get() raises AttributeError. Test fixtures
+    # and prod both supply StripeObject metadata here.
+    _sub_region_id = getattr(sub_meta, "regionId", None)
+    if _sub_region_id:
         try:
-            region_id = int(sub_meta["regionId"])
+            region_id = int(_sub_region_id)
         except (TypeError, ValueError) as exc:
             logger.warning(
                 "Invalid regionId in subscription metadata for customer_id=%s: %r (%s)",
                 customer_id,
-                sub_meta.get("regionId"),
+                _sub_region_id,
                 exc,
             )
 
@@ -464,8 +470,9 @@ async def _run_cycle_from_stripe_event(
         try:
             sub = stripe_sdk.Subscription.retrieve(subscription_id)
             meta = getattr(sub, "metadata", {}) or {}
-            if meta.get("regionId"):
-                region_id = int(meta["regionId"])
+            _meta_region_id = getattr(meta, "regionId", None)
+            if _meta_region_id:
+                region_id = int(_meta_region_id)
         except Exception as exc:
             logger.warning(
                 "Failed to retrieve subscription %s: %s", subscription_id, exc
@@ -555,6 +562,7 @@ async def _run_cycle_from_stripe_event(
     )
 
     try:
+        payment_id: Optional[int] = None
         if not is_first_cycle:
             for region in target_regions:
                 await capture_periodic_team_spend_for_period(
@@ -599,6 +607,20 @@ async def _run_cycle_from_stripe_event(
             )
             sync_errors.extend(region_errors)
 
+        # Full pipeline succeeded — promote the payment record to success.
+        # This must happen after apply_billing_cycle_for_team so that any
+        # retry via /cycle or the webhook path does not skip a partially-applied
+        # cycle (the idempotency guard at line 532 only skips on "success").
+        if payment_id:
+            payment_record = (
+                db.query(DBPeriodicPayment)
+                .filter(DBPeriodicPayment.id == payment_id)
+                .first()
+            )
+            if payment_record:
+                payment_record.sync_status = "success"
+                db.commit()
+
         logger.info(
             "Webhook invoice.paid cycle complete: team=%s invoice=%s budget=%s errors=%s",
             team.id,
@@ -614,6 +636,27 @@ async def _run_cycle_from_stripe_event(
             exc,
             exc_info=True,
         )
+        # Mark the payment record as sync_failed so retries are not blocked
+        # by the idempotency guard (which only skips on "success").
+        if payment_id:
+            try:
+                payment_record = (
+                    db.query(DBPeriodicPayment)
+                    .filter(DBPeriodicPayment.id == payment_id)
+                    .first()
+                )
+                if payment_record and payment_record.sync_status == "pending":
+                    payment_record.sync_status = "sync_failed"
+                    db.commit()
+            except Exception as commit_exc:
+                db.rollback()
+                logger.warning(
+                    "Failed to mark payment %s as sync_failed during error recovery: %s"
+                    " — record may be stuck in 'pending' and will block retries for stripe_payment_id=%s",
+                    payment_id,
+                    commit_exc,
+                    transaction_id,
+                )
 
 
 async def handle_stripe_event_background(event):
@@ -661,8 +704,9 @@ async def handle_stripe_event_background(event):
                     db, customer_id, product_id, datetime.now(UTC)
                 )
             else:
+                # getattr() not .get() — see note re: stripe-python v15.
                 metadata = getattr(event_object, "metadata", {})
-                if metadata and metadata.get("ai_budget_increase"):
+                if metadata and getattr(metadata, "ai_budget_increase", None):
                     team = (
                         db.query(DBTeam)
                         .filter(DBTeam.stripe_customer_id == customer_id)
