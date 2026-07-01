@@ -671,10 +671,16 @@ async def list_private_ai_keys(
                     # If force_user_keys is enabled, users can only see their own keys
                     query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
                 else:
-                    # Otherwise, can see their own keys and team-owned keys
+                    # Otherwise, can see their own keys and team-owned keys.
+                    # "Team-owned" means owner_id is NULL — individually-owned
+                    # keys are only attributed to a team_id for billing/limits
+                    # and must not leak to the rest of the team.
                     query = query.filter(
                         (DBPrivateAIKey.owner_id == current_user.id)
-                        | (DBPrivateAIKey.team_id == current_user.team_id)
+                        | (
+                            (DBPrivateAIKey.team_id == current_user.team_id)
+                            & (DBPrivateAIKey.owner_id.is_(None))
+                        )
                     )
         else:
             # Regular users can only see their own keys
@@ -770,10 +776,16 @@ async def list_private_ai_keys_by_region(
                     # If force_user_keys is enabled, users can only see their own keys
                     query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
                 else:
-                    # Otherwise, can see their own keys and team-owned keys
+                    # Otherwise, can see their own keys and team-owned keys.
+                    # "Team-owned" means owner_id is NULL — individually-owned
+                    # keys are only attributed to a team_id for billing/limits
+                    # and must not leak to the rest of the team.
                     query = query.filter(
                         (DBPrivateAIKey.owner_id == current_user.id)
-                        | (DBPrivateAIKey.team_id == current_user.team_id)
+                        | (
+                            (DBPrivateAIKey.team_id == current_user.team_id)
+                            & (DBPrivateAIKey.owner_id.is_(None))
+                        )
                     )
         else:
             # Regular users can only see their own keys
