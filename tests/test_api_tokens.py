@@ -1,3 +1,4 @@
+import hashlib
 from app.db.models import DBAPIToken
 
 
@@ -22,7 +23,9 @@ def test_list_api_tokens(client, test_token, test_user, db):
     """Test listing API tokens"""
     # Create a test token in the database
     test_api_token = DBAPIToken(
-        name="Test Token", token="test-token-123", user_id=test_user.id
+        name="Test Token",
+        token=hashlib.sha256("test-token-123".encode("utf-8")).hexdigest(),
+        user_id=test_user.id,
     )
     db.add(test_api_token)
     db.commit()
@@ -47,7 +50,9 @@ def test_delete_api_token(client, test_token, test_user, db):
     """Test deleting an API token"""
     # Create a test token in the database
     test_api_token = DBAPIToken(
-        name="Test Token", token="test-token-123", user_id=test_user.id
+        name="Test Token",
+        token=hashlib.sha256("test-token-123".encode("utf-8")).hexdigest(),
+        user_id=test_user.id,
     )
     db.add(test_api_token)
     db.commit()
@@ -79,7 +84,9 @@ def test_delete_other_users_token(client, test_token, test_admin, db):
     """Test that a user cannot delete another user's token"""
     # Create a token owned by the admin
     admin_token = DBAPIToken(
-        name="Admin Token", token="admin-token-123", user_id=test_admin.id
+        name="Admin Token",
+        token=hashlib.sha256("admin-token-123".encode("utf-8")).hexdigest(),
+        user_id=test_admin.id,
     )
     db.add(admin_token)
     db.commit()
