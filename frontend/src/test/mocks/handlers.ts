@@ -1,6 +1,15 @@
 import { http, HttpResponse } from "msw";
 
 export const handlers = [
+  // Global config fallback for client stores initialization
+  http.get("/api/config", () => {
+    return HttpResponse.json({
+      NEXT_PUBLIC_API_URL: "http://localhost:8800",
+      PASSWORDLESS_SIGN_IN: false,
+      STRIPE_PUBLISHABLE_KEY: "",
+    });
+  }),
+
   // Auth endpoints
   http.post("http://localhost:8800/auth/login", () => {
     return HttpResponse.json({
@@ -209,6 +218,157 @@ export const handlers = [
     return HttpResponse.json({
       items: paginatedLogs,
       total: allLogs.length,
+    });
+  }),
+
+  // Model Management endpoints
+  http.get("http://localhost:8800/admin/models", () => {
+    return HttpResponse.json([
+      {
+        id: 1,
+        model_id: "meta-llama/llama-3-70b-instruct",
+        display_name: "Llama 3 70B",
+        provider: "meta",
+        type: "chat",
+        context_length: 128000,
+        max_output_tokens: 4096,
+        description: "Meta's flagship open-weights model",
+        real_eol: "2026-12-31T23:59:59Z",
+        override_eol: null,
+        is_active_globally: true,
+        litellm_params: {},
+        created_at: "2024-01-01T00:00:00Z",
+        updated_at: "2024-01-01T00:00:00Z",
+        deleted_at: null,
+        regions: [
+          {
+            region_id: 1,
+            region_name: "us-east-1",
+            is_active: true,
+            sync_status: "synced",
+            sync_error: null,
+            synced_at: "2024-01-01T01:00:00Z",
+          },
+          {
+            region_id: 2,
+            region_name: "us-west-2",
+            is_active: false,
+            sync_status: "synced",
+            sync_error: null,
+            synced_at: null,
+          }
+        ],
+      },
+      {
+        id: 2,
+        model_id: "openai/gpt-4o-mini",
+        display_name: "GPT-4o Mini",
+        provider: "openai",
+        type: "chat",
+        context_length: 128000,
+        max_output_tokens: 16384,
+        description: "OpenAI's fast, cost-efficient small model",
+        real_eol: null,
+        override_eol: "2026-06-30T00:00:00Z",
+        is_active_globally: true,
+        litellm_params: {},
+        created_at: "2024-02-01T00:00:00Z",
+        updated_at: "2024-02-01T00:00:00Z",
+        deleted_at: null,
+        regions: [
+          {
+            region_id: 1,
+            region_name: "us-east-1",
+            is_active: true,
+            sync_status: "synced",
+            sync_error: null,
+            synced_at: "2024-02-01T01:00:00Z",
+          }
+        ],
+      }
+    ]);
+  }),
+
+  http.post("http://localhost:8800/admin/models", async ({ request }) => {
+    const data = (await request.json()) as any;
+    return HttpResponse.json(
+      {
+        id: 3,
+        ...data,
+        regions: [
+          {
+            region_id: 1,
+            region_name: "us-east-1",
+            is_active: false,
+            sync_status: "synced",
+            sync_error: null,
+            synced_at: null,
+          }
+        ],
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        deleted_at: null,
+      },
+      { status: 201 }
+    );
+  }),
+
+  http.put("http://localhost:8800/admin/models/:id", async ({ request, params }) => {
+    const data = (await request.json()) as any;
+    return HttpResponse.json({
+      id: Number(params.id),
+      ...data,
+      regions: [
+        {
+          region_id: 1,
+          region_name: "us-east-1",
+          is_active: true,
+          sync_status: "synced",
+          sync_error: null,
+          synced_at: new Date().toISOString(),
+        }
+      ],
+      updated_at: new Date().toISOString(),
+    });
+  }),
+
+  http.delete("http://localhost:8800/admin/models/:id", ({ params }) => {
+    return HttpResponse.json({
+      id: Number(params.id),
+      model_id: "meta-llama/llama-3-70b-instruct",
+      display_name: "Llama 3 70B",
+      provider: "meta",
+      type: "chat",
+      context_length: 128000,
+      max_output_tokens: 4096,
+      description: "Meta's flagship open-weights model",
+      real_eol: "2026-12-31T23:59:59Z",
+      override_eol: null,
+      is_active_globally: false,
+      litellm_params: {},
+      created_at: "2024-01-01T00:00:00Z",
+      updated_at: new Date().toISOString(),
+      deleted_at: new Date().toISOString(),
+      regions: [
+        {
+          region_id: 1,
+          region_name: "us-east-1",
+          is_active: false,
+          sync_status: "synced",
+          sync_error: null,
+          synced_at: "2024-01-01T01:00:00Z",
+        }
+      ],
+    });
+  }),
+
+  http.post("http://localhost:8800/admin/models/region-toggle", async ({ request }) => {
+    const data = (await request.json()) as any;
+    return HttpResponse.json({
+      success: true,
+      model_id: data.model_id,
+      region_id: data.region_id,
+      is_active: data.is_active,
     });
   }),
 

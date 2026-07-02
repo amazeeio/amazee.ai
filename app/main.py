@@ -5,6 +5,7 @@ from urllib.parse import urlparse
 
 from app.__version__ import __version__
 from app.api import (
+    admin_models,
     audit,
     auth,
     billing,
@@ -109,6 +110,9 @@ default_origins = [
     "http://localhost:3000",
     "http://localhost:3001",
     "http://localhost:8800",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
+    "http://127.0.0.1:8800",
 ]
 
 
@@ -213,6 +217,7 @@ app.include_router(
 app.include_router(limits.router, prefix="/limits", tags=["limits"])
 app.include_router(budgets.router, prefix="/budgets", tags=["budgets"])
 app.include_router(spend.router, prefix="/spend", tags=["spend"])
+app.include_router(admin_models.router)
 
 
 @app.get("/", include_in_schema=False)
