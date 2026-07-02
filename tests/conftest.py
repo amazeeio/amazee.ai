@@ -137,23 +137,6 @@ def test_team(db):
     db.add(team)
     db.commit()
     db.refresh(team)
-
-    existing_public_regions = (
-        db.query(DBRegion)
-        .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
-        .all()
-    )
-    for region in existing_public_regions:
-        exists = (
-            db.query(DBTeamRegion)
-            .filter(
-                DBTeamRegion.team_id == team.id, DBTeamRegion.region_id == region.id
-            )
-            .first()
-        )
-        if not exists:
-            db.add(DBTeamRegion(team_id=team.id, region_id=region.id))
-    db.commit()
     return team
 
 
@@ -276,6 +259,8 @@ def test_region(db):
     db.commit()
     db.refresh(region)
 
+    # Preserve historical fixture behavior: active non-dedicated teams are
+    # associated to the public test region, but team.region_id stays untouched.
     teams = (
         db.query(DBTeam)
         .filter(

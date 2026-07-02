@@ -178,16 +178,16 @@ async def list_regions(
             .all()
         )
 
-    # Team members can only see their team's explicitly assigned regions.
-    return (
+    # Team members can only see their team's single assigned region.
+    team = db.query(DBTeam).filter(DBTeam.id == current_user.team_id).first()
+    if not team or not team.region_id:
+        return []
+    region = (
         db.query(DBRegion)
-        .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
-        .filter(
-            DBRegion.is_active.is_(True),
-            DBTeamRegion.team_id == current_user.team_id,
-        )
-        .all()
+        .filter(DBRegion.id == team.region_id, DBRegion.is_active.is_(True))
+        .first()
     )
+    return [region] if region else []
 
 
 @router.get(
@@ -347,8 +347,10 @@ async def _associate_team_with_region(
             detail="Team is already associated with this region",
         )
 
+    previous_region_id = team.region_id
     team_region = DBTeamRegion(team_id=team_id, region_id=region_id)
     db.add(team_region)
+    team.region_id = region_id
 
     try:
         db.commit()
@@ -398,7 +400,8 @@ async def _associate_team_with_region(
             )
             if persisted_association is not None:
                 db.delete(persisted_association)
-                db.commit()
+            team.region_id = previous_region_id
+            db.commit()
         except Exception:
             db.rollback()
             logger.exception(
@@ -414,11 +417,12 @@ async def _associate_team_with_region(
     try:
         team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
         for team_user in team_users:
+            # team.region_id is already updated — sync_add_user_to_team will
+            # resolve the region from the team automatically.
             await sync_add_user_to_team(
                 db=db,
                 db_user=team_user,
                 team_id=team_id,
-                force_regions=[region],
             )
     except Exception as e:
         logger.error(
@@ -438,7 +442,8 @@ async def _associate_team_with_region(
             )
             if persisted_association is not None:
                 db.delete(persisted_association)
-                db.commit()
+            team.region_id = previous_region_id
+            db.commit()
         except Exception:
             db.rollback()
             logger.exception(
@@ -460,6 +465,14 @@ async def _disassociate_team_from_region(
     team_id: int,
     db: Session,
 ) -> dict[str, str]:
+    # Prevent removing a team's primary region.
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if team and team.region_id == region_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot disassociate team's primary region",
+        )
+
     association = (
         db.query(DBTeamRegion)
         .filter(DBTeamRegion.team_id == team_id, DBTeamRegion.region_id == region_id)
@@ -491,7 +504,7 @@ async def _disassociate_team_from_region(
                 db=db,
                 db_user=team_user,
                 team_id=team_id,
-                force_regions=[region],
+                region=region,
             )
     except Exception as e:
         try:
