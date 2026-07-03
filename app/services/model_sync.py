@@ -123,6 +123,8 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
                 try:
                     db.rollback()
                 except Exception:
+                    # Best-effort rollback during error handling; ignore rollback
+                    # failures here and let finally close the session.
                     pass
         
     finally:
