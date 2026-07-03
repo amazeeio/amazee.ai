@@ -1397,6 +1397,13 @@ async def get_key_last_used(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
 
+    if not key.litellm_token:
+        return KeyLastUsedResponse(
+            region_id=region_id,
+            key_id=key_id,
+            last_used_at=None,
+        )
+
     last_used_at = await service.get_key_last_used(key.litellm_token)
 
     return KeyLastUsedResponse(
