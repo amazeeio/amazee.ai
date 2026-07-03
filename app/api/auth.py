@@ -303,6 +303,11 @@ async def register(request: Request, user: UserCreate, db: Session = Depends(get
     After registration, you'll need to login to get an access token.
     """
     auth_logger.info(f"Registration attempt for user: {user.email}")
+    # Self-registration is anonymous: never trust role/team_id from the body,
+    # or a stranger could register straight into a victim's team or as an admin.
+    # Team membership and roles are assigned only via the authenticated flows.
+    user.role = None
+    user.team_id = None
     # Normalize plus-tags so registrations collapse to the canonical identity.
     user.email = normalize_email_for_lookup(user.email)
     # Check if user with this email exists
