@@ -300,14 +300,27 @@ async def update_team(
     if not db_team:
         raise HTTPException(status_code=404, detail="Team not found")
 
-    # Check if trying to update is_always_free without system admin privileges
-    if team_update.is_always_free is not None and not current_user.is_admin:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only system administrators can toggle always-free status",
-        )
-
     update_data = team_update.model_dump(exclude_unset=True)
+
+    # Fields that change a team's billing/payment posture or account status may
+    # only be set by system admins. A team admin flipping these (e.g.
+    # require_purchase_for_requests) would bypass the pool-purchase payment gate.
+    admin_only_fields = {
+        "is_always_free",
+        "budget_type",
+        "require_purchase_for_requests",
+        "is_active",
+    }
+    if not current_user.is_admin:
+        forbidden = admin_only_fields & update_data.keys()
+        if forbidden:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Only system administrators can modify: "
+                    + ", ".join(sorted(forbidden))
+                ),
+            )
 
     # Update team fields
     for key, value in update_data.items():
