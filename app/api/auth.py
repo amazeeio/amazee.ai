@@ -444,8 +444,10 @@ def send_validation_code(email: str, db: Session) -> None:
     Raises:
         HTTPException: If email sending fails
     """
-    # Ensure email is lowercased for consistency
-    email = email.lower()
+    # Deliver the code to the SAME normalized address it is stored and validated
+    # under. Otherwise a "+tag" variant that normalizes to the victim could route
+    # a valid code to a different inbox and pre-hijack the canonical identity (M4).
+    email = normalize_email_for_lookup(email)
 
     # Generate and store validation code
     code = generate_validation_token(email)
