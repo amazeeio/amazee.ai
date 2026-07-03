@@ -1,5 +1,7 @@
 import pytest
 import asyncio
+import hashlib
+from datetime import datetime, timezone
 from unittest.mock import patch, AsyncMock, Mock
 from fastapi import HTTPException
 from app.services.litellm import LiteLLMService
@@ -935,8 +937,6 @@ def test_get_team_model_aliases_team_list_fallback_returns_none_when_not_found(
 
 def test_hash_token_hashes_sk_keys():
     """sk- keys are SHA-256 hashed the way LiteLLM stores them."""
-    import hashlib
-
     token = "sk-abc123"
     expected = hashlib.sha256(token.encode()).hexdigest()
     assert LiteLLMService.hash_token(token) == expected
@@ -945,6 +945,91 @@ def test_hash_token_hashes_sk_keys():
 def test_hash_token_passes_through_non_sk_tokens():
     """Tokens that are not sk- keys are returned unchanged."""
     assert LiteLLMService.hash_token("already-hashed-token") == "already-hashed-token"
+
+
+@patch("httpx.AsyncClient")
+def test_get_key_last_used_returns_latest_start_time(mock_client_class, test_region):
+    """The most recent spend log startTime is returned as a datetime."""
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "data": [{"startTime": "2025-06-15T10:30:00.123000Z"}],
+        "total": 42,
+        "page": 1,
+        "page_size": 1,
+        "total_pages": 42,
+    }
+    mock_response.raise_for_status.return_value = None
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    result = asyncio.run(service.get_key_last_used("sk-abc123"))
+
+    assert result == datetime(2025, 6, 15, 10, 30, 0, 123000, tzinfo=timezone.utc)
+
+    # Filters by the hashed token and requests only the single latest row.
+    call = mock_client.get.call_args
+    assert call.args[0] == f"{test_region.litellm_api_url}/spend/logs/v2"
+    params = call.kwargs["params"]
+    assert params["api_key"] == hashlib.sha256(b"sk-abc123").hexdigest()
+    assert params["page_size"] == 1
+    assert params["start_date"] == "1970-01-01 00:00:00"
+
+
+@patch("httpx.AsyncClient")
+def test_get_key_last_used_returns_none_when_never_used(mock_client_class, test_region):
+    """A key with no spend logs yields None."""
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "data": [],
+        "total": 0,
+        "page": 1,
+        "page_size": 1,
+        "total_pages": 0,
+    }
+    mock_response.raise_for_status.return_value = None
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    result = asyncio.run(service.get_key_last_used("sk-abc123"))
+
+    assert result is None
+
+
+@patch("httpx.AsyncClient")
+def test_get_key_last_used_failure(
+    mock_client_class, test_region, mock_httpx_failure_client
+):
+    """A LiteLLM error is surfaced as an HTTPException."""
+    mock_client_class.return_value = mock_httpx_failure_client(
+        500, "Internal Server Error"
+    )
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(service.get_key_last_used("sk-abc123"))
+
+    assert "Failed to get LiteLLM key last-used time" in exc_info.value.detail
 
 
 def _daily_activity_page(results, has_more):
