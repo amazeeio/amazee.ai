@@ -285,9 +285,10 @@ class LiteLLMService:
         hashed_token = self.hash_token(litellm_token)
         results: list[dict] = []
         page = 1
+        max_pages = 100
         try:
             async with httpx.AsyncClient() as client:
-                while True:
+                while page <= max_pages:
                     response = await client.get(
                         f"{self.api_url}/user/daily/activity",
                         headers={"Authorization": f"Bearer {self.master_key}"},
