@@ -39,6 +39,8 @@ from app.schemas.limits import OwnerType, ResourceType
 from app.api.users import invalidate_user_spend_cache
 from app.schemas.models import (
     BudgetType,
+    KeyDailyActivityResponse,
+    KeyDailyActivityRow,
     KeyLastUsedResponse,
     PrivateAIKeySpend,
     SpendBudgetUpdateRequest,
@@ -1403,6 +1405,106 @@ async def get_key_last_used(
         region_id=region_id,
         key_id=key_id,
         last_used_at=last_used_at,
+    )
+
+
+@router.get(
+    "/{region_id}/key/{key_id}/daily-activity",
+    response_model=KeyDailyActivityResponse,
+    summary="Get key daily activity by region",
+    description=(
+        "Returns per-day usage (spend, tokens and request count) for a specific "
+        "key in the specified region across the requested date range. Proxies "
+        "LiteLLM's `/user/daily/activity`, filtered to this key. Days with no "
+        "usage are omitted from the response."
+    ),
+    response_description="Per-day usage rows for the key, ordered by date.",
+)
+async def get_key_daily_activity(
+    region_id: int,
+    key_id: int,
+    start_date: date = Query(
+        ..., description="Start date (inclusive), formatted YYYY-MM-DD."
+    ),
+    end_date: date = Query(
+        ..., description="End date (inclusive), formatted YYYY-MM-DD."
+    ),
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="start_date must be on or before end_date",
+        )
+
+    key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
+    if not key:
+        raise HTTPException(status_code=404, detail="Private AI Key not found")
+    if key.region_id != region_id:
+        raise HTTPException(
+            status_code=404, detail="Private AI Key not found in region"
+        )
+
+    # Reuse authorization semantics from get_key_spend_alias.
+    if current_user.is_admin:
+        pass
+    elif user_role in [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR, UserRole.READ_ONLY]:
+        if key.team_id is not None:
+            if key.team_id != current_user.team_id:
+                raise HTTPException(status_code=404, detail="Private AI Key not found")
+        else:
+            owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
+            if not owner or owner.team_id != current_user.team_id:
+                raise HTTPException(status_code=404, detail="Private AI Key not found")
+    else:
+        if key.owner_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Private AI Key not found")
+
+    region = _get_region_or_404(db, region_id)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+
+    rows = await service.get_daily_activity(
+        litellm_token=key.litellm_token,
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+    )
+
+    activity: list[KeyDailyActivityRow] = []
+    for row in rows:
+        if not row.get("date"):
+            continue
+        metrics = row.get("metrics") or {}
+        spend_val = metrics.get("spend")
+        activity.append(
+            KeyDailyActivityRow(
+                date=row["date"],
+                spend=spend_val if spend_val is not None else 0.0,
+                prompt_tokens=metrics.get("prompt_tokens")
+                if metrics.get("prompt_tokens") is not None
+                else 0,
+                completion_tokens=metrics.get("completion_tokens")
+                if metrics.get("completion_tokens") is not None
+                else 0,
+                total_tokens=metrics.get("total_tokens")
+                if metrics.get("total_tokens") is not None
+                else 0,
+                request_count=metrics.get("api_requests")
+                if metrics.get("api_requests") is not None
+                else 0,
+            )
+        )
+    activity.sort(key=lambda r: r.date)
+
+    return KeyDailyActivityResponse(
+        region_id=region_id,
+        key_id=key_id,
+        start_date=start_date,
+        end_date=end_date,
+        activity=activity,
     )
 
 
