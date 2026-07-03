@@ -1422,14 +1422,15 @@ async def get_key_daily_activity(
         if not row.get("date"):
             continue
         metrics = row.get("metrics") or {}
+        spend_val = metrics.get("spend")
         activity.append(
             KeyDailyActivityRow(
                 date=row["date"],
-                spend=metrics.get("spend") or 0.0,
-                prompt_tokens=metrics.get("prompt_tokens") or 0,
-                completion_tokens=metrics.get("completion_tokens") or 0,
-                total_tokens=metrics.get("total_tokens") or 0,
-                request_count=metrics.get("api_requests") or 0,
+                spend=spend_val if spend_val is not None else 0.0,
+                prompt_tokens=metrics.get("prompt_tokens") if metrics.get("prompt_tokens") is not None else 0,
+                completion_tokens=metrics.get("completion_tokens") if metrics.get("completion_tokens") is not None else 0,
+                total_tokens=metrics.get("total_tokens") if metrics.get("total_tokens") is not None else 0,
+                request_count=metrics.get("api_requests") if metrics.get("api_requests") is not None else 0,
             )
         )
     activity.sort(key=lambda r: r.date)
