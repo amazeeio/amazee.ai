@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from pydantic import ConfigDict, field_validator
+from pydantic import ConfigDict, Field, field_validator
 import os
 
 
@@ -11,7 +11,10 @@ class Settings(BaseSettings):
     DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
 
     # JWT settings
-    SECRET_KEY: str = os.environ["AMAZEEAI_JWT_SECRET"]
+    # Bind ONLY to AMAZEEAI_JWT_SECRET. Using an explicit validation_alias stops
+    # a bare SECRET_KEY env var (e.g. the Helm default) from silently overriding
+    # the real signing key. Required: startup fails if the secret is unset.
+    SECRET_KEY: str = Field(validation_alias="AMAZEEAI_JWT_SECRET")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60  # Increase to 60 minutes
 
@@ -83,6 +86,15 @@ class Settings(BaseSettings):
     model_config = ConfigDict(env_file=".env", extra="ignore")
     main_route: str = os.getenv("LAGOON_ROUTE", "http://localhost:8800")
     frontend_route: str = os.getenv("FRONTEND_ROUTE", "http://localhost:3000")
+
+    @field_validator("SECRET_KEY")
+    @classmethod
+    def reject_default_jwt_secret(cls, value):
+        if not value or value in ("my-secret-key", "test-secret-key"):
+            raise ValueError(
+                "AMAZEEAI_JWT_SECRET must be set to a strong, non-default value."
+            )
+        return value
 
     @field_validator(
         "DEDICATED_DEFAULT_USER_COUNT",

@@ -209,7 +209,7 @@ helm install amazee-ai . -n amazee-ai --create-namespace \
 | `backend.image.tag` | Backend image tag | `dev` |
 | `backend.image.pullPolicy` | Backend image pull policy | `IfNotPresent` |
 | `backend.database.url` | Database connection URL (auto-generated if empty) | `""` |
-| `backend.secretKey` | Key used to hash passwords stored in the database | `my-secret-key` |
+| `backend.secretKey` | JWT signing secret (`AMAZEEAI_JWT_SECRET`). **Required**, no default. | `""` |
 | `backend.stripeSecretKey` | Stripe secret key | `sk_test_your_stripe_secret_key` |
 | `backend.webhookSig` | Webhook signature (only needed for local development with Stripe CLI) | `""` |
 | `backend.awsAccessKeyId` | AWS access key ID | `your_aws_access_key` |

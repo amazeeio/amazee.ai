@@ -33,7 +33,7 @@ spec:
                 configMapKeyRef:
                   name: {{ include "backend.fullname" . }}-config
                   key: DATABASE_URL
-            - name: SECRET_KEY
+            - name: AMAZEEAI_JWT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: {{ include "backend.fullname" . }}-secret
