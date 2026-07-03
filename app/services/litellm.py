@@ -296,6 +296,8 @@ class LiteLLMService:
                         "end_date": end_date,
                         "page": 1,
                         "page_size": 1,
+                        "sort_by": "startTime",
+                        "sort_order": "desc",
                     },
                 )
                 response.raise_for_status()
