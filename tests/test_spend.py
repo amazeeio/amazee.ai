@@ -169,6 +169,94 @@ def test_key_spend_alias(
     assert data["total_tokens"] == 1500
 
 
+@patch("app.api.spend.LiteLLMService.get_key_last_used", new_callable=AsyncMock)
+def test_key_last_used(
+    mock_get_key_last_used, client, team_admin_token, test_team_user, test_region, db
+):
+    key = DBPrivateAIKey(
+        name="last-used-key",
+        litellm_token="sk-last-used-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team_user.team_id,
+    )
+    db.add(key)
+    db.commit()
+
+    mock_get_key_last_used.return_value = datetime(2025, 6, 15, 10, 30, 0, tzinfo=UTC)
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/last-used",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["region_id"] == test_region.id
+    assert data["key_id"] == key.id
+    returned = datetime.fromisoformat(data["last_used_at"].replace("Z", "+00:00"))
+    assert returned == datetime(2025, 6, 15, 10, 30, 0, tzinfo=UTC)
+
+    mock_get_key_last_used.assert_awaited_once()
+    assert mock_get_key_last_used.await_args.args[0] == "sk-last-used-token"
+
+
+@patch("app.api.spend.LiteLLMService.get_key_last_used", new_callable=AsyncMock)
+def test_key_last_used_never_used(
+    mock_get_key_last_used, client, team_admin_token, test_team_user, test_region, db
+):
+    key = DBPrivateAIKey(
+        name="never-used-key",
+        litellm_token="sk-never-used-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team_user.team_id,
+    )
+    db.add(key)
+    db.commit()
+    mock_get_key_last_used.return_value = None
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/last-used",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["last_used_at"] is None
+
+
+@patch("app.api.spend.LiteLLMService.get_key_last_used", new_callable=AsyncMock)
+def test_key_last_used_key_not_found(
+    mock_get_key_last_used, client, team_admin_token, test_region
+):
+    response = client.get(
+        f"/spend/{test_region.id}/key/999999/last-used",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 404
+    mock_get_key_last_used.assert_not_awaited()
+
+
+@patch("app.api.spend.LiteLLMService.get_key_last_used", new_callable=AsyncMock)
+def test_key_last_used_forbidden_other_owner(
+    mock_get_key_last_used, client, test_token, test_admin, test_region, db
+):
+    # Key owned by another user (the admin), no team; requested by test_user.
+    key = DBPrivateAIKey(
+        name="last-used-other-owner-key",
+        litellm_token="sk-other-owner-token",
+        region_id=test_region.id,
+        owner_id=test_admin.id,
+    )
+    db.add(key)
+    db.commit()
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/last-used",
+        headers={"Authorization": f"Bearer {test_token}"},
+    )
+    assert response.status_code == 404
+    mock_get_key_last_used.assert_not_awaited()
+
+
 @patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
 def test_key_daily_activity(
     mock_get_daily_activity, client, team_admin_token, test_team_user, test_region, db

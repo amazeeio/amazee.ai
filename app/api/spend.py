@@ -41,6 +41,7 @@ from app.schemas.models import (
     BudgetType,
     KeyDailyActivityResponse,
     KeyDailyActivityRow,
+    KeyLastUsedResponse,
     PrivateAIKeySpend,
     SpendBudgetUpdateRequest,
     SpendBudgetUpdateResponse,
@@ -1353,6 +1354,68 @@ async def get_key_spend_alias(
 
 
 @router.get(
+    "/{region_id}/key/{key_id}/last-used",
+    response_model=KeyLastUsedResponse,
+    summary="Get key last-used time by region",
+    description=(
+        "Returns the timestamp a specific key was last used in the given region, "
+        "derived from LiteLLM spend logs (the most recent request time). "
+        "`last_used_at` is null when the key has never been used."
+    ),
+    response_description="Last-used timestamp for the key.",
+)
+async def get_key_last_used(
+    region_id: int,
+    key_id: int,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
+    if not key:
+        raise HTTPException(status_code=404, detail="Private AI Key not found")
+    if key.region_id != region_id:
+        raise HTTPException(
+            status_code=404, detail="Private AI Key not found in region"
+        )
+
+    # Reuse authorization semantics from get_key_spend_alias.
+    if current_user.is_admin:
+        pass
+    elif user_role in [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR, UserRole.READ_ONLY]:
+        if key.team_id is not None:
+            if key.team_id != current_user.team_id:
+                raise HTTPException(status_code=404, detail="Private AI Key not found")
+        else:
+            owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
+            if not owner or owner.team_id != current_user.team_id:
+                raise HTTPException(status_code=404, detail="Private AI Key not found")
+    else:
+        if key.owner_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Private AI Key not found")
+
+    region = _get_region_or_404(db, region_id)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+
+    if not key.litellm_token:
+        return KeyLastUsedResponse(
+            region_id=region_id,
+            key_id=key_id,
+            last_used_at=None,
+        )
+
+    last_used_at = await service.get_key_last_used(key.litellm_token)
+
+    return KeyLastUsedResponse(
+        region_id=region_id,
+        key_id=key_id,
+        last_used_at=last_used_at,
+    )
+
+
+@router.get(
     "/{region_id}/key/{key_id}/daily-activity",
     response_model=KeyDailyActivityResponse,
     summary="Get key daily activity by region",
@@ -1427,10 +1490,18 @@ async def get_key_daily_activity(
             KeyDailyActivityRow(
                 date=row["date"],
                 spend=spend_val if spend_val is not None else 0.0,
-                prompt_tokens=metrics.get("prompt_tokens") if metrics.get("prompt_tokens") is not None else 0,
-                completion_tokens=metrics.get("completion_tokens") if metrics.get("completion_tokens") is not None else 0,
-                total_tokens=metrics.get("total_tokens") if metrics.get("total_tokens") is not None else 0,
-                request_count=metrics.get("api_requests") if metrics.get("api_requests") is not None else 0,
+                prompt_tokens=metrics.get("prompt_tokens")
+                if metrics.get("prompt_tokens") is not None
+                else 0,
+                completion_tokens=metrics.get("completion_tokens")
+                if metrics.get("completion_tokens") is not None
+                else 0,
+                total_tokens=metrics.get("total_tokens")
+                if metrics.get("total_tokens") is not None
+                else 0,
+                request_count=metrics.get("api_requests")
+                if metrics.get("api_requests") is not None
+                else 0,
             )
         )
     activity.sort(key=lambda r: r.date)
