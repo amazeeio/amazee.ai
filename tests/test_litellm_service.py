@@ -931,3 +931,98 @@ def test_get_team_model_aliases_team_list_fallback_returns_none_when_not_found(
     aliases = asyncio.run(service.get_team_model_aliases("team-1"))
 
     assert aliases == {}
+
+
+def test_hash_token_hashes_sk_keys():
+    """sk- keys are SHA-256 hashed the way LiteLLM stores them."""
+    import hashlib
+
+    token = "sk-abc123"
+    expected = hashlib.sha256(token.encode()).hexdigest()
+    assert LiteLLMService.hash_token(token) == expected
+
+
+def test_hash_token_passes_through_non_sk_tokens():
+    """Tokens that are not sk- keys are returned unchanged."""
+    assert LiteLLMService.hash_token("already-hashed-token") == "already-hashed-token"
+
+
+def _daily_activity_page(results, has_more):
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "results": results,
+        "metadata": {"has_more": has_more},
+    }
+    mock_response.raise_for_status.return_value = None
+    return mock_response
+
+
+@patch("httpx.AsyncClient")
+def test_get_daily_activity_paginates_and_filters_by_hashed_key(
+    mock_client_class, test_region
+):
+    """get_daily_activity follows pagination and filters by the hashed token."""
+    page1 = _daily_activity_page(
+        [{"date": "2025-06-01", "metrics": {"spend": 1.0}}], has_more=True
+    )
+    page2 = _daily_activity_page(
+        [{"date": "2025-06-02", "metrics": {"spend": 2.0}}], has_more=False
+    )
+
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = [page1, page2]
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    results = asyncio.run(
+        service.get_daily_activity(
+            litellm_token="sk-abc123",
+            start_date="2025-06-01",
+            end_date="2025-06-02",
+        )
+    )
+
+    assert [r["date"] for r in results] == ["2025-06-01", "2025-06-02"]
+    assert mock_client.get.call_count == 2
+
+    import hashlib
+
+    expected_hash = hashlib.sha256(b"sk-abc123").hexdigest()
+    first_call = mock_client.get.call_args_list[0]
+    assert first_call.kwargs["params"]["api_key"] == expected_hash
+    assert first_call.kwargs["params"]["start_date"] == "2025-06-01"
+    assert first_call.kwargs["params"]["end_date"] == "2025-06-02"
+    assert first_call.kwargs["params"]["page"] == 1
+    # Second page requested when has_more is True.
+    assert mock_client.get.call_args_list[1].kwargs["params"]["page"] == 2
+
+
+@patch("httpx.AsyncClient")
+def test_get_daily_activity_failure(
+    mock_client_class, test_region, mock_httpx_failure_client
+):
+    """A LiteLLM error is surfaced as an HTTPException."""
+    mock_client_class.return_value = mock_httpx_failure_client(
+        500, "Internal Server Error"
+    )
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            service.get_daily_activity(
+                litellm_token="sk-abc123",
+                start_date="2025-06-01",
+                end_date="2025-06-02",
+            )
+        )
+
+    assert "Failed to get LiteLLM daily activity" in exc_info.value.detail
