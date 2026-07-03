@@ -797,6 +797,23 @@ async def generate_trial_access(
 
         # Find the admin user of the team
         if team:
+            # Enforce a hard cap on trial users. The trial team's admin does not
+            # count against the cap. Without this the unauthenticated endpoint
+            # mints unlimited free AI keys (H3).
+            trial_user_count = (
+                db.query(func.count(DBUser.id))
+                .filter(
+                    DBUser.team_id == team.id,
+                    DBUser.role != UserRole.ADMIN,
+                )
+                .scalar()
+            )
+            if trial_user_count >= settings.AI_TRIAL_MAX_USERS:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Trial capacity reached. Please contact sales to continue.",
+                )
+
             admin_user = (
                 db.query(DBUser)
                 .filter(DBUser.team_id == team.id, DBUser.role == UserRole.ADMIN)
@@ -910,6 +927,9 @@ async def generate_trial_access(
             team_name=team.name,
         )
 
+    except HTTPException:
+        # Intentional HTTP errors (e.g. trial cap 429) must not be masked as 500.
+        raise
     except Exception as e:
         auth_logger.error(f"Failed to create anonymous trial account: {e}")
         # Log which line of code or the full stack

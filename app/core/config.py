@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     SES_REGION: str = "eu-west-1"
     ENABLE_LIMITS: bool = os.getenv("ENABLE_LIMITS", "false") == "true"
     AI_TRIAL_MAX_BUDGET: float = os.getenv("AI_TRIAL_MAX_BUDGET", 2.0)
+    # Hard ceiling on total trial users. The trial endpoint is unauthenticated,
+    # so this bounds free-key farming / provisioning DoS regardless of request
+    # rate. Per-IP throttling is expected at the ingress/edge.
+    AI_TRIAL_MAX_USERS: int = int(os.getenv("AI_TRIAL_MAX_USERS", "1000"))
     AI_TRIAL_TEAM_EMAIL: str = os.getenv(
         "AI_TRIAL_TEAM_EMAIL", "anonymous-trial-user@example.com"
     )
