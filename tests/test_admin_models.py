@@ -769,8 +769,20 @@ def test_admin_list_importable_models(mock_litellm_class, client, admin_token, t
     assert model["credential_keys"] == ["api_key"]
 
 
-def test_admin_import_model_success(client, admin_token, test_region, db):
-    """Test importing a model from regional LiteLLM instance."""
+@patch("app.services.litellm.LiteLLMService")
+def test_admin_import_model_success(mock_litellm_class, client, admin_token, test_region, db):
+    """Test importing a model: litellm_params come from the region proxy, not the client."""
+    proxy_params = {
+        "model": "azure/gpt-4o",
+        "api_key": "sk-proxy-secret",
+        "api_base": "https://custom-azure-endpoint.openai.azure.com/"
+    }
+    mock_instance = MagicMock()
+    mock_instance.get_model_info = AsyncMock(return_value={
+        "data": [{"model_name": "azure/gpt-4o-existing", "litellm_params": proxy_params}]
+    })
+    mock_litellm_class.return_value = mock_instance
+
     payload = {
         "model_id": "azure/gpt-4o-existing",
         "display_name": "Azure GPT-4o Existing",
@@ -780,11 +792,8 @@ def test_admin_import_model_success(client, admin_token, test_region, db):
         "max_output_tokens": 4096,
         "description": "An existing Azure GPT-4o model",
         "is_active_globally": True,
-        "litellm_params": {
-            "model": "azure/gpt-4o",
-            "api_key": "os.environ/AZURE_API_KEY",
-            "api_base": "https://custom-azure-endpoint.openai.azure.com/"
-        },
+        # Client-supplied params must be ignored in favor of the proxy's
+        "litellm_params": {"api_key": "attacker-controlled"},
         "region_id": test_region.id
     }
 
@@ -798,11 +807,14 @@ def test_admin_import_model_success(client, admin_token, test_region, db):
     data = response.json()
     assert data["model_id"] == "azure/gpt-4o-existing"
     assert data["display_name"] == "Azure GPT-4o Existing"
-    
-    # Verify DB entry and association are created
+    # Response must not leak the credential value
+    assert data["litellm_params"] is None or data["litellm_params"].get("api_key") != "sk-proxy-secret"
+
+    # Verify DB entry stores the proxy's params, not the client's
     db_model = db.query(DBModel).filter(DBModel.model_id == "azure/gpt-4o-existing").first()
     assert db_model is not None
     assert db_model.display_name == "Azure GPT-4o Existing"
+    assert db_model.litellm_params == proxy_params
 
     # Verify model is associated with the region and set to synced
     association = db.query(DBModelRegion).filter(
@@ -812,6 +824,130 @@ def test_admin_import_model_success(client, admin_token, test_region, db):
     assert association is not None
     assert association.is_active is True
     assert association.sync_status == "synced"
+
+
+@patch("app.services.litellm.LiteLLMService")
+def test_admin_import_model_absent_from_proxy_rejected(mock_litellm_class, client, admin_token, test_region, db):
+    """Importing a model the region proxy doesn't know must fail, not be marked synced."""
+    mock_instance = MagicMock()
+    mock_instance.get_model_info = AsyncMock(return_value={"data": []})
+    mock_litellm_class.return_value = mock_instance
+
+    response = client.post(
+        "/admin/models/import",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "model_id": "ghost-model",
+            "display_name": "Ghost",
+            "provider": "openai",
+            "type": "chat",
+            "region_id": test_region.id
+        }
+    )
+
+    assert response.status_code == 400
+    assert "not found in region" in response.json()["detail"]
+    assert db.query(DBModel).filter(DBModel.model_id == "ghost-model").first() is None
+
+
+def test_admin_get_model_redacts_credentials(client, admin_token, db):
+    """Detail endpoint must redact credential values but keep keys and os.environ/ refs visible."""
+    m = DBModel(
+        model_id="redaction-test-model",
+        display_name="Redaction Test",
+        provider="openai",
+        type="chat",
+        litellm_params={
+            "model": "gpt-4o",
+            "api_key": "sk-super-secret",
+            "azure_api_key": "os.environ/AZURE_API_KEY",
+            "vertex_credentials": '{"private_key": "-----BEGIN PRIVATE KEY-----"}',
+            "extra_headers": {"x-api-key": "hdr-secret", "x-trace": "abc"},
+            "max_tokens": 8192,
+            "temperature": 0.5,
+        },
+    )
+    db.add(m)
+    db.commit()
+
+    response = client.get(
+        f"/admin/models/{m.id}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200
+    params = response.json()["litellm_params"]
+    assert params["api_key"] == "********"
+    assert params["azure_api_key"] == "os.environ/AZURE_API_KEY"
+    assert params["vertex_credentials"] == "********"
+    assert params["extra_headers"]["x-api-key"] == "********"
+    assert params["extra_headers"]["x-trace"] == "abc"
+    assert params["max_tokens"] == 8192  # numeric values are never redacted
+    assert params["model"] == "gpt-4o"
+    assert params["temperature"] == 0.5
+    assert "sk-super-secret" not in response.text
+    assert "hdr-secret" not in response.text
+    assert "PRIVATE KEY" not in response.text
+
+
+def test_admin_update_model_sentinel_preserves_credentials(client, admin_token, db):
+    """PUT with the redaction sentinel keeps the stored secret; a real value overwrites it."""
+    m = DBModel(
+        model_id="sentinel-test-model",
+        display_name="Sentinel Test",
+        provider="openai",
+        type="chat",
+        litellm_params={"model": "gpt-4o", "api_key": "sk-original"},
+    )
+    db.add(m)
+    db.commit()
+
+    # Round-trip the redacted params (as the edit dialog does): secret must survive
+    response = client.put(
+        f"/admin/models/{m.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"litellm_params": {"model": "gpt-4o", "api_key": "********", "temperature": 0.2}}
+    )
+    assert response.status_code == 200
+    db.refresh(m)
+    assert m.litellm_params["api_key"] == "sk-original"
+    assert m.litellm_params["temperature"] == 0.2
+
+    # A real new value overwrites
+    response = client.put(
+        f"/admin/models/{m.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"litellm_params": {"model": "gpt-4o", "api_key": "sk-rotated"}}
+    )
+    assert response.status_code == 200
+    db.refresh(m)
+    assert m.litellm_params["api_key"] == "sk-rotated"
+
+    # A sentinel for a key with no stored counterpart is dropped, not stored as null
+    response = client.put(
+        f"/admin/models/{m.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"litellm_params": {"model": "gpt-4o", "aws_secret_access_key": "********"}}
+    )
+    assert response.status_code == 200
+    db.refresh(m)
+    assert "aws_secret_access_key" not in m.litellm_params
+
+
+def test_admin_create_model_rejects_sentinel_params(client, admin_token):
+    """Pasting redacted params into the create form must not store the placeholder."""
+    response = client.post(
+        "/admin/models",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "model_id": "sentinel-create-model",
+            "display_name": "Sentinel Create",
+            "provider": "openai",
+            "type": "chat",
+            "litellm_params": {"model": "gpt-4o", "api_key": "********"},
+        }
+    )
+    assert response.status_code == 400
+    assert "redacted placeholder" in response.json()["detail"]
 
 
 
