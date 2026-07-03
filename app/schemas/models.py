@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ConfigDict, EmailStr, AfterValidator, Field
 from typing import Optional, List, ClassVar, Literal, Dict, Annotated, Any
-from datetime import datetime
+from datetime import date, datetime
 from sqlalchemy.orm import relationship
 from enum import Enum
 
@@ -580,6 +580,33 @@ class KeyLastUsedResponse(BaseModel):
             "Timestamp the key was last used, derived from LiteLLM spend logs. "
             "Null when the key has never been used."
         ),
+    )
+    model_config = ConfigDict(from_attributes=True)
+
+
+class KeyDailyActivityRow(BaseModel):
+    date: date
+    spend: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    request_count: int = Field(
+        default=0,
+        description="Number of API requests made with this key on this day.",
+    )
+    model_config = ConfigDict(from_attributes=True)
+
+
+class KeyDailyActivityResponse(BaseModel):
+    region_id: int
+    key_id: int
+    start_date: date
+    end_date: date
+    activity: List[KeyDailyActivityRow] = Field(
+        description=(
+            "Per-day usage rows for the key, ordered ascending by date. "
+            "Days with no usage are omitted."
+        )
     )
     model_config = ConfigDict(from_attributes=True)
 
