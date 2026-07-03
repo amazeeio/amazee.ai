@@ -571,6 +571,19 @@ class UserSpendResponse(BaseModel):
     keys: List[SpendKeyItem]
 
 
+class KeyLastUsedResponse(BaseModel):
+    region_id: int
+    key_id: int
+    last_used_at: Optional[datetime] = Field(
+        default=None,
+        description=(
+            "Timestamp the key was last used, derived from LiteLLM spend logs. "
+            "Null when the key has never been used."
+        ),
+    )
+    model_config = ConfigDict(from_attributes=True)
+
+
 class SpendBudgetUpdateRequest(BaseModel):
     max_budget: Optional[float] = Field(default=None, ge=0)
 
