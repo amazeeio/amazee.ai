@@ -16,7 +16,7 @@ database:
   name: "postgres_service"
 
 # Application configuration
-secretKey: "my-secret-key"  # Key used to hash passwords stored in the database
+secretKey: ""  # JWT signing secret (AMAZEEAI_JWT_SECRET). REQUIRED, no default — deploy fails if unset.
 stripeSecretKey: "sk_test_your_stripe_secret_key"
 webhookSig: ""  # Only needed for local development with Stripe CLI
 awsAccessKeyId: "your_aws_access_key"
