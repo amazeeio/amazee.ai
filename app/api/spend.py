@@ -1565,6 +1565,22 @@ async def update_team_budget(
                 "Use subscription renewal and periodic top-up purchase flows."
             ),
         )
+    # A non-purchase-gated POOL team skips the purchase clamp below, so a team
+    # admin could set an arbitrary max_budget with no payment. Restrict that to
+    # system admins (gated POOL teams remain clamped to purchased budget).
+    if (
+        team.budget_type == BudgetType.POOL
+        and not team.requires_pool_purchase_gate
+        and body.max_budget is not None
+        and not current_user.is_admin
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Only system administrators can set the budget for "
+                "non-purchase-gated pool teams."
+            ),
+        )
     if team.requires_pool_purchase_gate and body.max_budget is not None:
         effective_duration = _pool_team_budget_duration_for_enforcement(
             db=db, team_id=team_id, region_id=region_id
