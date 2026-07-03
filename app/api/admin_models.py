@@ -77,7 +77,7 @@ def _build_model_response(
         real_eol=db_model.real_eol,
         override_eol=db_model.override_eol,
         is_active_globally=db_model.is_active_globally,
-        litellm_params=None if mask_litellm_params else db_model.litellm_params,
+        litellm_params=None if mask_litellm_params else _redact_litellm_params(db_model.litellm_params),
         created_at=db_model.created_at,
         updated_at=db_model.updated_at,
         deleted_at=db_model.deleted_at,
@@ -147,6 +147,14 @@ async def create_model(
                 detail="Override EOL cannot be set after Real EOL date."
             )
 
+    # A literal sentinel here is pasted-from-a-redacted-response, not a credential —
+    # storing it would push "********" to LiteLLM as the real key.
+    if _contains_sentinel(model_in.litellm_params):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"litellm_params contains redacted placeholder values ('{CREDENTIAL_SENTINEL}'); provide real credentials."
+        )
+
     db_model = DBModel(
         model_id=model_in.model_id,
         display_name=model_in.display_name,
@@ -171,15 +179,75 @@ async def create_model(
 def _extract_credential_keys(litellm_params: dict) -> List[str]:
     if not litellm_params:
         return []
-    cred_keywords = {"key", "secret", "token", "password", "aws_access_key_id", "aws_secret_access_key", "api_key"}
     cred_keys = []
     for k, v in litellm_params.items():
-        k_lower = k.lower()
-        if any(kw in k_lower for kw in cred_keywords):
+        if _is_credential_key(k):
             cred_keys.append(k)
         elif isinstance(v, str) and v.startswith("os.environ/"):
             cred_keys.append(k)
     return sorted(list(set(cred_keys)))
+
+
+CREDENTIAL_SENTINEL = "********"
+
+_CRED_KEYWORDS = {"key", "secret", "token", "password", "credential"}
+
+
+def _is_credential_key(key: str) -> bool:
+    return any(kw in key.lower() for kw in _CRED_KEYWORDS)
+
+
+def _redact_litellm_params(litellm_params: Optional[dict]) -> Optional[dict]:
+    """Replace credential values with a sentinel so secrets never reach the browser.
+    Walks nested dicts (e.g. extra_headers, vertex_credentials wrappers).
+    os.environ/ values are references to proxy-side env vars, not secrets — keep them readable.
+    Only string values are redacted: keyword matching is broad (e.g. 'token' also
+    hits 'max_tokens'), so numeric config values must pass through.
+    """
+    if not litellm_params:
+        return litellm_params
+
+    def walk(d: dict) -> dict:
+        out = {}
+        for k, v in d.items():
+            if isinstance(v, dict):
+                out[k] = walk(v)
+            elif isinstance(v, str) and v.startswith("os.environ/"):
+                out[k] = v
+            elif isinstance(v, str) and _is_credential_key(k):
+                out[k] = CREDENTIAL_SENTINEL
+            else:
+                out[k] = v
+        return out
+
+    return walk(litellm_params)
+
+
+def _merge_credential_sentinels(new_params: dict, stored_params: Optional[dict]) -> dict:
+    """Resolve sentinel values in a client-submitted params dict against the stored
+    params (credentials are write-only: a sentinel means 'keep the stored value').
+    A sentinel with no stored counterpart is dropped rather than persisted as None.
+    """
+    stored = stored_params if isinstance(stored_params, dict) else {}
+    out = {}
+    for k, v in new_params.items():
+        if v == CREDENTIAL_SENTINEL:
+            if k in stored:
+                out[k] = stored[k]
+        elif isinstance(v, dict):
+            out[k] = _merge_credential_sentinels(v, stored.get(k))
+        else:
+            out[k] = v
+    return out
+
+
+def _contains_sentinel(params: Optional[dict]) -> bool:
+    for v in (params or {}).values():
+        if v == CREDENTIAL_SENTINEL:
+            return True
+        if isinstance(v, dict) and _contains_sentinel(v):
+            return True
+    return False
 
 
 @router.get("/importable", response_model=List[ImportableModelResponse])
@@ -288,7 +356,7 @@ async def list_importable_models(
                 context_length=context_length,
                 max_output_tokens=max_output_tokens,
                 description=description,
-                litellm_params=litellm_params,
+                litellm_params=_redact_litellm_params(litellm_params),
                 credential_keys=cred_keys,
             )
         )
@@ -351,7 +419,14 @@ async def update_model(
         )
 
     update_data = model_in.model_dump(exclude_unset=True)
-    
+
+    # Credentials are write-only: reads return CREDENTIAL_SENTINEL, so a sentinel
+    # coming back on update means "keep the stored value".
+    if update_data.get("litellm_params"):
+        update_data["litellm_params"] = _merge_credential_sentinels(
+            update_data["litellm_params"], db_model.litellm_params
+        )
+
     # Validate date constraints if dates are being modified
     target_real_eol = update_data.get("real_eol", db_model.real_eol)
     target_override_eol = update_data.get("override_eol", db_model.override_eol)
@@ -523,6 +598,38 @@ async def import_model(
             detail=f"Model with ID '{import_in.model_id}' already exists."
         )
 
+    # Fetch litellm_params server-side from the region's proxy. This both verifies
+    # the model actually exists there (so "synced" is honest) and keeps credentials
+    # out of the browser round-trip — client-supplied litellm_params are ignored.
+    from app.services.litellm import LiteLLMService
+    litellm_service = LiteLLMService(
+        api_url=region.litellm_api_url,
+        api_key=region.litellm_api_key
+    )
+    try:
+        litellm_data = await litellm_service.get_model_info()
+    except Exception as e:
+        logger.error(f"Failed to fetch model info from LiteLLM in region {region.name}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to communicate with LiteLLM proxy in region '{region.name}': {str(e)}"
+        )
+
+    model_entries = litellm_data.get("data", [])
+    proxy_entry = None
+    if isinstance(model_entries, list):
+        proxy_entry = next(
+            (entry for entry in model_entries
+             if isinstance(entry, dict) and entry.get("model_name") == import_in.model_id),
+            None,
+        )
+    if not proxy_entry:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Model '{import_in.model_id}' not found in region '{region.name}'."
+        )
+    litellm_params = proxy_entry.get("litellm_params", {}) or {}
+
     # Check if a soft-deleted model with this model_id exists, and restore it if so
     soft_deleted_model = db.query(DBModel).filter(
         DBModel.model_id == import_in.model_id,
@@ -542,7 +649,7 @@ async def import_model(
         db_model.real_eol = import_in.real_eol
         db_model.override_eol = import_in.override_eol
         db_model.is_active_globally = import_in.is_active_globally
-        db_model.litellm_params = import_in.litellm_params
+        db_model.litellm_params = litellm_params
         db_model.updated_at = datetime.now(UTC)
     else:
         # Create a new model
@@ -557,12 +664,13 @@ async def import_model(
             real_eol=import_in.real_eol,
             override_eol=import_in.override_eol,
             is_active_globally=import_in.is_active_globally,
-            litellm_params=import_in.litellm_params,
+            litellm_params=litellm_params,
         )
         db.add(db_model)
 
-    db.commit()
-    db.refresh(db_model)
+    # Flush (not commit) so db_model.id is assigned and the model + association
+    # commit atomically below.
+    db.flush()
 
     # Upsert the region association and mark as immediately synced,
     # since it was imported directly from this active region proxy.

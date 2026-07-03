@@ -196,8 +196,10 @@ export default function ModelsPage() {
       } else if (importSourceRegionId !== null) {
         // Model already exists in this region's LiteLLM; import marks it synced
         // without re-pushing config (avoids overwriting the live model).
+        // litellm_params are fetched server-side from the region proxy — never sent.
+        const { litellm_params: _ignored, ...importPayload } = payload;
         const response = await post("admin/models/import", {
-          ...payload,
+          ...importPayload,
           region_id: importSourceRegionId,
         });
         return response.json();
