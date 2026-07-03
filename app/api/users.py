@@ -816,6 +816,14 @@ async def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
             detail=f"Invalid role. Must be one of: {', '.join(UserRole.get_all_roles())}",
         )
 
+    # This path always creates non-admin users (is_admin=False below), so a
+    # system_admin role here would be an inconsistent row (see rbac invariant).
+    if user.role == UserRole.SYSTEM_ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="system_admin role cannot be assigned via user creation.",
+        )
+
     # Default to the lowest permissions for a user in a team
     if user.role is None and user.team_id is not None:
         user.role = "read_only"
