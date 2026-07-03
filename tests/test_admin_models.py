@@ -549,6 +549,71 @@ def test_sync_model_narrow_exception_handling_already_exists(mock_litellm_class,
 
 
 @patch("app.services.model_sync.LiteLLMService")
+def test_sync_model_poisoned_session_never_commits_stale_synced(mock_litellm_class, db, test_region):
+    """If a failure happens after sync_status='synced' is set in memory AND the
+    error-path re-query also fails (poisoned session), the finally block must not
+    commit the stale 'synced' state — the association stays 'pending' for retry."""
+    from app.services import model_sync
+    from app.services.model_sync import sync_model_to_region_task
+    from app.db.database import get_db as real_get_db
+
+    mock_instance = MagicMock()
+    mock_instance.add_model = AsyncMock(return_value={"status": "success"})
+    mock_litellm_class.return_value = mock_instance
+
+    m = DBModel(
+        model_id="test/poisoned-session",
+        display_name="Poisoned Session",
+        provider="test",
+        type="chat",
+    )
+    db.add(m)
+    db.commit()
+
+    assoc = DBModelRegion(
+        model_id=m.id,
+        region_id=test_region.id,
+        is_active=True,
+        sync_status="pending",
+    )
+    db.add(assoc)
+    db.commit()
+
+    class PoisonedSession:
+        """Delegates to a real session; the 4th query (the error-path re-query,
+        after assoc/model/region fetches) raises as if the connection dropped."""
+        def __init__(self, real):
+            self._real = real
+            self._queries = 0
+
+        def query(self, *args, **kwargs):
+            self._queries += 1
+            if self._queries > 3:
+                raise RuntimeError("connection lost")
+            return self._real.query(*args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    def fake_get_db():
+        yield PoisonedSession(next(real_get_db()))
+
+    import asyncio
+    # Third logger.info call is "Successfully synchronized...", which runs after
+    # sync_status='synced' is set in memory — raising there simulates a late failure.
+    with patch("app.services.model_sync.get_db", fake_get_db), \
+         patch.object(model_sync.logger, "info", side_effect=[None, None, RuntimeError("late failure")]):
+        asyncio.run(sync_model_to_region_task(m.id, test_region.id))
+
+    db.expire_all()
+    db.refresh(assoc)
+    assert assoc.sync_status == "pending"  # NOT 'synced' — stale state must not be committed
+    # Pin the path: add_model must have run, proving the failure happened AFTER
+    # 'synced' was set in memory (guards against logger call-order drift).
+    mock_instance.add_model.assert_awaited_once()
+
+
+@patch("app.services.model_sync.LiteLLMService")
 def test_sync_model_global_deactivation_deregisters(mock_litellm_class, db, test_region):
     """Test that a globally inactive model with regionally active association deregistrates/deletes from LiteLLM."""
     from app.services.model_sync import sync_model_to_region_task
