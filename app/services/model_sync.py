@@ -9,6 +9,21 @@ from app.services.litellm import LiteLLMService
 
 logger = logging.getLogger(__name__)
 
+
+def _scrub_secrets(text: str, litellm_params) -> str:
+    """Proxy error bodies can echo the request payload (e.g. a 422 quoting
+    litellm_params, api_key included). sync_error is shown in admin responses,
+    so blank out any stored string param value that appears in the text."""
+    if not litellm_params:
+        return text
+    for v in litellm_params.values():
+        if isinstance(v, dict):
+            text = _scrub_secrets(text, v)
+        elif isinstance(v, str) and len(v) >= 8 and not v.startswith("os.environ/"):
+            text = text.replace(v, "********")
+    return text
+
+
 async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
     """
     Background task to synchronize a model's state to a regional LiteLLM proxy.
@@ -19,6 +34,7 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
     
     db = None
     assoc = None
+    model = None
     try:
         db = next(get_db())
         # Fetch model_region association
@@ -98,9 +114,16 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
                 assoc = db.query(DBModelRegion).filter_by(model_id=model_id, region_id=region_id).first()
                 if assoc:
                     assoc.sync_status = "failed"
-                    assoc.sync_error = str(e)
+                    assoc.sync_error = _scrub_secrets(str(e), model.litellm_params if model else None)
             except Exception as inner_e:
                 logger.error(f"Failed to write error status to DB: {inner_e}")
+                # Session is poisoned — drop assoc so finally can't commit the
+                # in-memory 'synced' state for a sync that actually failed.
+                assoc = None
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
         
     finally:
         if db:

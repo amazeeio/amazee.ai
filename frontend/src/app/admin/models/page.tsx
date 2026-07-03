@@ -821,6 +821,28 @@ export default function ModelsPage() {
                                       }}
                                     />
                                     {getSyncStatusBadge(assoc as AdminModelRegionResponse)}
+                                    {(assoc.sync_status === "failed" || assoc.sync_status === "pending") && (
+                                      // Re-toggle with the current state: resets the row to
+                                      // 'pending' and queues a fresh sync task. Covers failed
+                                      // syncs and 'pending' rows stranded by an app restart.
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-5 px-1.5 text-[10px] text-gray-500"
+                                        disabled={toggleRegionMutation.isPending}
+                                        onClick={() =>
+                                          toggleRegionMutation.mutate({
+                                            modelId: model.id,
+                                            regionId: region.id,
+                                            // A globally-inactive model can only retry deregistration:
+                                            // the backend rejects enabling regions for it.
+                                            isActive: assoc.is_active && model.is_active_globally,
+                                          })
+                                        }
+                                      >
+                                        <RefreshCw className="h-3 w-3 mr-1" /> Retry
+                                      </Button>
+                                    )}
                                   </div>
                                 </TableCell>
                               );
