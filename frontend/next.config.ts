@@ -4,6 +4,10 @@ const nextConfig: NextConfig = {
   allowedDevOrigins: ["127.0.0.1", "localhost"],
   env: {
     STRIPE_PUBLISHABLE_KEY: process.env.STRIPE_PUBLISHABLE_KEY,
+    // Non-NEXT_PUBLIC_ vars are only inlined into the client bundle when listed
+    // here; without this, the use-config error fallback always reads undefined
+    // and silently flips passwordless deployments to password login.
+    PASSWORDLESS_SIGN_IN: process.env.PASSWORDLESS_SIGN_IN,
   },
   async headers() {
     return [
