@@ -1566,12 +1566,12 @@ async def update_team_budget(
             ),
         )
     # A non-purchase-gated POOL team skips the purchase clamp below, so a team
-    # admin could set an arbitrary max_budget with no payment. Restrict that to
-    # system admins (gated POOL teams remain clamped to purchased budget).
+    # admin could set an arbitrary max_budget with no payment — or clear the cap
+    # by sending a null max_budget. Block all non-admin budget writes for this
+    # team type (gated POOL teams remain clamped to purchased budget).
     if (
         team.budget_type == BudgetType.POOL
         and not team.requires_pool_purchase_gate
-        and body.max_budget is not None
         and not current_user.is_admin
     ):
         raise HTTPException(

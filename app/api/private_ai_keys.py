@@ -460,7 +460,10 @@ async def create_llm_token(
             status_code=status.HTTP_404_NOT_FOUND, detail="Region not found or inactive"
         )
 
-    # Get the owner user if different from current user
+    # Get the owner user if different from current user. The primary cross-team
+    # ownership check is in _validate_permissions_and_get_ownership_info (called
+    # earlier); this guard is defence-in-depth and also fetches `owner` for use
+    # below. It can still fire if the owner is deleted between the two reads.
     owner = None
     if (
         owner_id is not None

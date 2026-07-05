@@ -15,11 +15,18 @@ echo "PostgreSQL is up - initializing database"
 # Initialize the database using the Python script
 python /app/scripts/initialise_resources.py
 
+# Which client IPs uvicorn trusts X-Forwarded-* headers from. Defaults to "*";
+# set FORWARDED_ALLOW_IPS to the ingress CIDR in production so clients can't
+# spoof X-Forwarded-Proto/For.
+FORWARDED_ALLOW_IPS="${FORWARDED_ALLOW_IPS:-*}"
+
 # Check if running in production (Lagoon) or development mode
 if [ -n "${LAGOON_ENVIRONMENT:-}" ]; then
     # Production mode (Lagoon)
-    exec uvicorn app.main:app --host 0.0.0.0 --port 8800 --workers 4
+    exec uvicorn app.main:app --host 0.0.0.0 --port 8800 --workers 4 \
+        --forwarded-allow-ips "${FORWARDED_ALLOW_IPS}"
 else
     # Development mode (local docker-compose)
-    exec uvicorn app.main:app --host 0.0.0.0 --port 8800 --reload
+    exec uvicorn app.main:app --host 0.0.0.0 --port 8800 --reload \
+        --forwarded-allow-ips "${FORWARDED_ALLOW_IPS}"
 fi

@@ -713,8 +713,11 @@ def send_validation_url(email: str) -> None:
     Raises:
         HTTPException: If email sending fails
     """
-    # Ensure email is lowercased for consistency
-    email = email.lower()
+    # Normalize plus-tags for the same reason send_validation_code does (M4):
+    # this email can come from a decoded (expired) JWT carrying a legacy +tag,
+    # so sign and deliver to the canonical address to avoid forking the identity
+    # or dispatching the link to a tagged inbox.
+    email = normalize_email_for_lookup(email)
 
     # Generate validation URL using the existing function
     validation_url = generate_pricing_url(email, validity_hours=1)
@@ -787,13 +790,19 @@ async def generate_trial_access(
     trial_max_budget = settings.AI_TRIAL_MAX_BUDGET
 
     try:
-        # Find the AI trial team
+        # Find the AI trial team. Lock the row (FOR UPDATE) so the cap check and
+        # the user insert below are atomic: concurrent trial requests serialize
+        # on this row instead of both reading a stale count and overshooting the
+        # cap (TOCTOU). All trials share one team, so this serializes trial
+        # creation — acceptable given trial volume; correctness over throughput.
+        # ponytail: SQLite (tests) ignores FOR UPDATE, which is fine there.
         team = (
             db.query(DBTeam)
             .filter(
                 func.lower(DBTeam.admin_email) == settings.AI_TRIAL_TEAM_EMAIL.lower(),
                 DBTeam.is_active,
             )
+            .with_for_update()
             .first()
         )
 
@@ -802,11 +811,16 @@ async def generate_trial_access(
             # Enforce a hard cap on trial users. The trial team's admin does not
             # count against the cap. Without this the unauthenticated endpoint
             # mints unlimited free AI keys (H3).
+            # Only active users count, so deactivating stale trial accounts
+            # reclaims capacity without raising AI_TRIAL_MAX_USERS.
             trial_user_count = (
                 db.query(func.count(DBUser.id))
                 .filter(
                     DBUser.team_id == team.id,
-                    DBUser.role != UserRole.ADMIN,
+                    # `role != 'admin'` alone drops NULL-role rows (SQL 3-valued
+                    # logic), which would let them escape the cap; include them.
+                    (DBUser.role != UserRole.ADMIN) | (DBUser.role.is_(None)),
+                    DBUser.is_active.is_(True),
                 )
                 .scalar()
             )
