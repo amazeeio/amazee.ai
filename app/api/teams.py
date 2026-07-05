@@ -316,7 +316,14 @@ async def update_team(
         "hide_public_regions",
     }
     if not current_user.is_admin:
-        forbidden = admin_only_fields & update_data.keys()
+        # Only block an actual CHANGE to an admin-only field. A GET-then-PUT
+        # round-trip that re-sends the current value (common REST pattern) is a
+        # no-op and must not 403 a team admin editing innocuous fields.
+        forbidden = {
+            field
+            for field in admin_only_fields & update_data.keys()
+            if getattr(db_team, field) != update_data[field]
+        }
         if forbidden:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

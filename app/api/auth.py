@@ -813,6 +813,8 @@ async def generate_trial_access(
             # mints unlimited free AI keys (H3).
             # Only active users count, so deactivating stale trial accounts
             # reclaims capacity without raising AI_TRIAL_MAX_USERS.
+            # Assumes a SINGLE trial team row (keyed on AI_TRIAL_TEAM_EMAIL); a
+            # manually-created duplicate would split the count and double the cap.
             trial_user_count = (
                 db.query(func.count(DBUser.id))
                 .filter(
