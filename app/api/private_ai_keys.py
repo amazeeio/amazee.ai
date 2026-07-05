@@ -93,7 +93,13 @@ def _validate_permissions_and_get_ownership_info(
         and not current_user.is_admin
     ):
         owner = db.query(DBUser).filter(DBUser.id == owner_id).first()
-        if not owner or owner.team_id != current_user.team_id:
+        # A teamless caller must never own another user's resource, and both
+        # sides being teamless (None == None) must NOT count as the same team.
+        if (
+            not owner
+            or current_user.team_id is None
+            or owner.team_id != current_user.team_id
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to perform this action",
@@ -472,7 +478,11 @@ async def create_llm_token(
     ):
         owner = db.query(DBUser).filter(DBUser.id == owner_id).first()
         if not owner or (
-            not current_user.is_admin and owner.team_id != current_user.team_id
+            not current_user.is_admin
+            and (
+                current_user.team_id is None
+                or owner.team_id != current_user.team_id
+            )
         ):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Owner user not found"
