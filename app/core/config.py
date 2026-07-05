@@ -107,6 +107,13 @@ class Settings(BaseSettings):
             raise ValueError(
                 "AMAZEEAI_JWT_SECRET must be set to a strong, non-default value."
             )
+        # Reject obviously-weak short secrets (e.g. "secret", "changeme").
+        # Generate one with: openssl rand -hex 32
+        if len(value) < 32:
+            raise ValueError(
+                "AMAZEEAI_JWT_SECRET must be at least 32 characters "
+                "(e.g. `openssl rand -hex 32`)."
+            )
         return value
 
     @field_validator(

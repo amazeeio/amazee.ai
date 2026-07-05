@@ -823,7 +823,10 @@ class TeamUpdate(BaseModel):
     billing_address: Optional[str] = None
     is_active: Optional[bool] = None
     is_always_free: Optional[bool] = None
-    force_user_keys: Optional[bool] = False
+    # Defaults to None (not False) like the other admin-only fields: otherwise a
+    # GET-then-PUT round-trip marks it "set", and update_team's admin_only_fields
+    # guard would 403 non-admins on innocuous edits (name/phone).
+    force_user_keys: Optional[bool] = None
     hide_public_regions: Optional[bool] = None
     budget_type: Optional[BudgetType] = None
     require_purchase_for_requests: Optional[bool] = None
