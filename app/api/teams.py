@@ -302,14 +302,18 @@ async def update_team(
 
     update_data = team_update.model_dump(exclude_unset=True)
 
-    # Fields that change a team's billing/payment posture or account status may
-    # only be set by system admins. A team admin flipping these (e.g.
-    # require_purchase_for_requests) would bypass the pool-purchase payment gate.
+    # Fields that change a team's billing/payment posture, account status, or
+    # provisioning tier may only be set by system admins. A team admin flipping
+    # these would bypass the pool-purchase gate (require_purchase_for_requests),
+    # remove an imposed key policy (force_user_keys), or change region
+    # visibility / dedicated status (hide_public_regions drives is_dedicated).
     admin_only_fields = {
         "is_always_free",
         "budget_type",
         "require_purchase_for_requests",
         "is_active",
+        "force_user_keys",
+        "hide_public_regions",
     }
     if not current_user.is_admin:
         forbidden = admin_only_fields & update_data.keys()

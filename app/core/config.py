@@ -26,9 +26,15 @@ class Settings(BaseSettings):
         "http://localhost:8800",
     ]
     ALLOWED_HOSTS: list[str] = ["*"]  # In production, restrict this
+    # NOTE: which client IPs uvicorn trusts X-Forwarded-* headers from is set via
+    # the FORWARDED_ALLOW_IPS env var, passed to uvicorn's --forwarded-allow-ips
+    # in backend-start.sh (a FastAPI constructor kwarg does NOT reach uvicorn).
     PUBLIC_PATHS: list[str] = [
         "/health",
-        "/docs",
+        # /openapi.json is only registered in local (see main.py openapi_url);
+        # it must stay public so the local Swagger UI can fetch the schema. In
+        # deployed envs the route does not exist, so this entry is inert.
+        # (/docs is never registered — docs_url=None — so it is not listed.)
         "/openapi.json",
         "/public/models",
         "/public/models/",
@@ -38,7 +44,10 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: str = "sk-string"
     SES_SENDER_EMAIL: str = "info@example.com"
     PASSWORDLESS_SIGN_IN: str = "true"
-    ENV_SUFFIX: str = os.getenv("ENV_SUFFIX", "local")
+    # Fail closed: an unset ENV_SUFFIX must NOT grant local privileges (docs
+    # exposure, local-bearer bypass). Local dev/tests set ENV_SUFFIX=local
+    # explicitly (docker-compose, conftest).
+    ENV_SUFFIX: str = os.getenv("ENV_SUFFIX", "production")
     LOCAL_BEARER_TOKEN: str = os.getenv("LOCAL_BEARER_TOKEN", "")
     LOCAL_BEARER_USER_EMAIL: str = os.getenv("LOCAL_BEARER_USER_EMAIL", "")
     DYNAMODB_REGION: str = "eu-west-1"

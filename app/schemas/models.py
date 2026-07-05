@@ -3,6 +3,8 @@ from typing import Optional, List, ClassVar, Literal, Dict, Annotated, Any
 from datetime import date, datetime
 from sqlalchemy.orm import relationship
 from enum import Enum
+from urllib.parse import urlparse
+import ipaddress
 
 
 class BudgetType(str, Enum):
@@ -141,15 +143,73 @@ class Product(ProductBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+_BLOCKED_HOST_ALIASES = {
+    "localhost",
+    "ip6-localhost",
+    "ip6-loopback",
+    "broadcasthost",
+}
+
+
+def _host_is_blocked(host: str) -> bool:
+    """Reject hosts that a region endpoint should never legitimately point at.
+
+    RFC1918/private addresses are intentionally allowed — regions often live on
+    the cluster's internal network. Loopback, link-local (incl. the cloud
+    metadata address 169.254.169.254), multicast and unspecified are blocked.
+    Non-IP hostnames can't be judged statically and are allowed (admin-only);
+    operator-side egress policy should still block loopback names. The common
+    OS loopback aliases below are blocked as cheap defense-in-depth.
+    """
+    if not host or host.lower() in _BLOCKED_HOST_ALIASES:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return (
+        ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
+def validate_region_api_url(value: str) -> str:
+    # Require https: the region master LiteLLM key is sent in request headers on
+    # every proxied call, so a plain-http URL would transmit it in cleartext.
+    # Internal services that need it can terminate TLS at the ingress.
+    # NOTE: existing http:// regions in the DB keep serving live traffic (the
+    # validator is not called on reads) but will fail validation on the next PUT
+    # update. Find affected rows before rollout:
+    #   SELECT id, name, litellm_api_url FROM regions WHERE litellm_api_url LIKE 'http://%';
+    parsed = urlparse(value)
+    if parsed.scheme != "https":
+        raise ValueError("litellm_api_url must use the https scheme")
+    if not parsed.hostname or _host_is_blocked(parsed.hostname):
+        raise ValueError("litellm_api_url must not target an internal/link-local host")
+    return value
+
+
+def validate_region_host(value: str) -> str:
+    if _host_is_blocked(value):
+        raise ValueError("host must not be an internal/link-local address")
+    return value
+
+
+RegionApiUrl = Annotated[str, AfterValidator(validate_region_api_url)]
+RegionDbHost = Annotated[str, AfterValidator(validate_region_host)]
+
+
 class RegionBase(BaseModel):
     name: str
     label: Optional[str] = None
     description: Optional[str] = None
-    postgres_host: str
+    postgres_host: RegionDbHost
     postgres_port: int = 5432
     postgres_admin_user: str
     postgres_admin_password: str
-    litellm_api_url: str
+    litellm_api_url: RegionApiUrl
     litellm_api_key: str
     is_active: bool = True
     is_dedicated: bool = False
@@ -163,11 +223,11 @@ class RegionUpdate(BaseModel):
     name: str
     label: Optional[str] = None
     description: Optional[str] = None
-    postgres_host: str
+    postgres_host: RegionDbHost
     postgres_port: int
     postgres_admin_user: str
     postgres_admin_password: Optional[str] = None
-    litellm_api_url: str
+    litellm_api_url: RegionApiUrl
     litellm_api_key: Optional[str] = None
     is_active: bool
     is_dedicated: bool
