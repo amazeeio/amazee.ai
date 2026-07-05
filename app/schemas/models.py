@@ -167,6 +167,11 @@ def _host_is_blocked(host: str) -> bool:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return False
+    # Unwrap IPv4-mapped IPv6 (e.g. ::ffff:169.254.169.254): is_loopback /
+    # is_link_local return False for the mapped form, so without this a mapped
+    # metadata/loopback address would bypass the block.
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
     return (
         ip.is_loopback
         or ip.is_link_local
