@@ -945,19 +945,24 @@ async def generate_trial_access(
             team_name=team.name,
         )
 
-    except HTTPException:
-        # Intentional HTTP errors (e.g. trial cap 429) must not be masked as 500.
-        raise
     except Exception as e:
-        auth_logger.error(f"Failed to create anonymous trial account: {e}")
-        # Log which line of code or the full stack
-        auth_logger.error(traceback.format_exc())
+        # Clean up on ANY failure — including intentional HTTPExceptions raised
+        # after the trial user was committed (e.g. key creation failing). An
+        # orphaned trial user counts toward AI_TRIAL_MAX_USERS forever.
         if user:
             db.delete(user)
         if private_ai_key:
             await litellm_service.delete_key(private_ai_key.litellm_token)
-        db.commit()
+        if user or private_ai_key:
+            db.commit()
 
+        if isinstance(e, HTTPException):
+            # Intentional HTTP errors (e.g. trial cap 429) must not be masked as 500.
+            raise
+
+        auth_logger.error(f"Failed to create anonymous trial account: {e}")
+        # Log which line of code or the full stack
+        auth_logger.error(traceback.format_exc())
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create anonymous trial account.",
