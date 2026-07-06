@@ -1190,6 +1190,15 @@ async def update_user_role(
                 detail="Not authorized to perform this action",
             )
 
+    # Only system admins may assign the system_admin role. Anyone else would
+    # create an inconsistent record (role=system_admin, is_admin=False) that
+    # spams rbac warnings on every request.
+    if role_update.role == UserRole.SYSTEM_ADMIN and not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only system administrators can assign the system_admin role",
+        )
+
     # Don't allow changing admin roles through this endpoint
     if db_user.is_admin:
         raise HTTPException(

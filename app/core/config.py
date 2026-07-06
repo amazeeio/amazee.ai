@@ -103,7 +103,11 @@ class Settings(BaseSettings):
     @field_validator("SECRET_KEY")
     @classmethod
     def reject_default_jwt_secret(cls, value):
-        if not value or value in ("my-secret-key", "test-secret-key"):
+        if (
+            not value
+            or value in ("my-secret-key", "test-secret-key")
+            or "CHANGE_ME" in value
+        ):
             raise ValueError(
                 "AMAZEEAI_JWT_SECRET must be set to a strong, non-default value."
             )

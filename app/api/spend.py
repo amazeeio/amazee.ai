@@ -1581,7 +1581,7 @@ async def update_team_budget(
                 "non-purchase-gated pool teams."
             ),
         )
-    if team.requires_pool_purchase_gate and body.max_budget is not None:
+    if team.requires_pool_purchase_gate:
         effective_duration = _pool_team_budget_duration_for_enforcement(
             db=db, team_id=team_id, region_id=region_id
         )
@@ -1592,14 +1592,18 @@ async def update_team_budget(
     month_start_spend = None
     available_total: float | None = None
 
-    if team.requires_pool_purchase_gate and body.max_budget is not None:
+    if team.requires_pool_purchase_gate:
         available_total = _pool_available_budget_for_team_region(db, team_id, region_id)
         month_start_spend = _pool_previous_period_spend_baseline(db, team_id, region_id)
         month_anchor = _current_month_anchor()
+        # A null max_budget must NOT clear the LiteLLM cap for purchase-gated
+        # teams — that would grant unlimited usage. Clamp to the purchased total.
         effective_max_budget = _compute_pool_monthly_effective_budget(
             purchased_total=available_total,
             period_baseline_spend=month_start_spend,
-            monthly_cap=body.max_budget,
+            monthly_cap=(
+                body.max_budget if body.max_budget is not None else available_total
+            ),
         )
 
     await service.update_team_budget(
