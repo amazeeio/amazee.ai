@@ -5,9 +5,29 @@ from app.db.database import get_db
 from app.middleware.prometheus import audit_events_total, audit_event_duration_seconds
 import logging
 import time
+from urllib.parse import urlparse, urlunparse
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Headers are attacker-controlled; cap what we persist.
+MAX_HEADER_URL_LENGTH = 2048
+
+
+def sanitize_referer(value: str | None) -> str | None:
+    """Strip query string, fragment, and userinfo from a Referer/Origin URL
+    before persisting, so tokens/PII/credentials never reach the audit log."""
+    if not value:
+        return None
+    try:
+        parsed = urlparse(value)
+        # Drop user:password@ userinfo; hosts can't contain "@".
+        netloc = parsed.netloc.rpartition("@")[2]
+        value = urlunparse((parsed.scheme, netloc, parsed.path, "", "", ""))
+    except ValueError:
+        # Malformed URLs are the interesting ones forensically; keep them raw.
+        pass
+    return value[:MAX_HEADER_URL_LENGTH]
 
 
 class AuditLogMiddleware(BaseHTTPMiddleware):
@@ -72,6 +92,8 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                 ip_address=request.client.host if request.client else None,
                 user_agent=request.headers.get("user-agent"),
                 request_source=request_source,
+                referer=sanitize_referer(referer),
+                origin=sanitize_referer(origin),
             )
 
             db.add(audit_log)

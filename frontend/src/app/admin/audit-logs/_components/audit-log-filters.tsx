@@ -64,6 +64,16 @@ export function AuditLogFilters({
               onChange={(e) => onFilterChange("user_email", e.target.value)}
             />
           </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Referer</label>
+            <Input
+              type="text"
+              placeholder="Search by referer"
+              value={filters.referer || ""}
+              onChange={(e) => onFilterChange("referer", e.target.value)}
+            />
+          </div>
         </div>
       </CardContent>
     </Card>

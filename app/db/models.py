@@ -460,6 +460,8 @@ class DBAuditLog(Base):
     ip_address = Column(String, nullable=True)
     user_agent = Column(String, nullable=True)
     request_source = Column(String, nullable=True)  # Values: 'frontend', 'api', or None
+    referer = Column(String, nullable=True)  # Referer header, query string stripped
+    origin = Column(String, nullable=True)  # Origin header, verbatim
 
     user = relationship("DBUser", back_populates="audit_logs")
 
