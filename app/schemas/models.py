@@ -184,9 +184,9 @@ def validate_region_api_url(value: str) -> str:
     # Require https: the region master LiteLLM key is sent in request headers on
     # every proxied call, so a plain-http URL would transmit it in cleartext.
     # Internal services that need it can terminate TLS at the ingress.
-    # NOTE: existing http:// regions in the DB keep serving live traffic (the
-    # validator is not called on reads) but will fail validation on the next PUT
-    # update. Find affected rows before rollout:
+    # NOTE: existing http:// regions in the DB keep serving live traffic and
+    # stay editable — update_region only validates this field when its value
+    # changes. Find legacy rows with:
     #   SELECT id, name, litellm_api_url FROM regions WHERE litellm_api_url LIKE 'http://%';
     parsed = urlparse(value)
     if parsed.scheme != "https":
@@ -225,14 +225,18 @@ class RegionCreate(RegionBase):
 
 
 class RegionUpdate(BaseModel):
+    # postgres_host / litellm_api_url are deliberately plain str here: legacy
+    # regions may hold values (e.g. http:// URLs) that predate validation, and
+    # a full PUT must not 422 on unchanged fields. update_region validates
+    # these only when the submitted value differs from the stored one.
     name: str
     label: Optional[str] = None
     description: Optional[str] = None
-    postgres_host: RegionDbHost
+    postgres_host: str
     postgres_port: int
     postgres_admin_user: str
     postgres_admin_password: Optional[str] = None
-    litellm_api_url: RegionApiUrl
+    litellm_api_url: str
     litellm_api_key: Optional[str] = None
     is_active: bool
     is_dedicated: bool
@@ -262,6 +266,10 @@ class RegionSummaryResponse(BaseModel):
 
 
 class Region(RegionBase):
+    # Response model: override validated input types so stored legacy values
+    # (e.g. http:// URLs) don't fail serialization on reads/updates.
+    postgres_host: str
+    litellm_api_url: str
     id: int
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)

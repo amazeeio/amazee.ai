@@ -949,12 +949,25 @@ async def generate_trial_access(
         # Clean up on ANY failure — including intentional HTTPExceptions raised
         # after the trial user was committed (e.g. key creation failing). An
         # orphaned trial user counts toward AI_TRIAL_MAX_USERS forever.
-        if user:
-            db.delete(user)
-        if private_ai_key:
-            await litellm_service.delete_key(private_ai_key.litellm_token)
-        if user or private_ai_key:
-            db.commit()
+        # Each step is guarded separately so a cleanup failure never masks the
+        # original error; the user row goes first since it consumes trial capacity.
+        try:
+            if user:
+                db.delete(user)
+                db.commit()
+        except Exception as cleanup_error:
+            db.rollback()
+            auth_logger.error(
+                f"Trial cleanup failed to delete user {user.email}; "
+                f"orphaned row still counts toward AI_TRIAL_MAX_USERS: {cleanup_error}"
+            )
+        try:
+            if private_ai_key:
+                await litellm_service.delete_key(private_ai_key.litellm_token)
+        except Exception as cleanup_error:
+            auth_logger.error(
+                f"Trial cleanup failed to delete LiteLLM key: {cleanup_error}"
+            )
 
         if isinstance(e, HTTPException):
             # Intentional HTTP errors (e.g. trial cap 429) must not be masked as 500.
