@@ -128,6 +128,10 @@ jobs:
           version: 'latest'
 
       - name: Test chart templates
+        env:
+          # backend.secretKey is `required` in the chart; helm doesn't read env
+          # vars itself, so pass the repo secret in via --set.
+          AMAZEEAI_JWT_SECRET: ${{ secrets.AMAZEEAI_JWT_SECRET }}
         run: |
           # Test the main chart with minimal values
           cd helm
@@ -140,17 +144,19 @@ jobs:
           for chart in */; do
             chart_name=$(basename "$chart")
             echo "Testing chart: $chart_name"
-            helm template "test-$chart_name" "$chart_name" > /dev/null
+            helm template "test-$chart_name" "$chart_name" --set secretKey="$AMAZEEAI_JWT_SECRET" > /dev/null
             echo "✅ $chart_name chart template test passed"
           done
 
       - name: Lint charts
+        env:
+          AMAZEEAI_JWT_SECRET: ${{ secrets.AMAZEEAI_JWT_SECRET }}
         run: |
           cd helm
-          helm lint . --strict
+          helm lint . --strict --set backend.secretKey="$AMAZEEAI_JWT_SECRET"
           cd charts
           for chart in */; do
             chart_name=$(basename "$chart")
             echo "Linting chart: $chart_name"
-            helm lint "$chart_name" --strict
+            helm lint "$chart_name" --strict --set secretKey="$AMAZEEAI_JWT_SECRET"
           done
