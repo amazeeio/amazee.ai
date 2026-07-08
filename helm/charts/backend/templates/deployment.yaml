@@ -80,6 +80,11 @@ spec:
                 configMapKeyRef:
                   name: {{ include "backend.fullname" . }}-config
                   key: ENV_SUFFIX
+            - name: FORWARDED_ALLOW_IPS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "backend.fullname" . }}-config
+                  key: FORWARDED_ALLOW_IPS
             - name: PASSWORDLESS_SIGN_IN
               valueFrom:
                 configMapKeyRef:
