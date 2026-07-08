@@ -303,6 +303,11 @@ async def register(request: Request, user: UserCreate, db: Session = Depends(get
     After registration, you'll need to login to get an access token.
     """
     auth_logger.info(f"Registration attempt for user: {user.email}")
+    # Self-registration is anonymous: never trust role/team_id from the body,
+    # or a stranger could register straight into a victim's team or as an admin.
+    # Team membership and roles are assigned only via the authenticated flows.
+    user.role = None
+    user.team_id = None
     # Normalize plus-tags so registrations collapse to the canonical identity.
     user.email = normalize_email_for_lookup(user.email)
     # Check if user with this email exists
@@ -439,8 +444,10 @@ def send_validation_code(email: str, db: Session) -> None:
     Raises:
         HTTPException: If email sending fails
     """
-    # Ensure email is lowercased for consistency
-    email = email.lower()
+    # Deliver the code to the SAME normalized address it is stored and validated
+    # under. Otherwise a "+tag" variant that normalizes to the victim could route
+    # a valid code to a different inbox and pre-hijack the canonical identity (M4).
+    email = normalize_email_for_lookup(email)
 
     # Generate and store validation code
     code = generate_validation_token(email)
@@ -706,8 +713,11 @@ def send_validation_url(email: str) -> None:
     Raises:
         HTTPException: If email sending fails
     """
-    # Ensure email is lowercased for consistency
-    email = email.lower()
+    # Normalize plus-tags for the same reason send_validation_code does (M4):
+    # this email can come from a decoded (expired) JWT carrying a legacy +tag,
+    # so sign and deliver to the canonical address to avoid forking the identity
+    # or dispatching the link to a tagged inbox.
+    email = normalize_email_for_lookup(email)
 
     # Generate validation URL using the existing function
     validation_url = generate_pricing_url(email, validity_hours=1)
@@ -780,18 +790,48 @@ async def generate_trial_access(
     trial_max_budget = settings.AI_TRIAL_MAX_BUDGET
 
     try:
-        # Find the AI trial team
+        # Find the AI trial team. Lock the row (FOR UPDATE) so the cap check and
+        # the user insert below are atomic: concurrent trial requests serialize
+        # on this row instead of both reading a stale count and overshooting the
+        # cap (TOCTOU). All trials share one team, so this serializes trial
+        # creation — acceptable given trial volume; correctness over throughput.
+        # ponytail: SQLite (tests) ignores FOR UPDATE, which is fine there.
         team = (
             db.query(DBTeam)
             .filter(
                 func.lower(DBTeam.admin_email) == settings.AI_TRIAL_TEAM_EMAIL.lower(),
                 DBTeam.is_active,
             )
+            .with_for_update()
             .first()
         )
 
         # Find the admin user of the team
         if team:
+            # Enforce a hard cap on trial users. The trial team's admin does not
+            # count against the cap. Without this the unauthenticated endpoint
+            # mints unlimited free AI keys (H3).
+            # Only active users count, so deactivating stale trial accounts
+            # reclaims capacity without raising AI_TRIAL_MAX_USERS.
+            # Assumes a SINGLE trial team row (keyed on AI_TRIAL_TEAM_EMAIL); a
+            # manually-created duplicate would split the count and double the cap.
+            trial_user_count = (
+                db.query(func.count(DBUser.id))
+                .filter(
+                    DBUser.team_id == team.id,
+                    # `role != 'admin'` alone drops NULL-role rows (SQL 3-valued
+                    # logic), which would let them escape the cap; include them.
+                    (DBUser.role != UserRole.ADMIN) | (DBUser.role.is_(None)),
+                    DBUser.is_active.is_(True),
+                )
+                .scalar()
+            )
+            if trial_user_count >= settings.AI_TRIAL_MAX_USERS:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Trial capacity reached. Please contact sales to continue.",
+                )
+
             admin_user = (
                 db.query(DBUser)
                 .filter(DBUser.team_id == team.id, DBUser.role == UserRole.ADMIN)
@@ -906,15 +946,36 @@ async def generate_trial_access(
         )
 
     except Exception as e:
+        # Clean up on ANY failure — including intentional HTTPExceptions raised
+        # after the trial user was committed (e.g. key creation failing). An
+        # orphaned trial user counts toward AI_TRIAL_MAX_USERS forever.
+        # Each step is guarded separately so a cleanup failure never masks the
+        # original error; the user row goes first since it consumes trial capacity.
+        try:
+            if user:
+                db.delete(user)
+                db.commit()
+        except Exception as cleanup_error:
+            db.rollback()
+            auth_logger.error(
+                f"Trial cleanup failed to delete user {user.email}; "
+                f"orphaned row still counts toward AI_TRIAL_MAX_USERS: {cleanup_error}"
+            )
+        try:
+            if private_ai_key:
+                await litellm_service.delete_key(private_ai_key.litellm_token)
+        except Exception as cleanup_error:
+            auth_logger.error(
+                f"Trial cleanup failed to delete LiteLLM key: {cleanup_error}"
+            )
+
+        if isinstance(e, HTTPException):
+            # Intentional HTTP errors (e.g. trial cap 429) must not be masked as 500.
+            raise
+
         auth_logger.error(f"Failed to create anonymous trial account: {e}")
         # Log which line of code or the full stack
         auth_logger.error(traceback.format_exc())
-        if user:
-            db.delete(user)
-        if private_ai_key:
-            await litellm_service.delete_key(private_ai_key.litellm_token)
-        db.commit()
-
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to create anonymous trial account.",

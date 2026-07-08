@@ -62,17 +62,17 @@ async def test_generate_trial_access(mock_auth_deps, db: Session):
     mock_region.label = "Test Region"
 
     def get_mock_query(model):
+        # `is`, not `==`: the trial-cap count query passes a SQLAlchemy
+        # expression here, and `==` on it builds a (failing) SQL comparison.
         mock_query = Mock()
-        if model == DBRegion:
+        if model is DBRegion:
             mock_query.filter.return_value.first.return_value = mock_region
-        elif model == DBTeam:
-            mock_query.filter.return_value.first.return_value = (
-                None  # Force create team
-            )
-        elif model == DBUser:
-            mock_query.filter.return_value.first.return_value = None
+        elif model is DBTeam:
+            # Force create team; the endpoint locks the row FOR UPDATE
+            mock_query.filter.return_value.with_for_update.return_value.first.return_value = None
         else:
             mock_query.filter.return_value.first.return_value = None
+            mock_query.filter.return_value.scalar.return_value = 0
         return mock_query
 
     mock_db.query.side_effect = get_mock_query
@@ -138,9 +138,20 @@ async def test_generate_trial_access(mock_auth_deps, db: Session):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "key_error,expected_status",
+    [
+        (Exception("Key creation failed"), 500),
+        # HTTPExceptions keep their status code AND still clean up the
+        # already-committed trial user (orphans consume trial capacity).
+        (HTTPException(status_code=503, detail="LiteLLM unavailable"), 503),
+    ],
+)
 async def test_generate_trial_access_cleanup_on_key_creation_failure(
     mock_auth_deps,
     db: Session,
+    key_error,
+    expected_status,
 ):
     """
     Given create_private_ai_key fails
@@ -157,15 +168,17 @@ async def test_generate_trial_access_cleanup_on_key_creation_failure(
     mock_region.litellm_api_key = "test"
 
     def get_mock_query(model):
+        # `is`, not `==`: the trial-cap count query passes a SQLAlchemy
+        # expression here, and `==` on it builds a (failing) SQL comparison.
         q = Mock()
-        if model == DBRegion:
+        if model is DBRegion:
             q.filter.return_value.first.return_value = mock_region
-        elif model == DBTeam:
-            q.filter.return_value.first.return_value = None  # Force create team
-        elif model == DBUser:
-            q.filter.return_value.first.return_value = None
+        elif model is DBTeam:
+            # Force create team; the endpoint locks the row FOR UPDATE
+            q.filter.return_value.with_for_update.return_value.first.return_value = None
         else:
             q.filter.return_value.first.return_value = None
+            q.filter.return_value.scalar.return_value = 0
         return q
 
     mock_db.query.side_effect = get_mock_query
@@ -182,7 +195,7 @@ async def test_generate_trial_access_cleanup_on_key_creation_failure(
     mock_auth_deps["register_team"].return_value = mock_team
 
     # Simulate failure
-    mock_auth_deps["create_key"].side_effect = Exception("Key creation failed")
+    mock_auth_deps["create_key"].side_effect = key_error
 
     # Mock LimitService
     mock_limit_service = Mock(spec=LimitService)
@@ -208,6 +221,6 @@ async def test_generate_trial_access_cleanup_on_key_creation_failure(
     with pytest.raises(HTTPException) as exc_info:
         await generate_trial_access(mock_response, mock_db, mock_limit_service)
 
-    assert exc_info.value.status_code == 500
+    assert exc_info.value.status_code == expected_status
 
     assert mock_db.delete.call_count >= 1

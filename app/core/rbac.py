@@ -69,6 +69,17 @@ class RBACDependency:
         """Get the effective role for a user"""
         if user.is_admin:
             return UserRole.SYSTEM_ADMIN
+        # system_admin is conferred ONLY by the is_admin flag. Never trust a
+        # role column of "system_admin" on a non-admin row, or a self-registered
+        # user could hold the role string and pass require_system_admin.
+        if user.role == UserRole.SYSTEM_ADMIN:
+            self.logger.warning(
+                "User id=%s has role=system_admin but is_admin=False — "
+                "downgrading to USER. Investigate for data corruption or a "
+                "privilege-escalation attempt.",
+                user.id,
+            )
+            return UserRole.USER
         return user.role or UserRole.USER
 
 

@@ -209,7 +209,7 @@ helm install amazee-ai . -n amazee-ai --create-namespace \
 | `backend.image.tag` | Backend image tag | `dev` |
 | `backend.image.pullPolicy` | Backend image pull policy | `IfNotPresent` |
 | `backend.database.url` | Database connection URL (auto-generated if empty) | `""` |
-| `backend.secretKey` | Key used to hash passwords stored in the database | `my-secret-key` |
+| `backend.secretKey` | JWT signing secret (`AMAZEEAI_JWT_SECRET`). **Required**, no default. | `""` |
 | `backend.stripeSecretKey` | Stripe secret key | `sk_test_your_stripe_secret_key` |
 | `backend.webhookSig` | Webhook signature (only needed for local development with Stripe CLI) | `""` |
 | `backend.awsAccessKeyId` | AWS access key ID | `your_aws_access_key` |
@@ -219,7 +219,8 @@ helm install amazee-ai . -n amazee-ai --create-namespace \
 | `backend.sesRegion` | AWS SES region | `us-east-1` |
 | `backend.sesSenderEmail` | SES sender email | `noreply@amazee.ai` |
 | `backend.enableLimits` | Enable resource limits | `true` |
-| `backend.envSuffix` | Environment suffix | `""` |
+| `backend.envSuffix` | Environment suffix. Anything other than `local` disables the docs/openapi routes and local-bearer bypass; never set `local` in a deployed env. | `"production"` |
+| `backend.forwardedAllowIps` | IPs/CIDRs uvicorn trusts `X-Forwarded-*` headers from (`FORWARDED_ALLOW_IPS`). Narrow to your ingress/Lagoon-router CIDR; never `"*"`. | RFC1918 ranges |
 | `backend.passwordlessSignIn` | Enable passwordless sign-in | `true` |
 | `backend.resources.requests.memory` | Backend memory request | `256Mi` |
 | `backend.resources.requests.cpu` | Backend CPU request | `250m` |

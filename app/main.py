@@ -27,7 +27,7 @@ from app.middleware.audit import AuditLogMiddleware
 from app.middleware.auth import AuthMiddleware
 from app.middleware.caching import CacheControlMiddleware
 from app.middleware.prometheus import PrometheusMiddleware
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -88,8 +88,10 @@ app = FastAPI(
     version=__version__,
     docs_url=None,  # Disable default /docs endpoint
     redoc_url=None,  # Disable default /redoc endpoint
+    # Only publish the OpenAPI schema locally. In deployed envs it would let
+    # anonymous callers enumerate every endpoint, param and schema (M5).
+    openapi_url="/openapi.json" if settings.ENV_SUFFIX == "local" else None,
     root_path_in_servers=True,
-    server_options={"forwarded_allow_ips": "*"},
     openapi_tags=[
         {
             "name": "Authentication",
@@ -217,6 +219,8 @@ app.include_router(spend.router, prefix="/spend", tags=["spend"])
 
 @app.get("/", include_in_schema=False)
 async def custom_swagger_ui_html():
+    if settings.ENV_SUFFIX != "local":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     return get_swagger_ui_html(
         openapi_url="/openapi.json",
         title="API Documentation",

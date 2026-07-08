@@ -512,6 +512,10 @@ async def _run_cycle_from_stripe_event(
     # --- Resolve budget ---
     amount_paid = int(getattr(event_object, "amount_paid", 0) or 0)
     budget_cents = amount_paid
+    # A real payment is a single aggregate charge and must be split across
+    # regions (L1). A free-plan product budget below is a per-key/per-region
+    # allowance, not an aggregate, so it is applied in full to each region.
+    is_paid_amount = amount_paid > 0
 
     if budget_cents == 0 and subscription_id:
         # Free plan — look up product budget from DB
@@ -574,6 +578,12 @@ async def _run_cycle_from_stripe_event(
                     source_event_id=event_id,
                 )
 
+        # Accounting model: the payment record holds the FULL invoice amount
+        # (one Stripe charge = one payment row). For paid charges the per-region
+        # ledger entries below hold each region's split share (summing to
+        # budget_cents); for free-plan allowances each region gets the full
+        # amount. Payment row and ledger entries are distinct granularities — a
+        # reconciliation query must sum ONE or the OTHER, never both.
         payment_id = await _record_periodic_payment_direct(
             db,
             team_id=team.id,
@@ -583,15 +593,35 @@ async def _run_cycle_from_stripe_event(
             payment_type="subscription",
         )
 
+        # Split a paid charge across regions rather than crediting the full
+        # amount to each: the ledger is idempotent per (invoice, region), so
+        # applying an aggregate payment to every region multiplied the paid
+        # budget by the region count (L1). The <region_count remainder cents go
+        # to the lowest-id region so the split is deterministic across retries
+        # (DB result order is otherwise arbitrary) and sums exactly to
+        # budget_cents. Free-plan product budgets are a per-region allowance,
+        # not an aggregate, so they are applied in full to each region (no split).
+        split_regions = sorted(target_regions, key=lambda r: r.id)
+        region_count = len(split_regions)
+        if is_paid_amount:
+            per_region_budget_cents = budget_cents // region_count
+            remainder_cents = budget_cents - per_region_budget_cents * region_count
+        else:
+            per_region_budget_cents = budget_cents
+            remainder_cents = 0
+
         sync_errors: list[str] = []
-        for region in target_regions:
+        for index, region in enumerate(split_regions):
+            region_budget_cents = per_region_budget_cents + (
+                remainder_cents if index == 0 else 0
+            )
             await _sync_periodic_ledger_for_period(
                 db=db,
                 team=team,
                 region=region,
                 period_start=period_start,
                 period_end=period_end,
-                amount_cents=budget_cents,
+                amount_cents=region_budget_cents,
                 source_payment_id=payment_id,
                 source_invoice_id=transaction_id,
             )
@@ -599,7 +629,7 @@ async def _run_cycle_from_stripe_event(
             region_errors = await apply_billing_cycle_for_team(
                 db=db,
                 team_id=team.id,
-                budget_cents=budget_cents,
+                budget_cents=region_budget_cents,
                 region_id=region.id,
                 period_start=period_start,
                 period_end=period_end,
