@@ -26,8 +26,14 @@ dynamodbRegion: "us-east-1"
 sesRegion: "us-east-1"
 sesSenderEmail: "noreply@amazee.ai"
 enableLimits: "true"
-envSuffix: ""
+# Anything other than "local" disables the docs/openapi routes and the
+# local-bearer bypass. Only docker-compose should ever set "local".
+envSuffix: "production"
 passwordlessSignIn: "true"
+# Client IPs/CIDRs uvicorn trusts X-Forwarded-* headers from. Defaults to the
+# RFC1918 ranges so only in-cluster peers (the ingress/Lagoon router) are
+# trusted; narrow to your router's actual CIDR if known. Never use "*".
+forwardedAllowIps: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
 
 resources:
   requests:

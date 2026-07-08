@@ -219,7 +219,8 @@ helm install amazee-ai . -n amazee-ai --create-namespace \
 | `backend.sesRegion` | AWS SES region | `us-east-1` |
 | `backend.sesSenderEmail` | SES sender email | `noreply@amazee.ai` |
 | `backend.enableLimits` | Enable resource limits | `true` |
-| `backend.envSuffix` | Environment suffix | `""` |
+| `backend.envSuffix` | Environment suffix. Anything other than `local` disables the docs/openapi routes and local-bearer bypass; never set `local` in a deployed env. | `"production"` |
+| `backend.forwardedAllowIps` | IPs/CIDRs uvicorn trusts `X-Forwarded-*` headers from (`FORWARDED_ALLOW_IPS`). Narrow to your ingress/Lagoon-router CIDR; never `"*"`. | RFC1918 ranges |
 | `backend.passwordlessSignIn` | Enable passwordless sign-in | `true` |
 | `backend.resources.requests.memory` | Backend memory request | `256Mi` |
 | `backend.resources.requests.cpu` | Backend CPU request | `250m` |

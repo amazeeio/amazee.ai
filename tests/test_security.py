@@ -1,3 +1,7 @@
+import os
+import subprocess
+import sys
+
 import pytest
 from fastapi import HTTPException
 from types import SimpleNamespace
@@ -206,3 +210,27 @@ async def test_get_current_user_from_auth_does_not_accept_local_bearer_from_cook
         settings.LOCAL_BEARER_USER_EMAIL = old_local_email
 
     assert exc_info.value.status_code == 401
+
+
+def test_docs_and_openapi_are_404_when_not_local():
+    """M5: non-local envs must not serve /openapi.json or the Swagger UI at /.
+
+    openapi_url is fixed when app.main builds the FastAPI app (conftest forces
+    ENV_SUFFIX=local before that import), so flipping settings.ENV_SUFFIX here
+    can't exercise it — import the app fresh in a subprocess instead.
+    """
+    code = (
+        "from fastapi.testclient import TestClient\n"
+        "from app.main import app\n"
+        "client = TestClient(app)\n"
+        "assert client.get('/openapi.json').status_code == 404\n"
+        "assert client.get('/').status_code == 404\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env={**os.environ, "ENV_SUFFIX": "production"},
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
