@@ -1095,7 +1095,7 @@ def test_toggle_always_free_as_team_admin(client, team_admin_token, test_team):
     assert response.status_code == 403
     assert (
         response.json()["detail"]
-        == "Only system administrators can toggle always-free status"
+        == "Only system administrators can modify: is_always_free"
     )
 
 

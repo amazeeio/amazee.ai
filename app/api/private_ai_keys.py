@@ -59,6 +59,7 @@ def _validate_permissions_and_get_ownership_info(
     team_id: Optional[int],
     current_user: DBUser,
     user_role: UserRole,
+    db: Session,
 ) -> tuple[Optional[int], Optional[int]]:
     """
     Helper function to determine ownership information based on user role and input.
@@ -78,6 +79,27 @@ def _validate_permissions_and_get_ownership_info(
             )
     elif user_role in team_users:
         if team_id is not None and team_id != current_user.team_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to perform this action",
+            )
+
+    # A non-system-admin may only assign ownership to a user in their own team.
+    # Without this, a key_creator/team_admin could set owner_id to a user in
+    # another team and mint resources billed to that team (H1).
+    if (
+        owner_id is not None
+        and owner_id != current_user.id
+        and not current_user.is_admin
+    ):
+        owner = db.query(DBUser).filter(DBUser.id == owner_id).first()
+        # A teamless caller must never own another user's resource, and both
+        # sides being teamless (None == None) must NOT count as the same team.
+        if (
+            not owner
+            or current_user.team_id is None
+            or owner.team_id != current_user.team_id
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to perform this action",
@@ -134,7 +156,7 @@ async def create_vector_db(
     """
     # Get ownership information
     owner_id, team_id = _validate_permissions_and_get_ownership_info(
-        vector_db.owner_id, vector_db.team_id, current_user, user_role
+        vector_db.owner_id, vector_db.team_id, current_user, user_role, db
     )
 
     # Get the region
@@ -430,7 +452,7 @@ async def create_llm_token(
     """
     # Get ownership information
     owner_id, team_id = _validate_permissions_and_get_ownership_info(
-        private_ai_key.owner_id, private_ai_key.team_id, current_user, user_role
+        private_ai_key.owner_id, private_ai_key.team_id, current_user, user_role, db
     )
 
     # Get the region
@@ -444,7 +466,10 @@ async def create_llm_token(
             status_code=status.HTTP_404_NOT_FOUND, detail="Region not found or inactive"
         )
 
-    # Get the owner user if different from current user
+    # Get the owner user if different from current user. The primary cross-team
+    # ownership check is in _validate_permissions_and_get_ownership_info (called
+    # earlier); this guard is defence-in-depth and also fetches `owner` for use
+    # below. It can still fire if the owner is deleted between the two reads.
     owner = None
     if (
         owner_id is not None
@@ -453,7 +478,11 @@ async def create_llm_token(
     ):
         owner = db.query(DBUser).filter(DBUser.id == owner_id).first()
         if not owner or (
-            user_role == "admin" and owner.team_id != current_user.team_id
+            not current_user.is_admin
+            and (
+                current_user.team_id is None
+                or owner.team_id != current_user.team_id
+            )
         ):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Owner user not found"

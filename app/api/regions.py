@@ -14,6 +14,8 @@ from app.schemas.models import (
     RegionResponse,
     User,
     RegionUpdate,
+    validate_region_api_url,
+    validate_region_host,
     TeamSummary,
     TeamRegionBudget,
     TeamRegionModelAliasesResponse,
@@ -270,6 +272,18 @@ async def update_region(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"A region with the name '{region.name}' already exists",
             )
+
+    # Validate only values that actually change, so legacy regions with
+    # pre-validation data (e.g. http:// LiteLLM URLs) stay editable via full PUT.
+    try:
+        if region.litellm_api_url != db_region.litellm_api_url:
+            validate_region_api_url(region.litellm_api_url)
+        if region.postgres_host != db_region.postgres_host:
+            validate_region_host(region.postgres_host)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e)
+        )
 
     # Update the region fields
     update_data = region.model_dump(exclude_unset=True)
