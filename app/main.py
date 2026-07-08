@@ -23,7 +23,7 @@ from app.api import (
     webhooks,
 )
 from app.core.config import settings
-from app.core.security import get_current_user
+from app.core.security import get_current_user_from_auth
 from app.middleware.audit import AuditLogMiddleware
 from app.middleware.auth import AuthMiddleware
 from app.middleware.caching import CacheControlMiddleware
@@ -219,10 +219,8 @@ app.include_router(spend.router, prefix="/spend", tags=["spend"])
 
 
 @app.get("/openapi.json", include_in_schema=False)
-async def openapi_schema(user=Depends(get_current_user)):
+async def openapi_schema(user=Depends(get_current_user_from_auth)):
     """Serve the OpenAPI schema to authenticated callers only (M5)."""
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     return app.openapi()
 
 
