@@ -212,18 +212,18 @@ async def test_get_current_user_from_auth_does_not_accept_local_bearer_from_cook
     assert exc_info.value.status_code == 401
 
 
-def test_docs_and_openapi_are_404_when_not_local():
-    """M5: non-local envs must not serve /openapi.json or the Swagger UI at /.
+def test_openapi_requires_auth_when_not_local():
+    """M5: /openapi.json must be auth-gated in deployed envs; Swagger UI still 404.
 
-    openapi_url is fixed when app.main builds the FastAPI app (conftest forces
-    ENV_SUFFIX=local before that import), so flipping settings.ENV_SUFFIX here
-    can't exercise it — import the app fresh in a subprocess instead.
+    Unauthenticated callers get 401 (not the schema). The Swagger UI at / stays
+    404 in non-local envs. openapi_url is fixed at import time, so we use a
+    subprocess to import the app fresh with ENV_SUFFIX=production.
     """
     code = (
         "from fastapi.testclient import TestClient\n"
         "from app.main import app\n"
         "client = TestClient(app)\n"
-        "assert client.get('/openapi.json').status_code == 404\n"
+        "assert client.get('/openapi.json').status_code == 401\n"
         "assert client.get('/').status_code == 404\n"
     )
     result = subprocess.run(
