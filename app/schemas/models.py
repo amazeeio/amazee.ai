@@ -684,6 +684,34 @@ class KeyDailyActivityResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class UserDailyActivityResponse(BaseModel):
+    region_id: int
+    user_id: int
+    start_date: date
+    end_date: date
+    activity: List[KeyDailyActivityRow] = Field(
+        description=(
+            "Per-day usage rows aggregated across all of the user's keys, "
+            "ordered ascending by date. Days with no usage are omitted."
+        )
+    )
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TeamDailyActivityResponse(BaseModel):
+    region_id: int
+    team_id: int
+    start_date: date
+    end_date: date
+    activity: List[KeyDailyActivityRow] = Field(
+        description=(
+            "Per-day usage rows aggregated across all of the team's keys, "
+            "ordered ascending by date. Days with no usage are omitted."
+        )
+    )
+    model_config = ConfigDict(from_attributes=True)
+
+
 class SpendBudgetUpdateRequest(BaseModel):
     max_budget: Optional[float] = Field(default=None, ge=0)
 
