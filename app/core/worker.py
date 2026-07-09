@@ -2861,7 +2861,7 @@ async def expire_trial_user_keys(db: Session, user: DBUser):
             try:
                 litellm_service = LiteLLMService(
                     api_url=key.region.litellm_api_url,
-                    api_key=key.region.litellm_api_key
+                    api_key=key.region.litellm_api_key,
                 )
                 await litellm_service.update_key_duration(key.litellm_token, "0d")
                 logger.info(f"Set duration to 0d for key {key.id}")
@@ -2886,27 +2886,37 @@ async def monitor_trial_users(db: Session):
     logger.info("Monitoring trial users")
     try:
         # Get trial team (only consider active teams)
-        trial_team = db.query(DBTeam).filter(
-            DBTeam.admin_email == settings.AI_TRIAL_TEAM_EMAIL,
-            DBTeam.is_active.is_(True)
-        ).first()
+        trial_team = (
+            db.query(DBTeam)
+            .filter(
+                DBTeam.admin_email == settings.AI_TRIAL_TEAM_EMAIL,
+                DBTeam.is_active.is_(True),
+            )
+            .first()
+        )
         if not trial_team:
             logger.info("Trial team not found, skipping")
             return
 
         # Get all active users in the trial team (excluding admin)
-        users = db.query(DBUser).filter(
-            DBUser.team_id == trial_team.id,
-            DBUser.is_active,
-            DBUser.role == "user"
-        ).all()
+        users = (
+            db.query(DBUser)
+            .filter(
+                DBUser.team_id == trial_team.id, DBUser.is_active, DBUser.role == "user"
+            )
+            .all()
+        )
 
         # Fetch all user budget limits in one query
-        user_limits = db.query(DBLimitedResource).filter(
-            DBLimitedResource.owner_type == OwnerType.USER,
-            DBLimitedResource.owner_id.in_([user.id for user in users]),
-            DBLimitedResource.resource == ResourceType.BUDGET
-        ).all()
+        user_limits = (
+            db.query(DBLimitedResource)
+            .filter(
+                DBLimitedResource.owner_type == OwnerType.USER,
+                DBLimitedResource.owner_id.in_([user.id for user in users]),
+                DBLimitedResource.resource == ResourceType.BUDGET,
+            )
+            .all()
+        )
 
         user_limit_map = {limit.owner_id: limit for limit in user_limits}
 
@@ -2916,7 +2926,9 @@ async def monitor_trial_users(db: Session):
             user_limit = user_limit_map.get(user.id)
             if user_limit and user_limit.current_value is not None:
                 if user_limit.current_value >= user_limit.max_value:
-                    logger.info(f"Trial user {user.email} (ID: {user.id}) has fully used up their budget ({user_limit.current_value} >= {user_limit.max_value}). Setting for removal.")
+                    logger.info(
+                        f"Trial user {user.email} (ID: {user.id}) has fully used up their budget ({user_limit.current_value} >= {user_limit.max_value}). Setting for removal."
+                    )
                     await deactivate_trial_user(db, user)
                     over_budget_users.append(user)
 
@@ -2933,4 +2945,3 @@ async def monitor_trial_users(db: Session):
         logger.error(f"Error in trial user monitoring: {e}")
         db.rollback()
         raise
-
