@@ -35,7 +35,7 @@ backend:
   database:
     url: ""  # Leave empty to auto-generate based on release name and PostgreSQL config
   # Application configuration
-  secretKey: "my-secret-key"  # Key used to hash passwords stored in the database
+  secretKey: ""  # JWT signing secret (AMAZEEAI_JWT_SECRET). REQUIRED, no default — deploy fails if unset.
   stripeSecretKey: "sk_test_your_stripe_secret_key"
   webhookSig: ""  # Only needed for local development with Stripe CLI
   awsAccessKeyId: "your_aws_access_key"
@@ -45,8 +45,14 @@ backend:
   sesRegion: "us-east-1"
   sesSenderEmail: "noreply@amazee.ai"
   enableLimits: "true"
-  envSuffix: ""
+  # Anything other than "local" disables the docs/openapi routes and the
+  # local-bearer bypass. Only docker-compose should ever set "local".
+  envSuffix: "production"
   passwordlessSignIn: "true"
+  # Client IPs/CIDRs uvicorn trusts X-Forwarded-* headers from. Defaults to the
+  # RFC1918 ranges so only in-cluster peers (the ingress/Lagoon router) are
+  # trusted; narrow to your router's actual CIDR if known. Never use "*".
+  forwardedAllowIps: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
   resources:
     requests:
       memory: "256Mi"

@@ -283,6 +283,57 @@ def test_update_region(client, admin_token, test_region):
     assert data["postgres_port"] == update_data["postgres_port"]
 
 
+def test_update_region_legacy_http_url_grandfathered(client, admin_token, test_region, db):
+    """
+    Given a legacy region whose stored litellm_api_url is still http://
+    When an admin updates unrelated fields without changing the URL
+    Then the update succeeds (unchanged legacy values are not revalidated)
+    """
+    test_region.litellm_api_url = "http://legacy-litellm.internal"
+    db.commit()
+
+    response = client.put(
+        f"/regions/{test_region.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "name": test_region.name,
+            "postgres_host": test_region.postgres_host,
+            "postgres_port": test_region.postgres_port,
+            "postgres_admin_user": test_region.postgres_admin_user,
+            "litellm_api_url": "http://legacy-litellm.internal",
+            "is_active": False,
+            "is_dedicated": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["is_active"] is False
+
+
+def test_update_region_rejects_new_http_url(client, admin_token, test_region):
+    """
+    Given an existing region with an https litellm_api_url
+    When an admin tries to change it to an http:// URL
+    Then the request is rejected with a 422 error
+    """
+    response = client.put(
+        f"/regions/{test_region.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "name": test_region.name,
+            "postgres_host": test_region.postgres_host,
+            "postgres_port": test_region.postgres_port,
+            "postgres_admin_user": test_region.postgres_admin_user,
+            "litellm_api_url": "http://new-litellm.internal",
+            "is_active": True,
+            "is_dedicated": False,
+        },
+    )
+
+    assert response.status_code == 422
+    assert "https" in response.json()["detail"]
+
+
 def test_update_region_duplicate_name(client, admin_token, test_region, db):
     """
     Given an admin user and two existing regions

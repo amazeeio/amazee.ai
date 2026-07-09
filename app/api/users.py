@@ -816,6 +816,14 @@ async def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
             detail=f"Invalid role. Must be one of: {', '.join(UserRole.get_all_roles())}",
         )
 
+    # This path always creates non-admin users (is_admin=False below), so a
+    # system_admin role here would be an inconsistent row (see rbac invariant).
+    if user.role == UserRole.SYSTEM_ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="system_admin role cannot be assigned via user creation.",
+        )
+
     # Default to the lowest permissions for a user in a team
     if user.role is None and user.team_id is not None:
         user.role = "read_only"
@@ -997,11 +1005,21 @@ async def update_user(
     dependencies=[Depends(get_role_min_team_admin)],
 )
 async def add_user_to_team(
-    user_id: int, team_operation: TeamOperation, db: Session = Depends(get_db)
+    user_id: int,
+    team_operation: TeamOperation,
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user_from_auth),
 ):
     """
     Add a user to a team. Accessible by admin users or team admins.
     """
+    # A team admin may only add users to their own team; system admins any team.
+    if not current_user.is_admin and current_user.team_id != team_operation.team_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action",
+        )
+
     db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -1172,6 +1190,15 @@ async def update_user_role(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not authorized to perform this action",
             )
+
+    # Only system admins may assign the system_admin role. Anyone else would
+    # create an inconsistent record (role=system_admin, is_admin=False) that
+    # spams rbac warnings on every request.
+    if role_update.role == UserRole.SYSTEM_ADMIN and not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only system administrators can assign the system_admin role",
+        )
 
     # Don't allow changing admin roles through this endpoint
     if db_user.is_admin:
