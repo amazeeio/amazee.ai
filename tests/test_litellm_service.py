@@ -1132,7 +1132,7 @@ def test_get_user_daily_activity_filters_by_user_id(mock_client_class, test_regi
 
     results = asyncio.run(
         service.get_user_daily_activity(
-            user_id=42,
+            user_id="42",
             start_date="2025-06-01",
             end_date="2025-06-02",
         )
