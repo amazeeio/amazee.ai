@@ -590,6 +590,79 @@ def test_team_daily_activity_team_not_found(
     mock_get_team_daily_activity.assert_not_awaited()
 
 
+@patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
+def test_key_daily_activity_defaults_to_last_30_days(
+    mock_get_daily_activity, client, team_admin_token, test_team_user, test_region, db
+):
+    key = DBPrivateAIKey(
+        name="daily-activity-default-key",
+        litellm_token="sk-default-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team_user.team_id,
+    )
+    db.add(key)
+    db.commit()
+    mock_get_daily_activity.return_value = []
+
+    # No start_date/end_date -> defaults to the last 30 days (UTC).
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/daily-activity",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    today = datetime.now(UTC).date()
+    data = response.json()
+    assert data["end_date"] == today.isoformat()
+    assert data["start_date"] == (today - timedelta(days=30)).isoformat()
+
+    kwargs = mock_get_daily_activity.await_args.kwargs
+    assert kwargs["end_date"] == today.isoformat()
+    assert kwargs["start_date"] == (today - timedelta(days=30)).isoformat()
+
+
+@patch("app.api.spend.LiteLLMService.get_user_daily_activity", new_callable=AsyncMock)
+def test_user_daily_activity_defaults_to_last_30_days(
+    mock_get_user_daily_activity, client, team_admin_token, test_team_user, test_region
+):
+    mock_get_user_daily_activity.return_value = []
+
+    response = client.get(
+        f"/spend/{test_region.id}/user/{test_team_user.id}/daily-activity",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    today = datetime.now(UTC).date()
+    data = response.json()
+    assert data["end_date"] == today.isoformat()
+    assert data["start_date"] == (today - timedelta(days=30)).isoformat()
+
+    kwargs = mock_get_user_daily_activity.await_args.kwargs
+    assert kwargs["end_date"] == today.isoformat()
+    assert kwargs["start_date"] == (today - timedelta(days=30)).isoformat()
+
+
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_team_daily_activity_defaults_to_last_30_days(
+    mock_get_team_daily_activity, client, team_admin_token, test_team, test_region
+):
+    mock_get_team_daily_activity.return_value = []
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/daily-activity",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    today = datetime.now(UTC).date()
+    data = response.json()
+    assert data["end_date"] == today.isoformat()
+    assert data["start_date"] == (today - timedelta(days=30)).isoformat()
+
+    kwargs = mock_get_team_daily_activity.await_args.kwargs
+    assert kwargs["end_date"] == today.isoformat()
+    assert kwargs["start_date"] == (today - timedelta(days=30)).isoformat()
+
+
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
 def test_key_spend_alias_uses_configured_cap_for_no_purchase_pool_team(
     mock_get_key_info, client, admin_token, test_team, test_region, db

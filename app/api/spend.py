@@ -309,6 +309,33 @@ def _rows_to_daily_activity(rows: list[dict]) -> list[KeyDailyActivityRow]:
     return activity
 
 
+# Default look-back window (in days) used when a daily-activity request omits
+# start_date and/or end_date.
+DEFAULT_DAILY_ACTIVITY_WINDOW_DAYS = 30
+
+
+def _resolve_daily_activity_range(
+    start_date: date | None, end_date: date | None
+) -> tuple[date, date]:
+    """Fill in defaults for an optional daily-activity date range and validate it.
+
+    When ``end_date`` is omitted it defaults to today (UTC); when ``start_date``
+    is omitted it defaults to ``end_date`` minus
+    ``DEFAULT_DAILY_ACTIVITY_WINDOW_DAYS`` days, giving a rolling 30-day window.
+    Raises 400 if the resolved ``start_date`` is after ``end_date``.
+    """
+    if end_date is None:
+        end_date = datetime.now(UTC).date()
+    if start_date is None:
+        start_date = end_date - timedelta(days=DEFAULT_DAILY_ACTIVITY_WINDOW_DAYS)
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="start_date must be on or before end_date",
+        )
+    return start_date, end_date
+
+
 def _sum_optional_token_values(
     items: list[SpendKeyItem],
 ) -> tuple[int | None, int | None, int | None]:
@@ -1459,7 +1486,9 @@ async def get_key_last_used(
     summary="Get key daily activity by region",
     description=(
         "Returns per-day usage (spend, tokens and request count) for a specific "
-        "key in the specified region across the requested date range. Proxies "
+        "key in the specified region across the requested date range. "
+        "start_date and end_date are optional and default to the last 30 days "
+        "(end_date defaults to today UTC, start_date to 30 days earlier). Proxies "
         "LiteLLM's `/user/daily/activity`, filtered to this key. Days with no "
         "usage are omitted from the response."
     ),
@@ -1468,21 +1497,25 @@ async def get_key_last_used(
 async def get_key_daily_activity(
     region_id: int,
     key_id: int,
-    start_date: date = Query(
-        ..., description="Start date (inclusive), formatted YYYY-MM-DD."
+    start_date: date | None = Query(
+        None,
+        description=(
+            "Start date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to 30 days before end_date when omitted."
+        ),
     ),
-    end_date: date = Query(
-        ..., description="End date (inclusive), formatted YYYY-MM-DD."
+    end_date: date | None = Query(
+        None,
+        description=(
+            "End date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to today (UTC) when omitted."
+        ),
     ),
     current_user: DBUser = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
 ):
-    if start_date > end_date:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="start_date must be on or before end_date",
-        )
+    start_date, end_date = _resolve_daily_activity_range(start_date, end_date)
 
     key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
     if not key:
@@ -1534,7 +1567,9 @@ async def get_key_daily_activity(
     description=(
         "Returns per-day usage (spend, tokens and request count) aggregated "
         "across all of a user's keys in the specified region across the "
-        "requested date range. Proxies LiteLLM's `/user/daily/activity`, "
+        "requested date range. start_date and end_date are optional and default "
+        "to the last 30 days (end_date defaults to today UTC, start_date to 30 "
+        "days earlier). Proxies LiteLLM's `/user/daily/activity`, "
         "filtered to this user. Days with no usage are omitted.\n\n"
         "Values come from LiteLLM's pre-aggregated daily-spend tables (whole "
         "UTC days) and are independent of billing-cycle spend resets, so they "
@@ -1547,21 +1582,25 @@ async def get_key_daily_activity(
 async def get_user_daily_activity(
     region_id: int,
     user_id: int,
-    start_date: date = Query(
-        ..., description="Start date (inclusive), formatted YYYY-MM-DD."
+    start_date: date | None = Query(
+        None,
+        description=(
+            "Start date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to 30 days before end_date when omitted."
+        ),
     ),
-    end_date: date = Query(
-        ..., description="End date (inclusive), formatted YYYY-MM-DD."
+    end_date: date | None = Query(
+        None,
+        description=(
+            "End date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to today (UTC) when omitted."
+        ),
     ),
     current_user: DBUser = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
 ):
-    if start_date > end_date:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="start_date must be on or before end_date",
-        )
+    start_date, end_date = _resolve_daily_activity_range(start_date, end_date)
 
     target_user = db.query(DBUser).filter(DBUser.id == user_id).first()
     if not target_user:
@@ -1595,7 +1634,9 @@ async def get_user_daily_activity(
     description=(
         "Returns per-day usage (spend, tokens and request count) aggregated "
         "across all of a team's keys in the specified region across the "
-        "requested date range. Proxies LiteLLM's `/team/daily/activity`, "
+        "requested date range. start_date and end_date are optional and default "
+        "to the last 30 days (end_date defaults to today UTC, start_date to 30 "
+        "days earlier). Proxies LiteLLM's `/team/daily/activity`, "
         "filtered to this team. Days with no usage are omitted.\n\n"
         "Values come from LiteLLM's pre-aggregated daily-spend tables (whole "
         "UTC days) and are independent of billing-cycle spend resets, so they "
@@ -1608,21 +1649,25 @@ async def get_user_daily_activity(
 async def get_team_daily_activity(
     region_id: int,
     team_id: int,
-    start_date: date = Query(
-        ..., description="Start date (inclusive), formatted YYYY-MM-DD."
+    start_date: date | None = Query(
+        None,
+        description=(
+            "Start date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to 30 days before end_date when omitted."
+        ),
     ),
-    end_date: date = Query(
-        ..., description="End date (inclusive), formatted YYYY-MM-DD."
+    end_date: date | None = Query(
+        None,
+        description=(
+            "End date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to today (UTC) when omitted."
+        ),
     ),
     current_user: DBUser = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
 ):
-    if start_date > end_date:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="start_date must be on or before end_date",
-        )
+    start_date, end_date = _resolve_daily_activity_range(start_date, end_date)
 
     team = (
         db.query(DBTeam)
