@@ -13,4 +13,5 @@ data:
   SES_SENDER_EMAIL: "{{ .Values.sesSenderEmail }}"
   ENABLE_LIMITS: "{{ .Values.enableLimits }}"
   ENV_SUFFIX: "{{ .Values.envSuffix }}"
+  FORWARDED_ALLOW_IPS: "{{ .Values.forwardedAllowIps }}"
   PASSWORDLESS_SIGN_IN: "{{ .Values.passwordlessSignIn }}"

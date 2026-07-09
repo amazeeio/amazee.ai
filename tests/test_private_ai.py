@@ -519,8 +519,9 @@ def test_create_private_ai_key_for_user_in_other_team(
         },
     )
 
-    assert response.status_code == 404
-    assert "Owner user not found" in response.json()["detail"]
+    # Cross-team owner assignment is rejected up front as 403 (H1 fix)
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
 
 
 def test_create_private_ai_key_for_nonexistent_team(client, admin_token, test_region):

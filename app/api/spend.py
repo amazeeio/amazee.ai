@@ -39,6 +39,9 @@ from app.schemas.limits import OwnerType, ResourceType
 from app.api.users import invalidate_user_spend_cache
 from app.schemas.models import (
     BudgetType,
+    KeyDailyActivityResponse,
+    KeyDailyActivityRow,
+    KeyLastUsedResponse,
     PrivateAIKeySpend,
     SpendBudgetUpdateRequest,
     SpendBudgetUpdateResponse,
@@ -1350,6 +1353,168 @@ async def get_key_spend_alias(
         )
 
 
+@router.get(
+    "/{region_id}/key/{key_id}/last-used",
+    response_model=KeyLastUsedResponse,
+    summary="Get key last-used time by region",
+    description=(
+        "Returns the timestamp a specific key was last used in the given region, "
+        "derived from LiteLLM spend logs (the most recent request time). "
+        "`last_used_at` is null when the key has never been used."
+    ),
+    response_description="Last-used timestamp for the key.",
+)
+async def get_key_last_used(
+    region_id: int,
+    key_id: int,
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
+    if not key:
+        raise HTTPException(status_code=404, detail="Private AI Key not found")
+    if key.region_id != region_id:
+        raise HTTPException(
+            status_code=404, detail="Private AI Key not found in region"
+        )
+
+    # Reuse authorization semantics from get_key_spend_alias.
+    if current_user.is_admin:
+        pass
+    elif user_role in [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR, UserRole.READ_ONLY]:
+        if key.team_id is not None:
+            if key.team_id != current_user.team_id:
+                raise HTTPException(status_code=404, detail="Private AI Key not found")
+        else:
+            owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
+            if not owner or owner.team_id != current_user.team_id:
+                raise HTTPException(status_code=404, detail="Private AI Key not found")
+    else:
+        if key.owner_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Private AI Key not found")
+
+    region = _get_region_or_404(db, region_id)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+
+    if not key.litellm_token:
+        return KeyLastUsedResponse(
+            region_id=region_id,
+            key_id=key_id,
+            last_used_at=None,
+        )
+
+    last_used_at = await service.get_key_last_used(key.litellm_token)
+
+    return KeyLastUsedResponse(
+        region_id=region_id,
+        key_id=key_id,
+        last_used_at=last_used_at,
+    )
+
+
+@router.get(
+    "/{region_id}/key/{key_id}/daily-activity",
+    response_model=KeyDailyActivityResponse,
+    summary="Get key daily activity by region",
+    description=(
+        "Returns per-day usage (spend, tokens and request count) for a specific "
+        "key in the specified region across the requested date range. Proxies "
+        "LiteLLM's `/user/daily/activity`, filtered to this key. Days with no "
+        "usage are omitted from the response."
+    ),
+    response_description="Per-day usage rows for the key, ordered by date.",
+)
+async def get_key_daily_activity(
+    region_id: int,
+    key_id: int,
+    start_date: date = Query(
+        ..., description="Start date (inclusive), formatted YYYY-MM-DD."
+    ),
+    end_date: date = Query(
+        ..., description="End date (inclusive), formatted YYYY-MM-DD."
+    ),
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="start_date must be on or before end_date",
+        )
+
+    key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
+    if not key:
+        raise HTTPException(status_code=404, detail="Private AI Key not found")
+    if key.region_id != region_id:
+        raise HTTPException(
+            status_code=404, detail="Private AI Key not found in region"
+        )
+
+    # Reuse authorization semantics from get_key_spend_alias.
+    if current_user.is_admin:
+        pass
+    elif user_role in [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR, UserRole.READ_ONLY]:
+        if key.team_id is not None:
+            if key.team_id != current_user.team_id:
+                raise HTTPException(status_code=404, detail="Private AI Key not found")
+        else:
+            owner = db.query(DBUser).filter(DBUser.id == key.owner_id).first()
+            if not owner or owner.team_id != current_user.team_id:
+                raise HTTPException(status_code=404, detail="Private AI Key not found")
+    else:
+        if key.owner_id != current_user.id:
+            raise HTTPException(status_code=404, detail="Private AI Key not found")
+
+    region = _get_region_or_404(db, region_id)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+
+    rows = await service.get_daily_activity(
+        litellm_token=key.litellm_token,
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+    )
+
+    activity: list[KeyDailyActivityRow] = []
+    for row in rows:
+        if not row.get("date"):
+            continue
+        metrics = row.get("metrics") or {}
+        spend_val = metrics.get("spend")
+        activity.append(
+            KeyDailyActivityRow(
+                date=row["date"],
+                spend=spend_val if spend_val is not None else 0.0,
+                prompt_tokens=metrics.get("prompt_tokens")
+                if metrics.get("prompt_tokens") is not None
+                else 0,
+                completion_tokens=metrics.get("completion_tokens")
+                if metrics.get("completion_tokens") is not None
+                else 0,
+                total_tokens=metrics.get("total_tokens")
+                if metrics.get("total_tokens") is not None
+                else 0,
+                request_count=metrics.get("api_requests")
+                if metrics.get("api_requests") is not None
+                else 0,
+            )
+        )
+    activity.sort(key=lambda r: r.date)
+
+    return KeyDailyActivityResponse(
+        region_id=region_id,
+        key_id=key_id,
+        start_date=start_date,
+        end_date=end_date,
+        activity=activity,
+    )
+
+
 @router.put(
     "/{region_id}/team/{team_id}/budget",
     response_model=SpendBudgetUpdateResponse,
@@ -1400,7 +1565,23 @@ async def update_team_budget(
                 "Use subscription renewal and periodic top-up purchase flows."
             ),
         )
-    if team.requires_pool_purchase_gate and body.max_budget is not None:
+    # A non-purchase-gated POOL team skips the purchase clamp below, so a team
+    # admin could set an arbitrary max_budget with no payment — or clear the cap
+    # by sending a null max_budget. Block all non-admin budget writes for this
+    # team type (gated POOL teams remain clamped to purchased budget).
+    if (
+        team.budget_type == BudgetType.POOL
+        and not team.requires_pool_purchase_gate
+        and not current_user.is_admin
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Only system administrators can set the budget for "
+                "non-purchase-gated pool teams."
+            ),
+        )
+    if team.requires_pool_purchase_gate:
         effective_duration = _pool_team_budget_duration_for_enforcement(
             db=db, team_id=team_id, region_id=region_id
         )
@@ -1411,14 +1592,18 @@ async def update_team_budget(
     month_start_spend = None
     available_total: float | None = None
 
-    if team.requires_pool_purchase_gate and body.max_budget is not None:
+    if team.requires_pool_purchase_gate:
         available_total = _pool_available_budget_for_team_region(db, team_id, region_id)
         month_start_spend = _pool_previous_period_spend_baseline(db, team_id, region_id)
         month_anchor = _current_month_anchor()
+        # A null max_budget must NOT clear the LiteLLM cap for purchase-gated
+        # teams — that would grant unlimited usage. Clamp to the purchased total.
         effective_max_budget = _compute_pool_monthly_effective_budget(
             purchased_total=available_total,
             period_baseline_spend=month_start_spend,
-            monthly_cap=body.max_budget,
+            monthly_cap=(
+                body.max_budget if body.max_budget is not None else available_total
+            ),
         )
 
     await service.update_team_budget(

@@ -512,6 +512,10 @@ async def _run_cycle_from_stripe_event(
     # --- Resolve budget ---
     amount_paid = int(getattr(event_object, "amount_paid", 0) or 0)
     budget_cents = amount_paid
+    # A real payment is a single aggregate charge and must be split across
+    # regions (L1). A free-plan product budget below is a per-key/per-region
+    # allowance, not an aggregate, so it is applied in full to each region.
+    is_paid_amount = amount_paid > 0
 
     if budget_cents == 0 and subscription_id:
         # Free plan — look up product budget from DB
@@ -574,6 +578,12 @@ async def _run_cycle_from_stripe_event(
                     source_event_id=event_id,
                 )
 
+        # Accounting model: the payment record holds the FULL invoice amount
+        # (one Stripe charge = one payment row). For paid charges the per-region
+        # ledger entries below hold each region's split share (summing to
+        # budget_cents); for free-plan allowances each region gets the full
+        # amount. Payment row and ledger entries are distinct granularities — a
+        # reconciliation query must sum ONE or the OTHER, never both.
         payment_id = await _record_periodic_payment_direct(
             db,
             team_id=team.id,
@@ -583,15 +593,35 @@ async def _run_cycle_from_stripe_event(
             payment_type="subscription",
         )
 
+        # Split a paid charge across regions rather than crediting the full
+        # amount to each: the ledger is idempotent per (invoice, region), so
+        # applying an aggregate payment to every region multiplied the paid
+        # budget by the region count (L1). The <region_count remainder cents go
+        # to the lowest-id region so the split is deterministic across retries
+        # (DB result order is otherwise arbitrary) and sums exactly to
+        # budget_cents. Free-plan product budgets are a per-region allowance,
+        # not an aggregate, so they are applied in full to each region (no split).
+        split_regions = sorted(target_regions, key=lambda r: r.id)
+        region_count = len(split_regions)
+        if is_paid_amount:
+            per_region_budget_cents = budget_cents // region_count
+            remainder_cents = budget_cents - per_region_budget_cents * region_count
+        else:
+            per_region_budget_cents = budget_cents
+            remainder_cents = 0
+
         sync_errors: list[str] = []
-        for region in target_regions:
+        for index, region in enumerate(split_regions):
+            region_budget_cents = per_region_budget_cents + (
+                remainder_cents if index == 0 else 0
+            )
             await _sync_periodic_ledger_for_period(
                 db=db,
                 team=team,
                 region=region,
                 period_start=period_start,
                 period_end=period_end,
-                amount_cents=budget_cents,
+                amount_cents=region_budget_cents,
                 source_payment_id=payment_id,
                 source_invoice_id=transaction_id,
             )
@@ -599,7 +629,7 @@ async def _run_cycle_from_stripe_event(
             region_errors = await apply_billing_cycle_for_team(
                 db=db,
                 team_id=team.id,
-                budget_cents=budget_cents,
+                budget_cents=region_budget_cents,
                 region_id=region.id,
                 period_start=period_start,
                 period_end=period_end,
@@ -2821,3 +2851,86 @@ def generate_pricing_url(admin_email: str, validity_hours: int = 24) -> str:
 
     # Add the token as a query parameter
     return f"{url}?token={token}"
+
+
+async def expire_trial_user_keys(db: Session, user: DBUser):
+    """Expire all LiteLLM keys for a trial user (best-effort, failures are logged)."""
+    keys = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.owner_id == user.id).all()
+    for key in keys:
+        if key.litellm_token and key.region:
+            try:
+                litellm_service = LiteLLMService(
+                    api_url=key.region.litellm_api_url,
+                    api_key=key.region.litellm_api_key
+                )
+                await litellm_service.update_key_duration(key.litellm_token, "0d")
+                logger.info(f"Set duration to 0d for key {key.id}")
+            except Exception as e:
+                logger.error(f"Failed to expire key {key.id}: {e}")
+
+
+async def deactivate_trial_user(db: Session, user: DBUser):
+    """Deactivate a trial user in the DB and expire all their LiteLLM keys.
+
+    The DB deactivation is committed by the caller before key expiry so that
+    the user is marked inactive even if the external LiteLLM call fails.
+    """
+    user.is_active = False
+    user.updated_at = datetime.now(UTC)
+
+
+async def monitor_trial_users(db: Session):
+    """
+    Monitor trial users and expire them if they have exceeded their budget.
+    """
+    logger.info("Monitoring trial users")
+    try:
+        # Get trial team (only consider active teams)
+        trial_team = db.query(DBTeam).filter(
+            DBTeam.admin_email == settings.AI_TRIAL_TEAM_EMAIL,
+            DBTeam.is_active.is_(True)
+        ).first()
+        if not trial_team:
+            logger.info("Trial team not found, skipping")
+            return
+
+        # Get all active users in the trial team (excluding admin)
+        users = db.query(DBUser).filter(
+            DBUser.team_id == trial_team.id,
+            DBUser.is_active,
+            DBUser.role == "user"
+        ).all()
+
+        # Fetch all user budget limits in one query
+        user_limits = db.query(DBLimitedResource).filter(
+            DBLimitedResource.owner_type == OwnerType.USER,
+            DBLimitedResource.owner_id.in_([user.id for user in users]),
+            DBLimitedResource.resource == ResourceType.BUDGET
+        ).all()
+
+        user_limit_map = {limit.owner_id: limit for limit in user_limits}
+
+        # Collect over-budget users and mark them inactive in the DB
+        over_budget_users = []
+        for user in users:
+            user_limit = user_limit_map.get(user.id)
+            if user_limit and user_limit.current_value is not None:
+                if user_limit.current_value >= user_limit.max_value:
+                    logger.info(f"Trial user {user.email} (ID: {user.id}) has fully used up their budget ({user_limit.current_value} >= {user_limit.max_value}). Setting for removal.")
+                    await deactivate_trial_user(db, user)
+                    over_budget_users.append(user)
+
+        # Commit DB changes first so users are deactivated even if key expiry fails
+        db.commit()
+
+        # Expire LiteLLM keys after the DB commit (best-effort)
+        for user in over_budget_users:
+            await expire_trial_user_keys(db, user)
+
+        logger.info(f"Finished monitoring {len(users)} trial users")
+
+    except Exception as e:
+        logger.error(f"Error in trial user monitoring: {e}")
+        db.rollback()
+        raise
+

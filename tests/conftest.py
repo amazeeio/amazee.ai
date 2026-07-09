@@ -1,7 +1,15 @@
 import os
 
-# Set environment variables BEFORE any app imports
-os.environ["AMAZEEAI_JWT_SECRET"] = "test-secret-key-for-tests"
+# Set environment variables BEFORE any app imports.
+# NOTE: this value must NOT be one of the strings rejected by the SECRET_KEY
+# validator in app/core/config.py ("my-secret-key", "test-secret-key"), or the
+# app will fail to start here. Keep the "-for-tests" suffix.
+os.environ["AMAZEEAI_JWT_SECRET"] = "test-secret-key-for-tests-0123456789abcdef"
+# Unconditional (like the JWT secret above) so an ambient ENV_SUFFIX=production
+# leaking from the shell/CI can't silently disable the local-bearer path or the
+# Swagger route and break tests. Per-test prod checks set settings.ENV_SUFFIX
+# directly (see tests/test_security.py), not this env var.
+os.environ["ENV_SUFFIX"] = "local"
 
 import pytest
 from fastapi.testclient import TestClient
