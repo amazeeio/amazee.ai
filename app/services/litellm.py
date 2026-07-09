@@ -428,7 +428,7 @@ class LiteLLMService:
         """
         return await self._fetch_daily_activity(
             "/user/daily/activity",
-            {"user_id": str(user_id)},
+            {"user_id": user_id},
             start_date=start_date,
             end_date=end_date,
             page_size=page_size,
