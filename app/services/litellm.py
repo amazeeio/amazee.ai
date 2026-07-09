@@ -327,21 +327,30 @@ class LiteLLMService:
                 detail=f"Failed to get LiteLLM key last-used time: {error_msg}",
             )
 
-    async def get_daily_activity(
+    async def _fetch_daily_activity(
         self,
-        litellm_token: str,
+        endpoint: str,
+        filter_params: dict,
         start_date: str,
         end_date: str,
         page_size: int = 1000,
     ) -> list[dict]:
-        """Fetch per-day usage for a single key from LiteLLM.
+        """Paginate a LiteLLM daily-activity endpoint and return all rows.
 
-        Proxies LiteLLM's ``/user/daily/activity`` endpoint, filtered to the
-        given key (via its hashed token), and paginates through every page.
-        Returns the raw ``results`` rows, each containing ``date``, ``metrics``
-        and ``breakdown``.
+        ``endpoint`` is the path to call (e.g. ``/user/daily/activity`` or
+        ``/team/daily/activity``). ``filter_params`` carries the entity filter
+        for that endpoint (e.g. ``{"api_key": ...}``, ``{"user_id": ...}`` or
+        ``{"team_ids": ...}``). Paginates through every page and returns the raw
+        ``results`` rows, each containing ``date``, ``metrics`` and
+        ``breakdown``.
+
+        These values come from LiteLLM's pre-aggregated daily-spend tables,
+        which are keyed on whole UTC days and are independent of our
+        billing-cycle spend resets — so they are a true continuous usage history
+        and will NOT reconcile with the cycle-reset spend/budget figures
+        returned by the other spend endpoints. The current UTC day may
+        under-report until LiteLLM's next batch flush.
         """
-        hashed_token = self.hash_token(litellm_token)
         results: list[dict] = []
         page = 1
         max_pages = 100
@@ -349,14 +358,14 @@ class LiteLLMService:
             async with httpx.AsyncClient() as client:
                 while page <= max_pages:
                     response = await client.get(
-                        f"{self.api_url}/user/daily/activity",
+                        f"{self.api_url}{endpoint}",
                         headers={"Authorization": f"Bearer {self.master_key}"},
                         params={
                             "start_date": start_date,
                             "end_date": end_date,
-                            "api_key": hashed_token,
                             "page": page,
                             "page_size": page_size,
+                            **filter_params,
                         },
                     )
                     response.raise_for_status()
@@ -383,6 +392,67 @@ class LiteLLMService:
                 status_code=status_code,
                 detail=f"Failed to get LiteLLM daily activity: {error_msg}",
             )
+
+    async def get_daily_activity(
+        self,
+        litellm_token: str,
+        start_date: str,
+        end_date: str,
+        page_size: int = 1000,
+    ) -> list[dict]:
+        """Fetch per-day usage for a single key from LiteLLM.
+
+        Proxies LiteLLM's ``/user/daily/activity`` endpoint, filtered to the
+        given key (via its hashed token).
+        """
+        hashed_token = self.hash_token(litellm_token)
+        return await self._fetch_daily_activity(
+            "/user/daily/activity",
+            {"api_key": hashed_token},
+            start_date=start_date,
+            end_date=end_date,
+            page_size=page_size,
+        )
+
+    async def get_user_daily_activity(
+        self,
+        user_id: str,
+        start_date: str,
+        end_date: str,
+        page_size: int = 1000,
+    ) -> list[dict]:
+        """Fetch per-day usage for a single user from LiteLLM.
+
+        Proxies LiteLLM's ``/user/daily/activity`` endpoint, filtered to the
+        given user (aggregated across all of the user's keys).
+        """
+        return await self._fetch_daily_activity(
+            "/user/daily/activity",
+            {"user_id": str(user_id)},
+            start_date=start_date,
+            end_date=end_date,
+            page_size=page_size,
+        )
+
+    async def get_team_daily_activity(
+        self,
+        team_id: str,
+        start_date: str,
+        end_date: str,
+        page_size: int = 1000,
+    ) -> list[dict]:
+        """Fetch per-day usage for a single team from LiteLLM.
+
+        Proxies LiteLLM's ``/team/daily/activity`` endpoint, filtered to the
+        given LiteLLM ``team_id`` (aggregated across all of the team's keys).
+        """
+        return await self._fetch_daily_activity(
+            "/team/daily/activity",
+            {"team_ids": team_id},
+            start_date=start_date,
+            end_date=end_date,
+            page_size=page_size,
+        )
 
     async def update_budget(
         self,

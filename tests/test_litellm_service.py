@@ -1111,3 +1111,70 @@ def test_get_daily_activity_failure(
         )
 
     assert "Failed to get LiteLLM daily activity" in exc_info.value.detail
+
+
+@patch("httpx.AsyncClient")
+def test_get_user_daily_activity_filters_by_user_id(mock_client_class, test_region):
+    """get_user_daily_activity hits /user/daily/activity filtered by user_id."""
+    page = _daily_activity_page(
+        [{"date": "2025-06-01", "metrics": {"spend": 1.0}}], has_more=False
+    )
+
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = [page]
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    results = asyncio.run(
+        service.get_user_daily_activity(
+            user_id=42,
+            start_date="2025-06-01",
+            end_date="2025-06-02",
+        )
+    )
+
+    assert [r["date"] for r in results] == ["2025-06-01"]
+    first_call = mock_client.get.call_args_list[0]
+    assert first_call.args[0].endswith("/user/daily/activity")
+    assert first_call.kwargs["params"]["user_id"] == "42"
+    assert "api_key" not in first_call.kwargs["params"]
+    assert first_call.kwargs["params"]["start_date"] == "2025-06-01"
+    assert first_call.kwargs["params"]["end_date"] == "2025-06-02"
+
+
+@patch("httpx.AsyncClient")
+def test_get_team_daily_activity_filters_by_team_ids(mock_client_class, test_region):
+    """get_team_daily_activity hits /team/daily/activity filtered by team_ids."""
+    page = _daily_activity_page(
+        [{"date": "2025-06-01", "metrics": {"spend": 3.0}}], has_more=False
+    )
+
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = [page]
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    results = asyncio.run(
+        service.get_team_daily_activity(
+            team_id="Test_Region_7",
+            start_date="2025-06-01",
+            end_date="2025-06-02",
+        )
+    )
+
+    assert [r["date"] for r in results] == ["2025-06-01"]
+    first_call = mock_client.get.call_args_list[0]
+    assert first_call.args[0].endswith("/team/daily/activity")
+    assert first_call.kwargs["params"]["team_ids"] == "Test_Region_7"
+    assert first_call.kwargs["params"]["start_date"] == "2025-06-01"
+    assert first_call.kwargs["params"]["end_date"] == "2025-06-02"

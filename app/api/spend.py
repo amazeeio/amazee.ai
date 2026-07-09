@@ -52,6 +52,8 @@ from app.schemas.models import (
     TeamSpendHistoryResponse,
     TeamSpendResponse,
     PeriodicTeamBudgetView,
+    TeamDailyActivityResponse,
+    UserDailyActivityResponse,
     UserSpendResponse,
 )
 from app.services.litellm import LiteLLMService
@@ -269,6 +271,42 @@ def _extract_token_usage(data: dict) -> tuple[int | None, int | None, int | None
         _to_int_or_none(data.get("completion_tokens")),
         _to_int_or_none(data.get("total_tokens")),
     )
+
+
+def _rows_to_daily_activity(rows: list[dict]) -> list[KeyDailyActivityRow]:
+    """Map raw LiteLLM daily-activity rows to daily-activity response rows.
+
+    Each raw row carries ``date`` and a ``metrics`` block; rows without a date
+    are skipped and the result is ordered ascending by date. The ``breakdown``
+    block returned by LiteLLM (per model/provider/key) is intentionally dropped
+    to keep the response flat.
+    """
+    activity: list[KeyDailyActivityRow] = []
+    for row in rows:
+        if not row.get("date"):
+            continue
+        metrics = row.get("metrics") or {}
+        spend_val = metrics.get("spend")
+        activity.append(
+            KeyDailyActivityRow(
+                date=row["date"],
+                spend=spend_val if spend_val is not None else 0.0,
+                prompt_tokens=metrics.get("prompt_tokens")
+                if metrics.get("prompt_tokens") is not None
+                else 0,
+                completion_tokens=metrics.get("completion_tokens")
+                if metrics.get("completion_tokens") is not None
+                else 0,
+                total_tokens=metrics.get("total_tokens")
+                if metrics.get("total_tokens") is not None
+                else 0,
+                request_count=metrics.get("api_requests")
+                if metrics.get("api_requests") is not None
+                else 0,
+            )
+        )
+    activity.sort(key=lambda r: r.date)
+    return activity
 
 
 def _sum_optional_token_values(
@@ -1480,38 +1518,139 @@ async def get_key_daily_activity(
         end_date=end_date.isoformat(),
     )
 
-    activity: list[KeyDailyActivityRow] = []
-    for row in rows:
-        if not row.get("date"):
-            continue
-        metrics = row.get("metrics") or {}
-        spend_val = metrics.get("spend")
-        activity.append(
-            KeyDailyActivityRow(
-                date=row["date"],
-                spend=spend_val if spend_val is not None else 0.0,
-                prompt_tokens=metrics.get("prompt_tokens")
-                if metrics.get("prompt_tokens") is not None
-                else 0,
-                completion_tokens=metrics.get("completion_tokens")
-                if metrics.get("completion_tokens") is not None
-                else 0,
-                total_tokens=metrics.get("total_tokens")
-                if metrics.get("total_tokens") is not None
-                else 0,
-                request_count=metrics.get("api_requests")
-                if metrics.get("api_requests") is not None
-                else 0,
-            )
-        )
-    activity.sort(key=lambda r: r.date)
-
     return KeyDailyActivityResponse(
         region_id=region_id,
         key_id=key_id,
         start_date=start_date,
         end_date=end_date,
-        activity=activity,
+        activity=_rows_to_daily_activity(rows),
+    )
+
+
+@router.get(
+    "/{region_id}/user/{user_id}/daily-activity",
+    response_model=UserDailyActivityResponse,
+    summary="Get user daily activity by region",
+    description=(
+        "Returns per-day usage (spend, tokens and request count) aggregated "
+        "across all of a user's keys in the specified region across the "
+        "requested date range. Proxies LiteLLM's `/user/daily/activity`, "
+        "filtered to this user. Days with no usage are omitted.\n\n"
+        "Values come from LiteLLM's pre-aggregated daily-spend tables (whole "
+        "UTC days) and are independent of billing-cycle spend resets, so they "
+        "do NOT reconcile with the cycle-reset spend/budget figures returned by "
+        "the other spend endpoints. The current UTC day may under-report until "
+        "LiteLLM's next batch flush."
+    ),
+    response_description="Per-day usage rows for the user, ordered by date.",
+)
+async def get_user_daily_activity(
+    region_id: int,
+    user_id: int,
+    start_date: date = Query(
+        ..., description="Start date (inclusive), formatted YYYY-MM-DD."
+    ),
+    end_date: date = Query(
+        ..., description="End date (inclusive), formatted YYYY-MM-DD."
+    ),
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="start_date must be on or before end_date",
+        )
+
+    target_user = db.query(DBUser).filter(DBUser.id == user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    _assert_user_access(current_user, user_role, target_user)
+
+    region = _get_region_or_404(db, region_id)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+
+    rows = await service.get_user_daily_activity(
+        user_id=str(user_id),
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+    )
+
+    return UserDailyActivityResponse(
+        region_id=region_id,
+        user_id=user_id,
+        start_date=start_date,
+        end_date=end_date,
+        activity=_rows_to_daily_activity(rows),
+    )
+
+
+@router.get(
+    "/{region_id}/team/{team_id}/daily-activity",
+    response_model=TeamDailyActivityResponse,
+    summary="Get team daily activity by region",
+    description=(
+        "Returns per-day usage (spend, tokens and request count) aggregated "
+        "across all of a team's keys in the specified region across the "
+        "requested date range. Proxies LiteLLM's `/team/daily/activity`, "
+        "filtered to this team. Days with no usage are omitted.\n\n"
+        "Values come from LiteLLM's pre-aggregated daily-spend tables (whole "
+        "UTC days) and are independent of billing-cycle spend resets, so they "
+        "do NOT reconcile with the cycle-reset spend/budget figures returned by "
+        "the other spend endpoints. The current UTC day may under-report until "
+        "LiteLLM's next batch flush."
+    ),
+    response_description="Per-day usage rows for the team, ordered by date.",
+)
+async def get_team_daily_activity(
+    region_id: int,
+    team_id: int,
+    start_date: date = Query(
+        ..., description="Start date (inclusive), formatted YYYY-MM-DD."
+    ),
+    end_date: date = Query(
+        ..., description="End date (inclusive), formatted YYYY-MM-DD."
+    ),
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="start_date must be on or before end_date",
+        )
+
+    team = (
+        db.query(DBTeam)
+        .filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None))
+        .first()
+    )
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    _assert_team_access(current_user, user_role, team_id)
+
+    region = _get_region_or_404(db, region_id)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+
+    rows = await service.get_team_daily_activity(
+        team_id=lite_team_id,
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+    )
+
+    return TeamDailyActivityResponse(
+        region_id=region_id,
+        team_id=team_id,
+        start_date=start_date,
+        end_date=end_date,
+        activity=_rows_to_daily_activity(rows),
     )
 
 
