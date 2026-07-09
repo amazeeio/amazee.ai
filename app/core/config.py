@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from pydantic import ConfigDict, field_validator
+from pydantic import ConfigDict, Field, field_validator
 import os
 
 
@@ -11,7 +11,10 @@ class Settings(BaseSettings):
     DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
 
     # JWT settings
-    SECRET_KEY: str = os.environ["AMAZEEAI_JWT_SECRET"]
+    # Bind ONLY to AMAZEEAI_JWT_SECRET. Using an explicit validation_alias stops
+    # a bare SECRET_KEY env var (e.g. the Helm default) from silently overriding
+    # the real signing key. Required: startup fails if the secret is unset.
+    SECRET_KEY: str = Field(validation_alias="AMAZEEAI_JWT_SECRET")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60  # Increase to 60 minutes
 
@@ -23,9 +26,15 @@ class Settings(BaseSettings):
         "http://localhost:8800",
     ]
     ALLOWED_HOSTS: list[str] = ["*"]  # In production, restrict this
+    # NOTE: which client IPs uvicorn trusts X-Forwarded-* headers from is set via
+    # the FORWARDED_ALLOW_IPS env var, passed to uvicorn's --forwarded-allow-ips
+    # in backend-start.sh (a FastAPI constructor kwarg does NOT reach uvicorn).
     PUBLIC_PATHS: list[str] = [
         "/health",
-        "/docs",
+        # /openapi.json is only registered in local (see main.py openapi_url);
+        # it must stay public so the local Swagger UI can fetch the schema. In
+        # deployed envs the route does not exist, so this entry is inert.
+        # (/docs is never registered — docs_url=None — so it is not listed.)
         "/openapi.json",
         "/public/models",
         "/public/models/",
@@ -35,13 +44,20 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: str = "sk-string"
     SES_SENDER_EMAIL: str = "info@example.com"
     PASSWORDLESS_SIGN_IN: str = "true"
-    ENV_SUFFIX: str = os.getenv("ENV_SUFFIX", "local")
+    # Fail closed: an unset ENV_SUFFIX must NOT grant local privileges (docs
+    # exposure, local-bearer bypass). Local dev/tests set ENV_SUFFIX=local
+    # explicitly (docker-compose, conftest).
+    ENV_SUFFIX: str = os.getenv("ENV_SUFFIX", "production")
     LOCAL_BEARER_TOKEN: str = os.getenv("LOCAL_BEARER_TOKEN", "")
     LOCAL_BEARER_USER_EMAIL: str = os.getenv("LOCAL_BEARER_USER_EMAIL", "")
     DYNAMODB_REGION: str = "eu-west-1"
     SES_REGION: str = "eu-west-1"
     ENABLE_LIMITS: bool = os.getenv("ENABLE_LIMITS", "false") == "true"
     AI_TRIAL_MAX_BUDGET: float = os.getenv("AI_TRIAL_MAX_BUDGET", 2.0)
+    # Hard ceiling on total trial users. The trial endpoint is unauthenticated,
+    # so this bounds free-key farming / provisioning DoS regardless of request
+    # rate. Per-IP throttling is expected at the ingress/edge.
+    AI_TRIAL_MAX_USERS: int = int(os.getenv("AI_TRIAL_MAX_USERS", "1000"))
     AI_TRIAL_TEAM_EMAIL: str = os.getenv(
         "AI_TRIAL_TEAM_EMAIL", "anonymous-trial-user@example.com"
     )
@@ -83,6 +99,26 @@ class Settings(BaseSettings):
     model_config = ConfigDict(env_file=".env", extra="ignore")
     main_route: str = os.getenv("LAGOON_ROUTE", "http://localhost:8800")
     frontend_route: str = os.getenv("FRONTEND_ROUTE", "http://localhost:3000")
+
+    @field_validator("SECRET_KEY")
+    @classmethod
+    def reject_default_jwt_secret(cls, value):
+        if (
+            not value
+            or value in ("my-secret-key", "test-secret-key")
+            or "CHANGE_ME" in value
+        ):
+            raise ValueError(
+                "AMAZEEAI_JWT_SECRET must be set to a strong, non-default value."
+            )
+        # Reject obviously-weak short secrets (e.g. "secret", "changeme").
+        # Generate one with: openssl rand -hex 32
+        if len(value) < 32:
+            raise ValueError(
+                "AMAZEEAI_JWT_SECRET must be at least 32 characters "
+                "(e.g. `openssl rand -hex 32`)."
+            )
+        return value
 
     @field_validator(
         "DEDICATED_DEFAULT_USER_COUNT",

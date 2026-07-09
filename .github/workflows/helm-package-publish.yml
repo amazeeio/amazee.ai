@@ -31,12 +31,12 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
       - name: Set up Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v3.18.0
 
@@ -115,10 +115,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v3.18.0
 
@@ -128,6 +128,10 @@ jobs:
           version: 'latest'
 
       - name: Test chart templates
+        env:
+          # backend.secretKey is `required` in the chart; helm doesn't read env
+          # vars itself, so pass the repo secret in via --set.
+          AMAZEEAI_JWT_SECRET: ${{ secrets.AMAZEEAI_JWT_SECRET }}
         run: |
           # Test the main chart with minimal values
           cd helm
@@ -140,17 +144,19 @@ jobs:
           for chart in */; do
             chart_name=$(basename "$chart")
             echo "Testing chart: $chart_name"
-            helm template "test-$chart_name" "$chart_name" > /dev/null
+            helm template "test-$chart_name" "$chart_name" --set secretKey="$AMAZEEAI_JWT_SECRET" > /dev/null
             echo "✅ $chart_name chart template test passed"
           done
 
       - name: Lint charts
+        env:
+          AMAZEEAI_JWT_SECRET: ${{ secrets.AMAZEEAI_JWT_SECRET }}
         run: |
           cd helm
-          helm lint . --strict
+          helm lint . --strict --set backend.secretKey="$AMAZEEAI_JWT_SECRET"
           cd charts
           for chart in */; do
             chart_name=$(basename "$chart")
             echo "Linting chart: $chart_name"
-            helm lint "$chart_name" --strict
+            helm lint "$chart_name" --strict --set secretKey="$AMAZEEAI_JWT_SECRET"
           done

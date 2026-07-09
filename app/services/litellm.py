@@ -1,4 +1,6 @@
+import hashlib
 import httpx
+from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException, status
 import logging
 import re
@@ -27,6 +29,19 @@ class LiteLLMService:
     def format_team_id(region_name: str, team_id: int) -> str:
         """Generate the correctly formatted team_id for LiteLLM"""
         return f"{region_name.replace(' ', '_')}_{team_id}"
+
+    @staticmethod
+    def hash_token(litellm_token: str) -> str:
+        """Hash a LiteLLM key the way LiteLLM stores it internally.
+
+        LiteLLM persists ``sk-`` keys as their SHA-256 hexdigest (e.g. in the
+        ``LiteLLM_SpendLogs`` table queried by ``/spend/logs/v2`` and the
+        daily-spend tables that back ``/user/daily/activity``). Any other token
+        is stored verbatim. Mirrors LiteLLM's ``_hash_token_if_needed``.
+        """
+        if litellm_token.startswith("sk-"):
+            return hashlib.sha256(litellm_token.encode()).hexdigest()
+        return litellm_token
 
     @staticmethod
     def sanitize_alias(alias: str) -> str:
@@ -253,6 +268,120 @@ class LiteLLMService:
             raise HTTPException(
                 status_code=status_code,
                 detail=f"Failed to get LiteLLM key information: {error_msg}",
+            )
+
+    async def get_key_last_used(self, litellm_token: str) -> Optional[datetime]:
+        """Return the timestamp a key was last used, or ``None`` if never used.
+
+        Derives the last-used time from LiteLLM's spend logs: the most recent
+        ``startTime`` recorded for the key. Uses the paginated
+        ``/spend/logs/v2`` endpoint sorted by ``startTime`` descending with
+        ``page_size=1``, so only the single latest row is transferred
+        regardless of how many requests the key has made.
+        """
+        hashed_token = self.hash_token(litellm_token)
+        # /spend/logs/v2 requires an explicit range; use an all-encompassing
+        # window so we capture the key's very first through most-recent usage.
+        start_date = "1970-01-01 00:00:00"
+        end_date = (datetime.now(timezone.utc) + timedelta(days=1)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.api_url}/spend/logs/v2",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    params={
+                        "api_key": hashed_token,
+                        "start_date": start_date,
+                        "end_date": end_date,
+                        "page": 1,
+                        "page_size": 1,
+                        "sort_by": "startTime",
+                        "sort_order": "desc",
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+            rows = data.get("data") or []
+            if not rows:
+                return None
+            # Sorted startTime desc, so the first row holds max(startTime).
+            start_time = rows[0].get("startTime")
+            if not start_time:
+                return None
+            return datetime.fromisoformat(str(start_time).replace("Z", "+00:00"))
+        except httpx.HTTPStatusError as e:
+            error_msg = str(e)
+            logger.error(f"Error getting LiteLLM key last-used time: {error_msg}")
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            if hasattr(e, "response") and e.response is not None:
+                status_code = e.response.status_code
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            raise HTTPException(
+                status_code=status_code,
+                detail=f"Failed to get LiteLLM key last-used time: {error_msg}",
+            )
+
+    async def get_daily_activity(
+        self,
+        litellm_token: str,
+        start_date: str,
+        end_date: str,
+        page_size: int = 1000,
+    ) -> list[dict]:
+        """Fetch per-day usage for a single key from LiteLLM.
+
+        Proxies LiteLLM's ``/user/daily/activity`` endpoint, filtered to the
+        given key (via its hashed token), and paginates through every page.
+        Returns the raw ``results`` rows, each containing ``date``, ``metrics``
+        and ``breakdown``.
+        """
+        hashed_token = self.hash_token(litellm_token)
+        results: list[dict] = []
+        page = 1
+        max_pages = 100
+        try:
+            async with httpx.AsyncClient() as client:
+                while page <= max_pages:
+                    response = await client.get(
+                        f"{self.api_url}/user/daily/activity",
+                        headers={"Authorization": f"Bearer {self.master_key}"},
+                        params={
+                            "start_date": start_date,
+                            "end_date": end_date,
+                            "api_key": hashed_token,
+                            "page": page,
+                            "page_size": page_size,
+                        },
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    results.extend(data.get("results", []))
+                    metadata = data.get("metadata") or {}
+                    if not metadata.get("has_more"):
+                        break
+                    page += 1
+            logger.info("Successfully retrieved LiteLLM daily activity")
+            return results
+        except httpx.HTTPStatusError as e:
+            error_msg = str(e)
+            logger.error(f"Error getting LiteLLM daily activity: {error_msg}")
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            if hasattr(e, "response") and e.response is not None:
+                status_code = e.response.status_code
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            raise HTTPException(
+                status_code=status_code,
+                detail=f"Failed to get LiteLLM daily activity: {error_msg}",
             )
 
     async def update_budget(
