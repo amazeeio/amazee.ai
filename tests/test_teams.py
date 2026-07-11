@@ -2233,7 +2233,7 @@ def test_restored_team_keys_are_accessible(
 
     # Verify key is not in list
     response = client.get(
-        f"/private-ai-keys?team_id={team_id}",
+        "/private-ai-keys?show_all=true",
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert response.status_code == 200
@@ -2249,7 +2249,7 @@ def test_restored_team_keys_are_accessible(
 
     # Verify key is now in list
     response = client.get(
-        f"/private-ai-keys?team_id={team_id}",
+        "/private-ai-keys?show_all=true",
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert response.status_code == 200

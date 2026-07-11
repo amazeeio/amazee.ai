@@ -3261,3 +3261,43 @@ def test_list_private_ai_keys_by_region_user_filter_ignored_for_non_admin(
     returned_db_names = {key["database_name"] for key in data}
     assert "region-non-admin-user-own-db" in returned_db_names
     assert "region-non-admin-other-db" not in returned_db_names
+
+
+def test_list_private_ai_keys_show_all(
+    client, admin_token, test_token, test_region, test_user, test_admin, db
+):
+    """show_all=true returns every key for admins and is ignored for non-admins"""
+    user_key = DBPrivateAIKey(
+        database_name="show-all-user-db",
+        database_host="test-host",
+        database_username="test-user",
+        database_password="test-pass",
+        litellm_token="show-all-user-token",
+        owner_id=test_user.id,
+        region_id=test_region.id,
+    )
+    db.add(user_key)
+    db.commit()
+
+    # Admin without show_all: safe default, other users' keys are absent
+    response = client.get(
+        "/private-ai-keys/", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200
+    assert "show-all-user-db" not in {k["database_name"] for k in response.json()}
+
+    # Admin with show_all=true sees every key
+    response = client.get(
+        "/private-ai-keys/?show_all=true",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert "show-all-user-db" in {k["database_name"] for k in response.json()}
+
+    # Non-admin with show_all=true still only sees their own keys
+    response = client.get(
+        "/private-ai-keys/?show_all=true",
+        headers={"Authorization": f"Bearer {test_token}"},
+    )
+    assert response.status_code == 200
+    assert all(k["owner_id"] == test_user.id for k in response.json())
