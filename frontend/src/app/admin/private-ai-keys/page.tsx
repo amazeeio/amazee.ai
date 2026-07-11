@@ -21,7 +21,7 @@ export default function PrivateAIKeysPage() {
   // Fetch all private AI keys
   const { data: privateAIKeys = [], isLoading: isLoadingPrivateAIKeys } =
     useQuery<PrivateAIKey[]>({
-      queryKey: ["private-ai-keys"],
+      queryKey: ["private-ai-keys", { showAll: true }],
       queryFn: async () => {
         // show_all: admin-only opt-in; without it the API returns only the
         // caller's own keys as a safe default
