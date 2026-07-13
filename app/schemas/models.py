@@ -172,12 +172,7 @@ def _host_is_blocked(host: str) -> bool:
     # metadata/loopback address would bypass the block.
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
-    return (
-        ip.is_loopback
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_unspecified
-    )
+    return ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified
 
 
 def validate_region_api_url(value: str) -> str:
@@ -679,6 +674,34 @@ class KeyDailyActivityResponse(BaseModel):
         description=(
             "Per-day usage rows for the key, ordered ascending by date. "
             "Days with no usage are omitted."
+        )
+    )
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserDailyActivityResponse(BaseModel):
+    region_id: int
+    user_id: int
+    start_date: date
+    end_date: date
+    activity: List[KeyDailyActivityRow] = Field(
+        description=(
+            "Per-day usage rows aggregated across all of the user's keys, "
+            "ordered ascending by date. Days with no usage are omitted."
+        )
+    )
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TeamDailyActivityResponse(BaseModel):
+    region_id: int
+    team_id: int
+    start_date: date
+    end_date: date
+    activity: List[KeyDailyActivityRow] = Field(
+        description=(
+            "Per-day usage rows aggregated across all of the team's keys, "
+            "ordered ascending by date. Days with no usage are omitted."
         )
     )
     model_config = ConfigDict(from_attributes=True)
