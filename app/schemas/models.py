@@ -845,6 +845,8 @@ class AuditLog(BaseModel):
     ip_address: Optional[str]
     user_agent: Optional[str]
     request_source: Optional[str]
+    referer: Optional[str] = None
+    origin: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -861,6 +863,8 @@ class AuditLogResponse(BaseModel):
     ip_address: Optional[str]
     user_agent: Optional[str]
     request_source: Optional[str]
+    referer: Optional[str] = None
+    origin: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
 

@@ -52,6 +52,8 @@ export function AuditLogTable({ logs }: AuditLogTableProps) {
               <TableHead>Status</TableHead>
               <TableHead>User</TableHead>
               <TableHead>Source</TableHead>
+              <TableHead>Referer</TableHead>
+              <TableHead>Origin</TableHead>
               <TableHead>IP Address</TableHead>
               <TableHead>Details</TableHead>
             </TableRow>
@@ -94,6 +96,22 @@ export function AuditLogTable({ logs }: AuditLogTableProps) {
                     {log.request_source || "Unknown"}
                   </span>
                 </TableCell>
+                <TableCell>
+                  <div
+                    className="max-w-[200px] truncate"
+                    title={log.referer || undefined}
+                  >
+                    {log.referer || "-"}
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <div
+                    className="max-w-[200px] truncate"
+                    title={log.origin || undefined}
+                  >
+                    {log.origin || "-"}
+                  </div>
+                </TableCell>
                 <TableCell className="whitespace-nowrap">
                   {log.ip_address || "-"}
                 </TableCell>
@@ -115,7 +133,7 @@ export function AuditLogTable({ logs }: AuditLogTableProps) {
             ))}
             {logs.length === 0 && (
               <TableRow>
-                <TableCell colSpan={9} className="text-center py-4">
+                <TableCell colSpan={11} className="text-center py-4">
                   No audit logs found
                 </TableCell>
               </TableRow>

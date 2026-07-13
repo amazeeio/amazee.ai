@@ -1,6 +1,8 @@
 from datetime import datetime, UTC, timedelta
+from urllib.parse import urlparse
 from app.db.models import DBAuditLog, DBUser
 from app.core.security import get_password_hash
+from app.middleware.audit import sanitize_referer, MAX_HEADER_URL_LENGTH
 
 
 def test_get_audit_logs_admin_access_success(client, admin_token, db):
@@ -694,3 +696,105 @@ def test_get_audit_logs_with_null_user(client, admin_token, db):
     null_user_log = next((log for log in data["items"] if log["user_id"] is None), None)
     assert null_user_log is not None
     assert null_user_log["user_email"] is None
+
+
+def test_sanitize_referer():
+    """
+    Given: Referer header values of various shapes
+    When: They are sanitized before persisting
+    Then: Query strings and fragments are stripped, oversized values truncated
+    """
+    assert (
+        sanitize_referer("https://evil.example/page?token=secret#frag")
+        == "https://evil.example/page"
+    )
+    assert (
+        sanitize_referer("https://user:password@example.com/path?token=secret")
+        == "https://example.com/path"
+    )
+    assert (
+        sanitize_referer("https://user@example.com:8443/p")
+        == "https://example.com:8443/p"
+    )
+    assert sanitize_referer("https://app.example.com/") == "https://app.example.com/"
+    assert sanitize_referer(None) is None
+    assert sanitize_referer("") is None
+    assert len(sanitize_referer("https://x.example/" + "a" * 5000)) == (
+        MAX_HEADER_URL_LENGTH
+    )
+
+
+def test_get_audit_logs_with_referer_filter(client, admin_token, db):
+    """
+    Given: Audit logs with referer/origin values
+    When: An admin filters by referer
+    Then: Logs matching on either the referer or origin column are returned
+    """
+    audit_logs = [
+        DBAuditLog(
+            event_type="GET",
+            resource_type="users",
+            action="GET /users",
+            details={"status_code": 200},
+            referer="https://partner.example.com/dashboard",
+            origin="https://partner.example.com",
+            timestamp=datetime.now(UTC),
+        ),
+        DBAuditLog(
+            event_type="GET",
+            resource_type="users",
+            action="GET /users",
+            details={"status_code": 200},
+            referer=None,
+            origin="https://other-site.example.org",
+            timestamp=datetime.now(UTC),
+        ),
+        DBAuditLog(
+            event_type="GET",
+            resource_type="users",
+            action="GET /users",
+            details={"status_code": 200},
+            timestamp=datetime.now(UTC),
+        ),
+    ]
+    for log in audit_logs:
+        db.add(log)
+    db.commit()
+
+    # Matches the referer column
+    response = client.get(
+        "/audit/logs?referer=partner.example.com",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] >= 1
+    for log in data["items"]:
+        referer_host = urlparse(log["referer"]).hostname if log["referer"] else None
+        origin_host = urlparse(log["origin"]).hostname if log["origin"] else None
+        assert any(
+            host == "partner.example.com" or host.endswith(".partner.example.com")
+            for host in [referer_host, origin_host]
+            if host
+        )
+
+    # Matches the origin column when referer is null
+    response = client.get(
+        "/audit/logs?referer=other-site",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] >= 1
+    assert all(
+        "other-site" in (log["referer"] or "") + (log["origin"] or "")
+        for log in data["items"]
+    )
+
+    # LIKE wildcards are escaped: a literal % must not act as match-all
+    response = client.get(
+        "/audit/logs?referer=%25",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["total"] == 0
