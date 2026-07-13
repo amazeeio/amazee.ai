@@ -290,6 +290,8 @@ def test_key_daily_activity(
                 "prompt_tokens": 100,
                 "completion_tokens": 20,
                 "total_tokens": 120,
+                "cache_read_input_tokens": 70,
+                "cache_creation_input_tokens": 30,
                 "api_requests": 2,
             },
         },
@@ -312,7 +314,17 @@ def test_key_daily_activity(
     assert first["prompt_tokens"] == 100
     assert first["completion_tokens"] == 20
     assert first["total_tokens"] == 120
+    assert first["cache_read_input_tokens"] == 70
+    assert first["cache_creation_input_tokens"] == 30
     assert first["request_count"] == 2
+    # Cache fields default to 0 when LiteLLM omits them from the metrics block.
+    second = data["activity"][1]
+    assert second["cache_read_input_tokens"] == 0
+    assert second["cache_creation_input_tokens"] == 0
+    # Without include_breakdown the per-model breakdown is omitted entirely
+    # (not serialized as null), keeping the flat response shape unchanged.
+    assert "breakdown" not in first
+    assert "breakdown" not in second
 
     # Endpoint forwards the key's plaintext token and the requested range.
     mock_get_daily_activity.assert_awaited_once()
@@ -320,6 +332,86 @@ def test_key_daily_activity(
     assert kwargs["litellm_token"] == "sk-daily-token"
     assert kwargs["start_date"] == "2025-06-01"
     assert kwargs["end_date"] == "2025-06-02"
+
+
+@patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
+def test_key_daily_activity_include_breakdown(
+    mock_get_daily_activity, client, team_admin_token, test_team_user, test_region, db
+):
+    key = DBPrivateAIKey(
+        name="daily-activity-breakdown-key",
+        litellm_token="sk-daily-breakdown-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team_user.team_id,
+    )
+    db.add(key)
+    db.commit()
+
+    mock_get_daily_activity.return_value = [
+        {
+            "date": "2025-06-01",
+            "metrics": {
+                "spend": 3.0,
+                "prompt_tokens": 300,
+                "completion_tokens": 60,
+                "total_tokens": 360,
+                "cache_read_input_tokens": 40,
+                "cache_creation_input_tokens": 10,
+                "api_requests": 5,
+            },
+            "breakdown": {
+                "models": {
+                    "cheap-model": {
+                        "metrics": {
+                            "spend": 1.0,
+                            "prompt_tokens": 100,
+                            "completion_tokens": 20,
+                            "total_tokens": 120,
+                            "api_requests": 2,
+                        }
+                    },
+                    "pricey-model": {
+                        "metrics": {
+                            "spend": 2.0,
+                            "prompt_tokens": 200,
+                            "completion_tokens": 40,
+                            "total_tokens": 240,
+                            "cache_read_input_tokens": 40,
+                            "cache_creation_input_tokens": 10,
+                            "api_requests": 3,
+                        }
+                    },
+                }
+            },
+        }
+    ]
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/daily-activity",
+        params={
+            "start_date": "2025-06-01",
+            "end_date": "2025-06-01",
+            "include_breakdown": "true",
+        },
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    row = response.json()["activity"][0]
+    # Flat aggregate is unchanged by the opt-in.
+    assert row["spend"] == 3.0
+    assert row["request_count"] == 5
+    # Breakdown is present and ordered by descending spend.
+    breakdown = row["breakdown"]
+    assert [m["model"] for m in breakdown] == ["pricey-model", "cheap-model"]
+    pricey = breakdown[0]
+    assert pricey["spend"] == 2.0
+    assert pricey["total_tokens"] == 240
+    assert pricey["cache_read_input_tokens"] == 40
+    assert pricey["cache_creation_input_tokens"] == 10
+    assert pricey["request_count"] == 3
+    # Missing cache fields on a model default to 0.
+    assert breakdown[1]["cache_read_input_tokens"] == 0
 
 
 @patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
