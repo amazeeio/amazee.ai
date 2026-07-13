@@ -479,10 +479,7 @@ async def create_llm_token(
         owner = db.query(DBUser).filter(DBUser.id == owner_id).first()
         if not owner or (
             not current_user.is_admin
-            and (
-                current_user.team_id is None
-                or owner.team_id != current_user.team_id
-            )
+            and (current_user.team_id is None or owner.team_id != current_user.team_id)
         ):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Owner user not found"

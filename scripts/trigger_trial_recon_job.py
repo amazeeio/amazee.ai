@@ -6,7 +6,7 @@ import asyncio
 import logging
 
 # Add the parent directory to the Python path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from sqlalchemy.orm import sessionmaker
 from app.db.database import engine
@@ -15,11 +15,11 @@ from app.core.locking import try_acquire_lock, release_lock
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
 logger = logging.getLogger(__name__)
+
 
 async def trigger_trial_recon_job():
     """Manually trigger the trial recon job (monitor_trial_users)"""
@@ -47,7 +47,9 @@ async def trigger_trial_recon_job():
                 release_lock(lock_name, db)
                 logger.info("Released monitor_trial_users lock")
         else:
-            logger.warning("Another process has the monitor_trial_users lock, cannot execute job")
+            logger.warning(
+                "Another process has the monitor_trial_users lock, cannot execute job"
+            )
             return False
 
     except Exception as e:
@@ -60,6 +62,7 @@ async def trigger_trial_recon_job():
 
     return True
 
+
 def main():
     """Main function to run the script"""
     try:
@@ -70,12 +73,15 @@ def main():
             logger.info("✅ Trial recon job completed successfully")
             sys.exit(0)
         else:
-            logger.info("⚠️  Trial recon job could not be executed (lock held by another process)")
+            logger.info(
+                "⚠️  Trial recon job could not be executed (lock held by another process)"
+            )
             sys.exit(1)
 
     except Exception as e:
         logger.error(f"❌ Script failed: {str(e)}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
