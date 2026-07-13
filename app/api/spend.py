@@ -300,6 +300,12 @@ def _rows_to_daily_activity(rows: list[dict]) -> list[KeyDailyActivityRow]:
                 total_tokens=metrics.get("total_tokens")
                 if metrics.get("total_tokens") is not None
                 else 0,
+                cache_read_input_tokens=metrics.get("cache_read_input_tokens")
+                if metrics.get("cache_read_input_tokens") is not None
+                else 0,
+                cache_creation_input_tokens=metrics.get("cache_creation_input_tokens")
+                if metrics.get("cache_creation_input_tokens") is not None
+                else 0,
                 request_count=metrics.get("api_requests")
                 if metrics.get("api_requests") is not None
                 else 0,
