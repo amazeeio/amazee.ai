@@ -624,6 +624,7 @@ async def list_private_ai_keys(
     owner_id: Optional[int] = None,
     team_id: Optional[int] = None,
     search: Optional[str] = None,
+    show_all: bool = False,
     current_user=Depends(get_current_user_from_auth),
     db: Session = Depends(get_db),
 ):
@@ -632,6 +633,7 @@ async def list_private_ai_keys(
     If user is admin:
         - Returns keys for specific owner if owner_id is provided
         - Returns keys for specific team if team_id is provided
+        - Returns every key in the system if show_all=true is passed
         - Otherwise (no params), returns only the admin's own keys — the
           same safe default as any other caller. This avoids handing back
           every secret in the database to any admin-scoped integration
@@ -672,9 +674,9 @@ async def list_private_ai_keys(
                 (DBPrivateAIKey.owner_id.in_(team_user_ids))
                 | (DBPrivateAIKey.team_id == team_id)
             )
-        else:
-            # Safe default: an admin with no filters gets only their own
-            # keys, not every key in the system.
+        elif not show_all:
+            # Safe default: no filters and no explicit opt-in means "my own
+            # keys", not "every key in the system".
             query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
     else:
         # Check if user is a team admin
@@ -728,6 +730,7 @@ async def list_private_ai_keys_by_region(
     region_id: int,
     team_id: Optional[int] = None,
     user_id: Optional[int] = None,
+    show_all: bool = False,
     current_user=Depends(get_current_user_from_auth),
     db: Session = Depends(get_db),
 ):
@@ -745,9 +748,9 @@ async def list_private_ai_keys_by_region(
       parameter silently ignored. May be combined with `team_id` to further scope
       results to keys owned by that user within a particular team.
       Returns an empty list when the specified user does not exist.
-
-    Without team_id or user_id, an admin caller gets only their own keys in
-    this region rather than every key in the region.
+    - **show_all**: System admin only. Without it (and without team_id/user_id),
+      an admin caller gets only their own keys in this region rather than every
+      key in the region.
     """
     query = db.query(DBPrivateAIKey).outerjoin(
         DBTeam, DBPrivateAIKey.team_id == DBTeam.id
@@ -785,9 +788,9 @@ async def list_private_ai_keys_by_region(
                 return []
             query = query.filter(DBPrivateAIKey.owner_id == user_id)
 
-        if team_id is None and user_id is None:
-            # Safe default: an admin with no filters gets only their own keys
-            # in this region, not every key in the region.
+        if team_id is None and user_id is None and not show_all:
+            # Safe default: no filters and no explicit opt-in means "my own
+            # keys in this region", not "every key in the region".
             query = query.filter(DBPrivateAIKey.owner_id == current_user.id)
     else:
         # Check if user is a team admin
