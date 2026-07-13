@@ -15,8 +15,13 @@ MAX_HEADER_URL_LENGTH = 2048
 
 
 def sanitize_referer(value: str | None) -> str | None:
-    """Strip query string, fragment, and userinfo from a Referer/Origin URL
-    before persisting, so tokens/PII/credentials never reach the audit log."""
+    """Strip query string, fragment, and userinfo from a well-formed
+    Referer/Origin URL before persisting, so query-string tokens and
+    authority-form credentials (``user:pass@host``) never reach the audit log.
+    The path is kept for forensic value, so tokens embedded in a referring
+    page's path (e.g. reset links), and credentials in malformed non-authority
+    URLs, are not removed. These headers are attacker-controlled, so the
+    residual value is a self-inflicted disclosure, not third-party exfil."""
     if not value:
         return None
     try:
