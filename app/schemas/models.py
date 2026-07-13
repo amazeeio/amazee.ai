@@ -658,6 +658,20 @@ class KeyDailyActivityRow(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cache_read_input_tokens: int = Field(
+        default=0,
+        description=(
+            "Prompt tokens served from LiteLLM's prompt cache on this day "
+            "(billed at the cheaper cache-read rate)."
+        ),
+    )
+    cache_creation_input_tokens: int = Field(
+        default=0,
+        description=(
+            "Prompt tokens written to LiteLLM's prompt cache on this day "
+            "(billed at the cache-write rate)."
+        ),
+    )
     request_count: int = Field(
         default=0,
         description="Number of API requests made with this key on this day.",

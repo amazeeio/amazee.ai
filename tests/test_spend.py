@@ -290,6 +290,8 @@ def test_key_daily_activity(
                 "prompt_tokens": 100,
                 "completion_tokens": 20,
                 "total_tokens": 120,
+                "cache_read_input_tokens": 70,
+                "cache_creation_input_tokens": 30,
                 "api_requests": 2,
             },
         },
@@ -312,7 +314,13 @@ def test_key_daily_activity(
     assert first["prompt_tokens"] == 100
     assert first["completion_tokens"] == 20
     assert first["total_tokens"] == 120
+    assert first["cache_read_input_tokens"] == 70
+    assert first["cache_creation_input_tokens"] == 30
     assert first["request_count"] == 2
+    # Cache fields default to 0 when LiteLLM omits them from the metrics block.
+    second = data["activity"][1]
+    assert second["cache_read_input_tokens"] == 0
+    assert second["cache_creation_input_tokens"] == 0
 
     # Endpoint forwards the key's plaintext token and the requested range.
     mock_get_daily_activity.assert_awaited_once()
