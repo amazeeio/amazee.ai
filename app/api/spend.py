@@ -39,6 +39,7 @@ from app.schemas.limits import OwnerType, ResourceType
 from app.api.users import invalidate_user_spend_cache
 from app.schemas.models import (
     BudgetType,
+    DailyActivityModelBreakdown,
     KeyDailyActivityResponse,
     KeyDailyActivityRow,
     KeyLastUsedResponse,
@@ -273,42 +274,69 @@ def _extract_token_usage(data: dict) -> tuple[int | None, int | None, int | None
     )
 
 
-def _rows_to_daily_activity(rows: list[dict]) -> list[KeyDailyActivityRow]:
+def _daily_metric_fields(metrics: dict) -> dict:
+    """Extract the shared per-day metric fields from a LiteLLM ``metrics`` block.
+
+    Returns kwargs common to both the flat daily row and each per-model
+    breakdown entry, coercing missing/null values to 0 (0.0 for spend). Note
+    ``request_count`` maps from LiteLLM's ``api_requests``.
+    """
+    spend_val = metrics.get("spend")
+
+    def _int(key: str) -> int:
+        val = metrics.get(key)
+        return val if val is not None else 0
+
+    return {
+        "spend": spend_val if spend_val is not None else 0.0,
+        "prompt_tokens": _int("prompt_tokens"),
+        "completion_tokens": _int("completion_tokens"),
+        "total_tokens": _int("total_tokens"),
+        "cache_read_input_tokens": _int("cache_read_input_tokens"),
+        "cache_creation_input_tokens": _int("cache_creation_input_tokens"),
+        "request_count": _int("api_requests"),
+    }
+
+
+def _row_model_breakdown(row: dict) -> list[DailyActivityModelBreakdown]:
+    """Build the per-model breakdown for one raw LiteLLM daily row.
+
+    Reads ``breakdown.models`` (a dict keyed by model name) and returns a list
+    ordered by descending spend. Returns an empty list when LiteLLM reports no
+    model breakdown for the day.
+    """
+    models = ((row.get("breakdown") or {}).get("models")) or {}
+    breakdown = [
+        DailyActivityModelBreakdown(
+            model=name, **_daily_metric_fields(entry.get("metrics") or {})
+        )
+        for name, entry in models.items()
+    ]
+    breakdown.sort(key=lambda b: b.spend, reverse=True)
+    return breakdown
+
+
+def _rows_to_daily_activity(
+    rows: list[dict], include_breakdown: bool = False
+) -> list[KeyDailyActivityRow]:
     """Map raw LiteLLM daily-activity rows to daily-activity response rows.
 
     Each raw row carries ``date`` and a ``metrics`` block; rows without a date
-    are skipped and the result is ordered ascending by date. The ``breakdown``
-    block returned by LiteLLM (per model/provider/key) is intentionally dropped
-    to keep the response flat.
+    are skipped and the result is ordered ascending by date. LiteLLM's
+    ``breakdown`` block (per model/provider/key) is dropped by default to keep
+    the response flat; when ``include_breakdown`` is set, the per-model slice is
+    attached to each row's ``breakdown`` field.
     """
     activity: list[KeyDailyActivityRow] = []
     for row in rows:
         if not row.get("date"):
             continue
         metrics = row.get("metrics") or {}
-        spend_val = metrics.get("spend")
         activity.append(
             KeyDailyActivityRow(
                 date=row["date"],
-                spend=spend_val if spend_val is not None else 0.0,
-                prompt_tokens=metrics.get("prompt_tokens")
-                if metrics.get("prompt_tokens") is not None
-                else 0,
-                completion_tokens=metrics.get("completion_tokens")
-                if metrics.get("completion_tokens") is not None
-                else 0,
-                total_tokens=metrics.get("total_tokens")
-                if metrics.get("total_tokens") is not None
-                else 0,
-                cache_read_input_tokens=metrics.get("cache_read_input_tokens")
-                if metrics.get("cache_read_input_tokens") is not None
-                else 0,
-                cache_creation_input_tokens=metrics.get("cache_creation_input_tokens")
-                if metrics.get("cache_creation_input_tokens") is not None
-                else 0,
-                request_count=metrics.get("api_requests")
-                if metrics.get("api_requests") is not None
-                else 0,
+                breakdown=_row_model_breakdown(row) if include_breakdown else None,
+                **_daily_metric_fields(metrics),
             )
         )
     activity.sort(key=lambda r: r.date)
@@ -1489,6 +1517,7 @@ async def get_key_last_used(
 @router.get(
     "/{region_id}/key/{key_id}/daily-activity",
     response_model=KeyDailyActivityResponse,
+    response_model_exclude_none=True,
     summary="Get key daily activity by region",
     description=(
         "Returns per-day usage (spend, tokens and request count) for a specific "
@@ -1515,6 +1544,13 @@ async def get_key_daily_activity(
         description=(
             "End date (inclusive), formatted YYYY-MM-DD. "
             "Defaults to today (UTC) when omitted."
+        ),
+    ),
+    include_breakdown: bool = Query(
+        False,
+        description=(
+            "When true, include a per-model breakdown on each daily row. "
+            "Defaults to false, leaving the flat response unchanged."
         ),
     ),
     current_user: DBUser = Depends(get_current_user_from_auth),
@@ -1562,13 +1598,14 @@ async def get_key_daily_activity(
         key_id=key_id,
         start_date=start_date,
         end_date=end_date,
-        activity=_rows_to_daily_activity(rows),
+        activity=_rows_to_daily_activity(rows, include_breakdown=include_breakdown),
     )
 
 
 @router.get(
     "/{region_id}/user/{user_id}/daily-activity",
     response_model=UserDailyActivityResponse,
+    response_model_exclude_none=True,
     summary="Get user daily activity by region",
     description=(
         "Returns per-day usage (spend, tokens and request count) aggregated "
@@ -1602,6 +1639,13 @@ async def get_user_daily_activity(
             "Defaults to today (UTC) when omitted."
         ),
     ),
+    include_breakdown: bool = Query(
+        False,
+        description=(
+            "When true, include a per-model breakdown on each daily row. "
+            "Defaults to false, leaving the flat response unchanged."
+        ),
+    ),
     current_user: DBUser = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
@@ -1629,13 +1673,14 @@ async def get_user_daily_activity(
         user_id=user_id,
         start_date=start_date,
         end_date=end_date,
-        activity=_rows_to_daily_activity(rows),
+        activity=_rows_to_daily_activity(rows, include_breakdown=include_breakdown),
     )
 
 
 @router.get(
     "/{region_id}/team/{team_id}/daily-activity",
     response_model=TeamDailyActivityResponse,
+    response_model_exclude_none=True,
     summary="Get team daily activity by region",
     description=(
         "Returns per-day usage (spend, tokens and request count) aggregated "
@@ -1667,6 +1712,13 @@ async def get_team_daily_activity(
         description=(
             "End date (inclusive), formatted YYYY-MM-DD. "
             "Defaults to today (UTC) when omitted."
+        ),
+    ),
+    include_breakdown: bool = Query(
+        False,
+        description=(
+            "When true, include a per-model breakdown on each daily row. "
+            "Defaults to false, leaving the flat response unchanged."
         ),
     ),
     current_user: DBUser = Depends(get_current_user_from_auth),
@@ -1701,7 +1753,7 @@ async def get_team_daily_activity(
         team_id=team_id,
         start_date=start_date,
         end_date=end_date,
-        activity=_rows_to_daily_activity(rows),
+        activity=_rows_to_daily_activity(rows, include_breakdown=include_breakdown),
     )
 
 
