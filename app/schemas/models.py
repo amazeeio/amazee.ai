@@ -652,15 +652,60 @@ class KeyLastUsedResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class DailyActivityModelBreakdown(BaseModel):
+    """Per-model slice of a day's usage, taken from LiteLLM's breakdown block.
+
+    Only present on daily-activity rows when the request opts in with
+    ``include_breakdown=true``. The metric fields mirror the flat row and, for
+    a given day, sum to the row's aggregate totals.
+    """
+
+    model: str = Field(
+        description="LiteLLM model name, e.g. 'bedrock/us.anthropic.claude-sonnet-4-6'.",
+    )
+    spend: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    request_count: int = 0
+    # `model` is a normal field here; opt out of pydantic's protected `model_`
+    # namespace so it doesn't warn/clash.
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
+
+
 class KeyDailyActivityRow(BaseModel):
     date: date
     spend: float = 0.0
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cache_read_input_tokens: int = Field(
+        default=0,
+        description=(
+            "Prompt tokens served from LiteLLM's prompt cache on this day "
+            "(billed at the cheaper cache-read rate)."
+        ),
+    )
+    cache_creation_input_tokens: int = Field(
+        default=0,
+        description=(
+            "Prompt tokens written to LiteLLM's prompt cache on this day "
+            "(billed at the cache-write rate)."
+        ),
+    )
     request_count: int = Field(
         default=0,
         description="Number of API requests made with this key on this day.",
+    )
+    breakdown: Optional[List[DailyActivityModelBreakdown]] = Field(
+        default=None,
+        description=(
+            "Per-model usage for this day, ordered by descending spend. Only "
+            "populated when the request sets include_breakdown=true; omitted "
+            "otherwise."
+        ),
     )
     model_config = ConfigDict(from_attributes=True)
 
