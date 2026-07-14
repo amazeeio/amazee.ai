@@ -106,11 +106,22 @@ async def handle_events(
         except Exception:
             # Release the claim row so the idempotency guard does not block
             # Stripe's re-delivery of this event, then surface the failure.
-            if event_id:
-                db.query(DBStripeProcessedEvent).filter(
-                    DBStripeProcessedEvent.stripe_event_id == event_id
-                ).delete()
-                db.commit()
+            # The cleanup is isolated so a failing commit here (e.g. broken DB
+            # connection) cannot replace the original processing exception —
+            # otherwise the claim could survive and be re-acked as a 200.
+            try:
+                if event_id:
+                    db.query(DBStripeProcessedEvent).filter(
+                        DBStripeProcessedEvent.stripe_event_id == event_id
+                    ).delete()
+                    db.commit()
+            except Exception as cleanup_exc:
+                logger.error(
+                    "Failed to release stripe event claim %s for retry: %s",
+                    event_id,
+                    cleanup_exc,
+                )
+                db.rollback()
             raise
 
         return Response(
