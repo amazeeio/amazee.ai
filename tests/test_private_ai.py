@@ -3345,3 +3345,152 @@ def test_list_private_ai_keys_show_all(
     )
     assert response.status_code == 200
     assert all(k["owner_id"] == test_user.id for k in response.json())
+
+
+# ---------------------------------------------------------------------------
+# Issue #600 — declared `team_id` scope (defence in depth) on key-by-id
+# endpoints. A caller authenticating with a shared system-admin token (the moad
+# BFF) must declare the team it is acting for; the key must belong to that team
+# or the request 404s, even for system admins. Backward compatible: omitting
+# team_id preserves prior behaviour.
+# ---------------------------------------------------------------------------
+
+
+def _make_scope_key(db, region, *, team_id=None, owner_id=None, name="scope-key"):
+    key = DBPrivateAIKey(
+        database_name=f"db-{name}",
+        name=name,
+        database_host="h",
+        database_username="u",
+        database_password="p",
+        litellm_token=f"token-{name}",
+        litellm_api_url="https://test-litellm.com",
+        team_id=team_id,
+        owner_id=owner_id,
+        region_id=region.id,
+    )
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+    return key
+
+
+@patch("httpx.AsyncClient")
+def test_get_private_ai_key_matching_team_id_allows(
+    mock_client_class, client, admin_token, test_region, db, test_team, mock_httpx_get_client
+):
+    """Declared team_id matching the key's team is allowed (issue #600)."""
+    db.refresh(test_team)
+    key = _make_scope_key(db, test_region, team_id=test_team.id, name="get-match")
+    mock_client_class.return_value = mock_httpx_get_client
+
+    response = client.get(
+        f"/private-ai-keys/{key.id}?team_id={test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["id"] == key.id
+
+    db.delete(key)
+    db.commit()
+
+
+@patch("httpx.AsyncClient")
+def test_get_private_ai_key_wrong_team_id_is_404(
+    mock_client_class, client, admin_token, test_region, db, test_team, mock_httpx_get_client
+):
+    """A system-admin caller declaring a mismatched team_id is denied — the
+    cross-tenant IDOR defence. 404 matches a missing key and LiteLLM is never
+    contacted."""
+    db.refresh(test_team)
+    key = _make_scope_key(db, test_region, team_id=test_team.id, name="get-wrong")
+    mock_client_class.return_value = mock_httpx_get_client
+
+    response = client.get(
+        f"/private-ai-keys/{key.id}?team_id={test_team.id + 999}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 404
+    assert "Private AI Key not found" in response.json()["detail"]
+    mock_httpx_get_client.get.assert_not_called()
+
+    db.delete(key)
+    db.commit()
+
+
+@patch("httpx.AsyncClient")
+def test_get_private_ai_key_user_owned_scoped_by_owner_team(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    test_team_user,
+    mock_httpx_get_client,
+):
+    """User-owned keys (team_id NULL) resolve scope via the owner's team: a
+    matching declared team_id is allowed, a mismatch is denied."""
+    db.refresh(test_team)
+    db.refresh(test_team_user)
+    key = _make_scope_key(db, test_region, owner_id=test_team_user.id, name="get-user-owned")
+    mock_client_class.return_value = mock_httpx_get_client
+
+    allowed = client.get(
+        f"/private-ai-keys/{key.id}?team_id={test_team.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert allowed.status_code == 200
+
+    denied = client.get(
+        f"/private-ai-keys/{key.id}?team_id={test_team.id + 999}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert denied.status_code == 404
+
+    db.delete(key)
+    db.commit()
+
+
+@patch("httpx.AsyncClient")
+def test_get_private_ai_key_without_team_id_is_unrestricted(
+    mock_client_class, client, admin_token, test_region, db, test_team, mock_httpx_get_client
+):
+    """Backward compatibility: omitting team_id keeps the prior admin behaviour."""
+    db.refresh(test_team)
+    key = _make_scope_key(db, test_region, team_id=test_team.id, name="get-no-scope")
+    mock_client_class.return_value = mock_httpx_get_client
+
+    response = client.get(
+        f"/private-ai-keys/{key.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+
+    db.delete(key)
+    db.commit()
+
+
+@patch("httpx.AsyncClient")
+def test_delete_private_ai_key_wrong_team_id_is_404_and_persists(
+    mock_client_class, client, admin_token, test_region, db, test_team, mock_httpx_get_client
+):
+    """Cross-team delete is blocked and the victim key is left intact (issue #600)."""
+    db.refresh(test_team)
+    key = _make_scope_key(db, test_region, team_id=test_team.id, name="del-wrong")
+    key_id = key.id
+    mock_client_class.return_value = mock_httpx_get_client
+
+    response = client.delete(
+        f"/private-ai-keys/{key_id}?team_id={test_team.id + 999}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 404
+
+    survivor = (
+        db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
+    )
+    assert survivor is not None
+
+    db.delete(survivor)
+    db.commit()

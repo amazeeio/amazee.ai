@@ -3532,3 +3532,89 @@ def test_periodic_live_remaining_invariant(
     assert response.status_code == 200
     data = response.json()
     assert data["periodic_budget"]["remaining_budget_cents"] == expected_remaining
+
+
+# ---------------------------------------------------------------------------
+# Issue #600 — declared `team_id` scope (defence in depth) on key-level spend
+# and budget endpoints. A mismatched team_id 404s before any LiteLLM call,
+# even for system-admin callers (the moad shared-admin token scenario).
+# ---------------------------------------------------------------------------
+
+
+def _make_spend_scope_key(db, region, team, name):
+    key = DBPrivateAIKey(
+        name=name,
+        litellm_token=f"token-{name}",
+        litellm_api_url="https://test-litellm.com",
+        region_id=region.id,
+        team_id=team.id,
+    )
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+    return key
+
+
+def test_update_key_budget_wrong_team_id_is_404(
+    client, admin_token, test_team, test_region, db
+):
+    db.refresh(test_team)
+    key = _make_spend_scope_key(db, test_region, test_team, "budget-wrong")
+
+    response = client.put(
+        f"/spend/{test_region.id}/key/{key.id}/budget?team_id={test_team.id + 999}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"max_budget": 5.0},
+    )
+    assert response.status_code == 404
+
+    db.delete(key)
+    db.commit()
+
+
+def test_clear_key_budget_wrong_team_id_is_404(
+    client, admin_token, test_team, test_region, db
+):
+    db.refresh(test_team)
+    key = _make_spend_scope_key(db, test_region, test_team, "budget-clear-wrong")
+
+    response = client.post(
+        f"/spend/{test_region.id}/key/{key.id}/budget/clear?team_id={test_team.id + 999}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 404
+
+    db.delete(key)
+    db.commit()
+
+
+def test_get_key_spend_wrong_team_id_is_404(
+    client, admin_token, test_team, test_region, db
+):
+    db.refresh(test_team)
+    key = _make_spend_scope_key(db, test_region, test_team, "spend-wrong")
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}?team_id={test_team.id + 999}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 404
+
+    db.delete(key)
+    db.commit()
+
+
+def test_get_key_daily_activity_wrong_team_id_is_404(
+    client, admin_token, test_team, test_region, db
+):
+    db.refresh(test_team)
+    key = _make_spend_scope_key(db, test_region, test_team, "daily-wrong")
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/daily-activity?team_id={test_team.id + 999}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 404
+
+    db.delete(key)
+    db.commit()
