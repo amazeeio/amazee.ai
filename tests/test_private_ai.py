@@ -3377,7 +3377,13 @@ def _make_scope_key(db, region, *, team_id=None, owner_id=None, name="scope-key"
 
 @patch("httpx.AsyncClient")
 def test_get_private_ai_key_matching_team_id_allows(
-    mock_client_class, client, admin_token, test_region, db, test_team, mock_httpx_get_client
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_get_client,
 ):
     """Declared team_id matching the key's team is allowed (issue #600)."""
     db.refresh(test_team)
@@ -3397,7 +3403,13 @@ def test_get_private_ai_key_matching_team_id_allows(
 
 @patch("httpx.AsyncClient")
 def test_get_private_ai_key_wrong_team_id_is_404(
-    mock_client_class, client, admin_token, test_region, db, test_team, mock_httpx_get_client
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_get_client,
 ):
     """A system-admin caller declaring a mismatched team_id is denied — the
     cross-tenant IDOR defence. 404 matches a missing key and LiteLLM is never
@@ -3433,7 +3445,9 @@ def test_get_private_ai_key_user_owned_scoped_by_owner_team(
     matching declared team_id is allowed, a mismatch is denied."""
     db.refresh(test_team)
     db.refresh(test_team_user)
-    key = _make_scope_key(db, test_region, owner_id=test_team_user.id, name="get-user-owned")
+    key = _make_scope_key(
+        db, test_region, owner_id=test_team_user.id, name="get-user-owned"
+    )
     mock_client_class.return_value = mock_httpx_get_client
 
     allowed = client.get(
@@ -3454,7 +3468,13 @@ def test_get_private_ai_key_user_owned_scoped_by_owner_team(
 
 @patch("httpx.AsyncClient")
 def test_get_private_ai_key_without_team_id_is_unrestricted(
-    mock_client_class, client, admin_token, test_region, db, test_team, mock_httpx_get_client
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_get_client,
 ):
     """Backward compatibility: omitting team_id keeps the prior admin behaviour."""
     db.refresh(test_team)
@@ -3473,7 +3493,13 @@ def test_get_private_ai_key_without_team_id_is_unrestricted(
 
 @patch("httpx.AsyncClient")
 def test_delete_private_ai_key_wrong_team_id_is_404_and_persists(
-    mock_client_class, client, admin_token, test_region, db, test_team, mock_httpx_get_client
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_get_client,
 ):
     """Cross-team delete is blocked and the victim key is left intact (issue #600)."""
     db.refresh(test_team)
@@ -3487,9 +3513,7 @@ def test_delete_private_ai_key_wrong_team_id_is_404_and_persists(
     )
     assert response.status_code == 404
 
-    survivor = (
-        db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
-    )
+    survivor = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
     assert survivor is not None
 
     db.delete(survivor)
