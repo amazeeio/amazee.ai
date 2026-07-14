@@ -1,7 +1,8 @@
 from fastapi import HTTPException, status
 from typing import List
+from sqlalchemy.orm import Session
 from app.core.roles import UserRole
-from app.db.models import DBUser
+from app.db.models import DBUser, DBPrivateAIKey
 import logging
 
 
@@ -130,3 +131,41 @@ def require_roles(*roles: str):
 def require_roles_with_team(*roles: str):
     """Create a dependency that requires specific roles and team membership"""
     return RBACDependency(list(roles), require_team_membership=True)
+
+
+def key_in_team(private_ai_key: DBPrivateAIKey, team_id: int, db: Session) -> bool:
+    """Return True when a private AI key is scoped to ``team_id``.
+
+    A key is in-team when it is directly team-owned (its ``team_id`` matches)
+    or, for user-owned keys, when its owner belongs to that team. Mirrors the
+    team-scoping logic already used by the private-ai-keys and spend endpoints
+    so declared-scope enforcement stays consistent.
+    """
+    if private_ai_key.team_id is not None:
+        return private_ai_key.team_id == team_id
+    owner = db.query(DBUser).filter(DBUser.id == private_ai_key.owner_id).first()
+    return owner is not None and owner.team_id == team_id
+
+
+def enforce_declared_team_scope(
+    private_ai_key: DBPrivateAIKey, declared_team_id: int | None, db: Session
+) -> None:
+    """Defence-in-depth scope gate for key-by-id endpoints (issue #600).
+
+    Callers that authenticate with a shared system-admin token (notably the
+    moad BFF) otherwise bypass all ownership checks, turning any endpoint keyed
+    by an integer ``key_id`` into a cross-tenant IDOR. When such a caller
+    declares the ``team_id`` it is acting for, the key must actually belong to
+    that team — enforced here even for system admins. The failure mode is an
+    indistinguishable 404 so ids cannot be enumerated.
+
+    No-op when ``declared_team_id`` is None, so existing callers that do not
+    pass a scope are unaffected (the change is backward compatible).
+    """
+    if declared_team_id is None:
+        return
+    if not key_in_team(private_ai_key, declared_team_id, db):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Private AI Key not found",
+        )
