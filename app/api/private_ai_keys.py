@@ -33,6 +33,7 @@ from app.core.security import (
     get_current_user_from_auth,
     get_role_min_team_admin,
     get_private_ai_access,
+    get_private_ai_direct_access,
     get_role_min_system_admin,
 )
 from app.core.roles import UserRole
@@ -119,7 +120,7 @@ def _validate_permissions_and_get_ownership_info(
 async def create_vector_db(
     vector_db: VectorDBCreate,
     current_user=Depends(get_current_user_from_auth),
-    user_role: UserRole = Depends(get_private_ai_access),
+    user_role: UserRole = Depends(get_private_ai_direct_access),
     db: Session = Depends(get_db),
     limit_service: LimitService = Depends(get_limit_service),
     store_result: bool = True,
@@ -419,7 +420,7 @@ async def _create_private_ai_key(
 async def create_llm_token(
     private_ai_key: PrivateAIKeyCreate,
     current_user=Depends(get_current_user_from_auth),
-    user_role: UserRole = Depends(get_private_ai_access),
+    user_role: UserRole = Depends(get_private_ai_direct_access),
     db: Session = Depends(get_db),
     limit_service: LimitService = Depends(get_limit_service),
     store_result: bool = True,

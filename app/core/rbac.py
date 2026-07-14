@@ -107,6 +107,19 @@ def require_private_ai_access():
     )
 
 
+def require_private_ai_direct_access():
+    """Require access to endpoints that mint LiteLLM keys directly (no moad delegation).
+
+    Same roles as require_private_ai_access, but require_team_membership=True so a
+    self-registered, teamless USER cannot mint uncapped paid keys via /token or
+    /vector-db. Teamless users go through POST / (delegated to moad, which caps
+    them); system admins bypass the team check (see check_access).
+    """
+    return RBACDependency(
+        UserRole.KEY_MANAGEMENT_ROLES + [UserRole.USER], require_team_membership=True
+    )
+
+
 def require_read_only_or_higher():
     """Require read only role or higher (team context)"""
     return RBACDependency(UserRole.READ_ACCESS_ROLES, require_team_membership=True)
