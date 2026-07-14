@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
 from app.core.litellm_user_sync import team_role_for_litellm
 from app.core.roles import UserRole
+from app.core.rbac import enforce_declared_team_scope
 from app.core.periodic_budget_ledger_service import compute_active_topup_remaining
 from app.core.pool_budget_service import (
     pool_available_budget_for_team_region as shared_pool_available_budget_for_team_region,
@@ -1311,6 +1312,7 @@ async def get_user_spend(
 async def get_key_spend_alias(
     region_id: int,
     key_id: int,
+    team_id: int | None = None,
     current_user: DBUser = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
@@ -1322,6 +1324,10 @@ async def get_key_spend_alias(
         raise HTTPException(
             status_code=404, detail="Private AI Key not found in region"
         )
+
+    # Defence-in-depth scope gate (issue #600): enforce declared team scope
+    # even for system-admin callers before applying role-based access.
+    enforce_declared_team_scope(key, team_id, db)
 
     # Reuse authorization semantics from private-ai-keys endpoints.
     if current_user.is_admin:
@@ -1466,6 +1472,7 @@ async def get_key_spend_alias(
 async def get_key_last_used(
     region_id: int,
     key_id: int,
+    team_id: int | None = None,
     current_user: DBUser = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
@@ -1477,6 +1484,9 @@ async def get_key_last_used(
         raise HTTPException(
             status_code=404, detail="Private AI Key not found in region"
         )
+
+    # Defence-in-depth scope gate (issue #600).
+    enforce_declared_team_scope(key, team_id, db)
 
     # Reuse authorization semantics from get_key_spend_alias.
     if current_user.is_admin:
@@ -1553,6 +1563,14 @@ async def get_key_daily_activity(
             "Defaults to false, leaving the flat response unchanged."
         ),
     ),
+    team_id: int | None = Query(
+        None,
+        description=(
+            "When provided, the key must belong to this team or the request "
+            "404s — a defence-in-depth scope check (issue #600) applied even "
+            "to system-admin callers."
+        ),
+    ),
     current_user: DBUser = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
@@ -1566,6 +1584,9 @@ async def get_key_daily_activity(
         raise HTTPException(
             status_code=404, detail="Private AI Key not found in region"
         )
+
+    # Defence-in-depth scope gate (issue #600).
+    enforce_declared_team_scope(key, team_id, db)
 
     # Reuse authorization semantics from get_key_spend_alias.
     if current_user.is_admin:
@@ -2182,6 +2203,7 @@ async def update_key_budget(
     region_id: int,
     key_id: int,
     body: SpendBudgetUpdateRequest,
+    team_id: int | None = None,
     current_user: DBUser = Depends(get_current_user_from_auth),
     role: str = Depends(get_role_min_team_admin),
     db: Session = Depends(get_db),
@@ -2191,6 +2213,9 @@ async def update_key_budget(
         raise HTTPException(
             status_code=404, detail="Private AI Key not found in region"
         )
+    # Defence-in-depth scope gate (issue #600): enforce declared team scope
+    # before the budget write, even for system-admin callers.
+    enforce_declared_team_scope(key, team_id, db)
     owner = None
     team_for_budget_check = None
     if key.team_id is not None:
@@ -2337,6 +2362,7 @@ async def update_key_budget(
 async def clear_key_budget(
     region_id: int,
     key_id: int,
+    team_id: int | None = None,
     current_user: DBUser = Depends(get_current_user_from_auth),
     role: str = Depends(get_role_min_team_admin),
     db: Session = Depends(get_db),
@@ -2346,6 +2372,8 @@ async def clear_key_budget(
         raise HTTPException(
             status_code=404, detail="Private AI Key not found in region"
         )
+    # Defence-in-depth scope gate (issue #600).
+    enforce_declared_team_scope(key, team_id, db)
     if key.team_id is not None:
         _assert_team_budget_write_access(current_user, role, key.team_id)
     else:
