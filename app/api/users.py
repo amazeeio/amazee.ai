@@ -21,7 +21,7 @@ from app.db.database import get_db
 from app.core.dependencies import get_limit_service
 from app.schemas.models import (
     User,
-    UserUpdate,
+    AdminUserUpdate,
     UserCreate,
     TeamOperation,
     UserAdminRegionResponse,
@@ -899,7 +899,7 @@ async def get_user(
 )
 async def update_user(
     user_id: int,
-    user_update: UserUpdate,
+    user_update: AdminUserUpdate,
     current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db),
 ):
@@ -1071,7 +1071,7 @@ async def add_user_to_team(
 @router.post(
     "/{user_id}/remove-from-team",
     response_model=User,
-    dependencies=[Depends(get_role_min_system_admin)],
+    dependencies=[Depends(get_role_min_team_admin)],
 )
 async def remove_user_from_team(
     user_id: int,
@@ -1079,11 +1079,20 @@ async def remove_user_from_team(
     db: Session = Depends(get_db),
 ):
     """
-    Remove a user from a team. Accessible by admin users.
+    Remove a user from a team. Accessible by system admins or team admins for
+    members of their own team.
     """
     db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    # Team admins may only remove members of their own team (mirrors
+    # update_user_role); system admins are unrestricted.
+    if not current_user.is_admin and db_user.team_id != current_user.team_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action",
+        )
 
     # Check if user is a member of a team
     if db_user.team_id is None:
