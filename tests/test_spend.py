@@ -3618,3 +3618,19 @@ def test_get_key_daily_activity_wrong_team_id_is_404(
 
     db.delete(key)
     db.commit()
+
+
+def test_get_key_last_used_wrong_team_id_is_404(
+    client, admin_token, test_team, test_region, db
+):
+    db.refresh(test_team)
+    key = _make_spend_scope_key(db, test_region, test_team, "last-used-wrong")
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/last-used?team_id={test_team.id + 999}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 404
+
+    db.delete(key)
+    db.commit()
