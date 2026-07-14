@@ -1110,6 +1110,25 @@ async def remove_user_from_team(
             detail="User is not a member of any team",
         )
 
+    # Don't orphan a team: block removing its last remaining team admin (a team
+    # admin can now remove members, including themselves). Promote another admin
+    # first.
+    if db_user.role == UserRole.TEAM_ADMIN:
+        other_admins = (
+            db.query(DBUser)
+            .filter(
+                DBUser.team_id == db_user.team_id,
+                DBUser.id != db_user.id,
+                DBUser.role == UserRole.TEAM_ADMIN,
+            )
+            .count()
+        )
+        if other_admins == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot remove the last team admin from the team",
+            )
+
     # Remove user from team
     previous_team_id = db_user.team_id
     db_user.team_id = None

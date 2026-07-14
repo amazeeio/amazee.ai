@@ -908,6 +908,22 @@ def test_team_admin_cannot_remove_other_team_user(
     assert other_user.team_id == other_team.id
 
 
+def test_cannot_remove_last_team_admin(client, team_admin_token, test_team_admin):
+    """
+    Removing a team's last team admin would orphan the team, so it is blocked.
+
+    GIVEN: A team whose only admin is the requesting team admin
+    WHEN: they try to remove that admin from the team
+    THEN: A 400 is returned and the admin stays in the team
+    """
+    response = client.post(
+        f"/users/{test_team_admin.id}/remove-from-team",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 400
+    assert "last team admin" in response.json()["detail"].lower()
+
+
 @patch("httpx.AsyncClient.post", new_callable=AsyncMock)
 @patch("app.api.teams.SESService")
 def test_extend_team_trial_success(

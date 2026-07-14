@@ -1004,6 +1004,20 @@ def test_user_privilege_escalation(client, team_admin_token):
     assert "User not found" in response.json()["detail"]
 
 
+def test_admin_update_user_rejects_password_fields(client, admin_token, test_user):
+    """
+    PUT /users/{id} does not support password changes and must reject them
+    with a 422 (previously they were silently discarded). Password changes go
+    through /auth/me.
+    """
+    response = client.put(
+        f"/users/{test_user.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"new_password": "brand-new-password"},
+    )
+    assert response.status_code == 422
+
+
 def test_team_admin_cannot_change_is_active(
     client, team_admin_token, test_team_user
 ):
