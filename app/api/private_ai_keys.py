@@ -36,6 +36,7 @@ from app.core.security import (
     get_role_min_system_admin,
 )
 from app.core.roles import UserRole
+from app.core.rbac import enforce_declared_team_scope
 from app.core.config import settings
 from app.core.limit_service import (
     LimitService,
@@ -846,6 +847,7 @@ async def list_private_ai_keys_by_region(
 )
 async def get_private_ai_key(
     key_id: int,
+    team_id: Optional[int] = None,
     current_user=Depends(get_current_user_from_auth),
     db: Session = Depends(get_db),
 ):
@@ -869,8 +871,15 @@ async def get_private_ai_key(
 
     Note: You must be authenticated to use this endpoint.
     Only system administrators can access this endpoint.
+
+    Optional query parameter:
+    - **team_id**: When provided, the key must belong to this team or the
+      request 404s — a defence-in-depth scope check (issue #600) that applies
+      even to system-admin callers.
     """
-    private_ai_key = _get_key_if_allowed(key_id, current_user, "system_admin", db)
+    private_ai_key = _get_key_if_allowed(
+        key_id, current_user, "system_admin", db, declared_team_id=team_id
+    )
 
     # Get the region
     region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
@@ -920,7 +929,11 @@ async def get_private_ai_key(
 
 
 def _get_key_if_allowed(
-    key_id: int, current_user: DBUser, user_role: UserRole, db: Session
+    key_id: int,
+    current_user: DBUser,
+    user_role: UserRole,
+    db: Session,
+    declared_team_id: Optional[int] = None,
 ) -> DBPrivateAIKey:
     # First try to find the key
     private_ai_key = (
@@ -931,6 +944,11 @@ def _get_key_if_allowed(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Private AI Key not found"
         )
+
+    # Defence-in-depth (issue #600): when the caller declares the team it is
+    # acting for, the key must belong to that team — enforced even for system
+    # admins (e.g. the moad shared-admin token), closing the cross-tenant IDOR.
+    enforce_declared_team_scope(private_ai_key, declared_team_id, db)
 
     # Check if user has permission to view the key
     team_users: list[UserRole] = [UserRole.TEAM_ADMIN, UserRole.KEY_CREATOR]
@@ -970,11 +988,14 @@ def _get_key_if_allowed(
 @router.delete("/{key_id}")
 async def delete_private_ai_key(
     key_id: int,
+    team_id: Optional[int] = None,
     current_user=Depends(get_current_user_from_auth),
     user_role: UserRole = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
 ):
-    private_ai_key = _get_key_if_allowed(key_id, current_user, user_role, db)
+    private_ai_key = _get_key_if_allowed(
+        key_id, current_user, user_role, db, declared_team_id=team_id
+    )
     # Get the region
     region = db.query(DBRegion).filter(DBRegion.id == private_ai_key.region_id).first()
     if not region:
