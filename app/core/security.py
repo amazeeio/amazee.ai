@@ -18,6 +18,7 @@ from app.core.rbac import (
     require_key_creator_or_higher,
     require_sales_or_higher,
     require_private_ai_access,
+    require_private_ai_direct_access,
 )
 
 logger = logging.getLogger(__name__)
@@ -302,6 +303,18 @@ async def get_private_ai_access(
 ):
     """Require access to private AI operations - allows system users or team key creators."""
     dependency = require_private_ai_access()
+    return dependency.check_access(current_user)
+
+
+async def get_private_ai_direct_access(
+    current_user: DBUser = Depends(get_current_user_from_auth),
+):
+    """Require access to endpoints that mint LiteLLM keys directly (no moad delegation).
+
+    Blocks teamless non-admin users so they cannot mint uncapped paid keys via
+    /token or /vector-db; system admins bypass the team check.
+    """
+    dependency = require_private_ai_direct_access()
     return dependency.check_access(current_user)
 
 
