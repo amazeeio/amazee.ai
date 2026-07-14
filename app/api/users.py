@@ -925,6 +925,15 @@ async def update_user(
                 detail="Team members cannot be made administrators",
             )
 
+    # Only system admins may change a user's activation status (mirrors the
+    # is_admin guard above). Team admins manage membership/role, not whether an
+    # account is active.
+    if user_update.is_active is not None and not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action",
+        )
+
     previous_email = db_user.email
     for key, value in user_update.model_dump(exclude_unset=True).items():
         setattr(db_user, key, value)

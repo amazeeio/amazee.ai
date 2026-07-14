@@ -1004,6 +1004,25 @@ def test_user_privilege_escalation(client, team_admin_token):
     assert "User not found" in response.json()["detail"]
 
 
+def test_team_admin_cannot_change_is_active(
+    client, team_admin_token, test_team_user
+):
+    """
+    A team admin may manage their own team members but not toggle activation.
+
+    GIVEN: A team member in the team admin's team
+    WHEN: the team admin tries to deactivate them via PUT /users/{id}
+    THEN: A 403 is returned and the member stays active
+    """
+    response = client.put(
+        f"/users/{test_team_user.id}",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+        json={"is_active": False},
+    )
+    assert response.status_code == 403
+    assert "Not authorized to perform this action" in response.json()["detail"]
+
+
 @patch("app.api.users.settings.ENABLE_LIMITS", True)
 def test_create_user_with_limits_enabled(client, team_admin_token, test_team, db):
     """
