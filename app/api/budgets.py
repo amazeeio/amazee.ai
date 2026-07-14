@@ -647,15 +647,15 @@ async def purchase_periodic_topup(
                     region_id,
                     str(rollback_exc),
                 )
-        # Top-up purchase failed to reach LiteLLM; do not keep allocatable
-        # balance in the periodic ledger for this failed API purchase.
+        # Top-up purchase failed to reach LiteLLM. Delete the ledger entry
+        # rather than deactivating it: uq_periodic_ledger_topup_payment makes
+        # (team_id, region_id, entry_type, stripe_payment_id) unique, so a
+        # lingering row would both block the duplicate guard (409) and collide
+        # on re-insert. Deleting lets a resubmission run the full flow fresh.
         if topup_entry is not None:
-            # Keep audit visibility but ensure failed top-up cannot contribute
-            # to future allocatable balance.
-            topup_entry.is_active = False
-            topup_entry.consumed_cents = topup_entry.amount_cents
-            db.add(topup_entry)
+            db.delete(topup_entry)
             db.flush()
+            topup_entry = None
         payment_record.sync_status = "sync_failed"
         payment_record.error_log = (
             f"Periodic top-up sync failed for region_id={region_id}: {str(exc)}"

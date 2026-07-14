@@ -3,7 +3,6 @@ import os
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     HTTPException,
     Request,
@@ -28,13 +27,13 @@ LEGACY_STRIPE_DRAIN_MODE_ENV = "LEGACY_STRIPE_DRAIN_MODE"
 @router.post("/events")
 async def handle_events(
     request: Request,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     """Handle Stripe webhook events.
 
-    Verifies the Stripe signature, then dispatches processing to a
-    background task so Stripe receives a fast 200 response.
+    Verifies the Stripe signature, then processes the event synchronously so
+    a processing failure is reported to Stripe (non-2xx) and retried, rather
+    than being acknowledged with 200 and silently lost.
     """
     try:
         # Temporary post-migration safety valve: once PROD billing has moved to
@@ -98,13 +97,25 @@ async def handle_events(
                     content="Webhook already processed",
                 )
 
-        # Process in the background — use the request-scoped event object
-        # and let the background task create its own DB session.
-        background_tasks.add_task(handle_stripe_event_background, event)
+        # Process synchronously so a processing failure can be reported to
+        # Stripe (non-2xx => Stripe retries). Doing this in a BackgroundTask
+        # would send 200 before the work ran, so a failure would leave the
+        # event marked processed but never applied — permanently lost.
+        try:
+            await handle_stripe_event_background(event)
+        except Exception:
+            # Release the claim row so the idempotency guard does not block
+            # Stripe's re-delivery of this event, then surface the failure.
+            if event_id:
+                db.query(DBStripeProcessedEvent).filter(
+                    DBStripeProcessedEvent.stripe_event_id == event_id
+                ).delete()
+                db.commit()
+            raise
 
         return Response(
             status_code=status.HTTP_200_OK,
-            content="Webhook received and processing started",
+            content="Webhook received and processed",
         )
 
     except HTTPException:

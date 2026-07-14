@@ -775,7 +775,11 @@ async def handle_stripe_event_background(event):
                 await remove_product_from_team(db, customer_id, product_id)
 
     except Exception as exc:
-        logger.error("Error in background event handler: %s", exc, exc_info=True)
+        # Re-raise so the caller can release the idempotency claim and return
+        # a non-2xx to Stripe; swallowing here would mark the event processed
+        # while it was never applied.
+        logger.error("Error in stripe event handler: %s", exc, exc_info=True)
+        raise
     finally:
         db.close()
 
