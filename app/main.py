@@ -23,12 +23,11 @@ from app.api import (
     webhooks,
 )
 from app.core.config import settings
-from app.core.security import get_current_user_from_auth
 from app.middleware.audit import AuditLogMiddleware
 from app.middleware.auth import AuthMiddleware
 from app.middleware.caching import CacheControlMiddleware
 from app.middleware.prometheus import PrometheusMiddleware
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -87,11 +86,10 @@ app = FastAPI(
     or you can provide a Bearer token in the Authorization header.
     """,
     version=__version__,
-    docs_url=None,  # Disable default /docs endpoint
+    docs_url=None,  # Disable default /docs endpoint; custom Swagger UI at /
     redoc_url=None,  # Disable default /redoc endpoint
-    # Disable FastAPI's default unauthenticated /openapi.json route.
-    # A custom authenticated endpoint is registered below (M5).
-    openapi_url=None,
+    # Public by design: the schema is the API's docs page (see PUBLIC_PATHS).
+    openapi_url="/openapi.json",
     root_path_in_servers=True,
     openapi_tags=[
         {
@@ -218,16 +216,8 @@ app.include_router(budgets.router, prefix="/budgets", tags=["budgets"])
 app.include_router(spend.router, prefix="/spend", tags=["spend"])
 
 
-@app.get("/openapi.json", include_in_schema=False)
-async def openapi_schema(user=Depends(get_current_user_from_auth)):
-    """Serve the OpenAPI schema to authenticated callers only (M5)."""
-    return app.openapi()
-
-
 @app.get("/", include_in_schema=False)
 async def custom_swagger_ui_html():
-    if settings.ENV_SUFFIX != "local":
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
     return get_swagger_ui_html(
         openapi_url="/openapi.json",
         title="API Documentation",

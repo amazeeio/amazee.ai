@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.core.limit_service import DEFAULT_MAX_SPEND, LimitService
 from app.core.litellm_user_sync import team_role_for_litellm
 from app.core.roles import UserRole
+from app.core.rbac import enforce_declared_team_scope
 from app.core.periodic_budget_ledger_service import compute_active_topup_remaining
 from app.core.pool_budget_service import (
     pool_available_budget_for_team_region as shared_pool_available_budget_for_team_region,
@@ -39,6 +40,7 @@ from app.schemas.limits import OwnerType, ResourceType
 from app.api.users import invalidate_user_spend_cache
 from app.schemas.models import (
     BudgetType,
+    DailyActivityModelBreakdown,
     KeyDailyActivityResponse,
     KeyDailyActivityRow,
     KeyLastUsedResponse,
@@ -52,6 +54,8 @@ from app.schemas.models import (
     TeamSpendHistoryResponse,
     TeamSpendResponse,
     PeriodicTeamBudgetView,
+    TeamDailyActivityResponse,
+    UserDailyActivityResponse,
     UserSpendResponse,
 )
 from app.services.litellm import LiteLLMService
@@ -269,6 +273,102 @@ def _extract_token_usage(data: dict) -> tuple[int | None, int | None, int | None
         _to_int_or_none(data.get("completion_tokens")),
         _to_int_or_none(data.get("total_tokens")),
     )
+
+
+def _daily_metric_fields(metrics: dict) -> dict:
+    """Extract the shared per-day metric fields from a LiteLLM ``metrics`` block.
+
+    Returns kwargs common to both the flat daily row and each per-model
+    breakdown entry, coercing missing/null values to 0 (0.0 for spend). Note
+    ``request_count`` maps from LiteLLM's ``api_requests``.
+    """
+    spend_val = metrics.get("spend")
+
+    def _int(key: str) -> int:
+        val = metrics.get(key)
+        return val if val is not None else 0
+
+    return {
+        "spend": spend_val if spend_val is not None else 0.0,
+        "prompt_tokens": _int("prompt_tokens"),
+        "completion_tokens": _int("completion_tokens"),
+        "total_tokens": _int("total_tokens"),
+        "cache_read_input_tokens": _int("cache_read_input_tokens"),
+        "cache_creation_input_tokens": _int("cache_creation_input_tokens"),
+        "request_count": _int("api_requests"),
+    }
+
+
+def _row_model_breakdown(row: dict) -> list[DailyActivityModelBreakdown]:
+    """Build the per-model breakdown for one raw LiteLLM daily row.
+
+    Reads ``breakdown.models`` (a dict keyed by model name) and returns a list
+    ordered by descending spend. Returns an empty list when LiteLLM reports no
+    model breakdown for the day.
+    """
+    models = ((row.get("breakdown") or {}).get("models")) or {}
+    breakdown = [
+        DailyActivityModelBreakdown(
+            model=name, **_daily_metric_fields(entry.get("metrics") or {})
+        )
+        for name, entry in models.items()
+    ]
+    breakdown.sort(key=lambda b: b.spend, reverse=True)
+    return breakdown
+
+
+def _rows_to_daily_activity(
+    rows: list[dict], include_breakdown: bool = False
+) -> list[KeyDailyActivityRow]:
+    """Map raw LiteLLM daily-activity rows to daily-activity response rows.
+
+    Each raw row carries ``date`` and a ``metrics`` block; rows without a date
+    are skipped and the result is ordered ascending by date. LiteLLM's
+    ``breakdown`` block (per model/provider/key) is dropped by default to keep
+    the response flat; when ``include_breakdown`` is set, the per-model slice is
+    attached to each row's ``breakdown`` field.
+    """
+    activity: list[KeyDailyActivityRow] = []
+    for row in rows:
+        if not row.get("date"):
+            continue
+        metrics = row.get("metrics") or {}
+        activity.append(
+            KeyDailyActivityRow(
+                date=row["date"],
+                breakdown=_row_model_breakdown(row) if include_breakdown else None,
+                **_daily_metric_fields(metrics),
+            )
+        )
+    activity.sort(key=lambda r: r.date)
+    return activity
+
+
+# Default look-back window (in days) used when a daily-activity request omits
+# start_date and/or end_date.
+DEFAULT_DAILY_ACTIVITY_WINDOW_DAYS = 30
+
+
+def _resolve_daily_activity_range(
+    start_date: date | None, end_date: date | None
+) -> tuple[date, date]:
+    """Fill in defaults for an optional daily-activity date range and validate it.
+
+    When ``end_date`` is omitted it defaults to today (UTC); when ``start_date``
+    is omitted it defaults to ``end_date`` minus
+    ``DEFAULT_DAILY_ACTIVITY_WINDOW_DAYS`` days, giving a rolling 30-day window.
+    Raises 400 if the resolved ``start_date`` is after ``end_date``.
+    """
+    if end_date is None:
+        end_date = datetime.now(UTC).date()
+    if start_date is None:
+        start_date = end_date - timedelta(days=DEFAULT_DAILY_ACTIVITY_WINDOW_DAYS)
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="start_date must be on or before end_date",
+        )
+    return start_date, end_date
 
 
 def _sum_optional_token_values(
@@ -1212,6 +1312,7 @@ async def get_user_spend(
 async def get_key_spend_alias(
     region_id: int,
     key_id: int,
+    team_id: int | None = None,
     current_user: DBUser = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
@@ -1223,6 +1324,10 @@ async def get_key_spend_alias(
         raise HTTPException(
             status_code=404, detail="Private AI Key not found in region"
         )
+
+    # Defence-in-depth scope gate (issue #600): enforce declared team scope
+    # even for system-admin callers before applying role-based access.
+    enforce_declared_team_scope(key, team_id, db)
 
     # Reuse authorization semantics from private-ai-keys endpoints.
     if current_user.is_admin:
@@ -1367,6 +1472,7 @@ async def get_key_spend_alias(
 async def get_key_last_used(
     region_id: int,
     key_id: int,
+    team_id: int | None = None,
     current_user: DBUser = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
@@ -1378,6 +1484,9 @@ async def get_key_last_used(
         raise HTTPException(
             status_code=404, detail="Private AI Key not found in region"
         )
+
+    # Defence-in-depth scope gate (issue #600).
+    enforce_declared_team_scope(key, team_id, db)
 
     # Reuse authorization semantics from get_key_spend_alias.
     if current_user.is_admin:
@@ -1418,10 +1527,13 @@ async def get_key_last_used(
 @router.get(
     "/{region_id}/key/{key_id}/daily-activity",
     response_model=KeyDailyActivityResponse,
+    response_model_exclude_none=True,
     summary="Get key daily activity by region",
     description=(
         "Returns per-day usage (spend, tokens and request count) for a specific "
-        "key in the specified region across the requested date range. Proxies "
+        "key in the specified region across the requested date range. "
+        "start_date and end_date are optional and default to the last 30 days "
+        "(end_date defaults to today UTC, start_date to 30 days earlier). Proxies "
         "LiteLLM's `/user/daily/activity`, filtered to this key. Days with no "
         "usage are omitted from the response."
     ),
@@ -1430,21 +1542,40 @@ async def get_key_last_used(
 async def get_key_daily_activity(
     region_id: int,
     key_id: int,
-    start_date: date = Query(
-        ..., description="Start date (inclusive), formatted YYYY-MM-DD."
+    start_date: date | None = Query(
+        None,
+        description=(
+            "Start date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to 30 days before end_date when omitted."
+        ),
     ),
-    end_date: date = Query(
-        ..., description="End date (inclusive), formatted YYYY-MM-DD."
+    end_date: date | None = Query(
+        None,
+        description=(
+            "End date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to today (UTC) when omitted."
+        ),
+    ),
+    include_breakdown: bool = Query(
+        False,
+        description=(
+            "When true, include a per-model breakdown on each daily row. "
+            "Defaults to false, leaving the flat response unchanged."
+        ),
+    ),
+    team_id: int | None = Query(
+        None,
+        description=(
+            "When provided, the key must belong to this team or the request "
+            "404s — a defence-in-depth scope check (issue #600) applied even "
+            "to system-admin callers."
+        ),
     ),
     current_user: DBUser = Depends(get_current_user_from_auth),
     user_role: str = Depends(get_private_ai_access),
     db: Session = Depends(get_db),
 ):
-    if start_date > end_date:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="start_date must be on or before end_date",
-        )
+    start_date, end_date = _resolve_daily_activity_range(start_date, end_date)
 
     key = db.query(DBPrivateAIKey).filter(DBPrivateAIKey.id == key_id).first()
     if not key:
@@ -1453,6 +1584,9 @@ async def get_key_daily_activity(
         raise HTTPException(
             status_code=404, detail="Private AI Key not found in region"
         )
+
+    # Defence-in-depth scope gate (issue #600).
+    enforce_declared_team_scope(key, team_id, db)
 
     # Reuse authorization semantics from get_key_spend_alias.
     if current_user.is_admin:
@@ -1480,38 +1614,167 @@ async def get_key_daily_activity(
         end_date=end_date.isoformat(),
     )
 
-    activity: list[KeyDailyActivityRow] = []
-    for row in rows:
-        if not row.get("date"):
-            continue
-        metrics = row.get("metrics") or {}
-        spend_val = metrics.get("spend")
-        activity.append(
-            KeyDailyActivityRow(
-                date=row["date"],
-                spend=spend_val if spend_val is not None else 0.0,
-                prompt_tokens=metrics.get("prompt_tokens")
-                if metrics.get("prompt_tokens") is not None
-                else 0,
-                completion_tokens=metrics.get("completion_tokens")
-                if metrics.get("completion_tokens") is not None
-                else 0,
-                total_tokens=metrics.get("total_tokens")
-                if metrics.get("total_tokens") is not None
-                else 0,
-                request_count=metrics.get("api_requests")
-                if metrics.get("api_requests") is not None
-                else 0,
-            )
-        )
-    activity.sort(key=lambda r: r.date)
-
     return KeyDailyActivityResponse(
         region_id=region_id,
         key_id=key_id,
         start_date=start_date,
         end_date=end_date,
-        activity=activity,
+        activity=_rows_to_daily_activity(rows, include_breakdown=include_breakdown),
+    )
+
+
+@router.get(
+    "/{region_id}/user/{user_id}/daily-activity",
+    response_model=UserDailyActivityResponse,
+    response_model_exclude_none=True,
+    summary="Get user daily activity by region",
+    description=(
+        "Returns per-day usage (spend, tokens and request count) aggregated "
+        "across all of a user's keys in the specified region across the "
+        "requested date range. start_date and end_date are optional and default "
+        "to the last 30 days (end_date defaults to today UTC, start_date to 30 "
+        "days earlier). Proxies LiteLLM's `/user/daily/activity`, "
+        "filtered to this user. Days with no usage are omitted.\n\n"
+        "Values come from LiteLLM's pre-aggregated daily-spend tables (whole "
+        "UTC days) and are independent of billing-cycle spend resets, so they "
+        "do NOT reconcile with the cycle-reset spend/budget figures returned by "
+        "the other spend endpoints. The current UTC day may under-report until "
+        "LiteLLM's next batch flush."
+    ),
+    response_description="Per-day usage rows for the user, ordered by date.",
+)
+async def get_user_daily_activity(
+    region_id: int,
+    user_id: int,
+    start_date: date | None = Query(
+        None,
+        description=(
+            "Start date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to 30 days before end_date when omitted."
+        ),
+    ),
+    end_date: date | None = Query(
+        None,
+        description=(
+            "End date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to today (UTC) when omitted."
+        ),
+    ),
+    include_breakdown: bool = Query(
+        False,
+        description=(
+            "When true, include a per-model breakdown on each daily row. "
+            "Defaults to false, leaving the flat response unchanged."
+        ),
+    ),
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    start_date, end_date = _resolve_daily_activity_range(start_date, end_date)
+
+    target_user = db.query(DBUser).filter(DBUser.id == user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    _assert_user_access(current_user, user_role, target_user)
+
+    region = _get_region_or_404(db, region_id)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+
+    rows = await service.get_user_daily_activity(
+        user_id=str(user_id),
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+    )
+
+    return UserDailyActivityResponse(
+        region_id=region_id,
+        user_id=user_id,
+        start_date=start_date,
+        end_date=end_date,
+        activity=_rows_to_daily_activity(rows, include_breakdown=include_breakdown),
+    )
+
+
+@router.get(
+    "/{region_id}/team/{team_id}/daily-activity",
+    response_model=TeamDailyActivityResponse,
+    response_model_exclude_none=True,
+    summary="Get team daily activity by region",
+    description=(
+        "Returns per-day usage (spend, tokens and request count) aggregated "
+        "across all of a team's keys in the specified region across the "
+        "requested date range. start_date and end_date are optional and default "
+        "to the last 30 days (end_date defaults to today UTC, start_date to 30 "
+        "days earlier). Proxies LiteLLM's `/team/daily/activity`, "
+        "filtered to this team. Days with no usage are omitted.\n\n"
+        "Values come from LiteLLM's pre-aggregated daily-spend tables (whole "
+        "UTC days) and are independent of billing-cycle spend resets, so they "
+        "do NOT reconcile with the cycle-reset spend/budget figures returned by "
+        "the other spend endpoints. The current UTC day may under-report until "
+        "LiteLLM's next batch flush."
+    ),
+    response_description="Per-day usage rows for the team, ordered by date.",
+)
+async def get_team_daily_activity(
+    region_id: int,
+    team_id: int,
+    start_date: date | None = Query(
+        None,
+        description=(
+            "Start date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to 30 days before end_date when omitted."
+        ),
+    ),
+    end_date: date | None = Query(
+        None,
+        description=(
+            "End date (inclusive), formatted YYYY-MM-DD. "
+            "Defaults to today (UTC) when omitted."
+        ),
+    ),
+    include_breakdown: bool = Query(
+        False,
+        description=(
+            "When true, include a per-model breakdown on each daily row. "
+            "Defaults to false, leaving the flat response unchanged."
+        ),
+    ),
+    current_user: DBUser = Depends(get_current_user_from_auth),
+    user_role: str = Depends(get_private_ai_access),
+    db: Session = Depends(get_db),
+):
+    start_date, end_date = _resolve_daily_activity_range(start_date, end_date)
+
+    team = (
+        db.query(DBTeam)
+        .filter(DBTeam.id == team_id, DBTeam.deleted_at.is_(None))
+        .first()
+    )
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    _assert_team_access(current_user, user_role, team_id)
+
+    region = _get_region_or_404(db, region_id)
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+
+    rows = await service.get_team_daily_activity(
+        team_id=lite_team_id,
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+    )
+
+    return TeamDailyActivityResponse(
+        region_id=region_id,
+        team_id=team_id,
+        start_date=start_date,
+        end_date=end_date,
+        activity=_rows_to_daily_activity(rows, include_breakdown=include_breakdown),
     )
 
 
@@ -1940,6 +2203,7 @@ async def update_key_budget(
     region_id: int,
     key_id: int,
     body: SpendBudgetUpdateRequest,
+    team_id: int | None = None,
     current_user: DBUser = Depends(get_current_user_from_auth),
     role: str = Depends(get_role_min_team_admin),
     db: Session = Depends(get_db),
@@ -1949,6 +2213,9 @@ async def update_key_budget(
         raise HTTPException(
             status_code=404, detail="Private AI Key not found in region"
         )
+    # Defence-in-depth scope gate (issue #600): enforce declared team scope
+    # before the budget write, even for system-admin callers.
+    enforce_declared_team_scope(key, team_id, db)
     owner = None
     team_for_budget_check = None
     if key.team_id is not None:
@@ -2095,6 +2362,7 @@ async def update_key_budget(
 async def clear_key_budget(
     region_id: int,
     key_id: int,
+    team_id: int | None = None,
     current_user: DBUser = Depends(get_current_user_from_auth),
     role: str = Depends(get_role_min_team_admin),
     db: Session = Depends(get_db),
@@ -2104,6 +2372,8 @@ async def clear_key_budget(
         raise HTTPException(
             status_code=404, detail="Private AI Key not found in region"
         )
+    # Defence-in-depth scope gate (issue #600).
+    enforce_declared_team_scope(key, team_id, db)
     if key.team_id is not None:
         _assert_team_budget_write_access(current_user, role, key.team_id)
     else:
