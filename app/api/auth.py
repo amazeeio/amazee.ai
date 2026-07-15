@@ -145,6 +145,11 @@ def create_and_set_access_token(
 
     # Set cookie expiration based on user role
     # System administrators get 8 hours (28800 seconds), regular users get 30 minutes (1800 seconds)
+    # NOTE: this cookie lifetime is deliberately independent of the JWT lifetime
+    # (settings.ACCESS_TOKEN_EXPIRE_MINUTES, applied in create_access_token). The
+    # effective session ends when the *shorter* of the two expires, so adjust
+    # both together — raising ACCESS_TOKEN_EXPIRE_MINUTES alone won't lengthen a
+    # regular user's session (this cookie dies first).
     cookie_expiration = 28800 if user and user.is_admin else 1800
 
     # Prepare cookie settings
