@@ -25,9 +25,7 @@ jobs:
   package-and-publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      packages: write
-      security-events: write
+      packages: write  # helm push charts to GHCR (GitHub Packages)
 
     steps:
       - name: Checkout code
@@ -39,11 +37,6 @@ jobs:
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v3.18.0
-
-      - name: Configure Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Log in to Container Registry
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
@@ -66,12 +59,11 @@ jobs:
             # Package the chart
             helm package "$chart_name"
 
-            # Push to OCI registry with version tag
+            # Push to OCI registry with version tag. helm derives the OCI tag
+            # from the chart's SemVer version (Chart.yaml), not the filename, so
+            # there is no separate "latest" push — consumers select an explicit
+            # version via --version / `helm search repo --versions`.
             helm push "$chart_name-$version.tgz" oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-
-            # Also push with latest tag by copying the chart and updating its version
-            cp "$chart_name-$version.tgz" "$chart_name-latest.tgz"
-            helm push "$chart_name-latest.tgz" oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
             echo "✅ Published $chart_name:$version to GHCR via OCI"
           done
@@ -90,23 +82,11 @@ jobs:
           version=$(grep '^version:' Chart.yaml | awk '{print $2}')
           echo "Main chart version: $version"
 
-          # Push to OCI registry with version tag
+          # Push to OCI registry with version tag (SemVer from Chart.yaml is the
+          # OCI tag; no separate "latest" push — see subchart step above).
           helm push "amazee-ai-$version.tgz" oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
-          # Also push with latest tag by copying the chart
-          cp "amazee-ai-$version.tgz" "amazee-ai-latest.tgz"
-          helm push "amazee-ai-latest.tgz" oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-
           echo "✅ Published amazee-ai:$version to GHCR via OCI"
-
-      - name: Create Release Tag
-        if: github.event_name == 'release'
-        run: |
-          cd helm
-          version=$(grep '^version:' Chart.yaml | awk '{print $2}')
-          echo "Creating release tag: v$version"
-          git tag -a "v$version" -m "Release Helm charts version $version"
-          git push origin "v$version"
 
   test-charts:
     runs-on: ubuntu-latest

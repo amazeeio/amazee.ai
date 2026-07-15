@@ -290,6 +290,8 @@ def test_key_daily_activity(
                 "prompt_tokens": 100,
                 "completion_tokens": 20,
                 "total_tokens": 120,
+                "cache_read_input_tokens": 70,
+                "cache_creation_input_tokens": 30,
                 "api_requests": 2,
             },
         },
@@ -312,7 +314,17 @@ def test_key_daily_activity(
     assert first["prompt_tokens"] == 100
     assert first["completion_tokens"] == 20
     assert first["total_tokens"] == 120
+    assert first["cache_read_input_tokens"] == 70
+    assert first["cache_creation_input_tokens"] == 30
     assert first["request_count"] == 2
+    # Cache fields default to 0 when LiteLLM omits them from the metrics block.
+    second = data["activity"][1]
+    assert second["cache_read_input_tokens"] == 0
+    assert second["cache_creation_input_tokens"] == 0
+    # Without include_breakdown the per-model breakdown is omitted entirely
+    # (not serialized as null), keeping the flat response shape unchanged.
+    assert "breakdown" not in first
+    assert "breakdown" not in second
 
     # Endpoint forwards the key's plaintext token and the requested range.
     mock_get_daily_activity.assert_awaited_once()
@@ -320,6 +332,86 @@ def test_key_daily_activity(
     assert kwargs["litellm_token"] == "sk-daily-token"
     assert kwargs["start_date"] == "2025-06-01"
     assert kwargs["end_date"] == "2025-06-02"
+
+
+@patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
+def test_key_daily_activity_include_breakdown(
+    mock_get_daily_activity, client, team_admin_token, test_team_user, test_region, db
+):
+    key = DBPrivateAIKey(
+        name="daily-activity-breakdown-key",
+        litellm_token="sk-daily-breakdown-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team_user.team_id,
+    )
+    db.add(key)
+    db.commit()
+
+    mock_get_daily_activity.return_value = [
+        {
+            "date": "2025-06-01",
+            "metrics": {
+                "spend": 3.0,
+                "prompt_tokens": 300,
+                "completion_tokens": 60,
+                "total_tokens": 360,
+                "cache_read_input_tokens": 40,
+                "cache_creation_input_tokens": 10,
+                "api_requests": 5,
+            },
+            "breakdown": {
+                "models": {
+                    "cheap-model": {
+                        "metrics": {
+                            "spend": 1.0,
+                            "prompt_tokens": 100,
+                            "completion_tokens": 20,
+                            "total_tokens": 120,
+                            "api_requests": 2,
+                        }
+                    },
+                    "pricey-model": {
+                        "metrics": {
+                            "spend": 2.0,
+                            "prompt_tokens": 200,
+                            "completion_tokens": 40,
+                            "total_tokens": 240,
+                            "cache_read_input_tokens": 40,
+                            "cache_creation_input_tokens": 10,
+                            "api_requests": 3,
+                        }
+                    },
+                }
+            },
+        }
+    ]
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/daily-activity",
+        params={
+            "start_date": "2025-06-01",
+            "end_date": "2025-06-01",
+            "include_breakdown": "true",
+        },
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    row = response.json()["activity"][0]
+    # Flat aggregate is unchanged by the opt-in.
+    assert row["spend"] == 3.0
+    assert row["request_count"] == 5
+    # Breakdown is present and ordered by descending spend.
+    breakdown = row["breakdown"]
+    assert [m["model"] for m in breakdown] == ["pricey-model", "cheap-model"]
+    pricey = breakdown[0]
+    assert pricey["spend"] == 2.0
+    assert pricey["total_tokens"] == 240
+    assert pricey["cache_read_input_tokens"] == 40
+    assert pricey["cache_creation_input_tokens"] == 10
+    assert pricey["request_count"] == 3
+    # Missing cache fields on a model default to 0.
+    assert breakdown[1]["cache_read_input_tokens"] == 0
 
 
 @patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
@@ -403,6 +495,264 @@ def test_key_daily_activity_forbidden_other_owner(
     )
     assert response.status_code == 404
     mock_get_daily_activity.assert_not_awaited()
+
+
+@patch("app.api.spend.LiteLLMService.get_user_daily_activity", new_callable=AsyncMock)
+def test_user_daily_activity(
+    mock_get_user_daily_activity,
+    client,
+    team_admin_token,
+    test_team_user,
+    test_region,
+):
+    # Returned out of order to verify the endpoint sorts ascending by date.
+    mock_get_user_daily_activity.return_value = [
+        {
+            "date": "2025-06-02",
+            "metrics": {
+                "spend": 2.5,
+                "prompt_tokens": 200,
+                "completion_tokens": 50,
+                "total_tokens": 250,
+                "api_requests": 4,
+            },
+        },
+        {
+            "date": "2025-06-01",
+            "metrics": {
+                "spend": 1.0,
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+                "api_requests": 2,
+            },
+        },
+    ]
+
+    response = client.get(
+        f"/spend/{test_region.id}/user/{test_team_user.id}/daily-activity",
+        params={"start_date": "2025-06-01", "end_date": "2025-06-02"},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["region_id"] == test_region.id
+    assert data["user_id"] == test_team_user.id
+    assert data["start_date"] == "2025-06-01"
+    assert data["end_date"] == "2025-06-02"
+    assert [row["date"] for row in data["activity"]] == ["2025-06-01", "2025-06-02"]
+    first = data["activity"][0]
+    assert first["spend"] == 1.0
+    assert first["prompt_tokens"] == 100
+    assert first["completion_tokens"] == 20
+    assert first["total_tokens"] == 120
+    assert first["request_count"] == 2
+
+    # Endpoint forwards the user id (as a string) and the requested range.
+    mock_get_user_daily_activity.assert_awaited_once()
+    kwargs = mock_get_user_daily_activity.await_args.kwargs
+    assert kwargs["user_id"] == str(test_team_user.id)
+    assert kwargs["start_date"] == "2025-06-01"
+    assert kwargs["end_date"] == "2025-06-02"
+
+
+@patch("app.api.spend.LiteLLMService.get_user_daily_activity", new_callable=AsyncMock)
+def test_user_daily_activity_invalid_range(
+    mock_get_user_daily_activity, client, team_admin_token, test_team_user, test_region
+):
+    response = client.get(
+        f"/spend/{test_region.id}/user/{test_team_user.id}/daily-activity",
+        params={"start_date": "2025-06-05", "end_date": "2025-06-01"},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 400
+    mock_get_user_daily_activity.assert_not_awaited()
+
+
+@patch("app.api.spend.LiteLLMService.get_user_daily_activity", new_callable=AsyncMock)
+def test_user_daily_activity_user_not_found(
+    mock_get_user_daily_activity, client, team_admin_token, test_region
+):
+    response = client.get(
+        f"/spend/{test_region.id}/user/999999/daily-activity",
+        params={"start_date": "2025-06-01", "end_date": "2025-06-02"},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 404
+    mock_get_user_daily_activity.assert_not_awaited()
+
+
+@patch("app.api.spend.LiteLLMService.get_user_daily_activity", new_callable=AsyncMock)
+def test_user_daily_activity_forbidden_other_user(
+    mock_get_user_daily_activity, client, test_token, test_admin, test_region
+):
+    # test_user requesting the admin's activity (different user, not same team).
+    response = client.get(
+        f"/spend/{test_region.id}/user/{test_admin.id}/daily-activity",
+        params={"start_date": "2025-06-01", "end_date": "2025-06-02"},
+        headers={"Authorization": f"Bearer {test_token}"},
+    )
+    assert response.status_code == 403
+    mock_get_user_daily_activity.assert_not_awaited()
+
+
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_team_daily_activity(
+    mock_get_team_daily_activity,
+    client,
+    team_admin_token,
+    test_team,
+    test_region,
+):
+    # Returned out of order to verify the endpoint sorts ascending by date.
+    mock_get_team_daily_activity.return_value = [
+        {
+            "date": "2025-06-02",
+            "metrics": {
+                "spend": 5.0,
+                "prompt_tokens": 400,
+                "completion_tokens": 100,
+                "total_tokens": 500,
+                "api_requests": 8,
+            },
+        },
+        {
+            "date": "2025-06-01",
+            "metrics": {
+                "spend": 3.0,
+                "prompt_tokens": 300,
+                "completion_tokens": 60,
+                "total_tokens": 360,
+                "api_requests": 6,
+            },
+        },
+    ]
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/daily-activity",
+        params={"start_date": "2025-06-01", "end_date": "2025-06-02"},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["region_id"] == test_region.id
+    assert data["team_id"] == test_team.id
+    assert data["start_date"] == "2025-06-01"
+    assert data["end_date"] == "2025-06-02"
+    assert [row["date"] for row in data["activity"]] == ["2025-06-01", "2025-06-02"]
+    first = data["activity"][0]
+    assert first["spend"] == 3.0
+    assert first["prompt_tokens"] == 300
+    assert first["completion_tokens"] == 60
+    assert first["total_tokens"] == 360
+    assert first["request_count"] == 6
+
+    # Endpoint forwards the formatted LiteLLM team id and the requested range.
+    mock_get_team_daily_activity.assert_awaited_once()
+    kwargs = mock_get_team_daily_activity.await_args.kwargs
+    expected_team_id = f"{test_region.name.replace(' ', '_')}_{test_team.id}"
+    assert kwargs["team_id"] == expected_team_id
+    assert kwargs["start_date"] == "2025-06-01"
+    assert kwargs["end_date"] == "2025-06-02"
+
+
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_team_daily_activity_invalid_range(
+    mock_get_team_daily_activity, client, team_admin_token, test_team, test_region
+):
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/daily-activity",
+        params={"start_date": "2025-06-05", "end_date": "2025-06-01"},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 400
+    mock_get_team_daily_activity.assert_not_awaited()
+
+
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_team_daily_activity_team_not_found(
+    mock_get_team_daily_activity, client, team_admin_token, test_region
+):
+    response = client.get(
+        f"/spend/{test_region.id}/team/999999/daily-activity",
+        params={"start_date": "2025-06-01", "end_date": "2025-06-02"},
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 404
+    mock_get_team_daily_activity.assert_not_awaited()
+
+
+@patch("app.api.spend.LiteLLMService.get_daily_activity", new_callable=AsyncMock)
+def test_key_daily_activity_defaults_to_last_30_days(
+    mock_get_daily_activity, client, team_admin_token, test_team_user, test_region, db
+):
+    key = DBPrivateAIKey(
+        name="daily-activity-default-key",
+        litellm_token="sk-default-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team_user.team_id,
+    )
+    db.add(key)
+    db.commit()
+    mock_get_daily_activity.return_value = []
+
+    # No start_date/end_date -> defaults to the last 30 days (UTC).
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/daily-activity",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    today = datetime.now(UTC).date()
+    data = response.json()
+    assert data["end_date"] == today.isoformat()
+    assert data["start_date"] == (today - timedelta(days=30)).isoformat()
+
+    kwargs = mock_get_daily_activity.await_args.kwargs
+    assert kwargs["end_date"] == today.isoformat()
+    assert kwargs["start_date"] == (today - timedelta(days=30)).isoformat()
+
+
+@patch("app.api.spend.LiteLLMService.get_user_daily_activity", new_callable=AsyncMock)
+def test_user_daily_activity_defaults_to_last_30_days(
+    mock_get_user_daily_activity, client, team_admin_token, test_team_user, test_region
+):
+    mock_get_user_daily_activity.return_value = []
+
+    response = client.get(
+        f"/spend/{test_region.id}/user/{test_team_user.id}/daily-activity",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    today = datetime.now(UTC).date()
+    data = response.json()
+    assert data["end_date"] == today.isoformat()
+    assert data["start_date"] == (today - timedelta(days=30)).isoformat()
+
+    kwargs = mock_get_user_daily_activity.await_args.kwargs
+    assert kwargs["end_date"] == today.isoformat()
+    assert kwargs["start_date"] == (today - timedelta(days=30)).isoformat()
+
+
+@patch("app.api.spend.LiteLLMService.get_team_daily_activity", new_callable=AsyncMock)
+def test_team_daily_activity_defaults_to_last_30_days(
+    mock_get_team_daily_activity, client, team_admin_token, test_team, test_region
+):
+    mock_get_team_daily_activity.return_value = []
+
+    response = client.get(
+        f"/spend/{test_region.id}/team/{test_team.id}/daily-activity",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
+    assert response.status_code == 200
+    today = datetime.now(UTC).date()
+    data = response.json()
+    assert data["end_date"] == today.isoformat()
+    assert data["start_date"] == (today - timedelta(days=30)).isoformat()
+
+    kwargs = mock_get_team_daily_activity.await_args.kwargs
+    assert kwargs["end_date"] == today.isoformat()
+    assert kwargs["start_date"] == (today - timedelta(days=30)).isoformat()
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
@@ -3182,3 +3532,105 @@ def test_periodic_live_remaining_invariant(
     assert response.status_code == 200
     data = response.json()
     assert data["periodic_budget"]["remaining_budget_cents"] == expected_remaining
+
+
+# ---------------------------------------------------------------------------
+# Issue #600 — declared `team_id` scope (defence in depth) on key-level spend
+# and budget endpoints. A mismatched team_id 404s before any LiteLLM call,
+# even for system-admin callers (the moad shared-admin token scenario).
+# ---------------------------------------------------------------------------
+
+
+def _make_spend_scope_key(db, region, team, name):
+    key = DBPrivateAIKey(
+        name=name,
+        litellm_token=f"token-{name}",
+        litellm_api_url="https://test-litellm.com",
+        region_id=region.id,
+        team_id=team.id,
+    )
+    db.add(key)
+    db.commit()
+    db.refresh(key)
+    return key
+
+
+def test_update_key_budget_wrong_team_id_is_404(
+    client, admin_token, test_team, test_region, db
+):
+    db.refresh(test_team)
+    key = _make_spend_scope_key(db, test_region, test_team, "budget-wrong")
+
+    response = client.put(
+        f"/spend/{test_region.id}/key/{key.id}/budget?team_id={test_team.id + 999}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"max_budget": 5.0},
+    )
+    assert response.status_code == 404
+
+    db.delete(key)
+    db.commit()
+
+
+def test_clear_key_budget_wrong_team_id_is_404(
+    client, admin_token, test_team, test_region, db
+):
+    db.refresh(test_team)
+    key = _make_spend_scope_key(db, test_region, test_team, "budget-clear-wrong")
+
+    response = client.post(
+        f"/spend/{test_region.id}/key/{key.id}/budget/clear?team_id={test_team.id + 999}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 404
+
+    db.delete(key)
+    db.commit()
+
+
+def test_get_key_spend_wrong_team_id_is_404(
+    client, admin_token, test_team, test_region, db
+):
+    db.refresh(test_team)
+    key = _make_spend_scope_key(db, test_region, test_team, "spend-wrong")
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}?team_id={test_team.id + 999}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 404
+
+    db.delete(key)
+    db.commit()
+
+
+def test_get_key_daily_activity_wrong_team_id_is_404(
+    client, admin_token, test_team, test_region, db
+):
+    db.refresh(test_team)
+    key = _make_spend_scope_key(db, test_region, test_team, "daily-wrong")
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/daily-activity?team_id={test_team.id + 999}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 404
+
+    db.delete(key)
+    db.commit()
+
+
+def test_get_key_last_used_wrong_team_id_is_404(
+    client, admin_token, test_team, test_region, db
+):
+    db.refresh(test_team)
+    key = _make_spend_scope_key(db, test_region, test_team, "last-used-wrong")
+
+    response = client.get(
+        f"/spend/{test_region.id}/key/{key.id}/last-used?team_id={test_team.id + 999}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 404
+
+    db.delete(key)
+    db.commit()

@@ -9,6 +9,8 @@ export interface LogEntry {
   user_email: string;
   request_source: string;
   ip_address: string;
+  referer: string | null;
+  origin: string | null;
 }
 
 export interface AuditLogFilters {
@@ -20,6 +22,7 @@ export interface AuditLogFilters {
   from_date?: string;
   to_date?: string;
   status_code?: string[];
+  referer?: string;
 }
 
 export interface AuditLogMetadata {

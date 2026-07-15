@@ -83,7 +83,8 @@ export function PrivateAIKeysTable({
   };
 
   const getSortedAndFilteredKeys = () => {
-    let filteredKeys = keys;
+    // Copy so the later in-place .sort() never mutates the `keys` prop.
+    let filteredKeys = [...keys];
 
     // Apply name filter
     if (nameFilter.trim()) {

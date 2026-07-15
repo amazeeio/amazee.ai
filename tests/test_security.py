@@ -212,19 +212,19 @@ async def test_get_current_user_from_auth_does_not_accept_local_bearer_from_cook
     assert exc_info.value.status_code == 401
 
 
-def test_openapi_requires_auth_when_not_local():
-    """M5: /openapi.json must be auth-gated in deployed envs; Swagger UI still 404.
+def test_openapi_and_docs_are_public_when_not_local():
+    """/openapi.json and the Swagger UI at / are the public API docs.
 
-    Unauthenticated callers get 401 (not the schema). The Swagger UI at / stays
-    404 in non-local envs. openapi_url is fixed at import time, so we use a
-    subprocess to import the app fresh with ENV_SUFFIX=production.
+    Both must be reachable without auth in deployed envs. Env-dependent app
+    setup is fixed at import time, so we use a subprocess to import the app
+    fresh with ENV_SUFFIX=production.
     """
     code = (
         "from fastapi.testclient import TestClient\n"
         "from app.main import app\n"
         "client = TestClient(app)\n"
-        "assert client.get('/openapi.json').status_code == 401\n"
-        "assert client.get('/').status_code == 404\n"
+        "assert client.get('/openapi.json').status_code == 200\n"
+        "assert client.get('/').status_code == 200\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", code],
