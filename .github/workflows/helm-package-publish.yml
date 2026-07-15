@@ -66,12 +66,11 @@ jobs:
             # Package the chart
             helm package "$chart_name"
 
-            # Push to OCI registry with version tag
+            # Push to OCI registry with version tag. helm derives the OCI tag
+            # from the chart's SemVer version (Chart.yaml), not the filename, so
+            # there is no separate "latest" push — consumers select an explicit
+            # version via --version / `helm search repo --versions`.
             helm push "$chart_name-$version.tgz" oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-
-            # Also push with latest tag by copying the chart and updating its version
-            cp "$chart_name-$version.tgz" "$chart_name-latest.tgz"
-            helm push "$chart_name-latest.tgz" oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
             echo "✅ Published $chart_name:$version to GHCR via OCI"
           done
@@ -90,12 +89,9 @@ jobs:
           version=$(grep '^version:' Chart.yaml | awk '{print $2}')
           echo "Main chart version: $version"
 
-          # Push to OCI registry with version tag
+          # Push to OCI registry with version tag (SemVer from Chart.yaml is the
+          # OCI tag; no separate "latest" push — see subchart step above).
           helm push "amazee-ai-$version.tgz" oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-
-          # Also push with latest tag by copying the chart
-          cp "amazee-ai-$version.tgz" "amazee-ai-latest.tgz"
-          helm push "amazee-ai-latest.tgz" oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
 
           echo "✅ Published amazee-ai:$version to GHCR via OCI"
 
