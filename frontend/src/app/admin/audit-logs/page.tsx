@@ -25,6 +25,7 @@ export default function AuditLogsPage() {
     resource_type: [],
     status_code: [],
     user_email: "",
+    referer: "",
   });
 
   const {
@@ -51,6 +52,7 @@ export default function AuditLogsPage() {
     if (filters.status_code?.length)
       params.append("status_code", filters.status_code.join(","));
     if (filters.user_email) params.append("user_email", filters.user_email);
+    if (filters.referer) params.append("referer", filters.referer);
     return params.toString();
   }, [currentPage, filters]);
 

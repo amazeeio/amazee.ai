@@ -2,6 +2,11 @@
 
 import { create } from "zustand";
 
+// Shared in-flight load so concurrent callers await the same request and get
+// the real config (or a genuine null on error), never an ambiguous "still
+// loading" null that callers would misread as a hard failure.
+let inFlightLoad: Promise<Config | null> | null = null;
+
 export interface Config {
   NEXT_PUBLIC_API_URL: string;
   PASSWORDLESS_SIGN_IN: boolean;
@@ -39,34 +44,40 @@ export const useConfig = create<ConfigState>((set, get) => ({
       return state.config; // Return cached config if already loaded successfully
     }
 
-    if (state.loading) {
-      return null; // Return null if already loading
+    if (inFlightLoad) {
+      return inFlightLoad; // Await the existing load instead of a bare null
     }
 
     set({ loading: true, error: null });
 
-    try {
-      const response = await fetch("/api/config");
-      if (!response.ok) {
-        throw new Error("Failed to load configuration");
-      }
+    inFlightLoad = (async () => {
+      try {
+        const response = await fetch("/api/config");
+        if (!response.ok) {
+          throw new Error("Failed to load configuration");
+        }
 
-      const config: Config = await response.json();
-      set({ config, loading: false, error: null, isLoaded: true });
-      return config;
-    } catch (error) {
-      console.error("Error loading configuration:", error);
-      set({
-        config: null,
-        loading: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to load configuration",
-        isLoaded: false,
-      });
-      return null;
-    }
+        const config: Config = await response.json();
+        set({ config, loading: false, error: null, isLoaded: true });
+        return config;
+      } catch (error) {
+        console.error("Error loading configuration:", error);
+        set({
+          config: null,
+          loading: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "Failed to load configuration",
+          isLoaded: false,
+        });
+        return null;
+      } finally {
+        inFlightLoad = null;
+      }
+    })();
+
+    return inFlightLoad;
   },
 
   getApiUrl: () => {
