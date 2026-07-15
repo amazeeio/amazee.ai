@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import Optional
 from datetime import datetime
-from sqlalchemy import distinct, cast, String
+from sqlalchemy import distinct, cast, String, or_
 from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
 from app.schemas.models import (
@@ -31,11 +31,13 @@ async def get_audit_logs(
     from_date: Optional[datetime] = None,
     to_date: Optional[datetime] = None,
     status_code: Optional[str] = None,
+    referer: Optional[str] = None,
 ):
     """
     Retrieve audit logs with optional filtering.
     Only accessible by admin users.
     event_type, resource_type, and status_code can be comma-separated lists for multiple values.
+    referer matches as a substring against both the referer and origin columns.
     """
     if not current_user.is_admin:
         logger.warning(
@@ -69,6 +71,19 @@ async def get_audit_logs(
             query = query.filter(
                 cast(DBAuditLog.details["status_code"], String).in_(status_codes)
             )
+        if referer:
+            # Escape LIKE wildcards so a literal % or _ in the search term
+            # doesn't act as a match-all pattern.
+            escaped = (
+                referer.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            # ponytail: seq scan; add a pg_trgm index if audit table growth makes this slow
+            query = query.filter(
+                or_(
+                    DBAuditLog.referer.ilike(f"%{escaped}%", escape="\\"),
+                    DBAuditLog.origin.ilike(f"%{escaped}%", escape="\\"),
+                )
+            )
 
         # Get total count
         total = query.count()
@@ -92,6 +107,8 @@ async def get_audit_logs(
                 ip_address=log.ip_address,
                 user_agent=log.user_agent,
                 request_source=log.request_source,
+                referer=log.referer,
+                origin=log.origin,
             )
             for log in results
         ]

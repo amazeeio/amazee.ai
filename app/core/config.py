@@ -31,11 +31,9 @@ class Settings(BaseSettings):
     # in backend-start.sh (a FastAPI constructor kwarg does NOT reach uvicorn).
     PUBLIC_PATHS: list[str] = [
         "/health",
-        # /openapi.json is only registered in local (see main.py openapi_url);
-        # it must stay public so the local Swagger UI can fetch the schema. In
-        # deployed envs the route does not exist, so this entry is inert.
-        # (/docs is never registered — docs_url=None — so it is not listed.)
+        # The schema and the Swagger UI at / are the public API docs.
         "/openapi.json",
+        "/",
         "/public/models",
         "/public/models/",
     ]

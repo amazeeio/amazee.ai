@@ -283,7 +283,9 @@ def test_update_region(client, admin_token, test_region):
     assert data["postgres_port"] == update_data["postgres_port"]
 
 
-def test_update_region_legacy_http_url_grandfathered(client, admin_token, test_region, db):
+def test_update_region_legacy_http_url_grandfathered(
+    client, admin_token, test_region, db
+):
     """
     Given a legacy region whose stored litellm_api_url is still http://
     When an admin updates unrelated fields without changing the URL
