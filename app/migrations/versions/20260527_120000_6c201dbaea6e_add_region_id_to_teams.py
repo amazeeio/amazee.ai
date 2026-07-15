@@ -25,17 +25,39 @@ def upgrade():
         ),
     )
 
-    # 2. Backfill from team_regions: prefer non-dedicated regions, then any region
+    # 2. Backfill region_id. Prefer the active region where the team actually
+    #    has the most keys (its real operational region); only fall back to the
+    #    earliest non-dedicated team_regions association when a team has no keys.
+    #
+    #    Historically every team was seeded with ALL public regions at creation,
+    #    so the old "earliest association" heuristic collapsed almost every team
+    #    onto whichever public region happened to be inserted first — not where
+    #    its keys live. Keying off actual key activity keeps region_id truthful,
+    #    which matters because team.region_id now drives the team's visible
+    #    region and LiteLLM member-sync target.
     op.execute(
         """
         UPDATE teams
-        SET region_id = (
-            SELECT tr.region_id
-            FROM team_regions tr
-            JOIN regions r ON r.id = tr.region_id
-            WHERE tr.team_id = teams.id
-            ORDER BY r.is_dedicated ASC, tr.created_at ASC
-            LIMIT 1
+        SET region_id = COALESCE(
+            (
+                SELECT k.region_id
+                FROM ai_tokens k
+                JOIN regions kr ON kr.id = k.region_id
+                WHERE k.team_id = teams.id
+                  AND k.region_id IS NOT NULL
+                  AND kr.is_active = true
+                GROUP BY k.region_id
+                ORDER BY count(*) DESC, k.region_id ASC
+                LIMIT 1
+            ),
+            (
+                SELECT tr.region_id
+                FROM team_regions tr
+                JOIN regions r ON r.id = tr.region_id
+                WHERE tr.team_id = teams.id
+                ORDER BY r.is_dedicated ASC, tr.created_at ASC
+                LIMIT 1
+            )
         )
         WHERE region_id IS NULL
         """
