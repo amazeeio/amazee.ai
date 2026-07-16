@@ -1,0 +1,44 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "bootstrap-sha": "9f1e6c5270aee6ecb44da6f19ee4d03f6b619823",
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "package-name": "amazee-ai",
+      "include-component-in-tag": false,
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        "app/__version__.py",
+        "helm/Chart.yaml",
+        "helm/charts/backend/Chart.yaml",
+        "helm/charts/frontend/Chart.yaml",
+        {
+          "type": "json",
+          "path": "frontend/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "frontend/package-lock.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "frontend/package-lock.json",
+          "jsonpath": "$.packages[\"\"].version"
+        }
+      ],
+      "changelog-sections": [
+        { "type": "feat", "section": "Features" },
+        { "type": "fix", "section": "Bug Fixes" },
+        { "type": "perf", "section": "Performance Improvements" },
+        { "type": "refactor", "section": "Code Refactoring" },
+        { "type": "docs", "section": "Documentation" },
+        { "type": "build", "section": "Build System", "hidden": true },
+        { "type": "chore", "section": "Miscellaneous Chores", "hidden": true },
+        { "type": "ci", "section": "Continuous Integration", "hidden": true },
+        { "type": "test", "section": "Tests", "hidden": true }
+      ]
+    }
+  }
+}

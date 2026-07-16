@@ -1,8 +1,8 @@
 name: backend
 description: Backend API service for amazee.ai
-version: 2.1.0
+version: 2.1.0 # x-release-please-version
 apiVersion: v2
-appVersion: "2.1.0"
+appVersion: "2.1.0" # x-release-please-version
 keywords:
   - api
   - fastapi

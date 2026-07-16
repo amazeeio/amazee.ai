@@ -1,0 +1,43 @@
+name: Release Please
+
+on:
+  push:
+    branches:
+      - dev
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # push the release PR branch, create the vX.Y.Z tag and GitHub Release
+      pull-requests: write  # open and update the release PR
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - name: Run release-please
+        id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          target-branch: dev
+
+  # Releases created with the default GITHUB_TOKEN never trigger other
+  # workflows (GitHub blocks recursive workflow runs), so a
+  # `release: published` trigger on the helm workflow would never fire.
+  # Publish the charts by calling that workflow directly instead — exactly
+  # once per release.
+  publish-helm-charts:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/helm-package-publish.yml
+    with:
+      publish: true
+    secrets: inherit
