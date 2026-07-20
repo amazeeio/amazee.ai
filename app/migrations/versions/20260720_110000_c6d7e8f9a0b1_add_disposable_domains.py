@@ -10,16 +10,14 @@ after deploy, before the first cron run.
 """
 
 from pathlib import Path
-from typing import Sequence, Union
+from typing import Union
 
 from alembic import op
 import sqlalchemy as sa
 
-# revision identifiers, used by Alembic.
+# revision identifiers, used by Alembic (read via module reflection).
 revision: str = "c6d7e8f9a0b1"
 down_revision: Union[str, None] = "b5c6d7e8f9a0"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
 
 # app/migrations/versions/<this> -> parents[2] == app/
 _BASELINE_FILE = (
