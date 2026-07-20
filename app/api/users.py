@@ -50,6 +50,7 @@ from app.core.security import (
 from app.core.email import normalize_email_for_lookup
 from app.core.roles import UserRole
 from app.services.litellm import LiteLLMService
+from app.services.disposable_domains import assert_email_domain_allowed
 from app.services.hubspot import HubSpotService
 from datetime import datetime, UTC
 import logging
@@ -805,6 +806,10 @@ async def create_user(
 
 
 async def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
+    # Defense-in-depth: reject disposable / dynamic-DNS domains at the narrowest
+    # user-creation choke point (covers create_user, sign-in auto-provision, trial).
+    assert_email_domain_allowed(user.email)
+
     limit_service = get_limit_service(db)
     if settings.ENABLE_LIMITS and user.team_id is not None:
         limit_service.check_team_user_limit(user.team_id)

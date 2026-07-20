@@ -721,3 +721,19 @@ class DBTeamSpendPeriodKey(Base):
             sqlite_where=text("key_id IS NULL"),
         ),
     )
+
+
+class DBSignupEvent(Base):
+    """Append-only log of anonymous signup attempts, used for per-IP velocity
+    limiting (trial-account abuse protection, moad #620). Not tied to a user/team
+    so it can be recorded before (and independently of) account creation."""
+
+    __tablename__ = "signup_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ip_address = Column(String, nullable=True, index=True)
+    email = Column(String, nullable=True)
+    endpoint = Column(String, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), default=func.now(), nullable=False, index=True
+    )

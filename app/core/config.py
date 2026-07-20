@@ -73,6 +73,33 @@ class Settings(BaseSettings):
     MOAD_DASHBOARD_API_URL: str = os.getenv("MOAD_DASHBOARD_API_URL", "")
     MOAD_DASHBOARD_API_TOKEN: str = os.getenv("MOAD_DASHBOARD_API_TOKEN", "")
     ENABLE_METRICS: bool = os.getenv("ENABLE_METRICS", "false") == "true"
+
+    # --- Trial-account abuse protection (moad #620) ---
+    # Layer 1: disposable / dynamic-DNS email-domain blocking (defense-in-depth;
+    # the backend must not trust callers to have filtered signup emails).
+    ENABLE_DISPOSABLE_EMAIL_BLOCKING: bool = (
+        os.getenv("ENABLE_DISPOSABLE_EMAIL_BLOCKING", "true") == "true"
+    )
+    DISPOSABLE_DOMAINS_URL: str = os.getenv(
+        "DISPOSABLE_DOMAINS_URL",
+        "https://disposable.github.io/disposable-email-domains/domains.txt",
+    )
+    # Extra domains merged with the committed baseline (comma-separated).
+    DISPOSABLE_DOMAINS_EXTRA: str = os.getenv("DISPOSABLE_DOMAINS_EXTRA", "")
+    DISPOSABLE_DOMAINS_REFRESH_HOURS: int = int(
+        os.getenv("DISPOSABLE_DOMAINS_REFRESH_HOURS", "24")
+    )
+
+    # Layer 2: per-IP signup velocity cap (backed by the signup_events table).
+    ENABLE_SIGNUP_VELOCITY_LIMIT: bool = (
+        os.getenv("ENABLE_SIGNUP_VELOCITY_LIMIT", "true") == "true"
+    )
+    SIGNUP_MAX_PER_IP_PER_WINDOW: int = int(
+        os.getenv("SIGNUP_MAX_PER_IP_PER_WINDOW", "5")
+    )
+    SIGNUP_VELOCITY_WINDOW_MINUTES: int = int(
+        os.getenv("SIGNUP_VELOCITY_WINDOW_MINUTES", "60")
+    )
     PROMETHEUS_API_KEY: str = os.getenv("PROMETHEUS_API_KEY", "")
     POOL_PURCHASE_EXPIRY_DAYS: int = int(os.getenv("POOL_PURCHASE_EXPIRY_DAYS", "365"))
     PERIODIC_TOPUP_EXPIRY_DAYS: int = int(
