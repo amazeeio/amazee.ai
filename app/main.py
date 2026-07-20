@@ -70,7 +70,9 @@ async def _refresh_disposable_domains_periodically(interval_seconds: int):
         except asyncio.CancelledError:
             break
         except Exception:  # noqa: BLE001 - a bad refresh must not kill the loop
-            logging.getLogger(__name__).exception("Disposable domain refresh loop error")
+            logging.getLogger(__name__).exception(
+                "Disposable domain refresh loop error"
+            )
 
 
 @asynccontextmanager
@@ -85,7 +87,9 @@ async def lifespan(app: FastAPI):
         try:
             await get_disposable_domain_service().refresh()
         except Exception:  # noqa: BLE001
-            logging.getLogger(__name__).exception("Initial disposable domain load failed")
+            logging.getLogger(__name__).exception(
+                "Initial disposable domain load failed"
+            )
         interval = max(1, settings.DISPOSABLE_DOMAINS_REFRESH_HOURS) * 3600
         refresh_task = asyncio.create_task(
             _refresh_disposable_domains_periodically(interval)

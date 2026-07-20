@@ -71,7 +71,10 @@ def enforce_signup_velocity(
     if recent >= settings.SIGNUP_MAX_PER_IP_PER_WINDOW:
         logger.warning(
             "Signup velocity cap hit: ip=%s recent=%d cap=%d endpoint=%s",
-            ip, recent, settings.SIGNUP_MAX_PER_IP_PER_WINDOW, endpoint,
+            ip,
+            recent,
+            settings.SIGNUP_MAX_PER_IP_PER_WINDOW,
+            endpoint,
         )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,

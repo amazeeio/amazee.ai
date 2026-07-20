@@ -24,7 +24,9 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-_BASELINE_FILE = Path(__file__).resolve().parent.parent / "data" / "disposable_domains_extra.txt"
+_BASELINE_FILE = (
+    Path(__file__).resolve().parent.parent / "data" / "disposable_domains_extra.txt"
+)
 
 
 def _parse_domains(lines: Iterable[str]) -> set[str]:
@@ -82,7 +84,9 @@ class DisposableDomainService:
     def _load_baseline(self) -> None:
         baseline: set[str] = set()
         try:
-            baseline |= _parse_domains(_BASELINE_FILE.read_text(encoding="utf-8").splitlines())
+            baseline |= _parse_domains(
+                _BASELINE_FILE.read_text(encoding="utf-8").splitlines()
+            )
         except FileNotFoundError:
             logger.warning("Disposable baseline file missing at %s", _BASELINE_FILE)
         extra = settings.DISPOSABLE_DOMAINS_EXTRA or ""
@@ -112,12 +116,17 @@ class DisposableDomainService:
             self._loaded_remote = True
             logger.info(
                 "Disposable domains refreshed: %d total (%d upstream + %d baseline)",
-                len(self._domains), len(remote), len(self._baseline),
+                len(self._domains),
+                len(remote),
+                len(self._baseline),
             )
             return True
         except Exception as exc:  # noqa: BLE001 - never let a refresh failure break signups
-            logger.warning("Disposable domain refresh failed (%s); keeping %d domains",
-                           exc, len(self._domains))
+            logger.warning(
+                "Disposable domain refresh failed (%s); keeping %d domains",
+                exc,
+                len(self._domains),
+            )
             return False
         finally:
             if owns_client and client is not None:
@@ -143,7 +152,9 @@ def get_disposable_domain_service() -> DisposableDomainService:
 def assert_email_domain_allowed(email: str) -> None:
     """Raise 422 if the email's domain is a known disposable / dynamic-DNS domain."""
     if get_disposable_domain_service().is_blocked(email):
-        logger.info("Blocked signup for disposable email domain: %s", extract_domain(email))
+        logger.info(
+            "Blocked signup for disposable email domain: %s", extract_domain(email)
+        )
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Invalid email domain.",
