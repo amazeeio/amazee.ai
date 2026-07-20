@@ -392,9 +392,7 @@ async def sign_in(
         auth_logger.info(f"Creating new user and team for: {sign_in_username}")
         # Only NEW-account creation is velocity-limited; existing-user code logins
         # (the common case, incl. many users behind one corporate IP) are not.
-        enforce_signup_velocity(
-            request, db, email=sign_in_username, endpoint="sign-in"
-        )
+        enforce_signup_velocity(request, db, email=sign_in_username, endpoint="sign-in")
         # First create the team
         team_data = TeamCreate(
             name=f"Team {sign_in_username}",

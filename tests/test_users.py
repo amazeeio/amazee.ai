@@ -1018,9 +1018,7 @@ def test_admin_update_user_rejects_password_fields(client, admin_token, test_use
     assert response.status_code == 422
 
 
-def test_team_admin_cannot_change_is_active(
-    client, team_admin_token, test_team_user
-):
+def test_team_admin_cannot_change_is_active(client, team_admin_token, test_team_user):
     """
     A team admin may manage their own team members but not toggle activation.
 
