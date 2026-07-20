@@ -44,9 +44,10 @@ def test_refresh_seeds_baseline_into_db(db):
     summary = refresh_disposable_domains(db)  # URL="" -> baseline only
     assert summary["baseline"] > 0
     rows = {r[0] for r in db.query(DBDisposableDomain.domain).all()}
-    assert "dynv6.net" in rows
-    assert "kozow.com" in rows
-    assert "baileybridge.org" in rows
+    # set-membership, not URL sanitization — use issubset so CodeQL's
+    # py/incomplete-url-substring-sanitization heuristic doesn't misfire on
+    # `"<host>" in rows`.
+    assert {"dynv6.net", "kozow.com", "baileybridge.org"}.issubset(rows)
 
 
 def test_is_blocked_subdomain_matching(db):
