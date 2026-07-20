@@ -209,10 +209,10 @@ async def subscription_cycle(
                 },
             )
             logger.error(
-                "subscription.cycle sync failed: team_id=%s transaction_id=%s errors=%s",
+                "subscription.cycle sync failed: team_id=%s transaction_id=%s sync_error_count=%s",
                 team.id,
                 request.transaction_id,
-                sync_errors,
+                len(sync_errors) if hasattr(sync_errors, "__len__") else 1,
             )
             raise HTTPException(
                 status_code=502,
