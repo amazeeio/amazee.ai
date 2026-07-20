@@ -85,10 +85,9 @@ class Settings(BaseSettings):
         "https://disposable.github.io/disposable-email-domains/domains.txt",
     )
     # Extra domains merged with the committed baseline (comma-separated).
+    # The blocklist itself lives in the disposable_domains table, repopulated by
+    # the daily refresh cron (scripts/trigger_refresh_disposable_domains_job.py).
     DISPOSABLE_DOMAINS_EXTRA: str = os.getenv("DISPOSABLE_DOMAINS_EXTRA", "")
-    DISPOSABLE_DOMAINS_REFRESH_HOURS: int = int(
-        os.getenv("DISPOSABLE_DOMAINS_REFRESH_HOURS", "24")
-    )
 
     # Layer 2: per-IP signup velocity cap (backed by the signup_events table).
     ENABLE_SIGNUP_VELOCITY_LIMIT: bool = (

@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -58,51 +57,9 @@ class HTTPSRedirectMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-async def _refresh_disposable_domains_periodically(interval_seconds: int):
-    """Background task: keep the disposable-domain list fresh."""
-    from app.services.disposable_domains import get_disposable_domain_service
-
-    service = get_disposable_domain_service()
-    while True:
-        try:
-            await asyncio.sleep(interval_seconds)
-            await service.refresh()
-        except asyncio.CancelledError:
-            break
-        except Exception:  # noqa: BLE001 - a bad refresh must not kill the loop
-            logging.getLogger(__name__).exception(
-                "Disposable domain refresh loop error"
-            )
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Load the disposable-domain list once at startup (baseline is available
-    # immediately; this pulls in the larger upstream list). Never block startup
-    # on a network failure — the service falls back to the committed baseline.
-    refresh_task = None
-    if settings.ENABLE_DISPOSABLE_EMAIL_BLOCKING:
-        from app.services.disposable_domains import get_disposable_domain_service
-
-        try:
-            await get_disposable_domain_service().refresh()
-        except Exception:  # noqa: BLE001
-            logging.getLogger(__name__).exception(
-                "Initial disposable domain load failed"
-            )
-        interval = max(1, settings.DISPOSABLE_DOMAINS_REFRESH_HOURS) * 3600
-        refresh_task = asyncio.create_task(
-            _refresh_disposable_domains_periodically(interval)
-        )
-    try:
-        yield
-    finally:
-        if refresh_task is not None:
-            refresh_task.cancel()
-            try:
-                await refresh_task
-            except asyncio.CancelledError:
-                pass
+    yield
 
 
 app = FastAPI(

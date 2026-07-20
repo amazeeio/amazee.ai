@@ -148,7 +148,7 @@ async def register_team(
     """
     # Defense-in-depth: block disposable / dynamic-DNS admin emails before any
     # team is created (the sign-in auto-provision path creates a team first).
-    assert_email_domain_allowed(team.admin_email)
+    assert_email_domain_allowed(db, team.admin_email)
 
     # Check if team email already exists (case insensitive)
     db_team = (

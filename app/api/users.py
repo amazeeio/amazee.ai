@@ -808,7 +808,7 @@ async def create_user(
 async def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
     # Defense-in-depth: reject disposable / dynamic-DNS domains at the narrowest
     # user-creation choke point (covers create_user, sign-in auto-provision, trial).
-    assert_email_domain_allowed(user.email)
+    assert_email_domain_allowed(db, user.email)
 
     limit_service = get_limit_service(db)
     if settings.ENABLE_LIMITS and user.team_id is not None:

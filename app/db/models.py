@@ -739,3 +739,18 @@ class DBSignupEvent(Base):
     created_at = Column(
         DateTime(timezone=True), default=func.now(), nullable=False, index=True
     )
+
+
+class DBDisposableDomain(Base):
+    """Blocklist of disposable / dynamic-DNS email domains (trial-account abuse
+    protection, moad #620). Populated by the daily refresh cron from a committed
+    baseline merged with the upstream disposable-email-domains list. Signup paths
+    cross-check an email's domain (and its parent domains) against this table."""
+
+    __tablename__ = "disposable_domains"
+
+    domain = Column(String, primary_key=True)  # registrable/apex domain, lowercased
+    source = Column(String, nullable=True)  # "baseline" | "upstream"
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

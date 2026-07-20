@@ -539,7 +539,7 @@ async def validate_email(
         )
 
     # Block disposable / dynamic-DNS domains before we even send an OTP.
-    assert_email_domain_allowed(email)
+    assert_email_domain_allowed(db, email)
 
     send_validation_code(email, db)
     return {"message": "Validation code has been generated and sent"}
