@@ -55,6 +55,7 @@ def upgrade():
                 FROM team_regions tr
                 JOIN regions r ON r.id = tr.region_id
                 WHERE tr.team_id = teams.id
+                  AND r.is_active = true
                 ORDER BY r.is_dedicated ASC, tr.created_at ASC
                 LIMIT 1
             )
