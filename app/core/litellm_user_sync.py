@@ -424,7 +424,7 @@ async def sync_delete_user_across_regions(
         )
     except Exception:
         _log_sync_event(
-            "warning",
+            "error",
             "remove_team_member_before_delete_failed",
             region_id=region.id,
             region=region.name,
