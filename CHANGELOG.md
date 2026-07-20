@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Stripe Processing**: Harden event handling and idempotency for budget and subscription flows (#562)
 - **Budget Enforcement**: Block requests from zero-budget pool teams/keys and tighten budget validation (#562)
+- **Billing Sync Recovery**: Recover from LiteLLM sync failures in top-up and `/cycle` flows (#617)
+
+### Changed
+
+- **Missing Models Check**: Switch missing-models monitoring to a daily check (#623)
+
+### Dependencies
+
+- Bump `ws` (frontend) (#624)
 
 ## 0.2.0 - 2026-05-28
 
