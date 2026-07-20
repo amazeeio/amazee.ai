@@ -541,6 +541,10 @@ async def validate_email(
     # Block disposable / dynamic-DNS domains before we even send an OTP.
     assert_email_domain_allowed(db, email)
 
+    # Cap OTP sends per IP: this endpoint triggers an email, so an unlimited
+    # loop from one client could be used to spam arbitrary addresses.
+    enforce_signup_velocity(request, db, email=email, endpoint="validate-email")
+
     send_validation_code(email, db)
     return {"message": "Validation code has been generated and sent"}
 

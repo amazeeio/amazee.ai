@@ -68,6 +68,13 @@ def enforce_signup_velocity(
     db.add(DBSignupEvent(ip_address=ip, email=email, endpoint=endpoint))
     db.commit()
 
+    # NOTE: the count above and the insert here are not atomic, so the cap is a
+    # soft limit, not a hard one. Under a burst of concurrent requests from one
+    # IP, several can observe recent == cap - 1 before any commits, letting a
+    # handful through at the boundary. This is acceptable for abuse mitigation
+    # (impact is bounded to a few extra signups) and is the trade-off of a
+    # DB-backed limiter without Redis / SELECT ... FOR UPDATE. Do not assume this
+    # blocks exactly SIGNUP_MAX_PER_IP_PER_WINDOW attempts.
     if recent >= settings.SIGNUP_MAX_PER_IP_PER_WINDOW:
         logger.warning(
             "Signup velocity cap hit: ip=%s recent=%d cap=%d endpoint=%s",
@@ -80,3 +87,27 @@ def enforce_signup_velocity(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many signup attempts from this network. Please try again later.",
         )
+
+
+def prune_signup_events(db: Session) -> int:
+    """Delete signup_events older than the retention window. Returns rows removed.
+
+    The table is append-only and grows one row per signup attempt, so under
+    sustained abuse (the scenario this feature targets) it would accumulate
+    indefinitely without cleanup. Only recent rows matter for the velocity
+    query, so anything older than SIGNUP_EVENTS_RETENTION_DAYS can be dropped.
+    Intended to run from the daily cron alongside the disposable-domain refresh.
+    """
+    cutoff = datetime.now(UTC) - timedelta(days=settings.SIGNUP_EVENTS_RETENTION_DAYS)
+    deleted = (
+        db.query(DBSignupEvent)
+        .filter(DBSignupEvent.created_at < cutoff)
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    logger.info(
+        "Pruned %d signup_events older than %d day(s)",
+        deleted,
+        settings.SIGNUP_EVENTS_RETENTION_DAYS,
+    )
+    return deleted

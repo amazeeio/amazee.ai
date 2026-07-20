@@ -99,6 +99,11 @@ class Settings(BaseSettings):
     SIGNUP_VELOCITY_WINDOW_MINUTES: int = int(
         os.getenv("SIGNUP_VELOCITY_WINDOW_MINUTES", "60")
     )
+    # Retention for the append-only signup_events table; rows older than this are
+    # removed by the daily prune cron so the table can't grow without bound.
+    SIGNUP_EVENTS_RETENTION_DAYS: int = int(
+        os.getenv("SIGNUP_EVENTS_RETENTION_DAYS", "7")
+    )
     PROMETHEUS_API_KEY: str = os.getenv("PROMETHEUS_API_KEY", "")
     POOL_PURCHASE_EXPIRY_DAYS: int = int(os.getenv("POOL_PURCHASE_EXPIRY_DAYS", "365"))
     PERIODIC_TOPUP_EXPIRY_DAYS: int = int(

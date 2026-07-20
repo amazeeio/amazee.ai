@@ -1,5 +1,6 @@
 """Tests for per-IP signup velocity limiting (moad #620, Layer 2)."""
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -7,7 +8,11 @@ from fastapi import HTTPException
 
 from app.core.config import settings
 from app.db.models import DBSignupEvent
-from app.services.signup_velocity import client_ip, enforce_signup_velocity
+from app.services.signup_velocity import (
+    client_ip,
+    enforce_signup_velocity,
+    prune_signup_events,
+)
 
 
 def _req(ip):
@@ -71,3 +76,21 @@ def test_velocity_no_ip_is_not_limited(db, monkeypatch):
             _req(None), db, endpoint="t"
         )  # unknown IP: skip, never raise
     assert db.query(DBSignupEvent).count() == 0
+
+
+def test_prune_removes_only_old_rows(db, monkeypatch):
+    monkeypatch.setattr(settings, "SIGNUP_EVENTS_RETENTION_DAYS", 7)
+    now = datetime.now(UTC)
+    fresh = DBSignupEvent(ip_address="1.1.1.1", endpoint="t")
+    fresh.created_at = now - timedelta(days=1)
+    old = DBSignupEvent(ip_address="2.2.2.2", endpoint="t")
+    old.created_at = now - timedelta(days=10)
+    db.add_all([fresh, old])
+    db.commit()
+
+    deleted = prune_signup_events(db)
+
+    assert deleted == 1
+    remaining = db.query(DBSignupEvent).all()
+    assert len(remaining) == 1
+    assert remaining[0].ip_address == "1.1.1.1"
