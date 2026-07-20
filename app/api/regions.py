@@ -470,6 +470,34 @@ async def _associate_team_with_region(
             detail="Failed to bootstrap team in LiteLLM",
         )
 
+    # The region change succeeded end-to-end. Drop the previous primary
+    # region's association so team_regions stays consistent with
+    # team.region_id — otherwise the stale row would trip the
+    # "already associated" guard and permanently block ever switching the
+    # team back to that region. Best-effort: the primary change is already
+    # committed and synced, so a cleanup failure must not fail the request.
+    if previous_region_id is not None and previous_region_id != region_id:
+        try:
+            stale_association = (
+                db.query(DBTeamRegion)
+                .filter(
+                    DBTeamRegion.team_id == team_id,
+                    DBTeamRegion.region_id == previous_region_id,
+                )
+                .first()
+            )
+            if stale_association is not None:
+                db.delete(stale_association)
+                db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Failed to remove stale team-region association after primary "
+                "region change (team_id=%s, previous_region_id=%s)",
+                team_id,
+                previous_region_id,
+            )
+
     return {"message": "Team associated with region successfully"}
 
 
