@@ -45,6 +45,7 @@ from app.schemas.models import (
     TeamUpdate,
     TeamWithUsers,
 )
+from app.services.disposable_domains import assert_email_domain_allowed
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -145,6 +146,10 @@ async def register_team(
     """
     Register a new team. Requires authentication.
     """
+    # Defense-in-depth: block disposable / dynamic-DNS admin emails before any
+    # team is created (the sign-in auto-provision path creates a team first).
+    assert_email_domain_allowed(db, team.admin_email)
+
     # Check if team email already exists (case insensitive)
     db_team = (
         db.query(DBTeam)

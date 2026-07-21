@@ -19,6 +19,14 @@ environments:
         schedule: "0 5 1 * *"
         command: python scripts/trigger_trial_recon_job.py
         service: backend
+      - name: refresh-disposable-domains
+        schedule: "0 2 * * *"
+        command: python scripts/trigger_refresh_disposable_domains_job.py
+        service: backend
+      - name: prune-signup-events
+        schedule: "30 2 * * *"
+        command: python scripts/trigger_prune_signup_events_job.py
+        service: backend
     routes:
       - backend:
         - api.amazee.ai:
@@ -49,6 +57,14 @@ environments:
       - name: monitor-trial-users
         schedule: "0 5 1 * *"
         command: python scripts/trigger_trial_recon_job.py
+        service: backend
+      - name: refresh-disposable-domains
+        schedule: "0 2 * * *"
+        command: python scripts/trigger_refresh_disposable_domains_job.py
+        service: backend
+      - name: prune-signup-events
+        schedule: "30 2 * * *"
+        command: python scripts/trigger_prune_signup_events_job.py
         service: backend
 
 tasks:
