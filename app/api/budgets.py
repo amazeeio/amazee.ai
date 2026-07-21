@@ -376,7 +376,24 @@ async def purchase_pool_budget(
                 detail="A purchase with this stripe_payment_id already exists",
             )
         # Prior attempt was sync_failed — clean up the stale records so the
-        # full purchase flow runs fresh and commits atomically.
+        # full purchase flow runs fresh and commits atomically. Also remove any
+        # lingering topup ledger entry for this stripe_payment_id: deleting the
+        # payment only SET NULLs the ledger's source_payment_id (FK ondelete),
+        # so the ledger row would otherwise survive and block the retry via the
+        # duplicate guard / unique constraint (issue #617A).
+        stale_ledger_entries = (
+            db.query(DBPeriodicBudgetLedgerEntry)
+            .filter(
+                DBPeriodicBudgetLedgerEntry.team_id == team_id,
+                DBPeriodicBudgetLedgerEntry.region_id == region_id,
+                DBPeriodicBudgetLedgerEntry.entry_type == "topup",
+                DBPeriodicBudgetLedgerEntry.stripe_payment_id
+                == purchase.stripe_payment_id,
+            )
+            .all()
+        )
+        for stale_entry in stale_ledger_entries:
+            db.delete(stale_entry)
         db.delete(matching_payment)
         db.delete(existing_purchase)
         db.flush()
@@ -647,14 +664,17 @@ async def purchase_periodic_topup(
                     region_id,
                     str(rollback_exc),
                 )
-        # Top-up purchase failed to reach LiteLLM; do not keep allocatable
-        # balance in the periodic ledger for this failed API purchase.
+        # Top-up purchase failed to reach LiteLLM. Delete the ledger entry
+        # rather than deactivating it (issue #617A): a leftover row — even
+        # inactive — permanently blocks a retry with the same
+        # stripe_payment_id, because the duplicate guards above and in
+        # add_topup_entry match on stripe_payment_id with no is_active filter,
+        # and the unique constraint (team_id, region_id, entry_type,
+        # stripe_payment_id) would reject a fresh insert anyway. Audit
+        # visibility of the failed attempt is preserved on payment_record
+        # (sync_failed + error_log), which the retry paths reuse.
         if topup_entry is not None:
-            # Keep audit visibility but ensure failed top-up cannot contribute
-            # to future allocatable balance.
-            topup_entry.is_active = False
-            topup_entry.consumed_cents = topup_entry.amount_cents
-            db.add(topup_entry)
+            db.delete(topup_entry)
             db.flush()
         payment_record.sync_status = "sync_failed"
         payment_record.error_log = (
