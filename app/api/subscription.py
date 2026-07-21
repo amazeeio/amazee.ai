@@ -183,6 +183,42 @@ async def subscription_cycle(
             source_payment_id=payment_id,
         )
 
+        # A LiteLLM sync failure is collected into sync_errors rather than
+        # raised (see apply_billing_cycle_for_team), and the payment is stamped
+        # sync_failed. If we returned 200 here the caller (MOAD's Stripe webhook)
+        # would treat the cycle as applied and never retry, silently leaving the
+        # team's budget un-provisioned until the next monthly cycle (issue
+        # #617B). Return a non-2xx so MOAD retries; the payment stays in a
+        # resubmittable sync_failed state (the idempotency guard only
+        # short-circuits on sync_status == "success"), so a re-driven cycle
+        # re-applies the budget.
+        if sync_errors:
+            _write_audit_log(
+                db,
+                "subscription.cycle",
+                "cycle",
+                str(team.id),
+                502,
+                {
+                    "transaction_id": request.transaction_id,
+                    "budget_cents": request.budget_cents,
+                    "region_id": request.region_id,
+                    "is_first_cycle": is_first_cycle,
+                    "sync_errors": sync_errors,
+                    "outcome": "sync_failed",
+                },
+            )
+            logger.error(
+                "subscription.cycle sync failed: team_id=%s transaction_id=%s sync_error_count=%s",
+                team.id,
+                request.transaction_id,
+                len(sync_errors) if hasattr(sync_errors, "__len__") else 1,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="LiteLLM sync failed during subscription cycle; retry",
+            )
+
         _write_audit_log(
             db,
             "subscription.cycle",

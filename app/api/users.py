@@ -21,7 +21,7 @@ from app.db.database import get_db
 from app.core.dependencies import get_limit_service
 from app.schemas.models import (
     User,
-    UserUpdate,
+    AdminUserUpdate,
     UserCreate,
     TeamOperation,
     UserAdminRegionResponse,
@@ -50,6 +50,7 @@ from app.core.security import (
 from app.core.email import normalize_email_for_lookup
 from app.core.roles import UserRole
 from app.services.litellm import LiteLLMService
+from app.services.disposable_domains import assert_email_domain_allowed
 from app.services.hubspot import HubSpotService
 from datetime import datetime, UTC
 import logging
@@ -805,6 +806,10 @@ async def create_user(
 
 
 async def _create_user_in_db(user: UserCreate, db: Session) -> DBUser:
+    # Defense-in-depth: reject disposable / dynamic-DNS domains at the narrowest
+    # user-creation choke point (covers create_user, sign-in auto-provision, trial).
+    assert_email_domain_allowed(db, user.email)
+
     limit_service = get_limit_service(db)
     if settings.ENABLE_LIMITS and user.team_id is not None:
         limit_service.check_team_user_limit(user.team_id)
@@ -899,7 +904,7 @@ async def get_user(
 )
 async def update_user(
     user_id: int,
-    user_update: UserUpdate,
+    user_update: AdminUserUpdate,
     current_user: DBUser = Depends(get_current_user_from_auth),
     db: Session = Depends(get_db),
 ):
@@ -924,6 +929,15 @@ async def update_user(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Team members cannot be made administrators",
             )
+
+    # Only system admins may change a user's activation status (mirrors the
+    # is_admin guard above). Team admins manage membership/role, not whether an
+    # account is active.
+    if user_update.is_active is not None and not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action",
+        )
 
     previous_email = db_user.email
     for key, value in user_update.model_dump(exclude_unset=True).items():
@@ -1072,7 +1086,7 @@ async def add_user_to_team(
 @router.post(
     "/{user_id}/remove-from-team",
     response_model=User,
-    dependencies=[Depends(get_role_min_system_admin)],
+    dependencies=[Depends(get_role_min_team_admin)],
 )
 async def remove_user_from_team(
     user_id: int,
@@ -1080,11 +1094,20 @@ async def remove_user_from_team(
     db: Session = Depends(get_db),
 ):
     """
-    Remove a user from a team. Accessible by admin users.
+    Remove a user from a team. Accessible by system admins or team admins for
+    members of their own team.
     """
     db_user = db.query(DBUser).filter(DBUser.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    # Team admins may only remove members of their own team (mirrors
+    # update_user_role); system admins are unrestricted.
+    if not current_user.is_admin and db_user.team_id != current_user.team_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to perform this action",
+        )
 
     # Check if user is a member of a team
     if db_user.team_id is None:
@@ -1092,6 +1115,25 @@ async def remove_user_from_team(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User is not a member of any team",
         )
+
+    # Don't orphan a team: block removing its last remaining team admin (a team
+    # admin can now remove members, including themselves). Promote another admin
+    # first.
+    if db_user.role == UserRole.TEAM_ADMIN:
+        other_admins = (
+            db.query(DBUser)
+            .filter(
+                DBUser.team_id == db_user.team_id,
+                DBUser.id != db_user.id,
+                DBUser.role == UserRole.TEAM_ADMIN,
+            )
+            .count()
+        )
+        if other_admins == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot remove the last team admin from the team",
+            )
 
     # Remove user from team
     previous_team_id = db_user.team_id

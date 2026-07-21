@@ -863,31 +863,78 @@ def test_remove_user_not_in_team(client, admin_token, test_user):
     assert "User is not a member of any team" in response.json()["detail"]
 
 
-def test_team_admin_cannot_remove_user_from_team(
-    client, team_admin_token, test_team_user
-):
+def test_team_admin_can_remove_same_team_user(client, team_admin_token, test_team_user):
     """
-    Test that a team admin cannot remove a user from their team.
+    Test that a team admin can remove a member of their own team.
 
-    GIVEN: User A is a member of Team 1
-    WHEN: a team admin tries to remove the user from the team
-    THEN: A 403 - Forbidden is returned
+    GIVEN: User A and a team admin are members of Team 1
+    WHEN: the team admin removes User A from the team
+    THEN: A 200 is returned and the user is no longer in the team
     """
     response = client.post(
         f"/users/{test_team_user.id}/remove-from-team",
         headers={"Authorization": f"Bearer {team_admin_token}"},
     )
+    assert response.status_code == 200
+    assert response.json()["team_id"] is None
+
+
+def test_team_admin_cannot_remove_other_team_user(
+    client, db, team_admin_token, test_team_user
+):
+    """
+    Test that a team admin cannot remove a user from a different team.
+
+    GIVEN: User B belongs to Team 2, a team admin belongs to Team 1
+    WHEN: the team admin tries to remove User B
+    THEN: A 403 - Forbidden is returned and User B stays in Team 2
+    """
+    other_team = DBTeam(
+        name="Other Team",
+        admin_email="other-team@example.com",
+        created_at=datetime.now(UTC),
+    )
+    db.add(other_team)
+    db.commit()
+    db.refresh(other_team)
+    other_user = DBUser(
+        email="other-team-user@example.com",
+        hashed_password=get_password_hash("password123"),
+        is_active=True,
+        is_admin=False,
+        role="key_creator",
+        team_id=other_team.id,
+        created_at=datetime.now(UTC),
+    )
+    db.add(other_user)
+    db.commit()
+    db.refresh(other_user)
+
+    response = client.post(
+        f"/users/{other_user.id}/remove-from-team",
+        headers={"Authorization": f"Bearer {team_admin_token}"},
+    )
     assert response.status_code == 403
     assert "Not authorized to perform this action" in response.json()["detail"]
 
-    # Verify user is still in the team
-    response = client.get(
-        f"/users/{test_team_user.id}",
+    db.refresh(other_user)
+    assert other_user.team_id == other_team.id
+
+
+def test_cannot_remove_last_team_admin(client, team_admin_token, test_team_admin):
+    """
+    Removing a team's last team admin would orphan the team, so it is blocked.
+
+    GIVEN: A team whose only admin is the requesting team admin
+    WHEN: they try to remove that admin from the team
+    THEN: A 400 is returned and the admin stays in the team
+    """
+    response = client.post(
+        f"/users/{test_team_admin.id}/remove-from-team",
         headers={"Authorization": f"Bearer {team_admin_token}"},
     )
-    assert response.status_code == 200
-    user_data = response.json()
-    assert user_data["team_id"] == test_team_user.team_id
+    assert response.status_code == 400
+    assert "last team admin" in response.json()["detail"].lower()
 
 
 @patch("httpx.AsyncClient.post", new_callable=AsyncMock)

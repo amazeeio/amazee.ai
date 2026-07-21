@@ -414,6 +414,157 @@ def test_create_periodic_topup_marks_sync_failed_on_litellm_error(
     assert "failed" in (payment.error_log or "").lower()
 
 
+def test_create_periodic_topup_retry_after_sync_failure_succeeds(
+    client, admin_token, db, test_team, test_region
+):
+    """Issue #617A: a top-up whose LiteLLM sync failed must be resubmittable
+    with the same stripe_payment_id. The failed attempt must not leave a ledger
+    entry behind (which would block the retry with a permanent 409)."""
+    test_team.budget_type = "periodic"
+    db.commit()
+
+    stripe_id = f"cs_periodic_retry_{int(time.time() * 1000000)}"
+    payload = {
+        "amount_cents": 5000,
+        "currency": "usd",
+        "purchased_at": "2026-03-13T10:00:00Z",
+        "stripe_payment_id": stripe_id,
+    }
+    url = f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic"
+    headers = {"Authorization": f"Bearer {admin_token}"}
+
+    # First attempt: LiteLLM sync fails -> 502, payment stamped sync_failed.
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(side_effect=Exception("region down"))
+        mock_instance.update_team_budget = AsyncMock()
+        first = client.post(url, json=payload, headers=headers)
+    assert first.status_code == 502
+
+    # The failed ledger entry must not linger — it would otherwise trip the
+    # duplicate guard / unique constraint on the retry.
+    leftover = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.stripe_payment_id == stripe_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "topup",
+        )
+        .all()
+    )
+    assert leftover == []
+
+    # Second attempt with the SAME stripe_payment_id: LiteLLM healthy -> applied.
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 0.0}}
+        )
+        mock_instance.update_team_budget = AsyncMock()
+        second = client.post(url, json=payload, headers=headers)
+    assert second.status_code == 201, second.text
+
+    entry = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.stripe_payment_id == stripe_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "topup",
+        )
+        .one()
+    )
+    assert entry.is_active is True
+    assert entry.amount_cents == 5000
+    payment = (
+        db.query(DBPeriodicPayment)
+        .filter(DBPeriodicPayment.stripe_payment_id == stripe_id)
+        .first()
+    )
+    assert payment.sync_status == "success"
+
+
+def test_pool_purchase_retry_removes_lingering_ledger_entry(
+    client, admin_token, db, test_team, test_region
+):
+    """Issue #617A: purchase_pool_budget's retry cleanup must delete a lingering
+    topup ledger entry from a prior sync_failed attempt. Deleting the payment
+    only SET NULLs the ledger's source_payment_id (FK ondelete), so without
+    explicit cleanup the ledger row survives and blocks the retry (permanent
+    409)."""
+    test_team.budget_type = "pool"
+    db.commit()
+
+    stripe_id = f"pi_pool_stale_{int(time.time() * 1000000)}"
+
+    # Simulate the rows a prior sync_failed pool purchase would leave behind.
+    payment = DBPeriodicPayment(
+        team_id=test_team.id,
+        stripe_payment_id=stripe_id,
+        amount_cents=5000,
+        currency="usd",
+        payment_type="topup",
+        status="completed",
+        sync_status="sync_failed",
+        payment_date=datetime.now(UTC),
+    )
+    db.add(payment)
+    db.flush()
+    db.add(
+        DBPoolPurchase(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            amount_cents=5000,
+            currency="usd",
+            purchased_at=datetime.now(UTC),
+            stripe_payment_id=stripe_id,
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="topup",
+            source_payment_id=payment.id,
+            stripe_payment_id=stripe_id,
+            amount_cents=5000,
+            consumed_cents=5000,
+            purchased_at=datetime.now(UTC),
+            is_active=False,
+        )
+    )
+    db.commit()
+
+    with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+        mock_instance = mock_litellm.return_value
+        mock_instance.get_team_info = AsyncMock(
+            return_value={"team_info": {"spend": 0.0}}
+        )
+        mock_instance.update_team_budget = AsyncMock()
+        response = client.post(
+            f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+            json={
+                "amount_cents": 5000,
+                "currency": "usd",
+                "purchased_at": "2026-03-13T10:00:00Z",
+                "stripe_payment_id": stripe_id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+
+    assert response.status_code == 201, response.text
+
+    entries = (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.stripe_payment_id == stripe_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "topup",
+        )
+        .all()
+    )
+    # The stale row is gone; exactly one active entry from the fresh run remains.
+    assert len(entries) == 1
+    assert entries[0].is_active is True
+
+
 def test_create_periodic_topup_expiry_anchors_to_last_topup_date(
     client, admin_token, db, test_team, test_region
 ):

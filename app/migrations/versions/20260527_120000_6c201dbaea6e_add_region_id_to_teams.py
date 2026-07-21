@@ -1,7 +1,7 @@
 """add region_id to teams
 
 Revision ID: 6c201dbaea6e
-Revises: a3f2b1c0d9e8
+Revises: c6d7e8f9a0b1
 Create Date: 2026-05-27 12:00:00.000000
 """
 
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "6c201dbaea6e"
-down_revision = "a3f2b1c0d9e8"
+down_revision = "c6d7e8f9a0b1"
 branch_labels = None
 depends_on = None
 
