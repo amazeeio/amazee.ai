@@ -10,6 +10,14 @@ os.environ["AMAZEEAI_JWT_SECRET"] = "test-secret-key-for-tests-0123456789abcdef"
 # Swagger route and break tests. Per-test prod checks set settings.ENV_SUFFIX
 # directly (see tests/test_security.py), not this env var.
 os.environ["ENV_SUFFIX"] = "local"
+# Tests must not hit the network on app startup. Empty URL makes the disposable
+# domain service use only the committed baseline (which includes the abuse
+# domains under test) instead of fetching the upstream list.
+os.environ["DISPOSABLE_DOMAINS_URL"] = ""
+# The per-IP signup velocity cap is a global rate limit; leave it off for the
+# suite (like ENABLE_LIMITS) so it can't throttle unrelated tests. Tests that
+# exercise it enable it explicitly via monkeypatch.
+os.environ["ENABLE_SIGNUP_VELOCITY_LIMIT"] = "false"
 
 import pytest
 from fastapi.testclient import TestClient
