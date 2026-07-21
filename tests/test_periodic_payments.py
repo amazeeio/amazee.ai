@@ -373,6 +373,46 @@ def test_subscription_cycle_endpoint_first_cycle(
     "app.api.subscription.capture_periodic_team_spend_for_period",
     new_callable=AsyncMock,
 )
+def test_subscription_cycle_endpoint_returns_5xx_on_sync_errors(
+    mock_capture,
+    mock_sync_ledger,
+    mock_apply_cycle,
+    mock_record_payment,
+    client,
+    admin_token,
+    test_team,
+    test_region,
+):
+    """Issue #617B: when apply_billing_cycle_for_team reports LiteLLM sync
+    errors, /cycle must return a non-2xx so MOAD's Stripe webhook retries —
+    not a silent 200 that strands the team's budget until the next cycle."""
+    mock_apply_cycle.return_value = [
+        "Failed to update team 1 budget in region test: LiteLLM down"
+    ]
+    mock_record_payment.return_value = 789
+
+    response = client.post(
+        "/billing/subscription/cycle",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_cycle_sync_fail",
+            "budget_cents": 10000,
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+        },
+    )
+
+    assert response.status_code == 502
+    mock_apply_cycle.assert_awaited_once()
+
+
+@patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.api.subscription.apply_billing_cycle_for_team", new_callable=AsyncMock)
+@patch("app.api.subscription._sync_periodic_ledger_for_period", new_callable=AsyncMock)
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
 def test_subscription_cycle_endpoint_existing_cycle_runs_snapshot_and_ledger(
     mock_capture,
     mock_sync_ledger,
