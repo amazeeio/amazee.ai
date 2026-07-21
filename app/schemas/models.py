@@ -61,6 +61,23 @@ class UserUpdate(BaseModel):
     new_password: Optional[str] = None
 
 
+class AdminUserUpdate(BaseModel):
+    """Fields an admin/team-admin may change via PUT /users/{id}.
+
+    Deliberately excludes password fields: this route never applied them (it
+    silently dropped current_password/new_password). extra='forbid' now rejects
+    them with a 422 instead of pretending to succeed. Self-service password
+    changes go through /auth/me.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: Optional[CaseInsensitiveEmailStr] = None
+    is_admin: Optional[bool] = None
+    is_active: Optional[bool] = None
+    receive_marketing_updates: Optional[bool] = None
+
+
 class User(UserBase):
     id: int
     is_active: bool

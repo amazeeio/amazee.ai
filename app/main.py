@@ -30,7 +30,10 @@ from app.middleware.prometheus import PrometheusMiddleware
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.docs import (
+    get_swagger_ui_html,
+    get_swagger_ui_oauth2_redirect_html,
+)
 from fastapi.openapi.utils import get_openapi
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -232,7 +235,7 @@ async def custom_swagger_ui_html():
 
 @app.get("/oauth2-redirect", include_in_schema=False)
 async def oauth2_redirect():
-    return get_swagger_ui_html(openapi_url="/openapi.json", title="OAuth2 Redirect")
+    return get_swagger_ui_oauth2_redirect_html()
 
 
 def custom_openapi():
