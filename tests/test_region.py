@@ -716,11 +716,11 @@ def test_list_regions_team_member_sees_team_dedicated_regions(
     client, team_admin_token, db, test_region, test_team
 ):
     """
-    Given a team member and a dedicated region associated with their team
+    Given a team member whose team has a dedicated region as its primary region
     When the team member lists regions
-    Then they should see non-dedicated regions plus their team's dedicated regions
+    Then they should see exactly that dedicated region
     """
-    # Create a dedicated region associated with the team
+    # Create a dedicated region and assign it as the team's primary region
     dedicated_region = (
         db.query(DBRegion).filter(DBRegion.name == "team-dedicated-region").first()
     )
@@ -741,11 +741,8 @@ def test_list_regions_team_member_sees_team_dedicated_regions(
         db.commit()
         db.refresh(dedicated_region)
 
-    # Create team-region association
-    from app.db.models import DBTeamRegion
-
-    team_region = DBTeamRegion(team_id=test_team.id, region_id=dedicated_region.id)
-    db.add(team_region)
+    # Set team's primary region to the dedicated region
+    test_team.region_id = dedicated_region.id
     db.commit()
 
     response = client.get(
@@ -754,30 +751,19 @@ def test_list_regions_team_member_sees_team_dedicated_regions(
 
     assert response.status_code == 200
     regions = response.json()
-    assert len(regions) == 2
-    region_names = [r["name"] for r in regions]
-    assert test_region.name in region_names
-    assert "team-dedicated-region" in region_names
+    assert len(regions) == 1
+    assert regions[0]["name"] == "team-dedicated-region"
 
 
 def test_list_regions_team_member_with_only_dedicated_assignment(
     client, team_admin_token, db, test_region, test_team
 ):
     """
-    Given a team where only a dedicated region is assigned
+    Given a team whose primary region is a dedicated region
     When a team member lists regions
-    Then they should only see that explicit assignment
+    Then they should only see that dedicated region
     """
-    from app.db.models import DBTeamRegion
-
-    # Remove the default public association for this team.
-    db.query(DBTeamRegion).filter(
-        DBTeamRegion.team_id == test_team.id,
-        DBTeamRegion.region_id == test_region.id,
-    ).delete()
-    db.commit()
-
-    # Create a dedicated region associated with the team
+    # Create a dedicated region and set it as the team's primary region
     dedicated_region = (
         db.query(DBRegion)
         .filter(DBRegion.name == "team-hidden-public-dedicated")
@@ -800,8 +786,7 @@ def test_list_regions_team_member_with_only_dedicated_assignment(
         db.commit()
         db.refresh(dedicated_region)
 
-    team_region = DBTeamRegion(team_id=test_team.id, region_id=dedicated_region.id)
-    db.add(team_region)
+    test_team.region_id = dedicated_region.id
     db.commit()
 
     response = client.get(
@@ -859,6 +844,7 @@ def test_list_regions_team_member_does_not_see_other_team_dedicated_regions(
 
     team_region = DBTeamRegion(team_id=other_team.id, region_id=dedicated_region.id)
     db.add(team_region)
+    test_team.region_id = test_region.id
     db.commit()
 
     response = client.get(
