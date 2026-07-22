@@ -28,6 +28,7 @@ from app.db.models import (
     DBPrivateAIKey,
     DBProduct,
     DBRegion,
+    DBSpendCap,
     DBTeam,
     DBTeamMetrics,
     DBTeamProduct,
@@ -35,6 +36,7 @@ from app.db.models import (
     DBUser,
 )
 from app.schemas.models import (
+    BudgetType,
     SalesProduct,
     SalesTeam,
     SalesTeamsResponse,
@@ -435,7 +437,12 @@ async def extend_team_trial(team_id: int, db: Session = Depends(get_db)):
     # pool purchase horizon and their spend is governed by the team-level pool
     # budget. Stamping DEFAULT_KEY_DURATION here previously expired paid,
     # in-credit keys mid-period (issue #631).
-    is_pool_team = db_team.requires_pool_purchase_gate
+    #
+    # Detect pool teams by budget_type, NOT by the purchase gate: an ungated
+    # pool team (require_purchase_for_requests=False) is still a pool team and
+    # must be protected too. requires_pool_purchase_gate would let such teams
+    # fall into the trial branch.
+    is_pool_team = db_team.budget_type == BudgetType.POOL
 
     # Update keys for each region
     for region, keys in keys_by_region.items():
@@ -444,12 +451,51 @@ async def extend_team_trial(team_id: int, db: Session = Depends(get_db)):
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
 
+        # Explicit operator per-key caps (DBSpendCap) for this region's keys, so
+        # the pool branch clears only *stale* caps left by the old trial path
+        # and preserves deliberate key caps.
+        key_cap_map: dict[int, float] = {}
+        if is_pool_team and keys:
+            for cap_key_id, cap_value in (
+                db.query(DBSpendCap.key_id, DBSpendCap.max_budget)
+                .filter(
+                    DBSpendCap.scope == "key",
+                    DBSpendCap.region_id == region.id,
+                    DBSpendCap.key_id.isnot(None),
+                    DBSpendCap.max_budget.isnot(None),
+                    DBSpendCap.key_id.in_([k.id for k in keys]),
+                )
+                .all()
+            ):
+                key_cap_map[int(cap_key_id)] = float(cap_value)
+
         # Update each key's duration and budget via LiteLLM
         for key in keys:
             try:
                 if is_pool_team:
-                    # Only extend key life; leave pool budget enforcement
-                    # (team-level max_budget) untouched.
+                    # Extend key life to the pool horizon and clear any stale
+                    # per-key budget so the team-level pool governs spend —
+                    # unless an explicit operator key cap is configured, which
+                    # is preserved. Without clearing, a key previously clobbered
+                    # by the old trial path stays capped at DEFAULT_MAX_SPEND
+                    # even while the pool has credit (issue #631).
+                    configured_cap = key_cap_map.get(key.id)
+                    if configured_cap is None:
+                        await litellm_service.update_key_budget(
+                            litellm_token=key.litellm_token,
+                            budget_duration=None,
+                            max_budget=None,
+                            clear_max_budget=True,
+                            clear_budget_duration=True,
+                            blocked=False,
+                        )
+                    else:
+                        await litellm_service.update_key_budget(
+                            litellm_token=key.litellm_token,
+                            max_budget=configured_cap,
+                            clear_max_budget=False,
+                            blocked=False,
+                        )
                     await litellm_service.update_key_duration(
                         litellm_token=key.litellm_token,
                         duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
