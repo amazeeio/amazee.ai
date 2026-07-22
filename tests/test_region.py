@@ -283,6 +283,41 @@ def test_update_region(client, admin_token, test_region):
     assert data["postgres_port"] == update_data["postgres_port"]
 
 
+def test_update_region_blank_secrets_keep_current(client, admin_token, test_region, db):
+    """
+    Given an existing region
+    When it is updated with explicitly blank/null credential fields
+    Then the stored credentials should remain unchanged
+    """
+    original_password = test_region.postgres_admin_password
+    original_key = test_region.litellm_api_key
+
+    update_data = {
+        "name": test_region.name,
+        "label": test_region.label,
+        "description": "updated description only",
+        "postgres_host": test_region.postgres_host,
+        "postgres_port": test_region.postgres_port,
+        "postgres_admin_user": test_region.postgres_admin_user,
+        "postgres_admin_password": "",
+        "litellm_api_url": test_region.litellm_api_url,
+        "litellm_api_key": None,
+        "is_active": True,
+        "is_dedicated": test_region.is_dedicated,
+    }
+
+    response = client.put(
+        f"/regions/{test_region.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json=update_data,
+    )
+
+    assert response.status_code == 200
+    db.refresh(test_region)
+    assert test_region.postgres_admin_password == original_password
+    assert test_region.litellm_api_key == original_key
+
+
 def test_update_region_legacy_http_url_grandfathered(
     client, admin_token, test_region, db
 ):
