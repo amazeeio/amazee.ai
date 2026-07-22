@@ -613,6 +613,12 @@ def test_list_admin_regions(client, admin_token, db, test_region):
     region_names = [r["name"] for r in regions]
     assert test_region.name in region_names
     assert "inactive-region" in region_names
+    # Admin listing exposes connection identity but never secrets
+    for r in regions:
+        assert "postgres_port" in r
+        assert "postgres_admin_user" in r
+        assert "postgres_admin_password" not in r
+        assert "litellm_api_key" not in r
 
 
 def test_list_admin_regions_non_admin(client, test_token):

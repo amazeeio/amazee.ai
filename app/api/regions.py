@@ -9,7 +9,7 @@ from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
 from app.core.roles import UserRole
 from app.schemas.models import (
-    Region,
+    RegionAdminResponse,
     RegionCreate,
     RegionResponse,
     User,
@@ -123,10 +123,14 @@ async def validate_database_connection(
 
 
 @router.post(
-    "", response_model=Region, dependencies=[Depends(get_role_min_system_admin)]
+    "",
+    response_model=RegionAdminResponse,
+    dependencies=[Depends(get_role_min_system_admin)],
 )
 @router.post(
-    "/", response_model=Region, dependencies=[Depends(get_role_min_system_admin)]
+    "/",
+    response_model=RegionAdminResponse,
+    dependencies=[Depends(get_role_min_system_admin)],
 )
 async def create_region(region: RegionCreate, db: Session = Depends(get_db)):
     # Check if region with this name already exists
@@ -194,7 +198,7 @@ async def list_regions(
 
 @router.get(
     "/admin",
-    response_model=List[Region],
+    response_model=List[RegionAdminResponse],
     dependencies=[Depends(get_role_min_system_admin)],
 )
 async def list_admin_regions(db: Session = Depends(get_db)):
@@ -248,7 +252,7 @@ async def delete_region(region_id: int, db: Session = Depends(get_db)):
 
 @router.put(
     "/{region_id}",
-    response_model=Region,
+    response_model=RegionAdminResponse,
     dependencies=[Depends(get_role_min_system_admin)],
 )
 async def update_region(
