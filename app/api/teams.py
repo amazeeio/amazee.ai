@@ -28,6 +28,7 @@ from app.db.models import (
     DBPrivateAIKey,
     DBProduct,
     DBRegion,
+    DBSpendCap,
     DBTeam,
     DBTeamMetrics,
     DBTeamProduct,
@@ -35,6 +36,7 @@ from app.db.models import (
     DBUser,
 )
 from app.schemas.models import (
+    BudgetType,
     SalesProduct,
     SalesTeam,
     SalesTeamsResponse,
@@ -415,6 +417,18 @@ async def extend_team_trial(team_id: int, db: Session = Depends(get_db)):
     # Get all keys for the team grouped by region
     keys_by_region = get_team_keys_by_region(db, team_id)
 
+    # Pool/top-up teams must not be forced onto the short DEFAULT_KEY_DURATION
+    # trial window or a per-key budget cap. Their key life should track the
+    # pool purchase horizon and their spend is governed by the team-level pool
+    # budget. Stamping DEFAULT_KEY_DURATION here previously expired paid,
+    # in-credit keys mid-period (issue #631).
+    #
+    # Detect pool teams by budget_type, NOT by the purchase gate: an ungated
+    # pool team (require_purchase_for_requests=False) is still a pool team and
+    # must be protected too. requires_pool_purchase_gate would let such teams
+    # fall into the trial branch.
+    is_pool_team = db_team.budget_type == BudgetType.POOL
+
     # Update keys for each region
     for region, keys in keys_by_region.items():
         # Initialize LiteLLM service for this region
@@ -422,16 +436,63 @@ async def extend_team_trial(team_id: int, db: Session = Depends(get_db)):
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
 
+        # Explicit operator per-key caps (DBSpendCap) for this region's keys, so
+        # the pool branch clears only *stale* caps left by the old trial path
+        # and preserves deliberate key caps.
+        key_cap_map: dict[int, float] = {}
+        if is_pool_team and keys:
+            for cap_key_id, cap_value in (
+                db.query(DBSpendCap.key_id, DBSpendCap.max_budget)
+                .filter(
+                    DBSpendCap.scope == "key",
+                    DBSpendCap.region_id == region.id,
+                    DBSpendCap.key_id.isnot(None),
+                    DBSpendCap.max_budget.isnot(None),
+                    DBSpendCap.key_id.in_([k.id for k in keys]),
+                )
+                .all()
+            ):
+                key_cap_map[int(cap_key_id)] = float(cap_value)
+
         # Update each key's duration and budget via LiteLLM
         for key in keys:
             try:
-                await litellm_service.set_key_restrictions(
-                    litellm_token=key.litellm_token,
-                    duration=f"{DEFAULT_KEY_DURATION}d",
-                    budget_duration=f"{DEFAULT_KEY_DURATION}d",
-                    budget_amount=DEFAULT_MAX_SPEND,
-                    rpm_limit=DEFAULT_RPM_PER_KEY,
-                )
+                if is_pool_team:
+                    # Extend key life to the pool horizon and clear any stale
+                    # per-key budget so the team-level pool governs spend —
+                    # unless an explicit operator key cap is configured, which
+                    # is preserved. Without clearing, a key previously clobbered
+                    # by the old trial path stays capped at DEFAULT_MAX_SPEND
+                    # even while the pool has credit (issue #631).
+                    configured_cap = key_cap_map.get(key.id)
+                    if configured_cap is None:
+                        await litellm_service.update_key_budget(
+                            litellm_token=key.litellm_token,
+                            budget_duration=None,
+                            max_budget=None,
+                            clear_max_budget=True,
+                            clear_budget_duration=True,
+                            blocked=False,
+                        )
+                    else:
+                        await litellm_service.update_key_budget(
+                            litellm_token=key.litellm_token,
+                            max_budget=configured_cap,
+                            clear_max_budget=False,
+                            blocked=False,
+                        )
+                    await litellm_service.update_key_duration(
+                        litellm_token=key.litellm_token,
+                        duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
+                    )
+                else:
+                    await litellm_service.set_key_restrictions(
+                        litellm_token=key.litellm_token,
+                        duration=f"{DEFAULT_KEY_DURATION}d",
+                        budget_duration=f"{DEFAULT_KEY_DURATION}d",
+                        budget_amount=DEFAULT_MAX_SPEND,
+                        rpm_limit=DEFAULT_RPM_PER_KEY,
+                    )
             except Exception as e:
                 logger.error(f"Failed to update key {key.id} via LiteLLM: {str(e)}")
                 # Continue with other keys even if one fails
