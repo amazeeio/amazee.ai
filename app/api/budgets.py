@@ -281,6 +281,18 @@ async def _sync_pool_key_effective_budgets(
                         clear_max_budget=False,
                         blocked=False,
                     )
+                if purchased_total > 0:
+                    # A purchase extends the key's expiry to match the credit's
+                    # POOL_PURCHASE_EXPIRY_DAYS shelf life. update_key_budget
+                    # deliberately never touches key duration/expiry, so without
+                    # this the key keeps whatever (possibly short) expiry an
+                    # earlier billing/trial path stamped — letting a paid,
+                    # in-credit key expire mid-period while its balance is
+                    # healthy (issue #631).
+                    await service.update_key_duration(
+                        litellm_token=key.litellm_token,
+                        duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
+                    )
             return None
         except Exception as exc:
             return f"Key {key.id}: {str(exc)}"
