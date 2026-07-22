@@ -461,7 +461,9 @@ class DBAuditLog(Base):
     user_agent = Column(String, nullable=True)
     request_source = Column(String, nullable=True)  # Values: 'frontend', 'api', or None
     referer = Column(String, nullable=True)  # Referer header, query string stripped
-    origin = Column(String, nullable=True)  # Origin header, sanitized (scheme+host+port)
+    origin = Column(
+        String, nullable=True
+    )  # Origin header, sanitized (scheme+host+port)
 
     user = relationship("DBUser", back_populates="audit_logs")
 
@@ -720,4 +722,35 @@ class DBTeamSpendPeriodKey(Base):
             postgresql_where=text("key_id IS NULL"),
             sqlite_where=text("key_id IS NULL"),
         ),
+    )
+
+
+class DBSignupEvent(Base):
+    """Append-only log of anonymous signup attempts, used for per-IP velocity
+    limiting (trial-account abuse protection, moad #620). Not tied to a user/team
+    so it can be recorded before (and independently of) account creation."""
+
+    __tablename__ = "signup_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ip_address = Column(String, nullable=True, index=True)
+    email = Column(String, nullable=True)
+    endpoint = Column(String, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), default=func.now(), nullable=False, index=True
+    )
+
+
+class DBDisposableDomain(Base):
+    """Blocklist of disposable / dynamic-DNS email domains (trial-account abuse
+    protection, moad #620). Populated by the daily refresh cron from a committed
+    baseline merged with the upstream disposable-email-domains list. Signup paths
+    cross-check an email's domain (and its parent domains) against this table."""
+
+    __tablename__ = "disposable_domains"
+
+    domain = Column(String, primary_key=True)  # registrable/apex domain, lowercased
+    source = Column(String, nullable=True)  # "baseline" | "upstream"
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
