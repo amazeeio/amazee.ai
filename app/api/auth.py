@@ -62,6 +62,8 @@ from app.schemas.models import (
 from app.api.teams import register_team
 from app.api.users import _create_user_in_db, get_user_by_email
 from app.core.email import normalize_email_for_lookup
+from app.services.disposable_domains import assert_email_domain_allowed
+from app.services.signup_velocity import enforce_signup_velocity
 
 auth_logger = logging.getLogger(__name__)
 
@@ -323,6 +325,9 @@ async def register(request: Request, user: UserCreate, db: Session = Depends(get
             status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered"
         )
 
+    # New account: apply the per-IP signup velocity cap (self-registration is anonymous).
+    enforce_signup_velocity(request, db, email=user.email, endpoint="register")
+
     db_user = await _create_user_in_db(user, db)
     auth_logger.info(f"Successfully registered new user: {user.email}")
     return db_user
@@ -385,6 +390,9 @@ async def sign_in(
     # If user doesn't exist, create a new user and team
     if not user:
         auth_logger.info(f"Creating new user and team for: {sign_in_username}")
+        # Only NEW-account creation is velocity-limited; existing-user code logins
+        # (the common case, incl. many users behind one corporate IP) are not.
+        enforce_signup_velocity(request, db, email=sign_in_username, endpoint="sign-in")
         # First create the team
         team_data = TeamCreate(
             name=f"Team {sign_in_username}",
@@ -529,6 +537,13 @@ async def validate_email(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid email format: {e}"
         )
+
+    # Block disposable / dynamic-DNS domains before we even send an OTP.
+    assert_email_domain_allowed(db, email)
+
+    # Cap OTP sends per IP: this endpoint triggers an email, so an unlimited
+    # loop from one client could be used to spam arbitrary addresses.
+    enforce_signup_velocity(request, db, email=email, endpoint="validate-email")
 
     send_validation_code(email, db)
     return {"message": "Validation code has been generated and sent"}
@@ -749,6 +764,7 @@ def send_validation_url(email: str) -> None:
 
 @router.post("/generate-trial-access", response_model=TrialAccessResponse)
 async def generate_trial_access(
+    request: Request,
     response: Response,
     db: Session = Depends(get_db),
     limit_service: LimitService = Depends(get_limit_service),
@@ -761,6 +777,10 @@ async def generate_trial_access(
     Returns the private AI key (which includes both LiteLLM token and VectorDB credentials),
     along with user and team information.
     """
+    # Unauthenticated free-key endpoint: cap per-IP request velocity (in addition
+    # to the global AI_TRIAL_MAX_USERS ceiling).
+    enforce_signup_velocity(request, db, endpoint="generate-trial-access")
+
     # Get default region by name and ensure it is active
     region = (
         db.query(DBRegion)

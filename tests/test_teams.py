@@ -848,9 +848,7 @@ def test_remove_user_not_in_team(client, admin_token, test_user):
     assert "User is not a member of any team" in response.json()["detail"]
 
 
-def test_team_admin_can_remove_same_team_user(
-    client, team_admin_token, test_team_user
-):
+def test_team_admin_can_remove_same_team_user(client, team_admin_token, test_team_user):
     """
     Test that a team admin can remove a member of their own team.
 

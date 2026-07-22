@@ -130,7 +130,9 @@ async def test_generate_trial_access(mock_auth_deps, db: Session):
     # Mock Response object
     mock_response = Mock(spec=Response)
 
-    result = await generate_trial_access(mock_response, mock_db, mock_limit_service)
+    result = await generate_trial_access(
+        Mock(), mock_response, mock_db, mock_limit_service
+    )
 
     assert result.user.id == 1
     assert result.team_id == 12
@@ -219,7 +221,7 @@ async def test_generate_trial_access_cleanup_on_key_creation_failure(
     mock_response = Mock(spec=Response)
 
     with pytest.raises(HTTPException) as exc_info:
-        await generate_trial_access(mock_response, mock_db, mock_limit_service)
+        await generate_trial_access(Mock(), mock_response, mock_db, mock_limit_service)
 
     assert exc_info.value.status_code == expected_status
 

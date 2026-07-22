@@ -1,0 +1,61 @@
+# Curated baseline of blocked email domains, merged with the upstream
+# disposable list (https://disposable.github.io/disposable-email-domains/domains.txt)
+# that DisposableDomainService fetches at runtime.
+#
+# This file is the ALWAYS-ON guarantee: even if the upstream fetch fails, these
+# domains stay blocked. Matching is suffix-based, so listing an apex domain
+# (e.g. "dynv6.net") also blocks every subdomain ("*.dynv6.net").
+#
+# Format: one registrable/apex domain per line, lowercase. Blank lines and
+# lines starting with "#" are ignored.
+#
+# Focus: free dynamic-DNS / free-subdomain providers (heavily abused for
+# throwaway signups, and only partially covered by the upstream disposable
+# list), plus specific domains seen abusing the amazee.ai AI trial.
+
+# --- Seen abusing the amazee.ai AI trial (moad #620) ---
+dynv6.net
+kozow.com
+baileybridge.org
+
+# --- Free dynamic-DNS / free-subdomain providers ---
+duckdns.org
+freemyip.com
+mooo.com
+afraid.org
+crabdance.com
+strangled.net
+twilightparadox.com
+us.to
+ignorelist.com
+chickenkiller.com
+# no-ip.com family
+no-ip.com
+no-ip.org
+no-ip.biz
+no-ip.info
+noip.com
+noip.me
+hopto.org
+zapto.org
+sytes.net
+ddns.net
+myftp.biz
+myftp.org
+serveblog.net
+servebeer.com
+servehttp.com
+serveftp.com
+servegame.com
+servehalflife.com
+serveminecraft.net
+servemp3.com
+servepics.com
+servequake.com
+redirectme.net
+webhop.me
+bounceme.net
+freedynamicdns.net
+freedynamicdns.org
+onthewifi.com
+myvnc.com
