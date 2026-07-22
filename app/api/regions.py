@@ -291,6 +291,10 @@ async def update_region(
 
     # Update the region fields
     update_data = region.model_dump(exclude_unset=True)
+    # Blank or null credentials mean "keep current" — never wipe stored secrets.
+    for secret_field in ("postgres_admin_password", "litellm_api_key"):
+        if not update_data.get(secret_field):
+            update_data.pop(secret_field, None)
     for field, value in update_data.items():
         setattr(db_region, field, value)
 
