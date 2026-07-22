@@ -430,6 +430,13 @@ async def extend_team_trial(team_id: int, db: Session = Depends(get_db)):
     # Get all keys for the team grouped by region
     keys_by_region = get_team_keys_by_region(db, team_id)
 
+    # Pool/top-up teams must not be forced onto the short DEFAULT_KEY_DURATION
+    # trial window or a per-key budget cap. Their key life should track the
+    # pool purchase horizon and their spend is governed by the team-level pool
+    # budget. Stamping DEFAULT_KEY_DURATION here previously expired paid,
+    # in-credit keys mid-period (issue #631).
+    is_pool_team = db_team.requires_pool_purchase_gate
+
     # Update keys for each region
     for region, keys in keys_by_region.items():
         # Initialize LiteLLM service for this region
@@ -440,13 +447,21 @@ async def extend_team_trial(team_id: int, db: Session = Depends(get_db)):
         # Update each key's duration and budget via LiteLLM
         for key in keys:
             try:
-                await litellm_service.set_key_restrictions(
-                    litellm_token=key.litellm_token,
-                    duration=f"{DEFAULT_KEY_DURATION}d",
-                    budget_duration=f"{DEFAULT_KEY_DURATION}d",
-                    budget_amount=DEFAULT_MAX_SPEND,
-                    rpm_limit=DEFAULT_RPM_PER_KEY,
-                )
+                if is_pool_team:
+                    # Only extend key life; leave pool budget enforcement
+                    # (team-level max_budget) untouched.
+                    await litellm_service.update_key_duration(
+                        litellm_token=key.litellm_token,
+                        duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
+                    )
+                else:
+                    await litellm_service.set_key_restrictions(
+                        litellm_token=key.litellm_token,
+                        duration=f"{DEFAULT_KEY_DURATION}d",
+                        budget_duration=f"{DEFAULT_KEY_DURATION}d",
+                        budget_amount=DEFAULT_MAX_SPEND,
+                        rpm_limit=DEFAULT_RPM_PER_KEY,
+                    )
             except Exception as e:
                 logger.error(f"Failed to update key {key.id} via LiteLLM: {str(e)}")
                 # Continue with other keys even if one fails
