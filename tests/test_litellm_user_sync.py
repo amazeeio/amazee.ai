@@ -11,13 +11,15 @@ from app.db.models import DBUser
 
 @patch("app.core.litellm_user_sync.LiteLLMService")
 @pytest.mark.asyncio
-async def test_sync_create_user_skips_trial_users(mock_litellm, db, test_region):
-    user = DBUser(email="trial-1775630556-f9c2b8a9@example.com")
+async def test_sync_create_user_skips_trial_users(
+    mock_litellm, db, test_team, test_region
+):
+    user = DBUser(email="trial-1775630556-f9c2b8a9@example.com", team_id=test_team.id)
     db.add(user)
     db.commit()
     db.refresh(user)
 
-    await sync_create_user_across_regions(db=db, db_user=user, team_id=None)
+    await sync_create_user_across_regions(db=db, db_user=user, team_id=test_team.id)
 
     mock_litellm.assert_not_called()
 
@@ -25,9 +27,12 @@ async def test_sync_create_user_skips_trial_users(mock_litellm, db, test_region)
 @patch("app.core.litellm_user_sync.LiteLLMService")
 @pytest.mark.asyncio
 async def test_sync_create_user_calls_litellm_for_regular_users(
-    mock_litellm, db, test_region
+    mock_litellm, db, test_team, test_region
 ):
-    user = DBUser(email="regular-user@example.com")
+    test_team.region_id = test_region.id
+    db.commit()
+
+    user = DBUser(email="regular-user@example.com", team_id=test_team.id)
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -35,7 +40,7 @@ async def test_sync_create_user_calls_litellm_for_regular_users(
     mock_service = AsyncMock()
     mock_litellm.return_value = mock_service
 
-    await sync_create_user_across_regions(db=db, db_user=user, team_id=None)
+    await sync_create_user_across_regions(db=db, db_user=user, team_id=test_team.id)
 
     mock_litellm.assert_called_once_with(
         api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key

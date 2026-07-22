@@ -77,9 +77,9 @@ def _create_default_limits_for_team(team: DBTeam, db: Session) -> None:
             # Don't fail team creation if limit creation fails
 
 
-async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
+async def _create_litellm_team_for_region(team: DBTeam, region: DBRegion) -> None:
     """
-    Create region-scoped LiteLLM teams for the team's explicitly allowed regions.
+    Create a region-scoped LiteLLM team for the given team in the given region.
 
     POOL teams start with $0 budget and a configurable duration (purchases raise budget).
     PERIODIC teams start with the default budget (DEFAULT_MAX_SPEND).
@@ -90,49 +90,15 @@ async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
         if team.requires_pool_purchase_gate
         else None
     )
-
-    regions = (
-        db.query(DBRegion)
-        .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
-        .filter(
-            DBRegion.is_active.is_(True),
-            DBTeamRegion.team_id == team.id,
-        )
-        .all()
+    litellm_service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
-
-    for region in regions:
-        litellm_service = LiteLLMService(
-            api_url=region.litellm_api_url, api_key=region.litellm_api_key
-        )
-        lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
-        await litellm_service.create_team(
-            team_id=lite_team_id,
-            team_alias=lite_team_id,
-            max_budget=max_budget,
-            budget_duration=budget_duration,
-        )
-
-
-def _seed_default_allowed_regions_for_team(team: DBTeam, db: Session) -> None:
-    # Keep legacy behavior for callers still sending hide_public_regions=True:
-    # explicit list stays empty instead of inheriting all public regions.
-    if team.hide_public_regions:
-        return
-
-    public_regions = (
-        db.query(DBRegion)
-        .filter(
-            DBRegion.is_active.is_(True),
-            DBRegion.is_dedicated.is_(False),
-        )
-        .all()
-    )
-    db.add_all(
-        [
-            DBTeamRegion(team_id=team.id, region_id=region.id)
-            for region in public_regions
-        ]
+    lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+    await litellm_service.create_team(
+        team_id=lite_team_id,
+        team_alias=lite_team_id,
+        max_budget=max_budget,
+        budget_duration=budget_duration,
     )
 
 
@@ -149,6 +115,23 @@ async def register_team(
     # Defense-in-depth: block disposable / dynamic-DNS admin emails before any
     # team is created (the sign-in auto-provision path creates a team first).
     assert_email_domain_allowed(db, team.admin_email)
+
+    # Validate region — must be active and non-dedicated
+    region = (
+        db.query(DBRegion)
+        .filter(DBRegion.id == team.region_id, DBRegion.is_active.is_(True))
+        .first()
+    )
+    if not region:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid or inactive region_id: {team.region_id}",
+        )
+    if region.is_dedicated:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot register a team in a dedicated region",
+        )
 
     # Check if team email already exists (case insensitive)
     db_team = (
@@ -184,14 +167,16 @@ async def register_team(
         hide_public_regions=team.hide_public_regions,
         budget_type=team.budget_type,
         require_purchase_for_requests=team.require_purchase_for_requests,
+        region_id=region.id,
     )
 
     db.add(db_team)
     try:
         db.flush()
-        _seed_default_allowed_regions_for_team(db_team, db)
+        # Create the single team_region row for backwards compatibility
+        db.add(DBTeamRegion(team_id=db_team.id, region_id=region.id))
         db.flush()
-        await _create_litellm_teams_for_new_team(db_team, db)
+        await _create_litellm_team_for_region(db_team, region)
         db.commit()
         db.refresh(db_team)
     except HTTPException:

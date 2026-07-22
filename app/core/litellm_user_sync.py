@@ -1,16 +1,14 @@
+import asyncio
 import logging
 import os
-import asyncio
 from time import perf_counter
-from typing import Iterable, List
 
 from prometheus_client import Counter, Histogram
-from app.db.models import DBRegion, DBTeamRegion, DBUser
+from app.db.models import DBRegion, DBTeam, DBUser
 from app.services.litellm import LiteLLMService
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
-SYNC_MAX_CONCURRENCY = int(os.getenv("LITELLM_SYNC_MAX_CONCURRENCY", "4"))
 SYNC_OPERATION_TIMEOUT_SECONDS = float(
     os.getenv("LITELLM_SYNC_OPERATION_TIMEOUT_SECONDS", "15")
 )
@@ -96,32 +94,9 @@ async def _run_sync_operation(
         raise
 
 
-async def _run_per_region_with_bounded_concurrency(
-    regions: list[DBRegion], region_runner
-) -> None:
-    semaphore = asyncio.Semaphore(max(1, SYNC_MAX_CONCURRENCY))
-
-    async def _wrapped(region: DBRegion) -> None:
-        async with semaphore:
-            await region_runner(region)
-
-    await asyncio.gather(*(_wrapped(region) for region in regions))
-
-
 def _should_skip_litellm_sync(db_user: DBUser) -> bool:
     email = (db_user.email or "").lower()
     return email.startswith("trial-") and email.endswith("@example.com")
-
-
-def _dedupe_regions(regions: Iterable[DBRegion]) -> List[DBRegion]:
-    seen: set[int] = set()
-    deduped: List[DBRegion] = []
-    for region in regions:
-        if region.id in seen:
-            continue
-        seen.add(region.id)
-        deduped.append(region)
-    return deduped
 
 
 def team_role_for_litellm(db_user: DBUser) -> str:
@@ -130,22 +105,15 @@ def team_role_for_litellm(db_user: DBUser) -> str:
     return "user"
 
 
-def get_target_regions_for_user(db: Session, team_id: int | None) -> List[DBRegion]:
-    if team_id is None:
-        return (
-            db.query(DBRegion)
-            .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
-            .all()
-        )
-
+def get_team_region(db: Session, team_id: int) -> DBRegion | None:
+    """Return the single active region for the given team, or None."""
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if not team or not team.region_id:
+        return None
     return (
         db.query(DBRegion)
-        .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
-        .filter(
-            DBRegion.is_active.is_(True),
-            DBTeamRegion.team_id == team_id,
-        )
-        .all()
+        .filter(DBRegion.id == team.region_id, DBRegion.is_active.is_(True))
+        .first()
     )
 
 
@@ -153,7 +121,6 @@ async def sync_create_user_across_regions(
     db: Session,
     db_user: DBUser,
     team_id: int | None = None,
-    force_regions: List[DBRegion] | None = None,
 ) -> None:
     if _should_skip_litellm_sync(db_user):
         litellm_user_sync_skips_total.labels(
@@ -170,53 +137,54 @@ async def sync_create_user_across_regions(
         )
         return
 
-    regions = force_regions or get_target_regions_for_user(db, team_id)
-    _log_sync_event(
-        "info",
-        "litellm_sync_batch_start",
-        sync_action="sync_create_user_across_regions",
-        user_id=db_user.id,
-        team_id=team_id,
-        region_count=len(regions),
-    )
-
-    async def _region_runner(region: DBRegion) -> None:
-        service = LiteLLMService(
-            api_url=region.litellm_api_url, api_key=region.litellm_api_key
-        )
-        await _run_sync_operation(
-            operation="create_user",
-            region=region,
+    resolved_team_id = team_id if team_id is not None else db_user.team_id
+    if resolved_team_id is None:
+        _log_sync_event(
+            "info",
+            "litellm_sync_skipped",
+            sync_action="sync_create_user_across_regions",
+            reason="no_team",
             user_id=db_user.id,
-            team_id=team_id,
-            action=lambda: service.create_user(
-                user_id=str(db_user.id),
-                user_email=db_user.email,
-                auto_create_key=False,
-            ),
         )
-        if team_id is not None:
-            lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-            await _run_sync_operation(
-                operation="add_team_member",
-                region=region,
-                user_id=db_user.id,
-                team_id=team_id,
-                action=lambda: service.add_team_member(
-                    team_id=lite_team_id,
-                    user_id=str(db_user.id),
-                    role=team_role_for_litellm(db_user),
-                ),
-            )
+        return
 
-    await _run_per_region_with_bounded_concurrency(regions, _region_runner)
-    _log_sync_event(
-        "info",
-        "litellm_sync_batch_complete",
-        sync_action="sync_create_user_across_regions",
+    region = get_team_region(db, resolved_team_id)
+    if not region:
+        _log_sync_event(
+            "info",
+            "litellm_sync_skipped",
+            sync_action="sync_create_user_across_regions",
+            reason="no_active_region",
+            user_id=db_user.id,
+            team_id=resolved_team_id,
+        )
+        return
+
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    await _run_sync_operation(
+        operation="create_user",
+        region=region,
         user_id=db_user.id,
-        team_id=team_id,
-        region_count=len(regions),
+        team_id=resolved_team_id,
+        action=lambda: service.create_user(
+            user_id=str(db_user.id),
+            user_email=db_user.email,
+            auto_create_key=False,
+        ),
+    )
+    lite_team_id = LiteLLMService.format_team_id(region.name, resolved_team_id)
+    await _run_sync_operation(
+        operation="add_team_member",
+        region=region,
+        user_id=db_user.id,
+        team_id=resolved_team_id,
+        action=lambda: service.add_team_member(
+            team_id=lite_team_id,
+            user_id=str(db_user.id),
+            role=team_role_for_litellm(db_user),
+        ),
     )
 
 
@@ -224,7 +192,6 @@ async def sync_add_user_to_team(
     db: Session,
     db_user: DBUser,
     team_id: int,
-    force_regions: List[DBRegion] | None = None,
 ) -> None:
     if _should_skip_litellm_sync(db_user):
         litellm_user_sync_skips_total.labels(
@@ -241,52 +208,43 @@ async def sync_add_user_to_team(
         )
         return
 
-    regions = force_regions or get_target_regions_for_user(db, team_id)
-    _log_sync_event(
-        "info",
-        "litellm_sync_batch_start",
-        sync_action="sync_add_user_to_team",
-        user_id=db_user.id,
-        team_id=team_id,
-        region_count=len(regions),
+    region = get_team_region(db, team_id)
+    if not region:
+        _log_sync_event(
+            "info",
+            "litellm_sync_skipped",
+            sync_action="sync_add_user_to_team",
+            reason="no_active_region",
+            user_id=db_user.id,
+            team_id=team_id,
+        )
+        return
+
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
-
-    async def _region_runner(region: DBRegion) -> None:
-        service = LiteLLMService(
-            api_url=region.litellm_api_url, api_key=region.litellm_api_key
-        )
-        await _run_sync_operation(
-            operation="create_user",
-            region=region,
-            user_id=db_user.id,
-            team_id=team_id,
-            action=lambda: service.create_user(
-                user_id=str(db_user.id),
-                user_email=db_user.email,
-                auto_create_key=False,
-            ),
-        )
-        lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-        await _run_sync_operation(
-            operation="add_team_member",
-            region=region,
-            user_id=db_user.id,
-            team_id=team_id,
-            action=lambda: service.add_team_member(
-                team_id=lite_team_id,
-                user_id=str(db_user.id),
-                role=team_role_for_litellm(db_user),
-            ),
-        )
-
-    await _run_per_region_with_bounded_concurrency(regions, _region_runner)
-    _log_sync_event(
-        "info",
-        "litellm_sync_batch_complete",
-        sync_action="sync_add_user_to_team",
+    await _run_sync_operation(
+        operation="create_user",
+        region=region,
         user_id=db_user.id,
         team_id=team_id,
-        region_count=len(regions),
+        action=lambda: service.create_user(
+            user_id=str(db_user.id),
+            user_email=db_user.email,
+            auto_create_key=False,
+        ),
+    )
+    lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+    await _run_sync_operation(
+        operation="add_team_member",
+        region=region,
+        user_id=db_user.id,
+        team_id=team_id,
+        action=lambda: service.add_team_member(
+            team_id=lite_team_id,
+            user_id=str(db_user.id),
+            role=team_role_for_litellm(db_user),
+        ),
     )
 
 
@@ -294,8 +252,14 @@ async def sync_remove_user_from_team(
     db: Session,
     db_user: DBUser,
     team_id: int,
-    force_regions: List[DBRegion] | None = None,
+    region: DBRegion | None = None,
 ) -> None:
+    """Remove a user from a team in LiteLLM.
+
+    ``region`` can be supplied explicitly when the team's ``region_id`` has
+    already been cleared (e.g. during a disassociation rollback).  When omitted
+    the team's current region is resolved automatically.
+    """
     if _should_skip_litellm_sync(db_user):
         litellm_user_sync_skips_total.labels(
             sync_action="sync_remove_user_from_team", reason="trial_user"
@@ -311,39 +275,30 @@ async def sync_remove_user_from_team(
         )
         return
 
-    regions = force_regions or get_target_regions_for_user(db, team_id)
-    _log_sync_event(
-        "info",
-        "litellm_sync_batch_start",
-        sync_action="sync_remove_user_from_team",
-        user_id=db_user.id,
-        team_id=team_id,
-        region_count=len(regions),
-    )
-
-    async def _region_runner(region: DBRegion) -> None:
-        service = LiteLLMService(
-            api_url=region.litellm_api_url, api_key=region.litellm_api_key
-        )
-        lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-        await _run_sync_operation(
-            operation="remove_team_member",
-            region=region,
+    resolved_region = region or get_team_region(db, team_id)
+    if not resolved_region:
+        _log_sync_event(
+            "info",
+            "litellm_sync_skipped",
+            sync_action="sync_remove_user_from_team",
+            reason="no_active_region",
             user_id=db_user.id,
             team_id=team_id,
-            action=lambda: service.remove_team_member(
-                team_id=lite_team_id, user_id=str(db_user.id)
-            ),
         )
+        return
 
-    await _run_per_region_with_bounded_concurrency(regions, _region_runner)
-    _log_sync_event(
-        "info",
-        "litellm_sync_batch_complete",
-        sync_action="sync_remove_user_from_team",
+    service = LiteLLMService(
+        api_url=resolved_region.litellm_api_url, api_key=resolved_region.litellm_api_key
+    )
+    lite_team_id = LiteLLMService.format_team_id(resolved_region.name, team_id)
+    await _run_sync_operation(
+        operation="remove_team_member",
+        region=resolved_region,
         user_id=db_user.id,
         team_id=team_id,
-        region_count=len(regions),
+        action=lambda: service.remove_team_member(
+            team_id=lite_team_id, user_id=str(db_user.id)
+        ),
     )
 
 
@@ -351,7 +306,6 @@ async def sync_update_user_team_role(
     db: Session,
     db_user: DBUser,
     team_id: int,
-    force_regions: List[DBRegion] | None = None,
 ) -> None:
     if _should_skip_litellm_sync(db_user):
         litellm_user_sync_skips_total.labels(
@@ -370,7 +324,7 @@ async def sync_update_user_team_role(
 
     role = team_role_for_litellm(db_user)
     if role == "user":
-        # Current OSS role mapping is constant. Skip cross-region calls.
+        # Current OSS role mapping is constant. Skip the call.
         litellm_user_sync_skips_total.labels(
             sync_action="sync_update_user_team_role", reason="no_role_change"
         ).inc()
@@ -383,39 +337,31 @@ async def sync_update_user_team_role(
             team_id=team_id,
         )
         return
-    regions = force_regions or get_target_regions_for_user(db, team_id)
-    _log_sync_event(
-        "info",
-        "litellm_sync_batch_start",
-        sync_action="sync_update_user_team_role",
-        user_id=db_user.id,
-        team_id=team_id,
-        region_count=len(regions),
-    )
 
-    async def _region_runner(region: DBRegion) -> None:
-        service = LiteLLMService(
-            api_url=region.litellm_api_url, api_key=region.litellm_api_key
-        )
-        lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-        await _run_sync_operation(
-            operation="update_team_member",
-            region=region,
+    region = get_team_region(db, team_id)
+    if not region:
+        _log_sync_event(
+            "info",
+            "litellm_sync_skipped",
+            sync_action="sync_update_user_team_role",
+            reason="no_active_region",
             user_id=db_user.id,
             team_id=team_id,
-            action=lambda: service.update_team_member(
-                team_id=lite_team_id, user_id=str(db_user.id), role=role
-            ),
         )
+        return
 
-    await _run_per_region_with_bounded_concurrency(regions, _region_runner)
-    _log_sync_event(
-        "info",
-        "litellm_sync_batch_complete",
-        sync_action="sync_update_user_team_role",
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
+    await _run_sync_operation(
+        operation="update_team_member",
+        region=region,
         user_id=db_user.id,
         team_id=team_id,
-        region_count=len(regions),
+        action=lambda: service.update_team_member(
+            team_id=lite_team_id, user_id=str(db_user.id), role=role
+        ),
     )
 
 
@@ -423,7 +369,6 @@ async def sync_delete_user_across_regions(
     db: Session,
     db_user: DBUser,
     team_id: int | None = None,
-    force_regions: List[DBRegion] | None = None,
 ) -> None:
     if _should_skip_litellm_sync(db_user):
         litellm_user_sync_skips_total.labels(
@@ -440,45 +385,57 @@ async def sync_delete_user_across_regions(
         )
         return
 
-    regions = force_regions or get_target_regions_for_user(db, team_id)
-    _log_sync_event(
-        "info",
-        "litellm_sync_batch_start",
-        sync_action="sync_delete_user_across_regions",
-        user_id=db_user.id,
-        team_id=team_id,
-        region_count=len(regions),
-    )
-
-    async def _region_runner(region: DBRegion) -> None:
-        service = LiteLLMService(
-            api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    resolved_team_id = team_id if team_id is not None else db_user.team_id
+    if resolved_team_id is None:
+        _log_sync_event(
+            "info",
+            "litellm_sync_skipped",
+            sync_action="sync_delete_user_across_regions",
+            reason="no_team",
+            user_id=db_user.id,
         )
-        if team_id is not None:
-            lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
-            await _run_sync_operation(
-                operation="remove_team_member",
-                region=region,
-                user_id=db_user.id,
-                team_id=team_id,
-                action=lambda: service.remove_team_member(
-                    team_id=lite_team_id, user_id=str(db_user.id)
-                ),
-            )
+        return
+
+    region = get_team_region(db, resolved_team_id)
+    if not region:
+        _log_sync_event(
+            "info",
+            "litellm_sync_skipped",
+            sync_action="sync_delete_user_across_regions",
+            reason="no_active_region",
+            user_id=db_user.id,
+            team_id=resolved_team_id,
+        )
+        return
+
+    service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
+    )
+    lite_team_id = LiteLLMService.format_team_id(region.name, resolved_team_id)
+    try:
         await _run_sync_operation(
-            operation="delete_user",
+            operation="remove_team_member",
             region=region,
             user_id=db_user.id,
-            team_id=team_id,
-            action=lambda: service.delete_user(user_id=str(db_user.id)),
+            team_id=resolved_team_id,
+            action=lambda: service.remove_team_member(
+                team_id=lite_team_id, user_id=str(db_user.id)
+            ),
         )
-
-    await _run_per_region_with_bounded_concurrency(regions, _region_runner)
-    _log_sync_event(
-        "info",
-        "litellm_sync_batch_complete",
-        sync_action="sync_delete_user_across_regions",
+    except Exception:
+        _log_sync_event(
+            "error",
+            "remove_team_member_before_delete_failed",
+            region_id=region.id,
+            region=region.name,
+            user_id=db_user.id,
+            team_id=resolved_team_id,
+            error_message="Proceeding with user deletion despite team removal failure",
+        )
+    await _run_sync_operation(
+        operation="delete_user",
+        region=region,
         user_id=db_user.id,
-        team_id=team_id,
-        region_count=len(regions),
+        team_id=resolved_team_id,
+        action=lambda: service.delete_user(user_id=str(db_user.id)),
     )
