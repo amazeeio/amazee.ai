@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { useState, useMemo, Fragment } from "react";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import {
   Table,
   TableBody,
@@ -49,12 +50,15 @@ export default function UsersPage() {
   const [roleFilter, setRoleFilter] = useState("all");
   const [sortField, setSortField] = useState<SortField>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const [showDeleted, setShowDeleted] = useState(false);
 
   // Queries
   const { data: users = [], isLoading: isLoadingUsers } = useQuery<User[]>({
-    queryKey: ["users"],
+    queryKey: ["users", showDeleted],
     queryFn: async () => {
-      const response = await get("/users");
+      const response = await get(
+        showDeleted ? "/users?include_inactive=true" : "/users",
+      );
       return response.json();
     },
   });
@@ -268,11 +272,23 @@ export default function UsersPage() {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold">Users</h1>
-        <CreateUserDialog
-          open={isAddingUser}
-          onOpenChange={setIsAddingUser}
-          teams={teams}
-        />
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <Switch
+              id="show-deleted-users"
+              checked={showDeleted}
+              onCheckedChange={setShowDeleted}
+            />
+            <label htmlFor="show-deleted-users" className="text-sm font-medium">
+              Show deleted
+            </label>
+          </div>
+          <CreateUserDialog
+            open={isAddingUser}
+            onOpenChange={setIsAddingUser}
+            teams={teams}
+          />
+        </div>
       </div>
 
       <TableFilters

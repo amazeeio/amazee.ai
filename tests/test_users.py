@@ -57,6 +57,27 @@ def test_get_users(client, admin_token, test_user):
     assert any(user["email"] == test_user.email for user in users)
 
 
+def test_get_users_include_inactive(client, admin_token, db):
+    inactive = DBUser(
+        email="inactive-list@example.com",
+        hashed_password=get_password_hash("password"),
+        is_active=False,
+    )
+    db.add(inactive)
+    db.commit()
+
+    response = client.get("/users/", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 200
+    assert "inactive-list@example.com" not in [u["email"] for u in response.json()]
+
+    response = client.get(
+        "/users/?include_inactive=true",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert "inactive-list@example.com" in [u["email"] for u in response.json()]
+
+
 def test_get_user_by_id(client, admin_token, test_user):
     response = client.get(
         f"/users/{test_user.id}", headers={"Authorization": f"Bearer {admin_token}"}

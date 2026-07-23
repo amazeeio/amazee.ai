@@ -268,6 +268,13 @@ class RegionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class RegionAdminResponse(RegionResponse):
+    # Admin view: includes DB connection identity but never secrets
+    # (postgres_admin_password / litellm_api_key stay server-side).
+    postgres_port: int
+    postgres_admin_user: str
+
+
 class RegionSummaryResponse(BaseModel):
     id: int
     name: str
