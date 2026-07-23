@@ -713,24 +713,27 @@ async def remove_user_admin_region(
 async def list_users(
     current_user: DBUser = Depends(get_current_user_from_auth),
     search: Optional[str] = None,
+    include_inactive: bool = False,
     db: Session = Depends(get_db),
 ):
     """
     List users. Accessible by admin users or team admins for their team members.
     Users from soft-deleted teams and inactive users are excluded from the results.
+    System admins can pass include_inactive=true to also see inactive users.
     Optionally filter by search term (partial email match).
     """
     if current_user.is_admin:
         # Use LEFT JOIN to get all users and their team information in a single query
-        # Exclude users from soft-deleted teams and inactive users
+        # Exclude users from soft-deleted teams
         query = (
             db.query(DBUser, DBTeam.name.label("team_name"))
             .outerjoin(DBTeam, DBUser.team_id == DBTeam.id)
             .filter(
-                DBUser.is_active.is_(True),
                 (DBUser.team_id.is_(None)) | (DBTeam.deleted_at.is_(None)),
             )
         )
+        if not include_inactive:
+            query = query.filter(DBUser.is_active.is_(True))
 
         if search:
             query = query.filter(DBUser.email.ilike(f"%{search}%"))
