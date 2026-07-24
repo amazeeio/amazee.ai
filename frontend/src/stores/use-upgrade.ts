@@ -94,8 +94,13 @@ export const useUpgrade = create<UpgradeState>((set, get) => ({
       // Load config and get it directly from the return value
       const config = await configStore.loadConfig();
 
-      if (config && config.STRIPE_PUBLISHABLE_KEY) {
-        set({ config, error: null });
+      if (config) {
+        const currentError = get().error;
+        const shouldClearError = !currentError || currentError.includes("configuration");
+        set({
+          config,
+          ...(shouldClearError ? { error: null } : {}),
+        });
       } else {
         console.error("Config missing or invalid:", config);
         set({

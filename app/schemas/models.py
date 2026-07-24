@@ -1236,3 +1236,77 @@ class SubscriptionDeactivateResponse(BaseModel):
     team_id: int
     payment_id: Optional[int] = None
     idempotent: bool = False
+
+
+class AdminModelRegionResponse(BaseModel):
+    region_id: int
+    region_name: str
+    is_active: bool
+    sync_status: str
+    sync_error: Optional[str] = None
+    synced_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AdminModelBase(BaseModel):
+    model_id: str
+    display_name: str
+    provider: str
+    type: str
+    context_length: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+    description: Optional[str] = None
+    real_eol: Optional[datetime] = None
+    override_eol: Optional[datetime] = None
+    is_active_globally: bool = True
+    litellm_params: Optional[dict] = None
+
+
+class AdminModelCreate(AdminModelBase):
+    pass
+
+
+class AdminModelUpdate(BaseModel):
+    display_name: Optional[str] = None
+    provider: Optional[str] = None
+    type: Optional[str] = None
+    context_length: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+    description: Optional[str] = None
+    real_eol: Optional[datetime] = None
+    override_eol: Optional[datetime] = None
+    is_active_globally: Optional[bool] = None
+    litellm_params: Optional[dict] = None
+
+
+class AdminModelResponse(AdminModelBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: Optional[datetime] = None
+    regions: List[AdminModelRegionResponse] = Field(default_factory=list)
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AdminModelRegionToggleRequest(BaseModel):
+    model_id: int
+    region_id: int
+    is_active: bool
+
+
+class ImportableModelResponse(BaseModel):
+    model_id: str
+    display_name: str
+    provider: str
+    type: str
+    context_length: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+    description: Optional[str] = None
+    litellm_params: Optional[dict] = None
+    credential_keys: List[str] = Field(default_factory=list)
+
+
+class AdminModelImport(AdminModelBase):
+    region_id: int
+
+
