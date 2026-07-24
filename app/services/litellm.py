@@ -1173,28 +1173,63 @@ class LiteLLMService:
                 detail=f"Failed to add LiteLLM model: {error_msg}",
             )
 
-    async def update_model(self, model_id: str, litellm_params: dict) -> dict:
+    async def get_model_deployment_ids(self, model_id: str) -> list[str]:
+        """
+        Resolve the LiteLLM deployment id(s) for a public model_name.
+        /model/update and /model/delete key on model_info.id, not model_name,
+        and /model/new allows duplicate model_names — so callers must resolve
+        ids first to upsert/delete correctly.
+        """
+        info = await self.get_model_info()
+        entries = info.get("data") or []
+        if not isinstance(entries, list):
+            return []
+        return [
+            entry["model_info"]["id"]
+            for entry in entries
+            if isinstance(entry, dict)
+            and entry.get("model_name") == model_id
+            and isinstance(entry.get("model_info"), dict)
+            and entry["model_info"].get("id")
+        ]
+
+    async def update_model(
+        self, model_id: str, litellm_params: dict, deployment_ids: Optional[list[str]] = None
+    ) -> dict:
         """
         Update an existing model in LiteLLM.
-        Sends POST /model/update.
+        Sends POST /model/update per deployment id (LiteLLM identifies the
+        deployment by model_info.id; model_name alone is not accepted).
         """
-        # Copy so we never mutate the caller's dict (it may back DBModel.litellm_params).
-        payload = {
-            "model_name": model_id,
-            "litellm_params": dict(litellm_params or {}),
-        }
-        if "model" not in payload["litellm_params"]:
-            payload["litellm_params"]["model"] = model_id
+        if deployment_ids is None:
+            deployment_ids = await self.get_model_deployment_ids(model_id)
+        if not deployment_ids:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"LiteLLM model '{model_id}' not registered; cannot update.",
+            )
 
+        # Copy so we never mutate the caller's dict (it may back DBModel.litellm_params).
+        params = dict(litellm_params or {})
+        if "model" not in params:
+            params["model"] = model_id
+
+        result = {}
         try:
             async with httpx.AsyncClient(timeout=MODEL_HTTP_TIMEOUT) as client:
-                response = await client.post(
-                    f"{self.api_url}/model/update",
-                    headers={"Authorization": f"Bearer {self.master_key}"},
-                    json=payload,
-                )
-                response.raise_for_status()
-                return response.json()
+                for dep_id in deployment_ids:
+                    response = await client.post(
+                        f"{self.api_url}/model/update",
+                        headers={"Authorization": f"Bearer {self.master_key}"},
+                        json={
+                            "model_name": model_id,
+                            "litellm_params": params,
+                            "model_info": {"id": dep_id},
+                        },
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+            return result
         except httpx.HTTPStatusError as e:
             _, error_msg, _ = self._parse_http_error(e)
             logger.error("Failed to update model %s in LiteLLM: %s", model_id, error_msg)
@@ -1203,31 +1238,36 @@ class LiteLLMService:
                 detail=f"Failed to update LiteLLM model: {error_msg}",
             )
 
-    async def delete_model(self, model_id: str) -> None:
+    async def delete_model(self, model_id: str, deployment_ids: Optional[list[str]] = None) -> None:
         """
         Delete/deregister a model in LiteLLM.
-        Sends POST /model/delete.
+        Sends POST /model/delete per deployment id ({"id": ...} — LiteLLM does
+        not accept model_name here). Absent deployments are treated as success.
         """
-        payload = {
-            "model_name": model_id
-        }
+        if deployment_ids is None:
+            deployment_ids = await self.get_model_deployment_ids(model_id)
+        if not deployment_ids:
+            logger.info("LiteLLM model %s already absent; continuing", model_id)
+            return
+
         try:
             async with httpx.AsyncClient(timeout=MODEL_HTTP_TIMEOUT) as client:
-                response = await client.post(
-                    f"{self.api_url}/model/delete",
-                    headers={"Authorization": f"Bearer {self.master_key}"},
-                    json=payload,
-                )
-                response.raise_for_status()
+                for dep_id in deployment_ids:
+                    response = await client.post(
+                        f"{self.api_url}/model/delete",
+                        headers={"Authorization": f"Bearer {self.master_key}"},
+                        json={"id": dep_id},
+                    )
+                    if response.status_code >= 400 and self._is_idempotent_litellm_error(
+                        response.status_code,
+                        response.text,
+                        ["not found", "does not exist", "already deleted", "not registered"],
+                    ):
+                        logger.info("LiteLLM model %s (id=%s) already absent; continuing", model_id, dep_id)
+                        continue
+                    response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            status_code, error_msg, response_text = self._parse_http_error(e)
-            if self._is_idempotent_litellm_error(
-                status_code,
-                response_text,
-                ["not found", "does not exist", "already deleted", "not registered"],
-            ):
-                logger.info("LiteLLM model %s already absent; continuing", model_id)
-                return
+            _, error_msg, _ = self._parse_http_error(e)
             logger.error("Failed to delete model %s from LiteLLM: %s", model_id, error_msg)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
