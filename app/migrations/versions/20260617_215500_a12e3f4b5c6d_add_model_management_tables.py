@@ -1,7 +1,7 @@
 """add model management tables
 
 Revision ID: a12e3f4b5c6d
-Revises: c4a9d8e1f2b3
+Revises: 6c201dbaea6e
 Create Date: 2026-06-17 21:55:00.000000
 
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 
 revision = "a12e3f4b5c6d"
-down_revision = "c4a9d8e1f2b3"
+down_revision = "6c201dbaea6e"
 branch_labels = None
 depends_on = None
 
