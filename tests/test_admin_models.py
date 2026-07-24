@@ -264,6 +264,7 @@ def test_admin_toggle_model_region_success(mock_litellm_class, client, admin_tok
     """Test toggling model status per region (successful sync)."""
     # Set up mock instances
     mock_instance = MagicMock()
+    mock_instance.get_model_deployment_ids = AsyncMock(return_value=[])
     mock_instance.add_model = AsyncMock(return_value={"status": "success"})
     mock_instance.delete_model = AsyncMock(return_value=None)
     mock_litellm_class.return_value = mock_instance
@@ -311,7 +312,7 @@ def test_admin_toggle_model_region_success(mock_litellm_class, client, admin_tok
     db.refresh(assoc)
     assert assoc.is_active is False
     assert assoc.sync_status == "synced"
-    mock_instance.delete_model.assert_called_once_with("openai/gpt-3.5-turbo")
+    mock_instance.delete_model.assert_called_once_with("openai/gpt-3.5-turbo", [])
 
 
 @patch("app.services.model_sync.LiteLLMService")
@@ -319,6 +320,7 @@ def test_admin_toggle_model_region_failure(mock_litellm_class, client, admin_tok
     """Test toggling model status per region (failed sync)."""
     # Set up mock instances
     mock_instance = MagicMock()
+    mock_instance.get_model_deployment_ids = AsyncMock(return_value=[])
     mock_instance.add_model = AsyncMock(side_effect=Exception("Connection refused"))
     mock_instance.update_model = AsyncMock(side_effect=Exception("Connection refused retry failed"))
     mock_litellm_class.return_value = mock_instance
@@ -359,6 +361,7 @@ def test_admin_delete_model_queues_failed_inactive_association(mock_litellm_clas
     """Test that soft-deleting a model triggers deregistration sync for inactive but previously failed associations."""
     # Set up mock instances
     mock_instance = MagicMock()
+    mock_instance.get_model_deployment_ids = AsyncMock(return_value=["dep-1"])
     mock_instance.delete_model = AsyncMock(return_value=None)
     mock_litellm_class.return_value = mock_instance
 
@@ -393,7 +396,7 @@ def test_admin_delete_model_queues_failed_inactive_association(mock_litellm_clas
     db.refresh(assoc)
     assert assoc.sync_status == "synced"
     assert assoc.sync_error is None
-    mock_instance.delete_model.assert_called_once_with("test/failed-inactive-dereg")
+    mock_instance.delete_model.assert_called_once_with("test/failed-inactive-dereg", ["dep-1"])
 
 
 def test_admin_list_models_search_wildcard_escaping(client, admin_token, db):
@@ -477,6 +480,7 @@ def test_sync_model_narrow_exception_handling_connection_refused(mock_litellm_cl
     from app.services.model_sync import sync_model_to_region_task
 
     mock_instance = MagicMock()
+    mock_instance.get_model_deployment_ids = AsyncMock(return_value=[])
     mock_instance.add_model = AsyncMock(side_effect=Exception("Connection refused"))
     mock_instance.update_model = AsyncMock()
     mock_litellm_class.return_value = mock_instance
@@ -511,12 +515,14 @@ def test_sync_model_narrow_exception_handling_connection_refused(mock_litellm_cl
 
 
 @patch("app.services.model_sync.LiteLLMService")
-def test_sync_model_narrow_exception_handling_already_exists(mock_litellm_class, db, test_region):
-    """Test that sync task retries with update_model if add_model fails indicating already exists."""
+def test_sync_model_existing_deployment_updates(mock_litellm_class, db, test_region):
+    """Test that sync task updates (by deployment id) instead of adding when the
+    model is already registered in the region's LiteLLM."""
     from app.services.model_sync import sync_model_to_region_task
 
     mock_instance = MagicMock()
-    mock_instance.add_model = AsyncMock(side_effect=Exception("Conflict: already registered"))
+    mock_instance.get_model_deployment_ids = AsyncMock(return_value=["dep-123"])
+    mock_instance.add_model = AsyncMock()
     mock_instance.update_model = AsyncMock(return_value={"status": "success"})
     mock_litellm_class.return_value = mock_instance
 
@@ -544,8 +550,8 @@ def test_sync_model_narrow_exception_handling_already_exists(mock_litellm_class,
     db.refresh(assoc)
     assert assoc.sync_status == "synced"
     assert assoc.sync_error is None
-    mock_instance.add_model.assert_called_once()
-    mock_instance.update_model.assert_called_once()
+    mock_instance.add_model.assert_not_called()
+    mock_instance.update_model.assert_called_once_with("test/conflict-sync", None, ["dep-123"])
 
 
 @patch("app.services.model_sync.LiteLLMService")
@@ -558,6 +564,7 @@ def test_sync_model_poisoned_session_never_commits_stale_synced(mock_litellm_cla
     from app.db.database import get_db as real_get_db
 
     mock_instance = MagicMock()
+    mock_instance.get_model_deployment_ids = AsyncMock(return_value=[])
     mock_instance.add_model = AsyncMock(return_value={"status": "success"})
     mock_litellm_class.return_value = mock_instance
 
@@ -619,6 +626,7 @@ def test_sync_model_global_deactivation_deregisters(mock_litellm_class, db, test
     from app.services.model_sync import sync_model_to_region_task
 
     mock_instance = MagicMock()
+    mock_instance.get_model_deployment_ids = AsyncMock(return_value=["dep-1"])
     mock_instance.delete_model = AsyncMock(return_value=None)
     mock_litellm_class.return_value = mock_instance
 
@@ -647,7 +655,7 @@ def test_sync_model_global_deactivation_deregisters(mock_litellm_class, db, test
     db.refresh(assoc)
     assert assoc.sync_status == "synced"
     assert assoc.sync_error is None
-    mock_instance.delete_model.assert_called_once_with("test/globally-inactive-model")
+    mock_instance.delete_model.assert_called_once_with("test/globally-inactive-model", ["dep-1"])
 
 
 def test_admin_update_model_global_deactivation_queues_sync(client, admin_token, test_region, db):

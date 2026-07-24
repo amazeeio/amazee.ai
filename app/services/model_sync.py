@@ -1,4 +1,3 @@
-from fastapi import HTTPException
 import logging
 import traceback
 from datetime import datetime, UTC
@@ -70,34 +69,22 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
             api_key=region.litellm_api_key
         )
         
+        # LiteLLM keys /model/update and /model/delete on the deployment id
+        # (model_info.id), and /model/new allows duplicate model_names — so
+        # resolve existing deployment ids first and upsert accordingly, instead
+        # of add-then-catch-conflict (which would silently create duplicates).
+        deployment_ids = await litellm_service.get_model_deployment_ids(model.model_id)
+
         if assoc.is_active and model.is_active_globally:
-            logger.info(f"Registering/Updating model '{model.model_id}' in region '{region.name}'")
-            # Try to add model first
-            try:
+            if deployment_ids:
+                logger.info(f"Updating model '{model.model_id}' in region '{region.name}' (deployments: {deployment_ids})")
+                await litellm_service.update_model(model.model_id, model.litellm_params, deployment_ids)
+            else:
+                logger.info(f"Registering model '{model.model_id}' in region '{region.name}'")
                 await litellm_service.add_model(model.model_id, model.litellm_params)
-            except Exception as add_err:
-                # Fallback to update model only if the error explicitly indicates
-                # that the model is already registered / already exists
-                # add_model preserves LiteLLM's 4xx status (409 already-exists);
-                # the string match is a fallback for versions returning 400.
-                is_already_exists = False
-                if isinstance(add_err, HTTPException):
-                    is_already_exists = (
-                        add_err.status_code == 409 or
-                        (add_err.detail and any(marker in str(add_err.detail).lower() for marker in ["already", "exists", "conflict"]))
-                    )
-                else:
-                    err_str = str(add_err).lower()
-                    is_already_exists = any(marker in err_str for marker in ["already", "exists", "conflict"])
-                
-                if is_already_exists:
-                    logger.warning(f"LiteLLM add_model for '{model.model_id}' failed with existing registration indicator: {add_err}. Retrying with update_model.")
-                    await litellm_service.update_model(model.model_id, model.litellm_params)
-                else:
-                    raise add_err
         else:
             logger.info(f"Deregistering model '{model.model_id}' from region '{region.name}'")
-            await litellm_service.delete_model(model.model_id)
+            await litellm_service.delete_model(model.model_id, deployment_ids)
             
         # Success!
         assoc.sync_status = "synced"
