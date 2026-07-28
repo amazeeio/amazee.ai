@@ -67,37 +67,56 @@ def upgrade():
     # 3. For teams that still have no region (zero team_regions rows),
     #    assign the first active non-dedicated region as a safe fallback
     #    and insert a matching team_regions association row.
+    #
+    #    Only look for a fallback region when a team actually still needs one.
+    #    This check used to run unconditionally, which aborted the migration on
+    #    any database with no active public region — even one with nothing left
+    #    to backfill. That failed the `main` environment (2 teams, 0 regions):
+    #    the RuntimeError rolled the migration back, backend-start.sh exited
+    #    under `set -e`, and the rollout timed out at applyingDeployments.
     bind = op.get_bind()
-    fallback_row = bind.execute(
-        sa.text(
-            "SELECT id FROM regions"
-            " WHERE is_active = true AND is_dedicated = false"
-            " ORDER BY id ASC LIMIT 1"
-        )
-    ).fetchone()
-    if fallback_row is None:
-        raise RuntimeError(
-            "No active non-dedicated region found; cannot backfill teams.region_id. "
-            "Create at least one active non-dedicated region before running this migration."
-        )
-    fallback_id = fallback_row[0]
-    # Insert team_regions rows for teams that have no association yet.
-    op.execute(
-        sa.text(
-            """
-            INSERT INTO team_regions (team_id, region_id, created_at)
-            SELECT id, :fallback_id, NOW()
-            FROM teams
-            WHERE region_id IS NULL
-            ON CONFLICT DO NOTHING
-            """
-        ).bindparams(fallback_id=fallback_id)
+    teams_without_region = (
+        bind.execute(
+            sa.text("SELECT count(*) FROM teams WHERE region_id IS NULL")
+        ).scalar()
+        or 0
     )
-    op.execute(
-        sa.text(
-            "UPDATE teams SET region_id = :fallback_id WHERE region_id IS NULL"
-        ).bindparams(fallback_id=fallback_id)
-    )
+    if teams_without_region:
+        fallback_row = bind.execute(
+            sa.text(
+                "SELECT id FROM regions"
+                " WHERE is_active = true AND is_dedicated = false"
+                " ORDER BY id ASC LIMIT 1"
+            )
+        ).fetchone()
+        # Still fail loudly when there IS data to backfill and nowhere to put
+        # it — leaving those teams region-less would silently break their
+        # LiteLLM member sync and hide their region from GET /regions/.
+        if fallback_row is None:
+            raise RuntimeError(
+                f"{teams_without_region} team(s) have no region and no active "
+                "non-dedicated region exists to fall back on; cannot backfill "
+                "teams.region_id. Create at least one active non-dedicated "
+                "region before running this migration."
+            )
+        fallback_id = fallback_row[0]
+        # Insert team_regions rows for teams that have no association yet.
+        op.execute(
+            sa.text(
+                """
+                INSERT INTO team_regions (team_id, region_id, created_at)
+                SELECT id, :fallback_id, NOW()
+                FROM teams
+                WHERE region_id IS NULL
+                ON CONFLICT DO NOTHING
+                """
+            ).bindparams(fallback_id=fallback_id)
+        )
+        op.execute(
+            sa.text(
+                "UPDATE teams SET region_id = :fallback_id WHERE region_id IS NULL"
+            ).bindparams(fallback_id=fallback_id)
+        )
 
     # 4. Create index for region_id lookups
     op.create_index("ix_teams_region_id", "teams", ["region_id"])
