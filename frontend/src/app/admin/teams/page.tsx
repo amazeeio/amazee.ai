@@ -236,6 +236,7 @@ export default function TeamsPage() {
             <CreateTeamDialog
               open={isAddingTeam}
               onOpenChange={setIsAddingTeam}
+              regions={regions}
             />
           </div>
         </div>
