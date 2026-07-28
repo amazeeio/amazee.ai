@@ -703,6 +703,124 @@ def test_subscription_cycle_renewal_allowed_on_inactive_region(
     mock_apply_cycle.assert_awaited_once()
 
 
+@patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.api.subscription.apply_billing_cycle_for_team", new_callable=AsyncMock)
+@patch("app.api.subscription._sync_periodic_ledger_for_period", new_callable=AsyncMock)
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+def test_subscription_cycle_renewal_allowed_when_previous_period_exhausted(
+    mock_capture,
+    mock_sync_ledger,
+    mock_apply_cycle,
+    mock_record_payment,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """
+    A recent cycle counts as a renewal even when its ledger entry is no longer
+    active. Both `expire_subscription_entries` (period rollover) and
+    `allocate_period_spend_fifo` (budget fully consumed) clear `is_active`, so
+    gating on that flag would refuse renewals for teams that used their whole
+    budget — exactly the paying teams we must not break mid-drain.
+    """
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="subscription",
+            amount_cents=10000,
+            consumed_cents=10000,  # spent to the last cent
+            purchased_at=datetime.now(UTC) - timedelta(days=30),
+            effective_period_start=datetime.now(UTC) - timedelta(days=30),
+            effective_period_end=datetime.now(UTC),
+            expires_at=datetime.now(UTC),
+            is_active=False,  # cleared by rollover / FIFO exhaustion
+        )
+    )
+    test_region.is_active = False
+    db.commit()
+    mock_apply_cycle.return_value = []
+    mock_record_payment.return_value = 901
+
+    response = client.post(
+        "/billing/subscription/cycle",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_cycle_inactive_exhausted_renewal",
+            "budget_cents": 10000,
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["payment_id"] == 901
+    mock_apply_cycle.assert_awaited_once()
+
+
+@patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.api.subscription.apply_billing_cycle_for_team", new_callable=AsyncMock)
+@patch("app.api.subscription._sync_periodic_ledger_for_period", new_callable=AsyncMock)
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+def test_subscription_cycle_resubscribe_after_stale_history_rejected(
+    mock_capture,
+    mock_sync_ledger,
+    mock_apply_cycle,
+    mock_record_payment,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """
+    A team that cancelled here long ago and re-subscribes is a *new*
+    subscription, not a renewal, even though historical subscription entries
+    make `is_first_cycle` false. It must not put fresh budget on a dying region.
+    """
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="subscription",
+            amount_cents=10000,
+            consumed_cents=10000,
+            purchased_at=datetime.now(UTC) - timedelta(days=200),
+            effective_period_start=datetime.now(UTC) - timedelta(days=200),
+            effective_period_end=datetime.now(UTC) - timedelta(days=169),
+            expires_at=datetime.now(UTC) - timedelta(days=169),
+            is_active=False,  # deactivated by subscription.deactivate
+        )
+    )
+    test_region.is_active = False
+    db.commit()
+
+    response = client.post(
+        "/billing/subscription/cycle",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_cycle_inactive_resubscribe",
+            "budget_cents": 10000,
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "inactive" in response.json()["detail"]
+    mock_record_payment.assert_not_awaited()
+    mock_sync_ledger.assert_not_awaited()
+    mock_apply_cycle.assert_not_awaited()
+
+
 def test_subscription_cycle_endpoint_idempotent(client, admin_token, db, test_team):
     payment = DBPeriodicPayment(
         team_id=test_team.id,
