@@ -268,6 +268,13 @@ class RegionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class RegionAdminResponse(RegionResponse):
+    # Admin view: includes DB connection identity but never secrets
+    # (postgres_admin_password / litellm_api_key stay server-side).
+    postgres_port: int
+    postgres_admin_user: str
+
+
 class RegionSummaryResponse(BaseModel):
     id: int
     name: str
@@ -911,6 +918,7 @@ class TeamCreate(TeamBase):
     hide_public_regions: bool = False
     budget_type: BudgetType = BudgetType.PERIODIC
     require_purchase_for_requests: bool = True
+    region_id: int
 
 
 class TeamUpdate(BaseModel):
@@ -943,6 +951,7 @@ class Team(TeamBase):
     last_payment: Optional[datetime] = None
     deleted_at: Optional[datetime] = None
     retention_warning_sent_at: Optional[datetime] = None
+    region_id: Optional[int] = None
     products: List[Product] = []
     allowed_regions: List[RegionSummaryResponse] = []
     model_config = ConfigDict(from_attributes=True)

@@ -191,6 +191,7 @@ class DBTeam(Base):
     deleted_at = Column(DateTime(timezone=True), nullable=True)
     retention_warning_sent_at = Column(DateTime(timezone=True), nullable=True)
     last_pool_purchase = Column(DateTime(timezone=True), nullable=True)
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=True, index=True)
 
     users = relationship("DBUser", back_populates="team")
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="team")
@@ -201,6 +202,7 @@ class DBTeam(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    region = relationship("DBRegion", foreign_keys=[region_id])
     metrics = relationship(
         "DBTeamMetrics", back_populates="team", uselist=False, cascade="all, delete"
     )

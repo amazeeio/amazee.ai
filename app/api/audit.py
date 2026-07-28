@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Query, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, UTC
 from sqlalchemy import distinct, cast, String, or_
 from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
@@ -16,6 +16,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["audit"])
+
+
+def _as_naive_utc(dt: datetime) -> datetime:
+    # DBAuditLog.timestamp is stored as naive UTC; normalize tz-aware
+    # query params so comparisons don't depend on the server timezone.
+    return dt.astimezone(UTC).replace(tzinfo=None) if dt.tzinfo else dt
 
 
 @router.get("/logs", response_model=PaginatedAuditLogResponse)
@@ -63,9 +69,9 @@ async def get_audit_logs(
         if user_email:
             query = query.filter(DBUser.email.ilike(f"%{user_email}%"))
         if from_date:
-            query = query.filter(DBAuditLog.timestamp >= from_date)
+            query = query.filter(DBAuditLog.timestamp >= _as_naive_utc(from_date))
         if to_date:
-            query = query.filter(DBAuditLog.timestamp <= to_date)
+            query = query.filter(DBAuditLog.timestamp <= _as_naive_utc(to_date))
         if status_code:
             status_codes = [sc.strip() for sc in status_code.split(",")]
             query = query.filter(

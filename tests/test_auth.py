@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock
 from app.api.auth import generate_validation_token
 
 
@@ -354,7 +354,7 @@ def test_sign_in_missing_data(client):
     assert "Invalid sign in data" in response.json()["detail"]
 
 
-def test_sign_in_new_user_success(client, mock_dynamodb):
+def test_sign_in_new_user_success(client, mock_dynamodb, test_region):
     # Use a hardcoded validation code since we're mocking the response anyway
     email = "newuser@example.com"
     code = "TESTCODE"
@@ -366,10 +366,14 @@ def test_sign_in_new_user_success(client, mock_dynamodb):
         "ttl": 1234567890,
     }
 
-    # Test with JSON data
-    response = client.post(
-        "/auth/sign-in", json={"username": email, "verification_code": code}
-    )
+    with (
+        patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock),
+        patch("app.core.litellm_user_sync.LiteLLMService") as mock_sync_litellm,
+    ):
+        mock_sync_litellm.return_value = AsyncMock()
+        response = client.post(
+            "/auth/sign-in", json={"username": email, "verification_code": code}
+        )
 
     # Verify the response
     assert response.status_code == 200
@@ -775,7 +779,7 @@ def test_sign_in_cookie_expiration_system_admin(client, test_admin, mock_dynamod
     assert "Max-Age=28800" in set_cookie_header or "max-age=28800" in set_cookie_header
 
 
-def test_sign_in_new_user_cookie_expiration(client, mock_dynamodb):
+def test_sign_in_new_user_cookie_expiration(client, mock_dynamodb, test_region):
     """
     Given a new user signing in for the first time
     When the user signs in with verification code
@@ -790,9 +794,14 @@ def test_sign_in_new_user_cookie_expiration(client, mock_dynamodb):
         "ttl": 1234567890,
     }
 
-    response = client.post(
-        "/auth/sign-in", json={"username": email, "verification_code": code}
-    )
+    with (
+        patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock),
+        patch("app.core.litellm_user_sync.LiteLLMService") as mock_sync_litellm,
+    ):
+        mock_sync_litellm.return_value = AsyncMock()
+        response = client.post(
+            "/auth/sign-in", json={"username": email, "verification_code": code}
+        )
     assert response.status_code == 200
 
     # Check that the cookie is set with 30-minute expiration (new users are not system admins)
