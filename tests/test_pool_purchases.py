@@ -655,6 +655,69 @@ def test_create_pool_purchase_region_not_found(client, admin_token, db, test_tea
     assert response.status_code == 404
 
 
+def test_create_pool_purchase_inactive_region_rejected(
+    client, admin_token, db, test_team, test_region
+):
+    """A region being decommissioned must not accept new pool purchases."""
+    test_team.budget_type = "pool"
+    test_region.is_active = False
+    db.commit()
+
+    response = client.post(
+        f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+        json={
+            "amount_cents": 5000,
+            "currency": "usd",
+            "purchased_at": "2026-03-13T10:00:00Z",
+            "stripe_payment_id": f"pi_inactive_{int(time.time() * 1000000)}",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Region not found or inactive"
+
+    # Nothing was recorded against the dead region.
+    assert (
+        db.query(DBPoolPurchase)
+        .filter(DBPoolPurchase.region_id == test_region.id)
+        .count()
+        == 0
+    )
+
+
+def test_create_periodic_topup_inactive_region_rejected(
+    client, admin_token, db, test_team, test_region
+):
+    """A region being decommissioned must not accept new top-ups either."""
+    test_team.budget_type = "periodic"
+    test_region.is_active = False
+    db.commit()
+
+    response = client.post(
+        f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase/periodic",
+        json={
+            "amount_cents": 5000,
+            "currency": "usd",
+            "purchased_at": "2026-03-13T10:00:00Z",
+            "stripe_payment_id": f"cs_inactive_{int(time.time() * 1000000)}",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Region not found or inactive"
+
+    # The inactive check runs before the team-region assignment check, so no
+    # ledger entry is written.
+    assert (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(DBPeriodicBudgetLedgerEntry.region_id == test_region.id)
+        .count()
+        == 0
+    )
+
+
 def test_pool_purchase_propagates_team_budget_only(
     client, admin_token, db, test_team, test_region
 ):
