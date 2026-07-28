@@ -66,6 +66,26 @@ export function AuditLogFilters({
           </div>
 
           <div className="space-y-2">
+            <label className="text-sm font-medium">From</label>
+            <Input
+              type="datetime-local"
+              aria-label="From date"
+              value={filters.from_date || ""}
+              onChange={(e) => onFilterChange("from_date", e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium">To</label>
+            <Input
+              type="datetime-local"
+              aria-label="To date"
+              value={filters.to_date || ""}
+              onChange={(e) => onFilterChange("to_date", e.target.value)}
+            />
+          </div>
+
+          <div className="space-y-2">
             <label className="text-sm font-medium">Referer</label>
             <Input
               type="text"

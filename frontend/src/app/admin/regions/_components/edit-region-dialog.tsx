@@ -202,7 +202,7 @@ export function EditRegionDialog({
                     postgres_admin_password: e.target.value,
                   })
                 }
-                placeholder="••••••••"
+                placeholder="Leave blank to keep current"
               />
             </div>
             <div className="space-y-2">
@@ -230,7 +230,7 @@ export function EditRegionDialog({
                     litellm_api_key: e.target.value,
                   })
                 }
-                placeholder="••••••••"
+                placeholder="Leave blank to keep current"
               />
             </div>
           </div>

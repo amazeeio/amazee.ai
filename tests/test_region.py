@@ -283,6 +283,41 @@ def test_update_region(client, admin_token, test_region):
     assert data["postgres_port"] == update_data["postgres_port"]
 
 
+def test_update_region_blank_secrets_keep_current(client, admin_token, test_region, db):
+    """
+    Given an existing region
+    When it is updated with explicitly blank/null credential fields
+    Then the stored credentials should remain unchanged
+    """
+    original_password = test_region.postgres_admin_password
+    original_key = test_region.litellm_api_key
+
+    update_data = {
+        "name": test_region.name,
+        "label": test_region.label,
+        "description": "updated description only",
+        "postgres_host": test_region.postgres_host,
+        "postgres_port": test_region.postgres_port,
+        "postgres_admin_user": test_region.postgres_admin_user,
+        "postgres_admin_password": "",
+        "litellm_api_url": test_region.litellm_api_url,
+        "litellm_api_key": None,
+        "is_active": True,
+        "is_dedicated": test_region.is_dedicated,
+    }
+
+    response = client.put(
+        f"/regions/{test_region.id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json=update_data,
+    )
+
+    assert response.status_code == 200
+    db.refresh(test_region)
+    assert test_region.postgres_admin_password == original_password
+    assert test_region.litellm_api_key == original_key
+
+
 def test_update_region_legacy_http_url_grandfathered(
     client, admin_token, test_region, db
 ):
@@ -613,6 +648,12 @@ def test_list_admin_regions(client, admin_token, db, test_region):
     region_names = [r["name"] for r in regions]
     assert test_region.name in region_names
     assert "inactive-region" in region_names
+    # Admin listing exposes connection identity but never secrets
+    for r in regions:
+        assert "postgres_port" in r
+        assert "postgres_admin_user" in r
+        assert "postgres_admin_password" not in r
+        assert "litellm_api_key" not in r
 
 
 def test_list_admin_regions_non_admin(client, test_token):
@@ -716,11 +757,11 @@ def test_list_regions_team_member_sees_team_dedicated_regions(
     client, team_admin_token, db, test_region, test_team
 ):
     """
-    Given a team member and a dedicated region associated with their team
+    Given a team member whose team has a dedicated region as its primary region
     When the team member lists regions
-    Then they should see non-dedicated regions plus their team's dedicated regions
+    Then they should see exactly that dedicated region
     """
-    # Create a dedicated region associated with the team
+    # Create a dedicated region and assign it as the team's primary region
     dedicated_region = (
         db.query(DBRegion).filter(DBRegion.name == "team-dedicated-region").first()
     )
@@ -741,11 +782,8 @@ def test_list_regions_team_member_sees_team_dedicated_regions(
         db.commit()
         db.refresh(dedicated_region)
 
-    # Create team-region association
-    from app.db.models import DBTeamRegion
-
-    team_region = DBTeamRegion(team_id=test_team.id, region_id=dedicated_region.id)
-    db.add(team_region)
+    # Set team's primary region to the dedicated region
+    test_team.region_id = dedicated_region.id
     db.commit()
 
     response = client.get(
@@ -754,30 +792,19 @@ def test_list_regions_team_member_sees_team_dedicated_regions(
 
     assert response.status_code == 200
     regions = response.json()
-    assert len(regions) == 2
-    region_names = [r["name"] for r in regions]
-    assert test_region.name in region_names
-    assert "team-dedicated-region" in region_names
+    assert len(regions) == 1
+    assert regions[0]["name"] == "team-dedicated-region"
 
 
 def test_list_regions_team_member_with_only_dedicated_assignment(
     client, team_admin_token, db, test_region, test_team
 ):
     """
-    Given a team where only a dedicated region is assigned
+    Given a team whose primary region is a dedicated region
     When a team member lists regions
-    Then they should only see that explicit assignment
+    Then they should only see that dedicated region
     """
-    from app.db.models import DBTeamRegion
-
-    # Remove the default public association for this team.
-    db.query(DBTeamRegion).filter(
-        DBTeamRegion.team_id == test_team.id,
-        DBTeamRegion.region_id == test_region.id,
-    ).delete()
-    db.commit()
-
-    # Create a dedicated region associated with the team
+    # Create a dedicated region and set it as the team's primary region
     dedicated_region = (
         db.query(DBRegion)
         .filter(DBRegion.name == "team-hidden-public-dedicated")
@@ -800,8 +827,7 @@ def test_list_regions_team_member_with_only_dedicated_assignment(
         db.commit()
         db.refresh(dedicated_region)
 
-    team_region = DBTeamRegion(team_id=test_team.id, region_id=dedicated_region.id)
-    db.add(team_region)
+    test_team.region_id = dedicated_region.id
     db.commit()
 
     response = client.get(
@@ -859,6 +885,7 @@ def test_list_regions_team_member_does_not_see_other_team_dedicated_regions(
 
     team_region = DBTeamRegion(team_id=other_team.id, region_id=dedicated_region.id)
     db.add(team_region)
+    test_team.region_id = test_region.id
     db.commit()
 
     response = client.get(

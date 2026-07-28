@@ -10,6 +10,7 @@ import {
 import { useState, Fragment, useMemo } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import {
   Table,
   TableBody,
@@ -46,6 +47,7 @@ export default function RegionsPage() {
   // Sorting state
   const [sortField, setSortField] = useState<SortField>("id");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const [showDeleted, setShowDeleted] = useState(false);
 
   // Queries
   const { data: regions = [], isLoading: isLoadingRegions } = useQuery<
@@ -90,7 +92,7 @@ export default function RegionsPage() {
 
   // Memoized sorted regions
   const sortedRegions = useMemo(() => {
-    const sorted = [...regions];
+    const sorted = regions.filter((r) => showDeleted || r.is_active);
     if (sortField) {
       sorted.sort((a, b) => {
         let aValue: string | number;
@@ -121,7 +123,7 @@ export default function RegionsPage() {
       });
     }
     return sorted;
-  }, [regions, sortField, sortDirection]);
+  }, [regions, sortField, sortDirection, showDeleted]);
 
   // Mutations
   const deleteRegionMutation = useMutation({
@@ -175,10 +177,25 @@ export default function RegionsPage() {
         <>
           <div className="flex items-center justify-between">
             <h1 className="text-3xl font-bold">Regions</h1>
-            <CreateRegionDialog
-              open={isAddingRegion}
-              onOpenChange={setIsAddingRegion}
-            />
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="show-deleted-regions"
+                  checked={showDeleted}
+                  onCheckedChange={setShowDeleted}
+                />
+                <label
+                  htmlFor="show-deleted-regions"
+                  className="text-sm font-medium"
+                >
+                  Show deleted
+                </label>
+              </div>
+              <CreateRegionDialog
+                open={isAddingRegion}
+                onOpenChange={setIsAddingRegion}
+              />
+            </div>
           </div>
           <div className="rounded-md border">
             <Table>
@@ -226,7 +243,12 @@ export default function RegionsPage() {
                       <TableCell>{region.id}</TableCell>
                       <TableCell>{region.name}</TableCell>
                       <TableCell>{region.label}</TableCell>
-                      <TableCell>{region.postgres_host}</TableCell>
+                      <TableCell>
+                        {region.postgres_host}:{region.postgres_port}
+                        <div className="text-xs text-muted-foreground">
+                          user: {region.postgres_admin_user}
+                        </div>
+                      </TableCell>
                       <TableCell>{region.litellm_api_url}</TableCell>
                       <TableCell>
                         <Badge
