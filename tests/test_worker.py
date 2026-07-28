@@ -1,3 +1,4 @@
+import asyncio
 import pytest
 import stripe
 from app.db.models import (
@@ -23,6 +24,8 @@ from app.core.worker import (
     team_total_spend,
     active_team_labels,
     reconcile_team_keys,
+    RegionKeyStateCache,
+    _resolve_key_state,
     _sync_periodic_ledger_for_invoice,
     _get_snapshot_remaining_cents,
     _parse_client_reference_ids,
@@ -3631,3 +3634,424 @@ async def test_invoice_ledger_duplicate_invoice_id_is_idempotent(
         f"Double-allocation detected: consumed_cents={topup_entry.consumed_cents}, "
         "expected at most 100¢ from a single FIFO run"
     )
+
+
+# ---------------------------------------------------------------------------
+# Bulk /key/list snapshot behaviour
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_region_key_state_cache_lists_region_once(test_region):
+    """The snapshot is fetched once per region and reused for later teams."""
+    service = AsyncMock()
+    service.list_all_keys.return_value = {"hash-1": {"spend": 1.0}}
+
+    cache = RegionKeyStateCache()
+    first = await cache.get(test_region, service)
+    second = await cache.get(test_region, service)
+
+    assert first == {"hash-1": {"spend": 1.0}}
+    assert second is first
+    # Reused, not re-listed: this is what keeps ~1.1k teams from re-paginating
+    assert service.list_all_keys.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_region_key_state_cache_caches_failure(test_region):
+    """A failing region degrades to an empty snapshot and is not retried per team."""
+    service = AsyncMock()
+    service.list_all_keys.side_effect = Exception("litellm down")
+
+    cache = RegionKeyStateCache()
+    first = await cache.get(test_region, service)
+    second = await cache.get(test_region, service)
+
+    assert first == {}
+    assert second == {}
+    assert service.list_all_keys.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_region_key_state_cache_rejects_non_dict(test_region):
+    """A non-mapping response degrades instead of being indexed into."""
+    service = AsyncMock()
+    service.list_all_keys.return_value = ["not", "a", "dict"]
+
+    cache = RegionKeyStateCache()
+    result = await cache.get(test_region, service)
+
+    assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_resolve_key_state_prefers_snapshot(test_region):
+    """A key present in the snapshot must not trigger a /key/info call."""
+    key = DBPrivateAIKey(name="k", litellm_token="sk-abc", region_id=test_region.id)
+    from app.services.litellm import LiteLLMService as _Svc
+
+    snapshot = {_Svc.hash_token("sk-abc"): {"spend": 3.0, "max_budget": 10.0}}
+    service = AsyncMock()
+
+    info = await _resolve_key_state(key, test_region, service, snapshot)
+
+    assert info == {"spend": 3.0, "max_budget": 10.0}
+    service.get_key_info.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_key_state_falls_back_when_key_missing(test_region):
+    """A key created after the snapshot still resolves, via /key/info."""
+    key = DBPrivateAIKey(name="k", litellm_token="sk-new", region_id=test_region.id)
+    snapshot = {"some-other-hash": {"spend": 1.0}}
+    service = AsyncMock()
+    service.get_key_info.return_value = {"info": {"spend": 7.0}}
+
+    info = await _resolve_key_state(key, test_region, service, snapshot)
+
+    assert info == {"spend": 7.0}
+    service.get_key_info.assert_awaited_once_with("sk-new")
+
+
+@pytest.mark.asyncio
+async def test_resolve_key_state_falls_back_on_empty_snapshot(test_region):
+    """An empty snapshot (failed listing) falls back for every key."""
+    key = DBPrivateAIKey(name="k", litellm_token="sk-abc", region_id=test_region.id)
+    service = AsyncMock()
+    service.get_key_info.return_value = {"info": {"spend": 2.0}}
+
+    info = await _resolve_key_state(key, test_region, service, {})
+
+    assert info == {"spend": 2.0}
+    service.get_key_info.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_uses_snapshot_not_per_key_info(
+    mock_litellm, db, test_team, test_region, test_team_user
+):
+    """
+    Given: A team whose keys are all present in the bulk snapshot
+    When: reconcile_team_keys runs
+    Then: Spend comes from the snapshot and no per-key /key/info call is made
+    """
+    from app.services.litellm import LiteLLMService as _Svc
+
+    team_key = DBPrivateAIKey(
+        name="Team Key",
+        litellm_token="sk-team-1",
+        region=test_region,
+        team_id=test_team.id,
+    )
+    user_key = DBPrivateAIKey(
+        name="User Key",
+        litellm_token="sk-user-1",
+        region=test_region,
+        owner_id=test_team_user.id,
+    )
+    db.add_all([team_key, user_key])
+    db.commit()
+
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock()
+    mock_instance.update_budget = AsyncMock()
+    mock_instance.list_all_keys = AsyncMock(
+        return_value={
+            _Svc.hash_token("sk-team-1"): {
+                "spend": 4.0,
+                "max_budget": 50.0,
+                "key_alias": "team_key",
+                "budget_duration": "30d",
+            },
+            _Svc.hash_token("sk-user-1"): {
+                "spend": 6.0,
+                "max_budget": 50.0,
+                "key_alias": "user_key",
+                "budget_duration": "30d",
+            },
+        }
+    )
+
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+    team_total = await reconcile_team_keys(db, test_team, keys_by_region, False)
+
+    assert team_total == 10.0
+    # The whole point of the change: one bulk listing, zero per-key lookups
+    assert mock_instance.list_all_keys.await_count == 1
+    mock_instance.get_key_info.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_shares_cache_across_teams(
+    mock_litellm, db, test_team, test_region
+):
+    """A shared cache means a second team in the same region does not re-list."""
+    from app.services.litellm import LiteLLMService as _Svc
+
+    key = DBPrivateAIKey(
+        name="Team Key",
+        litellm_token="sk-team-1",
+        region=test_region,
+        team_id=test_team.id,
+    )
+    db.add(key)
+
+    other_team = DBTeam(name="Other Team", admin_email="other@example.com")
+    db.add(other_team)
+    db.commit()
+
+    other_key = DBPrivateAIKey(
+        name="Other Key",
+        litellm_token="sk-other-1",
+        region=test_region,
+        team_id=other_team.id,
+    )
+    db.add(other_key)
+    db.commit()
+
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock()
+    mock_instance.update_budget = AsyncMock()
+    mock_instance.list_all_keys = AsyncMock(
+        return_value={
+            _Svc.hash_token("sk-team-1"): {"spend": 1.0, "max_budget": 10.0},
+            _Svc.hash_token("sk-other-1"): {"spend": 2.0, "max_budget": 10.0},
+        }
+    )
+
+    cache = RegionKeyStateCache()
+    total_a = await reconcile_team_keys(
+        db,
+        test_team,
+        get_team_keys_by_region(db, test_team.id),
+        False,
+        key_state_cache=cache,
+    )
+    total_b = await reconcile_team_keys(
+        db,
+        other_team,
+        get_team_keys_by_region(db, other_team.id),
+        False,
+        key_state_cache=cache,
+    )
+
+    assert total_a == 1.0
+    assert total_b == 2.0
+    assert mock_instance.list_all_keys.await_count == 1
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_still_writes_from_snapshot_state(
+    mock_litellm, db, test_team, test_region
+):
+    """
+    Given: A key whose snapshot budget differs from the expected budget
+    When: reconcile_team_keys runs off the snapshot
+    Then: The budget correction is still issued (writes are unchanged)
+    """
+    from app.services.litellm import LiteLLMService as _Svc
+
+    key = DBPrivateAIKey(
+        name="Team Key",
+        litellm_token="sk-team-1",
+        region=test_region,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock()
+    mock_instance.update_budget = AsyncMock()
+    mock_instance.list_all_keys = AsyncMock(
+        return_value={
+            _Svc.hash_token("sk-team-1"): {
+                "spend": 1.0,
+                "max_budget": 25.0,  # differs from the 50.0 we pass in
+                "key_alias": "team_key",
+                "budget_duration": "30d",
+            }
+        }
+    )
+
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+    await reconcile_team_keys(db, test_team, keys_by_region, False, 30, 50.0)
+
+    mock_instance.update_budget.assert_awaited_once()
+    args = mock_instance.update_budget.await_args
+    assert args.args[0] == "sk-team-1"
+    assert args.kwargs["budget_amount"] == 50.0
+
+
+# ---------------------------------------------------------------------------
+# Bounded-concurrency key writes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_key_writes_executes_all_and_returns_zero_failures():
+    """Every queued write runs; no failures reported on the happy path."""
+    from app.core.worker import _run_key_writes
+
+    called = []
+
+    def _make(i):
+        async def _write():
+            called.append(i)
+
+        return _write
+
+    pending = [(i, _make(i)) for i in range(25)]
+    failures = await _run_key_writes(pending, "test-region")
+
+    assert failures == 0
+    assert sorted(called) == list(range(25))
+
+
+@pytest.mark.asyncio
+async def test_run_key_writes_isolates_failures():
+    """A failing write is counted but does not stop the others."""
+    from app.core.worker import _run_key_writes
+
+    done = []
+
+    def _ok(i):
+        async def _write():
+            done.append(i)
+
+        return _write
+
+    async def _boom():
+        raise RuntimeError("litellm rejected the update")
+
+    pending = [(1, _ok(1)), (2, _boom), (3, _ok(3))]
+    failures = await _run_key_writes(pending, "test-region")
+
+    assert failures == 1
+    assert sorted(done) == [1, 3]
+
+
+@pytest.mark.asyncio
+async def test_run_key_writes_is_bounded():
+    """No more than KEY_WRITE_CONCURRENCY writes are in flight at once."""
+    from app.core import worker as worker_module
+    from app.core.worker import _run_key_writes
+
+    in_flight = 0
+    peak = 0
+
+    def _make():
+        async def _write():
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0)
+            in_flight -= 1
+
+        return _write
+
+    pending = [(i, _make()) for i in range(50)]
+    await _run_key_writes(pending, "test-region")
+
+    assert peak <= worker_module.KEY_WRITE_CONCURRENCY
+
+
+@pytest.mark.asyncio
+async def test_run_key_writes_empty_is_noop():
+    """An empty queue short-circuits."""
+    from app.core.worker import _run_key_writes
+
+    assert await _run_key_writes([], "test-region") == 0
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_expire_writes_are_batched(
+    mock_litellm, db, test_team, test_region
+):
+    """
+    Given: A team with several keys and expire_keys=True
+    When: reconcile_team_keys runs
+    Then: Every key gets an expiry write, issued through the batched path
+    """
+    from app.services.litellm import LiteLLMService as _Svc
+
+    tokens = [f"sk-expire-{i}" for i in range(5)]
+    for i, tok in enumerate(tokens):
+        db.add(
+            DBPrivateAIKey(
+                name=f"Key {i}",
+                litellm_token=tok,
+                region=test_region,
+                team_id=test_team.id,
+            )
+        )
+    db.commit()
+
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock()
+    mock_instance.update_budget = AsyncMock()
+    mock_instance.update_key_duration = AsyncMock()
+    mock_instance.list_all_keys = AsyncMock(
+        return_value={
+            _Svc.hash_token(tok): {"spend": 1.0, "max_budget": 10.0} for tok in tokens
+        }
+    )
+
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+    team_total = await reconcile_team_keys(db, test_team, keys_by_region, True)
+
+    # Spend still accumulated for every key
+    assert team_total == 5.0
+    # One expiry write per key, and no budget writes on the expire path
+    assert mock_instance.update_key_duration.await_count == 5
+    assert mock_instance.update_budget.await_count == 0
+    expired = sorted(
+        c.args[0] for c in mock_instance.update_key_duration.await_args_list
+    )
+    assert expired == sorted(tokens)
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_write_failure_does_not_lose_spend(
+    mock_litellm, db, test_team, test_region
+):
+    """A failed expiry write must not stop the other keys being processed."""
+    from app.services.litellm import LiteLLMService as _Svc
+
+    tokens = ["sk-a", "sk-b", "sk-c"]
+    for i, tok in enumerate(tokens):
+        db.add(
+            DBPrivateAIKey(
+                name=f"Key {i}",
+                litellm_token=tok,
+                region=test_region,
+                team_id=test_team.id,
+            )
+        )
+    db.commit()
+
+    async def _maybe_fail(token, duration):
+        if token == "sk-b":
+            raise RuntimeError("litellm 500")
+
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock()
+    mock_instance.update_budget = AsyncMock()
+    mock_instance.update_key_duration = AsyncMock(side_effect=_maybe_fail)
+    mock_instance.list_all_keys = AsyncMock(
+        return_value={
+            _Svc.hash_token(tok): {"spend": 2.0, "max_budget": 10.0} for tok in tokens
+        }
+    )
+
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+    team_total = await reconcile_team_keys(db, test_team, keys_by_region, True)
+
+    # All three attempted, and spend counted for all three
+    assert mock_instance.update_key_duration.await_count == 3
+    assert team_total == 6.0

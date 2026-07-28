@@ -1,8 +1,10 @@
+import asyncio
 import hashlib
 import httpx
 from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException, status
 import logging
+import os
 import re
 from app.core.limit_service import (
     DEFAULT_KEY_DURATION,
@@ -13,6 +15,28 @@ from app.core.config import settings
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Concurrent /key/list page fetches per region sweep. Pages are independent
+# read-only requests, so this only bounds load on the LiteLLM proxy.
+LIST_KEYS_PAGE_CONCURRENCY = max(1, int(os.getenv("LIST_KEYS_PAGE_CONCURRENCY", "8")))
+
+
+def hash_litellm_token(litellm_token: str) -> str:
+    """Hash a LiteLLM key the way LiteLLM stores it internally.
+
+    LiteLLM persists ``sk-`` keys as their SHA-256 hexdigest (e.g. in the
+    ``LiteLLM_SpendLogs`` table queried by ``/spend/logs/v2`` and the
+    daily-spend tables that back ``/user/daily/activity``). Any other token
+    is stored verbatim. Mirrors LiteLLM's ``_hash_token_if_needed``.
+
+    Exposed as a module-level function, not only as
+    :meth:`LiteLLMService.hash_token`, so callers can hash without holding a
+    service instance and without depending on the class symbol - which tests
+    routinely patch, silently breaking hash-keyed lookups.
+    """
+    if litellm_token.startswith("sk-"):
+        return hashlib.sha256(litellm_token.encode()).hexdigest()
+    return litellm_token
 
 
 class LiteLLMService:
@@ -34,14 +58,9 @@ class LiteLLMService:
     def hash_token(litellm_token: str) -> str:
         """Hash a LiteLLM key the way LiteLLM stores it internally.
 
-        LiteLLM persists ``sk-`` keys as their SHA-256 hexdigest (e.g. in the
-        ``LiteLLM_SpendLogs`` table queried by ``/spend/logs/v2`` and the
-        daily-spend tables that back ``/user/daily/activity``). Any other token
-        is stored verbatim. Mirrors LiteLLM's ``_hash_token_if_needed``.
+        Thin wrapper over :func:`hash_litellm_token`, kept for existing callers.
         """
-        if litellm_token.startswith("sk-"):
-            return hashlib.sha256(litellm_token.encode()).hexdigest()
-        return litellm_token
+        return hash_litellm_token(litellm_token)
 
     @staticmethod
     def sanitize_alias(alias: str) -> str:
@@ -268,6 +287,113 @@ class LiteLLMService:
             raise HTTPException(
                 status_code=status_code,
                 detail=f"Failed to get LiteLLM key information: {error_msg}",
+            )
+
+    async def _fetch_key_page(
+        self, client: httpx.AsyncClient, page: int, page_size: int
+    ) -> dict:
+        """Fetch a single ``/key/list`` page and return the decoded payload."""
+        response = await client.get(
+            f"{self.api_url}/key/list",
+            headers={"Authorization": f"Bearer {self.master_key}"},
+            params={
+                "page": page,
+                "size": page_size,
+                "return_full_object": True,
+                "include_team_keys": True,
+            },
+            timeout=60.0,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    @staticmethod
+    def _collect_key_page(payload: dict, keys: dict[str, dict]) -> list:
+        """Merge one page's keys into ``keys``. Returns the raw batch."""
+        batch = payload.get("keys") or []
+        for entry in batch:
+            # With return_full_object=true entries are objects; be defensive in
+            # case LiteLLM returns bare token strings.
+            if not isinstance(entry, dict):
+                continue
+            token = entry.get("token")
+            if token:
+                keys[token] = entry
+        return batch
+
+    async def list_all_keys(self, page_size: int = 100) -> dict[str, dict]:
+        """Return every key in this region, keyed by LiteLLM's hashed token.
+
+        Bulk replacement for calling :meth:`get_key_info` once per key. The
+        reconciliation job needs the state of every key in a region, which as a
+        per-key loop costs one HTTP round-trip each (~0.18s), i.e. ~40 minutes
+        at 13.5k keys. ``/key/list`` returns the same full key objects 100 at a
+        time, so the same sweep costs ``ceil(n / 100)`` requests instead of n.
+
+        ``page_size`` is capped at 100 by LiteLLM (values above that are
+        rejected with a 422), so it is clamped rather than passed through.
+
+        The returned mapping is keyed the way LiteLLM stores tokens - the
+        SHA-256 hexdigest of an ``sk-`` key - so look values up via
+        :meth:`hash_token`. Values are the flat key objects, matching the
+        ``info`` sub-dict that :meth:`get_key_info` returns.
+        """
+        page_size = max(1, min(int(page_size), 100))
+        keys: dict[str, dict] = {}
+        try:
+            async with httpx.AsyncClient() as client:
+                first = await self._fetch_key_page(client, 1, page_size)
+                batch = self._collect_key_page(first, keys)
+                pages_fetched = 1
+
+                # A short or empty first page is the only page.
+                if batch and len(batch) >= page_size:
+                    total_pages = first.get("total_pages") or 0
+                    if total_pages and total_pages > 1:
+                        # Page count known: fetch the rest concurrently. Pages
+                        # are independent reads, so this turns a 119-page walk
+                        # from minutes into seconds.
+                        semaphore = asyncio.Semaphore(LIST_KEYS_PAGE_CONCURRENCY)
+
+                        async def _page(page_number: int) -> dict:
+                            async with semaphore:
+                                return await self._fetch_key_page(
+                                    client, page_number, page_size
+                                )
+
+                        payloads = await asyncio.gather(
+                            *[_page(p) for p in range(2, total_pages + 1)]
+                        )
+                        for payload in payloads:
+                            self._collect_key_page(payload, keys)
+                        pages_fetched = total_pages
+                    else:
+                        # total_pages absent: fall back to a sequential walk,
+                        # since we cannot know how many pages to request.
+                        page = 2
+                        while True:
+                            payload = await self._fetch_key_page(
+                                client, page, page_size
+                            )
+                            batch = self._collect_key_page(payload, keys)
+                            pages_fetched = page
+                            if not batch or len(batch) < page_size:
+                                break
+                            page += 1
+
+            logger.info(
+                "Listed %d LiteLLM keys from %s across %d page(s)",
+                len(keys),
+                self.api_url,
+                pages_fetched,
+            )
+            return keys
+        except httpx.HTTPStatusError as e:
+            status_code, error_msg, _ = self._parse_http_error(e)
+            logger.error("Error listing LiteLLM keys: %s", error_msg)
+            raise HTTPException(
+                status_code=status_code,
+                detail=f"Failed to list LiteLLM keys: {error_msg}",
             )
 
     async def get_key_last_used(self, litellm_token: str) -> Optional[datetime]:
