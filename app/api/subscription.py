@@ -142,6 +142,20 @@ async def subscription_cycle(
         .first()
     )
 
+    # An inactive region is being decommissioned. Renewals of subscriptions that
+    # already run there must keep working — blocking them would strand paying
+    # teams without budget while their keys are still live and draining. But a
+    # subscription must not *start* its first cycle on a region that is going
+    # away, so only the first cycle is rejected.
+    if not region.is_active and is_first_cycle:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Region {request.region_id} is inactive; a subscription cannot "
+                "start a new billing cycle there"
+            ),
+        )
+
     try:
         if not is_first_cycle:
             await capture_periodic_team_spend_for_period(

@@ -606,6 +606,103 @@ async def test_webhook_cycle_first_cycle_is_region_scoped(
     mock_apply_cycle.assert_awaited_once()
 
 
+@patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.api.subscription.apply_billing_cycle_for_team", new_callable=AsyncMock)
+@patch("app.api.subscription._sync_periodic_ledger_for_period", new_callable=AsyncMock)
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+def test_subscription_cycle_first_cycle_rejected_on_inactive_region(
+    mock_capture,
+    mock_sync_ledger,
+    mock_apply_cycle,
+    mock_record_payment,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """A new subscription cannot start its first cycle on a decommissioning region."""
+    test_region.is_active = False
+    db.commit()
+
+    response = client.post(
+        "/billing/subscription/cycle",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_cycle_inactive_first",
+            "budget_cents": 10000,
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "inactive" in response.json()["detail"]
+
+    # No budget was granted and no payment recorded against the dead region.
+    mock_record_payment.assert_not_awaited()
+    mock_sync_ledger.assert_not_awaited()
+    mock_apply_cycle.assert_not_awaited()
+
+
+@patch("app.api.subscription._record_periodic_payment_direct", new_callable=AsyncMock)
+@patch("app.api.subscription.apply_billing_cycle_for_team", new_callable=AsyncMock)
+@patch("app.api.subscription._sync_periodic_ledger_for_period", new_callable=AsyncMock)
+@patch(
+    "app.api.subscription.capture_periodic_team_spend_for_period",
+    new_callable=AsyncMock,
+)
+def test_subscription_cycle_renewal_allowed_on_inactive_region(
+    mock_capture,
+    mock_sync_ledger,
+    mock_apply_cycle,
+    mock_record_payment,
+    client,
+    admin_token,
+    db,
+    test_team,
+    test_region,
+):
+    """Renewals keep working while the region drains, so paying teams keep budget."""
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="subscription",
+            amount_cents=10000,
+            consumed_cents=0,
+            purchased_at=datetime.now(UTC),
+            effective_period_start=datetime.now(UTC),
+            effective_period_end=datetime.now(UTC) + timedelta(days=31),
+            expires_at=datetime.now(UTC) + timedelta(days=31),
+            is_active=True,
+        )
+    )
+    test_region.is_active = False
+    db.commit()
+    mock_apply_cycle.return_value = []
+    mock_record_payment.return_value = 789
+
+    response = client.post(
+        "/billing/subscription/cycle",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "transaction_id": "txn_cycle_inactive_renewal",
+            "budget_cents": 10000,
+            "team_id": test_team.id,
+            "region_id": test_region.id,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["payment_id"] == 789
+    mock_sync_ledger.assert_awaited_once()
+    mock_apply_cycle.assert_awaited_once()
+
+
 def test_subscription_cycle_endpoint_idempotent(client, admin_token, db, test_team):
     payment = DBPeriodicPayment(
         team_id=test_team.id,

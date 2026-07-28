@@ -346,10 +346,18 @@ async def purchase_pool_budget(
             ),
         )
 
-    region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+    # Inactive regions reject new spend. A region is flipped `is_active=False`
+    # while its keys are still live and still draining, so without this filter a
+    # team could keep buying budget on a region that is being torn down.
+    region = (
+        db.query(DBRegion)
+        .filter(DBRegion.id == region_id, DBRegion.is_active.is_(True))
+        .first()
+    )
     if not region:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Region not found or inactive",
         )
 
     existing_purchase = (
@@ -503,10 +511,18 @@ async def create_periodic_topup(
 async def purchase_periodic_topup(
     *, region_id: int, team: DBTeam, purchase: PeriodicTopupRequest, db: Session
 ) -> PeriodicTopupResponse:
-    region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
+    # Same rule as purchase_pool_budget: no new spend on a region that is being
+    # decommissioned. Guarded here as well as at the pool entry point so the
+    # `/purchase/periodic` endpoint is covered too.
+    region = (
+        db.query(DBRegion)
+        .filter(DBRegion.id == region_id, DBRegion.is_active.is_(True))
+        .first()
+    )
     if not region:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Region not found or inactive",
         )
     team_region = (
         db.query(DBTeamRegion)
