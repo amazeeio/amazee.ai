@@ -1,6 +1,6 @@
 import logging
 from datetime import UTC, datetime
-from typing import List
+from typing import List, Optional
 
 from app.api.private_ai_keys import delete_private_ai_key
 from app.core.config import settings
@@ -50,7 +50,7 @@ from app.schemas.models import (
 from app.services.disposable_domains import assert_email_domain_allowed
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -203,22 +203,67 @@ async def register_team(
 @router.get(
     "/", response_model=List[Team], dependencies=[Depends(get_role_min_system_admin)]
 )
-async def list_teams(include_deleted: bool = False, db: Session = Depends(get_db)):
+async def list_teams(
+    response: Response,
+    include_deleted: bool = False,
+    name: Optional[str] = None,
+    admin_email: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    skip: int = Query(0, ge=0),
+    limit: Optional[int] = Query(None, ge=1, le=1000),
+    sort_by: Optional[str] = Query(
+        None, pattern="^(name|admin_email|is_active|created_at)$"
+    ),
+    sort_order: str = Query("asc", pattern="^(asc|desc)$"),
+    db: Session = Depends(get_db),
+):
     """
     List all teams. Only accessible by admin users.
 
     Args:
         include_deleted: If True, include soft-deleted teams in the results. Defaults to False.
+        name / admin_email: partial-match filters.
+        is_active: filter by active status.
+        skip / limit: pagination (unpaginated when limit is omitted, for
+            backwards compatibility). The total match count is returned in
+            the X-Total-Count response header.
     """
-    query = db.query(DBTeam).options(
+    query = db.query(DBTeam)
+
+    if not include_deleted:
+        query = query.filter(DBTeam.deleted_at.is_(None))
+    if name:
+        query = query.filter(DBTeam.name.ilike(f"%{name}%"))
+    if admin_email:
+        query = query.filter(DBTeam.admin_email.ilike(f"%{admin_email}%"))
+    if is_active is not None:
+        query = query.filter(DBTeam.is_active.is_(is_active))
+
+    total = query.count()
+    response.headers["X-Total-Count"] = str(total)
+
+    sort_columns = {
+        "name": func.lower(DBTeam.name),
+        "admin_email": func.lower(DBTeam.admin_email),
+        "is_active": DBTeam.is_active,
+        "created_at": DBTeam.created_at,
+    }
+    order_by = []
+    if sort_by:
+        column = sort_columns[sort_by]
+        order_by.append(column.desc() if sort_order == "desc" else column.asc())
+    # Stable ordering so skip/limit pagination is deterministic
+    order_by.append(DBTeam.id)
+
+    query = query.options(
         joinedload(DBTeam.active_products).joinedload(DBTeamProduct.product),
         selectinload(DBTeam.allowed_region_associations).joinedload(
             DBTeamRegion.region
         ),
-    )
+    ).order_by(*order_by)
 
-    if not include_deleted:
-        query = query.filter(DBTeam.deleted_at.is_(None))
+    if limit is not None:
+        query = query.offset(skip).limit(limit)
 
     return query.all()
 
