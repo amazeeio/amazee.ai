@@ -39,6 +39,13 @@ from app.services.litellm import LiteLLMService
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# How far back a prior subscription cycle can be and still make the next one a
+# renewal rather than a new subscription. Stripe cycles here are monthly, so 45
+# days leaves room for a late webhook without treating a months-old cancelled
+# subscription as still running. Only consulted for inactive (decommissioning)
+# regions — see subscription_cycle.
+SUBSCRIPTION_RENEWAL_GRACE_DAYS = 45
+
 
 def _write_audit_log(
     db: Session,
@@ -145,16 +152,44 @@ async def subscription_cycle(
     # An inactive region is being decommissioned. Renewals of subscriptions that
     # already run there must keep working — blocking them would strand paying
     # teams without budget while their keys are still live and draining. But a
-    # subscription must not *start* its first cycle on a region that is going
-    # away, so only the first cycle is rejected.
-    if not region.is_active and is_first_cycle:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Region {request.region_id} is inactive; a subscription cannot "
-                "start a new billing cycle there"
-            ),
+    # subscription must not *start* on a region that is going away.
+    #
+    # "Already running" is decided by recency, not by `is_first_cycle` and not by
+    # the ledger's `is_active` flag:
+    #
+    # - `is_first_cycle` is too weak. It is false as soon as *any* historical
+    #   subscription entry exists, so a team that cancelled here long ago and
+    #   then re-subscribes would look like a renewal and land fresh budget on a
+    #   dying region.
+    # - `is_active` is too strong. `expire_subscription_entries` clears it at
+    #   every period rollover, and `allocate_period_spend_fifo` clears it as soon
+    #   as a period's budget is fully consumed — so an ordinary renewal for a
+    #   team that spent its whole budget would be refused.
+    #
+    # A real renewal always follows a cycle roughly 30 days earlier (this handler
+    # assumes monthly: `period_end` above is a fixed 31 days). Anything older
+    # than the grace window is a new subscription in all but name.
+    if not region.is_active:
+        renewal_cutoff = period_start - timedelta(days=SUBSCRIPTION_RENEWAL_GRACE_DAYS)
+        has_recent_cycle = (
+            db.query(DBPeriodicBudgetLedgerEntry)
+            .filter(
+                DBPeriodicBudgetLedgerEntry.team_id == team.id,
+                DBPeriodicBudgetLedgerEntry.region_id == region.id,
+                DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+                DBPeriodicBudgetLedgerEntry.purchased_at >= renewal_cutoff,
+            )
+            .first()
+            is not None
         )
+        if not has_recent_cycle:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Region {request.region_id} is inactive; a subscription "
+                    "cannot start a new billing cycle there"
+                ),
+            )
 
     try:
         if not is_first_cycle:
