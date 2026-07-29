@@ -18,7 +18,11 @@ export function useTeams(includeDeleted: boolean = false) {
 
   // Mutations
   const createTeamMutation = useMutation({
-    mutationFn: async (data: { name: string; admin_email: string }) => {
+    mutationFn: async (data: {
+      name: string;
+      admin_email: string;
+      region_id: number;
+    }) => {
       const response = await post("/teams", data);
       return response.json();
     },
