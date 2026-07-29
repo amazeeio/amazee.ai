@@ -801,6 +801,39 @@ def write_audit_logs(
 # --------------------------------------------------------------------------- #
 
 
+def regions_to_sweep(db: Session) -> list[DBRegion]:
+    """Regions worth evaluating: any that still hold at least one live key.
+
+    Deliberately NOT filtered on ``is_active``. That flag governs whether a
+    region accepts *new* provisioning, not whether its existing keys still serve
+    traffic. On PROD, region 5 (``amazeeai-de103``) is inactive yet holds 11,859
+    keys — 85% of all keys, including the anonymous Drupal trial fleet, which is
+    exactly the population that runs into budget limits. Filtering on
+    ``is_active`` silently excluded them from every alert.
+
+    Requiring a live key also keeps the sweep off decommissioned regions, whose
+    LiteLLM URL may no longer resolve, without needing a second flag: an empty
+    region has nothing to alert on regardless of its status.
+    """
+    return (
+        db.query(DBRegion)
+        .filter(
+            DBRegion.litellm_api_url.isnot(None),
+            DBRegion.litellm_api_url != "",
+            DBRegion.litellm_api_key.isnot(None),
+            DBRegion.litellm_api_key != "",
+            db.query(DBPrivateAIKey.id)
+            .filter(
+                DBPrivateAIKey.region_id == DBRegion.id,
+                DBPrivateAIKey.litellm_token.isnot(None),
+            )
+            .exists(),
+        )
+        .order_by(DBRegion.id)
+        .all()
+    )
+
+
 @budget_alert_run_duration.time()
 async def monitor_budget_thresholds(db: Session) -> dict[str, int]:
     """Sweep every active region, notify new crossings, and record what stuck.
@@ -816,12 +849,7 @@ async def monitor_budget_thresholds(db: Session) -> dict[str, int]:
         logger.warning("No budget alert thresholds configured; nothing to do")
         return {"regions": 0, "events": 0, "delivered": 0}
 
-    regions = (
-        db.query(DBRegion)
-        .filter(DBRegion.is_active.is_(True))
-        .order_by(DBRegion.id)
-        .all()
-    )
+    regions = regions_to_sweep(db)
     logger.info(
         "Budget threshold sweep starting: %d region(s), thresholds=%s, enabled=%s",
         len(regions),
