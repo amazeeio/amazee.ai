@@ -52,7 +52,8 @@ def _deploy_model(db, model, region, sync_status="synced"):
     return assoc
 
 
-auth = lambda token: {"Authorization": f"Bearer {token}"}
+def auth(token):
+    return {"Authorization": f"Bearer {token}"}
 
 
 # ---------------------------------------------------------------------------
