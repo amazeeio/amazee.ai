@@ -875,6 +875,9 @@ _bedrock_catalog_cache: dict[str, Any] = {
     "url": None,
     "expires_at": datetime.min.replace(tzinfo=UTC),
     "data": None,
+    # EOL dates derived from "data", cached with it so the derivation happens
+    # once per fetch rather than once per caller.  See _build_eol_index.
+    "eol_index": {},
 }
 
 
@@ -926,6 +929,7 @@ async def _fetch_bedrock_catalog(url: str) -> list[dict[str, Any]]:
 
         _bedrock_catalog_cache["url"] = url
         _bedrock_catalog_cache["data"] = data
+        _bedrock_catalog_cache["eol_index"] = _build_eol_index(data)
         _bedrock_catalog_cache["expires_at"] = now + _BEDROCK_CATALOG_TTL
         return data
 
@@ -961,11 +965,6 @@ _EOL_ANNOTATION_PATTERN = re.compile(r"\(EOL:\s*(\d{4}-\d{2}-\d{2})\)")
 
 # ``bedrock/us.anthropic.claude-...`` -> the catalog's ``anthropic.claude-...``.
 _BEDROCK_REGION_PREFIXES = ("us.", "eu.", "au.", "apac.", "global.", "jp.")
-
-_bedrock_eol_cache: dict[str, Any] = {
-    "catalog_expires_at": None,
-    "index": {},
-}
 
 
 def _parse_eol_annotation(metadata_raw: Any) -> str | None:
@@ -1028,7 +1027,12 @@ def _build_eol_index(catalog: list[dict[str, Any]]) -> dict[str, str]:
                 index[model_id] = date.fromisoformat(raw.strip()[:10]).isoformat()
                 continue
             except ValueError:
-                pass
+                logger.debug(
+                    "Unparseable modelLifecycle.endOfLifeTime %r for Bedrock model "
+                    "%s; trying modelCard.modelEolDate",
+                    raw,
+                    model_id,
+                )
 
         card = model.get("modelCard")
         raw = (card or {}).get("modelEolDate") if isinstance(card, dict) else None
@@ -1047,6 +1051,9 @@ def _build_eol_index(catalog: list[dict[str, Any]]) -> dict[str, str]:
 async def _get_bedrock_eol_index() -> dict[str, str]:
     """EOL dates keyed by Bedrock ``modelId``; empty dict when unavailable.
 
+    The index is built by _fetch_bedrock_catalog under its own lock, so a cold
+    multi-region fan-out derives it once no matter how many regions ask for it.
+
     Never raises: /public/models must not fail because the upstream catalog is
     down, so a fetch error degrades to the operator-authored annotations only.
     An empty ``BEDROCK_MODELS_URL`` disables the lookup entirely (used by tests
@@ -1055,19 +1062,13 @@ async def _get_bedrock_eol_index() -> dict[str, str]:
     if not settings.BEDROCK_MODELS_URL:
         return {}
     try:
-        catalog = await _fetch_bedrock_catalog(settings.BEDROCK_MODELS_URL)
+        await _fetch_bedrock_catalog(settings.BEDROCK_MODELS_URL)
     except (httpx.RequestError, HTTPException, asyncio.TimeoutError) as exc:
         logger.warning(
             "Bedrock catalog unavailable for /public/models EOL dates: %s", str(exc)
         )
         return {}
-
-    # Rebuild only when _fetch_bedrock_catalog refreshed its cache.
-    expires_at = _bedrock_catalog_cache["expires_at"]
-    if _bedrock_eol_cache["catalog_expires_at"] != expires_at:
-        _bedrock_eol_cache["index"] = _build_eol_index(catalog)
-        _bedrock_eol_cache["catalog_expires_at"] = expires_at
-    return _bedrock_eol_cache["index"]
+    return _bedrock_catalog_cache["eol_index"] or {}
 
 
 def _resolve_eol(
