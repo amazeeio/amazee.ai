@@ -49,6 +49,7 @@ from app.core.pool_budget_service import pool_available_budget_for_team_region
 from app.core.spend_period_service import TeamPeriodWindow, resolve_team_period_window
 from app.core.team_service import get_team_region_litellm_keys
 from app.db.models import (
+    DBAuditLog,
     DBBudgetAlertState,
     DBLimitedResource,
     DBPrivateAIKey,
@@ -729,6 +730,72 @@ def mark_notified(
     return advanced
 
 
+def write_audit_logs(
+    db: Session,
+    events: list[BudgetAlertEvent],
+    delivered_event_ids: set[str],
+    now: datetime | None = None,
+) -> int:
+    """Record each attempted crossing in the audit log.
+
+    ``budget_alert_state`` only holds the *current* band per subject, so without
+    this there is no answer to "did we warn this customer before their keys were
+    cut off" — a billing-dispute question that application logs (rotated, and
+    absent from the DB) cannot settle. ``delivered`` distinguishes "the customer
+    was told" from "we detected it but could not reach the consumer".
+
+    An undelivered crossing is re-detected next tick, so a consumer outage
+    produces one row per attempt. That repetition is the retry record, and it is
+    bounded by the tick interval rather than by traffic.
+
+    Audit failure must never fail the sweep: alerting is the job, auditing is the
+    side effect.
+    """
+    if not events:
+        return 0
+    now = now or datetime.now(UTC)
+    written = 0
+    try:
+        for event in events:
+            db.add(
+                DBAuditLog(
+                    timestamp=now,
+                    user_id=None,
+                    event_type="WORKER",
+                    resource_type=event.subject_type,
+                    resource_id=event.subject_key,
+                    action="budget.threshold_reached",
+                    details={
+                        "event_id": event.event_id,
+                        "delivered": event.event_id in delivered_event_ids,
+                        "threshold_percent": event.threshold_pct,
+                        "percent_used": event.percent_used,
+                        "spend": event.spend,
+                        "max_budget": event.max_budget,
+                        "region_id": event.region_id,
+                        "region_name": event.region_name,
+                        "team_id": event.team_id,
+                        "user_id": event.user_id,
+                        "key_id": event.key_id,
+                        "period_key": event.period_key,
+                    },
+                    request_source=None,
+                )
+            )
+            written += 1
+        db.commit()
+    except Exception as exc:
+        logger.error("Failed to write budget alert audit logs: %s", exc)
+        try:
+            db.rollback()
+        except Exception as rollback_exc:
+            logger.warning(
+                "Failed to roll back budget alert audit logs: %s", rollback_exc
+            )
+        return 0
+    return written
+
+
 # --------------------------------------------------------------------------- #
 # Job entry point
 # --------------------------------------------------------------------------- #
@@ -767,6 +834,7 @@ async def monitor_budget_thresholds(db: Session) -> dict[str, int]:
         "subjects": 0,
         "events": 0,
         "delivered": 0,
+        "audited": 0,
         "litellm_calls": 0,
     }
 
@@ -834,15 +902,19 @@ async def monitor_budget_thresholds(db: Session) -> dict[str, int]:
         undelivered = len(evaluation.events) - len(delivered)
         if undelivered > 0:
             budget_alert_delivery_failures_total.inc(undelivered)
+        # Audit before advancing state: if mark_notified were to fail, the record
+        # that we did warn the customer should still survive.
+        totals["audited"] += write_audit_logs(db, evaluation.events, delivered)
         mark_notified(db, region, evaluation, delivered)
 
     logger.info(
         "Budget threshold sweep finished: regions=%d subjects=%d events=%d "
-        "delivered=%d litellm_calls=%d",
+        "delivered=%d audited=%d litellm_calls=%d",
         totals["regions"],
         totals["subjects"],
         totals["events"],
         totals["delivered"],
+        totals["audited"],
         totals["litellm_calls"],
     )
     return totals
