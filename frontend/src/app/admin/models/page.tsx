@@ -14,6 +14,8 @@ import {
   Layers,
   Globe2,
   Info,
+  Shield,
+  AlertTriangle,
 } from "lucide-react";
 import { useState, useMemo } from "react";
 import { Badge } from "@/components/ui/badge";
@@ -41,6 +43,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { get, post, put, del } from "@/utils/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import AccessGroupsTab, { AccessGroupResponse } from "./access-groups-tab";
 
 interface AdminModelRegionResponse {
   region_id: number;
@@ -68,6 +71,8 @@ interface AdminModelResponse {
   updated_at: string;
   deleted_at: string | null;
   regions: AdminModelRegionResponse[];
+  access_group_ids: number[];
+  access_group_slugs: string[];
 }
 
 export default function ModelsPage() {
@@ -98,6 +103,7 @@ export default function ModelsPage() {
   const [isActiveGlobally, setIsActiveGlobally] = useState(true);
   const [litellmParams, setLitellmParams] = useState("{}");
   const [selectedRegionIds, setSelectedRegionIds] = useState<number[]>([]);
+  const [selectedGroupIds, setSelectedGroupIds] = useState<number[]>([]);
   // When set, the form was opened via "Prep Import": submit creates the model
   // via /admin/models/import (marks the source region already-synced, no sync task).
   const [importSourceRegionId, setImportSourceRegionId] = useState<number | null>(null);
@@ -130,6 +136,12 @@ export default function ModelsPage() {
       const response = await get("regions/admin");
       return response.json();
     },
+  });
+
+  // Access groups (shared cache with the Access Groups tab)
+  const { data: accessGroups = [] } = useQuery<AccessGroupResponse[]>({
+    queryKey: ["access-groups"],
+    queryFn: async () => (await get("admin/access-groups")).json(),
   });
 
   // Unique list of regions from authoritative source (with models[0] fallback)
@@ -314,6 +326,7 @@ export default function ModelsPage() {
     setIsActiveGlobally(true);
     setLitellmParams("{}");
     setSelectedRegionIds([]);
+    setSelectedGroupIds([]);
     setImportSourceRegionId(null);
   };
 
@@ -356,7 +369,8 @@ export default function ModelsPage() {
         .filter((r) => r.is_active)
         .map((r) => r.region_id);
       setSelectedRegionIds(activeRegionIds);
-      
+      setSelectedGroupIds(fullModel.access_group_ids || []);
+
       setIsFormOpen(true);
     } catch (err: any) {
       toast({
@@ -410,6 +424,7 @@ export default function ModelsPage() {
       override_eol: overrideEol ? new Date(overrideEol).toISOString() : null,
       is_active_globally: isActiveGlobally,
       litellm_params: parsedParams,
+      access_group_ids: selectedGroupIds,
     };
 
     saveModelMutation.mutate(payload);
@@ -641,10 +656,17 @@ export default function ModelsPage() {
             <TabsTrigger value="matrix" className="flex items-center gap-1.5">
               <Globe2 className="h-4 w-4" /> Regions Matrix
             </TabsTrigger>
+            <TabsTrigger value="access-groups" className="flex items-center gap-1.5">
+              <Shield className="h-4 w-4" /> Access Groups
+            </TabsTrigger>
           </TabsList>
         </div>
 
-      {isLoading ? (
+      <TabsContent value="access-groups" className="mt-0">
+        <AccessGroupsTab regions={regions} />
+      </TabsContent>
+
+      {activeTab === "access-groups" ? null : isLoading ? (
         <div className="flex flex-col items-center justify-center min-h-[300px] border rounded-md space-y-4 bg-transparent">
           <Loader2 className="h-10 w-10 animate-spin text-gray-400" />
           <span className="text-sm text-gray-500">Loading catalog matrix...</span>
@@ -670,6 +692,7 @@ export default function ModelsPage() {
                           <TableHead className="w-[120px]">Provider</TableHead>
                           <TableHead className="w-[100px]">Type</TableHead>
                           <TableHead className="w-[110px]">Context Window</TableHead>
+                          <TableHead className="w-[160px]">Access Groups</TableHead>
                           <TableHead className="w-[130px]">Deprecation / EOL</TableHead>
                           <TableHead className="w-[100px]">Global Status</TableHead>
                           <TableHead className="w-[100px] text-right">Actions</TableHead>
@@ -711,6 +734,36 @@ export default function ModelsPage() {
                                 </div>
                               ) : (
                                 <span className="text-gray-400">-</span>
+                              )}
+                            </TableCell>
+                            <TableCell>
+                              {model.access_group_slugs?.length ? (
+                                <div className="flex flex-wrap gap-1">
+                                  {model.access_group_slugs.map((slug) => (
+                                    <Badge
+                                      key={slug}
+                                      variant="outline"
+                                      className="text-[10px] font-mono bg-transparent text-gray-600 border-gray-200 hover:bg-transparent"
+                                    >
+                                      {slug}
+                                    </Badge>
+                                  ))}
+                                </div>
+                              ) : (
+                                <TooltipProvider>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <div className="flex items-center gap-1 text-amber-700 text-xs cursor-help">
+                                        <AlertTriangle className="h-3.5 w-3.5" />
+                                        No group
+                                      </div>
+                                    </TooltipTrigger>
+                                    <TooltipContent className="max-w-xs">
+                                      Not in any access group — unreachable by all teams in
+                                      regions with enforcement enabled.
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
                               )}
                             </TableCell>
                             <TableCell>{getEolBadge(model)}</TableCell>
@@ -1029,6 +1082,50 @@ export default function ModelsPage() {
                             className="rounded border-gray-300 text-gray-900 focus:ring-gray-900 h-4 w-4"
                           />
                           <span className="font-medium">{region.name}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-1.5 col-span-2 border p-3 rounded-md bg-transparent">
+                <span className="text-sm font-semibold text-gray-900 block">Access Groups</span>
+                <span className="text-[11px] text-gray-500 block mb-3">
+                  Teams only reach models through access groups. A model in no group is
+                  unreachable in enforced regions.
+                </span>
+                {accessGroups.length === 0 ? (
+                  <span className="text-xs text-gray-400 italic block">
+                    No access groups defined yet (see the Access Groups tab).
+                  </span>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2">
+                    {accessGroups.map((group) => {
+                      const isChecked = selectedGroupIds.includes(group.id);
+                      return (
+                        <label
+                          key={group.id}
+                          className={`flex items-center gap-2 p-2 rounded-md border text-sm transition-all cursor-pointer ${
+                            isChecked
+                              ? "bg-gray-50/50 border-gray-400 text-gray-900"
+                              : "bg-transparent border-gray-100 text-gray-500 hover:bg-gray-50/30"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedGroupIds((prev) => [...prev, group.id]);
+                              } else {
+                                setSelectedGroupIds((prev) => prev.filter((id) => id !== group.id));
+                              }
+                            }}
+                            className="rounded border-gray-300 text-gray-900 focus:ring-gray-900 h-4 w-4"
+                          />
+                          <span className="font-medium">{group.label}</span>
+                          <span className="text-[10px] text-gray-400 font-mono">{group.slug}</span>
                         </label>
                       );
                     })}

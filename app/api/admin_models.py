@@ -6,7 +6,14 @@ from sqlalchemy import func
 
 from app.db.database import get_db
 from app.core.security import get_role_min_system_admin
-from app.db.models import DBModel, DBModelRegion, DBRegion, DBUser
+from app.db.models import (
+    DBModel,
+    DBModelAccessGroup,
+    DBModelAccessGroupModel,
+    DBModelRegion,
+    DBRegion,
+    DBUser,
+)
 from app.schemas.models import (
     AdminModelCreate,
     AdminModelUpdate,
@@ -24,16 +31,37 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/models", tags=["admin_models"])
 
 
+def _model_access_groups_map(
+    db: Session, model_pks: Optional[List[int]] = None
+) -> dict[int, List[tuple[int, str]]]:
+    """model pk -> [(group_id, slug), ...] in one query."""
+    query = (
+        db.query(DBModelAccessGroupModel.model_id, DBModelAccessGroup.id, DBModelAccessGroup.slug)
+        .join(DBModelAccessGroup, DBModelAccessGroup.id == DBModelAccessGroupModel.group_id)
+        .order_by(DBModelAccessGroup.slug)
+    )
+    if model_pks is not None:
+        query = query.filter(DBModelAccessGroupModel.model_id.in_(model_pks))
+    result: dict[int, List[tuple[int, str]]] = {}
+    for model_pk, group_id, slug in query.all():
+        result.setdefault(model_pk, []).append((group_id, slug))
+    return result
+
+
 def _build_model_response(
     db: Session,
     db_model: DBModel,
     all_regions: Optional[List[DBRegion]] = None,
     mask_litellm_params: bool = True,
+    groups_map: Optional[dict] = None,
 ) -> AdminModelResponse:
     """Helper to assemble a complete AdminModelResponse with all active regions."""
     # Fetch all regions in the database if not pre-cached
     if all_regions is None:
         all_regions = db.query(DBRegion).filter(DBRegion.is_active.is_(True)).all()
+    if groups_map is None:
+        groups_map = _model_access_groups_map(db, [db_model.id])
+    model_groups = groups_map.get(db_model.id, [])
     
     # Map of region_id -> DBModelRegion record for this model
     model_regions_map = {mr.region_id: mr for mr in db_model.regions}
@@ -82,6 +110,8 @@ def _build_model_response(
         updated_at=db_model.updated_at,
         deleted_at=db_model.deleted_at,
         regions=regions_list,
+        access_group_ids=[gid for gid, _ in model_groups],
+        access_group_slugs=[slug for _, slug in model_groups],
     )
 
 
@@ -115,7 +145,13 @@ async def list_models(
         
     db_models = query.order_by(DBModel.created_at.desc()).all()
     all_regions = db.query(DBRegion).filter(DBRegion.is_active.is_(True)).all()
-    return [_build_model_response(db, m, all_regions=all_regions, mask_litellm_params=True) for m in db_models]
+    groups_map = _model_access_groups_map(db)
+    return [
+        _build_model_response(
+            db, m, all_regions=all_regions, mask_litellm_params=True, groups_map=groups_map
+        )
+        for m in db_models
+    ]
 
 
 @router.post("", response_model=AdminModelResponse, status_code=status.HTTP_201_CREATED)
@@ -155,6 +191,9 @@ async def create_model(
             detail=f"litellm_params contains redacted placeholder values ('{CREDENTIAL_SENTINEL}'); provide real credentials."
         )
 
+    if model_in.access_group_ids:
+        _validate_access_group_ids(db, model_in.access_group_ids)
+
     db_model = DBModel(
         model_id=model_in.model_id,
         display_name=model_in.display_name,
@@ -168,12 +207,50 @@ async def create_model(
         is_active_globally=model_in.is_active_globally,
         litellm_params=model_in.litellm_params,
     )
-    
+
     db.add(db_model)
+    db.flush()
+    # No region sync needed here: the model has no region associations yet, so
+    # tags get pushed by the first region-toggle sync.
+    for group_id in set(model_in.access_group_ids or []):
+        db.add(DBModelAccessGroupModel(group_id=group_id, model_id=db_model.id))
     db.commit()
     db.refresh(db_model)
-    
+
     return _build_model_response(db, db_model)
+
+
+def _validate_access_group_ids(db: Session, group_ids: List[int]) -> None:
+    found = {
+        row[0]
+        for row in db.query(DBModelAccessGroup.id)
+        .filter(DBModelAccessGroup.id.in_(group_ids))
+        .all()
+    }
+    missing = sorted(set(group_ids) - found)
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown access group ids: {missing}",
+        )
+
+
+def _replace_model_access_groups(db: Session, model_pk: int, group_ids: List[int]) -> bool:
+    """Replace a model's group memberships. Returns True if they changed."""
+    _validate_access_group_ids(db, group_ids)
+    existing = {
+        row[0]
+        for row in db.query(DBModelAccessGroupModel.group_id)
+        .filter(DBModelAccessGroupModel.model_id == model_pk)
+        .all()
+    }
+    new_ids = set(group_ids)
+    if existing == new_ids:
+        return False
+    db.query(DBModelAccessGroupModel).filter_by(model_id=model_pk).delete()
+    for group_id in new_ids:
+        db.add(DBModelAccessGroupModel(group_id=group_id, model_id=model_pk))
+    return True
 
 
 def _extract_credential_keys(litellm_params: dict) -> List[str]:
@@ -420,6 +497,13 @@ async def update_model(
 
     update_data = model_in.model_dump(exclude_unset=True)
 
+    # Group memberships live in their own table, not on DBModel — pop before
+    # the setattr loop. Explicit [] means "remove from all groups".
+    groups_changed = False
+    group_ids = update_data.pop("access_group_ids", None)
+    if group_ids is not None:
+        groups_changed = _replace_model_access_groups(db, db_model.id, group_ids)
+
     # Credentials are write-only: reads return CREDENTIAL_SENTINEL, so a sentinel
     # coming back on update means "keep the stored value".
     if update_data.get("litellm_params"):
@@ -450,7 +534,9 @@ async def update_model(
     # Re-sync only when LiteLLM-relevant fields changed or global active state toggled
     is_active_changed = (old_is_active_globally != db_model.is_active_globally)
     litellm_params_changed = "litellm_params" in update_data
-    if is_active_changed or (db_model.is_active_globally and litellm_params_changed):
+    if is_active_changed or (
+        db_model.is_active_globally and (litellm_params_changed or groups_changed)
+    ):
         for assoc in db_model.regions:
             if assoc.is_active:
                 assoc.sync_status = "pending"
@@ -484,7 +570,11 @@ async def delete_model(
         )
 
     db_model.deleted_at = datetime.now(UTC)
-    
+
+    # Drop group memberships so the deleted model no longer counts toward any
+    # group; a later import-restore starts ungrouped (reachable by no team).
+    db.query(DBModelAccessGroupModel).filter_by(model_id=db_model.id).delete()
+
     # Soft delete regional associations and trigger sync task to de-register (delete) from LiteLLM
     for assoc in db_model.regions:
         if assoc.is_active or (not assoc.is_active and assoc.sync_status == "failed"):
@@ -571,6 +661,7 @@ async def toggle_model_region(
 @router.post("/import", response_model=AdminModelResponse, status_code=status.HTTP_201_CREATED)
 async def import_model(
     import_in: AdminModelImport,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: DBUser = Depends(get_role_min_system_admin),
 ):
@@ -672,6 +763,12 @@ async def import_model(
     # commit atomically below.
     db.flush()
 
+    groups_assigned = False
+    if import_in.access_group_ids is not None:
+        groups_assigned = _replace_model_access_groups(
+            db, db_model.id, import_in.access_group_ids
+        )
+
     # Upsert the region association and mark as immediately synced,
     # since it was imported directly from this active region proxy.
     association = db.query(DBModelRegion).filter(
@@ -695,6 +792,15 @@ async def import_model(
             synced_at=datetime.now(UTC),
         )
         db.add(association)
+
+    # Import copies the proxy's state, but freshly assigned access-group tags
+    # only exist in our DB — push them so "synced" stays honest.
+    if groups_assigned:
+        association.sync_status = "pending"
+        association.synced_at = None
+        background_tasks.add_task(
+            sync_model_to_region_task, db_model.id, import_in.region_id
+        )
 
     db.commit()
     db.refresh(db_model)

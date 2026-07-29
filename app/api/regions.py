@@ -40,6 +40,7 @@ from app.core.litellm_user_sync import (
     sync_remove_user_from_team,
 )
 from app.schemas.limits import ResourceType
+from app.services.access_groups import effective_team_group_slugs
 from app.services.litellm import LiteLLMService
 
 logger = logging.getLogger(__name__)
@@ -442,6 +443,7 @@ async def _associate_team_with_region(
             team_alias=lite_team_id,
             max_budget=max_budget,
             budget_duration=budget_duration,
+            models=effective_team_group_slugs(db, team_id, region),
         )
     except Exception as e:
         logger.error(

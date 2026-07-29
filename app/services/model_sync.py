@@ -4,6 +4,7 @@ from datetime import datetime, UTC
 
 from app.db.database import get_db
 from app.db.models import DBModel, DBModelRegion, DBRegion
+from app.services.access_groups import model_access_group_slugs
 from app.services.litellm import LiteLLMService
 
 logger = logging.getLogger(__name__)
@@ -76,12 +77,20 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
         deployment_ids = await litellm_service.get_model_deployment_ids(model.model_id)
 
         if assoc.is_active and model.is_active_globally:
+            # Access-group tags are derived state: groups containing this model
+            # that are deployed to this region. Always sent (possibly []) so
+            # removing a model from its last group clears the tags on the proxy.
+            access_groups = model_access_group_slugs(db, model.id, region_id)
             if deployment_ids:
                 logger.info(f"Updating model '{model.model_id}' in region '{region.name}' (deployments: {deployment_ids})")
-                await litellm_service.update_model(model.model_id, model.litellm_params, deployment_ids)
+                await litellm_service.update_model(
+                    model.model_id, model.litellm_params, deployment_ids, access_groups=access_groups
+                )
             else:
                 logger.info(f"Registering model '{model.model_id}' in region '{region.name}'")
-                await litellm_service.add_model(model.model_id, model.litellm_params)
+                await litellm_service.add_model(
+                    model.model_id, model.litellm_params, access_groups=access_groups
+                )
         else:
             logger.info(f"Deregistering model '{model.model_id}' from region '{region.name}'")
             await litellm_service.delete_model(model.model_id, deployment_ids)

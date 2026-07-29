@@ -1011,12 +1011,16 @@ class LiteLLMService:
         budget_duration: Optional[str] = None,
         team_id: Optional[str] = None,
         team_alias: Optional[str] = None,
+        models: Optional[list[str]] = None,
     ):
         """Create a LiteLLM team. Treat existing team as success.
 
         Args:
             max_budget: Budget limit. None means no team-level budget gate.
                         0.0 blocks all requests (used for POOL teams).
+            models: Access-group slugs the team may use (LiteLLM's `models`
+                    field accepts access-group names). None = no restriction
+                    (all proxy models).
         """
         try:
             request_data = {}
@@ -1028,6 +1032,8 @@ class LiteLLMService:
                 request_data["team_alias"] = team_alias
             if budget_duration:
                 request_data["budget_duration"] = budget_duration
+            if models is not None:
+                request_data["models"] = models
 
             async with httpx.AsyncClient() as client:
                 response = await client.post(
@@ -1096,6 +1102,28 @@ class LiteLLMService:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to update LiteLLM team budget: {error_msg}",
+            )
+
+    async def update_team_models(self, team_id: str, models: list[str]) -> None:
+        """Set a LiteLLM team's `models` list (access-group slugs).
+
+        An empty list clears the restriction (LiteLLM treats [] as
+        all-proxy-models) — used when a region's enforcement is turned off.
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/team/update",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json={"team_id": team_id, "models": models},
+                )
+                response.raise_for_status()
+                logger.info(f"Updated team {team_id} models to {models} in LiteLLM")
+        except httpx.HTTPStatusError as e:
+            _, error_msg, _ = self._parse_http_error(e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update LiteLLM team models: {error_msg}",
             )
 
     async def get_team_model_aliases(self, team_id: str) -> dict[str, str]:
@@ -1415,7 +1443,12 @@ class LiteLLMService:
                 detail=f"Failed to remove LiteLLM team member: {error_msg}",
             )
 
-    async def add_model(self, model_id: str, litellm_params: dict) -> dict:
+    async def add_model(
+        self,
+        model_id: str,
+        litellm_params: dict,
+        access_groups: Optional[list[str]] = None,
+    ) -> dict:
         """
         Register a new model in LiteLLM.
         Sends POST /model/new.
@@ -1425,6 +1458,8 @@ class LiteLLMService:
             "model_name": model_id,
             "litellm_params": dict(litellm_params or {}),
         }
+        if access_groups is not None:
+            payload["model_info"] = {"access_groups": access_groups}
         if "model" not in payload["litellm_params"]:
             payload["litellm_params"]["model"] = model_id
 
@@ -1469,12 +1504,17 @@ class LiteLLMService:
         ]
 
     async def update_model(
-        self, model_id: str, litellm_params: dict, deployment_ids: Optional[list[str]] = None
+        self,
+        model_id: str,
+        litellm_params: dict,
+        deployment_ids: Optional[list[str]] = None,
+        access_groups: Optional[list[str]] = None,
     ) -> dict:
         """
         Update an existing model in LiteLLM.
         Sends POST /model/update per deployment id (LiteLLM identifies the
         deployment by model_info.id; model_name alone is not accepted).
+        access_groups=[] clears the tags; None leaves them untouched.
         """
         if deployment_ids is None:
             deployment_ids = await self.get_model_deployment_ids(model_id)
@@ -1493,13 +1533,16 @@ class LiteLLMService:
         try:
             async with httpx.AsyncClient(timeout=MODEL_HTTP_TIMEOUT) as client:
                 for dep_id in deployment_ids:
+                    model_info: dict = {"id": dep_id}
+                    if access_groups is not None:
+                        model_info["access_groups"] = access_groups
                     response = await client.post(
                         f"{self.api_url}/model/update",
                         headers={"Authorization": f"Bearer {self.master_key}"},
                         json={
                             "model_name": model_id,
                             "litellm_params": params,
-                            "model_info": {"id": dep_id},
+                            "model_info": model_info,
                         },
                     )
                     response.raise_for_status()

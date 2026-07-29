@@ -258,6 +258,8 @@ export const handlers = [
             synced_at: null,
           }
         ],
+        access_group_ids: [1],
+        access_group_slugs: ["default-zdr"],
       },
       {
         id: 2,
@@ -285,9 +287,102 @@ export const handlers = [
             synced_at: "2024-02-01T01:00:00Z",
           }
         ],
+        access_group_ids: [1, 2],
+        access_group_slugs: ["default-zdr", "extended-retention-30d"],
       }
     ]);
   }),
+
+  // Model Access Group endpoints
+  http.get("http://localhost:8800/admin/access-groups", () => {
+    return HttpResponse.json([
+      {
+        id: 1,
+        slug: "default-zdr",
+        label: "Default ZDR Models",
+        description: "Zero data retention",
+        model_ids: [1, 2],
+        region_ids: [1],
+        default_in_region_ids: [1],
+        team_count: 0,
+        created_at: "2024-01-01T00:00:00Z",
+        updated_at: "2024-01-01T00:00:00Z",
+      },
+      {
+        id: 2,
+        slug: "extended-retention-30d",
+        label: "Extended Data Retention Models",
+        description: null,
+        model_ids: [2],
+        region_ids: [1],
+        default_in_region_ids: [],
+        team_count: 3,
+        created_at: "2024-01-01T00:00:00Z",
+        updated_at: "2024-01-01T00:00:00Z",
+      },
+    ]);
+  }),
+
+  http.post("http://localhost:8800/admin/access-groups", async ({ request }) => {
+    const data = (await request.json()) as any;
+    return HttpResponse.json(
+      {
+        id: 3,
+        description: null,
+        ...data,
+        default_in_region_ids: [],
+        team_count: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      { status: 201 }
+    );
+  }),
+
+  http.put("http://localhost:8800/admin/access-groups/:id", async ({ request, params }) => {
+    const data = (await request.json()) as any;
+    return HttpResponse.json({
+      id: Number(params.id),
+      slug: "default-zdr",
+      description: null,
+      model_ids: [],
+      region_ids: [],
+      ...data,
+      default_in_region_ids: [],
+      team_count: 0,
+      created_at: "2024-01-01T00:00:00Z",
+      updated_at: new Date().toISOString(),
+    });
+  }),
+
+  http.delete("http://localhost:8800/admin/access-groups/:id", () => {
+    return HttpResponse.json({ status: "success", models_untagged: 1, teams_detached: 0 });
+  }),
+
+  http.get("http://localhost:8800/admin/regions/:id/team-group-sync-run", () => {
+    return HttpResponse.json(null);
+  }),
+
+  http.post("http://localhost:8800/admin/regions/:id/team-group-sync-run", ({ params }) => {
+    return HttpResponse.json({
+      id: 1,
+      region_id: Number(params.id),
+      status: "running",
+      total: 0,
+      done: 0,
+      failed_team_ids: null,
+      error_sample: null,
+      started_at: new Date().toISOString(),
+      finished_at: null,
+    });
+  }),
+
+  http.put(
+    "http://localhost:8800/admin/regions/:id/default-access-group",
+    () => {
+      return HttpResponse.json({ status: "success", run_id: 1 });
+    }
+  ),
 
   http.post("http://localhost:8800/admin/models", async ({ request }) => {
     const data = (await request.json()) as any;

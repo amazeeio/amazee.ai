@@ -28,6 +28,7 @@ import { Team } from "@/types/team";
 import { get, del } from "@/utils/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { CreateRegionDialog } from "./_components/create-region-dialog";
+import { DefaultAccessGroupCell } from "./_components/default-access-group-cell";
 import { EditRegionDialog } from "./_components/edit-region-dialog";
 import { ManageRegionTeamsDialog } from "./_components/manage-region-teams-dialog";
 
@@ -232,6 +233,7 @@ export default function RegionsPage() {
                   <TableHead>LiteLLM URL</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Default Access Group</TableHead>
                   <TableHead>Teams</TableHead>
                   <TableHead>Actions</TableHead>
                 </TableRow>
@@ -271,6 +273,9 @@ export default function RegionsPage() {
                         </span>
                       </TableCell>
                       <TableCell>
+                        <DefaultAccessGroupCell region={region} />
+                      </TableCell>
+                      <TableCell>
                         {region.is_dedicated ? (
                           <Button
                             variant="outline"
@@ -299,7 +304,7 @@ export default function RegionsPage() {
                     </TableRow>
                     <TableRow>
                       <TableCell
-                        colSpan={9}
+                        colSpan={10}
                         className="pt-0 text-xs text-muted-foreground"
                       >
                         {region.description}
