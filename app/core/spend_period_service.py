@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db.models import (
+    DBPeriodicBudgetLedgerEntry,
     DBPrivateAIKey,
     DBTeam,
     DBTeamSpendPeriod,
@@ -30,6 +34,215 @@ def _resolve_budget_type(team: DBTeam) -> str:
     if isinstance(budget_type, BudgetType):
         return budget_type.value
     return str(budget_type).lower()
+
+
+def compute_period_start(
+    budget_reset_at: datetime | None, budget_duration: str | None
+) -> datetime | None:
+    """
+    Derive the start of the current budget period from LiteLLM's
+    ``budget_reset_at`` (end-of-period) and ``budget_duration``.
+
+    LiteLLM sets ``budget_reset_at`` to the moment the budget will auto-reset.
+    For ``"Nd"`` durations the reset is rolling N days after the last update;
+    for ``"1mo"`` / ``"30d"`` it snaps to the 1st of the next calendar month.
+
+    We parse the duration string and subtract from ``budget_reset_at`` to get
+    a best-effort calendar ``period_start``.  Returns ``None`` when either
+    input is missing or the duration cannot be parsed.
+    """
+    if budget_reset_at is None or not budget_duration:
+        return None
+
+    # Handle "1mo" / "30d" — both snap to 1st of next calendar month
+    # so the period start is always the 1st of the current month.
+    if budget_duration in ("1mo", "30d"):
+        # budget_reset_at is midnight on the 1st of next month.
+        # If reset is on 1st, the period that just ended started last month.
+        if budget_reset_at.day == 1:
+            if budget_reset_at.month == 1:
+                return budget_reset_at.replace(
+                    year=budget_reset_at.year - 1, month=12, day=1
+                )
+            return budget_reset_at.replace(month=budget_reset_at.month - 1, day=1)
+        return budget_reset_at.replace(day=1)
+
+    match = re.fullmatch(r"(\d+)([dhms])", budget_duration)
+    if not match:
+        return None
+    value = int(match.group(1))
+    unit = match.group(2)
+    if unit == "d":
+        return budget_reset_at - timedelta(days=value)
+    if unit == "h":
+        return budget_reset_at - timedelta(hours=value)
+    if unit == "m":
+        return budget_reset_at - timedelta(minutes=value)
+    if unit == "s":
+        return budget_reset_at - timedelta(seconds=value)
+    return None
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
+@dataclass(frozen=True)
+class TeamPeriodWindow:
+    """The current budget window for one (team, region) pair.
+
+    ``period_end`` is the same instant LiteLLM calls ``budget_reset_at``.
+    ``source`` records which rule produced the window, which makes a wrong
+    percentage traceable to a rule rather than to arithmetic.
+    """
+
+    period_start: datetime | None
+    period_end: datetime | None
+    budget_duration: str | None
+    source: str
+    active_subscription: DBPeriodicBudgetLedgerEntry | None = None
+
+    @property
+    def period_key(self) -> str:
+        """Stable identity for this window, used to re-arm threshold alerts.
+
+        A new billing cycle yields a different key, which is what makes an
+        already-notified threshold fire again in the next period.
+        """
+        if self.period_start is None:
+            return f"{self.source}:none"
+        return f"{self.source}:{self.period_start.isoformat()}"
+
+
+def _active_subscription_entry(
+    db: Session, team_id: int, region_id: int, now: datetime
+) -> DBPeriodicBudgetLedgerEntry | None:
+    return (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team_id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            DBPeriodicBudgetLedgerEntry.effective_period_start.isnot(None),
+            DBPeriodicBudgetLedgerEntry.effective_period_end.isnot(None),
+            DBPeriodicBudgetLedgerEntry.effective_period_end > now,
+        )
+        .order_by(
+            DBPeriodicBudgetLedgerEntry.effective_period_end.desc(),
+            DBPeriodicBudgetLedgerEntry.id.desc(),
+        )
+        .first()
+    )
+
+
+def _latest_active_topup(
+    db: Session, team_id: int, region_id: int, now: datetime
+) -> DBPeriodicBudgetLedgerEntry | None:
+    return (
+        db.query(DBPeriodicBudgetLedgerEntry)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team_id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.entry_type.in_(["topup", "topup_rollover"]),
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+            ),
+        )
+        .order_by(
+            DBPeriodicBudgetLedgerEntry.purchased_at.desc(),
+            DBPeriodicBudgetLedgerEntry.id.desc(),
+        )
+        .first()
+    )
+
+
+def resolve_team_period_window(
+    db: Session,
+    team: DBTeam,
+    region_id: int,
+    *,
+    litellm_budget_duration: str | None = None,
+    litellm_budget_reset_at: datetime | None = None,
+    now: datetime | None = None,
+) -> TeamPeriodWindow:
+    """Resolve the active budget window for a (team, region) pair.
+
+    Single source of truth for "which period are we in", shared by the spend
+    API and the budget-threshold alert engine. If these two ever disagree, a
+    customer sees one percentage in the dashboard and gets alerted on another.
+
+    POOL teams are resolved purely from our own ledger — LiteLLM's counters are
+    not authoritative for them (the budget is pushed there, not owned there).
+    PERIODIC teams prefer the LiteLLM window when the caller has already
+    fetched team info, and fall back to the ledger otherwise, so a caller that
+    cannot afford a LiteLLM round-trip still gets a usable window.
+    """
+    now = now or datetime.now(UTC)
+
+    if team.budget_type == BudgetType.POOL:
+        active_subscription = _active_subscription_entry(db, team.id, region_id, now)
+        if active_subscription is not None:
+            return TeamPeriodWindow(
+                period_start=_as_utc(active_subscription.effective_period_start),
+                period_end=_as_utc(active_subscription.effective_period_end),
+                # Stripe cycles are 30d; LiteLLM carries 31d as the missed-webhook
+                # safety net, matching apply_billing_cycle_for_team.
+                budget_duration="31d",
+                source="subscription_ledger",
+                active_subscription=active_subscription,
+            )
+
+        # No subscription: the window is the top-up purchase lifetime.
+        active_topup = _latest_active_topup(db, team.id, region_id, now)
+        anchor = _as_utc(
+            (active_topup.purchased_at if active_topup is not None else None)
+            or team.created_at
+            or now
+        )
+        return TeamPeriodWindow(
+            period_start=anchor,
+            period_end=anchor + timedelta(days=settings.POOL_PURCHASE_EXPIRY_DAYS),
+            budget_duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
+            source="pool_topup",
+        )
+
+    # --- PERIODIC ---
+    if litellm_budget_reset_at is not None and litellm_budget_duration:
+        derived_start = compute_period_start(
+            litellm_budget_reset_at, litellm_budget_duration
+        )
+        if derived_start is not None:
+            return TeamPeriodWindow(
+                period_start=_as_utc(derived_start),
+                period_end=_as_utc(litellm_budget_reset_at),
+                budget_duration=litellm_budget_duration,
+                source="litellm",
+            )
+
+    active_subscription = _active_subscription_entry(db, team.id, region_id, now)
+    if active_subscription is not None:
+        return TeamPeriodWindow(
+            period_start=_as_utc(active_subscription.effective_period_start),
+            period_end=_as_utc(active_subscription.effective_period_end),
+            budget_duration="31d",
+            source="subscription_ledger",
+            active_subscription=active_subscription,
+        )
+
+    anchor = _as_utc(team.last_payment or team.created_at or now)
+    return TeamPeriodWindow(
+        period_start=anchor,
+        period_end=anchor + timedelta(days=31),
+        budget_duration="31d",
+        source="team_anchor",
+    )
 
 
 async def fetch_team_spend_snapshot_for_region(
