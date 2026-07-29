@@ -125,11 +125,21 @@ class Settings(BaseSettings):
     BUDGET_ALERT_REGION_CONCURRENCY: int = int(
         os.getenv("BUDGET_ALERT_REGION_CONCURRENCY", "4")
     )
-    # How far back the daily-activity sweep looks when a period has no resolvable
-    # start. Also bounds the window for very long POOL periods, since a 365d
-    # sweep would return a year of daily rows for no benefit.
+    # How far back the daily-activity sweep reaches. It must cover the oldest
+    # still-valid ledger entry, because spend is counted from that entry's purchase
+    # date — a shorter window understates the percentage. POOL entries live for
+    # POOL_PURCHASE_EXPIRY_DAYS (365), so the default clears that with margin. The
+    # cost is one extra day-row per day, all within a single page.
     BUDGET_ALERT_MAX_LOOKBACK_DAYS: int = int(
-        os.getenv("BUDGET_ALERT_MAX_LOOKBACK_DAYS", "62")
+        os.getenv("BUDGET_ALERT_MAX_LOOKBACK_DAYS", "370")
+    )
+    # How long a budget *decrease* (an expired ledger entry, an edited spend cap)
+    # keeps a team in the recheck set. A decrease raises the percentage without any
+    # traffic, so such a team would otherwise never be looked at. Spans several
+    # ticks deliberately: alert state prevents re-notification, so looking too
+    # often is harmless where missing the one relevant tick is not.
+    BUDGET_ALERT_RECHECK_GRACE_HOURS: int = int(
+        os.getenv("BUDGET_ALERT_RECHECK_GRACE_HOURS", "24")
     )
 
     PROMETHEUS_API_KEY: str = os.getenv("PROMETHEUS_API_KEY", "")

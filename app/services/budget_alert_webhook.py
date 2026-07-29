@@ -47,6 +47,11 @@ def serialize_event(event: BudgetAlertEvent) -> dict:
             "percent_used": event.percent_used,
             "spend": event.spend,
             "max_budget": event.max_budget,
+            # Where max_budget came from, so the consumer can word the message:
+            # "key_cap" / "litellm_key_budget" = the key's own limit;
+            # "team_pool" = the key is uncapped and measured against the team pool;
+            # "team_ledger" = a team- or member-scope budget.
+            "budget_source": event.budget_source,
             "currency": "USD",
             "budget_duration": event.budget_duration,
             "region": {"id": event.region_id, "name": event.region_name},
@@ -61,7 +66,12 @@ def serialize_event(event: BudgetAlertEvent) -> dict:
                 else None
             ),
             "key": (
-                {"id": event.key_id, "name": event.key_name}
+                {
+                    "id": event.key_id,
+                    "name": event.key_name,
+                    # Service keys belong to the team; user keys have an owner.
+                    "is_service_key": event.is_service_key,
+                }
                 if event.key_id is not None
                 else None
             ),

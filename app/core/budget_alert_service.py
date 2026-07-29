@@ -4,6 +4,12 @@ Emits an event when a team, key or team member crosses 50 / 75 / 90 / 100 % of
 its budget, so a downstream consumer (MOAD) can warn the customer *before* their
 keys stop working.
 
+Scope: **POOL teams**, and keys carrying both a team and a region — the shape MOAD
+provisions and can actually notify. PERIODIC is excluded because on PROD every
+PERIODIC key (12,098 of them) belongs to the single anonymous Drupal trial team,
+which has no MOAD workspace and no addressable owner. Note that the *period-window
+helper* still handles PERIODIC, since the spend API shares it.
+
 Why amazee.ai computes the percentage instead of LiteLLM
 -------------------------------------------------------
 LiteLLM has native budget alerting, but it cannot produce the right number for
@@ -23,14 +29,18 @@ So LiteLLM is the source of *spend*, and every budget number comes from our DB.
 
 How it scales to 100k keys
 --------------------------
-Spend is read from ``/team/daily/activity`` and ``/user/daily/activity`` with no
-entity filter — two calls per region, regardless of key count. LiteLLM only
-writes daily-spend rows for entities that actually spent, so the cost tracks
-*active* entities rather than total keys. Enumerating every key instead (the
-shape of the existing hourly reconciler) is what does not survive 100k.
+Two stages, both bounded by *activity* rather than by key count:
 
-The one place we still enumerate keys is a scoped ``/key/list?team_id=`` for a
-team we have already decided is worth confirming — see ``_exact_team_key_state``.
+1. **Discovery** — one unfiltered ``/team/daily/activity`` call per region tells us
+   which teams spent anything. LiteLLM writes no daily rows for idle entities, so
+   on PROD region 5 an 11,859-key region reported 42 active teams in one 1.68 s
+   page. Only entity *ids* are used from this; see ``_active_entity_ids``.
+2. **Measurement** — one scoped ``/key/list?team_id=`` per candidate team gives
+   exact ``spend`` and ``max_budget`` for that team's keys.
+
+So a tick costs ``1 + active_teams`` calls per region, independent of how many idle
+keys exist. Sweeping every key instead — the shape of the existing hourly
+reconciler, ~40 min at 13.9k keys — is what does not survive 100k.
 """
 
 from __future__ import annotations
@@ -42,16 +52,17 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
 from prometheus_client import Counter, Gauge, Summary
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.pool_budget_service import pool_available_budget_for_team_region
 from app.core.spend_period_service import TeamPeriodWindow, resolve_team_period_window
-from app.core.team_service import get_team_region_litellm_keys
 from app.db.models import (
     DBAuditLog,
     DBBudgetAlertState,
     DBLimitedResource,
+    DBPeriodicBudgetLedgerEntry,
     DBPrivateAIKey,
     DBRegion,
     DBSpendCap,
@@ -143,12 +154,16 @@ class BudgetAlertEvent:
     period_start: datetime | None
     period_end: datetime | None
     budget_duration: str | None
+    budget_source: str = "team_ledger"
     team_id: int | None = None
     team_name: str | None = None
     user_id: int | None = None
     user_email: str | None = None
     key_id: int | None = None
     key_name: str | None = None
+    # Service keys belong to the team itself; user keys have an owner. Both are in
+    # scope, and consumers route the notification differently for each.
+    is_service_key: bool = False
 
 
 @dataclass
@@ -163,6 +178,9 @@ class _Subject:
     team: DBTeam | None = None
     user: DBUser | None = None
     key: DBPrivateAIKey | None = None
+    # Where the denominator came from. Consumers need this to word the message:
+    # "90% of this key's limit" and "90% of the team pool" are different sentences.
+    budget_source: str = "team_ledger"
 
     @property
     def percent_used(self) -> float:
@@ -195,22 +213,25 @@ class RegionEvaluation:
 # --------------------------------------------------------------------------- #
 
 
-def _sum_activity_by_entity(
-    rows: list[dict], since: date | None
-) -> tuple[dict[str, float], dict[str, float], date | None]:
-    """Fold daily-activity rows into per-entity and per-key spend totals.
+def _active_entity_ids(rows: list[dict]) -> set[str]:
+    """Entity ids that appear anywhere in a daily-activity sweep (discovery)."""
+    entity_ids: set[str] = set()
+    for row in rows:
+        breakdown = row.get("breakdown") or {}
+        entity_ids.update((breakdown.get("entities") or {}).keys())
+    return entity_ids
 
-    ``rows`` is one entry per UTC day. Days before ``since`` are skipped so each
-    team is only credited with spend inside its own billing window, even though
-    a single sweep covers every team's window at once.
 
-    Returns ``(entity_spend, key_spend, earliest_day_seen)``. The third value
-    lets the caller tell whether the sweep actually reached back to the start of
-    a window, or whether the total it just computed is partial.
+def _sum_activity_since(
+    rows: list[dict], since: date
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Sum per-day activity from ``since`` onwards, by entity and by hashed key.
+
+    Returns ``(entity_spend, key_spend)``. Rows are one per UTC day, so a window
+    opening mid-day includes that whole day — an overstatement bounded by one day.
     """
     entity_spend: dict[str, float] = {}
     key_spend: dict[str, float] = {}
-    earliest: date | None = None
 
     for row in rows:
         raw_date = row.get("date")
@@ -219,10 +240,8 @@ def _sum_activity_by_entity(
         except (TypeError, ValueError):
             logger.warning("Skipping daily-activity row with bad date: %r", raw_date)
             continue
-        if since is not None and row_date < since:
+        if row_date < since:
             continue
-        if earliest is None or row_date < earliest:
-            earliest = row_date
 
         breakdown = row.get("breakdown") or {}
         for entity_id, payload in (breakdown.get("entities") or {}).items():
@@ -236,7 +255,49 @@ def _sum_activity_by_entity(
                 metrics.get("spend") or 0.0
             )
 
-    return entity_spend, key_spend, earliest
+    return entity_spend, key_spend
+
+
+def spend_window_start(
+    db: Session, team: DBTeam, region_id: int, now: datetime
+) -> datetime:
+    """When the spend that counts against the *current* budget began.
+
+    This is the purchase date of the **oldest still-valid** ledger entry, and it is
+    the crux of getting top-up-only POOL teams right.
+
+    A top-up never resets key spend — ``purchase_periodic_topup`` only raises the
+    team's ``max_budget`` — so LiteLLM's key counters are lifetime totals. The
+    denominator, meanwhile, counts only entries that have not expired. Divide one by
+    the other and an expired top-up leaves its spend in the numerator while its
+    money has left the denominator:
+
+        $100 expired (of which $80 spent) + $100 just bought
+        lifetime spend $82 / remaining $100  ->  82%   (wrong)
+        spend since the valid entry $2 / $100 ->  2%   (right)
+
+    Anchoring on the oldest *valid* entry rather than the newest purchase is what
+    makes both directions correct: money bought earlier but still valid keeps its
+    spend counted, while money that has expired takes its spend with it.
+    """
+    oldest_valid = (
+        db.query(func.min(DBPeriodicBudgetLedgerEntry.purchased_at))
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team.id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            DBPeriodicBudgetLedgerEntry.purchased_at.isnot(None),
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+            ),
+        )
+        .scalar()
+    )
+    anchor = oldest_valid or team.created_at or now
+    if anchor.tzinfo is None:
+        anchor = anchor.replace(tzinfo=UTC)
+    return anchor
 
 
 def _amazee_team_id_from_litellm(entity_id: str, region_name: str) -> int | None:
@@ -374,15 +435,77 @@ def _sweep_start(now: datetime) -> date:
     return (now - timedelta(days=settings.BUDGET_ALERT_MAX_LOOKBACK_DAYS)).date()
 
 
-def _window_since(window: TeamPeriodWindow, sweep_start: date) -> date:
-    if window.period_start is None:
-        return sweep_start
-    return max(window.period_start.date(), sweep_start)
-
-
 def _is_expiring(key_state: dict) -> bool:
     """A key set to ``0d`` is being expired; it is not a budget problem."""
     return str(key_state.get("budget_duration") or "") == "0d"
+
+
+def denominator_change_candidates(
+    db: Session, region_id: int, now: datetime
+) -> set[int]:
+    """Teams whose *budget* just fell, regardless of whether they spent anything.
+
+    Traffic-driven discovery rests on "percent only rises when spend rises", which
+    is false: the denominator moves too. On PROD every active ledger entry carries
+    an ``expires_at`` (321 of them due to expire), so a lapsing top-up or
+    subscription drops a team's remaining budget and can push it past 90 % while
+    it sits completely idle. Such a team produces no daily-activity rows, so
+    without this it would never be looked at and the warning would never fire —
+    the exact scenario the feature exists to prevent.
+
+    Two sources, both cheap because they are bounded by *changes* rather than by
+    team count:
+
+    * a ledger entry that expired within the recheck grace window;
+    * a spend cap edited within the same window (lowering a cap shrinks the
+      denominator just as effectively as an expiry).
+
+    The grace window spans several ticks on purpose. Re-notification is not a risk
+    — ``budget_alert_state`` suppresses a band already sent — so it is better to
+    look a few times too often than to miss the one tick the change landed in.
+    """
+    grace_hours = max(1, settings.BUDGET_ALERT_RECHECK_GRACE_HOURS)
+    since = now - timedelta(hours=grace_hours)
+
+    expired_team_ids = {
+        team_id
+        for (team_id,) in db.query(DBPeriodicBudgetLedgerEntry.team_id)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.expires_at.isnot(None),
+            DBPeriodicBudgetLedgerEntry.expires_at <= now,
+            DBPeriodicBudgetLedgerEntry.expires_at >= since,
+        )
+        .distinct()
+        .all()
+        if team_id is not None
+    }
+
+    capped_team_ids = {
+        team_id
+        for (team_id,) in db.query(DBSpendCap.team_id)
+        .filter(
+            DBSpendCap.region_id == region_id,
+            DBSpendCap.team_id.isnot(None),
+            DBSpendCap.updated_at.isnot(None),
+            DBSpendCap.updated_at >= since,
+        )
+        .distinct()
+        .all()
+        if team_id is not None
+    }
+
+    candidates = expired_team_ids | capped_team_ids
+    if candidates:
+        logger.info(
+            "Region %s: %d team(s) rechecked for a budget decrease "
+            "(%d expiry, %d cap change)",
+            region_id,
+            len(candidates),
+            len(expired_team_ids),
+            len(capped_team_ids),
+        )
+    return candidates
 
 
 async def evaluate_region(
@@ -407,11 +530,8 @@ async def evaluate_region(
     end_str = now.date().isoformat()
 
     try:
-        team_rows, user_rows = await asyncio.gather(
-            service.get_all_team_daily_activity(start_str, end_str),
-            service.get_all_user_daily_activity(start_str, end_str),
-        )
-        result.litellm_calls += 2
+        team_rows = await service.get_all_team_daily_activity(start_str, end_str)
+        result.litellm_calls += 1
     except Exception as exc:
         logger.error("Budget alert sweep failed for region %s: %s", region.name, exc)
         return result
@@ -423,93 +543,123 @@ async def evaluate_region(
     # working set: on a DEV region with 2,740 keys it was 27 teams. A team with
     # no traffic in the lookback cannot have newly crossed a band, since spend
     # only rises with traffic and we notify on upward moves only.
-    team_totals_all, _, _ = _sum_activity_by_entity(team_rows, None)
     candidate_team_ids = {
         team_id
-        for entity_id in team_totals_all
+        for entity_id in _active_entity_ids(team_rows)
         if (team_id := _amazee_team_id_from_litellm(entity_id, region.name)) is not None
     }
 
-    # A key owned by a user but not attached to a LiteLLM team contributes no
-    # team entity, so its team would be invisible above. The user sweep closes
-    # that gap: active user ids map back to their team.
-    active_user_totals, _, _ = _sum_activity_by_entity(user_rows, None)
-    active_user_ids = [
-        int(user_id) for user_id in active_user_totals if str(user_id).isdigit()
-    ]
-    if active_user_ids:
-        candidate_team_ids.update(
-            team_id
-            for (team_id,) in db.query(DBUser.team_id)
-            .filter(DBUser.id.in_(active_user_ids), DBUser.team_id.isnot(None))
-            .distinct()
-            .all()
-        )
+    # Traffic is not the only way to cross a threshold: percent = spend / budget,
+    # and the *budget* can fall on its own. These teams therefore have to be
+    # evaluated even though they were silent.
+    denominator_change_team_ids = denominator_change_candidates(db, region.id, now)
+    candidate_team_ids.update(denominator_change_team_ids)
 
     if not candidate_team_ids:
         logger.info("No active teams in region %s this sweep", region.name)
         return result
 
+    # POOL only. These are the teams MOAD provisions and can actually notify —
+    # every PERIODIC key on PROD (12,098 of them) belongs to the single anonymous
+    # Drupal trial team, which has no MOAD workspace and no addressable owner, so
+    # a threshold webhook for it would have nowhere to go.
     teams = (
         db.query(DBTeam)
-        .filter(DBTeam.id.in_(candidate_team_ids), DBTeam.deleted_at.is_(None))
+        .filter(
+            DBTeam.id.in_(candidate_team_ids),
+            DBTeam.deleted_at.is_(None),
+            DBTeam.budget_type == BudgetType.POOL,
+        )
         .all()
     )
     for team in teams:
         window = resolve_team_period_window(db, team, region.id, now=now)
-        since = _window_since(window, sweep_start)
-        team_totals, key_totals, _ = _sum_activity_by_entity(team_rows, since)
         lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
 
-        # Whole-UTC-day granularity and a lookback shorter than the window both
-        # make the swept total partial. POOL windows run for
-        # POOL_PURCHASE_EXPIRY_DAYS (365 by default), well past the lookback, so
-        # for those we take LiteLLM's live key spend instead: a pool window never
-        # resets, so key spend *is* the window total.
-        window_predates_sweep = (
-            window.period_start is not None and window.period_start.date() < sweep_start
-        )
-        needs_exact_keys = window_predates_sweep or team.budget_type != BudgetType.POOL
-        exact_keys = (
-            await _exact_team_key_state(service, lite_team_id)
-            if needs_exact_keys
-            else {}
-        )
-        if exact_keys:
-            result.litellm_calls += 1
+        # Spend is summed from the purchase date of the oldest still-valid ledger
+        # entry — NOT taken from LiteLLM's key counters, which are lifetime totals a
+        # top-up never resets. See spend_window_start for why that distinction
+        # decides whether an expired top-up corrupts the percentage.
+        since_dt = spend_window_start(db, team, region.id, now)
+        since = since_dt.date()
+        if since < sweep_start:
+            logger.warning(
+                "Team %s spend window opens %s, before the %s sweep start; "
+                "percentage may be understated. Raise BUDGET_ALERT_MAX_LOOKBACK_DAYS.",
+                team.id,
+                since,
+                sweep_start,
+            )
+        entity_totals, key_totals = _sum_activity_since(team_rows, since)
 
-        # Includes keys owned by team members but not attached to the team, which
-        # is the same ownership rule the spend API and the billing cycle use.
-        db_keys = get_team_region_litellm_keys(db, team_id=team.id, region_id=region.id)
+        # /key/list supplies the key *denominators* (max_budget) and flags keys being
+        # expired; its spend figures are deliberately not used.
+        exact_keys = await _exact_team_key_state(service, lite_team_id)
+        result.litellm_calls += 1
+
+        # Only keys carrying both a team and a region — the shape MOAD provisions.
+        # A key with just an owner and no team has no team budget to be a share of,
+        # and no workspace to notify, so it is out of scope by design rather than
+        # by omission. On PROD that is 418 of 13,930 keys.
+        db_keys = (
+            db.query(DBPrivateAIKey)
+            .filter(
+                DBPrivateAIKey.team_id == team.id,
+                DBPrivateAIKey.region_id == region.id,
+                DBPrivateAIKey.litellm_token.isnot(None),
+            )
+            .all()
+        )
         cap_map = _key_cap_map(db, region.id, [key.id for key in db_keys])
+        team_budget = _team_budget(db, team, region.id)
 
-        team_spend = float(team_totals.get(lite_team_id, 0.0))
+        # An uncapped key's only budget is the team pool, so that is what it is
+        # measured against — it answers "which key is eating the pool", which the
+        # team event alone cannot. Withheld when the team has a single in-scope key,
+        # because then the key percentage is arithmetically identical to the team's
+        # and the alert would just be the team event repeated. That is the common
+        # shape: 481 of 739 POOL teams on PROD hold exactly one key.
+        pool_fallback_budget = team_budget if len(db_keys) > 1 else None
+
         member_spend: dict[int, float] = {}
+        # The team total is the sum of its keys' windowed spend, so team and key
+        # percentages are always drawn from the same numbers.
+        team_spend = 0.0
 
         for db_key in db_keys:
             hashed = LiteLLMService.hash_token(db_key.litellm_token)
             key_state = exact_keys.get(hashed)
-            if key_state is not None:
-                if _is_expiring(key_state):
-                    continue
-                key_spend = float(key_state.get("spend") or 0.0)
-                litellm_max_budget = key_state.get("max_budget")
-            else:
-                key_spend = float(key_totals.get(hashed, 0.0))
-                litellm_max_budget = None
+            if key_state is not None and _is_expiring(key_state):
+                # Being expired via budget_duration "0d"; not a budget warning.
+                continue
+            key_spend = float(key_totals.get(hashed, 0.0))
+            litellm_max_budget = (
+                key_state.get("max_budget") if key_state is not None else None
+            )
+            team_spend += key_spend
 
             if db_key.owner_id:
                 member_spend[db_key.owner_id] = (
                     member_spend.get(db_key.owner_id, 0.0) + key_spend
                 )
 
-            # A DB cap wins; otherwise fall back to what LiteLLM enforces.
+            # Denominator precedence: our own cap, then whatever LiteLLM enforces,
+            # then the team pool. Applies equally to service keys (no owner) and
+            # user keys — a key is in scope for having a team, not for having an
+            # owner. On PROD: 405 service and 929 user keys across POOL teams.
             key_budget = cap_map.get(db_key.id)
+            budget_source = "key_cap"
             if key_budget is None and litellm_max_budget is not None:
                 key_budget = float(litellm_max_budget)
-            # max_budget of 0 is how a pool-gated key is born blocked. Alerting
-            # 100 % at creation would be pure noise, so an absent or
-            # non-positive budget means "no key-level threshold".
+                budget_source = "litellm_key_budget"
+            if not key_budget or key_budget <= 0:
+                # A budget of <= 0 is how a pool-gated key is born blocked;
+                # reporting it as "100% used" at creation would be pure noise.
+                # An absent budget instead means the key is bounded by the pool.
+                if litellm_max_budget is not None and float(litellm_max_budget) <= 0:
+                    continue
+                key_budget = pool_fallback_budget
+                budget_source = "team_pool"
             if not key_budget or key_budget <= 0:
                 continue
 
@@ -522,16 +672,23 @@ async def evaluate_region(
                     window=window,
                     team=team,
                     key=db_key,
+                    budget_source=budget_source,
                 )
             )
 
-        if exact_keys:
-            # Prefer the live sum for the team as well, so the team percentage and
-            # its keys' percentages are drawn from the same numbers.
-            team_spend = sum(
-                float(state.get("spend") or 0.0)
-                for state in exact_keys.values()
-                if not _is_expiring(state)
+        # The entity total covers every key LiteLLM attributes to the team, including
+        # any we do not have a row for. A gap means our key table is out of sync, and
+        # the team percentage would be understated, so it is worth saying so.
+        entity_total = float(entity_totals.get(lite_team_id, 0.0))
+        if entity_total - team_spend > 0.01:
+            logger.warning(
+                "Team %s region %s: LiteLLM attributes %.4f but our keys account for "
+                "%.4f; %.4f of spend belongs to keys missing from ai_tokens",
+                team.id,
+                region.id,
+                entity_total,
+                team_spend,
+                entity_total - team_spend,
             )
 
         subjects.append(
@@ -539,7 +696,7 @@ async def evaluate_region(
                 subject_type=SUBJECT_TEAM,
                 subject_key=f"team:{team.id}:{region.id}",
                 spend=team_spend,
-                max_budget=_team_budget(db, team, region.id),
+                max_budget=team_budget,
                 window=window,
                 team=team,
             )
@@ -625,12 +782,14 @@ def _build_event(
         period_start=subject.window.period_start,
         period_end=subject.window.period_end,
         budget_duration=subject.window.budget_duration,
+        budget_source=subject.budget_source,
         team_id=subject.team.id if subject.team else None,
         team_name=subject.team.name if subject.team else None,
         user_id=subject.user.id if subject.user else None,
         user_email=subject.user.email if subject.user else None,
         key_id=subject.key.id if subject.key else None,
         key_name=subject.key.name if subject.key else None,
+        is_service_key=(subject.key is not None and subject.key.owner_id is None),
     )
 
 
