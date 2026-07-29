@@ -480,25 +480,6 @@ class LiteLLMService:
             page_size=page_size,
         )
 
-    async def get_all_user_daily_activity(
-        self,
-        start_date: str,
-        end_date: str,
-        page_size: int = 1000,
-    ) -> list[dict]:
-        """Fetch per-day usage for **every active user** in this region.
-
-        As :meth:`get_all_team_daily_activity`, but ``breakdown.entities`` is
-        keyed by amazee.ai user id (LiteLLM stores our user ids verbatim).
-        """
-        return await self._fetch_daily_activity(
-            "/user/daily/activity",
-            {},
-            start_date=start_date,
-            end_date=end_date,
-            page_size=page_size,
-        )
-
     async def list_keys_for_team(
         self, team_id: str, page_size: int = 100
     ) -> list[dict]:

@@ -4,6 +4,12 @@ The important cases here are the ones where the maths is easy to get wrong:
 LiteLLM's compounding team counter, POOL's moving denominator, and cycle
 rollover. A percentage that is silently wrong is worse than no alert at all,
 because it teaches customers to ignore the warnings.
+
+Note the split of responsibilities in the fakes below, which mirrors the engine:
+daily-activity day-rows carry the *spend* (summed from the oldest still-valid
+ledger entry), while key state carries only the *denominator*. LiteLLM's key spend
+counters are lifetime totals a top-up never resets, so they are never the
+numerator.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -32,6 +38,7 @@ from app.db.models import (
     DBUser,
 )
 from app.schemas.models import BudgetType
+from app.services.litellm import LiteLLMService
 
 THRESHOLDS = [50, 75, 90, 100]
 
@@ -58,7 +65,7 @@ def test_highest_crossed_band_returns_only_the_top_band():
 
 
 # --------------------------------------------------------------------------- #
-# Fixtures
+# Fixtures and fakes
 # --------------------------------------------------------------------------- #
 
 
@@ -112,12 +119,7 @@ def _make_key(db, team, region, *, name="k1", token="sk-key-1", owner=None):
 
 
 def _make_user(db, team, email="member@example.com"):
-    user = DBUser(
-        email=email,
-        hashed_password="x",
-        is_active=True,
-        team_id=team.id,
-    )
+    user = DBUser(email=email, hashed_password="x", is_active=True, team_id=team.id)
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -142,29 +144,63 @@ def _add_subscription(db, team, region, *, amount_cents, days_left=20):
     return entry
 
 
-def _activity(lite_team_id, spend, *, day_offset=0, hashed_keys=None):
-    """Build one day of LiteLLM daily-activity output."""
-    day = (datetime.now(UTC) - timedelta(days=day_offset)).date().isoformat()
-    api_keys = {
-        hashed: {"metrics": {"spend": value}}
-        for hashed, value in (hashed_keys or {}).items()
-    }
+def _add_topup(
+    db, team, region, *, amount_cents, purchased_days_ago=1, expires_at=None
+):
+    now = datetime.now(UTC)
+    entry = DBPeriodicBudgetLedgerEntry(
+        team_id=team.id,
+        region_id=region.id,
+        entry_type="topup",
+        amount_cents=amount_cents,
+        consumed_cents=0,
+        is_active=True,
+        purchased_at=now - timedelta(days=purchased_days_ago),
+        expires_at=expires_at if expires_at is not None else now + timedelta(days=364),
+    )
+    db.add(entry)
+    db.commit()
+    return entry
+
+
+def _day(lite_team_id, spend, *, days_ago=0, keys=None):
+    """One UTC day of activity, optionally with a per-key breakdown."""
     return {
-        "date": day,
+        "date": (datetime.now(UTC) - timedelta(days=days_ago)).date().isoformat(),
         "metrics": {"spend": spend},
         "breakdown": {
             "entities": {lite_team_id: {"metrics": {"spend": spend}}},
-            "api_keys": api_keys,
+            "api_keys": {
+                LiteLLMService.hash_token(token): {"metrics": {"spend": value}}
+                for token, value in (keys or {}).items()
+            },
         },
     }
 
 
-def _patch_litellm(team_rows, user_rows=None, team_keys=None):
-    """Patch the three LiteLLM reads the engine can make."""
+def _active(lite_team_id, spend=0.0, *, keys=None, days_ago=0):
+    """Today's activity for one team."""
+    return [_day(lite_team_id, spend, days_ago=days_ago, keys=keys)]
+
+
+def _key_state(token, *, max_budget=None, budget_duration="365d"):
+    """One entry of LiteLLM's /key/list response.
+
+    Carries the *denominator* only. Spend deliberately comes from the day-rows, so
+    a test cannot accidentally assert against LiteLLM's lifetime counter.
+    """
+    return {
+        "token": LiteLLMService.hash_token(token),
+        "max_budget": max_budget,
+        "budget_duration": budget_duration,
+    }
+
+
+def _patch_litellm(team_rows, team_keys=None):
+    """Patch the two LiteLLM reads the engine makes."""
     return patch.multiple(
         "app.core.budget_alert_service.LiteLLMService",
         get_all_team_daily_activity=AsyncMock(return_value=team_rows),
-        get_all_user_daily_activity=AsyncMock(return_value=user_rows or []),
         list_keys_for_team=AsyncMock(return_value=team_keys or []),
     )
 
@@ -179,10 +215,11 @@ async def test_pool_team_percentage_uses_ledger_not_litellm_max_budget(db, regio
     """The denominator is our ledger, and one crossing yields one event."""
     team = _make_team(db)
     _add_subscription(db, team, region, amount_cents=10_000)  # $100
-    lite_team_id = f"{region.name}_{team.id}"
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
 
     # $92 spent of $100 -> 92% -> crosses the 90 band.
-    with _patch_litellm([_activity(lite_team_id, 92.0)]):
+    with _patch_litellm(_active(lite, keys={"sk-a": 92.0}), [_key_state("sk-a")]):
         result = await evaluate_region(db, region, thresholds=THRESHOLDS)
 
     team_events = [e for e in result.events if e.subject_type == SUBJECT_TEAM]
@@ -193,6 +230,49 @@ async def test_pool_team_percentage_uses_ledger_not_litellm_max_budget(db, regio
     assert event.spend == 92.0
     assert 91.9 < event.percent_used < 92.1
     assert event.team_id == team.id
+    assert event.budget_source == "team_ledger"
+
+
+@pytest.mark.asyncio
+async def test_team_spend_is_the_sum_of_its_keys(db, region):
+    """Team and key percentages must come from the same numbers."""
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=10_000)  # $100
+    _make_key(db, team, region, token="sk-a", name="a")
+    _make_key(db, team, region, token="sk-b", name="b")
+    lite = f"{region.name}_{team.id}"
+
+    with _patch_litellm(
+        _active(lite, keys={"sk-a": 60.0, "sk-b": 32.0}),
+        [_key_state("sk-a"), _key_state("sk-b")],
+    ):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
+    assert event.spend == 92.0
+    assert event.threshold_pct == 90
+
+
+@pytest.mark.asyncio
+async def test_team_total_comes_from_keys_not_the_entity_figure(db, region):
+    """The team numerator is built from the per-key breakdown.
+
+    Using the entity figure directly would attribute spend we cannot tie to any of
+    our keys, so team and key percentages could disagree.
+    """
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=10_000)  # $100
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+
+    rows = _active(lite, spend=99999.0, keys={"sk-a": 55.0})
+
+    with _patch_litellm(rows, [_key_state("sk-a")]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
+    assert event.spend == 55.0
+    assert event.threshold_pct == 50
 
 
 @pytest.mark.asyncio
@@ -204,10 +284,11 @@ async def test_team_cap_tightens_the_denominator(db, region):
         DBSpendCap(scope="team", region_id=region.id, team_id=team.id, max_budget=50.0)
     )
     db.commit()
-    lite_team_id = f"{region.name}_{team.id}"
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
 
     # $46 is 46% of $100 but 92% of the $50 cap.
-    with _patch_litellm([_activity(lite_team_id, 46.0)]):
+    with _patch_litellm(_active(lite, keys={"sk-a": 46.0}), [_key_state("sk-a")]):
         result = await evaluate_region(db, region, thresholds=THRESHOLDS)
 
     event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
@@ -219,23 +300,25 @@ async def test_team_cap_tightens_the_denominator(db, region):
 async def test_no_budget_means_no_event(db, region):
     """A team with no ledger and no limit has nothing to be a percentage of."""
     team = _make_team(db)
-    lite_team_id = f"{region.name}_{team.id}"
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
 
-    with _patch_litellm([_activity(lite_team_id, 500.0)]):
+    with _patch_litellm(_active(lite, keys={"sk-a": 500.0}), [_key_state("sk-a")]):
         result = await evaluate_region(db, region, thresholds=THRESHOLDS)
 
-    assert [e for e in result.events if e.subject_type == SUBJECT_TEAM] == []
+    assert result.events == []
 
 
 @pytest.mark.asyncio
 async def test_soft_deleted_team_is_skipped(db, region):
     team = _make_team(db)
     _add_subscription(db, team, region, amount_cents=10_000)
+    _make_key(db, team, region, token="sk-a")
     team.deleted_at = datetime.now(UTC)
     db.commit()
-    lite_team_id = f"{region.name}_{team.id}"
+    lite = f"{region.name}_{team.id}"
 
-    with _patch_litellm([_activity(lite_team_id, 99.0)]):
+    with _patch_litellm(_active(lite, keys={"sk-a": 99.0}), [_key_state("sk-a")]):
         result = await evaluate_region(db, region, thresholds=THRESHOLDS)
 
     assert result.events == []
@@ -243,13 +326,25 @@ async def test_soft_deleted_team_is_skipped(db, region):
 
 @pytest.mark.asyncio
 async def test_empty_activity_sweep_produces_nothing(db, region):
-    _make_team(db)
+    """No traffic and no budget change -> no per-team key calls at all.
 
-    with _patch_litellm([]):
+    This is the property that makes a 5-minute cadence affordable: a quiet region
+    costs exactly one request.
+    """
+    _make_team(db)
+    list_keys = AsyncMock(return_value=[])
+
+    with patch.multiple(
+        "app.core.budget_alert_service.LiteLLMService",
+        get_all_team_daily_activity=AsyncMock(return_value=[]),
+        list_keys_for_team=list_keys,
+    ):
         result = await evaluate_region(db, region, thresholds=THRESHOLDS)
 
     assert result.events == []
     assert result.subjects_evaluated == 0
+    assert result.litellm_calls == 1
+    list_keys.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -257,94 +352,127 @@ async def test_unknown_entities_are_ignored(db, region):
     """LiteLLM's own bookkeeping team is not one of ours."""
     _make_team(db)
 
-    with _patch_litellm([_activity("litellm-dashboard", 100.0)]):
+    with _patch_litellm(_active("litellm-dashboard", spend=100.0)):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    assert result.events == []
+
+
+@pytest.mark.asyncio
+async def test_periodic_team_is_out_of_scope(db, region):
+    """PERIODIC is excluded: on PROD every PERIODIC key belongs to the anonymous
+    trial team, which has no MOAD workspace and nobody to notify."""
+    team = _make_team(db, budget_type=BudgetType.PERIODIC, name="periodic-team")
+    _add_subscription(db, team, region, amount_cents=10_000)
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+
+    with _patch_litellm(_active(lite, keys={"sk-a": 99.0}), [_key_state("sk-a")]):
         result = await evaluate_region(db, region, thresholds=THRESHOLDS)
 
     assert result.events == []
 
 
 # --------------------------------------------------------------------------- #
-# Dedup, re-arm, and the POOL moving denominator
+# Top-up windows: which spend counts against the current budget
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.asyncio
-async def test_same_band_is_not_notified_twice(db, region):
-    team = _make_team(db)
-    _add_subscription(db, team, region, amount_cents=10_000)
-    lite_team_id = f"{region.name}_{team.id}"
-    rows = [_activity(lite_team_id, 92.0)]
+async def test_spend_against_an_expired_topup_is_not_counted(db, region):
+    """The top-up-only case, and the reason spend is not read from key counters.
 
-    with _patch_litellm(rows):
-        first = await evaluate_region(db, region, thresholds=THRESHOLDS)
-    delivered = {e.event_id for e in first.events}
-    mark_notified(db, region, first, delivered)
+    A top-up never resets key spend (purchase_periodic_topup only raises the team
+    max_budget), so LiteLLM's counters are lifetime totals. The denominator counts
+    only unexpired entries. Taking spend from the counters would therefore leave an
+    expired top-up's spend in the numerator after its money left the denominator:
 
-    with _patch_litellm(rows):
-        second = await evaluate_region(db, region, thresholds=THRESHOLDS)
-
-    assert [e for e in second.events if e.subject_type == SUBJECT_TEAM] == []
-
-
-@pytest.mark.asyncio
-async def test_higher_band_notifies_again_in_the_same_period(db, region):
-    team = _make_team(db)
-    _add_subscription(db, team, region, amount_cents=10_000)
-    lite_team_id = f"{region.name}_{team.id}"
-
-    with _patch_litellm([_activity(lite_team_id, 60.0)]):
-        first = await evaluate_region(db, region, thresholds=THRESHOLDS)
-    assert (
-        next(e for e in first.events if e.subject_type == SUBJECT_TEAM).threshold_pct
-        == 50
-    )
-    mark_notified(db, region, first, {e.event_id for e in first.events})
-
-    with _patch_litellm([_activity(lite_team_id, 91.0)]):
-        second = await evaluate_region(db, region, thresholds=THRESHOLDS)
-
-    assert (
-        next(e for e in second.events if e.subject_type == SUBJECT_TEAM).threshold_pct
-        == 90
-    )
-
-
-@pytest.mark.asyncio
-async def test_topup_lowering_the_percentage_does_not_alert_but_re_arms(db, region):
-    """The POOL moving-denominator case.
-
-    Crossing 90%, then buying budget, must not emit anything on the way down --
-    but the band has to be rewritten, or the genuine second crossing of 90% is
-    suppressed forever.
+        $100 expired (of which $80 spent) + $100 bought 10 days ago, $2 spent
+        lifetime $82 / remaining $100 -> 82%   (wrong, would alert at 75)
+        windowed  $2 / remaining $100 ->  2%   (right, no alert)
     """
     team = _make_team(db)
-    _add_subscription(db, team, region, amount_cents=10_000)  # $100
-    lite_team_id = f"{region.name}_{team.id}"
+    now = datetime.now(UTC)
+    # Old money, now expired: $100 purchased 100 days ago, $80 spent against it.
+    _add_topup(
+        db,
+        team,
+        region,
+        amount_cents=10_000,
+        purchased_days_ago=100,
+        expires_at=now - timedelta(days=2),
+    )
+    # Current money: $100 purchased 10 days ago.
+    _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=10)
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
 
-    with _patch_litellm([_activity(lite_team_id, 92.0)]):
+    rows = [
+        _day(lite, 80.0, days_ago=90, keys={"sk-a": 80.0}),  # spent on the old money
+        _day(lite, 2.0, days_ago=1, keys={"sk-a": 2.0}),  # spent on the new money
+    ]
+
+    with _patch_litellm(rows, [_key_state("sk-a")]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    # Only the $2 counts, so nothing crosses 50%.
+    assert result.events == []
+
+
+@pytest.mark.asyncio
+async def test_spend_against_an_older_but_still_valid_topup_is_counted(db, region):
+    """The other direction: valid money keeps its spend.
+
+    Anchoring on the *newest* purchase would have dropped the $85 spent against the
+    still-valid older top-up and reported ~2% instead of ~43%.
+    """
+    team = _make_team(db)
+    # Both still valid: $100 bought 100 days ago, $100 bought 10 days ago.
+    _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=100)
+    _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=10)
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+
+    rows = [
+        _day(lite, 85.0, days_ago=90, keys={"sk-a": 85.0}),
+        _day(lite, 20.0, days_ago=1, keys={"sk-a": 20.0}),
+    ]
+
+    with _patch_litellm(rows, [_key_state("sk-a")]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
+    # All $105 counts against the $200 still on the books -> 52.5%, crossing 50.
+    # Anchoring on the newest purchase would have seen only $20 (10%) and stayed
+    # silent, which is the failure this test exists to catch.
+    assert event.spend == 105.0
+    assert event.max_budget == 200.0
+    assert event.threshold_pct == 50
+    assert 52.4 < event.percent_used < 52.6
+
+
+@pytest.mark.asyncio
+async def test_new_topup_re_arms_the_bands(db, region):
+    """Alerts are per budget cycle, and a purchase starts a new one."""
+    team = _make_team(db)
+    _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=5)  # $100
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+    rows = [_day(lite, 92.0, days_ago=1, keys={"sk-a": 92.0})]
+
+    with _patch_litellm(rows, [_key_state("sk-a")]):
         first = await evaluate_region(db, region, thresholds=THRESHOLDS)
+    first_event = next(e for e in first.events if e.subject_type == SUBJECT_TEAM)
+    assert first_event.threshold_pct == 90
     mark_notified(db, region, first, {e.event_id for e in first.events})
 
-    # Top-up: budget becomes $300, so $92 is now ~31%.
-    db.add(
-        DBPeriodicBudgetLedgerEntry(
-            team_id=team.id,
-            region_id=region.id,
-            entry_type="topup",
-            amount_cents=20_000,
-            consumed_cents=0,
-            is_active=True,
-            purchased_at=datetime.now(UTC),
-        )
-    )
-    db.commit()
-
-    with _patch_litellm([_activity(lite_team_id, 92.0)]):
+    # Buying more moves the pool window anchor, so period_key changes.
+    _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=0)  # +$100
+    with _patch_litellm(rows, [_key_state("sk-a")]):
         second = await evaluate_region(db, region, thresholds=THRESHOLDS)
 
-    # Nothing announced on the decrease...
+    # $92 of $200 is 46%, below the band already sent -- silent walk-back, no event.
     assert [e for e in second.events if e.subject_type == SUBJECT_TEAM] == []
-    # ...but the band was walked back.
     apply_resets(db, region, second)
     state = (
         db.query(DBBudgetAlertState)
@@ -352,353 +480,130 @@ async def test_topup_lowering_the_percentage_does_not_alert_but_re_arms(db, regi
         .one()
     )
     assert state.last_threshold_pct == 0
+    assert state.period_key != first_event.period_key
 
-    # Spending up to 90% of the larger budget alerts again.
-    with _patch_litellm([_activity(lite_team_id, 275.0)]):
-        third = await evaluate_region(db, region, thresholds=THRESHOLDS)
 
-    assert (
-        next(e for e in third.events if e.subject_type == SUBJECT_TEAM).threshold_pct
-        == 90
-    )
+# --------------------------------------------------------------------------- #
+# Budget decreases with no recent traffic
+# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.asyncio
-async def test_new_period_re_arms_the_same_band(db, region):
+async def test_expired_topup_raises_the_percentage(db, region):
+    """A lapsing top-up shrinks the denominator, with no new traffic at all."""
     team = _make_team(db)
-    subscription = _add_subscription(db, team, region, amount_cents=10_000)
-    lite_team_id = f"{region.name}_{team.id}"
-
-    with _patch_litellm([_activity(lite_team_id, 92.0)]):
-        first = await evaluate_region(db, region, thresholds=THRESHOLDS)
-    mark_notified(db, region, first, {e.event_id for e in first.events})
-    old_period_key = next(
-        e for e in first.events if e.subject_type == SUBJECT_TEAM
-    ).period_key
-
-    # Roll the cycle: a new window means a new period_key.
     now = datetime.now(UTC)
-    subscription.effective_period_start = now - timedelta(days=1)
-    subscription.effective_period_end = now + timedelta(days=30)
-    db.commit()
-
-    with _patch_litellm([_activity(lite_team_id, 92.0)]):
-        second = await evaluate_region(db, region, thresholds=THRESHOLDS)
-
-    event = next(e for e in second.events if e.subject_type == SUBJECT_TEAM)
-    assert event.threshold_pct == 90
-    assert event.period_key != old_period_key
-
-
-@pytest.mark.asyncio
-async def test_failed_delivery_leaves_state_unadvanced_and_retries(db, region):
-    """No outbox: an undelivered event must be re-detected next tick."""
-    team = _make_team(db)
-    _add_subscription(db, team, region, amount_cents=10_000)
-    lite_team_id = f"{region.name}_{team.id}"
-    rows = [_activity(lite_team_id, 92.0)]
-
-    with _patch_litellm(rows):
-        first = await evaluate_region(db, region, thresholds=THRESHOLDS)
-    assert len(first.events) >= 1
-
-    # Delivery failed -> nothing is marked.
-    advanced = mark_notified(db, region, first, set())
-    assert advanced == 0
-
-    with _patch_litellm(rows):
-        second = await evaluate_region(db, region, thresholds=THRESHOLDS)
-
-    assert (
-        next(e for e in second.events if e.subject_type == SUBJECT_TEAM).threshold_pct
-        == 90
+    # $100 still valid, purchased 20 days ago.
+    _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=20)
+    # $200 that lapsed an hour ago -- was purchased *after* the valid one, so the
+    # window start stays at 20 days ago and the $92 below still counts.
+    _add_topup(
+        db,
+        team,
+        region,
+        amount_cents=20_000,
+        purchased_days_ago=15,
+        expires_at=now - timedelta(hours=1),
     )
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+    rows = [_day(lite, 92.0, days_ago=10, keys={"sk-a": 92.0})]
 
+    with _patch_litellm(rows, [_key_state("sk-a")]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
 
-# --------------------------------------------------------------------------- #
-# Key scope
-# --------------------------------------------------------------------------- #
+    event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
+    # Budget was $300, is now $100 -> $92 jumps from 31% to 92%.
+    assert event.max_budget == 100.0
+    assert event.spend == 92.0
+    assert event.threshold_pct == 90
 
 
 @pytest.mark.asyncio
-async def test_key_cap_drives_key_scope_alert(db, region):
+async def test_recent_cap_change_rechecks_a_silent_team(db, region):
+    """Lowering a cap shrinks the denominator as effectively as an expiry."""
     team = _make_team(db)
-    _add_subscription(db, team, region, amount_cents=100_000)  # big team budget
-    key = _make_key(db, team, region, token="sk-key-a")
-    db.add(DBSpendCap(scope="key", region_id=region.id, key_id=key.id, max_budget=10.0))
-    db.commit()
-
-    from app.services.litellm import LiteLLMService
-
-    hashed = LiteLLMService.hash_token("sk-key-a")
-    lite_team_id = f"{region.name}_{team.id}"
-    rows = [_activity(lite_team_id, 7.6, hashed_keys={hashed: 7.6})]
-
-    with _patch_litellm(rows):
-        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
-
-    key_events = [e for e in result.events if e.subject_type == SUBJECT_KEY]
-    assert len(key_events) == 1
-    assert key_events[0].key_id == key.id
-    assert key_events[0].max_budget == 10.0
-    assert key_events[0].threshold_pct == 75
-
-
-@pytest.mark.asyncio
-async def test_key_without_any_budget_emits_nothing(db, region):
-    """POOL keys carry no max_budget unless explicitly capped."""
-    team = _make_team(db)
-    _add_subscription(db, team, region, amount_cents=100_000)
-    _make_key(db, team, region, token="sk-key-b")
-
-    from app.services.litellm import LiteLLMService
-
-    hashed = LiteLLMService.hash_token("sk-key-b")
-    lite_team_id = f"{region.name}_{team.id}"
-
-    with _patch_litellm([_activity(lite_team_id, 900.0, hashed_keys={hashed: 900.0})]):
-        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
-
-    assert [e for e in result.events if e.subject_type == SUBJECT_KEY] == []
-
-
-@pytest.mark.asyncio
-async def test_zero_budget_key_is_skipped(db, region):
-    """A pool-gated key is born with max_budget 0; that is not 100% used."""
-    team = _make_team(db)
-    _add_subscription(db, team, region, amount_cents=100_000)
-    key = _make_key(db, team, region, token="sk-key-c")
-    db.add(DBSpendCap(scope="key", region_id=region.id, key_id=key.id, max_budget=0.0))
-    db.commit()
-
-    from app.services.litellm import LiteLLMService
-
-    hashed = LiteLLMService.hash_token("sk-key-c")
-    lite_team_id = f"{region.name}_{team.id}"
-
-    with _patch_litellm([_activity(lite_team_id, 0.0, hashed_keys={hashed: 0.0})]):
-        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
-
-    assert [e for e in result.events if e.subject_type == SUBJECT_KEY] == []
-
-
-@pytest.mark.asyncio
-async def test_expiring_key_is_skipped(db, region):
-    """A key being expired (budget_duration 0d) is not a budget warning."""
-    team = _make_team(db, budget_type=BudgetType.PERIODIC)
-    _add_subscription(db, team, region, amount_cents=100_000)
-    _make_key(db, team, region, token="sk-key-d")
-
-    from app.services.litellm import LiteLLMService
-
-    hashed = LiteLLMService.hash_token("sk-key-d")
-    lite_team_id = f"{region.name}_{team.id}"
-    # PERIODIC teams take the exact-key path, which is where 0d is visible.
-    team_keys = [
-        {
-            "token": hashed,
-            "spend": 95.0,
-            "max_budget": 100.0,
-            "budget_duration": "0d",
-        }
-    ]
-
-    with _patch_litellm([_activity(lite_team_id, 95.0)], team_keys=team_keys):
-        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
-
-    assert [e for e in result.events if e.subject_type == SUBJECT_KEY] == []
-
-
-@pytest.mark.asyncio
-async def test_periodic_key_uses_litellm_max_budget(db, region):
-    """PERIODIC key budgets live in LiteLLM, and its key spend does reset."""
-    team = _make_team(db, budget_type=BudgetType.PERIODIC)
-    _add_subscription(db, team, region, amount_cents=100_000)
-    key = _make_key(db, team, region, token="sk-key-e")
-
-    from app.services.litellm import LiteLLMService
-
-    hashed = LiteLLMService.hash_token("sk-key-e")
-    lite_team_id = f"{region.name}_{team.id}"
-    team_keys = [
-        {
-            "token": hashed,
-            "spend": 51.0,
-            "max_budget": 100.0,
-            "budget_duration": "31d",
-        }
-    ]
-
-    with _patch_litellm([_activity(lite_team_id, 51.0)], team_keys=team_keys):
-        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
-
-    key_events = [e for e in result.events if e.subject_type == SUBJECT_KEY]
-    assert len(key_events) == 1
-    assert key_events[0].key_id == key.id
-    assert key_events[0].max_budget == 100.0
-    assert key_events[0].threshold_pct == 50
-
-
-@pytest.mark.asyncio
-async def test_periodic_team_spend_comes_from_key_sum_not_team_counter(db, region):
-    """The compounding-counter trap.
-
-    LiteLLM's team entity reports a lifetime figure. For a PERIODIC team the
-    engine must use the per-key spends instead, which are what the cycle resets.
-    """
-    team = _make_team(db, budget_type=BudgetType.PERIODIC)
-    _add_subscription(db, team, region, amount_cents=10_000)  # $100 this cycle
-    _make_key(db, team, region, token="sk-key-f", name="f")
-
-    from app.services.litellm import LiteLLMService
-
-    hashed = LiteLLMService.hash_token("sk-key-f")
-    lite_team_id = f"{region.name}_{team.id}"
-    # Team entity claims $4,000 of lifetime spend; the key holds $55 this cycle.
-    team_keys = [
-        {
-            "token": hashed,
-            "spend": 55.0,
-            "max_budget": 100.0,
-            "budget_duration": "31d",
-        }
-    ]
-
-    with _patch_litellm([_activity(lite_team_id, 4000.0)], team_keys=team_keys):
-        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
-
-    team_event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
-    # $55 of $100 -> 50 band, not the 100 band a lifetime total would produce.
-    assert team_event.spend == 55.0
-    assert team_event.threshold_pct == 50
-
-
-# --------------------------------------------------------------------------- #
-# Team-member scope
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.asyncio
-async def test_team_member_cap_drives_member_alert(db, region):
-    team = _make_team(db)
-    _add_subscription(db, team, region, amount_cents=100_000)
-    user = _make_user(db, team)
-    _make_key(db, team, region, token="sk-key-g", owner=user)
+    _add_subscription(db, team, region, amount_cents=100_000)  # $1000
+    _make_key(db, team, region, token="sk-a")
     db.add(
         DBSpendCap(
-            scope="team_member",
+            scope="team",
             region_id=region.id,
             team_id=team.id,
-            user_id=user.id,
-            max_budget=20.0,
+            max_budget=50.0,
+            updated_at=datetime.now(UTC) - timedelta(minutes=5),
         )
     )
     db.commit()
+    lite = f"{region.name}_{team.id}"
 
-    from app.services.litellm import LiteLLMService
-
-    hashed = LiteLLMService.hash_token("sk-key-g")
-    lite_team_id = f"{region.name}_{team.id}"
-
-    with _patch_litellm([_activity(lite_team_id, 19.0, hashed_keys={hashed: 19.0})]):
+    with _patch_litellm(
+        [_day(lite, 48.0, days_ago=3, keys={"sk-a": 48.0})], [_key_state("sk-a")]
+    ):
         result = await evaluate_region(db, region, thresholds=THRESHOLDS)
 
-    member_events = [e for e in result.events if e.subject_type == SUBJECT_TEAM_MEMBER]
-    assert len(member_events) == 1
-    assert member_events[0].user_id == user.id
-    assert member_events[0].max_budget == 20.0
-    assert member_events[0].threshold_pct == 90
+    event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
+    assert event.max_budget == 50.0
+    assert event.threshold_pct == 90
 
 
-@pytest.mark.asyncio
-async def test_member_without_cap_emits_nothing(db, region):
-    team = _make_team(db)
-    _add_subscription(db, team, region, amount_cents=100_000)
-    user = _make_user(db, team, email="nocap@example.com")
-    _make_key(db, team, region, token="sk-key-h", owner=user)
-
-    from app.services.litellm import LiteLLMService
-
-    hashed = LiteLLMService.hash_token("sk-key-h")
-    lite_team_id = f"{region.name}_{team.id}"
-
-    with _patch_litellm([_activity(lite_team_id, 900.0, hashed_keys={hashed: 900.0})]):
-        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
-
-    assert [e for e in result.events if e.subject_type == SUBJECT_TEAM_MEMBER] == []
-
-
-# --------------------------------------------------------------------------- #
-# Delivery payload
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.asyncio
-async def test_webhook_payload_excludes_the_litellm_token(db, region):
-    from app.services.budget_alert_webhook import serialize_event
+def test_old_expiry_does_not_recheck_forever(db, region):
+    """The recheck window is bounded, so it cannot grow into a full table scan."""
+    from app.core.budget_alert_service import denominator_change_candidates
 
     team = _make_team(db)
-    _add_subscription(db, team, region, amount_cents=10_000)
-    lite_team_id = f"{region.name}_{team.id}"
-
-    with _patch_litellm([_activity(lite_team_id, 92.0)]):
-        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
-
-    payload = serialize_event(
-        next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
-    )
-    assert payload["type"] == "budget.threshold_reached"
-    assert payload["data"]["threshold_percent"] == 90
-    assert payload["data"]["team"]["id"] == team.id
-    assert "sk-" not in str(payload)
-    assert "token" not in payload["data"]
-
-
-@pytest.mark.asyncio
-async def test_delivery_failure_returns_no_delivered_ids(db, region):
-    """A non-2xx must not be reported as delivered, or the alert is lost."""
-    from app.services.budget_alert_webhook import deliver_events
-    from app.core.budget_alert_service import BudgetAlertEvent
-
-    event = BudgetAlertEvent(
-        event_id="evt_test",
-        subject_type=SUBJECT_TEAM,
-        subject_key="team:1:1",
-        threshold_pct=90,
-        percent_used=92.0,
-        spend=92.0,
-        max_budget=100.0,
-        region_id=region.id,
-        region_name=region.name,
-        period_key="subscription_ledger:x",
-        period_start=None,
-        period_end=None,
-        budget_duration="31d",
-        team_id=1,
+    _add_topup(
+        db,
+        team,
+        region,
+        amount_cents=5_000,
+        purchased_days_ago=400,
+        expires_at=datetime.now(UTC) - timedelta(days=35),
     )
 
-    class _Resp:
-        status_code = 500
-        text = "boom"
+    assert denominator_change_candidates(db, region.id, datetime.now(UTC)) == set()
 
-    class _Client:
-        def __init__(self, *args, **kwargs):
-            pass
 
-        async def __aenter__(self):
-            return self
+def test_future_expiry_is_not_a_candidate_yet(db, region):
+    """Nothing has changed until the entry actually lapses."""
+    from app.core.budget_alert_service import denominator_change_candidates
 
-        async def __aexit__(self, *args):
-            return False
+    team = _make_team(db)
+    _add_topup(db, team, region, amount_cents=5_000)
 
-        async def post(self, *args, **kwargs):
-            return _Resp()
+    assert denominator_change_candidates(db, region.id, datetime.now(UTC)) == set()
 
-    with patch.object(settings, "BUDGET_ALERT_WEBHOOK_URL", "http://moad.test/hook"):
-        with patch("app.services.budget_alert_webhook.httpx.AsyncClient", _Client):
-            delivered = await deliver_events([event])
 
-    assert delivered == set()
+def test_spend_window_start_uses_oldest_valid_entry(db, region):
+    """Directly pin the rule, since everything downstream depends on it."""
+    from app.core.budget_alert_service import spend_window_start
+
+    team = _make_team(db)
+    now = datetime.now(UTC)
+    # Expired: must NOT set the window.
+    _add_topup(
+        db,
+        team,
+        region,
+        amount_cents=10_000,
+        purchased_days_ago=200,
+        expires_at=now - timedelta(days=1),
+    )
+    _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=40)
+    _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=5)
+
+    start = spend_window_start(db, team, region.id, now)
+    assert 39 <= (now - start).days <= 41
+
+
+def test_spend_window_start_falls_back_to_team_creation(db, region):
+    """A team with no ledger at all still needs a defined window."""
+    from app.core.budget_alert_service import spend_window_start
+
+    team = _make_team(db)
+    now = datetime.now(UTC)
+    start = spend_window_start(db, team, region.id, now)
+    assert 4 <= (now - start).days <= 6
 
 
 # --------------------------------------------------------------------------- #
@@ -742,6 +647,377 @@ def test_region_without_litellm_credentials_is_not_swept(db, region):
     assert regions_to_sweep(db) == []
 
 
+# --------------------------------------------------------------------------- #
+# Dedup, re-arm, and the moving denominator
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_same_band_is_not_notified_twice(db, region):
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=10_000)
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+    rows, keys = _active(lite, keys={"sk-a": 92.0}), [_key_state("sk-a")]
+
+    with _patch_litellm(rows, keys):
+        first = await evaluate_region(db, region, thresholds=THRESHOLDS)
+    mark_notified(db, region, first, {e.event_id for e in first.events})
+
+    with _patch_litellm(rows, keys):
+        second = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    assert [e for e in second.events if e.subject_type == SUBJECT_TEAM] == []
+
+
+@pytest.mark.asyncio
+async def test_higher_band_notifies_again_in_the_same_period(db, region):
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=10_000)
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+
+    with _patch_litellm(_active(lite, keys={"sk-a": 60.0}), [_key_state("sk-a")]):
+        first = await evaluate_region(db, region, thresholds=THRESHOLDS)
+    assert (
+        next(e for e in first.events if e.subject_type == SUBJECT_TEAM).threshold_pct
+        == 50
+    )
+    mark_notified(db, region, first, {e.event_id for e in first.events})
+
+    with _patch_litellm(_active(lite, keys={"sk-a": 91.0}), [_key_state("sk-a")]):
+        second = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    assert (
+        next(e for e in second.events if e.subject_type == SUBJECT_TEAM).threshold_pct
+        == 90
+    )
+
+
+@pytest.mark.asyncio
+async def test_new_period_re_arms_the_same_band(db, region):
+    team = _make_team(db)
+    subscription = _add_subscription(db, team, region, amount_cents=10_000)
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+    rows, keys = _active(lite, keys={"sk-a": 92.0}), [_key_state("sk-a")]
+
+    with _patch_litellm(rows, keys):
+        first = await evaluate_region(db, region, thresholds=THRESHOLDS)
+    mark_notified(db, region, first, {e.event_id for e in first.events})
+    old_period_key = next(
+        e for e in first.events if e.subject_type == SUBJECT_TEAM
+    ).period_key
+
+    # Roll the cycle: a new window means a new period_key.
+    now = datetime.now(UTC)
+    subscription.effective_period_start = now - timedelta(days=1)
+    subscription.effective_period_end = now + timedelta(days=30)
+    db.commit()
+
+    with _patch_litellm(rows, keys):
+        second = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    event = next(e for e in second.events if e.subject_type == SUBJECT_TEAM)
+    assert event.threshold_pct == 90
+    assert event.period_key != old_period_key
+
+
+@pytest.mark.asyncio
+async def test_failed_delivery_leaves_state_unadvanced_and_retries(db, region):
+    """No outbox: an undelivered event must be re-detected next tick."""
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=10_000)
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+    rows, keys = _active(lite, keys={"sk-a": 92.0}), [_key_state("sk-a")]
+
+    with _patch_litellm(rows, keys):
+        first = await evaluate_region(db, region, thresholds=THRESHOLDS)
+    assert len(first.events) >= 1
+
+    # Delivery failed -> nothing is marked.
+    assert mark_notified(db, region, first, set()) == 0
+
+    with _patch_litellm(rows, keys):
+        second = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    assert (
+        next(e for e in second.events if e.subject_type == SUBJECT_TEAM).threshold_pct
+        == 90
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Key scope
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_key_cap_drives_key_scope_alert(db, region):
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=100_000)  # big team budget
+    key = _make_key(db, team, region, token="sk-a")
+    db.add(DBSpendCap(scope="key", region_id=region.id, key_id=key.id, max_budget=10.0))
+    db.commit()
+    lite = f"{region.name}_{team.id}"
+
+    with _patch_litellm(_active(lite, keys={"sk-a": 7.6}), [_key_state("sk-a")]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    key_events = [e for e in result.events if e.subject_type == SUBJECT_KEY]
+    assert len(key_events) == 1
+    assert key_events[0].key_id == key.id
+    assert key_events[0].max_budget == 10.0
+    assert key_events[0].threshold_pct == 75
+    assert key_events[0].budget_source == "key_cap"
+
+
+@pytest.mark.asyncio
+async def test_service_key_and_user_key_both_alert(db, region):
+    """A key is in scope for having a team, not for having an owner.
+
+    PROD POOL teams hold 405 service keys (no owner) and 929 user keys; both must
+    produce key-scope alerts, and the event says which it is so the consumer can
+    route it to the workspace or to the individual.
+    """
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=100_000)
+    user = _make_user(db, team, email="both@example.com")
+    svc = _make_key(db, team, region, token="sk-svc", name="svc")  # owner_id None
+    usr = _make_key(db, team, region, token="sk-usr", name="usr", owner=user)
+    for k in (svc, usr):
+        db.add(
+            DBSpendCap(scope="key", region_id=region.id, key_id=k.id, max_budget=10.0)
+        )
+    db.commit()
+    lite = f"{region.name}_{team.id}"
+
+    with _patch_litellm(
+        _active(lite, keys={"sk-svc": 9.5, "sk-usr": 9.5}),
+        [_key_state("sk-svc"), _key_state("sk-usr")],
+    ):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    by_key = {e.key_id: e for e in result.events if e.subject_type == SUBJECT_KEY}
+    assert set(by_key) == {svc.id, usr.id}
+    assert by_key[svc.id].is_service_key is True
+    assert by_key[usr.id].is_service_key is False
+    assert all(e.threshold_pct == 90 for e in by_key.values())
+
+
+@pytest.mark.asyncio
+async def test_uncapped_key_covered_by_the_team_alert_on_a_single_key_team(db, region):
+    """An uncapped key has no key-level budget, but the customer is still warned.
+
+    44.7% of team-attached keys on PROD carry no max_budget: for POOL, only an
+    explicit cap sets one, and everything else is bounded by the team pool. On a
+    one-key team the key percentage would equal the team's, so only the team event
+    fires -- the spend is routed, not dropped.
+    """
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=100_000)  # $1000
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+
+    with _patch_litellm(_active(lite, keys={"sk-a": 900.0}), [_key_state("sk-a")]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    assert [e for e in result.events if e.subject_type == SUBJECT_KEY] == []
+    team_event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
+    assert team_event.spend == 900.0
+    assert team_event.max_budget == 1000.0
+    assert team_event.threshold_pct == 90
+
+
+@pytest.mark.asyncio
+async def test_uncapped_key_measured_against_pool_when_team_has_several(db, region):
+    """With more than one key, an uncapped key is measured against the pool.
+
+    Legitimate rather than a proxy: worker.py leaves uncapped POOL keys with
+    max_budget=None and enforces at team level, so the pool *is* that key's limit.
+    """
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=10_000)  # $100 pool
+    hog = _make_key(db, team, region, token="sk-hog", name="hog")
+    _make_key(db, team, region, token="sk-quiet", name="quiet")
+    lite = f"{region.name}_{team.id}"
+
+    with _patch_litellm(
+        _active(lite, keys={"sk-hog": 92.0, "sk-quiet": 1.0}),
+        [_key_state("sk-hog"), _key_state("sk-quiet")],
+    ):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    key_events = {e.key_id: e for e in result.events if e.subject_type == SUBJECT_KEY}
+    # The hog crossed 90% of the pool; the quiet key crossed nothing.
+    assert set(key_events) == {hog.id}
+    assert key_events[hog.id].max_budget == 100.0
+    assert key_events[hog.id].budget_source == "team_pool"
+    assert key_events[hog.id].threshold_pct == 90
+
+
+@pytest.mark.asyncio
+async def test_distributed_burn_is_team_scope_only(db, region):
+    """Three keys at ~31% each trip the team but no individual key.
+
+    With a shared pool there is no per-key line to cross, so per-key events are
+    attribution on top of the team alert rather than independent coverage.
+    """
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=10_000)  # $100
+    for name in ("a", "b", "c"):
+        _make_key(db, team, region, token=f"sk-{name}", name=name)
+    lite = f"{region.name}_{team.id}"
+
+    with _patch_litellm(
+        _active(lite, keys={f"sk-{n}": 31.0 for n in ("a", "b", "c")}),
+        [_key_state(f"sk-{n}") for n in ("a", "b", "c")],
+    ):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    assert [e for e in result.events if e.subject_type == SUBJECT_KEY] == []
+    assert (
+        next(e for e in result.events if e.subject_type == SUBJECT_TEAM).threshold_pct
+        == 90
+    )
+
+
+@pytest.mark.asyncio
+async def test_zero_budget_key_is_skipped(db, region):
+    """A pool-gated key is born with max_budget 0; that is not 100% used."""
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=100_000)
+    _make_key(db, team, region, token="sk-a", name="a")
+    _make_key(db, team, region, token="sk-b", name="b")
+    lite = f"{region.name}_{team.id}"
+
+    with _patch_litellm(
+        _active(lite, keys={"sk-a": 0.0, "sk-b": 1.0}),
+        [_key_state("sk-a", max_budget=0.0), _key_state("sk-b")],
+    ):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    assert [e for e in result.events if e.subject_type == SUBJECT_KEY] == []
+
+
+@pytest.mark.asyncio
+async def test_expiring_key_is_skipped(db, region):
+    """A key being expired (budget_duration 0d) is not a budget warning."""
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=100_000)
+    key = _make_key(db, team, region, token="sk-a")
+    db.add(
+        DBSpendCap(scope="key", region_id=region.id, key_id=key.id, max_budget=100.0)
+    )
+    db.commit()
+    lite = f"{region.name}_{team.id}"
+
+    with _patch_litellm(
+        _active(lite, keys={"sk-a": 95.0}),
+        [_key_state("sk-a", max_budget=100.0, budget_duration="0d")],
+    ):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    assert [e for e in result.events if e.subject_type == SUBJECT_KEY] == []
+    # Its spend is excluded from the team total too -- the key is going away.
+    assert [e for e in result.events if e.subject_type == SUBJECT_TEAM] == []
+
+
+@pytest.mark.asyncio
+async def test_litellm_key_budget_used_when_no_db_cap_exists(db, region):
+    """With no spend_caps row, whatever LiteLLM enforces is the key's budget."""
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=100_000)
+    key = _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+
+    with _patch_litellm(
+        _active(lite, keys={"sk-a": 51.0}), [_key_state("sk-a", max_budget=100.0)]
+    ):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    key_events = [e for e in result.events if e.subject_type == SUBJECT_KEY]
+    assert len(key_events) == 1
+    assert key_events[0].key_id == key.id
+    assert key_events[0].max_budget == 100.0
+    assert key_events[0].threshold_pct == 50
+    assert key_events[0].budget_source == "litellm_key_budget"
+
+
+@pytest.mark.asyncio
+async def test_key_without_team_id_is_out_of_scope(db, region):
+    """Only keys carrying both a team and a region are in scope (MOAD's shape)."""
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=10_000)
+    user = _make_user(db, team, email="orphan@example.com")
+    key = _make_key(db, team, region, token="sk-orphan", owner=user)
+    key.team_id = None  # owner only, no team
+    db.commit()
+    db.add(DBSpendCap(scope="key", region_id=region.id, key_id=key.id, max_budget=1.0))
+    db.commit()
+    lite = f"{region.name}_{team.id}"
+
+    with _patch_litellm(
+        _active(lite, keys={"sk-orphan": 5.0}), [_key_state("sk-orphan")]
+    ):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    assert [e for e in result.events if e.subject_type == SUBJECT_KEY] == []
+
+
+# --------------------------------------------------------------------------- #
+# Team-member scope
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_team_member_cap_drives_member_alert(db, region):
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=100_000)
+    user = _make_user(db, team)
+    _make_key(db, team, region, token="sk-a", owner=user)
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=region.id,
+            team_id=team.id,
+            user_id=user.id,
+            max_budget=20.0,
+        )
+    )
+    db.commit()
+    lite = f"{region.name}_{team.id}"
+
+    with _patch_litellm(_active(lite, keys={"sk-a": 19.0}), [_key_state("sk-a")]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    member_events = [e for e in result.events if e.subject_type == SUBJECT_TEAM_MEMBER]
+    assert len(member_events) == 1
+    assert member_events[0].user_id == user.id
+    assert member_events[0].max_budget == 20.0
+    assert member_events[0].threshold_pct == 90
+
+
+@pytest.mark.asyncio
+async def test_member_without_cap_emits_nothing(db, region):
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=100_000)
+    user = _make_user(db, team, email="nocap@example.com")
+    _make_key(db, team, region, token="sk-a", owner=user)
+    lite = f"{region.name}_{team.id}"
+
+    with _patch_litellm(_active(lite, keys={"sk-a": 900.0}), [_key_state("sk-a")]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    assert [e for e in result.events if e.subject_type == SUBJECT_TEAM_MEMBER] == []
+
+
+# --------------------------------------------------------------------------- #
+# Audit trail
+# --------------------------------------------------------------------------- #
+
+
 @pytest.mark.asyncio
 async def test_audit_log_records_delivered_and_undelivered_crossings(db, region):
     """budget_alert_state only holds the current band, so the audit log is the
@@ -751,9 +1027,10 @@ async def test_audit_log_records_delivered_and_undelivered_crossings(db, region)
 
     team = _make_team(db)
     _add_subscription(db, team, region, amount_cents=10_000)
-    lite_team_id = f"{region.name}_{team.id}"
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
 
-    with _patch_litellm([_activity(lite_team_id, 92.0)]):
+    with _patch_litellm(_active(lite, keys={"sk-a": 92.0}), [_key_state("sk-a")]):
         result = await evaluate_region(db, region, thresholds=THRESHOLDS)
 
     event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
@@ -805,10 +1082,85 @@ def test_audit_log_write_failure_does_not_raise(db):
         assert write_audit_logs(db, [event], set()) == 0
 
 
+# --------------------------------------------------------------------------- #
+# Delivery payload
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_webhook_payload_excludes_the_litellm_token(db, region):
+    from app.services.budget_alert_webhook import serialize_event
+
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=10_000)
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+
+    with _patch_litellm(_active(lite, keys={"sk-a": 92.0}), [_key_state("sk-a")]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    payload = serialize_event(
+        next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
+    )
+    assert payload["type"] == "budget.threshold_reached"
+    assert payload["data"]["threshold_percent"] == 90
+    assert payload["data"]["team"]["id"] == team.id
+    assert payload["data"]["budget_source"] == "team_ledger"
+    assert "sk-" not in str(payload)
+    assert "token" not in payload["data"]
+
+
+@pytest.mark.asyncio
+async def test_delivery_failure_returns_no_delivered_ids(db, region):
+    """A non-2xx must not be reported as delivered, or the alert is lost."""
+    from app.core.budget_alert_service import BudgetAlertEvent
+    from app.services.budget_alert_webhook import deliver_events
+
+    event = BudgetAlertEvent(
+        event_id="evt_test",
+        subject_type=SUBJECT_TEAM,
+        subject_key="team:1:1",
+        threshold_pct=90,
+        percent_used=92.0,
+        spend=92.0,
+        max_budget=100.0,
+        region_id=region.id,
+        region_name=region.name,
+        period_key="subscription_ledger:x",
+        period_start=None,
+        period_end=None,
+        budget_duration="31d",
+        team_id=1,
+    )
+
+    class _Resp:
+        status_code = 500
+        text = "boom"
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, *args, **kwargs):
+            return _Resp()
+
+    with patch.object(settings, "BUDGET_ALERT_WEBHOOK_URL", "http://moad.test/hook"):
+        with patch("app.services.budget_alert_webhook.httpx.AsyncClient", _Client):
+            delivered = await deliver_events([event])
+
+    assert delivered == set()
+
+
 @pytest.mark.asyncio
 async def test_delivery_without_url_configured_is_a_no_op(db, region):
-    from app.services.budget_alert_webhook import deliver_events
     from app.core.budget_alert_service import BudgetAlertEvent
+    from app.services.budget_alert_webhook import deliver_events
 
     event = BudgetAlertEvent(
         event_id="evt_test2",
