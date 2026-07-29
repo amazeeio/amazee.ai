@@ -743,6 +743,48 @@ class DBSignupEvent(Base):
     )
 
 
+class DBBudgetAlertState(Base):
+    """Highest budget threshold already notified for one alert subject.
+
+    One row per subject, **not** one row per notification. ``subject_key``
+    identifies the thing being watched (a key, a team+region, or a member of a
+    team in a region) and ``period_key`` identifies the billing window that
+    ``last_threshold_pct`` refers to.
+
+    The pair is what makes alerts both idempotent and self-re-arming: while the
+    window is unchanged we never re-notify a band we have already sent, and when
+    a new billing cycle produces a different ``period_key`` the bands reset so
+    the customer is warned again in the new period. A TTL-based dedup (which is
+    what LiteLLM's native alerting uses) cannot express that, because it expires
+    on wall-clock time rather than on the cycle boundary.
+    """
+
+    __tablename__ = "budget_alert_state"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # "key:<key_id>" | "team:<team_id>:<region_id>" | "member:<team_id>:<user_id>:<region_id>"
+    subject_key = Column(String, unique=True, nullable=False, index=True)
+    subject_type = Column(String, nullable=False, index=True)  # key|team|team_member
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=False, index=True)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    key_id = Column(Integer, ForeignKey("ai_tokens.id"), nullable=True, index=True)
+
+    period_key = Column(String, nullable=False)
+    last_threshold_pct = Column(Integer, default=0, nullable=False)
+
+    # Snapshot of the numbers that triggered the last notification. The
+    # denominator is recorded because a POOL top-up moves it, so without this
+    # the event cannot be explained after the fact.
+    spend_at_notify = Column(Float, nullable=True)
+    budget_at_notify = Column(Float, nullable=True)
+    percent_at_notify = Column(Float, nullable=True)
+
+    notified_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+
 class DBDisposableDomain(Base):
     """Blocklist of disposable / dynamic-DNS email domains (trial-account abuse
     protection, moad #620). Populated by the daily refresh cron from a committed
