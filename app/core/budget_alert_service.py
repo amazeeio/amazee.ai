@@ -31,15 +31,18 @@ How it scales to 100k keys
 --------------------------
 Two stages, both bounded by *activity* rather than by key count:
 
-1. **Discovery** — one unfiltered ``/team/daily/activity`` call per region tells us
-   which teams spent anything. LiteLLM writes no daily rows for idle entities, so
-   on PROD region 5 an 11,859-key region reported 42 active teams in one 1.68 s
-   page. Only entity *ids* are used from this; see ``_active_entity_ids``.
-2. **Measurement** — one scoped ``/key/list?team_id=`` per candidate team gives
-   exact ``spend`` and ``max_budget`` for that team's keys.
+1. **Discovery and spend** — an unfiltered ``/team/daily/activity`` sweep over the
+   lookback. LiteLLM writes no daily rows for idle entities, so on PROD region 5 an
+   11,859-key region reported 42 active teams and 351 active keys. Measured cost is
+   3 pages / ~1 s at the 370-day default (page 1 alone at 62 days was 1.08 s);
+   ``_fetch_daily_activity`` follows ``has_more``, and pages partition the data
+   rather than repeating it, so the per-day totals add up cleanly.
+2. **Denominators for keys** — one scoped ``/key/list?team_id=`` per candidate team,
+   used for ``max_budget`` and to spot keys being expired. Its ``spend`` figures are
+   deliberately ignored; see ``spend_window_start``.
 
-So a tick costs ``1 + active_teams`` calls per region, independent of how many idle
-keys exist. Sweeping every key instead — the shape of the existing hourly
+So a tick costs ``pages + active_teams`` calls per region, independent of how many
+idle keys exist. Sweeping every key instead — the shape of the existing hourly
 reconciler, ~40 min at 13.9k keys — is what does not survive 100k.
 """
 
