@@ -117,11 +117,21 @@ class DBRegion(Base):
     litellm_api_key = Column(String)
     is_active = Column(Boolean, default=True)
     is_dedicated = Column(Boolean, default=False)
+    # NULL = access-group enforcement off for this region (legacy all-models
+    # behavior; team `models` lists are never touched). Set = enforcement on.
+    default_access_group_id = Column(
+        Integer,
+        ForeignKey("model_access_groups.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     created_at = Column(DateTime(timezone=True), default=func.now())
 
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="region")
     teams = relationship("DBTeamRegion", back_populates="region")
     admin_users = relationship("DBUserAdminRegion", back_populates="region")
+    default_access_group = relationship(
+        "DBModelAccessGroup", foreign_keys=[default_access_group_id]
+    )
 
 
 class DBAPIToken(Base):
@@ -840,6 +850,119 @@ class DBModel(Base):
             sqlite_where=text("deleted_at IS NULL"),
         ),
     )
+
+
+class DBModelAccessGroup(Base):
+    """A named set of models synced to LiteLLM as a model access group.
+
+    LiteLLM has no access-group object: a group exists only as a string inside
+    each model's model_info.access_groups and each team's models list. The slug
+    is that string — immutable after creation, since renaming it would require
+    rewriting every deployment and team on every proxy. label/description are
+    dashboard-only and never synced.
+    """
+
+    __tablename__ = "model_access_groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    slug = Column(String, unique=True, nullable=False, index=True)
+    label = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+
+    model_associations = relationship(
+        "DBModelAccessGroupModel", back_populates="group", cascade="all, delete-orphan"
+    )
+    region_associations = relationship(
+        "DBModelAccessGroupRegion", back_populates="group", cascade="all, delete-orphan"
+    )
+    team_associations = relationship(
+        "DBTeamModelAccessGroup", back_populates="group", cascade="all, delete-orphan"
+    )
+
+
+class DBModelAccessGroupModel(Base):
+    __tablename__ = "model_access_group_models"
+
+    group_id = Column(
+        Integer,
+        ForeignKey("model_access_groups.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    model_id = Column(
+        Integer, ForeignKey("models.id", ondelete="CASCADE"), primary_key=True, nullable=False
+    )
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    group = relationship("DBModelAccessGroup", back_populates="model_associations")
+    model = relationship("DBModel")
+
+
+class DBModelAccessGroupRegion(Base):
+    """Deploy toggle: a group deployed to a region means its member models carry
+    the slug tag there, the region's teams may opt into it, and it is eligible
+    to be that region's default group."""
+
+    __tablename__ = "model_access_group_regions"
+
+    group_id = Column(
+        Integer,
+        ForeignKey("model_access_groups.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    region_id = Column(
+        Integer, ForeignKey("regions.id", ondelete="CASCADE"), primary_key=True, nullable=False
+    )
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    group = relationship("DBModelAccessGroup", back_populates="region_associations")
+    region = relationship("DBRegion")
+
+
+class DBTeamModelAccessGroup(Base):
+    """Opt-in group attachments only — the region's default group is implicit
+    (computed at sync time) and never stored per team."""
+
+    __tablename__ = "team_model_access_groups"
+
+    team_id = Column(
+        Integer, ForeignKey("teams.id", ondelete="CASCADE"), primary_key=True, nullable=False
+    )
+    group_id = Column(
+        Integer,
+        ForeignKey("model_access_groups.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    team = relationship("DBTeam")
+    group = relationship("DBModelAccessGroup", back_populates="team_associations")
+
+
+class DBTeamGroupSyncRun(Base):
+    """One row per region-wide team fan-out (enforcement flip / default change).
+    Per-team truth is recomputable from the DB, so this only tracks progress
+    for the admin UI — there is deliberately no per-team sync_status."""
+
+    __tablename__ = "team_group_sync_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    region_id = Column(
+        Integer, ForeignKey("regions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    status = Column(String, default="running", nullable=False)  # running | done | failed
+    total = Column(Integer, default=0, nullable=False)
+    done = Column(Integer, default=0, nullable=False)
+    failed_team_ids = Column(JSON, nullable=True)
+    error_sample = Column(String, nullable=True)
+    started_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+
+    region = relationship("DBRegion")
 
 
 class DBModelRegion(Base):

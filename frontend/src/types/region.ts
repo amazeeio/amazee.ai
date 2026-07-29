@@ -11,4 +11,6 @@ export interface Region {
   litellm_api_key?: string;
   is_active: boolean;
   is_dedicated: boolean;
+  // null = access-group enforcement off (legacy all-models behavior)
+  default_access_group_id?: number | null;
 }

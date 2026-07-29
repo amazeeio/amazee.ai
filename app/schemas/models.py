@@ -273,6 +273,8 @@ class RegionAdminResponse(RegionResponse):
     # (postgres_admin_password / litellm_api_key stay server-side).
     postgres_port: int
     postgres_admin_user: str
+    # NULL = access-group enforcement off (legacy all-models behavior)
+    default_access_group_id: Optional[int] = None
 
 
 class RegionSummaryResponse(BaseModel):
@@ -1286,10 +1288,11 @@ class AdminModelBase(BaseModel):
 
 
 class AdminModelCreate(AdminModelBase):
-    pass
+    access_group_ids: Optional[List[int]] = None
 
 
 class AdminModelUpdate(BaseModel):
+    access_group_ids: Optional[List[int]] = None
     display_name: Optional[str] = None
     provider: Optional[str] = None
     type: Optional[str] = None
@@ -1308,6 +1311,8 @@ class AdminModelResponse(AdminModelBase):
     updated_at: datetime
     deleted_at: Optional[datetime] = None
     regions: List[AdminModelRegionResponse] = Field(default_factory=list)
+    access_group_slugs: List[str] = Field(default_factory=list)
+    access_group_ids: List[int] = Field(default_factory=list)
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -1331,5 +1336,69 @@ class ImportableModelResponse(BaseModel):
 
 class AdminModelImport(AdminModelBase):
     region_id: int
+    access_group_ids: Optional[List[int]] = None
+
+
+# The slug is the literal string synced into LiteLLM model_info.access_groups
+# and team models lists — immutable after creation (see DBModelAccessGroup).
+ACCESS_GROUP_SLUG_PATTERN = r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+
+
+class AccessGroupCreate(BaseModel):
+    slug: str = Field(min_length=1, max_length=64, pattern=ACCESS_GROUP_SLUG_PATTERN)
+    label: str = Field(min_length=1)
+    description: Optional[str] = None
+    model_ids: List[int] = Field(default_factory=list)
+    region_ids: List[int] = Field(default_factory=list)
+
+
+class AccessGroupUpdate(BaseModel):
+    label: Optional[str] = None
+    description: Optional[str] = None
+    model_ids: Optional[List[int]] = None
+    region_ids: Optional[List[int]] = None
+
+
+class AccessGroupResponse(BaseModel):
+    id: int
+    slug: str
+    label: str
+    description: Optional[str] = None
+    model_ids: List[int] = Field(default_factory=list)
+    region_ids: List[int] = Field(default_factory=list)
+    default_in_region_ids: List[int] = Field(default_factory=list)
+    team_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RegionDefaultAccessGroupRequest(BaseModel):
+    # None = turn enforcement off for the region (legacy all-models behavior)
+    group_id: Optional[int] = None
+
+
+class TeamAccessGroupsUpdateRequest(BaseModel):
+    access_groups: List[str] = Field(default_factory=list)
+
+
+class TeamAccessGroupsResponse(BaseModel):
+    team_id: int
+    access_groups: List[str] = Field(default_factory=list)
+    # region_name -> default group slug, for each enforced region the team belongs to
+    defaults: Dict[str, str] = Field(default_factory=dict)
+
+
+class TeamGroupSyncRunResponse(BaseModel):
+    id: int
+    region_id: int
+    status: str
+    total: int
+    done: int
+    failed_team_ids: Optional[List[int]] = None
+    error_sample: Optional[str] = None
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
 
 
