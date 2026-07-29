@@ -682,32 +682,37 @@ async def _resolve_optional_user(request: Request, db: Session) -> DBUser | None
         return None
 
 
+async def _fetch_router_aliases(service: LiteLLMService) -> dict[str, str]:
+    """Fetch the region's real model_group_alias map, or {} when unavailable.
+
+    Aliases are enrichment — a broken /router/settings must not mark the whole
+    region unavailable, so every failure degrades to an empty map.
+    """
+    try:
+        return _extract_model_group_alias(await service.get_router_settings())
+    except Exception:
+        return {}
+
+
 async def _fetch_region_model_group(
     service: LiteLLMService, region_name: str
 ) -> PublicRegionModels:
     async with _REGION_SEMAPHORE:
         try:
-            model_info = await asyncio.wait_for(
-                service.get_model_info(), timeout=_REGION_TIMEOUT
-            )
-            profit_margin = await asyncio.wait_for(
-                _resolve_profit_margin(service, region_name),
+            # The three LiteLLM calls are independent; fetch them concurrently
+            # under one deadline so a slow region costs one timeout, not three.
+            model_info, profit_margin, router_aliases = await asyncio.wait_for(
+                asyncio.gather(
+                    service.get_model_info(),
+                    _resolve_profit_margin(service, region_name),
+                    _fetch_router_aliases(service),
+                ),
                 timeout=_REGION_TIMEOUT,
             )
             items = model_info.get("data", [])
             # Both maps need the whole region: aliased_to compares models against
             # each other, and the EOL index is shared by every model here.
-            # Real router aliases win over the derived fake-alias map; the
-            # fetch degrades to {} because aliases are enrichment — a broken
-            # /router/settings must not mark the whole region unavailable.
-            try:
-                router_aliases = _extract_model_group_alias(
-                    await asyncio.wait_for(
-                        service.get_router_settings(), timeout=_REGION_TIMEOUT
-                    )
-                )
-            except Exception:
-                router_aliases = {}
+            # Real router aliases win over the derived fake-alias map.
             alias_map = {**_build_alias_map(items), **router_aliases}
             eol_index = await _get_bedrock_eol_index()
             return PublicRegionModels(
