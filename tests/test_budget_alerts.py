@@ -702,6 +702,69 @@ async def test_delivery_failure_returns_no_delivered_ids(db, region):
 
 
 @pytest.mark.asyncio
+async def test_audit_log_records_delivered_and_undelivered_crossings(db, region):
+    """budget_alert_state only holds the current band, so the audit log is the
+    only durable answer to "was this customer warned"."""
+    from app.core.budget_alert_service import write_audit_logs
+    from app.db.models import DBAuditLog
+
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=10_000)
+    lite_team_id = f"{region.name}_{team.id}"
+
+    with _patch_litellm([_activity(lite_team_id, 92.0)]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
+
+    # Delivered.
+    assert write_audit_logs(db, [event], {event.event_id}) == 1
+    row = (
+        db.query(DBAuditLog)
+        .filter(DBAuditLog.action == "budget.threshold_reached")
+        .one()
+    )
+    assert row.resource_type == SUBJECT_TEAM
+    assert row.resource_id == f"team:{team.id}:{region.id}"
+    assert row.details["delivered"] is True
+    assert row.details["threshold_percent"] == 90
+    assert row.details["team_id"] == team.id
+    assert row.event_type == "WORKER"
+
+    # Undelivered crossings are recorded too, flagged as such.
+    write_audit_logs(db, [event], set())
+    rows = (
+        db.query(DBAuditLog)
+        .filter(DBAuditLog.action == "budget.threshold_reached")
+        .all()
+    )
+    assert sorted(r.details["delivered"] for r in rows) == [False, True]
+
+
+def test_audit_log_write_failure_does_not_raise(db):
+    """Auditing is a side effect; it must never break the sweep."""
+    from app.core.budget_alert_service import BudgetAlertEvent, write_audit_logs
+
+    event = BudgetAlertEvent(
+        event_id="evt_audit",
+        subject_type=SUBJECT_TEAM,
+        subject_key="team:1:1",
+        threshold_pct=50,
+        percent_used=55.0,
+        spend=55.0,
+        max_budget=100.0,
+        region_id=1,
+        region_name="r",
+        period_key="k",
+        period_start=None,
+        period_end=None,
+        budget_duration=None,
+    )
+    with patch.object(db, "commit", side_effect=RuntimeError("db gone")):
+        assert write_audit_logs(db, [event], set()) == 0
+
+
+@pytest.mark.asyncio
 async def test_delivery_without_url_configured_is_a_no_op(db, region):
     from app.services.budget_alert_webhook import deliver_events
     from app.core.budget_alert_service import BudgetAlertEvent
