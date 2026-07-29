@@ -1,6 +1,8 @@
+import asyncio
+
 import pytest
 import httpx
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.api import public as public_api
 from app.db.models import DBRegion, DBTeam, DBTeamRegion, DBUser
@@ -1165,8 +1167,7 @@ def test_public_models_survives_unreachable_bedrock_catalog(client, db):
     """A dead upstream catalog must not fail the endpoint."""
     _clear_public_models_cache()
     _make_public_region(db, "eol-degraded-region")
-    public_api._bedrock_eol_cache["catalog_expires_at"] = None
-    public_api._bedrock_eol_cache["index"] = {}
+    public_api._bedrock_catalog_cache["eol_index"] = {}
 
     with (
         patch("app.api.public.LiteLLMService") as mock_cls,
@@ -1217,3 +1218,57 @@ def test_build_eol_index_prefers_lifecycle_and_parses_card_dates():
         "anthropic.claude-sonnet-4-20250514-v1:0": "2026-10-14",
         "anthropic.claude-3-haiku-20240307-v1:0": "2026-09-10",
     }
+
+
+@pytest.mark.asyncio
+async def test_bedrock_eol_index_is_derived_once_per_fetch():
+    """A cold multi-region fan-out must not rebuild the index per region.
+
+    The index is derived inside _fetch_bedrock_catalog's lock, so concurrent
+    callers share one HTTP fetch and one derivation.
+    """
+    public_api._bedrock_catalog_cache["url"] = None
+    public_api._bedrock_catalog_cache["data"] = None
+    public_api._bedrock_catalog_cache["eol_index"] = {}
+    public_api._bedrock_catalog_cache["expires_at"] = public_api.datetime.min.replace(
+        tzinfo=public_api.UTC
+    )
+
+    catalog = [
+        {
+            "modelId": "anthropic.claude-3-haiku-20240307-v1:0",
+            "modelLifecycle": {"endOfLifeTime": "2026-09-10 08:00:00+00:00"},
+        }
+    ]
+    builds = []
+    real_build = public_api._build_eol_index
+
+    def counting_build(data):
+        builds.append(len(data))
+        return real_build(data)
+
+    response = MagicMock()
+    response.json.return_value = catalog
+    response.raise_for_status.return_value = None
+    mock_client = MagicMock()
+    mock_client.get = AsyncMock(return_value=response)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch.object(
+            public_api.settings,
+            "BEDROCK_MODELS_URL",
+            "https://catalog.test/models.json",
+        ),
+        patch.object(public_api, "_build_eol_index", counting_build),
+        patch.object(public_api.httpx, "AsyncClient", return_value=mock_client),
+    ):
+        indexes = await asyncio.gather(
+            *(public_api._get_bedrock_eol_index() for _ in range(5))
+        )
+
+    assert len(builds) == 1, f"index rebuilt {len(builds)} times"
+    assert mock_client.get.await_count == 1
+    expected = {"anthropic.claude-3-haiku-20240307-v1:0": "2026-09-10"}
+    assert all(index == expected for index in indexes)
