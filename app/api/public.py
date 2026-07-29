@@ -337,12 +337,22 @@ async def _resolve_profit_margin(service: LiteLLMService, region_name: str) -> f
 # aliased_to resolution
 # ---------------------------------------------------------------------------
 #
-# LiteLLM has no alias concept we can read: an alias is configured as a second
-# model entry that happens to share the same ``litellm_params.model`` as the
-# model it points at.  ``/model/info``, ``/model_group/info`` and ``/v1/models``
-# expose no field linking one entry to another (``base_model`` and
-# ``team_public_model_name`` are null across every entry on DEV and PROD), so
-# the link has to be derived from data LiteLLM does give us.
+# Aliases come from two sources, merged in ``_fetch_region_model_group`` with
+# the first winning on conflict:
+#
+# 1. LiteLLM's real alias mechanism, ``router_settings.model_group_alias``
+#    (read via ``/router/settings``).  The model endpoints hide it: an alias is
+#    expanded into a ``/model/info`` entry identical to its target except for
+#    ``model_name``, so the mapping itself is only available from the router
+#    settings.
+# 2. Derived from the model list, for regions still running "fake aliases":
+#    an alias configured as a second model entry that happens to share the
+#    same ``litellm_params.model`` as the model it points at.  ``/model/info``,
+#    ``/model_group/info`` and ``/v1/models`` expose no field linking one
+#    entry to another (``base_model`` and ``team_public_model_name`` are null
+#    across every entry on DEV and PROD), so the link has to be derived from
+#    data LiteLLM does give us.  Delete this path once every region has
+#    migrated to real model_group_alias entries.
 #
 # Sharing a ``litellm_params.model`` is a fact, not a guess: those entries are
 # the same deployment.  Picking *which* member is the canonical one is the part
@@ -447,6 +457,37 @@ def _resolve_canonical_model(
     upstream_tokens = _model_identity_tokens(upstream_model)
     matches = [m for m in members if _model_identity_tokens(m) == upstream_tokens]
     return matches[0] if len(matches) == 1 else None
+
+
+def _extract_model_group_alias(router_settings: Any) -> dict[str, str]:
+    """Return LiteLLM's configured ``model_group_alias`` map from /router/settings.
+
+    Values may be plain target names or ``{"model": ..., "hidden": ...}`` items
+    (LiteLLM's RouterModelGroupAliasItem); both normalize to ``alias -> target``.
+    """
+    if not isinstance(router_settings, dict):
+        return {}
+    fields = router_settings.get("fields")
+    if not isinstance(fields, list):
+        return {}
+    raw = next(
+        (
+            field.get("field_value")
+            for field in fields
+            if isinstance(field, dict)
+            and field.get("field_name") == "model_group_alias"
+        ),
+        None,
+    )
+    if not isinstance(raw, dict):
+        return {}
+    aliases: dict[str, str] = {}
+    for alias, target in raw.items():
+        if isinstance(target, dict):
+            target = target.get("model")
+        if isinstance(alias, str) and isinstance(target, str) and alias != target:
+            aliases[alias] = target
+    return aliases
 
 
 def _build_alias_map(items: list[dict[str, Any]]) -> dict[str, str]:
@@ -656,7 +697,18 @@ async def _fetch_region_model_group(
             items = model_info.get("data", [])
             # Both maps need the whole region: aliased_to compares models against
             # each other, and the EOL index is shared by every model here.
-            alias_map = _build_alias_map(items)
+            # Real router aliases win over the derived fake-alias map; the
+            # fetch degrades to {} because aliases are enrichment — a broken
+            # /router/settings must not mark the whole region unavailable.
+            try:
+                router_aliases = _extract_model_group_alias(
+                    await asyncio.wait_for(
+                        service.get_router_settings(), timeout=_REGION_TIMEOUT
+                    )
+                )
+            except Exception:
+                router_aliases = {}
+            alias_map = {**_build_alias_map(items), **router_aliases}
             eol_index = await _get_bedrock_eol_index()
             return PublicRegionModels(
                 region=region_name,

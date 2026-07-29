@@ -1026,6 +1026,108 @@ def test_public_models_aliased_to_is_null_when_canonical_is_ambiguous(client, db
     assert models["house-chat-fast"]["aliased_to"] is None
 
 
+def _router_settings_response(alias_map):
+    return {
+        "fields": [
+            {"field_name": "routing_strategy", "field_value": "simple-shuffle"},
+            {"field_name": "model_group_alias", "field_value": alias_map},
+        ]
+    }
+
+
+def test_public_models_resolves_aliases_from_router_settings(client, db):
+    """A real model_group_alias resolves groups the derived map cannot."""
+    _clear_public_models_cache()
+    _make_public_region(db, "router-alias-region")
+
+    upstream = {"model": "bedrock/us.anthropic.claude-sonnet-4-6"}
+    with patch("app.api.public.LiteLLMService") as mock_cls:
+        mock_cls.return_value.get_model_info = AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        "model_name": "house-chat",
+                        "litellm_params": upstream,
+                        "model_info": {"mode": "chat"},
+                    },
+                    {
+                        "model_name": "house-chat-fast",
+                        "litellm_params": upstream,
+                        "model_info": {"mode": "chat"},
+                    },
+                ]
+            }
+        )
+        mock_cls.return_value.get_router_settings = AsyncMock(
+            return_value=_router_settings_response({"house-chat": "house-chat-fast"})
+        )
+        response = client.get("/public/models")
+
+    assert response.status_code == 200
+    models = _models_by_id(response)
+    assert models["house-chat"]["aliased_to"] == "house-chat-fast"
+    assert models["house-chat-fast"]["aliased_to"] is None
+
+
+def test_public_models_router_alias_wins_over_derived_map(client, db):
+    """model_group_alias overrides what the fake-alias heuristics derived."""
+    _clear_public_models_cache()
+    _make_public_region(db, "router-priority-region")
+
+    with patch("app.api.public.LiteLLMService") as mock_cls:
+        mock_cls.return_value.get_model_info = AsyncMock(
+            return_value=_alias_group_response()
+        )
+        mock_cls.return_value.get_router_settings = AsyncMock(
+            return_value=_router_settings_response({"chat": "gemini-2.5-flash-image"})
+        )
+        response = client.get("/public/models")
+
+    assert response.status_code == 200
+    models = _models_by_id(response)
+    # Router settings win for chat; the rest keep the derived resolution.
+    assert models["chat"]["aliased_to"] == "gemini-2.5-flash-image"
+    assert models["claude-3-5-sonnet"]["aliased_to"] == "claude-4-6-sonnet"
+
+
+def test_public_models_falls_back_when_router_settings_unavailable(client, db):
+    """A broken /router/settings degrades to the derived map, not an error."""
+    _clear_public_models_cache()
+    _make_public_region(db, "router-broken-region")
+
+    with patch("app.api.public.LiteLLMService") as mock_cls:
+        mock_cls.return_value.get_model_info = AsyncMock(
+            return_value=_alias_group_response()
+        )
+        mock_cls.return_value.get_router_settings = AsyncMock(
+            side_effect=Exception("boom")
+        )
+        response = client.get("/public/models")
+
+    assert response.status_code == 200
+    assert response.json()[0]["status"] == "ga"
+    models = _models_by_id(response)
+    assert models["chat"]["aliased_to"] == "claude-4-6-sonnet"
+
+
+def test_extract_model_group_alias_normalizes_shapes():
+    """Direct unit check: string targets, item dicts, junk, self-aliases."""
+    settings = _router_settings_response(
+        {
+            "chat": "claude-4-7-opus",
+            "vision": {"model": "gemini-2.5-flash-image", "hidden": True},
+            "self": "self",
+            "junk": 42,
+        }
+    )
+    assert public_api._extract_model_group_alias(settings) == {
+        "chat": "claude-4-7-opus",
+        "vision": "gemini-2.5-flash-image",
+    }
+    assert public_api._extract_model_group_alias(None) == {}
+    assert public_api._extract_model_group_alias({"fields": "nope"}) == {}
+
+
 def test_build_alias_map_ignores_word_order_and_version_suffixes():
     """Direct unit check of the name-shape fallback."""
     alias_map = public_api._build_alias_map(
