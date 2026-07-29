@@ -379,3 +379,118 @@ class TestMainWarningDaysValidation:
         ):
             exit_code = mod["main"]()
             assert exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# Structured eol_date field (issue #638)
+# ---------------------------------------------------------------------------
+
+
+class TestStructuredEolDateField:
+    def test_prefers_structured_field_over_metadata_raw(self):
+        """eol_date wins; metadata_raw is only a fallback for older backends."""
+        mod = _load_module()
+        results = mod["check_eol_models"](
+            [
+                {
+                    "region": "test-region",
+                    "models": [
+                        {
+                            "model_id": "claude-3-haiku",
+                            "eol_date": "2026-08-01",
+                            "metadata_raw": "Stale prose. (EOL: 2026-09-10)",
+                        }
+                    ],
+                }
+            ],
+            warning_days=100000,
+        )
+        found = results["expired"] + results["approaching"]
+        assert [m["eol_date"] for m in found] == ["2026-08-01"]
+
+    def test_falls_back_to_metadata_raw_when_field_absent(self):
+        """A backend that predates eol_date must still be handled."""
+        mod = _load_module()
+        results = mod["check_eol_models"](
+            [
+                {
+                    "region": "test-region",
+                    "models": [
+                        {
+                            "model_id": "claude-3-haiku",
+                            "metadata_raw": "Legacy prose. (EOL: 2026-09-10)",
+                        }
+                    ],
+                }
+            ],
+            warning_days=100000,
+        )
+        found = results["expired"] + results["approaching"]
+        assert [m["eol_date"] for m in found] == ["2026-09-10"]
+
+    def test_falls_back_when_field_is_null(self):
+        """Models with no known EOL date send eol_date: null."""
+        mod = _load_module()
+        results = mod["check_eol_models"](
+            [
+                {
+                    "region": "test-region",
+                    "models": [
+                        {
+                            "model_id": "claude-3-haiku",
+                            "eol_date": None,
+                            "metadata_raw": "Prose only. (EOL: 2026-09-10)",
+                        }
+                    ],
+                }
+            ],
+            warning_days=100000,
+        )
+        found = results["expired"] + results["approaching"]
+        assert [m["eol_date"] for m in found] == ["2026-09-10"]
+
+    def test_model_with_no_eol_anywhere_is_ignored(self):
+        mod = _load_module()
+        results = mod["check_eol_models"](
+            [
+                {
+                    "region": "test-region",
+                    "models": [
+                        {
+                            "model_id": "claude-opus-5",
+                            "eol_date": None,
+                            "metadata_raw": "No EOL here.",
+                        }
+                    ],
+                }
+            ],
+            warning_days=100000,
+        )
+        assert results == {"expired": [], "approaching": []}
+
+    @pytest.mark.parametrize("value", ["", "   ", "not-a-date", "2026-13-45", 20260910])
+    def test_unparseable_structured_field_is_ignored(self, value):
+        mod = _load_module()
+        assert mod["parse_eol_date"](value) is None
+
+    def test_annotation_regex_matches_the_backend_copy(self):
+        """The duplicated (EOL: ...) pattern must agree with app/api/public.py.
+
+        The script is stdlib-only so it cannot import from app/; this pins the
+        two copies together.
+        """
+        from app.api.public import _parse_eol_annotation
+
+        mod = _load_module()
+        for text in (
+            "Low cost Claude model. (EOL: 2026-09-10)",
+            "Alias pointing to Claude 3 Haiku. (EOL: 2026-09-10)",
+            "(EOL:2026-01-02) leading",
+            "no annotation here",
+            "malformed (EOL: 2026-9-10)",
+        ):
+            script_result = mod["extract_eol_date"](text)
+            backend_result = _parse_eol_annotation(text)
+            assert (
+                script_result.isoformat() if script_result else None
+            ) == backend_result, text
