@@ -68,6 +68,41 @@ def _is_duplicate_stripe_payment_integrity_error(exc: IntegrityError) -> bool:
     return "stripe_payment_id" in message
 
 
+def _lock_active_region_or_404(db: Session, region_id: int) -> DBRegion:
+    """
+    Load an active region and hold a row lock on it for the rest of the
+    transaction.
+
+    A region is flipped `is_active=False` while its keys are still live and
+    draining, so a purchase must not land on one that is being torn down. An
+    unlocked read is not enough: the purchase path awaits LiteLLM before it
+    commits, and a deactivation landing inside that window would leave the
+    payment and ledger rows committed against an already-inactive region.
+
+    `FOR UPDATE` serialises the two. The deactivation is an `UPDATE` on this
+    same row, so whichever starts first wins and the other waits:
+
+    - purchase first -> the deactivation blocks until the purchase commits
+    - deactivation first -> this blocks, then re-evaluates the predicate under
+      READ COMMITTED, finds no active row, and 404s
+
+    Only writers to this row contend; readers are unaffected by MVCC, and a
+    region row is only written when an admin edits the region.
+    """
+    region = (
+        db.query(DBRegion)
+        .filter(DBRegion.id == region_id, DBRegion.is_active.is_(True))
+        .with_for_update()
+        .first()
+    )
+    if not region:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Region not found or inactive",
+        )
+    return region
+
+
 # PERIODIC teams use a fixed 31d rolling window so LiteLLM never self-resets
 # on a calendar boundary. Spend is reset manually on each Stripe webhook renewal.
 PERIODIC_BUDGET_DURATION = "31d"
@@ -346,11 +381,12 @@ async def purchase_pool_budget(
             ),
         )
 
-    region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
-    if not region:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
-        )
+    # Inactive regions reject new spend. A region is flipped `is_active=False`
+    # while its keys are still live and still draining, so without this filter a
+    # team could keep buying budget on a region that is being torn down. The
+    # lock is taken here, at the start of the transaction that
+    # purchase_periodic_topup later commits.
+    _lock_active_region_or_404(db, region_id)
 
     existing_purchase = (
         db.query(DBPoolPurchase)
@@ -503,11 +539,13 @@ async def create_periodic_topup(
 async def purchase_periodic_topup(
     *, region_id: int, team: DBTeam, purchase: PeriodicTopupRequest, db: Session
 ) -> PeriodicTopupResponse:
-    region = db.query(DBRegion).filter(DBRegion.id == region_id).first()
-    if not region:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Region not found"
-        )
+    # Same rule as purchase_pool_budget: no new spend on a region that is being
+    # decommissioned. Guarded here as well as at the pool entry point so the
+    # `/purchase/periodic` endpoint is covered too. When reached via the pool
+    # endpoint the row is already locked by this transaction, so this is a
+    # no-op re-lock.
+    region = _lock_active_region_or_404(db, region_id)
+
     team_region = (
         db.query(DBTeamRegion)
         .filter(DBTeamRegion.team_id == team.id, DBTeamRegion.region_id == region_id)
