@@ -1462,3 +1462,59 @@ async def test_sync_pool_team_monthly_caps_rollover_updates_effective_budget(
     mock_update_team_budget.assert_awaited_once()
     assert mock_update_team_budget.await_args.kwargs["max_budget"] == 30.0
     assert mock_update_team_budget.await_args.kwargs["budget_duration"] == "365d"
+
+
+def test_pool_purchase_locks_region_row_against_concurrent_deactivation(
+    client, admin_token, db, test_team, test_region
+):
+    """
+    The region check must take a row lock, not just read.
+
+    The purchase path awaits LiteLLM before it commits. Without `FOR UPDATE`, a
+    deactivation committing inside that window would leave the payment and
+    ledger rows against an already-inactive region. Postgres enforces the
+    blocking itself — what we verify here is that the lock is actually
+    requested, which is the part that lives in our code.
+    """
+    from sqlalchemy import event
+
+    # Bind from the live session — importing conftest here would build a second
+    # engine object and the listener would never fire.
+    engine = db.get_bind()
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, params, context, executemany):
+        statements.append(statement)
+
+    test_team.budget_type = "pool"
+    db.commit()
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        with patch("app.api.budgets.LiteLLMService") as mock_litellm:
+            mock_instance = mock_litellm.return_value
+            mock_instance.update_team_budget = AsyncMock()
+            mock_instance.get_team_info = AsyncMock(
+                return_value={"team_info": {"spend": 0.0, "max_budget": 0.0}}
+            )
+            client.post(
+                f"/budgets/region/{test_region.id}/teams/{test_team.id}/purchase",
+                json={
+                    "amount_cents": 5000,
+                    "currency": "usd",
+                    "purchased_at": "2026-03-13T10:00:00Z",
+                    "stripe_payment_id": f"pi_lock_{int(time.time() * 1000000)}",
+                },
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+
+    region_selects = [
+        s for s in statements if "FROM regions" in s and s.strip().startswith("SELECT")
+    ]
+    assert region_selects, "expected the purchase path to select the region"
+    assert any("FOR UPDATE" in s for s in region_selects), (
+        "region row must be locked FOR UPDATE so a concurrent deactivation "
+        f"cannot commit mid-purchase; got: {region_selects}"
+    )
