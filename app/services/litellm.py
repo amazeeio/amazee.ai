@@ -805,6 +805,29 @@ class LiteLLMService:
                 detail=f"Failed to get LiteLLM model info: {error_msg}",
             )
 
+    async def get_router_settings(self) -> dict:
+        """Get LiteLLM router settings (includes model_group_alias)."""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.api_url}/router/settings",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            error_msg = str(e)
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get LiteLLM router settings: {error_msg}",
+            )
+
     async def get_cost_margin_config(self) -> dict:
         """Get LiteLLM provider margin configuration."""
         try:

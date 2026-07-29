@@ -342,6 +342,29 @@ class PublicModelSummary(BaseModel):
     manufacturer: Optional[PublicModelManufacturer] = None
     capabilities: PublicModelCapabilities
     pricing: PublicModelPricing
+    aliased_to: Optional[str] = Field(
+        default=None,
+        description=(
+            "The canonical model_id this entry points at, or null when this "
+            "model is itself canonical. Two models in the same region are the "
+            "same deployment when they share a litellm_params.model."
+        ),
+    )
+    eol_date: Optional[str] = Field(
+        default=None,
+        description=(
+            "End-of-Life date as ISO YYYY-MM-DD, or null when the model has no "
+            "known EOL date."
+        ),
+    )
+    eol_source: Optional[str] = Field(
+        default=None,
+        description=(
+            "Where eol_date came from: 'manual' for an operator-authored "
+            "'(EOL: ...)' annotation in the LiteLLM model metadata, 'bedrock' "
+            "for the upstream AWS Bedrock catalog. Null when eol_date is null."
+        ),
+    )
 
 
 class PublicRegionModels(BaseModel):

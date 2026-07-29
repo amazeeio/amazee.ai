@@ -17,6 +17,7 @@ AWS_PATH = "/models/missing/aws"
 def _clear_bedrock_catalog_cache():
     public_api._bedrock_catalog_cache["url"] = None
     public_api._bedrock_catalog_cache["data"] = None
+    public_api._bedrock_catalog_cache["eol_index"] = {}
     public_api._bedrock_catalog_cache["expires_at"] = datetime.min.replace(tzinfo=UTC)
 
 
