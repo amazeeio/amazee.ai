@@ -16,6 +16,18 @@ def _clear_public_models_cache():
     public_api._dedicated_cache["team_expires"] = {}
 
 
+@pytest.fixture(autouse=True)
+def _offline_bedrock_catalog():
+    """Keep /public/models off the network.
+
+    The endpoint enriches models with EOL dates from the upstream Bedrock
+    catalog; an empty BEDROCK_MODELS_URL skips that fetch. Tests that exercise
+    the EOL path patch _get_bedrock_eol_index (or this setting) themselves.
+    """
+    with patch.object(public_api.settings, "BEDROCK_MODELS_URL", ""):
+        yield
+
+
 def test_public_models_returns_aggregated_data(client, db):
     _clear_public_models_cache()
     region = DBRegion(
@@ -909,3 +921,299 @@ def test_public_models_team_visibility_uses_explicit_team_regions(client, db):
     region_names = [r["region"] for r in response.json()]
     assert "public-region-hidden" not in region_names
     assert "team-hidden-dedicated" in region_names
+
+
+# ---------------------------------------------------------------------------
+# aliased_to
+# ---------------------------------------------------------------------------
+
+
+def _alias_group_response():
+    """Three models on one upstream deployment, plus an unrelated canonical one.
+
+    Mirrors DEV amazeeai-us1: aliases are separate entries sharing a
+    litellm_params.model, one of them annotated "Points to ...".
+    """
+    return {
+        "data": [
+            {
+                "model_name": "claude-4-6-sonnet",
+                "litellm_params": {"model": "bedrock/us.anthropic.claude-sonnet-4-6"},
+                "model_info": {"mode": "chat", "metadata": "Previous generation."},
+            },
+            {
+                "model_name": "claude-3-5-sonnet",
+                "litellm_params": {"model": "bedrock/us.anthropic.claude-sonnet-4-6"},
+                "model_info": {
+                    "mode": "chat",
+                    "metadata": "Points to claude-4-6-sonnet.",
+                },
+            },
+            {
+                "model_name": "chat",
+                "litellm_params": {"model": "bedrock/us.anthropic.claude-sonnet-4-6"},
+                "model_info": {
+                    "mode": "chat",
+                    "metadata": "Points to the latest Claude model.",
+                },
+            },
+            {
+                "model_name": "gemini-2.5-flash-image",
+                "litellm_params": {"model": "vertex_ai/gemini-2.5-flash-image"},
+                "model_info": {"mode": "chat", "metadata": "Image generation."},
+            },
+        ]
+    }
+
+
+def _models_by_id(response):
+    return {m["model_id"]: m for m in response.json()[0]["models"]}
+
+
+def test_public_models_marks_aliases_and_canonical_models(client, db):
+    """Aliases point at the canonical model; the canonical one reports null."""
+    _clear_public_models_cache()
+    _make_public_region(db, "alias-region")
+
+    with patch("app.api.public.LiteLLMService") as mock_cls:
+        mock_cls.return_value.get_model_info = AsyncMock(
+            return_value=_alias_group_response()
+        )
+        response = client.get("/public/models")
+
+    assert response.status_code == 200
+    models = _models_by_id(response)
+    # Canonical: shares the upstream id's identity tokens.
+    assert models["claude-4-6-sonnet"]["aliased_to"] is None
+    # Alias resolved from the "Points to ..." annotation.
+    assert models["claude-3-5-sonnet"]["aliased_to"] == "claude-4-6-sonnet"
+    # Alias with vague prose still resolved via the shared upstream deployment.
+    assert models["chat"]["aliased_to"] == "claude-4-6-sonnet"
+    # Sole deployment on its upstream model: canonical by definition.
+    assert models["gemini-2.5-flash-image"]["aliased_to"] is None
+
+
+def test_public_models_aliased_to_is_null_when_canonical_is_ambiguous(client, db):
+    """No single winner means null everywhere, never a guessed pointer."""
+    _clear_public_models_cache()
+    _make_public_region(db, "ambiguous-alias-region")
+
+    upstream = {"model": "bedrock/us.anthropic.claude-sonnet-4-6"}
+    with patch("app.api.public.LiteLLMService") as mock_cls:
+        mock_cls.return_value.get_model_info = AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        "model_name": "house-chat",
+                        "litellm_params": upstream,
+                        "model_info": {"mode": "chat"},
+                    },
+                    {
+                        "model_name": "house-chat-fast",
+                        "litellm_params": upstream,
+                        "model_info": {"mode": "chat"},
+                    },
+                ]
+            }
+        )
+        response = client.get("/public/models")
+
+    assert response.status_code == 200
+    models = _models_by_id(response)
+    assert models["house-chat"]["aliased_to"] is None
+    assert models["house-chat-fast"]["aliased_to"] is None
+
+
+def test_build_alias_map_ignores_word_order_and_version_suffixes():
+    """Direct unit check of the name-shape fallback."""
+    alias_map = public_api._build_alias_map(
+        [
+            {
+                "model_name": "claude-4-5-haiku",
+                "litellm_params": {
+                    "model": "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                },
+                "model_info": {},
+            },
+            {
+                "model_name": "claude-3-5-haiku",
+                "litellm_params": {
+                    "model": "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                },
+                "model_info": {},
+            },
+            {
+                "model_name": "titan-embed-text-v2:0",
+                "litellm_params": {"model": "amazon.titan-embed-text-v2:0"},
+                "model_info": {},
+            },
+            {
+                "model_name": "embeddings",
+                "litellm_params": {"model": "amazon.titan-embed-text-v2:0"},
+                "model_info": {},
+            },
+        ]
+    )
+    assert alias_map == {
+        "claude-3-5-haiku": "claude-4-5-haiku",
+        "embeddings": "titan-embed-text-v2:0",
+    }
+
+
+# ---------------------------------------------------------------------------
+# eol_date
+# ---------------------------------------------------------------------------
+
+
+def _eol_response():
+    return {
+        "data": [
+            {
+                "model_name": "claude-3-haiku",
+                "litellm_params": {
+                    "model": "bedrock/us.anthropic.claude-3-haiku-20240307-v1:0"
+                },
+                "model_info": {
+                    "mode": "chat",
+                    "metadata": "Low cost Claude model. (EOL: 2026-09-10)",
+                },
+            },
+            {
+                "model_name": "claude-4-6-sonnet",
+                "litellm_params": {"model": "bedrock/us.anthropic.claude-sonnet-4-6"},
+                "model_info": {"mode": "chat", "metadata": "Current Sonnet."},
+            },
+            {
+                "model_name": "gemini-2.5-pro",
+                "litellm_params": {"model": "vertex_ai/gemini-2.5-pro"},
+                "model_info": {"mode": "chat", "metadata": "Not a Bedrock model."},
+            },
+        ]
+    }
+
+
+def test_public_models_reports_eol_from_annotation_and_catalog(client, db):
+    """Manual annotations and upstream catalog dates both surface, tagged."""
+    _clear_public_models_cache()
+    _make_public_region(db, "eol-region")
+
+    with (
+        patch("app.api.public.LiteLLMService") as mock_cls,
+        patch.object(
+            public_api,
+            "_get_bedrock_eol_index",
+            AsyncMock(return_value={"anthropic.claude-sonnet-4-6": "2026-10-14"}),
+        ),
+    ):
+        mock_cls.return_value.get_model_info = AsyncMock(return_value=_eol_response())
+        response = client.get("/public/models")
+
+    assert response.status_code == 200
+    models = _models_by_id(response)
+
+    assert models["claude-3-haiku"]["eol_date"] == "2026-09-10"
+    assert models["claude-3-haiku"]["eol_source"] == "manual"
+    # metadata_raw must keep the annotation: no breaking change.
+    assert "(EOL: 2026-09-10)" in models["claude-3-haiku"]["metadata_raw"]
+
+    assert models["claude-4-6-sonnet"]["eol_date"] == "2026-10-14"
+    assert models["claude-4-6-sonnet"]["eol_source"] == "bedrock"
+
+    assert models["gemini-2.5-pro"]["eol_date"] is None
+    assert models["gemini-2.5-pro"]["eol_source"] is None
+
+
+def test_public_models_annotation_overrides_catalog_eol(client, db):
+    """An operator may retire a model earlier than AWS does."""
+    _clear_public_models_cache()
+    _make_public_region(db, "eol-override-region")
+
+    with (
+        patch("app.api.public.LiteLLMService") as mock_cls,
+        patch.object(
+            public_api,
+            "_get_bedrock_eol_index",
+            AsyncMock(
+                return_value={"anthropic.claude-3-haiku-20240307-v1:0": "2026-09-10"}
+            ),
+        ),
+    ):
+        mock_cls.return_value.get_model_info = AsyncMock(
+            return_value={
+                "data": [
+                    {
+                        "model_name": "claude-3-haiku",
+                        "litellm_params": {
+                            "model": "bedrock/us.anthropic.claude-3-haiku-20240307-v1:0"
+                        },
+                        "model_info": {
+                            "mode": "chat",
+                            "metadata": "Retiring early. (EOL: 2026-08-01)",
+                        },
+                    }
+                ]
+            }
+        )
+        response = client.get("/public/models")
+
+    models = _models_by_id(response)
+    assert models["claude-3-haiku"]["eol_date"] == "2026-08-01"
+    assert models["claude-3-haiku"]["eol_source"] == "manual"
+
+
+def test_public_models_survives_unreachable_bedrock_catalog(client, db):
+    """A dead upstream catalog must not fail the endpoint."""
+    _clear_public_models_cache()
+    _make_public_region(db, "eol-degraded-region")
+    public_api._bedrock_eol_cache["catalog_expires_at"] = None
+    public_api._bedrock_eol_cache["index"] = {}
+
+    with (
+        patch("app.api.public.LiteLLMService") as mock_cls,
+        patch.object(
+            public_api.settings,
+            "BEDROCK_MODELS_URL",
+            "https://catalog.invalid/models.json",
+        ),
+        patch.object(
+            public_api,
+            "_fetch_bedrock_catalog",
+            AsyncMock(side_effect=httpx.ConnectError("boom")),
+        ),
+    ):
+        mock_cls.return_value.get_model_info = AsyncMock(return_value=_eol_response())
+        response = client.get("/public/models")
+
+    assert response.status_code == 200
+    models = _models_by_id(response)
+    # The manual annotation still works; the catalog-only date is simply absent.
+    assert models["claude-3-haiku"]["eol_date"] == "2026-09-10"
+    assert models["claude-4-6-sonnet"]["eol_date"] is None
+
+
+def test_build_eol_index_prefers_lifecycle_and_parses_card_dates():
+    """Both upstream date fields are read; lifecycle wins when both are set."""
+    index = public_api._build_eol_index(
+        [
+            {
+                "modelId": "anthropic.claude-sonnet-4-20250514-v1:0",
+                "modelLifecycle": {"endOfLifeTime": "2026-10-14 07:00:00+00:00"},
+                "modelCard": {"modelEolDate": "October 14, 2026"},
+            },
+            {
+                "modelId": "anthropic.claude-3-haiku-20240307-v1:0",
+                "modelLifecycle": {"status": "ACTIVE"},
+                "modelCard": {"modelEolDate": "September 10, 2026"},
+            },
+            {
+                "modelId": "anthropic.claude-opus-5",
+                "modelLifecycle": {"status": "ACTIVE"},
+                "modelCard": {"modelEolDate": None},
+            },
+            {"modelId": "broken.model", "modelCard": {"modelEolDate": "not a date"}},
+        ]
+    )
+    assert index == {
+        "anthropic.claude-sonnet-4-20250514-v1:0": "2026-10-14",
+        "anthropic.claude-3-haiku-20240307-v1:0": "2026-09-10",
+    }
