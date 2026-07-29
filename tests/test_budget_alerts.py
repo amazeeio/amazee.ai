@@ -701,6 +701,47 @@ async def test_delivery_failure_returns_no_delivered_ids(db, region):
     assert delivered == set()
 
 
+# --------------------------------------------------------------------------- #
+# Which regions get swept
+# --------------------------------------------------------------------------- #
+
+
+def test_inactive_region_holding_keys_is_still_swept(db, region):
+    """PROD region 5 is inactive but holds 85% of all keys.
+
+    is_active governs new provisioning, not whether existing keys serve traffic.
+    Filtering on it would exclude the anonymous trial fleet -- the population most
+    likely to hit a budget limit -- from every alert.
+    """
+    from app.core.budget_alert_service import regions_to_sweep
+
+    team = _make_team(db)
+    region.is_active = False
+    db.commit()
+    _make_key(db, team, region, token="sk-inactive-region-key")
+
+    assert [r.id for r in regions_to_sweep(db)] == [region.id]
+
+
+def test_region_without_keys_is_not_swept(db, region):
+    """An empty region has nothing to alert on, active or not."""
+    from app.core.budget_alert_service import regions_to_sweep
+
+    assert regions_to_sweep(db) == []
+
+
+def test_region_without_litellm_credentials_is_not_swept(db, region):
+    """A region we cannot reach must not be attempted every 5 minutes."""
+    from app.core.budget_alert_service import regions_to_sweep
+
+    team = _make_team(db)
+    _make_key(db, team, region, token="sk-no-creds")
+    region.litellm_api_url = ""
+    db.commit()
+
+    assert regions_to_sweep(db) == []
+
+
 @pytest.mark.asyncio
 async def test_audit_log_records_delivered_and_undelivered_crossings(db, region):
     """budget_alert_state only holds the current band, so the audit log is the
