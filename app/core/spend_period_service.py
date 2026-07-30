@@ -36,6 +36,47 @@ def _resolve_budget_type(team: DBTeam) -> str:
     return str(budget_type).lower()
 
 
+def current_cycle_start(
+    budget_duration: str | None, anchor: datetime | None, now: datetime
+) -> datetime | None:
+    """Start of the cycle *containing now* for a per-cycle budget.
+
+    Spend caps are per cycle, not absolute: on PROD every one of them is ``31d``
+    or ``1mo``, and LiteLLM zeroes the key's spend at each boundary. A percentage
+    against such a cap therefore has to be summed over that cap's current cycle —
+    dividing a longer stretch of spend by a one-month cap reads far above 100 %
+    and fires alerts nobody has earned.
+
+    This differs from :func:`compute_period_start` in rolling forward. That one
+    derives the window from LiteLLM's ``budget_reset_at``, which can sit in the
+    past (PROD has keys whose ``budget_reset_at`` is a month behind), and would
+    then hand back a window that ended long ago. Here the anchor is stepped by
+    whole cycles until it contains ``now``, which is what LiteLLM does when it
+    actually resets.
+
+    ``1mo``/``30d`` snap to the calendar month, matching LiteLLM's own rule and
+    the ``budget_reset_at`` values it stores (always the 1st).
+    """
+    if not budget_duration:
+        return None
+
+    if budget_duration in ("1mo", "30d"):
+        return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    match = re.fullmatch(r"(\d+)d", str(budget_duration).strip())
+    if not match:
+        return None
+    days = int(match.group(1))
+    if days <= 0:
+        return None
+
+    start = _as_utc(anchor) or now
+    if start >= now:
+        return start
+    whole_cycles = (now - start).days // days
+    return start + timedelta(days=whole_cycles * days)
+
+
 def compute_period_start(
     budget_reset_at: datetime | None, budget_duration: str | None
 ) -> datetime | None:

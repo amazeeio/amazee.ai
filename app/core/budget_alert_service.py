@@ -64,12 +64,17 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.pool_budget_service import pool_available_budget_for_team_region
-from app.core.spend_period_service import TeamPeriodWindow, resolve_team_period_window
+from app.core.spend_period_service import (
+    TeamPeriodWindow,
+    current_cycle_start,
+    resolve_team_period_window,
+)
 from app.db.models import (
     DBAuditLog,
     DBBudgetAlertState,
     DBLimitedResource,
     DBPeriodicBudgetLedgerEntry,
+    DBPeriodicPayment,
     DBPrivateAIKey,
     DBRegion,
     DBSpendCap,
@@ -235,14 +240,59 @@ def _active_entity_ids(rows: list[dict]) -> set[str]:
     return entity_ids
 
 
+def _day_series(
+    rows: list[dict],
+) -> tuple[dict[str, dict[date, float]], dict[str, dict[date, float]]]:
+    """Index per-day activity by entity and by hashed key.
+
+    Kept as a series rather than pre-summed because subjects do not share a
+    window: a team is measured over its billing cycle while a capped key is
+    measured over that cap's own cycle. One pass over the rows, then each subject
+    sums the days its own window covers.
+    """
+    entity_days: dict[str, dict[date, float]] = {}
+    key_days: dict[str, dict[date, float]] = {}
+
+    for row in rows:
+        raw_date = row.get("date")
+        try:
+            row_date = date.fromisoformat(str(raw_date)[:10])
+        except (TypeError, ValueError):
+            logger.warning("Skipping daily-activity row with bad date: %r", raw_date)
+            continue
+
+        breakdown = row.get("breakdown") or {}
+        for entity_id, payload in (breakdown.get("entities") or {}).items():
+            metrics = (payload or {}).get("metrics") or {}
+            bucket = entity_days.setdefault(entity_id, {})
+            bucket[row_date] = bucket.get(row_date, 0.0) + float(
+                metrics.get("spend") or 0.0
+            )
+        for hashed_token, payload in (breakdown.get("api_keys") or {}).items():
+            metrics = (payload or {}).get("metrics") or {}
+            bucket = key_days.setdefault(hashed_token, {})
+            bucket[row_date] = bucket.get(row_date, 0.0) + float(
+                metrics.get("spend") or 0.0
+            )
+
+    return entity_days, key_days
+
+
+def _sum_from(series: dict[date, float] | None, since: date) -> float:
+    """Total the days at or after ``since``.
+
+    Rows are whole UTC days, so a window opening mid-day includes that whole day —
+    an overstatement bounded by one day.
+    """
+    if not series:
+        return 0.0
+    return sum(value for day, value in series.items() if day >= since)
+
+
 def _sum_activity_since(
     rows: list[dict], since: date
 ) -> tuple[dict[str, float], dict[str, float]]:
-    """Sum per-day activity from ``since`` onwards, by entity and by hashed key.
-
-    Returns ``(entity_spend, key_spend)``. Rows are one per UTC day, so a window
-    opening mid-day includes that whole day — an overstatement bounded by one day.
-    """
+    """Sum per-day activity from ``since`` onwards, by entity and by hashed key."""
     entity_spend: dict[str, float] = {}
     key_spend: dict[str, float] = {}
 
@@ -381,12 +431,42 @@ def _team_budget(db: Session, team: DBTeam, region_id: int) -> float | None:
     return available if available > 0 else None
 
 
+def _cap_cycle_anchor(db: Session, team: DBTeam) -> datetime | None:
+    """Where a rolling ``Nd`` cap cycle is anchored for this team.
+
+    Mirrors ``app/api/spend.py``: the most recent completed deactivation payment,
+    else team creation. Using the same anchor as the endpoint the customer reads
+    is the point — a cap percentage that disagrees with the dashboard is worse
+    than no alert.
+    """
+    last_deactivation = (
+        db.query(DBPeriodicPayment.payment_date)
+        .filter(
+            DBPeriodicPayment.team_id == team.id,
+            DBPeriodicPayment.payment_type == "deactivation",
+            DBPeriodicPayment.status == "completed",
+        )
+        .order_by(DBPeriodicPayment.payment_date.desc())
+        .first()
+    )
+    anchor = (last_deactivation[0] if last_deactivation else None) or team.created_at
+    if anchor is not None and anchor.tzinfo is None:
+        anchor = anchor.replace(tzinfo=UTC)
+    return anchor
+
+
 def _member_budget(
     db: Session, team_id: int, user_id: int, region_id: int
-) -> float | None:
-    """Per-member budget: the team-member cap, else the user's BUDGET limit."""
+) -> tuple[float | None, str | None]:
+    """Per-member budget and the cycle it applies to.
+
+    The team-member cap wins, else the user's BUDGET limit. The cap carries a
+    duration (every one on PROD is ``1mo``) because it is a per-cycle allowance;
+    the BUDGET limit is absolute and returns ``None`` for the duration, so the
+    caller measures it over the team's cycle instead.
+    """
     cap = (
-        db.query(DBSpendCap.max_budget)
+        db.query(DBSpendCap.max_budget, DBSpendCap.budget_duration)
         .filter(
             DBSpendCap.scope == "team_member",
             DBSpendCap.region_id == region_id,
@@ -394,10 +474,11 @@ def _member_budget(
             DBSpendCap.user_id == user_id,
             DBSpendCap.max_budget.isnot(None),
         )
-        .scalar()
+        .first()
     )
-    if cap is not None:
-        return float(cap) if float(cap) > 0 else None
+    if cap is not None and cap[0] is not None:
+        value = float(cap[0])
+        return (value, cap[1]) if value > 0 else (None, None)
 
     limit_value = (
         db.query(DBLimitedResource.max_value)
@@ -409,15 +490,17 @@ def _member_budget(
         .scalar()
     )
     if limit_value and float(limit_value) > 0:
-        return float(limit_value)
-    return None
+        return float(limit_value), None
+    return None, None
 
 
-def _key_cap_map(db: Session, region_id: int, key_ids: list[int]) -> dict[int, float]:
+def _key_cap_map(
+    db: Session, region_id: int, key_ids: list[int]
+) -> dict[int, tuple[float, str | None]]:
     if not key_ids:
         return {}
     rows = (
-        db.query(DBSpendCap.key_id, DBSpendCap.max_budget)
+        db.query(DBSpendCap.key_id, DBSpendCap.max_budget, DBSpendCap.budget_duration)
         .filter(
             DBSpendCap.scope == "key",
             DBSpendCap.region_id == region_id,
@@ -426,7 +509,14 @@ def _key_cap_map(db: Session, region_id: int, key_ids: list[int]) -> dict[int, f
         )
         .all()
     )
-    return {int(key_id): float(value) for key_id, value in rows if value}
+    # The duration comes along because a cap is a per-cycle allowance, so it
+    # determines the window its percentage must be measured over, not just the
+    # number to divide by.
+    return {
+        int(key_id): (float(value), duration)
+        for key_id, value, duration in rows
+        if value
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -647,7 +737,7 @@ async def evaluate_region(
         team_budget = _team_budget(db, team, region.id)
 
         if since >= sweep_start:
-            entity_totals, key_totals = _sum_activity_since(team_rows, since)
+            entity_days, key_days = _day_series(team_rows)
         elif not (team_budget or cap_map):
             # Nothing to measure, so nothing to fetch. A POOL team with no valid
             # ledger entry anchors on team.created_at, which is routinely older than
@@ -693,7 +783,7 @@ async def evaluate_region(
                     reason="activity_backfill_failed"
                 ).inc()
                 continue
-            entity_totals, key_totals = _sum_activity_since(scoped_rows, since)
+            entity_days, key_days = _day_series(scoped_rows)
 
         # /key/list supplies the key *denominators* (max_budget) and flags keys being
         # expired; its spend figures are deliberately not used.
@@ -713,23 +803,27 @@ async def evaluate_region(
         # percentages are always drawn from the same numbers.
         team_spend = 0.0
 
+        # Anchor for a cap whose cycle is a rolling "Nd": the same one the spend
+        # API uses, so the alert and the dashboard agree on where the cycle began.
+        cap_anchor = _cap_cycle_anchor(db, team)
+
         for db_key in db_keys:
             hashed = LiteLLMService.hash_token(db_key.litellm_token)
             key_state = exact_keys.get(hashed)
-            key_spend = float(key_totals.get(hashed, 0.0))
             litellm_max_budget = (
                 key_state.get("max_budget") if key_state is not None else None
             )
 
             # Money a key spent counts towards its team and its owner whatever the
-            # key's own state, so these totals are accumulated before any of the
-            # per-key skips below. Dropping an expiring key's spend here would
-            # understate the team percentage and make the reconciliation warning
-            # further down fire on a gap that does not exist.
-            team_spend += key_spend
+            # key's own state, so these totals are accumulated over the *team's*
+            # cycle before any of the per-key skips below. Dropping an expiring
+            # key's spend here would understate the team percentage and make the
+            # reconciliation warning further down fire on a gap that does not exist.
+            team_cycle_spend = _sum_from(key_days.get(hashed), since)
+            team_spend += team_cycle_spend
             if db_key.owner_id:
                 member_spend[db_key.owner_id] = (
-                    member_spend.get(db_key.owner_id, 0.0) + key_spend
+                    member_spend.get(db_key.owner_id, 0.0) + team_cycle_spend
                 )
 
             if key_state is not None and _is_expiring(key_state):
@@ -741,10 +835,17 @@ async def evaluate_region(
             # then the team pool. Applies equally to service keys (no owner) and
             # user keys — a key is in scope for having a team, not for having an
             # owner. On PROD: 405 service and 929 user keys across POOL teams.
-            key_budget = cap_map.get(db_key.id)
+            cap_entry = cap_map.get(db_key.id)
+            key_budget: float | None = None
+            cap_duration: str | None = None
             budget_source = "key_cap"
+            if cap_entry is not None:
+                key_budget, cap_duration = cap_entry
             if key_budget is None and litellm_max_budget is not None:
                 key_budget = float(litellm_max_budget)
+                cap_duration = (
+                    key_state.get("budget_duration") if key_state is not None else None
+                )
                 budget_source = "litellm_key_budget"
             if not key_budget or key_budget <= 0:
                 # A budget of <= 0 is how a pool-gated key is born blocked;
@@ -753,9 +854,34 @@ async def evaluate_region(
                 if litellm_max_budget is not None and float(litellm_max_budget) <= 0:
                     continue
                 key_budget = pool_fallback_budget
+                cap_duration = None
                 budget_source = "team_pool"
             if not key_budget or key_budget <= 0:
                 continue
+
+            # A cap is an allowance *per cycle*, so its percentage is measured over
+            # that cycle. Every cap on PROD is 31d or 1mo, and LiteLLM zeroes the
+            # key's spend at each boundary; dividing the team's longer cycle of
+            # spend by a one-month cap would read far above 100 % and alert on
+            # nothing. A key bounded by the pool has no cycle of its own and keeps
+            # the team's window.
+            key_window = window
+            key_since = since
+            if cap_duration:
+                cap_start = current_cycle_start(cap_duration, cap_anchor, now)
+                if cap_start is not None:
+                    key_since = cap_start.date()
+                    key_window = TeamPeriodWindow(
+                        period_start=cap_start,
+                        period_end=None,
+                        budget_duration=cap_duration,
+                        source=f"key_cap:{cap_duration}",
+                    )
+            key_spend = (
+                team_cycle_spend
+                if key_since == since
+                else _sum_from(key_days.get(hashed), key_since)
+            )
 
             subjects.append(
                 _Subject(
@@ -763,7 +889,7 @@ async def evaluate_region(
                     subject_key=f"key:{db_key.id}",
                     spend=key_spend,
                     max_budget=key_budget,
-                    window=window,
+                    window=key_window,
                     team=team,
                     key=db_key,
                     budget_source=budget_source,
@@ -773,7 +899,7 @@ async def evaluate_region(
         # The entity total covers every key LiteLLM attributes to the team, including
         # any we do not have a row for. A gap means our key table is out of sync, and
         # the team percentage would be understated, so it is worth saying so.
-        entity_total = float(entity_totals.get(lite_team_id, 0.0))
+        entity_total = _sum_from(entity_days.get(lite_team_id), since)
         if entity_total - team_spend > 0.01:
             logger.warning(
                 "Team %s region %s: LiteLLM attributes %.4f but our keys account for "
@@ -801,14 +927,43 @@ async def evaluate_region(
             users = (
                 db.query(DBUser).filter(DBUser.id.in_(list(member_spend.keys()))).all()
             )
+            owned_keys: dict[int, list[str]] = {}
+            for db_key in db_keys:
+                if db_key.owner_id:
+                    owned_keys.setdefault(db_key.owner_id, []).append(
+                        LiteLLMService.hash_token(db_key.litellm_token)
+                    )
+
             for user in users:
+                member_budget, member_duration = _member_budget(
+                    db, team.id, user.id, region.id
+                )
+                # Same rule as for key caps: a team-member cap is a per-cycle
+                # allowance (all 38 on PROD are 1mo), so it is measured over its own
+                # cycle. A plain USER BUDGET limit is absolute and keeps the team's.
+                member_window = window
+                member_total = member_spend.get(user.id, 0.0)
+                if member_duration:
+                    cap_start = current_cycle_start(member_duration, cap_anchor, now)
+                    if cap_start is not None:
+                        member_since = cap_start.date()
+                        member_total = sum(
+                            _sum_from(key_days.get(hashed), member_since)
+                            for hashed in owned_keys.get(user.id, [])
+                        )
+                        member_window = TeamPeriodWindow(
+                            period_start=cap_start,
+                            period_end=None,
+                            budget_duration=member_duration,
+                            source=f"member_cap:{member_duration}",
+                        )
                 subjects.append(
                     _Subject(
                         subject_type=SUBJECT_TEAM_MEMBER,
                         subject_key=f"member:{team.id}:{user.id}:{region.id}",
-                        spend=member_spend.get(user.id, 0.0),
-                        max_budget=_member_budget(db, team.id, user.id, region.id),
-                        window=window,
+                        spend=member_total,
+                        max_budget=member_budget,
+                        window=member_window,
                         team=team,
                         user=user,
                     )
