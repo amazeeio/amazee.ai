@@ -373,7 +373,7 @@ async def test_unknown_entities_are_ignored(db, region):
 
 @pytest.mark.asyncio
 async def test_periodic_team_is_out_of_scope(db, region):
-    """PERIODIC is excluded: on PROD every PERIODIC key belongs to the anonymous
+    """PERIODIC is excluded: those keys belong to the anonymous
     trial team, which has no MOAD workspace and nobody to notify."""
     team = _make_team(db, budget_type=BudgetType.PERIODIC, name="periodic-team")
     _add_subscription(db, team, region, amount_cents=10_000)
@@ -677,7 +677,7 @@ def test_spend_window_start_falls_back_to_team_creation(db, region):
 
 
 def test_inactive_region_holding_keys_is_still_swept(db, region):
-    """PROD region 5 is inactive but holds 85% of all keys.
+    """An inactive region can still hold the large majority of a fleet's keys.
 
     is_active governs new provisioning, not whether existing keys serve traffic.
     Filtering on it would exclude the anonymous trial fleet -- the population most
@@ -842,7 +842,7 @@ async def test_key_cap_drives_key_scope_alert(db, region):
 async def test_service_key_and_user_key_both_alert(db, region):
     """A key is in scope for having a team, not for having an owner.
 
-    PROD POOL teams hold 405 service keys (no owner) and 929 user keys; both must
+    POOL teams hold both service keys (no owner) and user keys; both must
     produce key-scope alerts, and the event says which it is so the consumer can
     route it to the workspace or to the individual.
     """
@@ -875,7 +875,7 @@ async def test_service_key_and_user_key_both_alert(db, region):
 async def test_uncapped_key_covered_by_the_team_alert_on_a_single_key_team(db, region):
     """An uncapped key has no key-level budget, but the customer is still warned.
 
-    44.7% of team-attached keys on PROD carry no max_budget: for POOL, only an
+    Many team-attached keys carry no max_budget: for POOL, only an
     explicit cap sets one, and everything else is bounded by the team pool. On a
     one-key team the key percentage would equal the team's, so only the team event
     fires -- the spend is routed, not dropped.
@@ -1403,7 +1403,7 @@ async def test_team_is_dropped_when_the_back_fill_fails(db, region):
 
 @pytest.mark.asyncio
 async def test_budget_less_team_costs_no_extra_call(db, region):
-    """The 673 ledger-less POOL teams must not each trigger a back-fill.
+    """Ledger-less POOL teams must not each trigger a back-fill.
 
     They anchor on team.created_at, which is routinely older than the window, but
     they have no budget to be a percentage of, so there is nothing to fetch.
@@ -1432,7 +1432,7 @@ async def test_budget_less_team_costs_no_extra_call(db, region):
 async def test_pool_team_budget_limit_is_not_a_pool_denominator(db, region):
     """A POOL team's budget is the money it bought, not its BUDGET limit.
 
-    673 POOL teams on PROD hold no valid ledger entry but do carry a
+    Many POOL teams hold no valid ledger entry but do carry a
     ``limited_resources`` BUDGET row (mostly $27). That row is a provisioning
     allowance, not available credit, and with no purchase to anchor on the spend
     window would stretch back to team creation. Measuring against it would invent
@@ -1551,7 +1551,7 @@ async def test_re_crossing_a_band_in_one_period_gets_a_new_event_id(db, region):
 def test_current_cycle_start_rolls_forward_to_contain_now():
     """A stale anchor must not hand back a window that already closed.
 
-    PROD has keys whose LiteLLM budget_reset_at is a month in the past, so the
+    A key's LiteLLM budget_reset_at can sit a month in the past, so the
     cycle has to be stepped forward the way LiteLLM steps it on reset.
     """
     from app.core.spend_period_service import current_cycle_start
@@ -1576,7 +1576,7 @@ def test_current_cycle_start_rolls_forward_to_contain_now():
 
 @pytest.mark.asyncio
 async def test_capped_key_is_measured_over_the_cap_cycle_not_the_pool(db, region):
-    """195 of 196 key caps on PROD sit on top-up-only teams.
+    """Nearly every key cap sits on a top-up-only team.
 
     The team's cycle can be far longer than the cap's, so summing the team window
     against a monthly cap would read hundreds of percent and fire immediately.
@@ -1656,7 +1656,7 @@ async def test_capped_key_crossing_inside_its_own_cycle_still_fires(db, region):
 
 @pytest.mark.asyncio
 async def test_member_cap_is_measured_over_the_cap_cycle(db, region):
-    """All 38 team-member caps on PROD are 1mo, same rule as key caps."""
+    """Team-member caps are written as 1mo, same rule as key caps."""
     team = _make_team(db)
     _add_topup(db, team, region, amount_cents=100_000, purchased_days_ago=90)
     user = _make_user(db, team)
@@ -1721,10 +1721,9 @@ async def test_uncapped_key_keeps_the_team_cycle(db, region):
 async def test_rolling_cap_cycle_is_anchored_on_the_cap_not_the_team(db, region):
     """A cap set months after the team must count from *its* cycle.
 
-    Verified against PROD: for a team whose cap was set well after the team, the
-    cap's created_at reproduces LiteLLM's budget_reset_at to the time of day while
-    team creation was 18.7 days out. 29 of the 130 rolling 31d caps were set more
-    than a day after their team, by up to 420 days.
+    A cap set well after its team is common, and the two dates can be hundreds of
+    days apart. The cap's own created_at reproduces LiteLLM's budget_reset_at, while
+    team creation can be weeks out.
     """
     now = datetime.now(UTC)
     team = _make_team(db)
@@ -1842,3 +1841,102 @@ async def test_cap_cycle_ignores_a_litellm_reset_for_a_different_duration(db, re
 
     # Window opened 9 days ago -> only $5 of $100 -> nothing to say.
     assert [e for e in result.events if e.subject_type == SUBJECT_KEY] == []
+
+
+# --------------------------------------------------------------------------- #
+# Cancellation: FIFO settles without re-basing
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_cancelled_subscription_falls_back_to_the_topup_window(db, region):
+    """Cancelling deactivates the subscription rows, so the top-up rule takes over."""
+    now = datetime.now(UTC)
+    team = _make_team(db)
+    sub = _add_subscription(db, team, region, amount_cents=10_000, days_left=20)
+    _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=40)
+    _make_key(db, team, region, token="sk-a")
+
+    window = resolve_team_period_window(db, team, region.id, now=now)
+    assert window.source == "subscription_ledger"
+
+    # Cancellation sets is_active = False on every subscription row.
+    sub.is_active = False
+    db.commit()
+
+    window = resolve_team_period_window(db, team, region.id, now=now)
+    assert window.source == "pool_topup"
+    assert 39 <= (now - window.period_start).days <= 41
+
+
+@pytest.mark.asyncio
+async def test_consumed_on_a_still_valid_entry_is_added_back(db, region):
+    """Cancellation runs FIFO without re-basing, so the budget must be face value.
+
+    ``allocate_period_spend_fifo`` increments ``consumed_cents`` on entries that
+    stay valid, while ``materialize_topup_rollovers`` — which would deactivate and
+    replace them — is only called on the invoice path. Left uncorrected the budget
+    drops by spend the numerator still counts, and the percentage reads high.
+    """
+    team = _make_team(db)
+    entry = _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=40)
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+    rows = [_day(lite, 60.0, days_ago=30, keys={"sk-a": 60.0})]
+
+    # FIFO settled $60 against this entry but left it valid.
+    entry.consumed_cents = 6_000
+    db.commit()
+
+    with _patch_litellm(rows, [_key_state("sk-a")]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
+    # $60 of the $100 bought -> 60%, crossing 50. Against the $40 "remaining" it
+    # would have read 150% and fired 100.
+    assert event.spend == 60.0
+    assert event.max_budget == 100.0
+    assert event.threshold_pct == 50
+
+
+@pytest.mark.asyncio
+async def test_a_rebased_rollover_is_not_double_counted(db, region):
+    """The normal settlement shape.
+
+    A partly-consumed top-up is deactivated and replaced by a rollover holding the
+    remainder with ``consumed_cents = 0``. The window must open at the rollover, so
+    the already-settled spend is counted on neither side.
+    """
+    now = datetime.now(UTC)
+    team = _make_team(db)
+    spent = _add_topup(db, team, region, amount_cents=100_000, purchased_days_ago=45)
+    spent.consumed_cents = 73_670
+    spent.is_active = False  # re-based, so out of scope
+    rollover = DBPeriodicBudgetLedgerEntry(
+        team_id=team.id,
+        region_id=region.id,
+        entry_type="topup_rollover",
+        amount_cents=26_330,
+        consumed_cents=0,
+        is_active=True,
+        purchased_at=now - timedelta(days=4),
+        expires_at=now + timedelta(days=320),
+    )
+    db.add(rollover)
+    db.commit()
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+
+    rows = [
+        _day(lite, 736.70, days_ago=20, keys={"sk-a": 736.70}),  # already settled
+        _day(lite, 200.0, days_ago=1, keys={"sk-a": 200.0}),  # since the rollover
+    ]
+
+    with _patch_litellm(rows, [_key_state("sk-a")]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
+    # Only the $200 since the rollover, against the $263.30 it holds -> 76%.
+    assert event.spend == 200.0
+    assert event.max_budget == 263.30
+    assert event.threshold_pct == 75

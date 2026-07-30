@@ -182,7 +182,7 @@ def test_pool_topup_window_opens_at_the_oldest_valid_purchase(
 def test_pool_topup_window_is_unchanged_for_a_single_purchase(
     db, test_team, test_region
 ):
-    """215 of 222 top-up team+regions hold one entry: nothing moves for them."""
+    """Most top-up team+regions hold one entry: nothing moves for them."""
     test_team.budget_type = BudgetType.POOL
     db.commit()
     now = datetime.now(UTC)

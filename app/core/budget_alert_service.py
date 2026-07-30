@@ -5,10 +5,10 @@ its budget, so a downstream consumer (MOAD) can warn the customer *before* their
 keys stop working.
 
 Scope: **POOL teams**, and keys carrying both a team and a region — the shape MOAD
-provisions and can actually notify. PERIODIC is excluded because on PROD every
-PERIODIC key (12,098 of them) belongs to the single anonymous Drupal trial team,
-which has no MOAD workspace and no addressable owner. Note that the *period-window
-helper* still handles PERIODIC, since the spend API shares it.
+provisions and can actually notify. PERIODIC is excluded because those keys belong
+to the anonymous Drupal trial team, which has no MOAD workspace and no addressable
+owner. Note that the *period-window helper* still handles PERIODIC, since the spend
+API shares it.
 
 Why amazee.ai computes the percentage instead of LiteLLM
 -------------------------------------------------------
@@ -33,19 +33,19 @@ Two stages, both bounded by *activity* rather than by key count:
 
 1. **Discovery and spend** — an unfiltered ``/team/daily/activity`` sweep over the
    window that ``region_sweep_start`` derives from the ledger. LiteLLM writes no
-   daily rows for idle entities, so on PROD region 5 an 11,859-key region reported
-   42 active teams and 351 active keys. Measured cost is 3 pages / ~1 s at the full
-   370-day span (page 1 alone at 62 days was 1.08 s), and usually less, because the
-   window only reaches back as far as the oldest unexpired purchase.
-   ``_fetch_daily_activity`` follows ``has_more``, and pages partition the data
-   rather than repeating it, so the per-day totals add up cleanly.
+   daily rows for idle entities, so the working set is the few percent of keys that
+   saw traffic rather than every key in the region. The request costs a handful of
+   pages even at the full lookback, and usually fewer, because the window only
+   reaches back as far as the oldest unexpired purchase. ``_fetch_daily_activity``
+   follows ``has_more``, and pages partition the data rather than repeating it, so
+   the per-day totals add up cleanly.
 2. **Denominators for keys** — one scoped ``/key/list?team_id=`` per candidate team,
    used for ``max_budget`` and to spot keys being expired. Its ``spend`` figures are
    deliberately ignored; spend comes from the daily rows instead.
 
 So a tick costs ``pages + active_teams`` calls per region, independent of how many
 idle keys exist, plus one scoped back-fill for any team whose budget window opens
-before the wide request (none on PROD today). Sweeping every key instead — the
+before the wide request. Sweeping every key instead — the
 shape of the existing hourly reconciler, ~40 min at 13.9k keys — is what does not
 survive 100k.
 """
@@ -384,6 +384,53 @@ async def _exact_team_key_state(
 # --------------------------------------------------------------------------- #
 
 
+def _unsettled_consumed_dollars(db: Session, team: DBTeam, region_id: int) -> float:
+    """``consumed_cents`` sitting on entries that are *still valid*, in dollars.
+
+    Normally zero, and it has to be added back when it is not. Settlement usually
+    re-bases rather than annotates: ``materialize_topup_rollovers`` deactivates a
+    partly-consumed entry and writes a fresh ``topup_rollover`` holding the
+    remainder with ``consumed_cents = 0``, deactivating the original. So among valid
+    entries the column is 0, face value equals remaining, and the window opening at
+    the oldest valid purchase lines up with it.
+
+    Cancellation is the exception. ``app/api/subscription.py`` runs
+    ``allocate_period_spend_fifo`` but never calls ``materialize_topup_rollovers``,
+    so it increments ``consumed_cents`` on entries that stay valid. The budget would
+    then drop by spend the numerator still counts — the same money subtracted once
+    and added once — and the percentage would read high. Adding it back keeps the
+    two sides describing the same money whichever way the ledger was settled.
+
+    Normally a no-op, and it logs the first time it is not.
+    """
+    consumed_cents = (
+        db.query(func.coalesce(func.sum(DBPeriodicBudgetLedgerEntry.consumed_cents), 0))
+        .filter(
+            DBPeriodicBudgetLedgerEntry.team_id == team.id,
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            DBPeriodicBudgetLedgerEntry.consumed_cents > 0,
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > func.now())
+            ),
+        )
+        .scalar()
+    ) or 0
+    if not consumed_cents:
+        return 0.0
+    dollars = round(int(consumed_cents) / 100.0, 4)
+    logger.info(
+        "Team %s region %s has $%.2f consumed on still-valid ledger entries "
+        "(unsettled, likely a cancellation); added back so the budget matches the "
+        "spend window",
+        team.id,
+        region_id,
+        dollars,
+    )
+    return dollars
+
+
 def _team_budget(db: Session, team: DBTeam, region_id: int) -> float | None:
     """Budget available to a team in a region, from our ledger.
 
@@ -399,12 +446,12 @@ def _team_budget(db: Session, team: DBTeam, region_id: int) -> float | None:
         # This deliberately does *not* apply to POOL teams. A POOL team's budget is
         # the money it bought, so no valid ledger entry means nothing to be a
         # percentage of, and the BUDGET limit is a provisioning allowance rather
-        # than available credit. On PROD 673 POOL teams sit in exactly that state
-        # (662 never purchased at all) carrying a mostly-$27 limit; measuring
-        # spend against it would invent a percentage, and with no purchase to anchor
-        # on there is no cycle start either, so the window would fall back to team
-        # creation. Such a team simply gets no team event; its keys are still
-        # evaluated if they carry their own cap.
+        # than available credit. Many POOL teams sit in exactly that state, never
+        # having purchased at all, and measuring spend against a provisioning
+        # allowance would invent a percentage. With no purchase to anchor on there is
+        # no cycle start either, so the window would fall back to team creation. Such
+        # a team simply gets no team event; its keys are still evaluated if they
+        # carry their own cap.
         limit_value = (
             db.query(DBLimitedResource.max_value)
             .filter(
@@ -415,6 +462,8 @@ def _team_budget(db: Session, team: DBTeam, region_id: int) -> float | None:
             .scalar()
         )
         available = float(limit_value) if limit_value else 0.0
+
+    available += _unsettled_consumed_dollars(db, team, region_id)
 
     cap = (
         db.query(DBSpendCap.max_budget)
@@ -437,9 +486,9 @@ def _litellm_cycle_anchor(
     """Anchor for a budget LiteLLM owns, derived from its own reset date.
 
     ``budget_reset_at`` is the *end* of the cycle it is currently counting, so the
-    anchor is that minus the duration. It can be stale — PROD has keys whose reset
-    date is a month in the past — which is why the caller rolls it forward instead
-    of using it directly.
+    anchor is that minus the duration. It can be stale — a key's reset date may sit
+    in the past — which is why the caller rolls it forward instead of using it
+    directly.
     """
     if key_state is None or not budget_duration:
         return None
@@ -467,10 +516,9 @@ def _cap_cycle_anchor(cap_created_at: datetime | None, team: DBTeam) -> datetime
     amount-only change deliberately passes no duration, so the original anchor
     survives and ``created_at`` stays the right one.
 
-    Verified against PROD: for a team whose cap was set 44 days after the team
-    itself, ``created_at`` reproduces LiteLLM's ``budget_reset_at`` to the
-    time-of-day, while team creation was 18.7 days out. 29 of the 130 rolling
-    ``31d`` caps were set more than a day after their team, by up to 420 days.
+    Team creation is the wrong anchor whenever a cap was added later than the team,
+    which is common: the two dates can be hundreds of days apart, and the cap's own
+    timestamp is the one that reproduces LiteLLM's ``budget_reset_at``.
 
     ``team.created_at`` is only a fallback for a cap row with no timestamp.
     """
@@ -486,9 +534,9 @@ def _member_budget(
     """Per-member budget and the cycle it applies to.
 
     The team-member cap wins, else the user's BUDGET limit. The cap carries a
-    duration (every one on PROD is ``1mo``) because it is a per-cycle allowance;
-    the BUDGET limit is absolute and returns ``None`` for the duration, so the
-    caller measures it over the team's cycle instead.
+    duration because it is a per-cycle allowance; the BUDGET limit is absolute and
+    returns ``None`` for the duration, so the caller measures it over the team's
+    cycle instead.
     """
     cap = (
         db.query(
@@ -615,10 +663,10 @@ def denominator_change_candidates(
     """Teams whose *budget* just fell, regardless of whether they spent anything.
 
     Traffic-driven discovery rests on "percent only rises when spend rises", which
-    is false: the denominator moves too. On PROD every active ledger entry carries
-    an ``expires_at`` (321 of them due to expire), so a lapsing top-up or
-    subscription drops a team's remaining budget and can push it past 90 % while
-    it sits completely idle. Such a team produces no daily-activity rows, so
+    is false: the denominator moves too. Active ledger entries carry an
+    ``expires_at``, so a lapsing top-up or subscription drops a team's remaining
+    budget and can push it past 90 % while it sits completely idle. Such a team
+    produces no daily-activity rows, so
     without this it would never be looked at and the warning would never fire —
     the exact scenario the feature exists to prevent.
 
@@ -728,10 +776,10 @@ async def evaluate_region(
         logger.info("No active teams in region %s this sweep", region.name)
         return result
 
-    # POOL only. These are the teams MOAD provisions and can actually notify —
-    # every PERIODIC key on PROD (12,098 of them) belongs to the single anonymous
-    # Drupal trial team, which has no MOAD workspace and no addressable owner, so
-    # a threshold webhook for it would have nowhere to go.
+    # POOL only. These are the teams MOAD provisions and can actually notify. The
+    # PERIODIC keys belong to the anonymous Drupal trial team, which has no MOAD
+    # workspace and no addressable owner, so a threshold webhook for it would have
+    # nowhere to go.
     teams = (
         db.query(DBTeam)
         .filter(
@@ -755,7 +803,7 @@ async def evaluate_region(
         # Only keys carrying both a team and a region — the shape MOAD provisions.
         # A key with just an owner and no team has no team budget to be a share of,
         # and no workspace to notify, so it is out of scope by design rather than
-        # by omission. On PROD that is 418 of 13,930 keys.
+        # by omission.
         db_keys = (
             db.query(DBPrivateAIKey)
             .filter(
@@ -773,8 +821,8 @@ async def evaluate_region(
         elif not (team_budget or cap_map):
             # Nothing to measure, so nothing to fetch. A POOL team with no valid
             # ledger entry anchors on team.created_at, which is routinely older than
-            # the window, and there are 673 of those on PROD — spending a call on
-            # each would cost a call per team per tick for no possible event.
+            # the window, and there are many such teams — spending a call on each
+            # would cost a call per team per tick for no possible event.
             continue
         else:
             # The wide sweep starts after this team's window opens, so its rows hold
@@ -786,10 +834,9 @@ async def evaluate_region(
             # So the team is back-filled with a scoped call over its own window
             # instead. /team/daily/activity takes a team_ids filter, and one team's
             # rows are bounded by the number of days, so this stays cheap. It costs
-            # one extra call only for teams the wide sweep cannot cover — none on
-            # PROD today, where no anchor is older than 69 days against a 370-day
-            # floor. Skipping such a team instead would hide every crossing it has
-            # until the floor was raised by hand.
+            # one extra call only for teams the wide sweep cannot cover, which the
+            # default lookback already spans. Skipping such a team instead would hide
+            # every crossing it has until the floor was raised by hand.
             logger.info(
                 "Team %s window opens %s, before the %s sweep start; "
                 "back-filling its spend with a scoped activity call",
@@ -827,7 +874,7 @@ async def evaluate_region(
         # team event alone cannot. Withheld when the team has a single in-scope key,
         # because then the key percentage is arithmetically identical to the team's
         # and the alert would just be the team event repeated. That is the common
-        # shape: 481 of 739 POOL teams on PROD hold exactly one key.
+        # shape — most POOL teams hold exactly one key.
         pool_fallback_budget = team_budget if len(db_keys) > 1 else None
 
         member_spend: dict[int, float] = {}
@@ -862,7 +909,7 @@ async def evaluate_region(
             # Denominator precedence: our own cap, then whatever LiteLLM enforces,
             # then the team pool. Applies equally to service keys (no owner) and
             # user keys — a key is in scope for having a team, not for having an
-            # owner. On PROD: 405 service and 929 user keys across POOL teams.
+            # owner.
             cap_entry = cap_map.get(db_key.id)
             key_budget: float | None = None
             cap_duration: str | None = None
@@ -905,7 +952,7 @@ async def evaluate_region(
                 continue
 
             # A cap is an allowance *per cycle*, so its percentage is measured over
-            # that cycle. Every cap on PROD is 31d or 1mo, and LiteLLM zeroes the
+            # that cycle. Caps are written as 31d or 1mo and LiteLLM zeroes the
             # key's spend at each boundary; dividing the team's longer cycle of
             # spend by a one-month cap would read far above 100 % and alert on
             # nothing. A key bounded by the pool has no cycle of its own and keeps
@@ -986,8 +1033,8 @@ async def evaluate_region(
                     db, team.id, user.id, region.id
                 )
                 # Same rule as for key caps: a team-member cap is a per-cycle
-                # allowance (all 38 on PROD are 1mo), so it is measured over its own
-                # cycle. A plain USER BUDGET limit is absolute and keeps the team's.
+                # allowance, so it is measured over its own cycle. A plain USER
+                # BUDGET limit is absolute and keeps the team's.
                 member_window = window
                 member_total = member_spend.get(user.id, 0.0)
                 if member_duration:
@@ -1302,10 +1349,10 @@ def regions_to_sweep(db: Session) -> list[DBRegion]:
 
     Deliberately NOT filtered on ``is_active``. That flag governs whether a
     region accepts *new* provisioning, not whether its existing keys still serve
-    traffic. On PROD, region 5 (``amazeeai-de103``) is inactive yet holds 11,859
-    keys — 85% of all keys, including the anonymous Drupal trial fleet, which is
-    exactly the population that runs into budget limits. Filtering on
-    ``is_active`` silently excluded them from every alert.
+    traffic. An inactive region can still hold the large majority of a fleet's keys,
+    including the anonymous Drupal trial keys, which are exactly the population that
+    runs into budget limits. Filtering on ``is_active`` silently excluded them from
+    every alert.
 
     Requiring a live key also keeps the sweep off decommissioned regions, whose
     LiteLLM URL may no longer resolve, without needing a second flag: an empty
