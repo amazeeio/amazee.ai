@@ -433,11 +433,14 @@ async def test_spend_against_an_expired_topup_is_not_counted(db, region):
 
 
 @pytest.mark.asyncio
-async def test_topup_only_team_counts_from_the_last_purchase(db, region):
-    """For a top-up-only team the cycle starts at the last top-up purchase.
+async def test_topup_only_team_counts_from_the_oldest_valid_purchase(db, region):
+    """The window opens at the OLDEST still-valid purchase, not the newest.
 
-    Spend from before it belongs to an earlier cycle and is not counted again,
-    even when the older top-up is still valid and still funding the balance.
+    The budget is the full face value of every valid entry, because
+    ``consumed_cents`` is only written at invoice close and a team with no
+    subscription never has one. Opening the window at the newest purchase would
+    leave spend against the older entries counted nowhere — absent from the
+    numerator and not deducted from the budget either.
     """
     team = _make_team(db)
     # Both still valid: $100 bought 100 days ago, $100 bought 10 days ago.
@@ -447,20 +450,19 @@ async def test_topup_only_team_counts_from_the_last_purchase(db, region):
     lite = f"{region.name}_{team.id}"
 
     rows = [
-        _day(lite, 85.0, days_ago=90, keys={"sk-a": 85.0}),  # previous cycle
-        _day(lite, 120.0, days_ago=1, keys={"sk-a": 120.0}),  # this cycle
+        _day(lite, 85.0, days_ago=90, keys={"sk-a": 85.0}),
+        _day(lite, 120.0, days_ago=1, keys={"sk-a": 120.0}),
     ]
 
     with _patch_litellm(rows, [_key_state("sk-a")]):
         result = await evaluate_region(db, region, thresholds=THRESHOLDS)
 
     event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
-    # Only the $120 spent since the last purchase counts, against the $200 still on
-    # the books -> 60%. Including the older $85 would read 102.5% and fire 100.
-    assert event.spend == 120.0
+    # All $205 spent against the $200 the team still holds -> over 100%. Anchored on
+    # the newest purchase this read $120 of $200 (60%) and the $85 vanished.
+    assert event.spend == 205.0
     assert event.max_budget == 200.0
-    assert event.threshold_pct == 50
-    assert 59.9 < event.percent_used < 60.1
+    assert event.threshold_pct == 100
 
 
 @pytest.mark.asyncio
@@ -494,8 +496,15 @@ async def test_subscription_cycle_wins_over_an_older_topup(db, region):
 
 
 @pytest.mark.asyncio
-async def test_new_topup_re_arms_the_bands(db, region):
-    """Alerts are per budget cycle, and a purchase starts a new one."""
+async def test_new_topup_walks_the_band_back_without_changing_the_period(db, region):
+    """A purchase re-arms through ``arm_seq``, not through a new period.
+
+    The window is anchored on the oldest still-valid purchase, so buying more does
+    not move ``period_start`` and ``period_key`` is unchanged. What changes is the
+    budget: it rises, the percentage falls, and the band is rewritten silently so a
+    genuine re-crossing later still notifies. Bands are not blanket-reset to 0 —
+    a team still above 50% is not warned about 50% a second time.
+    """
     team = _make_team(db)
     _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=5)  # $100
     _make_key(db, team, region, token="sk-a")
@@ -508,7 +517,6 @@ async def test_new_topup_re_arms_the_bands(db, region):
     assert first_event.threshold_pct == 90
     mark_notified(db, region, first, {e.event_id for e in first.events})
 
-    # Buying more moves the pool window anchor, so period_key changes.
     _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=0)  # +$100
     with _patch_litellm(rows, [_key_state("sk-a")]):
         second = await evaluate_region(db, region, thresholds=THRESHOLDS)
@@ -521,8 +529,9 @@ async def test_new_topup_re_arms_the_bands(db, region):
         .filter(DBBudgetAlertState.subject_key == f"team:{team.id}:{region.id}")
         .one()
     )
-    assert state.last_threshold_pct == 0
-    assert state.period_key != first_event.period_key
+    assert state.period_key == first_event.period_key  # same pool, same window
+    assert state.last_threshold_pct == 0  # 46% crosses nothing
+    assert state.arm_seq == 1  # re-armed, so a second 90% gets a fresh event_id
 
 
 # --------------------------------------------------------------------------- #
@@ -616,7 +625,7 @@ def test_future_expiry_is_not_a_candidate_yet(db, region):
     assert denominator_change_candidates(db, region.id, datetime.now(UTC)) == set()
 
 
-def test_spend_window_start_is_the_last_topup_for_a_topup_only_team(db, region):
+def test_spend_window_start_is_the_oldest_valid_topup(db, region):
     """Directly pin the rule, since everything downstream depends on it."""
     from app.core.budget_alert_service import spend_window_start
 
@@ -627,8 +636,11 @@ def test_spend_window_start_is_the_last_topup_for_a_topup_only_team(db, region):
 
     window = resolve_team_period_window(db, team, region.id, now=now)
     start = spend_window_start(window, now)
-    # The most recent purchase opens the cycle, not the older still-valid one.
-    assert 4 <= (now - start).days <= 6
+    # The oldest still-valid purchase opens the window, not the most recent one.
+    assert 39 <= (now - start).days <= 41
+    # ...while the window closes 365 days after the NEWEST purchase.
+    assert window.period_end is not None
+    assert 359 <= (window.period_end - now).days <= 361
 
 
 def test_spend_window_start_is_the_cycle_start_when_subscribed(db, region):

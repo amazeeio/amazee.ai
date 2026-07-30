@@ -188,9 +188,24 @@ def _active_subscription_entry(
     )
 
 
-def _latest_active_topup(
-    db: Session, team_id: int, region_id: int, now: datetime
+def _active_topup(
+    db: Session, team_id: int, region_id: int, now: datetime, *, oldest: bool
 ) -> DBPeriodicBudgetLedgerEntry | None:
+    """The oldest or newest still-valid top-up for a (team, region).
+
+    Both ends are needed: the oldest opens the window and the newest closes it.
+    See ``resolve_team_period_window`` for why they are not the same entry.
+    """
+    order = (
+        DBPeriodicBudgetLedgerEntry.purchased_at.asc()
+        if oldest
+        else DBPeriodicBudgetLedgerEntry.purchased_at.desc()
+    )
+    tiebreak = (
+        DBPeriodicBudgetLedgerEntry.id.asc()
+        if oldest
+        else DBPeriodicBudgetLedgerEntry.id.desc()
+    )
     return (
         db.query(DBPeriodicBudgetLedgerEntry)
         .filter(
@@ -203,12 +218,21 @@ def _latest_active_topup(
                 | (DBPeriodicBudgetLedgerEntry.expires_at > now)
             ),
         )
-        .order_by(
-            DBPeriodicBudgetLedgerEntry.purchased_at.desc(),
-            DBPeriodicBudgetLedgerEntry.id.desc(),
-        )
+        .order_by(order, tiebreak)
         .first()
     )
+
+
+def _latest_active_topup(
+    db: Session, team_id: int, region_id: int, now: datetime
+) -> DBPeriodicBudgetLedgerEntry | None:
+    return _active_topup(db, team_id, region_id, now, oldest=False)
+
+
+def _oldest_active_topup(
+    db: Session, team_id: int, region_id: int, now: datetime
+) -> DBPeriodicBudgetLedgerEntry | None:
+    return _active_topup(db, team_id, region_id, now, oldest=True)
 
 
 def resolve_team_period_window(
@@ -247,16 +271,39 @@ def resolve_team_period_window(
                 active_subscription=active_subscription,
             )
 
-        # No subscription: the window is the top-up purchase lifetime.
-        active_topup = _latest_active_topup(db, team.id, region_id, now)
-        anchor = _as_utc(
-            (active_topup.purchased_at if active_topup is not None else None)
+        # No subscription: the window spans the life of the credit the team still
+        # holds. It opens at the **oldest** still-valid purchase and closes when the
+        # **newest** one expires, so the two ends come from different entries.
+        #
+        # Opening at the oldest rather than the newest is what keeps the window and
+        # the budget describing the same money. The budget is
+        # ``amount - consumed_cents`` summed over every still-valid entry, and
+        # consumed_cents is only written by FIFO allocation at invoice close — which
+        # a team with no subscription never has. On PROD exactly one of 233 top-up
+        # entries has it set. So the budget is the full face value of every valid
+        # purchase, and a window opening at the newest purchase would leave the spend
+        # against the older ones counted nowhere: absent from the numerator, and not
+        # deducted from the denominator either.
+        #
+        # Worked example: $30 bought on 6 July with $25 spent against it, then $30
+        # more on 29 July. Anchored on the newest purchase that reads $0 of $60 while
+        # the team really has $35 left, and later reports 50 % when the true figure
+        # is 92 %. Anchored on the oldest it reads $25 of $60, and keeps counting.
+        oldest_topup = _oldest_active_topup(db, team.id, region_id, now)
+        latest_topup = _latest_active_topup(db, team.id, region_id, now)
+        start_anchor = _as_utc(
+            (oldest_topup.purchased_at if oldest_topup is not None else None)
             or team.created_at
             or now
         )
+        # The pool is only fully gone once the newest purchase lapses.
+        end_anchor = (
+            _as_utc((latest_topup.purchased_at if latest_topup is not None else None))
+            or start_anchor
+        )
         return TeamPeriodWindow(
-            period_start=anchor,
-            period_end=anchor + timedelta(days=settings.POOL_PURCHASE_EXPIRY_DAYS),
+            period_start=start_anchor,
+            period_end=end_anchor + timedelta(days=settings.POOL_PURCHASE_EXPIRY_DAYS),
             budget_duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
             source="pool_topup",
         )
