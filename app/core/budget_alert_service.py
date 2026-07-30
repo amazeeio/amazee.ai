@@ -41,7 +41,7 @@ Two stages, both bounded by *activity* rather than by key count:
    rather than repeating it, so the per-day totals add up cleanly.
 2. **Denominators for keys** — one scoped ``/key/list?team_id=`` per candidate team,
    used for ``max_budget`` and to spot keys being expired. Its ``spend`` figures are
-   deliberately ignored; see ``spend_window_start``.
+   deliberately ignored; spend comes from the daily rows instead.
 
 So a tick costs ``pages + active_teams`` calls per region, independent of how many
 idle keys exist, plus one scoped back-fill for any team whose budget window opens
@@ -271,46 +271,28 @@ def _sum_activity_since(
     return entity_spend, key_spend
 
 
-def spend_window_start(
-    db: Session, team: DBTeam, region_id: int, now: datetime
-) -> datetime:
-    """When the spend that counts against the *current* budget began.
+def spend_window_start(window: TeamPeriodWindow, now: datetime) -> datetime:
+    """When the spend that counts against the current budget began.
 
-    This is the purchase date of the **oldest still-valid** ledger entry, and it is
-    the crux of getting top-up-only POOL teams right.
+    Always the start of the **current cycle**, and deliberately nothing else:
 
-    A top-up never resets key spend — ``purchase_periodic_topup`` only raises the
-    team's ``max_budget`` — so LiteLLM's key counters are lifetime totals. The
-    denominator, meanwhile, counts only entries that have not expired. Divide one by
-    the other and an expired top-up leaves its spend in the numerator while its
-    money has left the denominator:
+    * subscription team -> the cycle start (``effective_period_start``);
+    * top-up-only team  -> the last top-up purchase;
+    * neither           -> team creation.
 
-        $100 expired (of which $80 spent) + $100 just bought
-        lifetime spend $82 / remaining $100  ->  82%   (wrong)
-        spend since the valid entry $2 / $100 ->  2%   (right)
+    Those are exactly the windows ``resolve_team_period_window`` already resolves
+    for the spend API, so this is a thin read of it rather than a second rule. An
+    alert has to quote the number the dashboard shows, and two independent window
+    calculations would eventually disagree.
 
-    Anchoring on the oldest *valid* entry rather than the newest purchase is what
-    makes both directions correct: money bought earlier but still valid keeps its
-    spend counted, while money that has expired takes its spend with it.
+    Reaching back further than the cycle start would *double count*: the
+    denominator is ``purchased - consumed_cents``, and ``consumed_cents`` is
+    incremented at cycle close while LiteLLM's spend is reset on the same call
+    (see the invariant at ``app/api/spend.py``). A closed cycle's spend is
+    therefore already subtracted from the budget, so counting it again in the
+    numerator inflates the percentage and fires alerts nobody has earned.
     """
-    oldest_valid = (
-        db.query(func.min(DBPeriodicBudgetLedgerEntry.purchased_at))
-        .filter(
-            DBPeriodicBudgetLedgerEntry.team_id == team.id,
-            DBPeriodicBudgetLedgerEntry.region_id == region_id,
-            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
-            DBPeriodicBudgetLedgerEntry.purchased_at.isnot(None),
-            (
-                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
-                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
-            ),
-        )
-        .scalar()
-    )
-    anchor = oldest_valid or team.created_at or now
-    if anchor.tzinfo is None:
-        anchor = anchor.replace(tzinfo=UTC)
-    return anchor
+    return window.period_start or now
 
 
 def _amazee_team_id_from_litellm(entity_id: str, region_name: str) -> int | None:
@@ -369,10 +351,10 @@ def _team_budget(db: Session, team: DBTeam, region_id: int) -> float | None:
         # percentage of, and the BUDGET limit is a provisioning allowance rather
         # than available credit. On PROD 673 POOL teams sit in exactly that state
         # (662 never purchased at all) carrying a mostly-$27 limit; measuring
-        # lifetime spend against it would invent a percentage, and with no purchase
-        # to anchor on, spend_window_start would fall back to team.created_at and
-        # sum an unbounded stretch of history. Such a team simply gets no team
-        # event; its keys are still evaluated if they carry their own cap.
+        # spend against it would invent a percentage, and with no purchase to anchor
+        # on there is no cycle start either, so the window would fall back to team
+        # creation. Such a team simply gets no team event; its keys are still
+        # evaluated if they carry their own cap.
         limit_value = (
             db.query(DBLimitedResource.max_value)
             .filter(
@@ -466,6 +448,10 @@ def region_sweep_start(db: Session, region_id: int, now: datetime) -> date:
     precision — the percentage stays permanently understated, so a team truly at
     90 % is reported at 55 % and gets told it is fine. The fix is to make the
     request cover the earliest window in the region rather than a fixed span.
+
+    It anchors on the oldest still-valid purchase, which is a *conservative* lower
+    bound: a cycle start is always at or after the purchase that funded it, so this
+    can fetch a few more days than any team needs but can never fetch too few.
 
     Anchoring on the ledger also usually makes the sweep *cheaper* than the
     370-day default: most POOL money was bought recently, so the request narrows
@@ -637,11 +623,11 @@ async def evaluate_region(
         window = resolve_team_period_window(db, team, region.id, now=now)
         lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
 
-        # Spend is summed from the purchase date of the oldest still-valid ledger
-        # entry — NOT taken from LiteLLM's key counters, which are lifetime totals a
-        # top-up never resets. See spend_window_start for why that distinction
-        # decides whether an expired top-up corrupts the percentage.
-        since_dt = spend_window_start(db, team, region.id, now)
+        # Alerts are per cycle, so spend is summed from the current cycle's start:
+        # the subscription's effective_period_start, or the last top-up purchase for
+        # a team that only buys top-ups. Never from LiteLLM's key counters, which
+        # are lifetime totals a top-up does not reset.
+        since_dt = spend_window_start(window, now)
         since = since_dt.date()
 
         # Only keys carrying both a team and a region — the shape MOAD provisions.
@@ -730,19 +716,26 @@ async def evaluate_region(
         for db_key in db_keys:
             hashed = LiteLLMService.hash_token(db_key.litellm_token)
             key_state = exact_keys.get(hashed)
-            if key_state is not None and _is_expiring(key_state):
-                # Being expired via budget_duration "0d"; not a budget warning.
-                continue
             key_spend = float(key_totals.get(hashed, 0.0))
             litellm_max_budget = (
                 key_state.get("max_budget") if key_state is not None else None
             )
-            team_spend += key_spend
 
+            # Money a key spent counts towards its team and its owner whatever the
+            # key's own state, so these totals are accumulated before any of the
+            # per-key skips below. Dropping an expiring key's spend here would
+            # understate the team percentage and make the reconciliation warning
+            # further down fire on a gap that does not exist.
+            team_spend += key_spend
             if db_key.owner_id:
                 member_spend[db_key.owner_id] = (
                     member_spend.get(db_key.owner_id, 0.0) + key_spend
                 )
+
+            if key_state is not None and _is_expiring(key_state):
+                # Being expired via budget_duration "0d". No key-scope alert: the
+                # key is on its way out, which is not a budget problem.
+                continue
 
             # Denominator precedence: our own cap, then whatever LiteLLM enforces,
             # then the team pool. Applies equally to service keys (no owner) and
@@ -1137,9 +1130,11 @@ def regions_to_sweep(db: Session) -> list[DBRegion]:
 async def monitor_budget_thresholds(db: Session) -> dict[str, int]:
     """Sweep every active region, notify new crossings, and record what stuck.
 
-    Regions are independent, so they are swept concurrently — but each region's
-    DB work runs on the shared session, so evaluation is serialised per region
-    and only the LiteLLM reads overlap.
+    Regions are independent, so their LiteLLM reads are overlapped. They share one
+    Session, so their DB work interleaves at every ``await`` — safe only because
+    each query is synchronous (nothing else can run mid-query) and ``evaluate_region``
+    never writes. Every write happens below, sequentially, after the gather. Adding
+    a write inside ``evaluate_region`` would need a session per region.
     """
     from app.services.budget_alert_webhook import deliver_events
 
