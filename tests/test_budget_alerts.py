@@ -1280,28 +1280,96 @@ async def test_sweep_does_not_reach_past_the_lookback_floor(db, region):
 
 
 @pytest.mark.asyncio
-async def test_team_is_skipped_when_its_window_predates_the_floor(db, region):
-    """Better no alert than a confidently wrong one.
+async def test_window_before_the_floor_is_back_filled_not_dropped(db, region):
+    """A team the wide sweep cannot cover gets its own scoped call.
 
-    With the window truncated, the visible spend is only part of the total, so the
-    percentage would sit permanently low — a team at 92% would be told it is at
-    30%. The team is dropped and logged instead.
+    The wide request is bounded by the floor, so its rows hold only part of a
+    200-day window. Summing them would peg the team at 30% for good and it would
+    never reach the 90 band. Skipping it instead would hide every crossing until
+    someone raised the floor by hand, so its spend is fetched over its own window.
     """
     team = _make_team(db)
     _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=200)
     _make_key(db, team, region, token="sk-a")
     lite = f"{region.name}_{team.id}"
 
-    # Only the spend inside the floor is visible; the rest of the 200-day window
-    # is not returned at all.
-    rows = _active(lite, keys={"sk-a": 30.0})
+    # The wide sweep only sees the recent $30 of a $92 window.
+    wide_rows = _active(lite, keys={"sk-a": 30.0})
+    scoped_rows = [
+        _day(lite, 62.0, days_ago=150, keys={"sk-a": 62.0}),
+        _day(lite, 30.0, days_ago=0, keys={"sk-a": 30.0}),
+    ]
+    scoped = AsyncMock(return_value=scoped_rows)
 
     with patch.object(settings, "BUDGET_ALERT_MAX_LOOKBACK_DAYS", 30):
-        with _patch_litellm(rows, [_key_state("sk-a")]):
+        with patch.multiple(
+            "app.core.budget_alert_service.LiteLLMService",
+            get_all_team_daily_activity=AsyncMock(return_value=wide_rows),
+            get_team_daily_activity=scoped,
+            list_keys_for_team=AsyncMock(return_value=[_key_state("sk-a")]),
+        ):
+            result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    # The scoped call asked for the team's own window, not the floor.
+    assert scoped.await_args.args[0] == lite
+    assert (
+        date.fromisoformat(scoped.await_args.args[1])
+        == (datetime.now(UTC) - timedelta(days=200)).date()
+    )
+
+    event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
+    assert event.spend == 92.0  # the whole window, not just the visible $30
+    assert event.threshold_pct == 90
+
+
+@pytest.mark.asyncio
+async def test_team_is_dropped_when_the_back_fill_fails(db, region):
+    """If the exact number cannot be fetched, report none rather than a wrong one."""
+    team = _make_team(db)
+    _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=200)
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+
+    with patch.object(settings, "BUDGET_ALERT_MAX_LOOKBACK_DAYS", 30):
+        with patch.multiple(
+            "app.core.budget_alert_service.LiteLLMService",
+            get_all_team_daily_activity=AsyncMock(
+                return_value=_active(lite, keys={"sk-a": 30.0})
+            ),
+            get_team_daily_activity=AsyncMock(side_effect=RuntimeError("boom")),
+            list_keys_for_team=AsyncMock(return_value=[_key_state("sk-a")]),
+        ):
             result = await evaluate_region(db, region, thresholds=THRESHOLDS)
 
     assert result.events == []
     assert result.subjects_evaluated == 0
+
+
+@pytest.mark.asyncio
+async def test_budget_less_team_costs_no_extra_call(db, region):
+    """The 673 ledger-less POOL teams must not each trigger a back-fill.
+
+    They anchor on team.created_at, which is routinely older than the window, but
+    they have no budget to be a percentage of, so there is nothing to fetch.
+    """
+    team = _make_team(db)  # no ledger entry at all
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+    scoped = AsyncMock(return_value=[])
+
+    with patch.object(settings, "BUDGET_ALERT_MAX_LOOKBACK_DAYS", 1):
+        with patch.multiple(
+            "app.core.budget_alert_service.LiteLLMService",
+            get_all_team_daily_activity=AsyncMock(
+                return_value=_active(lite, keys={"sk-a": 5.0})
+            ),
+            get_team_daily_activity=scoped,
+            list_keys_for_team=AsyncMock(return_value=[_key_state("sk-a")]),
+        ):
+            result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    scoped.assert_not_awaited()
+    assert result.events == []
 
 
 @pytest.mark.asyncio

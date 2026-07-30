@@ -44,8 +44,10 @@ Two stages, both bounded by *activity* rather than by key count:
    deliberately ignored; see ``spend_window_start``.
 
 So a tick costs ``pages + active_teams`` calls per region, independent of how many
-idle keys exist. Sweeping every key instead — the shape of the existing hourly
-reconciler, ~40 min at 13.9k keys — is what does not survive 100k.
+idle keys exist, plus one scoped back-fill for any team whose budget window opens
+before the wide request (none on PROD today). Sweeping every key instead — the
+shape of the existing hourly reconciler, ~40 min at 13.9k keys — is what does not
+survive 100k.
 """
 
 from __future__ import annotations
@@ -327,13 +329,11 @@ async def _exact_team_key_state(
 ) -> dict[str, dict]:
     """Current per-key ``spend``/``max_budget`` for one team, keyed by hashed token.
 
-    Needed when the daily-activity sweep cannot answer on its own:
-
-    * a POOL window that opened before the sweep's lookback (its total would be
-      partial) — LiteLLM's key spend is the pool-lifetime spend, which is exactly
-      what a non-resetting pool window wants;
-    * PERIODIC keys, whose authoritative ``max_budget`` lives in LiteLLM rather
-      than in our ``spend_caps``.
+    Supplies the ``max_budget`` a key is measured against when our ``spend_caps``
+    hold none, and flags keys being expired via ``budget_duration``. Its ``spend``
+    is never read: LiteLLM's key counters are lifetime totals that a top-up does
+    not reset, so they cannot be divided by a budget that excludes expired
+    entries. Spend always comes from the daily-activity rows.
     """
     try:
         keys = await service.list_keys_for_team(lite_team_id)
@@ -470,8 +470,9 @@ def region_sweep_start(db: Session, region_id: int, now: datetime) -> date:
     Anchoring on the ledger also usually makes the sweep *cheaper* than the
     370-day default: most POOL money was bought recently, so the request narrows
     to the days that can matter. ``BUDGET_ALERT_MAX_LOOKBACK_DAYS`` remains a hard
-    floor, and any team whose window opens before it is skipped rather than
-    reported wrongly.
+    floor on this one wide request; a team whose window opens before it is
+    back-filled with its own scoped call in ``evaluate_region`` rather than being
+    summed from partial rows.
     """
     floor = _sweep_start(now)
     oldest_anchor = (
@@ -659,31 +660,54 @@ async def evaluate_region(
         cap_map = _key_cap_map(db, region.id, [key.id for key in db_keys])
         team_budget = _team_budget(db, team, region.id)
 
-        if since < sweep_start:
-            # region_sweep_start already stretched the request to the oldest ledger
-            # anchor, so reaching here means the window predates the hard lookback
-            # floor. Summing anyway would understate the percentage for good and
-            # announce a low band for a team that is actually near its limit, so
-            # the team is dropped instead.
+        if since >= sweep_start:
+            entity_totals, key_totals = _sum_activity_since(team_rows, since)
+        elif not (team_budget or cap_map):
+            # Nothing to measure, so nothing to fetch. A POOL team with no valid
+            # ledger entry anchors on team.created_at, which is routinely older than
+            # the window, and there are 673 of those on PROD — spending a call on
+            # each would cost a call per team per tick for no possible event.
+            continue
+        else:
+            # The wide sweep starts after this team's window opens, so its rows hold
+            # only part of the team's spend. Summing them anyway would understate the
+            # percentage for good — not merely imprecisely — because the missing days
+            # never enter the window: a team truly at 92 % would be told it is at
+            # 30 %, and would never reach the 90 band at all.
             #
-            # Only worth complaining about when the team had a budget to measure.
-            # A POOL team with no valid ledger entry anchors on team.created_at,
-            # which is routinely older than the window, and there are 673 of those
-            # on PROD — logging each one would bury the case that matters.
-            if team_budget or cap_map:
+            # So the team is back-filled with a scoped call over its own window
+            # instead. /team/daily/activity takes a team_ids filter, and one team's
+            # rows are bounded by the number of days, so this stays cheap. It costs
+            # one extra call only for teams the wide sweep cannot cover — none on
+            # PROD today, where no anchor is older than 69 days against a 370-day
+            # floor. Skipping such a team instead would hide every crossing it has
+            # until the floor was raised by hand.
+            logger.info(
+                "Team %s window opens %s, before the %s sweep start; "
+                "back-filling its spend with a scoped activity call",
+                team.id,
+                since,
+                sweep_start,
+            )
+            try:
+                scoped_rows = await service.get_team_daily_activity(
+                    lite_team_id, since.isoformat(), end_str
+                )
+                result.litellm_calls += 1
+            except Exception as exc:
+                # Without the back-fill the only honest options are a wrong number
+                # or no number; take no number, and make the reason visible.
                 logger.error(
-                    "Team %s skipped: spend window opens %s, before the %s sweep "
-                    "floor. Raise BUDGET_ALERT_MAX_LOOKBACK_DAYS to cover it.",
+                    "Team %s skipped: could not back-fill spend from %s: %s",
                     team.id,
                     since,
-                    sweep_start,
+                    exc,
                 )
                 budget_alert_subjects_skipped_total.labels(
-                    reason="window_before_lookback"
+                    reason="activity_backfill_failed"
                 ).inc()
-            continue
-
-        entity_totals, key_totals = _sum_activity_since(team_rows, since)
+                continue
+            entity_totals, key_totals = _sum_activity_since(scoped_rows, since)
 
         # /key/list supplies the key *denominators* (max_budget) and flags keys being
         # expired; its spend figures are deliberately not used.
