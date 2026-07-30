@@ -3,7 +3,10 @@
 Posts batches of events to a single configured URL (MOAD, in practice). There is
 no retry queue by design: the alert engine only advances its threshold state for
 events this module reports as delivered, so a failed POST is re-detected and
-re-sent on the next tick. Consumers de-duplicate on ``event_id``.
+re-sent on the next tick. Consumers de-duplicate on ``event_id``, which is derived
+from (subject, period, band) rather than randomly generated — a retry therefore
+carries the same id as the attempt it repeats, including when a response is lost
+after the consumer already accepted the batch. See ``event_id_for``.
 
 The destination is a full URL from ``BUDGET_ALERT_WEBHOOK_URL`` rather than a
 base plus a hardcoded path, so the receiving route stays the consumer's choice.

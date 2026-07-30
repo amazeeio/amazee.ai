@@ -32,9 +32,11 @@ How it scales to 100k keys
 Two stages, both bounded by *activity* rather than by key count:
 
 1. **Discovery and spend** — an unfiltered ``/team/daily/activity`` sweep over the
-   lookback. LiteLLM writes no daily rows for idle entities, so on PROD region 5 an
-   11,859-key region reported 42 active teams and 351 active keys. Measured cost is
-   3 pages / ~1 s at the 370-day default (page 1 alone at 62 days was 1.08 s);
+   window that ``region_sweep_start`` derives from the ledger. LiteLLM writes no
+   daily rows for idle entities, so on PROD region 5 an 11,859-key region reported
+   42 active teams and 351 active keys. Measured cost is 3 pages / ~1 s at the full
+   370-day span (page 1 alone at 62 days was 1.08 s), and usually less, because the
+   window only reaches back as far as the oldest unexpired purchase.
    ``_fetch_daily_activity`` follows ``has_more``, and pages partition the data
    rather than repeating it, so the per-day totals add up cleanly.
 2. **Denominators for keys** — one scoped ``/key/list?team_id=`` per candidate team,
@@ -49,8 +51,8 @@ reconciler, ~40 min at 13.9k keys — is what does not survive 100k.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
-import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
@@ -91,6 +93,12 @@ budget_alerts_fired_total = Counter(
 budget_alert_delivery_failures_total = Counter(
     "budget_alert_delivery_failures_total",
     "Budget threshold events that were detected but not delivered",
+)
+
+budget_alert_subjects_skipped_total = Counter(
+    "budget_alert_subjects_skipped_total",
+    "Subjects that could not be evaluated safely and were dropped",
+    ["reason"],
 )
 
 budget_alert_subjects_evaluated = Gauge(
@@ -435,7 +443,46 @@ def _key_cap_map(db: Session, region_id: int, key_ids: list[int]) -> dict[int, f
 
 
 def _sweep_start(now: datetime) -> date:
+    """The hard floor on how far back a sweep will ever ask LiteLLM to go."""
     return (now - timedelta(days=settings.BUDGET_ALERT_MAX_LOOKBACK_DAYS)).date()
+
+
+def region_sweep_start(db: Session, region_id: int, now: datetime) -> date:
+    """First day the activity sweep must cover for this region.
+
+    Each team's spend is summed from its own window start (see
+    ``spend_window_start``), so a sweep that begins *after* that date returns only
+    part of the team's spend. Summing a partial answer does not merely lose
+    precision — the percentage stays permanently understated, so a team truly at
+    90 % is reported at 55 % and gets told it is fine. The fix is to make the
+    request cover the earliest window in the region rather than a fixed span.
+
+    Anchoring on the ledger also usually makes the sweep *cheaper* than the
+    370-day default: most POOL money was bought recently, so the request narrows
+    to the days that can matter. ``BUDGET_ALERT_MAX_LOOKBACK_DAYS`` remains a hard
+    floor, and any team whose window opens before it is skipped rather than
+    reported wrongly.
+    """
+    floor = _sweep_start(now)
+    oldest_anchor = (
+        db.query(func.min(DBPeriodicBudgetLedgerEntry.purchased_at))
+        .join(DBTeam, DBTeam.id == DBPeriodicBudgetLedgerEntry.team_id)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            DBPeriodicBudgetLedgerEntry.purchased_at.isnot(None),
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+            ),
+            DBTeam.deleted_at.is_(None),
+            DBTeam.budget_type == BudgetType.POOL,
+        )
+        .scalar()
+    )
+    if oldest_anchor is None:
+        return floor
+    return max(floor, oldest_anchor.date())
 
 
 def _is_expiring(key_state: dict) -> bool:
@@ -528,7 +575,7 @@ async def evaluate_region(
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
-    sweep_start = _sweep_start(now)
+    sweep_start = region_sweep_start(db, region.id, now)
     start_str = sweep_start.isoformat()
     end_str = now.date().isoformat()
 
@@ -586,13 +633,23 @@ async def evaluate_region(
         since_dt = spend_window_start(db, team, region.id, now)
         since = since_dt.date()
         if since < sweep_start:
-            logger.warning(
-                "Team %s spend window opens %s, before the %s sweep start; "
-                "percentage may be understated. Raise BUDGET_ALERT_MAX_LOOKBACK_DAYS.",
+            # region_sweep_start already stretched the request to the oldest ledger
+            # anchor, so reaching here means the window predates the hard lookback
+            # floor. Summing anyway would understate the percentage for good and
+            # announce a low band for a team that is actually near its limit, so
+            # the team is dropped instead. Raise BUDGET_ALERT_MAX_LOOKBACK_DAYS if
+            # this ever appears in the logs.
+            logger.error(
+                "Team %s skipped: spend window opens %s, before the %s sweep floor. "
+                "Raise BUDGET_ALERT_MAX_LOOKBACK_DAYS to cover it.",
                 team.id,
                 since,
                 sweep_start,
             )
+            budget_alert_subjects_skipped_total.labels(
+                reason="window_before_lookback"
+            ).inc()
+            continue
         entity_totals, key_totals = _sum_activity_since(team_rows, since)
 
         # /key/list supplies the key *denominators* (max_budget) and flags keys being
@@ -768,11 +825,27 @@ def _classify_subjects(
             result.resets.append((subject, band))
 
 
+def event_id_for(subject_key: str, period_key: str, band: int) -> str:
+    """A stable id for one crossing, so a retry carries the id of the original.
+
+    Delivery is at-least-once: a POST whose response is lost leaves the state
+    unadvanced, and the next tick rebuilds the same crossing. A random id would
+    make that retry look like a second, separate crossing to the consumer, and its
+    de-duplication on ``event_id`` — which is the only thing protecting the
+    customer from a duplicate notification — could not catch it.
+
+    (subject, period, band) identifies a crossing exactly: bands only ever move
+    upward within a period, so the same triple cannot legitimately occur twice.
+    """
+    digest = hashlib.sha256(f"{subject_key}|{period_key}|{band}".encode()).hexdigest()
+    return f"evt_{digest[:32]}"
+
+
 def _build_event(
     region: DBRegion, subject: _Subject, band: int, period_key: str
 ) -> BudgetAlertEvent:
     return BudgetAlertEvent(
-        event_id=f"evt_{uuid.uuid4().hex}",
+        event_id=event_id_for(subject.subject_key, period_key, band),
         subject_type=subject.subject_type,
         subject_key=subject.subject_key,
         threshold_pct=band,
