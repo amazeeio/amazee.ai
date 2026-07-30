@@ -848,6 +848,39 @@ def test_admin_list_importable_models(mock_litellm_class, client, admin_token, t
 
 
 @patch("app.services.litellm.LiteLLMService")
+def test_admin_list_importable_models_dict_metadata(mock_litellm_class, client, admin_token, test_region, db):
+    """model_info.metadata is arbitrary JSON — a dict must not 500 the listing
+    (description: Optional[str] would fail pydantic validation)."""
+    mock_instance = MagicMock()
+    mock_instance.get_model_info = AsyncMock(return_value={
+        "data": [
+            {
+                "model_name": "bedrock/claude-dict-metadata",
+                "litellm_params": {"model": "bedrock/claude"},
+                "model_info": {
+                    "litellm_provider": "bedrock",
+                    "mode": "chat",
+                    "metadata": {"notes": "arbitrary", "nested": {"json": True}},
+                },
+            }
+        ]
+    })
+    mock_litellm_class.return_value = mock_instance
+
+    response = client.get(
+        f"/admin/models/importable?region_id={test_region.id}",
+        headers={"Authorization": f"Bearer {admin_token}"}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["description"] == (
+        "Imported model bedrock/claude-dict-metadata from LiteLLM proxy."
+    )
+
+
+@patch("app.services.litellm.LiteLLMService")
 def test_admin_import_model_success(mock_litellm_class, client, admin_token, test_region, db):
     """Test importing a model: litellm_params come from the region proxy, not the client."""
     proxy_params = {
