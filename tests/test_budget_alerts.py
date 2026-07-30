@@ -29,6 +29,7 @@ from app.core.budget_alert_service import (
     parse_thresholds,
 )
 from app.core.config import settings
+from app.core.spend_period_service import resolve_team_period_window
 from app.db.models import (
     DBBudgetAlertState,
     DBLimitedResource,
@@ -429,11 +430,11 @@ async def test_spend_against_an_expired_topup_is_not_counted(db, region):
 
 
 @pytest.mark.asyncio
-async def test_spend_against_an_older_but_still_valid_topup_is_counted(db, region):
-    """The other direction: valid money keeps its spend.
+async def test_topup_only_team_counts_from_the_last_purchase(db, region):
+    """For a top-up-only team the cycle starts at the last top-up purchase.
 
-    Anchoring on the *newest* purchase would have dropped the $85 spent against the
-    still-valid older top-up and reported ~2% instead of ~43%.
+    Spend from before it belongs to an earlier cycle and is not counted again,
+    even when the older top-up is still valid and still funding the balance.
     """
     team = _make_team(db)
     # Both still valid: $100 bought 100 days ago, $100 bought 10 days ago.
@@ -443,21 +444,50 @@ async def test_spend_against_an_older_but_still_valid_topup_is_counted(db, regio
     lite = f"{region.name}_{team.id}"
 
     rows = [
-        _day(lite, 85.0, days_ago=90, keys={"sk-a": 85.0}),
-        _day(lite, 20.0, days_ago=1, keys={"sk-a": 20.0}),
+        _day(lite, 85.0, days_ago=90, keys={"sk-a": 85.0}),  # previous cycle
+        _day(lite, 120.0, days_ago=1, keys={"sk-a": 120.0}),  # this cycle
     ]
 
     with _patch_litellm(rows, [_key_state("sk-a")]):
         result = await evaluate_region(db, region, thresholds=THRESHOLDS)
 
     event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
-    # All $105 counts against the $200 still on the books -> 52.5%, crossing 50.
-    # Anchoring on the newest purchase would have seen only $20 (10%) and stayed
-    # silent, which is the failure this test exists to catch.
-    assert event.spend == 105.0
+    # Only the $120 spent since the last purchase counts, against the $200 still on
+    # the books -> 60%. Including the older $85 would read 102.5% and fire 100.
+    assert event.spend == 120.0
     assert event.max_budget == 200.0
     assert event.threshold_pct == 50
-    assert 52.4 < event.percent_used < 52.6
+    assert 59.9 < event.percent_used < 60.1
+
+
+@pytest.mark.asyncio
+async def test_subscription_cycle_wins_over_an_older_topup(db, region):
+    """A team holding both is measured over its current subscription cycle.
+
+    The budget is still the whole available balance — subscription remaining plus
+    top-up remaining — but spend from before the cycle opened has already been
+    settled into ``consumed_cents``, so counting it again would double count.
+    """
+    team = _make_team(db)
+    # $100 subscription, cycle opened 11 days ago; plus a $100 top-up from before.
+    _add_subscription(db, team, region, amount_cents=10_000, days_left=20)
+    _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=60)
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+
+    rows = [
+        _day(lite, 70.0, days_ago=40, keys={"sk-a": 70.0}),  # before the cycle
+        _day(lite, 105.0, days_ago=1, keys={"sk-a": 105.0}),  # inside the cycle
+    ]
+
+    with _patch_litellm(rows, [_key_state("sk-a")]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
+    assert event.spend == 105.0  # not 175.0
+    assert event.max_budget == 200.0  # subscription + top-up remaining
+    assert event.threshold_pct == 50
+    assert event.budget_duration == "31d"
 
 
 @pytest.mark.asyncio
@@ -583,26 +613,36 @@ def test_future_expiry_is_not_a_candidate_yet(db, region):
     assert denominator_change_candidates(db, region.id, datetime.now(UTC)) == set()
 
 
-def test_spend_window_start_uses_oldest_valid_entry(db, region):
+def test_spend_window_start_is_the_last_topup_for_a_topup_only_team(db, region):
     """Directly pin the rule, since everything downstream depends on it."""
     from app.core.budget_alert_service import spend_window_start
 
     team = _make_team(db)
     now = datetime.now(UTC)
-    # Expired: must NOT set the window.
-    _add_topup(
-        db,
-        team,
-        region,
-        amount_cents=10_000,
-        purchased_days_ago=200,
-        expires_at=now - timedelta(days=1),
-    )
     _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=40)
     _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=5)
 
-    start = spend_window_start(db, team, region.id, now)
-    assert 39 <= (now - start).days <= 41
+    window = resolve_team_period_window(db, team, region.id, now=now)
+    start = spend_window_start(window, now)
+    # The most recent purchase opens the cycle, not the older still-valid one.
+    assert 4 <= (now - start).days <= 6
+
+
+def test_spend_window_start_is_the_cycle_start_when_subscribed(db, region):
+    """A subscription defines the cycle, whatever top-ups sit alongside it."""
+    from app.core.budget_alert_service import spend_window_start
+
+    team = _make_team(db)
+    now = datetime.now(UTC)
+    # Cycle opened 11 days ago (31d window, 20 days left).
+    _add_subscription(db, team, region, amount_cents=10_000, days_left=20)
+    # An older top-up must not drag the window back before the cycle.
+    _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=60)
+
+    window = resolve_team_period_window(db, team, region.id, now=now)
+    start = spend_window_start(window, now)
+    assert 10 <= (now - start).days <= 12
+    assert window.source == "subscription_ledger"
 
 
 def test_spend_window_start_falls_back_to_team_creation(db, region):
@@ -611,7 +651,8 @@ def test_spend_window_start_falls_back_to_team_creation(db, region):
 
     team = _make_team(db)
     now = datetime.now(UTC)
-    start = spend_window_start(db, team, region.id, now)
+    window = resolve_team_period_window(db, team, region.id, now=now)
+    start = spend_window_start(window, now)
     assert 4 <= (now - start).days <= 6
 
 
