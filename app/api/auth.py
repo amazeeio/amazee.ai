@@ -404,6 +404,24 @@ async def sign_in(
             )
             .first()
         )
+        if team is None and "@" in sign_in_username:
+            # The orphaned team may store a plus-tagged admin_email
+            # (e.g. "user+p12@…") while sign_in_username is the stripped
+            # base form — match tagged variants too.
+            # Escape LIKE wildcards — '_' is common in email local parts.
+            local, domain = (
+                part.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                for part in sign_in_username.split("@", 1)
+            )
+            team = (
+                db.query(DBTeam)
+                .filter(
+                    DBTeam.admin_email.ilike(f"{local}+%@{domain}", escape="\\"),
+                    DBTeam.deleted_at.is_(None),
+                )
+                .order_by(DBTeam.id)
+                .first()
+            )
         if team:
             auth_logger.info(
                 f"Re-attaching {sign_in_username} to existing team {team.id} as admin"
