@@ -513,6 +513,20 @@ def test_list_teams_paginated(client, admin_token, db):
     assert [t["name"] for t in response.json()] == ["paginated team 0"]
 
 
+def test_list_teams_filter_escapes_wildcards(client, admin_token, db):
+    for name in ["wild_card team", "wildxcard team"]:
+        db.add(DBTeam(name=name, admin_email=f"{name.replace(' ', '-')}@example.com"))
+    db.commit()
+
+    response = client.get(
+        "/teams/?name=wild_card",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "1"
+    assert [t["name"] for t in response.json()] == ["wild_card team"]
+
+
 def test_list_teams_unauthorized(client, test_token):
     """Test listing teams without admin privileges"""
     response = client.get("/teams/", headers={"Authorization": f"Bearer {test_token}"})

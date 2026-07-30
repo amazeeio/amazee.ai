@@ -109,6 +109,26 @@ def test_get_users_paginated(client, admin_token, db):
     assert [u["email"] for u in response.json()] == ["paginated-0@example.com"]
 
 
+def test_get_users_search_escapes_wildcards(client, admin_token, db):
+    for email in ["wild_card@example.com", "wildxcard@example.com"]:
+        db.add(
+            DBUser(
+                email=email,
+                hashed_password=get_password_hash("password"),
+                is_active=True,
+            )
+        )
+    db.commit()
+
+    response = client.get(
+        "/users/?search=wild_card",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "1"
+    assert [u["email"] for u in response.json()] == ["wild_card@example.com"]
+
+
 def test_get_user_by_id(client, admin_token, test_user):
     response = client.get(
         f"/users/{test_user.id}", headers={"Authorization": f"Bearer {admin_token}"}

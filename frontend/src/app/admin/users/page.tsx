@@ -123,6 +123,11 @@ export default function UsersPage() {
     pageSize,
   ]);
 
+  // Clamp when mutations shrink the result set below the current page
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
+
   const { data: teams = [] } = useQuery<{ id: string; name: string }[]>({
     queryKey: ["teams"],
     queryFn: async () => {
