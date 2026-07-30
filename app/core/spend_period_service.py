@@ -41,16 +41,16 @@ def current_cycle_start(
 ) -> datetime | None:
     """Start of the cycle *containing now* for a per-cycle budget.
 
-    Spend caps are per cycle, not absolute: on PROD every one of them is ``31d``
-    or ``1mo``, and LiteLLM zeroes the key's spend at each boundary. A percentage
+    Spend caps are per cycle, not absolute: they are written as ``31d`` or ``1mo``,
+    and LiteLLM zeroes the key's spend at each boundary. A percentage
     against such a cap therefore has to be summed over that cap's current cycle —
     dividing a longer stretch of spend by a one-month cap reads far above 100 %
     and fires alerts nobody has earned.
 
     This differs from :func:`compute_period_start` in rolling forward. That one
     derives the window from LiteLLM's ``budget_reset_at``, which can sit in the
-    past (PROD has keys whose ``budget_reset_at`` is a month behind), and would
-    then hand back a window that ended long ago. Here the anchor is stepped by
+    past — a key's reset date may be a month behind — and would then hand back a
+    window that ended long ago. Here the anchor is stepped by
     whole cycles until it contains ``now``, which is what LiteLLM does when it
     actually resets.
 
@@ -58,11 +58,11 @@ def current_cycle_start(
     choose — it is what LiteLLM does, and ``31d`` exists precisely to avoid it, so
     that a cap runs from the day it was set rather than resetting on the 1st. But
     an alert has to predict when the customer's key will actually stop working, and
-    for a key still carrying ``1mo`` LiteLLM really does reset on the 1st: PROD
-    shows those keys with ``budget_reset_at`` at ``2026-08-01T00:00:00``. Measuring
-    them over a rolling month would disagree with the enforcement they are subject
-    to. 66 key caps and all 38 member caps are still ``1mo``; moving them to
-    ``31d`` is a data change, and this follows whichever they carry.
+    for a key still carrying ``1mo`` LiteLLM really does reset on the 1st — its
+    stored ``budget_reset_at`` is the 1st of the next month. Measuring such a key
+    over a rolling month would disagree with the enforcement it is subject to. Caps
+    written before the ``31d`` rule still carry ``1mo``; moving them is a data
+    change, and this follows whichever they carry.
     """
     if not budget_duration:
         return None
@@ -279,9 +279,9 @@ def resolve_team_period_window(
         # the budget describing the same money. The budget is
         # ``amount - consumed_cents`` summed over every still-valid entry, and
         # consumed_cents is only written by FIFO allocation at invoice close — which
-        # a team with no subscription never has. On PROD exactly one of 233 top-up
-        # entries has it set. So the budget is the full face value of every valid
-        # purchase, and a window opening at the newest purchase would leave the spend
+        # a team with no subscription never has. So the budget is effectively the full
+        # face value of every valid purchase, and a window opening at the newest
+        # purchase would leave the spend
         # against the older ones counted nowhere: absent from the numerator, and not
         # deducted from the denominator either.
         #
