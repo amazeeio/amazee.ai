@@ -1940,3 +1940,63 @@ async def test_a_rebased_rollover_is_not_double_counted(db, region):
     assert event.spend == 200.0
     assert event.max_budget == 263.30
     assert event.threshold_pct == 75
+
+
+@pytest.mark.asyncio
+async def test_idle_team_with_a_window_before_the_sweep_is_still_found(db, region):
+    """Spending nothing inside the swept range must not hide a crossing.
+
+    The wide request returns no row for such a team, so traffic-based discovery
+    misses it — and with it the scoped back-fill that exists for exactly this case.
+    The team is found from the ledger instead.
+    """
+    team = _make_team(db)
+    # Window opened 200 days ago; the sweep floor is 30, so the wide request covers
+    # only the last 30 days -- in which this team spent nothing at all.
+    _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=200)
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+
+    # Nothing in the wide response; the scoped call carries the real history.
+    scoped_rows = [_day(lite, 92.0, days_ago=150, keys={"sk-a": 92.0})]
+    scoped = AsyncMock(return_value=scoped_rows)
+
+    with patch.object(settings, "BUDGET_ALERT_MAX_LOOKBACK_DAYS", 30):
+        with patch.multiple(
+            "app.core.budget_alert_service.LiteLLMService",
+            get_all_team_daily_activity=AsyncMock(return_value=[]),
+            get_team_daily_activity=scoped,
+            list_keys_for_team=AsyncMock(return_value=[_key_state("sk-a")]),
+        ):
+            result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    scoped.assert_awaited()
+    event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
+    assert event.spend == 92.0
+    assert event.threshold_pct == 90
+
+
+def test_window_before_sweep_candidates_is_empty_under_the_default_lookback(db, region):
+    """With the shipped settings no valid window can predate the sweep.
+
+    The floor is longer than a purchase can stay valid, so this returns nothing —
+    which is why the query is a safety net rather than a hot path.
+    """
+    from app.core.budget_alert_service import (
+        region_sweep_start,
+        window_before_sweep_candidates,
+    )
+
+    now = datetime.now(UTC)
+    team = _make_team(db)
+    _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=300)
+
+    sweep_start = region_sweep_start(db, region.id, now)
+    assert window_before_sweep_candidates(db, region.id, sweep_start, now) == set()
+
+    # Lower the floor below the purchase age and the team surfaces.
+    with patch.object(settings, "BUDGET_ALERT_MAX_LOOKBACK_DAYS", 30):
+        sweep_start = region_sweep_start(db, region.id, now)
+        assert window_before_sweep_candidates(db, region.id, sweep_start, now) == {
+            team.id
+        }

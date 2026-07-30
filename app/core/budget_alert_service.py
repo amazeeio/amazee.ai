@@ -725,6 +725,61 @@ def denominator_change_candidates(
     return candidates
 
 
+def window_before_sweep_candidates(
+    db: Session, region_id: int, sweep_start: date, now: datetime
+) -> set[int]:
+    """Teams whose budget window opens before the wide request does.
+
+    Such a team may have spent nothing inside the swept range and so produce no
+    daily-activity row at all, which would keep it out of the candidate set — and
+    out of the scoped back-fill that exists precisely for it. Its spend would then
+    go unreported however far past a threshold it is, including on a first run when
+    no state exists to say otherwise.
+
+    ``region_sweep_start`` derives the floor from these same anchors, so today the
+    set is empty: a still-valid purchase cannot predate a lookback longer than the
+    purchase expiry. That is a coincidence between two settings rather than a
+    guarantee, and lowering ``BUDGET_ALERT_MAX_LOOKBACK_DAYS`` below the pool expiry
+    would quietly make it non-empty. Discovering these teams explicitly costs one
+    indexed query and removes the dependency.
+    """
+    rows = (
+        db.query(DBPeriodicBudgetLedgerEntry.team_id)
+        .join(DBTeam, DBTeam.id == DBPeriodicBudgetLedgerEntry.team_id)
+        .filter(
+            DBPeriodicBudgetLedgerEntry.region_id == region_id,
+            DBPeriodicBudgetLedgerEntry.is_active.is_(True),
+            DBTeam.deleted_at.is_(None),
+            DBTeam.budget_type == BudgetType.POOL,
+            (
+                DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
+                | (DBPeriodicBudgetLedgerEntry.expires_at > now)
+            ),
+            (
+                (DBPeriodicBudgetLedgerEntry.purchased_at.isnot(None))
+                & (DBPeriodicBudgetLedgerEntry.purchased_at < sweep_start)
+            )
+            | (
+                (DBPeriodicBudgetLedgerEntry.effective_period_start.isnot(None))
+                & (DBPeriodicBudgetLedgerEntry.effective_period_start < sweep_start)
+            ),
+        )
+        .distinct()
+        .all()
+    )
+    candidates = {int(team_id) for (team_id,) in rows if team_id is not None}
+    if candidates:
+        logger.warning(
+            "Region %s: %d team(s) hold budget older than the %s sweep start; "
+            "they are evaluated from their own scoped activity call. Raise "
+            "BUDGET_ALERT_MAX_LOOKBACK_DAYS to keep them in the wide request.",
+            region_id,
+            len(candidates),
+            sweep_start,
+        )
+    return candidates
+
+
 async def evaluate_region(
     db: Session,
     region: DBRegion,
@@ -771,6 +826,14 @@ async def evaluate_region(
     # evaluated even though they were silent.
     denominator_change_team_ids = denominator_change_candidates(db, region.id, now)
     candidate_team_ids.update(denominator_change_team_ids)
+
+    # Nor is appearing in the wide request the only way to be worth evaluating: a
+    # team whose window predates it may have spent nothing inside the swept range
+    # and still be over a threshold. Those are found from the ledger and back-filled
+    # below rather than being invisible.
+    candidate_team_ids.update(
+        window_before_sweep_candidates(db, region.id, sweep_start, now)
+    )
 
     if not candidate_team_ids:
         logger.info("No active teams in region %s this sweep", region.name)
