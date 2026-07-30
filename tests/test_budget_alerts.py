@@ -193,17 +193,20 @@ def _active(lite_team_id, spend=0.0, *, keys=None, days_ago=0):
     return [_day(lite_team_id, spend, days_ago=days_ago, keys=keys)]
 
 
-def _key_state(token, *, max_budget=None, budget_duration="365d"):
+def _key_state(token, *, max_budget=None, budget_duration="365d", budget_reset_at=None):
     """One entry of LiteLLM's /key/list response.
 
     Carries the *denominator* only. Spend deliberately comes from the day-rows, so
     a test cannot accidentally assert against LiteLLM's lifetime counter.
     """
-    return {
+    state = {
         "token": LiteLLMService.hash_token(token),
         "max_budget": max_budget,
         "budget_duration": budget_duration,
     }
+    if budget_reset_at is not None:
+        state["budget_reset_at"] = budget_reset_at.isoformat()
+    return state
 
 
 def _patch_litellm(team_rows, team_keys=None):
@@ -1742,4 +1745,88 @@ async def test_rolling_cap_cycle_is_anchored_on_the_cap_not_the_team(db, region)
 
     # $30 of $100 is 30% -> silent. Anchored on the team it would have summed
     # $110, read 110%, and fired 100 on spend from the previous cycle.
+    assert [e for e in result.events if e.subject_type == SUBJECT_KEY] == []
+
+
+@pytest.mark.asyncio
+async def test_cap_cycle_phase_comes_from_litellm_reset_date(db, region):
+    """LiteLLM owns where the boundary actually falls, so it owns the phase.
+
+    Its reset job recomputes each boundary from the day it runs, so
+    budget_reset_at absorbs any lateness. Our created_at only predicts the
+    boundary for as long as that job stays punctual, so it is the fallback.
+    """
+    now = datetime.now(UTC)
+    team = _make_team(db)
+    _add_topup(db, team, region, amount_cents=100_000, purchased_days_ago=60)
+    key = _make_key(db, team, region, token="sk-a")
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=region.id,
+            team_id=team.id,
+            key_id=key.id,
+            max_budget=100.0,
+            budget_duration="31d",
+            # Anchored here the cycle would have opened 9 days ago (40 - 31).
+            created_at=now - timedelta(days=40),
+        )
+    )
+    db.commit()
+    lite = f"{region.name}_{team.id}"
+
+    # LiteLLM says the cycle ends in 3 days, so it opened 28 days ago.
+    key_state = _key_state(
+        "sk-a", budget_duration="31d", budget_reset_at=now + timedelta(days=3)
+    )
+    rows = [
+        _day(lite, 80.0, days_ago=20, keys={"sk-a": 80.0}),
+        _day(lite, 5.0, days_ago=1, keys={"sk-a": 5.0}),
+    ]
+
+    with _patch_litellm(rows, [key_state]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    event = next(e for e in result.events if e.subject_type == SUBJECT_KEY)
+    # $85 of $100 -> 75 band. Anchored on created_at the window would have opened
+    # 9 days ago, seen only $5, and stayed silent through an 85% cycle.
+    assert event.spend == 85.0
+    assert event.threshold_pct == 75
+
+
+@pytest.mark.asyncio
+async def test_cap_cycle_ignores_a_litellm_reset_for_a_different_duration(db, region):
+    """A 1mo reset date must not be read as though it were a 31d one."""
+    now = datetime.now(UTC)
+    team = _make_team(db)
+    _add_topup(db, team, region, amount_cents=100_000, purchased_days_ago=60)
+    key = _make_key(db, team, region, token="sk-a")
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=region.id,
+            team_id=team.id,
+            key_id=key.id,
+            max_budget=100.0,
+            budget_duration="31d",
+            created_at=now - timedelta(days=40),  # cycle opened 9 days ago
+        )
+    )
+    db.commit()
+    lite = f"{region.name}_{team.id}"
+
+    # LiteLLM is on a calendar month here, so its reset date says nothing about
+    # where our 31d cycle falls; created_at has to be used instead.
+    key_state = _key_state(
+        "sk-a", budget_duration="1mo", budget_reset_at=now + timedelta(days=3)
+    )
+    rows = [
+        _day(lite, 80.0, days_ago=20, keys={"sk-a": 80.0}),
+        _day(lite, 5.0, days_ago=1, keys={"sk-a": 5.0}),
+    ]
+
+    with _patch_litellm(rows, [key_state]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    # Window opened 9 days ago -> only $5 of $100 -> nothing to say.
     assert [e for e in result.events if e.subject_type == SUBJECT_KEY] == []

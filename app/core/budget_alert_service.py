@@ -869,7 +869,20 @@ async def evaluate_region(
             cap_anchor: datetime | None = None
             budget_source = "key_cap"
             if cap_entry is not None:
-                key_budget, cap_duration, cap_anchor = cap_entry
+                key_budget, cap_duration, cap_created_at = cap_entry
+                # Phase comes from LiteLLM when it is enforcing the same cycle.
+                # It recomputes each boundary from the day its reset job runs, so
+                # budget_reset_at is where the cycle actually lands, drift included,
+                # while our created_at only predicts it correctly for as long as
+                # that job stays punctual. Requiring the durations to match keeps a
+                # 1mo reset date from being read as a 31d one.
+                litellm_duration = (
+                    key_state.get("budget_duration") if key_state is not None else None
+                )
+                if litellm_duration == cap_duration:
+                    cap_anchor = _litellm_cycle_anchor(key_state, cap_duration)
+                if cap_anchor is None:
+                    cap_anchor = cap_created_at
             if key_budget is None and litellm_max_budget is not None:
                 key_budget = float(litellm_max_budget)
                 cap_duration = (
