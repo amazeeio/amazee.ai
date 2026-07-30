@@ -1987,15 +1987,23 @@ async def reconcile_team_keys(
                             )
                         )
                     else:
-                        update_data = {"litellm_token": key.litellm_token}
+                        # Each drifted field is tracked on its own so the write
+                        # carries only what actually drifted. Reads come from a
+                        # snapshot that can be minutes old, so a write that also
+                        # sends unrelated fields could overwrite a change made
+                        # after the snapshot was taken.
                         needs_update = False
+                        new_budget_amount: Optional[float] = None
+                        new_budget_duration: Optional[str] = None
+                        extend_key_life = False
+
                         current_max_budget = info.get("max_budget")
                         # If the budget amount mis-matches, always update that field
                         if (
                             max_budget_amount is not None
                             and current_max_budget != max_budget_amount
                         ):
-                            update_data["budget_amount"] = max_budget_amount
+                            new_budget_amount = max_budget_amount
                             needs_update = True
                             logger.info(
                                 f"Key {key.id} has incorrect budget of {current_max_budget}, will change to {max_budget_amount}"
@@ -2007,7 +2015,7 @@ async def reconcile_team_keys(
                             current_budget_duration is None
                             and renewal_period_days is not None
                         ):
-                            update_data["budget_duration"] = f"{renewal_period_days}d"
+                            new_budget_duration = f"{renewal_period_days}d"
                             needs_update = True
                             logger.info(
                                 f"Key {key.id} budget update triggered by None budget_duration"
@@ -2017,7 +2025,7 @@ async def reconcile_team_keys(
                             current_budget_duration == "0d"
                             and renewal_period_days is not None
                         ):
-                            update_data["budget_duration"] = f"{renewal_period_days}d"
+                            new_budget_duration = f"{renewal_period_days}d"
                             needs_update = True
                             logger.info(
                                 f"Key {key.id} budget update triggered by 0d duration (expired key fix)"
@@ -2030,41 +2038,51 @@ async def reconcile_team_keys(
                             )
                             this_month = current_time + timedelta(days=30)
                             if parsed_expiry_date <= this_month:
-                                update_data["budget_duration"] = (
-                                    f"{renewal_period_days}d"
-                                )
+                                new_budget_duration = f"{renewal_period_days}d"
+                                extend_key_life = True
                                 needs_update = True
                                 logger.info(
                                     f"Key {key.id} expires at {expiry_date}, updating to extend life."
                                 )
 
                         if needs_update:
-                            # Determine what the new budget_duration will be for logging
-                            new_budget_duration = update_data.get(
-                                "budget_duration", current_budget_duration
-                            )
                             logger.info(
-                                f"Key {key.id} budget update triggered: changing from {current_budget_duration}, {current_max_budget} to {new_budget_duration}, {max_budget_amount}"
+                                f"Key {key.id} budget update triggered: changing from {current_budget_duration}, {current_max_budget} to {new_budget_duration or current_budget_duration}, {max_budget_amount}"
                             )
 
-                            # Extract litellm_token and other parameters for update_budget call
-                            litellm_token = update_data.pop("litellm_token")
-                            budget_duration = update_data.get("budget_duration")
-                            budget_amount = update_data.get("budget_amount")
-
-                            # Call update_budget with correct parameter order
-                            # Always pass budget_duration as second positional argument (can be None)
-                            pending_writes.append(
-                                (
-                                    key.id,
-                                    partial(
-                                        litellm_service.update_budget,
-                                        litellm_token,
-                                        budget_duration,
-                                        budget_amount=budget_amount,
-                                    ),
+                            if extend_key_life:
+                                # update_budget also resets the key's duration to
+                                # 365d, which is the whole point when the key is
+                                # close to expiring. budget_duration is always set
+                                # on this path, so nothing is sent as null.
+                                pending_writes.append(
+                                    (
+                                        key.id,
+                                        partial(
+                                            litellm_service.update_budget,
+                                            key.litellm_token,
+                                            new_budget_duration,
+                                            budget_amount=new_budget_amount,
+                                        ),
+                                    )
                                 )
-                            )
+                            else:
+                                # Budget-only drift: leave duration/expiry alone and
+                                # send no field we did not mean to change. LiteLLM
+                                # reads a null budget_duration as "clear it", so
+                                # passing None here would wipe the reset period and
+                                # the next run would write it back - a flap.
+                                pending_writes.append(
+                                    (
+                                        key.id,
+                                        partial(
+                                            litellm_service.update_key_budget,
+                                            key.litellm_token,
+                                            budget_duration=new_budget_duration,
+                                            max_budget=new_budget_amount,
+                                        ),
+                                    )
+                                )
                             logger.info(f"Queued key {key.id} budget update")
                         else:
                             logger.info(

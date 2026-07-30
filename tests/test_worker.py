@@ -1558,6 +1558,7 @@ async def test_reconcile_team_keys_with_renewal_period_updates(
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock()
     mock_instance.update_budget = AsyncMock()
+    mock_instance.update_key_budget = AsyncMock()
 
     # Mock key info responses - both keys have different budget amounts, triggering updates
     mock_instance.get_key_info.side_effect = [
@@ -1604,24 +1605,28 @@ async def test_reconcile_team_keys_with_renewal_period_updates(
     # Verify get_key_info was called for both keys
     assert mock_instance.get_key_info.call_count == 2
 
-    # Verify update_budget was called for both keys since they have different settings
-    assert mock_instance.update_budget.call_count == 2
+    # Only the budget amount drifted, so the write must go through
+    # update_key_budget, which leaves duration/expiry alone.
+    assert mock_instance.update_key_budget.call_count == 2
+    mock_instance.update_budget.assert_not_called()
 
     # Check the first call (team key)
-    first_call = mock_instance.update_budget.call_args_list[0]
+    first_call = mock_instance.update_key_budget.call_args_list[0]
     assert (
         first_call[0][0] == "team_token_123"
     )  # First positional argument should be litellm_token
-    assert first_call[1]["budget_amount"] == test_product.max_budget_per_key
-    # budget_duration should not be updated since it's not None and no other conditions trigger an update
+    assert first_call[1]["max_budget"] == test_product.max_budget_per_key
+    # budget_duration is not None and nothing else drifted, so it must not be sent
+    assert first_call[1]["budget_duration"] is None
 
     # Check the second call (user key)
-    second_call = mock_instance.update_budget.call_args_list[1]
+    second_call = mock_instance.update_key_budget.call_args_list[1]
     assert (
         second_call[0][0] == "user_token_456"
     )  # First positional argument should be litellm_token
-    assert second_call[1]["budget_amount"] == test_product.max_budget_per_key
-    # budget_duration should not be updated since it's not None and no other conditions trigger an update
+    assert second_call[1]["max_budget"] == test_product.max_budget_per_key
+    # budget_duration is not None and nothing else drifted, so it must not be sent
+    assert second_call[1]["budget_duration"] is None
 
     # Verify team total spend is calculated correctly
     assert team_total == 5.0  # 0.0 + 5.0
@@ -1668,6 +1673,7 @@ async def test_reconcile_team_keys_with_renewal_period_updates_no_products(
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock()
     mock_instance.update_budget = AsyncMock()
+    mock_instance.update_key_budget = AsyncMock()
 
     # Mock key info responses - both keys have None budget_duration, triggering updates
     mock_instance.get_key_info.side_effect = [
@@ -1709,30 +1715,27 @@ async def test_reconcile_team_keys_with_renewal_period_updates_no_products(
     # Verify get_key_info was called for both keys
     assert mock_instance.get_key_info.call_count == 2
 
-    # Verify update_budget was called for both keys since they have None budget_duration
-    assert mock_instance.update_budget.call_count == 2
+    # Only budget_duration drifted, so the key's expiry must not be touched
+    assert mock_instance.update_key_budget.call_count == 2
+    mock_instance.update_budget.assert_not_called()
 
     # Check the first call (team key)
-    first_call = mock_instance.update_budget.call_args_list[0]
+    first_call = mock_instance.update_key_budget.call_args_list[0]
     assert (
         first_call[0][0] == "team_token_123"
     )  # First positional argument should be litellm_token
-    assert (
-        first_call[0][1] == "30d"
-    )  # Second positional argument should be budget_duration
-    # Should not have budget_amount since no products were found
-    assert first_call[1]["budget_amount"] is None
+    assert first_call[1]["budget_duration"] == "30d"
+    # Should not have a budget amount since no products were found
+    assert first_call[1]["max_budget"] is None
 
     # Check the second call (user key)
-    second_call = mock_instance.update_budget.call_args_list[1]
+    second_call = mock_instance.update_key_budget.call_args_list[1]
     assert (
         second_call[0][0] == "user_token_456"
     )  # First positional argument should be litellm_token
-    assert (
-        second_call[0][1] == "30d"
-    )  # Second positional argument should be budget_duration
-    # Should not have budget_amount since no products were found
-    assert second_call[1]["budget_amount"] is None
+    assert second_call[1]["budget_duration"] == "30d"
+    # Should not have a budget amount since no products were found
+    assert second_call[1]["max_budget"] is None
 
     # Verify team total spend is calculated correctly
     assert team_total == 5.0  # 0.0 + 5.0
@@ -1780,6 +1783,7 @@ async def test_reconcile_team_keys_none_budget_duration_handled(
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock()
     mock_instance.update_budget = AsyncMock()
+    mock_instance.update_key_budget = AsyncMock()
 
     current_time = datetime.now(UTC)
 
@@ -1807,16 +1811,15 @@ async def test_reconcile_team_keys_none_budget_duration_handled(
         test_product.max_budget_per_key,
     )
 
-    # Verify update_budget was called because budget_duration is None (forces update)
-    assert mock_instance.update_budget.call_count == 1
-    update_call = mock_instance.update_budget.call_args
+    # Verify a write was issued because budget_duration is None (forces update)
+    assert mock_instance.update_key_budget.call_count == 1
+    mock_instance.update_budget.assert_not_called()
+    update_call = mock_instance.update_key_budget.call_args
     assert (
         update_call[0][0] == "team_token_123"
     )  # First positional argument should be litellm_token
-    assert (
-        update_call[0][1] == f"{test_product.renewal_period_days}d"
-    )  # Second positional argument should be budget_duration
-    assert update_call[1]["budget_amount"] == test_product.max_budget_per_key
+    assert update_call[1]["budget_duration"] == f"{test_product.renewal_period_days}d"
+    assert update_call[1]["max_budget"] == test_product.max_budget_per_key
 
     # Verify team total spend is calculated correctly
     assert team_total == 10.0
@@ -1864,6 +1867,7 @@ async def test_reconcile_team_keys_zero_duration_renewal(
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock()
     mock_instance.update_budget = AsyncMock()
+    mock_instance.update_key_budget = AsyncMock()
 
     current_time = datetime.now(UTC)
 
@@ -1893,16 +1897,15 @@ async def test_reconcile_team_keys_zero_duration_renewal(
         test_product.max_budget_per_key,
     )
 
-    # Verify update_budget was called to fix the "0d" duration
-    assert mock_instance.update_budget.call_count == 1
-    update_call = mock_instance.update_budget.call_args
+    # Verify a write was issued to fix the "0d" duration
+    assert mock_instance.update_key_budget.call_count == 1
+    mock_instance.update_budget.assert_not_called()
+    update_call = mock_instance.update_key_budget.call_args
     assert (
         update_call[0][0] == "team_token_123"
     )  # First positional argument should be litellm_token
-    assert (
-        update_call[0][1] == f"{test_product.renewal_period_days}d"
-    )  # Second positional argument should be budget_duration
-    assert update_call[1]["budget_amount"] == test_product.max_budget_per_key
+    assert update_call[1]["budget_duration"] == f"{test_product.renewal_period_days}d"
+    assert update_call[1]["max_budget"] == test_product.max_budget_per_key
 
     # Verify team total spend is calculated correctly
     assert team_total == 10.0
@@ -1924,7 +1927,7 @@ async def test_reconcile_team_keys_update_budget_parameter_issue(
 
     GIVEN: A team with a product and keys that have different budget amounts
     WHEN: reconcile_team_keys is called with renewal period and budget amount
-    THEN: update_budget should be called with litellm_token as first positional argument, not as keyword argument
+    THEN: the write should be called with litellm_token as first positional argument, not as keyword argument
     """
     # Set up team-product association
     team_product = DBTeamProduct(team_id=test_team.id, product_id=test_product.id)
@@ -1944,6 +1947,7 @@ async def test_reconcile_team_keys_update_budget_parameter_issue(
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock()
     mock_instance.update_budget = AsyncMock()
+    mock_instance.update_key_budget = AsyncMock()
 
     # Mock key info response - different budget amount triggers update
     mock_instance.get_key_info.return_value = {
@@ -1969,18 +1973,21 @@ async def test_reconcile_team_keys_update_budget_parameter_issue(
         test_product.max_budget_per_key,
     )
 
-    # Verify update_budget was called with correct parameters
-    assert mock_instance.update_budget.call_count == 1
+    # Only the budget amount drifted, so duration/expiry must be left alone
+    assert mock_instance.update_key_budget.call_count == 1
+    mock_instance.update_budget.assert_not_called()
 
     # Check that litellm_token is passed as first positional argument, not as keyword
-    call_args = mock_instance.update_budget.call_args
+    call_args = mock_instance.update_key_budget.call_args
     # After the fix, litellm_token should be the first positional argument
     assert (
         call_args[0][0] == "team_token_123"
     )  # First positional argument should be litellm_token
     assert (
-        call_args[1]["budget_amount"] == test_product.max_budget_per_key
-    )  # budget_amount as keyword argument
+        call_args[1]["max_budget"] == test_product.max_budget_per_key
+    )  # max_budget as keyword argument
+    # A healthy budget_duration must not be sent, since null clears it in LiteLLM
+    assert call_args[1]["budget_duration"] is None
 
 
 @pytest.mark.asyncio
@@ -2025,6 +2032,7 @@ async def test_reconcile_team_keys_expiry_within_next_month(
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock()
     mock_instance.update_budget = AsyncMock()
+    mock_instance.update_key_budget = AsyncMock()
 
     current_time = datetime.now(UTC)
     # Set expiry date to 15 days from now (within the 30-day window)
@@ -2113,6 +2121,7 @@ async def test_reconcile_team_keys_expired_key(
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock()
     mock_instance.update_budget = AsyncMock()
+    mock_instance.update_key_budget = AsyncMock()
 
     current_time = datetime.now(UTC)
     # Set expiry date to 5 days ago (already expired)
@@ -2201,6 +2210,7 @@ async def test_reconcile_team_keys_expiry_beyond_next_month(
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock()
     mock_instance.update_budget = AsyncMock()
+    mock_instance.update_key_budget = AsyncMock()
 
     current_time = datetime.now(UTC)
     # Set expiry date to 45 days from now (beyond the 30-day window)
@@ -2231,8 +2241,9 @@ async def test_reconcile_team_keys_expiry_beyond_next_month(
         test_product.max_budget_per_key,
     )
 
-    # Verify update_budget was not called for expiry reasons
+    # Verify no write was issued for expiry reasons, on either path
     assert mock_instance.update_budget.call_count == 0
+    assert mock_instance.update_key_budget.call_count == 0
 
     # Verify team total spend is calculated correctly
     assert team_total == 10.0
@@ -3756,6 +3767,7 @@ async def test_reconcile_team_keys_uses_snapshot_not_per_key_info(
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock()
     mock_instance.update_budget = AsyncMock()
+    mock_instance.update_key_budget = AsyncMock()
     mock_instance.list_all_keys = AsyncMock(
         return_value={
             _Svc.hash_token("sk-team-1"): {
@@ -3814,6 +3826,7 @@ async def test_reconcile_team_keys_shares_cache_across_teams(
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock()
     mock_instance.update_budget = AsyncMock()
+    mock_instance.update_key_budget = AsyncMock()
     mock_instance.list_all_keys = AsyncMock(
         return_value={
             _Svc.hash_token("sk-team-1"): {"spend": 1.0, "max_budget": 10.0},
@@ -3866,6 +3879,7 @@ async def test_reconcile_team_keys_still_writes_from_snapshot_state(
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock()
     mock_instance.update_budget = AsyncMock()
+    mock_instance.update_key_budget = AsyncMock()
     mock_instance.list_all_keys = AsyncMock(
         return_value={
             _Svc.hash_token("sk-team-1"): {
@@ -3880,10 +3894,64 @@ async def test_reconcile_team_keys_still_writes_from_snapshot_state(
     keys_by_region = get_team_keys_by_region(db, test_team.id)
     await reconcile_team_keys(db, test_team, keys_by_region, False, 30, 50.0)
 
+    mock_instance.update_key_budget.assert_awaited_once()
+    mock_instance.update_budget.assert_not_awaited()
+    args = mock_instance.update_key_budget.await_args
+    assert args.args[0] == "sk-team-1"
+    assert args.kwargs["max_budget"] == 50.0
+    # Only the amount drifted in the snapshot, so the healthy budget_duration
+    # must not be sent along - LiteLLM reads a null as "clear it".
+    assert args.kwargs["budget_duration"] is None
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_near_expiry_still_resets_duration(
+    mock_litellm, db, test_team, test_region
+):
+    """
+    Given: A snapshot key that expires within the next month
+    When: reconcile_team_keys runs off the snapshot
+    Then: The write goes through update_budget, which resets the key duration -
+          the narrow write path must not swallow the expiry extension
+    """
+    from app.services.litellm import LiteLLMService as _Svc
+
+    key = DBPrivateAIKey(
+        name="Team Key",
+        litellm_token="sk-team-1",
+        region=test_region,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock()
+    mock_instance.update_budget = AsyncMock()
+    mock_instance.update_key_budget = AsyncMock()
+    mock_instance.list_all_keys = AsyncMock(
+        return_value={
+            _Svc.hash_token("sk-team-1"): {
+                "spend": 1.0,
+                "max_budget": 50.0,  # matches, so only the expiry drifts
+                "key_alias": "team_key",
+                "budget_duration": "30d",
+                "expires": (datetime.now(UTC) + timedelta(days=5)).isoformat(),
+            }
+        }
+    )
+
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+    await reconcile_team_keys(db, test_team, keys_by_region, False, 30, 50.0)
+
     mock_instance.update_budget.assert_awaited_once()
+    mock_instance.update_key_budget.assert_not_awaited()
     args = mock_instance.update_budget.await_args
     assert args.args[0] == "sk-team-1"
-    assert args.kwargs["budget_amount"] == 50.0
+    assert args.args[1] == "30d"
+    # Budget matched, so no amount is sent and the existing one is left in place
+    assert args.kwargs["budget_amount"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -3994,6 +4062,7 @@ async def test_reconcile_team_keys_expire_writes_are_batched(
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock()
     mock_instance.update_budget = AsyncMock()
+    mock_instance.update_key_budget = AsyncMock()
     mock_instance.update_key_duration = AsyncMock()
     mock_instance.list_all_keys = AsyncMock(
         return_value={
@@ -4042,6 +4111,7 @@ async def test_reconcile_team_keys_write_failure_does_not_lose_spend(
     mock_instance = mock_litellm.return_value
     mock_instance.get_key_info = AsyncMock()
     mock_instance.update_budget = AsyncMock()
+    mock_instance.update_key_budget = AsyncMock()
     mock_instance.update_key_duration = AsyncMock(side_effect=_maybe_fail)
     mock_instance.list_all_keys = AsyncMock(
         return_value={
