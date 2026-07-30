@@ -298,8 +298,9 @@ def test_admin_toggle_model_region_success(mock_litellm_class, client, admin_tok
     assert assoc is not None
     assert assoc.is_active is True
     assert assoc.sync_status == "synced"
+    # Sync pushes the resolved effective params (base + region override; {} here)
     mock_instance.add_model.assert_called_once_with(
-        "openai/gpt-3.5-turbo", None, access_groups=[]
+        "openai/gpt-3.5-turbo", {}, access_groups=[]
     )
     
     # Toggle region OFF
@@ -554,7 +555,7 @@ def test_sync_model_existing_deployment_updates(mock_litellm_class, db, test_reg
     assert assoc.sync_error is None
     mock_instance.add_model.assert_not_called()
     mock_instance.update_model.assert_called_once_with(
-        "test/conflict-sync", None, ["dep-123"], access_groups=[]
+        "test/conflict-sync", {}, ["dep-123"], access_groups=[]
     )
 
 
@@ -591,16 +592,16 @@ def test_sync_model_poisoned_session_never_commits_stale_synced(mock_litellm_cla
     db.commit()
 
     class PoisonedSession:
-        """Delegates to a real session; the 5th query (the error-path re-query,
-        after assoc/model/region/access-group-slugs fetches) raises as if the
-        connection dropped."""
+        """Delegates to a real session; the 6th query (the error-path re-query,
+        after assoc/model/region/effective-params/access-group-slugs fetches)
+        raises as if the connection dropped."""
         def __init__(self, real):
             self._real = real
             self._queries = 0
 
         def query(self, *args, **kwargs):
             self._queries += 1
-            if self._queries > 4:
+            if self._queries > 5:
                 raise RuntimeError("connection lost")
             return self._real.query(*args, **kwargs)
 

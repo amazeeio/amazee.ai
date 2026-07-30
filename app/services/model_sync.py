@@ -3,11 +3,45 @@ import traceback
 from datetime import datetime, UTC
 
 from app.db.database import get_db
-from app.db.models import DBModel, DBModelRegion, DBRegion
+from app.db.models import DBModel, DBModelAliasTarget, DBModelRegion, DBRegion
 from app.services.access_groups import model_access_group_slugs
 from app.services.litellm import LiteLLMService
 
 logger = logging.getLogger(__name__)
+
+
+def effective_litellm_params(
+    db, model: DBModel, region_id: int
+) -> tuple[dict | None, str | None]:
+    """Resolve the params actually pushed to a region: base litellm_params
+    merged with the region's override — or, for an alias, the region target's
+    effective params (pointer semantics). Returns (params, error)."""
+    if model.is_alias:
+        target_row = (
+            db.query(DBModelAliasTarget)
+            .filter_by(alias_model_id=model.id, region_id=region_id)
+            .first()
+        )
+        if not target_row:
+            return None, f"Alias '{model.model_id}' has no target model for this region."
+        target = db.query(DBModel).filter_by(id=target_row.target_model_id).first()
+        if not target or target.deleted_at is not None or not target.is_active_globally:
+            return None, f"Alias '{model.model_id}' target is missing or inactive."
+        if target.is_alias:
+            return None, f"Alias '{model.model_id}' points at another alias; chains are not supported."
+        params, error = effective_litellm_params(db, target, region_id)
+        if error:
+            return None, error
+        # The deployment is registered under the ALIAS name; make sure the
+        # backend `model` stays the target's (add_model would otherwise
+        # default it to the alias name).
+        if "model" not in params:
+            params["model"] = target.model_id
+        return params, None
+
+    assoc = db.query(DBModelRegion).filter_by(model_id=model.id, region_id=region_id).first()
+    override = dict(assoc.litellm_params_override or {}) if assoc else {}
+    return {**dict(model.litellm_params or {}), **override}, None
 
 
 def _scrub_secrets(text: str, litellm_params) -> str:
@@ -77,6 +111,14 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
         deployment_ids = await litellm_service.get_model_deployment_ids(model.model_id)
 
         if assoc.is_active and model.is_active_globally:
+            # Base params + per-region override, or the alias target's params.
+            params, resolve_error = effective_litellm_params(db, model, region_id)
+            if resolve_error:
+                assoc.sync_status = "failed"
+                assoc.sync_error = resolve_error
+                db.commit()
+                logger.error(f"Sync failed for model_id={model_id}, region_id={region_id}: {resolve_error}")
+                return
             # Access-group tags are derived state: groups containing this model
             # that are deployed to this region. Always sent (possibly []) so
             # removing a model from its last group clears the tags on the proxy.
@@ -84,12 +126,12 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
             if deployment_ids:
                 logger.info(f"Updating model '{model.model_id}' in region '{region.name}' (deployments: {deployment_ids})")
                 await litellm_service.update_model(
-                    model.model_id, model.litellm_params, deployment_ids, access_groups=access_groups
+                    model.model_id, params, deployment_ids, access_groups=access_groups
                 )
             else:
                 logger.info(f"Registering model '{model.model_id}' in region '{region.name}'")
                 await litellm_service.add_model(
-                    model.model_id, model.litellm_params, access_groups=access_groups
+                    model.model_id, params, access_groups=access_groups
                 )
         else:
             logger.info(f"Deregistering model '{model.model_id}' from region '{region.name}'")
