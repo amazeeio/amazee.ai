@@ -360,9 +360,19 @@ def _team_budget(db: Session, team: DBTeam, region_id: int) -> float | None:
     (``spend_caps`` scope ``team``) only ever tightens it.
     """
     available = pool_available_budget_for_team_region(db, team.id, region_id)
-    if available <= 0:
-        # PERIODIC teams with no ledger yet (e.g. trials) still carry a BUDGET
-        # limit, which is the only budget they have.
+    if available <= 0 and team.budget_type != BudgetType.POOL:
+        # A PERIODIC team with no ledger yet (e.g. a trial) still carries a BUDGET
+        # limit, which is the only budget it has.
+        #
+        # This deliberately does *not* apply to POOL teams. A POOL team's budget is
+        # the money it bought, so no valid ledger entry means nothing to be a
+        # percentage of, and the BUDGET limit is a provisioning allowance rather
+        # than available credit. On PROD 673 POOL teams sit in exactly that state
+        # (662 never purchased at all) carrying a mostly-$27 limit; measuring
+        # lifetime spend against it would invent a percentage, and with no purchase
+        # to anchor on, spend_window_start would fall back to team.created_at and
+        # sum an unbounded stretch of history. Such a team simply gets no team
+        # event; its keys are still evaluated if they carry their own cap.
         limit_value = (
             db.query(DBLimitedResource.max_value)
             .filter(
@@ -632,30 +642,6 @@ async def evaluate_region(
         # decides whether an expired top-up corrupts the percentage.
         since_dt = spend_window_start(db, team, region.id, now)
         since = since_dt.date()
-        if since < sweep_start:
-            # region_sweep_start already stretched the request to the oldest ledger
-            # anchor, so reaching here means the window predates the hard lookback
-            # floor. Summing anyway would understate the percentage for good and
-            # announce a low band for a team that is actually near its limit, so
-            # the team is dropped instead. Raise BUDGET_ALERT_MAX_LOOKBACK_DAYS if
-            # this ever appears in the logs.
-            logger.error(
-                "Team %s skipped: spend window opens %s, before the %s sweep floor. "
-                "Raise BUDGET_ALERT_MAX_LOOKBACK_DAYS to cover it.",
-                team.id,
-                since,
-                sweep_start,
-            )
-            budget_alert_subjects_skipped_total.labels(
-                reason="window_before_lookback"
-            ).inc()
-            continue
-        entity_totals, key_totals = _sum_activity_since(team_rows, since)
-
-        # /key/list supplies the key *denominators* (max_budget) and flags keys being
-        # expired; its spend figures are deliberately not used.
-        exact_keys = await _exact_team_key_state(service, lite_team_id)
-        result.litellm_calls += 1
 
         # Only keys carrying both a team and a region — the shape MOAD provisions.
         # A key with just an owner and no team has no team budget to be a share of,
@@ -672,6 +658,37 @@ async def evaluate_region(
         )
         cap_map = _key_cap_map(db, region.id, [key.id for key in db_keys])
         team_budget = _team_budget(db, team, region.id)
+
+        if since < sweep_start:
+            # region_sweep_start already stretched the request to the oldest ledger
+            # anchor, so reaching here means the window predates the hard lookback
+            # floor. Summing anyway would understate the percentage for good and
+            # announce a low band for a team that is actually near its limit, so
+            # the team is dropped instead.
+            #
+            # Only worth complaining about when the team had a budget to measure.
+            # A POOL team with no valid ledger entry anchors on team.created_at,
+            # which is routinely older than the window, and there are 673 of those
+            # on PROD — logging each one would bury the case that matters.
+            if team_budget or cap_map:
+                logger.error(
+                    "Team %s skipped: spend window opens %s, before the %s sweep "
+                    "floor. Raise BUDGET_ALERT_MAX_LOOKBACK_DAYS to cover it.",
+                    team.id,
+                    since,
+                    sweep_start,
+                )
+                budget_alert_subjects_skipped_total.labels(
+                    reason="window_before_lookback"
+                ).inc()
+            continue
+
+        entity_totals, key_totals = _sum_activity_since(team_rows, since)
+
+        # /key/list supplies the key *denominators* (max_budget) and flags keys being
+        # expired; its spend figures are deliberately not used.
+        exact_keys = await _exact_team_key_state(service, lite_team_id)
+        result.litellm_calls += 1
 
         # An uncapped key's only budget is the team pool, so that is what it is
         # measured against — it answers "which key is eating the pool", which the
@@ -814,8 +831,15 @@ def _classify_subjects(
         if state is not None and state.period_key == period_key:
             previous_band = int(state.last_threshold_pct or 0)
 
+        # The arming this crossing belongs to. Every silent reset bumps it, which is
+        # what lets a genuine re-crossing of an already-notified band carry a new
+        # event_id instead of colliding with the first one. See event_id_for.
+        arm_seq = int(state.arm_seq or 0) if state is not None else 0
+
         if band > previous_band:
-            result.events.append(_build_event(region, subject, band, period_key))
+            result.events.append(
+                _build_event(region, subject, band, period_key, arm_seq)
+            )
         elif band != previous_band or (
             state is not None and state.period_key != period_key
         ):
@@ -825,7 +849,7 @@ def _classify_subjects(
             result.resets.append((subject, band))
 
 
-def event_id_for(subject_key: str, period_key: str, band: int) -> str:
+def event_id_for(subject_key: str, period_key: str, band: int, arm_seq: int) -> str:
     """A stable id for one crossing, so a retry carries the id of the original.
 
     Delivery is at-least-once: a POST whose response is lost leaves the state
@@ -834,18 +858,27 @@ def event_id_for(subject_key: str, period_key: str, band: int) -> str:
     de-duplication on ``event_id`` — which is the only thing protecting the
     customer from a duplicate notification — could not catch it.
 
-    (subject, period, band) identifies a crossing exactly: bands only ever move
-    upward within a period, so the same triple cannot legitimately occur twice.
+    ``arm_seq`` is what keeps that from going too far. A band can legitimately
+    recur inside one period: a POOL top-up raises the denominator, the percentage
+    falls, the band is silently re-armed, and later spend crosses the same band
+    again. That second crossing is a real event the customer must hear about. It is
+    only distinguishable from a retry because ``arm_seq`` was bumped by the reset,
+    so (subject, period, band) alone would collapse the two and the consumer would
+    discard the new warning.
+
+    So the identity of a crossing is (subject, period, band, arm generation), and
+    re-sending it is the only thing that reproduces the same id.
     """
-    digest = hashlib.sha256(f"{subject_key}|{period_key}|{band}".encode()).hexdigest()
+    payload = f"{subject_key}|{period_key}|{band}|{arm_seq}"
+    digest = hashlib.sha256(payload.encode()).hexdigest()
     return f"evt_{digest[:32]}"
 
 
 def _build_event(
-    region: DBRegion, subject: _Subject, band: int, period_key: str
+    region: DBRegion, subject: _Subject, band: int, period_key: str, arm_seq: int
 ) -> BudgetAlertEvent:
     return BudgetAlertEvent(
-        event_id=event_id_for(subject.subject_key, period_key, band),
+        event_id=event_id_for(subject.subject_key, period_key, band, arm_seq),
         subject_type=subject.subject_type,
         subject_key=subject.subject_key,
         threshold_pct=band,
@@ -882,6 +915,7 @@ def _upsert_state(
     band: int,
     period_key: str,
     notified_at: datetime | None,
+    bump_arm: bool = False,
 ) -> None:
     row = (
         db.query(DBBudgetAlertState)
@@ -893,8 +927,13 @@ def _upsert_state(
             subject_key=subject.subject_key,
             subject_type=subject.subject_type,
             region_id=region_id,
+            arm_seq=0,
         )
         db.add(row)
+    if bump_arm:
+        # A band was re-armed, so the next crossing of it is a new event and must
+        # not reuse the id of the one already sent.
+        row.arm_seq = int(row.arm_seq or 0) + 1
     row.subject_type = subject.subject_type
     row.region_id = region_id
     row.team_id = subject.team.id if subject.team else None
@@ -919,6 +958,7 @@ def apply_resets(db: Session, region: DBRegion, evaluation: RegionEvaluation) ->
             band=band,
             period_key=subject.window.period_key,
             notified_at=None,
+            bump_arm=True,
         )
     if evaluation.resets:
         db.commit()

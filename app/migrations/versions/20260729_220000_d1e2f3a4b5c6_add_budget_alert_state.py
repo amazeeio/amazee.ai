@@ -30,6 +30,7 @@ def upgrade() -> None:
         sa.Column(
             "last_threshold_pct", sa.Integer(), server_default="0", nullable=False
         ),
+        sa.Column("arm_seq", sa.Integer(), server_default="0", nullable=False),
         sa.Column("spend_at_notify", sa.Float(), nullable=True),
         sa.Column("budget_at_notify", sa.Float(), nullable=True),
         sa.Column("percent_at_notify", sa.Float(), nullable=True),
