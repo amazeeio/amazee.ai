@@ -667,36 +667,6 @@ def _filter_region_groups_by_alias(
     return filtered_region_groups
 
 
-def _allowed_model_names(db: Session, region: DBRegion, team_id: int | None) -> set[str]:
-    """model_id strings reachable in an enforced region: members of the
-    region's default group plus the caller team's opt-in groups deployed there."""
-    group_ids = {region.default_access_group_id}
-    if team_id:
-        opt_ins = (
-            db.query(DBTeamModelAccessGroup.group_id)
-            .join(
-                DBModelAccessGroupRegion,
-                DBModelAccessGroupRegion.group_id == DBTeamModelAccessGroup.group_id,
-            )
-            .filter(
-                DBTeamModelAccessGroup.team_id == team_id,
-                DBModelAccessGroupRegion.region_id == region.id,
-            )
-            .all()
-        )
-        group_ids |= {row[0] for row in opt_ins}
-    rows = (
-        db.query(DBModel.model_id)
-        .join(DBModelAccessGroupModel, DBModelAccessGroupModel.model_id == DBModel.id)
-        .filter(
-            DBModelAccessGroupModel.group_id.in_(group_ids),
-            DBModel.deleted_at.is_(None),
-        )
-        .all()
-    )
-    return {row[0] for row in rows}
-
-
 def _filter_region_groups_by_access(
     db: Session, region_groups: list[PublicRegionModels], user: DBUser | None
 ) -> list[PublicRegionModels]:
@@ -704,7 +674,11 @@ def _filter_region_groups_by_access(
     access group, only models in the default group (plus the caller team's
     opt-ins) are listed — unauthenticated callers see exactly the "available
     to everyone" default set. Regions without a default are unfiltered
-    (legacy all-models). Admins always see everything."""
+    (legacy all-models). Admins always see everything.
+
+    Query cost is fixed per request (at most three queries) regardless of how
+    many regions are enforced — this is a high-traffic endpoint.
+    """
     if user is not None and user.is_admin:
         return region_groups
 
@@ -717,14 +691,55 @@ def _filter_region_groups_by_access(
     if not enforced:
         return region_groups
 
+    relevant = [enforced[g.region] for g in region_groups if g.region in enforced]
+    if not relevant:
+        return region_groups
+
+    # region_id -> allowed group ids: the region default plus the caller
+    # team's opt-in groups deployed to that region.
+    allowed_group_ids: dict[int, set[int]] = {
+        r.id: {r.default_access_group_id} for r in relevant
+    }
     team_id = user.team_id if user else None
+    if team_id:
+        opt_ins = (
+            db.query(DBTeamModelAccessGroup.group_id, DBModelAccessGroupRegion.region_id)
+            .join(
+                DBModelAccessGroupRegion,
+                DBModelAccessGroupRegion.group_id == DBTeamModelAccessGroup.group_id,
+            )
+            .filter(
+                DBTeamModelAccessGroup.team_id == team_id,
+                DBModelAccessGroupRegion.region_id.in_(allowed_group_ids.keys()),
+            )
+            .all()
+        )
+        for group_id, region_id in opt_ins:
+            allowed_group_ids[region_id].add(group_id)
+
+    all_group_ids = set().union(*allowed_group_ids.values())
+    rows = (
+        db.query(DBModelAccessGroupModel.group_id, DBModel.model_id)
+        .join(DBModel, DBModel.id == DBModelAccessGroupModel.model_id)
+        .filter(
+            DBModelAccessGroupModel.group_id.in_(all_group_ids),
+            DBModel.deleted_at.is_(None),
+        )
+        .all()
+    )
+    names_by_group: dict[int, set[str]] = {}
+    for group_id, model_name in rows:
+        names_by_group.setdefault(group_id, set()).add(model_name)
+
     filtered: list[PublicRegionModels] = []
     for group in region_groups:
         region = enforced.get(group.region)
         if region is None:
             filtered.append(group)
             continue
-        allowed = _allowed_model_names(db, region, team_id)
+        allowed: set[str] = set().union(
+            *(names_by_group.get(gid, set()) for gid in allowed_group_ids[region.id])
+        )
         filtered.append(
             PublicRegionModels(
                 region=group.region,

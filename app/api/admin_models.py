@@ -420,7 +420,14 @@ async def list_importable_models(
 
         context_length = model_info.get("max_input_tokens") or model_info.get("max_tokens")
         max_output_tokens = model_info.get("max_output_tokens")
-        description = model_info.get("metadata") or f"Imported model {model_name} from LiteLLM proxy."
+        # model_info.metadata is arbitrary JSON — commonly a dict in production.
+        # Only use it as the description when it is actually a string.
+        raw_metadata = model_info.get("metadata")
+        description = (
+            raw_metadata
+            if isinstance(raw_metadata, str) and raw_metadata
+            else f"Imported model {model_name} from LiteLLM proxy."
+        )
 
         cred_keys = _extract_credential_keys(litellm_params)
 
