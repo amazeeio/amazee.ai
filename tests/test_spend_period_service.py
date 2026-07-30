@@ -1,7 +1,16 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from app.core.spend_period_service import upsert_team_spend_period
-from app.db.models import DBTeamSpendPeriod, DBTeamSpendPeriodKey
+from app.core.config import settings
+from app.core.spend_period_service import (
+    resolve_team_period_window,
+    upsert_team_spend_period,
+)
+from app.db.models import (
+    DBPeriodicBudgetLedgerEntry,
+    DBTeamSpendPeriod,
+    DBTeamSpendPeriodKey,
+)
+from app.schemas.models import BudgetType
 
 
 def test_upsert_team_spend_period_creates_parent_and_keys(
@@ -120,3 +129,100 @@ def test_upsert_team_spend_period_keeps_original_snapshot_for_same_window(
     )
     assert len(rows) == 1
     assert rows[0].total_spend == 5.0
+
+
+def _topup(db, team, region, *, amount_cents, days_ago):
+    now = datetime.now(UTC)
+    entry = DBPeriodicBudgetLedgerEntry(
+        team_id=team.id,
+        region_id=region.id,
+        entry_type="topup",
+        amount_cents=amount_cents,
+        consumed_cents=0,
+        is_active=True,
+        purchased_at=now - timedelta(days=days_ago),
+        expires_at=now + timedelta(days=settings.POOL_PURCHASE_EXPIRY_DAYS - days_ago),
+    )
+    db.add(entry)
+    db.commit()
+    return entry
+
+
+def test_pool_topup_window_opens_at_the_oldest_valid_purchase(
+    db, test_team, test_region
+):
+    """The window spans the life of the credit the team still holds.
+
+    It opens at the oldest still-valid purchase because the budget is the full face
+    value of every valid entry: ``consumed_cents`` is only written by FIFO at
+    invoice close, which a team with no subscription never has. Opening at the
+    newest purchase would leave spend against the older entries counted nowhere —
+    missing from the numerator and never deducted from the budget.
+
+    It closes 365 days after the NEWEST purchase, since that is when the last of
+    the credit lapses.
+    """
+    test_team.budget_type = BudgetType.POOL
+    db.commit()
+    now = datetime.now(UTC)
+    _topup(db, test_team, test_region, amount_cents=10_000, days_ago=100)
+    _topup(db, test_team, test_region, amount_cents=10_000, days_ago=10)
+
+    window = resolve_team_period_window(db, test_team, test_region.id, now=now)
+
+    assert window.source == "pool_topup"
+    assert 99 <= (now - window.period_start).days <= 101
+    expected_end = (
+        now - timedelta(days=10) + timedelta(days=settings.POOL_PURCHASE_EXPIRY_DAYS)
+    )
+    assert abs((window.period_end - expected_end).total_seconds()) < 5
+    assert window.budget_duration == f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
+
+
+def test_pool_topup_window_is_unchanged_for_a_single_purchase(
+    db, test_team, test_region
+):
+    """215 of 222 top-up team+regions hold one entry: nothing moves for them."""
+    test_team.budget_type = BudgetType.POOL
+    db.commit()
+    now = datetime.now(UTC)
+    _topup(db, test_team, test_region, amount_cents=10_000, days_ago=30)
+
+    window = resolve_team_period_window(db, test_team, test_region.id, now=now)
+
+    # Oldest and newest are the same row, so both ends derive from it.
+    assert 29 <= (now - window.period_start).days <= 31
+    expected_end = (
+        now - timedelta(days=30) + timedelta(days=settings.POOL_PURCHASE_EXPIRY_DAYS)
+    )
+    assert abs((window.period_end - expected_end).total_seconds()) < 5
+
+
+def test_pool_window_ignores_topups_when_a_subscription_is_active(
+    db, test_team, test_region
+):
+    """The subscription branch wins, so top-up dates do not touch the window."""
+    test_team.budget_type = BudgetType.POOL
+    db.commit()
+    now = datetime.now(UTC)
+    _topup(db, test_team, test_region, amount_cents=10_000, days_ago=100)
+    db.add(
+        DBPeriodicBudgetLedgerEntry(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            entry_type="subscription",
+            amount_cents=10_000,
+            consumed_cents=0,
+            is_active=True,
+            purchased_at=now - timedelta(days=11),
+            effective_period_start=now - timedelta(days=11),
+            effective_period_end=now + timedelta(days=20),
+        )
+    )
+    db.commit()
+
+    window = resolve_team_period_window(db, test_team, test_region.id, now=now)
+
+    assert window.source == "subscription_ledger"
+    assert 10 <= (now - window.period_start).days <= 12
+    assert window.budget_duration == "31d"
