@@ -127,6 +127,11 @@ export default function TeamsPage() {
     pageSize,
   ]);
 
+  // Clamp when mutations shrink the result set below the current page
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
+
   const { data: regions = [] } = useQuery<Region[]>({
     queryKey: ["regions"],
     queryFn: async () => {

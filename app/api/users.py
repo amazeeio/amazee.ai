@@ -759,9 +759,13 @@ async def list_users(
         )
 
     if search:
-        query = query.filter(DBUser.email.ilike(f"%{search}%"))
+        escaped = (
+            search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        query = query.filter(DBUser.email.ilike(f"%{escaped}%", escape="\\"))
     if team:
-        query = query.filter(DBTeam.name.ilike(f"%{team}%"))
+        escaped = team.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = query.filter(DBTeam.name.ilike(f"%{escaped}%", escape="\\"))
     if role:
         query = query.filter(DBUser.role == role)
 

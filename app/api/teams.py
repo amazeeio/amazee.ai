@@ -233,9 +233,13 @@ async def list_teams(
     if not include_deleted:
         query = query.filter(DBTeam.deleted_at.is_(None))
     if name:
-        query = query.filter(DBTeam.name.ilike(f"%{name}%"))
+        escaped = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = query.filter(DBTeam.name.ilike(f"%{escaped}%", escape="\\"))
     if admin_email:
-        query = query.filter(DBTeam.admin_email.ilike(f"%{admin_email}%"))
+        escaped = (
+            admin_email.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        query = query.filter(DBTeam.admin_email.ilike(f"%{escaped}%", escape="\\"))
     if is_active is not None:
         query = query.filter(DBTeam.is_active.is_(is_active))
 
