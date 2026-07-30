@@ -12,7 +12,7 @@ counters are lifetime totals a top-up never resets, so they are never the
 numerator.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -23,6 +23,7 @@ from app.core.budget_alert_service import (
     SUBJECT_TEAM_MEMBER,
     apply_resets,
     evaluate_region,
+    event_id_for,
     highest_crossed_band,
     mark_notified,
     parse_thresholds,
@@ -1179,3 +1180,116 @@ async def test_delivery_without_url_configured_is_a_no_op(db, region):
     )
     with patch.object(settings, "BUDGET_ALERT_WEBHOOK_URL", ""):
         assert await deliver_events([event]) == set()
+
+
+# --------------------------------------------------------------------------- #
+# Retry identity and lookback coverage
+# --------------------------------------------------------------------------- #
+
+
+def test_event_id_identifies_the_crossing_not_the_attempt():
+    """The same crossing must always produce the same id.
+
+    Delivery is at-least-once: if a response is lost after the consumer accepted
+    the batch, the next tick re-sends. A random id would defeat the consumer's
+    de-duplication and the customer would be notified twice.
+    """
+    first = event_id_for("team:7:2", "2026-07-01:2026-08-01", 90)
+    second = event_id_for("team:7:2", "2026-07-01:2026-08-01", 90)
+    assert first == second
+    assert first.startswith("evt_")
+
+    # A different band, period or subject is a different crossing.
+    assert event_id_for("team:7:2", "2026-07-01:2026-08-01", 100) != first
+    assert event_id_for("team:7:2", "2026-08-01:2026-09-01", 90) != first
+    assert event_id_for("team:8:2", "2026-07-01:2026-08-01", 90) != first
+
+
+@pytest.mark.asyncio
+async def test_undelivered_event_keeps_its_id_on_the_next_tick(db, region):
+    """A failed delivery is retried under the original id, so it dedups."""
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=10_000)  # $100
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+    rows = _active(lite, keys={"sk-a": 92.0})
+
+    with _patch_litellm(rows, [_key_state("sk-a")]):
+        first = await evaluate_region(db, region, thresholds=THRESHOLDS)
+    # Nothing is marked notified: this stands for a POST that did not confirm.
+    with _patch_litellm(rows, [_key_state("sk-a")]):
+        second = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    ids_first = {e.event_id for e in first.events}
+    assert ids_first == {e.event_id for e in second.events}
+    assert len(ids_first) == len(first.events)  # ids are unique within a tick
+
+
+@pytest.mark.asyncio
+async def test_sweep_reaches_back_to_the_oldest_valid_purchase(db, region):
+    """The request window is derived from the ledger, not from a fixed span.
+
+    A top-up bought 200 days ago is still valid, so its spend counts. Asking
+    LiteLLM for a shorter span would return part of the spend and understate the
+    percentage for as long as the entry lives.
+    """
+    team = _make_team(db)
+    _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=200)
+    _make_key(db, team, region, token="sk-a")
+
+    activity = AsyncMock(return_value=[])
+    with patch.multiple(
+        "app.core.budget_alert_service.LiteLLMService",
+        get_all_team_daily_activity=activity,
+        list_keys_for_team=AsyncMock(return_value=[]),
+    ):
+        await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    start = date.fromisoformat(activity.await_args.args[0])
+    expected = (datetime.now(UTC) - timedelta(days=200)).date()
+    assert start == expected
+
+
+@pytest.mark.asyncio
+async def test_sweep_does_not_reach_past_the_lookback_floor(db, region):
+    """The floor still bounds the request, however old the ledger is."""
+    team = _make_team(db)
+    _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=200)
+    _make_key(db, team, region, token="sk-a")
+
+    activity = AsyncMock(return_value=[])
+    with patch.object(settings, "BUDGET_ALERT_MAX_LOOKBACK_DAYS", 30):
+        with patch.multiple(
+            "app.core.budget_alert_service.LiteLLMService",
+            get_all_team_daily_activity=activity,
+            list_keys_for_team=AsyncMock(return_value=[]),
+        ):
+            await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    start = date.fromisoformat(activity.await_args.args[0])
+    assert start == (datetime.now(UTC) - timedelta(days=30)).date()
+
+
+@pytest.mark.asyncio
+async def test_team_is_skipped_when_its_window_predates_the_floor(db, region):
+    """Better no alert than a confidently wrong one.
+
+    With the window truncated, the visible spend is only part of the total, so the
+    percentage would sit permanently low — a team at 92% would be told it is at
+    30%. The team is dropped and logged instead.
+    """
+    team = _make_team(db)
+    _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=200)
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+
+    # Only the spend inside the floor is visible; the rest of the 200-day window
+    # is not returned at all.
+    rows = _active(lite, keys={"sk-a": 30.0})
+
+    with patch.object(settings, "BUDGET_ALERT_MAX_LOOKBACK_DAYS", 30):
+        with _patch_litellm(rows, [_key_state("sk-a")]):
+            result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    assert result.events == []
+    assert result.subjects_evaluated == 0
