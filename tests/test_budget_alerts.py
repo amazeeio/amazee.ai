@@ -31,12 +31,20 @@ from app.core.budget_alert_service import (
 from app.core.config import settings
 from app.db.models import (
     DBBudgetAlertState,
+    DBLimitedResource,
     DBPeriodicBudgetLedgerEntry,
     DBPrivateAIKey,
     DBRegion,
     DBSpendCap,
     DBTeam,
     DBUser,
+)
+from app.schemas.limits import (
+    LimitSource,
+    LimitType,
+    OwnerType,
+    ResourceType,
+    UnitType,
 )
 from app.schemas.models import BudgetType
 from app.services.litellm import LiteLLMService
@@ -1194,15 +1202,16 @@ def test_event_id_identifies_the_crossing_not_the_attempt():
     the batch, the next tick re-sends. A random id would defeat the consumer's
     de-duplication and the customer would be notified twice.
     """
-    first = event_id_for("team:7:2", "2026-07-01:2026-08-01", 90)
-    second = event_id_for("team:7:2", "2026-07-01:2026-08-01", 90)
+    first = event_id_for("team:7:2", "2026-07-01:2026-08-01", 90, 0)
+    second = event_id_for("team:7:2", "2026-07-01:2026-08-01", 90, 0)
     assert first == second
     assert first.startswith("evt_")
 
-    # A different band, period or subject is a different crossing.
-    assert event_id_for("team:7:2", "2026-07-01:2026-08-01", 100) != first
-    assert event_id_for("team:7:2", "2026-08-01:2026-09-01", 90) != first
-    assert event_id_for("team:8:2", "2026-07-01:2026-08-01", 90) != first
+    # A different band, period, subject or arming is a different crossing.
+    assert event_id_for("team:7:2", "2026-07-01:2026-08-01", 100, 0) != first
+    assert event_id_for("team:7:2", "2026-08-01:2026-09-01", 90, 0) != first
+    assert event_id_for("team:8:2", "2026-07-01:2026-08-01", 90, 0) != first
+    assert event_id_for("team:7:2", "2026-07-01:2026-08-01", 90, 1) != first
 
 
 @pytest.mark.asyncio
@@ -1293,3 +1302,118 @@ async def test_team_is_skipped_when_its_window_predates_the_floor(db, region):
 
     assert result.events == []
     assert result.subjects_evaluated == 0
+
+
+@pytest.mark.asyncio
+async def test_pool_team_budget_limit_is_not_a_pool_denominator(db, region):
+    """A POOL team's budget is the money it bought, not its BUDGET limit.
+
+    673 POOL teams on PROD hold no valid ledger entry but do carry a
+    ``limited_resources`` BUDGET row (mostly $27). That row is a provisioning
+    allowance, not available credit, and with no purchase to anchor on the spend
+    window would stretch back to team creation. Measuring against it would invent
+    a percentage, so such a team gets no team event.
+    """
+    team = _make_team(db)
+    db.add(
+        DBLimitedResource(
+            owner_type=OwnerType.TEAM,
+            owner_id=team.id,
+            resource=ResourceType.BUDGET,
+            limit_type=LimitType.DATA_PLANE,
+            unit=UnitType.DOLLAR,
+            max_value=27.0,
+            current_value=0.0,
+            limited_by=LimitSource.MANUAL,
+            set_by="test",
+        )
+    )
+    db.commit()
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+
+    # Spend that would be 92% of the $27 limit if it were treated as a budget.
+    with _patch_litellm(_active(lite, keys={"sk-a": 25.0}), [_key_state("sk-a")]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    assert [e for e in result.events if e.subject_type == SUBJECT_TEAM] == []
+
+
+@pytest.mark.asyncio
+async def test_periodic_team_still_uses_its_budget_limit(db, region):
+    """The limit fallback stays available to PERIODIC teams, which is its purpose."""
+    from app.core.budget_alert_service import _team_budget
+
+    team = _make_team(db, budget_type=BudgetType.PERIODIC, name="periodic-team")
+    db.add(
+        DBLimitedResource(
+            owner_type=OwnerType.TEAM,
+            owner_id=team.id,
+            resource=ResourceType.BUDGET,
+            limit_type=LimitType.DATA_PLANE,
+            unit=UnitType.DOLLAR,
+            max_value=27.0,
+            current_value=0.0,
+            limited_by=LimitSource.MANUAL,
+            set_by="test",
+        )
+    )
+    db.commit()
+
+    assert _team_budget(db, team, region.id) == 27.0
+
+
+@pytest.mark.asyncio
+async def test_re_crossing_a_band_in_one_period_gets_a_new_event_id(db, region):
+    """A re-armed band must not reuse the id of the crossing already sent.
+
+    A subscription-backed POOL team keeps one ``period_key`` for the whole
+    subscription window, so a top-up inside it lowers the percentage without
+    starting a new period. The band is silently re-armed, and when spend climbs
+    back through it that is a real second warning. Keyed on
+    (subject, period, band) alone the two crossings would share an id and the
+    consumer would discard the second as a duplicate.
+    """
+    team = _make_team(db)
+    _add_subscription(db, team, region, amount_cents=10_000, days_left=20)  # $100
+    _make_key(db, team, region, token="sk-a")
+    lite = f"{region.name}_{team.id}"
+    subject_key = f"team:{team.id}:{region.id}"
+
+    # 1. $92 of $100 -> crosses 90, delivered.
+    rows = [_day(lite, 92.0, days_ago=2, keys={"sk-a": 92.0})]
+    with _patch_litellm(rows, [_key_state("sk-a")]):
+        first = await evaluate_region(db, region, thresholds=THRESHOLDS)
+    first_event = next(e for e in first.events if e.subject_type == SUBJECT_TEAM)
+    assert first_event.threshold_pct == 90
+    mark_notified(db, region, first, {e.event_id for e in first.events})
+
+    # 2. A top-up doubles the pool: $92 of $200 is 46%, so the band walks back
+    #    silently. The subscription still defines the period.
+    _add_topup(db, team, region, amount_cents=10_000, purchased_days_ago=0)
+    with _patch_litellm(rows, [_key_state("sk-a")]):
+        second = await evaluate_region(db, region, thresholds=THRESHOLDS)
+    assert [e for e in second.events if e.subject_type == SUBJECT_TEAM] == []
+    apply_resets(db, region, second)
+
+    state = (
+        db.query(DBBudgetAlertState)
+        .filter(DBBudgetAlertState.subject_key == subject_key)
+        .one()
+    )
+    assert state.period_key == first_event.period_key  # same subscription period
+    assert state.arm_seq == 1  # the reset re-armed the bands
+
+    # 3. Spend climbs to $185 of $200 -> crosses 90 again, in the same period.
+    rows_after = [
+        _day(lite, 92.0, days_ago=2, keys={"sk-a": 92.0}),
+        _day(lite, 93.0, days_ago=0, keys={"sk-a": 93.0}),
+    ]
+    with _patch_litellm(rows_after, [_key_state("sk-a")]):
+        third = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    third_event = next(e for e in third.events if e.subject_type == SUBJECT_TEAM)
+    assert third_event.threshold_pct == 90
+    assert third_event.period_key == first_event.period_key
+    # Same subject, same period, same band -- but a genuinely new warning.
+    assert third_event.event_id != first_event.event_id

@@ -773,6 +773,14 @@ class DBBudgetAlertState(Base):
     period_key = Column(String, nullable=False)
     last_threshold_pct = Column(Integer, default=0, nullable=False)
 
+    # How many times this subject's bands have been re-armed inside the current
+    # period. A POOL top-up raises the denominator, so the percentage can fall
+    # below a band already notified and later cross it again — a real second
+    # warning. It is mixed into the event id so that crossing gets a fresh id,
+    # while a redelivery of the first one keeps the original. Without it the
+    # consumer's de-duplication would silently swallow the second warning.
+    arm_seq = Column(Integer, default=0, nullable=False)
+
     # Snapshot of the numbers that triggered the last notification. The
     # denominator is recorded because a POOL top-up moves it, so without this
     # the event cannot be explained after the fact.
