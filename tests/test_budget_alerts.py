@@ -1526,3 +1526,177 @@ async def test_re_crossing_a_band_in_one_period_gets_a_new_event_id(db, region):
     assert third_event.period_key == first_event.period_key
     # Same subject, same period, same band -- but a genuinely new warning.
     assert third_event.event_id != first_event.event_id
+
+
+# --------------------------------------------------------------------------- #
+# Caps are per cycle, so they are measured over their own cycle
+# --------------------------------------------------------------------------- #
+
+
+def test_current_cycle_start_rolls_forward_to_contain_now():
+    """A stale anchor must not hand back a window that already closed.
+
+    PROD has keys whose LiteLLM budget_reset_at is a month in the past, so the
+    cycle has to be stepped forward the way LiteLLM steps it on reset.
+    """
+    from app.core.spend_period_service import current_cycle_start
+
+    now = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
+    anchor = datetime(2026, 1, 1, tzinfo=UTC)  # 210 days back
+
+    start = current_cycle_start("31d", anchor, now)
+    assert start is not None
+    # 210 // 31 = 6 whole cycles -> 186 days after the anchor.
+    assert start == anchor + timedelta(days=186)
+    assert start <= now < start + timedelta(days=31)
+
+    # 1mo snaps to the calendar month, matching LiteLLM's own boundary.
+    assert current_cycle_start("1mo", anchor, now) == datetime(2026, 7, 1, tzinfo=UTC)
+    # An anchor in the future is left alone, and junk yields nothing.
+    future = now + timedelta(days=5)
+    assert current_cycle_start("31d", future, now) == future
+    assert current_cycle_start("weekly", anchor, now) is None
+    assert current_cycle_start(None, anchor, now) is None
+
+
+@pytest.mark.asyncio
+async def test_capped_key_is_measured_over_the_cap_cycle_not_the_pool(db, region):
+    """195 of 196 key caps on PROD sit on top-up-only teams.
+
+    The team's cycle can be far longer than the cap's, so summing the team window
+    against a monthly cap would read hundreds of percent and fire immediately.
+    """
+    team = _make_team(db)
+    # Top-up-only team whose cycle opened 90 days ago, holding $250.
+    _add_topup(db, team, region, amount_cents=25_000, purchased_days_ago=90)
+    key = _make_key(db, team, region, token="sk-a")
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=region.id,
+            team_id=team.id,
+            key_id=key.id,
+            max_budget=100.0,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+    lite = f"{region.name}_{team.id}"
+
+    # $200 spent 60 days ago (an earlier cap cycle) and $30 spent today.
+    rows = [
+        _day(lite, 200.0, days_ago=60, keys={"sk-a": 200.0}),
+        _day(lite, 30.0, days_ago=0, keys={"sk-a": 30.0}),
+    ]
+
+    with _patch_litellm(rows, [_key_state("sk-a")]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    key_events = [e for e in result.events if e.subject_type == SUBJECT_KEY]
+    # $30 of the $100 monthly cap is 30% -> no band. Measured over the team's
+    # 90-day window it would have been $230/$100 = 230% and fired 100.
+    assert key_events == []
+
+    # The team subject still uses the team cycle and sees everything: $230 of the
+    # $250 pool is 92%, so the team is warned even though the key is not.
+    team_event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM)
+    assert team_event.spend == 230.0
+    assert team_event.threshold_pct == 90
+
+
+@pytest.mark.asyncio
+async def test_capped_key_crossing_inside_its_own_cycle_still_fires(db, region):
+    """The narrower window must not suppress a real crossing."""
+    team = _make_team(db)
+    _add_topup(db, team, region, amount_cents=100_000, purchased_days_ago=90)
+    key = _make_key(db, team, region, token="sk-a")
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=region.id,
+            team_id=team.id,
+            key_id=key.id,
+            max_budget=100.0,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+    lite = f"{region.name}_{team.id}"
+
+    # $92 spent today, inside the current calendar month.
+    rows = [_day(lite, 92.0, days_ago=0, keys={"sk-a": 92.0})]
+
+    with _patch_litellm(rows, [_key_state("sk-a")]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    event = next(e for e in result.events if e.subject_type == SUBJECT_KEY)
+    assert event.threshold_pct == 90
+    assert event.spend == 92.0
+    assert event.max_budget == 100.0
+    assert event.budget_source == "key_cap"
+    assert event.budget_duration == "1mo"
+    # The cap's cycle, not the team's, so a new month re-arms the key alert.
+    assert event.period_key.startswith("key_cap:1mo:")
+
+
+@pytest.mark.asyncio
+async def test_member_cap_is_measured_over_the_cap_cycle(db, region):
+    """All 38 team-member caps on PROD are 1mo, same rule as key caps."""
+    team = _make_team(db)
+    _add_topup(db, team, region, amount_cents=100_000, purchased_days_ago=90)
+    user = _make_user(db, team)
+    _make_key(db, team, region, token="sk-a", owner=user)
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=region.id,
+            team_id=team.id,
+            user_id=user.id,
+            max_budget=50.0,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+    lite = f"{region.name}_{team.id}"
+
+    rows = [
+        _day(lite, 300.0, days_ago=60, keys={"sk-a": 300.0}),  # earlier cycle
+        _day(lite, 26.0, days_ago=0, keys={"sk-a": 26.0}),  # this cycle
+    ]
+
+    with _patch_litellm(rows, [_key_state("sk-a")]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    event = next(e for e in result.events if e.subject_type == SUBJECT_TEAM_MEMBER)
+    # $26 of $50 is 52% -> crosses 50 only. Over the team window it would have
+    # been $326/$50 and fired 100 on spend that belongs to earlier months.
+    assert event.spend == 26.0
+    assert event.threshold_pct == 50
+
+
+@pytest.mark.asyncio
+async def test_uncapped_key_keeps_the_team_cycle(db, region):
+    """A key bounded by the pool has no cycle of its own."""
+    team = _make_team(db)
+    _add_topup(db, team, region, amount_cents=20_000, purchased_days_ago=90)
+    _make_key(db, team, region, token="sk-a", name="a")
+    _make_key(db, team, region, token="sk-b", name="b")
+    lite = f"{region.name}_{team.id}"
+
+    rows = [
+        _day(lite, 100.0, days_ago=60, keys={"sk-a": 100.0}),
+        _day(lite, 90.0, days_ago=0, keys={"sk-a": 90.0}),
+    ]
+
+    with _patch_litellm(rows, [_key_state("sk-a"), _key_state("sk-b")]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    event = next(
+        e
+        for e in result.events
+        if e.subject_type == SUBJECT_KEY and e.budget_source == "team_pool"
+    )
+    # Both days count: the pool window is the team's, opened by the last top-up.
+    assert event.spend == 190.0
+    assert event.max_budget == 200.0
+    assert event.threshold_pct == 90
