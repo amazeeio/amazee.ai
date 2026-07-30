@@ -1700,3 +1700,46 @@ async def test_uncapped_key_keeps_the_team_cycle(db, region):
     assert event.spend == 190.0
     assert event.max_budget == 200.0
     assert event.threshold_pct == 90
+
+
+@pytest.mark.asyncio
+async def test_rolling_cap_cycle_is_anchored_on_the_cap_not_the_team(db, region):
+    """A cap set months after the team must count from *its* cycle.
+
+    Verified against PROD: for a team whose cap was set well after the team, the
+    cap's created_at reproduces LiteLLM's budget_reset_at to the time of day while
+    team creation was 18.7 days out. 29 of the 130 rolling 31d caps were set more
+    than a day after their team, by up to 420 days.
+    """
+    now = datetime.now(UTC)
+    team = _make_team(db)
+    team.created_at = now - timedelta(days=60)
+    _add_topup(db, team, region, amount_cents=100_000, purchased_days_ago=50)
+    key = _make_key(db, team, region, token="sk-a")
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=region.id,
+            team_id=team.id,
+            key_id=key.id,
+            max_budget=100.0,
+            budget_duration="31d",
+            # Set 40 days ago -> one whole cycle elapsed -> current cycle opened 9
+            # days ago. Anchored on the team it would have opened 29 days ago.
+            created_at=now - timedelta(days=40),
+        )
+    )
+    db.commit()
+    lite = f"{region.name}_{team.id}"
+
+    rows = [
+        _day(lite, 80.0, days_ago=20, keys={"sk-a": 80.0}),  # previous cap cycle
+        _day(lite, 30.0, days_ago=1, keys={"sk-a": 30.0}),  # current cap cycle
+    ]
+
+    with _patch_litellm(rows, [_key_state("sk-a")]):
+        result = await evaluate_region(db, region, thresholds=THRESHOLDS)
+
+    # $30 of $100 is 30% -> silent. Anchored on the team it would have summed
+    # $110, read 110%, and fired 100 on spend from the previous cycle.
+    assert [e for e in result.events if e.subject_type == SUBJECT_KEY] == []
