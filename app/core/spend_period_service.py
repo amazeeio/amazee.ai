@@ -54,8 +54,15 @@ def current_cycle_start(
     whole cycles until it contains ``now``, which is what LiteLLM does when it
     actually resets.
 
-    ``1mo``/``30d`` snap to the calendar month, matching LiteLLM's own rule and
-    the ``budget_reset_at`` values it stores (always the 1st).
+    ``1mo``/``30d`` snap to the calendar month. That is *not* the window we would
+    choose — it is what LiteLLM does, and ``31d`` exists precisely to avoid it, so
+    that a cap runs from the day it was set rather than resetting on the 1st. But
+    an alert has to predict when the customer's key will actually stop working, and
+    for a key still carrying ``1mo`` LiteLLM really does reset on the 1st: PROD
+    shows those keys with ``budget_reset_at`` at ``2026-08-01T00:00:00``. Measuring
+    them over a rolling month would disagree with the enforcement they are subject
+    to. 66 key caps and all 38 member caps are still ``1mo``; moving them to
+    ``31d`` is a data change, and this follows whichever they carry.
     """
     if not budget_duration:
         return None

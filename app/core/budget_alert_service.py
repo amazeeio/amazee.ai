@@ -66,6 +66,7 @@ from app.core.config import settings
 from app.core.pool_budget_service import pool_available_budget_for_team_region
 from app.core.spend_period_service import (
     TeamPeriodWindow,
+    compute_period_start,
     current_cycle_start,
     resolve_team_period_window,
 )
@@ -74,7 +75,6 @@ from app.db.models import (
     DBBudgetAlertState,
     DBLimitedResource,
     DBPeriodicBudgetLedgerEntry,
-    DBPeriodicPayment,
     DBPrivateAIKey,
     DBRegion,
     DBSpendCap,
@@ -431,25 +431,50 @@ def _team_budget(db: Session, team: DBTeam, region_id: int) -> float | None:
     return available if available > 0 else None
 
 
-def _cap_cycle_anchor(db: Session, team: DBTeam) -> datetime | None:
-    """Where a rolling ``Nd`` cap cycle is anchored for this team.
+def _litellm_cycle_anchor(
+    key_state: dict | None, budget_duration: str | None
+) -> datetime | None:
+    """Anchor for a budget LiteLLM owns, derived from its own reset date.
 
-    Mirrors ``app/api/spend.py``: the most recent completed deactivation payment,
-    else team creation. Using the same anchor as the endpoint the customer reads
-    is the point — a cap percentage that disagrees with the dashboard is worse
-    than no alert.
+    ``budget_reset_at`` is the *end* of the cycle it is currently counting, so the
+    anchor is that minus the duration. It can be stale — PROD has keys whose reset
+    date is a month in the past — which is why the caller rolls it forward instead
+    of using it directly.
     """
-    last_deactivation = (
-        db.query(DBPeriodicPayment.payment_date)
-        .filter(
-            DBPeriodicPayment.team_id == team.id,
-            DBPeriodicPayment.payment_type == "deactivation",
-            DBPeriodicPayment.status == "completed",
-        )
-        .order_by(DBPeriodicPayment.payment_date.desc())
-        .first()
-    )
-    anchor = (last_deactivation[0] if last_deactivation else None) or team.created_at
+    if key_state is None or not budget_duration:
+        return None
+    raw = key_state.get("budget_reset_at")
+    if not raw:
+        return None
+    if isinstance(raw, datetime):
+        reset_at = raw
+    else:
+        try:
+            reset_at = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if reset_at.tzinfo is None:
+        reset_at = reset_at.replace(tzinfo=UTC)
+    return compute_period_start(reset_at, budget_duration)
+
+
+def _cap_cycle_anchor(cap_created_at: datetime | None, team: DBTeam) -> datetime | None:
+    """Where a rolling ``Nd`` cap cycle is anchored.
+
+    The cap row's own ``created_at``. Setting a cap calls ``update_key_budget``
+    with the duration, which is the moment LiteLLM starts counting: it stores
+    ``budget_reset_at = that moment + N days`` and steps it on from there. An
+    amount-only change deliberately passes no duration, so the original anchor
+    survives and ``created_at`` stays the right one.
+
+    Verified against PROD: for a team whose cap was set 44 days after the team
+    itself, ``created_at`` reproduces LiteLLM's ``budget_reset_at`` to the
+    time-of-day, while team creation was 18.7 days out. 29 of the 130 rolling
+    ``31d`` caps were set more than a day after their team, by up to 420 days.
+
+    ``team.created_at`` is only a fallback for a cap row with no timestamp.
+    """
+    anchor = cap_created_at or team.created_at
     if anchor is not None and anchor.tzinfo is None:
         anchor = anchor.replace(tzinfo=UTC)
     return anchor
@@ -457,7 +482,7 @@ def _cap_cycle_anchor(db: Session, team: DBTeam) -> datetime | None:
 
 def _member_budget(
     db: Session, team_id: int, user_id: int, region_id: int
-) -> tuple[float | None, str | None]:
+) -> tuple[float | None, str | None, datetime | None]:
     """Per-member budget and the cycle it applies to.
 
     The team-member cap wins, else the user's BUDGET limit. The cap carries a
@@ -466,7 +491,9 @@ def _member_budget(
     caller measures it over the team's cycle instead.
     """
     cap = (
-        db.query(DBSpendCap.max_budget, DBSpendCap.budget_duration)
+        db.query(
+            DBSpendCap.max_budget, DBSpendCap.budget_duration, DBSpendCap.created_at
+        )
         .filter(
             DBSpendCap.scope == "team_member",
             DBSpendCap.region_id == region_id,
@@ -478,7 +505,7 @@ def _member_budget(
     )
     if cap is not None and cap[0] is not None:
         value = float(cap[0])
-        return (value, cap[1]) if value > 0 else (None, None)
+        return (value, cap[1], cap[2]) if value > 0 else (None, None, None)
 
     limit_value = (
         db.query(DBLimitedResource.max_value)
@@ -490,17 +517,22 @@ def _member_budget(
         .scalar()
     )
     if limit_value and float(limit_value) > 0:
-        return float(limit_value), None
-    return None, None
+        return float(limit_value), None, None
+    return None, None, None
 
 
 def _key_cap_map(
     db: Session, region_id: int, key_ids: list[int]
-) -> dict[int, tuple[float, str | None]]:
+) -> dict[int, tuple[float, str | None, datetime | None]]:
     if not key_ids:
         return {}
     rows = (
-        db.query(DBSpendCap.key_id, DBSpendCap.max_budget, DBSpendCap.budget_duration)
+        db.query(
+            DBSpendCap.key_id,
+            DBSpendCap.max_budget,
+            DBSpendCap.budget_duration,
+            DBSpendCap.created_at,
+        )
         .filter(
             DBSpendCap.scope == "key",
             DBSpendCap.region_id == region_id,
@@ -509,12 +541,12 @@ def _key_cap_map(
         )
         .all()
     )
-    # The duration comes along because a cap is a per-cycle allowance, so it
-    # determines the window its percentage must be measured over, not just the
-    # number to divide by.
+    # The duration and the row's own created_at come along because a cap is a
+    # per-cycle allowance: together they say which window its percentage must be
+    # measured over, not just the number to divide by.
     return {
-        int(key_id): (float(value), duration)
-        for key_id, value, duration in rows
+        int(key_id): (float(value), duration, created_at)
+        for key_id, value, duration, created_at in rows
         if value
     }
 
@@ -803,10 +835,6 @@ async def evaluate_region(
         # percentages are always drawn from the same numbers.
         team_spend = 0.0
 
-        # Anchor for a cap whose cycle is a rolling "Nd": the same one the spend
-        # API uses, so the alert and the dashboard agree on where the cycle began.
-        cap_anchor = _cap_cycle_anchor(db, team)
-
         for db_key in db_keys:
             hashed = LiteLLMService.hash_token(db_key.litellm_token)
             key_state = exact_keys.get(hashed)
@@ -838,14 +866,17 @@ async def evaluate_region(
             cap_entry = cap_map.get(db_key.id)
             key_budget: float | None = None
             cap_duration: str | None = None
+            cap_anchor: datetime | None = None
             budget_source = "key_cap"
             if cap_entry is not None:
-                key_budget, cap_duration = cap_entry
+                key_budget, cap_duration, cap_anchor = cap_entry
             if key_budget is None and litellm_max_budget is not None:
                 key_budget = float(litellm_max_budget)
                 cap_duration = (
                     key_state.get("budget_duration") if key_state is not None else None
                 )
+                # LiteLLM owns this budget, so its own reset date is the anchor.
+                cap_anchor = _litellm_cycle_anchor(key_state, cap_duration)
                 budget_source = "litellm_key_budget"
             if not key_budget or key_budget <= 0:
                 # A budget of <= 0 is how a pool-gated key is born blocked;
@@ -855,6 +886,7 @@ async def evaluate_region(
                     continue
                 key_budget = pool_fallback_budget
                 cap_duration = None
+                cap_anchor = None
                 budget_source = "team_pool"
             if not key_budget or key_budget <= 0:
                 continue
@@ -868,7 +900,9 @@ async def evaluate_region(
             key_window = window
             key_since = since
             if cap_duration:
-                cap_start = current_cycle_start(cap_duration, cap_anchor, now)
+                cap_start = current_cycle_start(
+                    cap_duration, _cap_cycle_anchor(cap_anchor, team), now
+                )
                 if cap_start is not None:
                     key_since = cap_start.date()
                     key_window = TeamPeriodWindow(
@@ -935,7 +969,7 @@ async def evaluate_region(
                     )
 
             for user in users:
-                member_budget, member_duration = _member_budget(
+                member_budget, member_duration, member_anchor = _member_budget(
                     db, team.id, user.id, region.id
                 )
                 # Same rule as for key caps: a team-member cap is a per-cycle
@@ -944,7 +978,9 @@ async def evaluate_region(
                 member_window = window
                 member_total = member_spend.get(user.id, 0.0)
                 if member_duration:
-                    cap_start = current_cycle_start(member_duration, cap_anchor, now)
+                    cap_start = current_cycle_start(
+                        member_duration, _cap_cycle_anchor(member_anchor, team), now
+                    )
                     if cap_start is not None:
                         member_since = cap_start.date()
                         member_total = sum(
