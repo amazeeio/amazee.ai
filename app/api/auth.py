@@ -393,29 +393,65 @@ async def sign_in(
         # Only NEW-account creation is velocity-limited; existing-user code logins
         # (the common case, incl. many users behind one corporate IP) are not.
         enforce_signup_velocity(request, db, email=sign_in_username, endpoint="sign-in")
-        # Resolve the sign-up region — first active non-dedicated region
-        sign_up_region = (
-            db.query(DBRegion)
-            .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
-            .order_by(DBRegion.id)
+        # Reuse a team orphaned by a user hard-delete: same admin_email, not
+        # soft-deleted. Without this, the unique admin_email on the leftover
+        # team makes re-registration fail forever ("Email already registered").
+        team = (
+            db.query(DBTeam)
+            .filter(
+                func.lower(DBTeam.admin_email) == sign_in_username,
+                DBTeam.deleted_at.is_(None),
+            )
             .first()
         )
-        if not sign_up_region:
-            auth_logger.error("No active public region available for new team creation")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="No active public region available",
+        if team is None and "@" in sign_in_username:
+            # The orphaned team may store a plus-tagged admin_email
+            # (e.g. "user+p12@…") while sign_in_username is the stripped
+            # base form — match tagged variants too.
+            # Escape LIKE wildcards — '_' is common in email local parts.
+            local, domain = (
+                part.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                for part in sign_in_username.split("@", 1)
             )
-        # First create the team
-        team_data = TeamCreate(
-            name=f"Team {sign_in_username}",
-            admin_email=sign_in_username,
-            phone="",  # Required by schema but not used for auto-created teams
-            billing_address="",  # Required by schema but not used for auto-created teams
-            budget_type=BudgetType.PERIODIC,
-            region_id=sign_up_region.id,
-        )
-        team = await register_team(team_data, db)
+            team = (
+                db.query(DBTeam)
+                .filter(
+                    DBTeam.admin_email.ilike(f"{local}+%@{domain}", escape="\\"),
+                    DBTeam.deleted_at.is_(None),
+                )
+                .order_by(DBTeam.id)
+                .first()
+            )
+        if team:
+            auth_logger.info(
+                f"Re-attaching {sign_in_username} to existing team {team.id} as admin"
+            )
+        else:
+            # Resolve the sign-up region — first active non-dedicated region
+            sign_up_region = (
+                db.query(DBRegion)
+                .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
+                .order_by(DBRegion.id)
+                .first()
+            )
+            if not sign_up_region:
+                auth_logger.error(
+                    "No active public region available for new team creation"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="No active public region available",
+                )
+            # First create the team
+            team_data = TeamCreate(
+                name=f"Team {sign_in_username}",
+                admin_email=sign_in_username,
+                phone="",  # Required by schema but not used for auto-created teams
+                billing_address="",  # Required by schema but not used for auto-created teams
+                budget_type=BudgetType.PERIODIC,
+                region_id=sign_up_region.id,
+            )
+            team = await register_team(team_data, db)
 
         user_data = UserCreate(
             email=sign_in_username,
