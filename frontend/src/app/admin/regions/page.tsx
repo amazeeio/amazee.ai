@@ -253,13 +253,23 @@ export default function RegionsPage() {
                       </TableCell>
                       <TableCell>{region.litellm_api_url}</TableCell>
                       <TableCell>
-                        <Badge
-                          variant={
-                            region.is_dedicated ? "default" : "secondary"
-                          }
-                        >
-                          {region.is_dedicated ? "Dedicated" : "Shared"}
-                        </Badge>
+                        <div className="flex flex-col gap-1 items-start">
+                          <Badge
+                            variant={
+                              region.is_dedicated ? "default" : "secondary"
+                            }
+                          >
+                            {region.is_dedicated ? "Dedicated" : "Shared"}
+                          </Badge>
+                          {region.regional_area && (
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] font-mono"
+                            >
+                              {region.regional_area}
+                            </Badge>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell>
                         <span

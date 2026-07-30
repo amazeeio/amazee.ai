@@ -218,6 +218,13 @@ RegionApiUrl = Annotated[str, AfterValidator(validate_region_api_url)]
 RegionDbHost = Annotated[str, AfterValidator(validate_region_host)]
 
 
+# Which market a LiteLLM region serves. Fixed enum: extending it is a
+# deliberate code change (drives bedrock candidate suggestions in the model
+# dialog and appears on region admin responses).
+REGIONAL_AREAS = ("US", "US+CA", "EU", "DE", "CH", "UK", "AU", "APAC", "GLOBAL")
+RegionalArea = Literal["US", "US+CA", "EU", "DE", "CH", "UK", "AU", "APAC", "GLOBAL"]
+
+
 class RegionBase(BaseModel):
     name: str
     label: Optional[str] = None
@@ -230,6 +237,7 @@ class RegionBase(BaseModel):
     litellm_api_key: str
     is_active: bool = True
     is_dedicated: bool = False
+    regional_area: Optional[RegionalArea] = None
 
 
 class RegionCreate(RegionBase):
@@ -252,6 +260,7 @@ class RegionUpdate(BaseModel):
     litellm_api_key: Optional[str] = None
     is_active: bool
     is_dedicated: bool
+    regional_area: Optional[RegionalArea] = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -273,6 +282,7 @@ class RegionAdminResponse(RegionResponse):
     # (postgres_admin_password / litellm_api_key stay server-side).
     postgres_port: int
     postgres_admin_user: str
+    regional_area: Optional[str] = None
     # NULL = access-group enforcement off (legacy all-models behavior)
     default_access_group_id: Optional[int] = None
 
@@ -1270,6 +1280,14 @@ class AdminModelRegionResponse(BaseModel):
     sync_status: str
     sync_error: Optional[str] = None
     synced_at: Optional[datetime] = None
+    # Merged over the model's litellm_params at sync time (credentials redacted)
+    litellm_params_override: Optional[dict] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AdminModelAliasTarget(BaseModel):
+    region_id: int
+    target_model_id: int
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -1289,10 +1307,16 @@ class AdminModelBase(BaseModel):
 
 class AdminModelCreate(AdminModelBase):
     access_group_ids: Optional[List[int]] = None
+    is_alias: bool = False
+    alias_targets: Optional[List[AdminModelAliasTarget]] = None
+    # region_id -> params merged over litellm_params for that region
+    region_overrides: Optional[Dict[int, dict]] = None
 
 
 class AdminModelUpdate(BaseModel):
     access_group_ids: Optional[List[int]] = None
+    alias_targets: Optional[List[AdminModelAliasTarget]] = None
+    region_overrides: Optional[Dict[int, dict]] = None
     display_name: Optional[str] = None
     provider: Optional[str] = None
     type: Optional[str] = None
@@ -1313,6 +1337,8 @@ class AdminModelResponse(AdminModelBase):
     regions: List[AdminModelRegionResponse] = Field(default_factory=list)
     access_group_slugs: List[str] = Field(default_factory=list)
     access_group_ids: List[int] = Field(default_factory=list)
+    is_alias: bool = False
+    alias_targets: List[AdminModelAliasTarget] = Field(default_factory=list)
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -1320,6 +1346,8 @@ class AdminModelRegionToggleRequest(BaseModel):
     model_id: int
     region_id: int
     is_active: bool
+    # When provided, replaces the stored per-region params override
+    litellm_params_override: Optional[dict] = None
 
 
 class ImportableModelResponse(BaseModel):
@@ -1337,6 +1365,33 @@ class ImportableModelResponse(BaseModel):
 class AdminModelImport(AdminModelBase):
     region_id: int
     access_group_ids: Optional[List[int]] = None
+
+
+class AdminModelImportAllRequest(BaseModel):
+    region_id: int
+    access_group_ids: Optional[List[int]] = None
+
+
+class AdminModelImportAllResponse(BaseModel):
+    imported: List[str] = Field(default_factory=list)
+    skipped: List[str] = Field(default_factory=list)
+    errors: Dict[str, str] = Field(default_factory=dict)
+
+
+class BedrockCandidate(BaseModel):
+    """An upstream Bedrock model id an admin can pick as a region's backend id."""
+
+    model_id: str
+    model_name: str
+    provider_name: str
+    regions: List[str] = Field(default_factory=list)
+
+
+class BedrockCandidatesResponse(BaseModel):
+    query: str
+    candidates: List[BedrockCandidate] = Field(default_factory=list)
+    # regional area -> AWS regions considered "in area" (for UI highlighting)
+    area_aws_regions: Dict[str, List[str]] = Field(default_factory=dict)
 
 
 # The slug is the literal string synced into LiteLLM model_info.access_groups

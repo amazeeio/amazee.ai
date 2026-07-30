@@ -384,6 +384,29 @@ export const handlers = [
     }
   ),
 
+  http.post("http://localhost:8800/admin/models/import-all", async () => {
+    return HttpResponse.json(
+      { imported: ["new-model-1"], skipped: [], errors: {} },
+      { status: 201 }
+    );
+  }),
+
+  http.get("http://localhost:8800/admin/models/bedrock-candidates", ({ request }) => {
+    const q = new URL(request.url).searchParams.get("q") || "";
+    return HttpResponse.json({
+      query: q,
+      candidates: [
+        {
+          model_id: "anthropic.claude-opus-5-v1:0",
+          model_name: "Claude Opus 5",
+          provider_name: "Anthropic",
+          regions: ["us-east-1", "eu-central-2"],
+        },
+      ],
+      area_aws_regions: { US: ["us-east-1"], CH: ["eu-central-2"] },
+    });
+  }),
+
   http.post("http://localhost:8800/admin/models", async ({ request }) => {
     const data = (await request.json()) as any;
     return HttpResponse.json(

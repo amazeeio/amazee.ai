@@ -52,6 +52,19 @@ interface AdminModelRegionResponse {
   sync_status: "pending" | "synced" | "failed" | "not_configured";
   sync_error: string | null;
   synced_at: string | null;
+  litellm_params_override?: Record<string, any> | null;
+}
+
+interface AdminModelAliasTarget {
+  region_id: number;
+  target_model_id: number;
+}
+
+interface BedrockCandidate {
+  model_id: string;
+  model_name: string;
+  provider_name: string;
+  regions: string[];
 }
 
 interface AdminModelResponse {
@@ -73,6 +86,8 @@ interface AdminModelResponse {
   regions: AdminModelRegionResponse[];
   access_group_ids: number[];
   access_group_slugs: string[];
+  is_alias?: boolean;
+  alias_targets?: AdminModelAliasTarget[];
 }
 
 export default function ModelsPage() {
@@ -104,6 +119,16 @@ export default function ModelsPage() {
   const [litellmParams, setLitellmParams] = useState("{}");
   const [selectedRegionIds, setSelectedRegionIds] = useState<number[]>([]);
   const [selectedGroupIds, setSelectedGroupIds] = useState<number[]>([]);
+  const [isAlias, setIsAlias] = useState(false);
+  // region_id -> target model id (as string, "" = unset) for alias models
+  const [aliasTargets, setAliasTargets] = useState<Record<number, string>>({});
+  // region_id -> per-region litellm params override (JSON text, "" = none)
+  const [regionOverrides, setRegionOverrides] = useState<Record<number, string>>({});
+  // Bedrock candidate picker
+  const [bedrockQuery, setBedrockQuery] = useState("");
+  const [bedrockCandidates, setBedrockCandidates] = useState<BedrockCandidate[]>([]);
+  const [bedrockAreaRegions, setBedrockAreaRegions] = useState<Record<string, string[]>>({});
+  const [isBedrockLoading, setIsBedrockLoading] = useState(false);
   // When set, the form was opened via "Prep Import": submit creates the model
   // via /admin/models/import (marks the source region already-synced, no sync task).
   const [importSourceRegionId, setImportSourceRegionId] = useState<number | null>(null);
@@ -149,11 +174,19 @@ export default function ModelsPage() {
     if (adminRegions.length > 0) {
       return adminRegions
         .filter((r) => r.is_active)
-        .map((r) => ({ id: Number(r.id), name: r.name }));
+        .map((r) => ({
+          id: Number(r.id),
+          name: r.name,
+          regional_area: (r.regional_area as string | null) ?? null,
+        }));
     }
     if (models.length === 0) return [];
     // Grab from the first model which returns active regions as a fallback
-    return models[0].regions.map((r) => ({ id: r.region_id, name: r.region_name }));
+    return models[0].regions.map((r) => ({
+      id: r.region_id,
+      name: r.region_name,
+      regional_area: null as string | null,
+    }));
   }, [adminRegions, models]);
 
   // Filtered models list
@@ -286,6 +319,33 @@ export default function ModelsPage() {
     },
   });
 
+  // Bulk import: temporary migration helper for porting YAML-configured
+  // proxy models into the DB inventory — remove once that migration is done.
+  const importAllMutation = useMutation({
+    mutationFn: async (regionId: number) => {
+      const response = await post("admin/models/import-all", { region_id: regionId });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.detail || "Bulk import failed");
+      }
+      return response.json();
+    },
+    onSuccess: (data: { imported: string[]; skipped: string[]; errors: Record<string, string> }) => {
+      queryClient.invalidateQueries({ queryKey: ["admin-models"] });
+      setIsImportOpen(false);
+      const errorCount = Object.keys(data.errors || {}).length;
+      toast({
+        title: "Bulk import finished",
+        description: `${data.imported.length} imported, ${data.skipped.length} already present${
+          errorCount ? `, ${errorCount} failed — check backend logs` : ""
+        }.`,
+        variant: errorCount ? "destructive" : undefined,
+      });
+    },
+    onError: (error: Error) =>
+      toast({ title: "Bulk import error", description: error.message, variant: "destructive" }),
+  });
+
   // Region Toggle Mutation
   const toggleRegionMutation = useMutation({
     mutationFn: async (variables: { modelId: number; regionId: number; isActive: boolean }) => {
@@ -327,7 +387,63 @@ export default function ModelsPage() {
     setLitellmParams("{}");
     setSelectedRegionIds([]);
     setSelectedGroupIds([]);
+    setIsAlias(false);
+    setAliasTargets({});
+    setRegionOverrides({});
+    setBedrockQuery("");
+    setBedrockCandidates([]);
     setImportSourceRegionId(null);
+  };
+
+  const searchBedrockCandidates = async () => {
+    if (bedrockQuery.trim().length < 2) return;
+    setIsBedrockLoading(true);
+    try {
+      const response = await get(
+        `admin/models/bedrock-candidates?q=${encodeURIComponent(bedrockQuery.trim())}`
+      );
+      if (response.ok) {
+        const data = await response.json();
+        setBedrockCandidates(data.candidates || []);
+        setBedrockAreaRegions(data.area_aws_regions || {});
+      } else {
+        const err = await response.json();
+        toast({
+          title: "Bedrock catalog error",
+          description: err.detail || "Failed to search the Bedrock catalog.",
+          variant: "destructive",
+        });
+      }
+    } catch (err: any) {
+      toast({
+        title: "Bedrock catalog error",
+        description: err.message,
+        variant: "destructive",
+      });
+    } finally {
+      setIsBedrockLoading(false);
+    }
+  };
+
+  const applyCandidateToRegion = (candidate: BedrockCandidate, regionId: number) => {
+    let current: Record<string, any> = {};
+    try {
+      current = JSON.parse(regionOverrides[regionId] || "{}");
+    } catch {
+      current = {};
+    }
+    current.model = `bedrock/${candidate.model_id}`;
+    setRegionOverrides((prev) => ({
+      ...prev,
+      [regionId]: JSON.stringify(current, null, 2),
+    }));
+  };
+
+  const candidateInArea = (candidate: BedrockCandidate, area: string | null) => {
+    if (!area) return false;
+    const areaRegions = bedrockAreaRegions[area] || [];
+    if (areaRegions.length === 0) return true; // GLOBAL
+    return candidate.regions.some((r) => areaRegions.includes(r));
   };
 
   const handleOpenCreate = () => {
@@ -370,6 +486,19 @@ export default function ModelsPage() {
         .map((r) => r.region_id);
       setSelectedRegionIds(activeRegionIds);
       setSelectedGroupIds(fullModel.access_group_ids || []);
+      setIsAlias(!!fullModel.is_alias);
+      const targets: Record<number, string> = {};
+      for (const t of fullModel.alias_targets || []) {
+        targets[t.region_id] = String(t.target_model_id);
+      }
+      setAliasTargets(targets);
+      const overrides: Record<number, string> = {};
+      for (const r of fullModel.regions) {
+        if (r.litellm_params_override) {
+          overrides[r.region_id] = JSON.stringify(r.litellm_params_override, null, 2);
+        }
+      }
+      setRegionOverrides(overrides);
 
       setIsFormOpen(true);
     } catch (err: any) {
@@ -412,7 +541,43 @@ export default function ModelsPage() {
       return;
     }
 
-    const payload = {
+    // Per-region overrides: validate each JSON blob; empty text = no override
+    const parsedOverrides: Record<number, Record<string, any>> = {};
+    for (const regionId of selectedRegionIds) {
+      const text = (regionOverrides[regionId] || "").trim();
+      if (!text) continue;
+      try {
+        parsedOverrides[regionId] = JSON.parse(text);
+      } catch {
+        const regionName = regions.find((r) => r.id === regionId)?.name || regionId;
+        toast({
+          title: "JSON Parsing Error",
+          description: `The params override for region '${regionName}' must be valid JSON.`,
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
+    // Alias models need a target for every selected region
+    const parsedTargets: { region_id: number; target_model_id: number }[] = [];
+    if (isAlias) {
+      for (const regionId of selectedRegionIds) {
+        const target = aliasTargets[regionId];
+        if (!target) {
+          const regionName = regions.find((r) => r.id === regionId)?.name || regionId;
+          toast({
+            title: "Missing alias target",
+            description: `Select a target model for region '${regionName}' (or untick the region).`,
+            variant: "destructive",
+          });
+          return;
+        }
+        parsedTargets.push({ region_id: regionId, target_model_id: Number(target) });
+      }
+    }
+
+    const payload: Record<string, any> = {
       model_id: modelId,
       display_name: displayName,
       provider: provider,
@@ -423,9 +588,14 @@ export default function ModelsPage() {
       real_eol: realEol ? new Date(realEol).toISOString() : null,
       override_eol: overrideEol ? new Date(overrideEol).toISOString() : null,
       is_active_globally: isActiveGlobally,
-      litellm_params: parsedParams,
+      litellm_params: isAlias ? null : parsedParams,
       access_group_ids: selectedGroupIds,
+      region_overrides: isAlias ? undefined : parsedOverrides,
+      alias_targets: isAlias ? parsedTargets : undefined,
     };
+    if (!editingModel) {
+      payload.is_alias = isAlias;
+    }
 
     saveModelMutation.mutate(payload);
   };
@@ -720,9 +890,16 @@ export default function ModelsPage() {
                               {model.provider}
                             </TableCell>
                             <TableCell>
-                              <Badge variant="outline" className="capitalize font-mono text-[10px] bg-transparent text-gray-600 border-gray-200 hover:bg-transparent">
-                                {model.type}
-                              </Badge>
+                              <div className="flex flex-col gap-1 items-start">
+                                <Badge variant="outline" className="capitalize font-mono text-[10px] bg-transparent text-gray-600 border-gray-200 hover:bg-transparent">
+                                  {model.type}
+                                </Badge>
+                                {model.is_alias && (
+                                  <Badge className="text-[10px] bg-blue-100 text-blue-800 border-blue-200 hover:bg-blue-100">
+                                    alias
+                                  </Badge>
+                                )}
+                              </div>
                             </TableCell>
                             <TableCell className="text-gray-700 text-sm">
                               {model.context_length ? (
@@ -1049,6 +1226,21 @@ export default function ModelsPage() {
                 />
               </div>
 
+              <div className="space-y-1.5 col-span-2 border p-3 rounded-md flex items-center justify-between bg-gray-50/50">
+                <div className="flex flex-col">
+                  <span className="text-sm font-semibold text-gray-900">Alias Model</span>
+                  <span className="text-[11px] text-gray-500">
+                    Points at a different target model per region (e.g. &quot;best-model&quot;) and always
+                    inherits the target&apos;s current configuration. Cannot be changed after creation.
+                  </span>
+                </div>
+                <Switch
+                  checked={isAlias}
+                  disabled={!!editingModel}
+                  onCheckedChange={setIsAlias}
+                />
+              </div>
+
               <div className="space-y-1.5 col-span-2 border p-3 rounded-md bg-transparent mt-2">
                 <span className="text-sm font-semibold text-gray-900 block">Rollout to Regions</span>
                 <span className="text-[11px] text-gray-500 block mb-3">
@@ -1082,9 +1274,145 @@ export default function ModelsPage() {
                             className="rounded border-gray-300 text-gray-900 focus:ring-gray-900 h-4 w-4"
                           />
                           <span className="font-medium">{region.name}</span>
+                          {region.regional_area && (
+                            <span className="text-[10px] text-gray-400 font-mono ml-auto">
+                              {region.regional_area}
+                            </span>
+                          )}
                         </label>
                       );
                     })}
+                  </div>
+                )}
+
+                {/* Per-region configuration for the ticked regions */}
+                {selectedRegionIds.length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    {selectedRegionIds
+                      .map((id) => regions.find((r) => r.id === id))
+                      .filter((r): r is NonNullable<typeof r> => !!r)
+                      .map((region) => (
+                        <div key={region.id} className="border rounded-md p-2 bg-gray-50/30">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-xs font-semibold text-gray-800">
+                              {region.name}
+                              {region.regional_area && (
+                                <span className="text-gray-400 font-mono ml-1.5">
+                                  ({region.regional_area})
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                          {isAlias ? (
+                            <select
+                              value={aliasTargets[region.id] || ""}
+                              onChange={(e) =>
+                                setAliasTargets((prev) => ({
+                                  ...prev,
+                                  [region.id]: e.target.value,
+                                }))
+                              }
+                              className="flex h-8 w-full rounded-md border border-input bg-background px-2 py-1 text-xs"
+                            >
+                              <option value="">— Select target model —</option>
+                              {models
+                                .filter((m) => !m.is_alias && !m.deleted_at)
+                                .map((m) => (
+                                  <option key={m.id} value={String(m.id)}>
+                                    {m.display_name} ({m.model_id})
+                                  </option>
+                                ))}
+                            </select>
+                          ) : (
+                            <textarea
+                              value={regionOverrides[region.id] || ""}
+                              onChange={(e) =>
+                                setRegionOverrides((prev) => ({
+                                  ...prev,
+                                  [region.id]: e.target.value,
+                                }))
+                              }
+                              rows={2}
+                              placeholder={'Optional params override, e.g. {"model": "bedrock/eu.anthropic..."}'}
+                              className="flex w-full rounded-md border border-input bg-background px-2 py-1 text-xs font-mono"
+                            />
+                          )}
+                        </div>
+                      ))}
+                  </div>
+                )}
+
+                {/* Bedrock candidate picker: search upstream catalog, apply exact ids per region */}
+                {!isAlias && selectedRegionIds.length > 0 && (
+                  <div className="mt-3 border rounded-md p-2">
+                    <span className="text-xs font-semibold text-gray-800 block mb-1.5">
+                      Bedrock Catalog Lookup
+                    </span>
+                    <div className="flex items-center gap-2 mb-2">
+                      <Input
+                        placeholder="Search upstream Bedrock ids (e.g. claude-opus)..."
+                        className="h-8 text-xs"
+                        value={bedrockQuery}
+                        onChange={(e) => setBedrockQuery(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            searchBedrockCandidates();
+                          }
+                        }}
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 text-xs"
+                        disabled={isBedrockLoading || bedrockQuery.trim().length < 2}
+                        onClick={searchBedrockCandidates}
+                      >
+                        {isBedrockLoading ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Search className="h-3 w-3" />
+                        )}
+                      </Button>
+                    </div>
+                    {bedrockCandidates.length > 0 && (
+                      <div className="max-h-40 overflow-y-auto space-y-1.5">
+                        {bedrockCandidates.map((candidate) => (
+                          <div
+                            key={candidate.model_id}
+                            className="border rounded p-1.5 text-xs space-y-1"
+                          >
+                            <div className="font-mono text-gray-900">{candidate.model_id}</div>
+                            <div className="text-[10px] text-gray-500">
+                              {candidate.provider_name} · runs in: {candidate.regions.join(", ") || "unknown"}
+                            </div>
+                            <div className="flex flex-wrap gap-1">
+                              {selectedRegionIds
+                                .map((id) => regions.find((r) => r.id === id))
+                                .filter((r): r is NonNullable<typeof r> => !!r)
+                                .map((region) => (
+                                  <Button
+                                    key={region.id}
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className={`h-5 px-1.5 text-[10px] ${
+                                      candidateInArea(candidate, region.regional_area)
+                                        ? "border-green-300 text-green-700"
+                                        : "text-gray-500"
+                                    }`}
+                                    onClick={() => applyCandidateToRegion(candidate, region.id)}
+                                  >
+                                    Use for {region.name}
+                                    {candidateInArea(candidate, region.regional_area) && " ✓"}
+                                  </Button>
+                                ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1133,15 +1461,17 @@ export default function ModelsPage() {
                 )}
               </div>
 
-              <div className="space-y-1.5 col-span-2">
-                <label className="text-xs font-semibold text-gray-700">LiteLLM Parameters (JSON configuration object)</label>
-                <textarea
-                  value={litellmParams}
-                  onChange={(e) => setLitellmParams(e.target.value)}
-                  rows={4}
-                  className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-gray-900 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                />
-              </div>
+              {!isAlias && (
+                <div className="space-y-1.5 col-span-2">
+                  <label className="text-xs font-semibold text-gray-700">LiteLLM Parameters (JSON configuration object)</label>
+                  <textarea
+                    value={litellmParams}
+                    onChange={(e) => setLitellmParams(e.target.value)}
+                    rows={4}
+                    className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-gray-900 font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  />
+                </div>
+              )}
             </div>
 
             <DialogFooter className="pt-4 border-t border-gray-100">
@@ -1322,6 +1652,17 @@ export default function ModelsPage() {
             <Button type="button" variant="ghost" onClick={() => setIsImportOpen(false)}>
               Close
             </Button>
+            {importRegionId && importableModels.length > 0 && (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={importAllMutation.isPending}
+                onClick={() => importAllMutation.mutate(Number(importRegionId))}
+              >
+                {importAllMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Import all {importableModels.length} models
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
