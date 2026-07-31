@@ -2738,8 +2738,9 @@ def test_create_private_ai_key_cleanup_on_db_storage_failure(
     assert cleanup_call[0][0] == f"{test_region.litellm_api_url}/key/delete"
     assert cleanup_call[1]["json"]["keys"] == ["test-private-key-123"]
 
-    # Verify vector database was cleaned up
-    mock_delete_db.assert_called_once_with("test_db_123")
+    # Verify vector database AND its role were cleaned up — a leftover role
+    # keeps valid credentials on the shared cluster.
+    mock_delete_db.assert_called_once_with("test_db_123", "test_user")
 
     # Verify no key was stored in the database
     stored_keys = client.get(
