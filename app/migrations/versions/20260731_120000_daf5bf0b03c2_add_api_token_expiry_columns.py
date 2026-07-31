@@ -1,7 +1,7 @@
 """add api token expiry columns
 
 Revision ID: daf5bf0b03c2
-Revises: e5b8c7d2a941
+Revises: d1e2f3a4b5c6
 Create Date: 2026-07-31 12:00:00.000000+00:00
 
 """
@@ -14,7 +14,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "daf5bf0b03c2"
-down_revision: Union[str, None] = "e5b8c7d2a941"
+down_revision: Union[str, None] = "d1e2f3a4b5c6"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
