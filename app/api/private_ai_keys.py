@@ -28,7 +28,7 @@ from app.db.models import (
     DBSpendCap,
 )
 from app.core.email import normalize_email_for_lookup
-from app.services.litellm import LiteLLMService
+from app.services.litellm import INFERENCE_ONLY_ROUTES, LiteLLMService
 from app.core.security import (
     get_current_user_from_auth,
     get_role_min_team_admin,
@@ -46,6 +46,7 @@ from app.core.limit_service import (
     DEFAULT_RPM_PER_KEY,
 )
 from app.core.pool_budget_service import pool_team_has_ever_purchased
+from app.core.team_service import is_ai_trial_team
 
 router = APIRouter(tags=["private-ai-keys"])
 
@@ -526,6 +527,14 @@ async def create_llm_token(
             db, effective_team.id, region.id
         )
 
+    # Every anonymous trial lands in ONE shared team (so the keys stay
+    # trackable), and LiteLLM lets any key in a team read that team —
+    # /team/info returns every sibling key with its owner, spend and budget.
+    # Trial keys therefore get LiteLLM's inference-only route group: LLM calls
+    # work, every management route returns 403. Members of a real (customer)
+    # team are colleagues, so this scoping is deliberately trial-only.
+    allowed_routes = INFERENCE_ONLY_ROUTES if is_ai_trial_team(effective_team) else None
+
     if (owner is not None and owner.team_id) or team_id:
         if settings.ENABLE_LIMITS and not is_pool_team:
             limit_service.check_key_limits(owner.team_id or team_id, owner_id)
@@ -586,6 +595,7 @@ async def create_llm_token(
             rpm_limit=max_rpm_limit,
             apply_limits=not is_pool_team,
             blocked=(True if is_pool_team and not has_pool_purchase else None),
+            allowed_routes=allowed_routes,
         )
         if is_pool_team and not has_pool_purchase:
             await litellm_service.update_key_budget(
