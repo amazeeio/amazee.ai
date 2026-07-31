@@ -1,5 +1,8 @@
 """Tenant isolation guarantees of vector-DB provisioning."""
 
+import os
+import sys
+
 import pytest
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -74,3 +77,23 @@ async def test_restrict_connect_to_owner_rejects_bad_identifiers(
                 database_name, database_username
             )
     mock_connect.assert_not_called()
+
+
+def test_backfill_includes_regions_with_no_tracked_keys():
+    """A region whose key rows were deleted without dropping their databases
+    must still be visited, or its orphans are never reported."""
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    from scripts.lock_vector_db_connect import get_vector_dbs_grouped_by_region
+
+    tracked, orphan_only = Mock(spec=DBRegion), Mock(spec=DBRegion)
+    tracked.id, orphan_only.id = 1, 2
+    session = Mock()
+    query = session.query.return_value
+    query.filter.return_value.all.return_value = [tracked, orphan_only]
+    query.filter.return_value.filter.return_value.filter.return_value.all.return_value = [
+        (1, "db_abc123", "user_abc123")
+    ]
+
+    work = dict(get_vector_dbs_grouped_by_region(session, None))
+    assert work[tracked] == [("db_abc123", "user_abc123")]
+    assert work[orphan_only] == []
