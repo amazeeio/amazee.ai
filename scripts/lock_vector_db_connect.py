@@ -62,7 +62,9 @@ def get_vector_dbs_grouped_by_region(session, region_name: str | None):
     for region_id, database_name, database_username in rows:
         keys_by_region[region_id].append((database_name, database_username))
 
-    return [(regions[rid], dbs) for rid, dbs in keys_by_region.items()]
+    # every region, not just ones with tracked keys — a region whose keys were all
+    # deleted without dropping their databases still needs its orphans reported
+    return [(region, keys_by_region.get(rid, [])) for rid, region in regions.items()]
 
 
 async def run(dry_run: bool, region_name: str | None) -> int:
