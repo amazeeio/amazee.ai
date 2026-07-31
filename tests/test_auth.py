@@ -500,7 +500,10 @@ def test_sign_in_reuses_orphaned_team_with_plus_tagged_admin_email(
         mock_sync_litellm.return_value = AsyncMock()
         response = client.post(
             "/auth/sign-in",
-            json={"username": "tagged_orphan+p12@example.com", "verification_code": code},
+            json={
+                "username": "tagged_orphan+p12@example.com",
+                "verification_code": code,
+            },
         )
 
     assert response.status_code == 200
