@@ -59,6 +59,13 @@ class PostgresManager:
             await conn.execute(
                 f"GRANT ALL PRIVILEGES ON DATABASE {db_name} TO {db_user}"
             )
+            # PostgreSQL grants CONNECT to PUBLIC on every new database, and
+            # every tenant role is a member of PUBLIC — so on a shared cluster
+            # that default lets any tenant role open a session against any
+            # other tenant's database. The GRANT ALL above already gave db_user
+            # its own CONNECT, so revoking PUBLIC leaves exactly one role able
+            # to connect.
+            await conn.execute(f"REVOKE CONNECT ON DATABASE {db_name} FROM PUBLIC")
             logger.info("Database and user created successfully")
 
             # Close the initial connection
@@ -87,6 +94,11 @@ class PostgresManager:
                     f"ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON FUNCTIONS TO {db_user}"
                 )
                 await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                # On PostgreSQL < 15 PUBLIC also holds CREATE on the public
+                # schema. db_user owns it (above) and is the only role that
+                # should touch it. No app path connects to a tenant database as
+                # the admin user, so this cannot lock our own tooling out.
+                await conn.execute("REVOKE ALL ON SCHEMA public FROM PUBLIC")
                 logger.info("Schema permissions granted successfully")
             finally:
                 await conn.close()
@@ -100,6 +112,57 @@ class PostgresManager:
         except Exception as e:
             logger.error(f"Error creating database: {str(e)}")
             raise
+        finally:
+            await conn.close()
+
+    async def restrict_connect_to_owner(
+        self, database_name: str, database_username: str
+    ) -> None:
+        """Make *database_name* connectable only by *database_username*.
+
+        Databases provisioned before create_database started revoking it still
+        carry PostgreSQL's default ``CONNECT`` grant to PUBLIC. Grant first,
+        revoke second, so the owning tenant is never locked out even if the run
+        is interrupted.
+        """
+        _validate_identifier(database_name, "database name")
+        _validate_identifier(database_username, "database username")
+
+        conn = await asyncpg.connect(
+            host=self.host,
+            port=self.port,
+            user=self.admin_user,
+            password=self.admin_password,
+        )
+        try:
+            await conn.execute(
+                f"GRANT CONNECT ON DATABASE {database_name} TO {database_username}"
+            )
+            await conn.execute(
+                f"REVOKE CONNECT ON DATABASE {database_name} FROM PUBLIC"
+            )
+        finally:
+            await conn.close()
+
+    async def list_tenant_databases(self) -> list[str]:
+        """Return every ``db_*`` database on the cluster.
+
+        Used by the connect-privilege backfill to spot tenant databases the
+        platform no longer tracks (failed deletes) — those keep PUBLIC
+        connectivity and need an operator decision, so they are reported rather
+        than modified.
+        """
+        conn = await asyncpg.connect(
+            host=self.host,
+            port=self.port,
+            user=self.admin_user,
+            password=self.admin_password,
+        )
+        try:
+            rows = await conn.fetch(
+                "SELECT datname FROM pg_database WHERE datname LIKE 'db\\_%'"
+            )
+            return [row["datname"] for row in rows]
         finally:
             await conn.close()
 
