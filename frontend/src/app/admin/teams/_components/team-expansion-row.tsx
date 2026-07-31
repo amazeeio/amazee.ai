@@ -72,7 +72,7 @@ export function TeamExpansionRow({
     isCancelingSubscription,
     resetLimits,
     isResettingLimits,
-  } = useTeams();
+  } = useTeams(false, { enabled: false });
 
   const { data: expandedTeam, isLoading: isLoadingTeamDetails } =
     useQuery<Team>({

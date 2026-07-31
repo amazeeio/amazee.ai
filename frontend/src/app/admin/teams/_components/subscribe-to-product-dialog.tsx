@@ -37,7 +37,7 @@ export function SubscribeToProductDialog({
 }: SubscribeToProductDialogProps) {
   const [selectedProductId, setSelectedProductId] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
-  const { subscribeToProduct, isSubscribing } = useTeams();
+  const { subscribeToProduct, isSubscribing } = useTeams(false, { enabled: false });
 
   const { data: allProducts = [], isLoading: isLoadingAllProducts } = useQuery<
     Product[]
