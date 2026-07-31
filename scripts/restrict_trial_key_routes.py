@@ -22,7 +22,7 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.api.private_ai_keys import is_ai_trial_team
+from app.core.team_service import is_ai_trial_team
 from app.db.database import SessionLocal
 from app.db.models import DBPrivateAIKey, DBRegion, DBTeam, DBUser
 from app.services.litellm import INFERENCE_ONLY_ROUTES, LiteLLMService
