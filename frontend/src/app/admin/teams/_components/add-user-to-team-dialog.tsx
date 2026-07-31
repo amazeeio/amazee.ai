@@ -40,7 +40,7 @@ export function AddUserToTeamDialog({
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<User[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  const { addUserToTeam, isAddingUser } = useTeams();
+  const { addUserToTeam, isAddingUser } = useTeams(false, { enabled: false });
 
   const searchUsersMutation = useMutation({
     mutationFn: async (query: string) => {

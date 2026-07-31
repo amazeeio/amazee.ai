@@ -35,7 +35,7 @@ export function CreateTeamDialog({
   const [newTeamName, setNewTeamName] = useState("");
   const [newTeamAdminEmail, setNewTeamAdminEmail] = useState("");
   const [newTeamRegionId, setNewTeamRegionId] = useState("");
-  const { createTeam, isCreating } = useTeams();
+  const { createTeam, isCreating } = useTeams(false, { enabled: false });
 
   // A team is locked to a single region on creation, and the backend rejects
   // inactive or dedicated regions — only offer the ones it will accept.
