@@ -138,6 +138,9 @@ class DBAPIToken(Base):
     expiry_option = Column(
         String, default="forever", server_default="forever", nullable=False
     )
+    # read | write — a read token may only call safe HTTP methods. Enforced in
+    # app/core/security.py; new tokens default to read.
+    scope = Column(String, default="read", server_default="read", nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"))
 
     owner = relationship("DBUser", back_populates="api_tokens")

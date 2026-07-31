@@ -55,10 +55,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 # Get a fresh database session
                 db = next(get_db())
                 try:
+                    # Pass the request so an API token's scope lands on
+                    # request.state: this call is the only place the token row is
+                    # read, and the endpoint's own dependency call reuses the
+                    # result stored here.
                     user = await get_current_user_from_auth(
                         access_token=access_token if access_token else None,
                         authorization=auth_header if auth_header else None,
                         db=db,
+                        request=request,
                     )
                     # Store essential user data instead of the full SQLAlchemy object
                     request.state.user = {

@@ -29,6 +29,29 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 # Custom bearer scheme
 bearer_scheme = HTTPBearer(auto_error=False)
 
+# HTTP methods a read-scoped API token may use. Every mutating route in this API
+# uses one of the other verbs, so the method is a reliable proxy for "writes"
+# and needs no per-endpoint annotation — a new write endpoint is covered the day
+# it is added.
+SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _enforce_api_token_scope(request: Optional[Request], scope: Optional[str]) -> None:
+    """Reject unsafe methods for a read-scoped API token.
+
+    JWT/cookie callers have no token scope and are unaffected. Called both where
+    the token is resolved and before the request.state short-circuit, because
+    AuthMiddleware resolves the token once and later dependency calls reuse its
+    result.
+    """
+    if scope != "read" or request is None:
+        return
+    if request.method.upper() not in SAFE_HTTP_METHODS:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This API token is read-only. Create a token with write scope to make changes.",
+        )
+
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
@@ -99,6 +122,13 @@ async def get_current_user_from_auth(
     request: Request = None,
 ) -> DBUser:
     """Get current user from either JWT token (in cookie or Authorization header) or API token."""
+    # AuthMiddleware already resolved the token for this request and recorded its
+    # scope; the branch below returns without re-reading the token row, so the
+    # scope has to be checked here.
+    _enforce_api_token_scope(
+        request, getattr(request.state, "api_token_scope", None) if request else None
+    )
+
     # First check if user is already in request state (set by AuthMiddleware)
     if request and hasattr(request.state, "user") and request.state.user is not None:
         # If we have a dict from middleware, load the full user object
@@ -180,6 +210,13 @@ async def get_current_user_from_auth(
                     detail="API token has expired",
                     headers={"WWW-Authenticate": "Bearer"},
                 )
+
+            # Record the scope for the rest of the request (AuthMiddleware passes
+            # the request, so the endpoint's dependency call sees it too) and
+            # refuse writes for a read-only token.
+            if request is not None:
+                request.state.api_token_scope = db_token.scope
+            _enforce_api_token_scope(request, db_token.scope)
 
             # Update last used timestamp
             db_token.last_used_at = datetime.now(UTC)

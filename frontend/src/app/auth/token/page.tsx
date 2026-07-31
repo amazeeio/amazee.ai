@@ -27,6 +27,7 @@ interface APIToken {
   last_used_at?: string;
   expires_at?: string;
   expiry_option: string;
+  scope: "read" | "write";
 }
 
 interface ExpiryOption {
@@ -40,6 +41,7 @@ export default function APITokensPage() {
   const queryClient = useQueryClient();
   const [newTokenName, setNewTokenName] = useState("");
   const [selectedExpiry, setSelectedExpiry] = useState("forever");
+  const [selectedScope, setSelectedScope] = useState<"read" | "write">("read");
   const [showNewToken, setShowNewToken] = useState<APIToken | null>(null);
 
   const { data: expiryOptions } = useQuery({
@@ -61,7 +63,11 @@ export default function APITokensPage() {
   });
 
   const createMutation = useMutation({
-    mutationFn: async (payload: { name: string; expiry: string }) => {
+    mutationFn: async (payload: {
+      name: string;
+      expiry: string;
+      scope: "read" | "write";
+    }) => {
       const response = await post("/auth/token", payload);
       const data = await response.json();
       return data;
@@ -71,6 +77,7 @@ export default function APITokensPage() {
       setShowNewToken(newToken);
       setNewTokenName("");
       setSelectedExpiry("forever");
+      setSelectedScope("read");
       toast({
         title: "Success",
         description: "Token created successfully",
@@ -108,7 +115,11 @@ export default function APITokensPage() {
   const handleCreateToken = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!newTokenName.trim()) return;
-    createMutation.mutate({ name: newTokenName, expiry: selectedExpiry });
+    createMutation.mutate({
+      name: newTokenName,
+      expiry: selectedExpiry,
+      scope: selectedScope,
+    });
   };
 
   if (queryLoading) {
@@ -167,6 +178,25 @@ export default function APITokensPage() {
                 </SelectContent>
               </Select>
             </div>
+            <div className="grid gap-2 w-[200px]">
+              <label htmlFor="scope" className="text-sm font-medium">
+                Access
+              </label>
+              <Select
+                value={selectedScope}
+                onValueChange={(value) =>
+                  setSelectedScope(value as "read" | "write")
+                }
+              >
+                <SelectTrigger id="scope">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="read">Read only</SelectItem>
+                  <SelectItem value="write">Read and write</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <Button
               type="submit"
               disabled={createMutation.isPending || !newTokenName.trim()}
@@ -218,7 +248,12 @@ export default function APITokensPage() {
               <div className="flex items-center justify-between">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 flex-1">
                   <div>
-                    <h3 className="text-lg font-medium">{token.name}</h3>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-lg font-medium">{token.name}</h3>
+                      <span className="rounded border px-1.5 py-0.5 text-xs text-muted-foreground">
+                        {token.scope === "write" ? "Read and write" : "Read only"}
+                      </span>
+                    </div>
                     <p className="text-xs text-muted-foreground">
                       Created: {new Date(token.created_at).toLocaleDateString()}
                     </p>

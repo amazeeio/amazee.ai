@@ -68,8 +68,13 @@ def admin_user(db):
 def admin_token(db, admin_user):
     from app.db.models import DBAPIToken
 
+    # moad provisions keys, so its credential must be a write-scoped token —
+    # a read-scoped one is refused on any non-GET route.
     api_token = DBAPIToken(
-        name="moad", token="moad-admin-token-123", user_id=admin_user.id
+        name="moad",
+        token="moad-admin-token-123",
+        user_id=admin_user.id,
+        scope="write",
     )
     db.add(api_token)
     db.commit()

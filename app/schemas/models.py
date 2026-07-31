@@ -107,9 +107,15 @@ class APITokenBase(BaseModel):
     name: str
 
 
+APITokenScope = Literal["read", "write"]
+
+
 class APITokenCreate(APITokenBase):
     user_id: Optional[int] = None
     expiry: Optional[str] = "forever"
+    # Least privilege by default: a token can only read unless write is asked
+    # for explicitly. Scope is fixed at creation — re-create to change it.
+    scope: APITokenScope = "read"
 
 
 class APIToken(APITokenBase):
@@ -119,6 +125,7 @@ class APIToken(APITokenBase):
     last_used_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
     expiry_option: str
+    scope: APITokenScope
     user_id: int
     model_config = ConfigDict(from_attributes=True)
 
@@ -129,6 +136,7 @@ class APITokenResponse(APITokenBase):
     last_used_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
     expiry_option: str
+    scope: APITokenScope
     user_id: int
     model_config = ConfigDict(from_attributes=True)
 

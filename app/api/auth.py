@@ -686,6 +686,7 @@ async def create_token(
         user_id=user_id,
         expires_at=expires_at,
         expiry_option=expiry_slug,
+        scope=token_create.scope,
     )
     db.add(db_token)
     db.commit()
