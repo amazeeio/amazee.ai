@@ -398,7 +398,11 @@ async def _create_private_ai_key(
             if db_info and region:
                 # Delete vector database
                 postgres_manager = PostgresManager(region=region)
-                await postgres_manager.delete_database(db_info.database_name)
+                # Drop the role too — a leftover role keeps valid, unowned
+                # credentials on the shared cluster.
+                await postgres_manager.delete_database(
+                    db_info.database_name, db_info.database_username
+                )
                 logger.info("Cleaned up vector database after failure")
         except Exception as cleanup_error:
             logger.error(
