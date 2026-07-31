@@ -1,7 +1,7 @@
 """add budget_alert_state table for budget threshold alerts
 
 Revision ID: d1e2f3a4b5c6
-Revises: 6c201dbaea6e
+Revises: e5b8c7d2a941
 Create Date: 2026-07-29 22:00:00.000000+00:00
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic (read via module reflection).
 revision: str = "d1e2f3a4b5c6"
-down_revision: Union[str, None] = "6c201dbaea6e"
+down_revision: Union[str, None] = "e5b8c7d2a941"
 
 
 def upgrade() -> None:
