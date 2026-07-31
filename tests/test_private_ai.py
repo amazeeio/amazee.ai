@@ -1,4 +1,7 @@
 from unittest.mock import patch, Mock, AsyncMock
+
+import pytest
+
 from app.db.models import (
     DBPrivateAIKey,
     DBPeriodicBudgetLedgerEntry,
@@ -1769,17 +1772,31 @@ def test_create_llm_token_for_trial_team_is_inference_only(
     assert payload["allowed_routes"] == ["llm_api_routes"]
 
 
+@pytest.mark.parametrize(
+    "admin_email",
+    [
+        "customer-team-admin@example.com",
+        # A plus-tag of the trial address is a DIFFERENT team (that's how the
+        # trial team is looked up), so it must not inherit the restriction.
+        settings.AI_TRIAL_TEAM_EMAIL.replace("@", "+customer@"),
+    ],
+)
 @patch("httpx.AsyncClient")
 def test_create_llm_token_for_customer_team_is_unrestricted(
     mock_client_class,
+    admin_email,
     client,
     admin_token,
     test_region,
+    db,
     test_team,
     mock_httpx_post_client,
 ):
     """Members of a real team are colleagues — the trial restriction must not
     leak into normal team keys."""
+    test_team.admin_email = admin_email
+    db.commit()
+
     mock_client_class.return_value = mock_httpx_post_client
 
     response = client.post(
