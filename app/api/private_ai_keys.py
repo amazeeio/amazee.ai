@@ -46,6 +46,7 @@ from app.core.limit_service import (
     DEFAULT_RPM_PER_KEY,
 )
 from app.core.pool_budget_service import pool_team_has_ever_purchased
+from app.core.team_service import is_ai_trial_team
 
 router = APIRouter(tags=["private-ai-keys"])
 
@@ -54,19 +55,6 @@ logger = logging.getLogger(__name__)
 
 # Fake ID for resources not stored in the database
 FAKE_ID = -1
-
-
-def is_ai_trial_team(team: DBTeam | None) -> bool:
-    """True for the single team that pools all anonymous trial users.
-
-    Unlike a customer team, its members are unrelated to each other, so keys
-    minted in it must stay private from the rest of the team.
-    """
-    if team is None or not team.admin_email:
-        return False
-    return normalize_email_for_lookup(team.admin_email) == normalize_email_for_lookup(
-        settings.AI_TRIAL_TEAM_EMAIL
-    )
 
 
 def _validate_permissions_and_get_ownership_info(
