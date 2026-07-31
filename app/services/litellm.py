@@ -14,6 +14,15 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# LiteLLM treats a key's team_id as team membership, so any team key can read
+# the whole team via management routes (/team/info returns every sibling key's
+# owner, spend and budget). `llm_api_routes` is LiteLLM's route
+# group for inference only — /chat/completions, /embeddings, /responses,
+# /v1/messages, /models, pass-through providers — and excludes /team/*, /key/*,
+# /user/* and /spend/*. Used for keys that must stay private from their own
+# team, i.e. the shared anonymous-trial team.
+INFERENCE_ONLY_ROUTES = ["llm_api_routes"]
+
 
 class LiteLLMService:
     def __init__(self, api_url: str, api_key: str):
@@ -124,8 +133,15 @@ class LiteLLMService:
         rpm_limit: Optional[int] = DEFAULT_RPM_PER_KEY,
         apply_limits: bool = True,
         blocked: Optional[bool] = None,
+        allowed_routes: Optional[list[str]] = None,
     ) -> str:
-        """Create a new API key for LiteLLM"""
+        """Create a new API key for LiteLLM
+
+        Args:
+            allowed_routes: Restrict the key to these LiteLLM routes (exact
+                paths, wildcards or route-group names such as
+                ``llm_api_routes``). None means no route restriction.
+        """
         try:
             logger.info(
                 f"Creating new LiteLLM API key for email: {email}, name: {name}, user_id: {user_id}, team_id: {team_id}"
@@ -161,6 +177,8 @@ class LiteLLMService:
             request_data["team_id"] = team_id
             if blocked is not None:
                 request_data["blocked"] = blocked
+            if allowed_routes:
+                request_data["allowed_routes"] = allowed_routes
 
             request_data["duration"] = "365d"  # Sets the key expiry date
             if settings.ENABLE_LIMITS and apply_limits:
@@ -607,6 +625,25 @@ class LiteLLMService:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to set LiteLLM key restrictions: {error_msg}",
+            )
+
+    async def set_key_allowed_routes(
+        self, litellm_token: str, allowed_routes: list[str]
+    ) -> None:
+        """Scope an existing key to *allowed_routes* (used by the backfill)."""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/key/update",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json={"key": litellm_token, "allowed_routes": allowed_routes},
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            _, error_msg, _ = self._parse_http_error(e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to set LiteLLM key allowed_routes: {error_msg}",
             )
 
     async def update_key_team_association(self, litellm_token: str, new_team_id: str):
