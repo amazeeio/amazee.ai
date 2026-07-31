@@ -95,12 +95,21 @@ class UserMarketingUpdatesByEmailUpdate(BaseModel):
     receive_marketing_updates: bool
 
 
+class APITokenExpiryOption(BaseModel):
+    """A selectable lifetime for a management API token. `days=None` = forever."""
+
+    name: str
+    slug: str
+    days: Optional[int] = None
+
+
 class APITokenBase(BaseModel):
     name: str
 
 
 class APITokenCreate(APITokenBase):
     user_id: Optional[int] = None
+    expiry: Optional[str] = "forever"
 
 
 class APIToken(APITokenBase):
@@ -108,6 +117,8 @@ class APIToken(APITokenBase):
     token: str
     created_at: datetime
     last_used_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    expiry_option: str
     user_id: int
     model_config = ConfigDict(from_attributes=True)
 
@@ -116,6 +127,8 @@ class APITokenResponse(APITokenBase):
     id: int
     created_at: datetime
     last_used_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    expiry_option: str
     user_id: int
     model_config = ConfigDict(from_attributes=True)
 

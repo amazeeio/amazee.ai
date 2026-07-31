@@ -132,6 +132,12 @@ class DBAPIToken(Base):
     token = Column(String, unique=True, index=True)
     created_at = Column(DateTime(timezone=True), default=func.now())
     last_used_at = Column(DateTime(timezone=True), nullable=True)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    # server_default as well as default, so a schema built by `create_all`
+    # matches the one built by the migration.
+    expiry_option = Column(
+        String, default="forever", server_default="forever", nullable=False
+    )
     user_id = Column(Integer, ForeignKey("users.id"))
 
     owner = relationship("DBUser", back_populates="api_tokens")

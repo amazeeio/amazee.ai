@@ -4,7 +4,7 @@ import secrets
 import os
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, UTC
 import email_validator
 
 from typing import Optional, List, Union
@@ -50,6 +50,7 @@ from app.schemas.models import (
     APIToken,
     APITokenCreate,
     APITokenResponse,
+    APITokenExpiryOption,
     UserUpdate,
     EmailValidation,
     LoginData,
@@ -604,6 +605,38 @@ def generate_api_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+# Selectable lifetimes for management API tokens, shortest first. `days=None`
+# means the token never expires. The slug is what clients send and what is
+# stored on the token row.
+API_TOKEN_EXPIRY_OPTIONS: List[APITokenExpiryOption] = [
+    APITokenExpiryOption(name="1 day", slug="1_day", days=1),
+    APITokenExpiryOption(name="1 week", slug="1_week", days=7),
+    APITokenExpiryOption(name="1 month", slug="1_month", days=30),
+    APITokenExpiryOption(name="2 months", slug="2_months", days=60),
+    APITokenExpiryOption(name="3 months", slug="3_months", days=90),
+    APITokenExpiryOption(name="4 months", slug="4_months", days=120),
+    APITokenExpiryOption(name="5 months", slug="5_months", days=150),
+    APITokenExpiryOption(name="6 months", slug="6_months", days=180),
+    APITokenExpiryOption(name="7 months", slug="7_months", days=210),
+    APITokenExpiryOption(name="8 months", slug="8_months", days=240),
+    APITokenExpiryOption(name="9 months", slug="9_months", days=270),
+    APITokenExpiryOption(name="10 months", slug="10_months", days=300),
+    APITokenExpiryOption(name="11 months", slug="11_months", days=330),
+    APITokenExpiryOption(name="1 year", slug="1_year", days=365),
+    APITokenExpiryOption(name="forever", slug="forever", days=None),
+]
+
+_EXPIRY_DAYS_BY_SLUG = {opt.slug: opt.days for opt in API_TOKEN_EXPIRY_OPTIONS}
+
+
+@router.get("/token/expiry-options", response_model=List[APITokenExpiryOption])
+async def list_expiry_options(
+    current_user=Depends(get_current_user_from_auth),
+):
+    """List the available API token expiry options."""
+    return API_TOKEN_EXPIRY_OPTIONS
+
+
 @router.post("/token", response_model=APIToken)
 async def create_token(
     token_create: APITokenCreate,
@@ -637,8 +670,22 @@ async def create_token(
         # Create token for the current user
         user_id = current_user.id
 
+    expiry_slug = token_create.expiry or "forever"
+    if expiry_slug not in _EXPIRY_DAYS_BY_SLUG:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid expiry option: {expiry_slug}",
+        )
+
+    days = _EXPIRY_DAYS_BY_SLUG[expiry_slug]
+    expires_at = datetime.now(UTC) + timedelta(days=days) if days is not None else None
+
     db_token = DBAPIToken(
-        name=token_create.name, token=generate_api_token(), user_id=user_id
+        name=token_create.name,
+        token=generate_api_token(),
+        user_id=user_id,
+        expires_at=expires_at,
+        expiry_option=expiry_slug,
     )
     db.add(db_token)
     db.commit()
