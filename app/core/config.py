@@ -104,6 +104,44 @@ class Settings(BaseSettings):
     SIGNUP_EVENTS_RETENTION_DAYS: int = int(
         os.getenv("SIGNUP_EVENTS_RETENTION_DAYS", "7")
     )
+    # --- Budget threshold alerts (AI-448) ---
+    # Off by default: enabling it starts sending webhooks to a third party, so it
+    # must be an explicit per-environment decision.
+    BUDGET_ALERT_ENABLED: bool = os.getenv("BUDGET_ALERT_ENABLED", "false") == "true"
+    # Percentages of budget at which to notify, ascending, comma-separated.
+    BUDGET_ALERT_THRESHOLDS: str = os.getenv("BUDGET_ALERT_THRESHOLDS", "50,75,90,100")
+    # Full destination URL, not a base — the receiving path is MOAD's to choose,
+    # so it is configured rather than hardcoded here.
+    BUDGET_ALERT_WEBHOOK_URL: str = os.getenv("BUDGET_ALERT_WEBHOOK_URL", "")
+    # Bearer token for the webhook. Falls back to the existing MOAD token so a
+    # deployment that already talks to MOAD needs no extra secret.
+    BUDGET_ALERT_WEBHOOK_TOKEN: str = os.getenv(
+        "BUDGET_ALERT_WEBHOOK_TOKEN", os.getenv("MOAD_DASHBOARD_API_TOKEN", "")
+    )
+    BUDGET_ALERT_WEBHOOK_TIMEOUT: float = float(
+        os.getenv("BUDGET_ALERT_WEBHOOK_TIMEOUT", "30")
+    )
+    BUDGET_ALERT_BATCH_SIZE: int = int(os.getenv("BUDGET_ALERT_BATCH_SIZE", "200"))
+    BUDGET_ALERT_REGION_CONCURRENCY: int = int(
+        os.getenv("BUDGET_ALERT_REGION_CONCURRENCY", "4")
+    )
+    # How far back the daily-activity sweep reaches. It must cover the oldest
+    # still-valid ledger entry, because spend is counted from that entry's purchase
+    # date — a shorter window understates the percentage. POOL entries live for
+    # POOL_PURCHASE_EXPIRY_DAYS (365), so the default clears that with margin. The
+    # cost is one extra day-row per day, all within a single page.
+    BUDGET_ALERT_MAX_LOOKBACK_DAYS: int = int(
+        os.getenv("BUDGET_ALERT_MAX_LOOKBACK_DAYS", "370")
+    )
+    # How long a budget *decrease* (an expired ledger entry, an edited spend cap)
+    # keeps a team in the recheck set. A decrease raises the percentage without any
+    # traffic, so such a team would otherwise never be looked at. Spans several
+    # ticks deliberately: alert state prevents re-notification, so looking too
+    # often is harmless where missing the one relevant tick is not.
+    BUDGET_ALERT_RECHECK_GRACE_HOURS: int = int(
+        os.getenv("BUDGET_ALERT_RECHECK_GRACE_HOURS", "24")
+    )
+
     PROMETHEUS_API_KEY: str = os.getenv("PROMETHEUS_API_KEY", "")
     POOL_PURCHASE_EXPIRY_DAYS: int = int(os.getenv("POOL_PURCHASE_EXPIRY_DAYS", "365"))
     PERIODIC_TOPUP_EXPIRY_DAYS: int = int(

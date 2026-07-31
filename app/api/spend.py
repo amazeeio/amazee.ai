@@ -1,5 +1,4 @@
 import logging
-import re
 from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -22,6 +21,10 @@ from app.core.security import (
     get_current_user_from_auth,
     get_private_ai_access,
     get_role_min_team_admin,
+)
+from app.core.spend_period_service import (
+    compute_period_start,
+    resolve_team_period_window,
 )
 from app.db.database import get_db
 from app.db.models import (
@@ -65,51 +68,10 @@ logger = logging.getLogger(__name__)
 MONTHLY_BUDGET_DURATION = "1mo"
 
 
-def _compute_period_start(
-    budget_reset_at: datetime | None, budget_duration: str | None
-) -> datetime | None:
-    """
-    Derive the start of the current budget period from LiteLLM's
-    ``budget_reset_at`` (end-of-period) and ``budget_duration``.
-
-    LiteLLM sets ``budget_reset_at`` to the moment the budget will auto-reset.
-    For ``"Nd"`` durations the reset is rolling N days after the last update;
-    for ``"1mo"`` / ``"30d"`` it snaps to the 1st of the next calendar month.
-
-    We parse the duration string and subtract from ``budget_reset_at`` to get
-    a best-effort calendar ``period_start``.  Returns ``None`` when either
-    input is missing or the duration cannot be parsed.
-    """
-    if budget_reset_at is None or not budget_duration:
-        return None
-
-    # Handle "1mo" / "30d" — both snap to 1st of next calendar month
-    # so the period start is always the 1st of the current month.
-    if budget_duration in ("1mo", "30d"):
-        # budget_reset_at is midnight on the 1st of next month.
-        # If reset is on 1st, the period that just ended started last month.
-        if budget_reset_at.day == 1:
-            if budget_reset_at.month == 1:
-                return budget_reset_at.replace(
-                    year=budget_reset_at.year - 1, month=12, day=1
-                )
-            return budget_reset_at.replace(month=budget_reset_at.month - 1, day=1)
-        return budget_reset_at.replace(day=1)
-
-    match = re.fullmatch(r"(\d+)([dhms])", budget_duration)
-    if not match:
-        return None
-    value = int(match.group(1))
-    unit = match.group(2)
-    if unit == "d":
-        return budget_reset_at - timedelta(days=value)
-    if unit == "h":
-        return budget_reset_at - timedelta(hours=value)
-    if unit == "m":
-        return budget_reset_at - timedelta(minutes=value)
-    if unit == "s":
-        return budget_reset_at - timedelta(seconds=value)
-    return None
+# Period-window maths lives in spend_period_service so the budget-threshold
+# alert engine derives the same window as this API. Kept under the original
+# private name because callers (and tests) already import it from here.
+_compute_period_start = compute_period_start
 
 
 @router.get(
@@ -973,64 +935,15 @@ async def get_team_spend(
     # For subscription-managed POOL teams, expose cycle window semantics from
     # Amazee DB ledger truth instead of LiteLLM counters.
     if team.budget_type == BudgetType.POOL:
-        now = datetime.now(UTC)
-        active_subscription = (
-            db.query(DBPeriodicBudgetLedgerEntry)
-            .filter(
-                DBPeriodicBudgetLedgerEntry.team_id == team_id,
-                DBPeriodicBudgetLedgerEntry.region_id == region_id,
-                DBPeriodicBudgetLedgerEntry.entry_type == "subscription",
-                DBPeriodicBudgetLedgerEntry.is_active.is_(True),
-                DBPeriodicBudgetLedgerEntry.effective_period_start.isnot(None),
-                DBPeriodicBudgetLedgerEntry.effective_period_end.isnot(None),
-                DBPeriodicBudgetLedgerEntry.effective_period_end > now,
-            )
-            .order_by(
-                DBPeriodicBudgetLedgerEntry.effective_period_end.desc(),
-                DBPeriodicBudgetLedgerEntry.id.desc(),
-            )
-            .first()
-        )
+        pool_window = resolve_team_period_window(db, team, region_id)
+        team_budget_duration = pool_window.budget_duration
+        team_budget_reset_at = pool_window.period_end
+        team_period_start = pool_window.period_start
+        active_subscription = pool_window.active_subscription
         if active_subscription is not None:
-            team_budget_duration = "31d"
-            team_budget_reset_at = active_subscription.effective_period_end
-            team_period_start = active_subscription.effective_period_start
             # For POOL teams, expose only current-cycle subscription amount.
             sub_cycle_budget_cents = int(active_subscription.amount_cents or 0)
             periodic_budget_view = round(sub_cycle_budget_cents / 100.0, 4)
-        else:
-            active_topup = (
-                db.query(DBPeriodicBudgetLedgerEntry)
-                .filter(
-                    DBPeriodicBudgetLedgerEntry.team_id == team_id,
-                    DBPeriodicBudgetLedgerEntry.region_id == region_id,
-                    DBPeriodicBudgetLedgerEntry.entry_type.in_(
-                        ["topup", "topup_rollover"]
-                    ),
-                    DBPeriodicBudgetLedgerEntry.is_active.is_(True),
-                    (
-                        DBPeriodicBudgetLedgerEntry.expires_at.is_(None)
-                        | (DBPeriodicBudgetLedgerEntry.expires_at > now)
-                    ),
-                )
-                .order_by(
-                    DBPeriodicBudgetLedgerEntry.purchased_at.desc(),
-                    DBPeriodicBudgetLedgerEntry.id.desc(),
-                )
-                .first()
-            )
-            pool_duration = f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
-            team_budget_duration = pool_duration
-            if active_topup is not None and active_topup.purchased_at is not None:
-                anchor = active_topup.purchased_at
-            else:
-                anchor = team.created_at or now
-            if anchor.tzinfo is None:
-                anchor = anchor.replace(tzinfo=UTC)
-            team_period_start = anchor
-            team_budget_reset_at = anchor + timedelta(
-                days=settings.POOL_PURCHASE_EXPIRY_DAYS
-            )
 
     if team.budget_type != BudgetType.POOL:
         periodic_budget_view = None
