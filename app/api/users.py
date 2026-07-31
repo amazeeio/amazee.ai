@@ -759,9 +759,7 @@ async def list_users(
         )
 
     if search:
-        escaped = (
-            search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        )
+        escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         query = query.filter(DBUser.email.ilike(f"%{escaped}%", escape="\\"))
     if team:
         escaped = team.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
