@@ -16,11 +16,11 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from sqlalchemy.orm import sessionmaker  # noqa: E402
+from sqlalchemy.orm import sessionmaker
 
-from app.core.locking import release_lock, try_acquire_lock  # noqa: E402
-from app.core.worker import reap_trial_keys  # noqa: E402
-from app.db.database import engine  # noqa: E402
+from app.core.locking import release_lock, try_acquire_lock
+from app.core.worker import reap_trial_keys
+from app.db.database import engine
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
