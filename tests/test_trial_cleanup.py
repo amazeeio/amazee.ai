@@ -10,6 +10,7 @@ from app.core.trial_cleanup import (
     LIVE_REGION_MIN_AGE_DAYS,
     LiveTrialRegionError,
     assert_safe_for_region,
+    assess_selection,
     delete_trial_key,
     resolve_live_trial_region,
     select_trial_keys,
@@ -302,6 +303,86 @@ def test_selection_skips_keys_with_spend(
     selected = select_trial_keys(db, old_region.id, unused_only=True)
 
     assert [k.id for k in selected] == [unused.id]
+
+
+def test_spend_filter_applies_before_the_limit(
+    db: Session, trial_team: DBTeam, old_region: DBRegion
+):
+    """Regression: the batch must be filled with reapable keys, not filtered after.
+
+    Keys with spend can never be deleted and sort to the front by id. If the
+    SQL LIMIT ran before the spend filter, a batch smaller than the number of
+    leading spent keys would come back empty every run and the reaper would
+    stall forever.
+    """
+    for i in range(3):
+        _make_trial_key(
+            db, trial_team, old_region, email=f"spent{i}@example.com", spend=0.5
+        )
+    unused = [
+        _make_trial_key(
+            db, trial_team, old_region, email=f"unused{i}@example.com", spend=0.0
+        )[1]
+        for i in range(3)
+    ]
+
+    selected = select_trial_keys(db, old_region.id, unused_only=True, limit=2)
+
+    assert len(selected) == 2
+    assert [k.id for k in selected] == [unused[0].id, unused[1].id]
+
+
+def test_selection_risk_flags_used_and_recent_keys(
+    db: Session, trial_team: DBTeam, old_region: DBRegion
+):
+    """A retired region can still hold keys that are in use or days old."""
+    now = datetime.now(UTC)
+    _make_trial_key(
+        db,
+        trial_team,
+        old_region,
+        email="used@example.com",
+        spend=1.5,
+        created_at=now - timedelta(days=200),
+    )
+    _make_trial_key(
+        db,
+        trial_team,
+        old_region,
+        email="new@example.com",
+        created_at=now - timedelta(days=3),
+    )
+    _make_trial_key(
+        db,
+        trial_team,
+        old_region,
+        email="stale@example.com",
+        created_at=now - timedelta(days=200),
+    )
+
+    risk = assess_selection(db, select_trial_keys(db, old_region.id))
+
+    assert risk.total == 3
+    assert risk.with_spend == 1
+    assert risk.younger_than_30d == 1
+    assert risk.needs_attention
+
+
+def test_selection_risk_is_quiet_for_a_clean_batch(
+    db: Session, trial_team: DBTeam, old_region: DBRegion
+):
+    _make_trial_key(
+        db,
+        trial_team,
+        old_region,
+        email="abandoned@example.com",
+        created_at=datetime.now(UTC) - timedelta(days=200),
+    )
+
+    risk = assess_selection(db, select_trial_keys(db, old_region.id))
+
+    assert risk.total == 1
+    assert not risk.needs_attention
 
 
 def test_missing_budget_row_counts_as_unused(
