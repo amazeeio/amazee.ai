@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import or_
+from sqlalchemy import exists, or_
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -193,42 +193,98 @@ def select_trial_keys(
         cutoff = datetime.now(UTC) - timedelta(days=older_than_days)
         query = query.filter(DBPrivateAIKey.created_at < cutoff)
 
+    if unused_only:
+        query = query.filter(~_has_recorded_spend())
+
     query = query.order_by(DBPrivateAIKey.id)
     if limit is not None:
         query = query.limit(limit)
 
-    keys = query.all()
-    if unused_only:
-        keys = [key for key in keys if _key_is_unused(db, key)]
-    return keys
+    return query.all()
 
 
-def _key_is_unused(db: Session, key: DBPrivateAIKey) -> bool:
-    """True when the key's owner has no recorded spend.
+def _has_recorded_spend():
+    """SQL predicate: this key's owner has spend recorded against them.
+
+    Must be applied in the query, never as a Python filter over the results.
+    ``limit`` is a SQL LIMIT, so filtering afterwards would pick the batch
+    first and shrink it second: keys with spend are permanently undeletable and
+    sort to the front by id, so once their number exceeds the batch size every
+    run would select the same undeletable prefix, filter it away, and reap
+    nothing — forever.
 
     Reads the owner's BUDGET ``limited_resources`` row rather than asking
-    LiteLLM, so filtering thousands of keys stays a single query per key
-    instead of a network round trip. ``current_value`` is the same figure the
-    budget system maintains.
+    LiteLLM, so filtering thousands of keys costs one join instead of a network
+    round trip each. ``current_value`` is the figure the budget system
+    maintains, and it is cumulative — LiteLLM's monthly ``budget_duration``
+    reset does not roll it back — so it stays a safe signal of "this trial was
+    used at some point".
 
-    A missing row, or a NULL ``current_value``, counts as unused: both mean
-    nothing was ever recorded against this trial, which is the normal state for
-    the ~99.6% of trials that are never called.
+    A missing row, a NULL ``current_value``, or a NULL ``owner_id`` all mean no
+    spend was ever recorded, which is the normal state for the ~99.6% of trials
+    that are never called.
     """
-    if key.owner_id is None:
-        return True
-    limit = (
-        db.query(DBLimitedResource)
-        .filter(
-            DBLimitedResource.owner_type == OwnerType.USER,
-            DBLimitedResource.owner_id == key.owner_id,
-            DBLimitedResource.resource == ResourceType.BUDGET,
-        )
-        .first()
+    return exists().where(
+        DBLimitedResource.owner_type == OwnerType.USER,
+        DBLimitedResource.owner_id == DBPrivateAIKey.owner_id,
+        DBLimitedResource.resource == ResourceType.BUDGET,
+        DBLimitedResource.current_value > 0,
     )
-    if limit is None or limit.current_value is None:
-        return True
-    return limit.current_value <= 0
+
+
+@dataclass
+class SelectionRisk:
+    """What is inside a selection that the operator should see before deleting.
+
+    A retired region can be swept unfiltered — that is how a decommission
+    drains one, and requiring filters there would make the job impossible. But
+    a region only stopped issuing trials when ``AI_TRIAL_REGION`` was repointed,
+    which may have been days ago, so its keys can still be young or in use. The
+    count alone does not show that. This does, so the choice is informed rather
+    than blind.
+    """
+
+    total: int = 0
+    with_spend: int = 0
+    younger_than_30d: int = 0
+
+    @property
+    def needs_attention(self) -> bool:
+        return bool(self.with_spend or self.younger_than_30d)
+
+
+def assess_selection(db: Session, keys: list[DBPrivateAIKey]) -> SelectionRisk:
+    """Count keys in a selection that are used or recent."""
+    risk = SelectionRisk(total=len(keys))
+    if not keys:
+        return risk
+
+    cutoff = datetime.now(UTC) - timedelta(days=30)
+    owner_ids = {k.owner_id for k in keys if k.owner_id is not None}
+    spending_owners = set()
+    if owner_ids:
+        spending_owners = {
+            row[0]
+            for row in db.query(DBLimitedResource.owner_id)
+            .filter(
+                DBLimitedResource.owner_type == OwnerType.USER,
+                DBLimitedResource.owner_id.in_(owner_ids),
+                DBLimitedResource.resource == ResourceType.BUDGET,
+                DBLimitedResource.current_value > 0,
+            )
+            .all()
+        }
+
+    for key in keys:
+        if key.owner_id in spending_owners:
+            risk.with_spend += 1
+        created = key.created_at
+        if created is not None:
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=UTC)
+            if created >= cutoff:
+                risk.younger_than_30d += 1
+    return risk
 
 
 @dataclass

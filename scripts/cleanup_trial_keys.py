@@ -41,6 +41,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from app.core.trial_cleanup import (  # noqa: E402
     LiveTrialRegionError,
     TrialCleanupSummary,
+    assess_selection,
     delete_trial_key,
     select_trial_keys,
 )
@@ -93,6 +94,21 @@ async def run(args) -> int:
         if not keys:
             return 0
 
+        # A region stops issuing trials the moment AI_TRIAL_REGION is repointed,
+        # which may have been days ago — so "not the live region" does not mean
+        # "nothing here is in use". Show what is actually in the selection.
+        risk = assess_selection(db, keys)
+        if risk.needs_attention:
+            print("\n  ! This selection is not all abandoned keys:")
+            if risk.with_spend:
+                print(f"    {risk.with_spend} key(s) have recorded spend — "
+                      "someone used these")
+            if risk.younger_than_30d:
+                print(f"    {risk.younger_than_30d} key(s) were created in the "
+                      "last 30 days")
+            print("    Deleting them destroys working keys and their vector "
+                  "databases.")
+
         if not args.apply:
             for key in keys[:10]:
                 print(
@@ -105,10 +121,23 @@ async def run(args) -> int:
             return 0
 
         if not args.yes:
-            answer = input(f"\nDelete {len(keys)} key(s) from {region.name}? (y/N): ")
-            if answer.lower() != "y":
-                print("Cancelled.")
-                return 0
+            if risk.needs_attention:
+                # A plain "y" is too easy to type past when used or recent keys
+                # are in the batch. Make the operator name the region.
+                answer = input(
+                    f"\nType the region name ({region.name}) to confirm "
+                    "deleting used/recent keys: "
+                )
+                if answer.strip() != region.name:
+                    print("Cancelled.")
+                    return 0
+            else:
+                answer = input(
+                    f"\nDelete {len(keys)} key(s) from {region.name}? (y/N): "
+                )
+                if answer.lower() != "y":
+                    print("Cancelled.")
+                    return 0
 
         # One service per region, not per key — each key is an HTTP call plus a
         # DROP DATABASE, and reconnecting for every one of thousands is wasteful.
