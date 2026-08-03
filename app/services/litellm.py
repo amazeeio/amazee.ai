@@ -21,7 +21,16 @@ logger = logging.getLogger(__name__)
 # /v1/messages, /models, pass-through providers — and excludes /team/*, /key/*,
 # /user/* and /spend/*. Used for keys that must stay private from their own
 # team, i.e. the shared anonymous-trial team.
-INFERENCE_ONLY_ROUTES = ["llm_api_routes"]
+#
+# /model/info is added explicitly: it is an info route, NOT part of
+# `llm_api_routes`. The Drupal module (`ai_provider_amazeeio`) lists models
+# through it with whatever key it holds — trial keys and self-service keys
+# alike — from `AmazeeClient::models()` and from the provider config form, which
+# needs the human-readable description that the OpenAI-style /models list does
+# not carry. Unrestricted keys reach it anyway, so only the route-restricted
+# trial keys need it named here; without it those sites 403 on model discovery.
+# It exposes the region's model catalogue only, not other keys.
+INFERENCE_ONLY_ROUTES = ["llm_api_routes", "/model/info"]
 
 
 class LiteLLMService:
@@ -472,6 +481,86 @@ class LiteLLMService:
             page_size=page_size,
         )
 
+    async def get_all_team_daily_activity(
+        self,
+        start_date: str,
+        end_date: str,
+        page_size: int = 1000,
+    ) -> list[dict]:
+        """Fetch per-day usage for **every active team** in this region.
+
+        Same endpoint as :meth:`get_team_daily_activity` but with no entity
+        filter, which LiteLLM answers with one row per UTC day. Each row's
+        ``breakdown.entities`` is keyed by LiteLLM team id and each
+        ``breakdown.api_keys`` by hashed token, so a single sweep yields period
+        spend for every team *and* key that had any traffic.
+
+        This is deliberately O(active entities), not O(total keys): idle keys
+        produce no daily-spend rows at all. That is what makes a frequent poll
+        affordable at 100k keys, where enumerating every key is not.
+        """
+        return await self._fetch_daily_activity(
+            "/team/daily/activity",
+            {},
+            start_date=start_date,
+            end_date=end_date,
+            page_size=page_size,
+        )
+
+    async def list_keys_for_team(
+        self, team_id: str, page_size: int = 100
+    ) -> list[dict]:
+        """Return the full key objects for one LiteLLM team.
+
+        Used to confirm exact ``spend`` and ``max_budget`` for a team that a
+        daily-activity sweep has already flagged as worth looking at. Scoping
+        by team keeps this cheap; an unscoped ``/key/list`` walk would defeat
+        the point of the sweep.
+
+        ``page_size`` is capped at 100 by LiteLLM (larger values 422), so it is
+        clamped rather than passed through.
+        """
+        page_size = max(1, min(int(page_size), 100))
+        keys: list[dict] = []
+        page = 1
+        max_pages = 1000
+        try:
+            async with httpx.AsyncClient() as client:
+                while page <= max_pages:
+                    response = await client.get(
+                        f"{self.api_url}/key/list",
+                        headers={"Authorization": f"Bearer {self.master_key}"},
+                        params={
+                            "team_id": team_id,
+                            "page": page,
+                            "size": page_size,
+                            "return_full_object": "true",
+                        },
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    batch = [k for k in (data.get("keys") or []) if isinstance(k, dict)]
+                    keys.extend(batch)
+                    # Stop on a short or empty page. total_pages is only a
+                    # secondary check: when it is absent, trusting it alone
+                    # truncates the walk after page 1.
+                    if len(batch) < page_size:
+                        break
+                    total_pages = data.get("total_pages") or 0
+                    if total_pages and page >= total_pages:
+                        break
+                    page += 1
+            return keys
+        except httpx.HTTPStatusError as e:
+            status_code, error_msg, _ = self._parse_http_error(e)
+            logger.error(
+                "Error listing LiteLLM keys for team %s: %s", team_id, error_msg
+            )
+            raise HTTPException(
+                status_code=status_code,
+                detail=f"Failed to list LiteLLM keys for team: {error_msg}",
+            )
+
     async def update_budget(
         self,
         litellm_token: str,
@@ -714,6 +803,29 @@ class LiteLLMService:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to get LiteLLM model info: {error_msg}",
+            )
+
+    async def get_router_settings(self) -> dict:
+        """Get LiteLLM router settings (includes model_group_alias)."""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.api_url}/router/settings",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as e:
+            error_msg = str(e)
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    error_details = e.response.json()
+                    error_msg = f"Status {e.response.status_code}: {error_details}"
+                except ValueError:
+                    error_msg = f"Status {e.response.status_code}: {e.response.text}"
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get LiteLLM router settings: {error_msg}",
             )
 
     async def get_cost_margin_config(self) -> dict:

@@ -393,29 +393,65 @@ async def sign_in(
         # Only NEW-account creation is velocity-limited; existing-user code logins
         # (the common case, incl. many users behind one corporate IP) are not.
         enforce_signup_velocity(request, db, email=sign_in_username, endpoint="sign-in")
-        # Resolve the sign-up region — first active non-dedicated region
-        sign_up_region = (
-            db.query(DBRegion)
-            .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
-            .order_by(DBRegion.id)
+        # Reuse a team orphaned by a user hard-delete: same admin_email, not
+        # soft-deleted. Without this, the unique admin_email on the leftover
+        # team makes re-registration fail forever ("Email already registered").
+        team = (
+            db.query(DBTeam)
+            .filter(
+                func.lower(DBTeam.admin_email) == sign_in_username,
+                DBTeam.deleted_at.is_(None),
+            )
             .first()
         )
-        if not sign_up_region:
-            auth_logger.error("No active public region available for new team creation")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="No active public region available",
+        if team is None and "@" in sign_in_username:
+            # The orphaned team may store a plus-tagged admin_email
+            # (e.g. "user+p12@…") while sign_in_username is the stripped
+            # base form — match tagged variants too.
+            # Escape LIKE wildcards — '_' is common in email local parts.
+            local, domain = (
+                part.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                for part in sign_in_username.split("@", 1)
             )
-        # First create the team
-        team_data = TeamCreate(
-            name=f"Team {sign_in_username}",
-            admin_email=sign_in_username,
-            phone="",  # Required by schema but not used for auto-created teams
-            billing_address="",  # Required by schema but not used for auto-created teams
-            budget_type=BudgetType.PERIODIC,
-            region_id=sign_up_region.id,
-        )
-        team = await register_team(team_data, db)
+            team = (
+                db.query(DBTeam)
+                .filter(
+                    DBTeam.admin_email.ilike(f"{local}+%@{domain}", escape="\\"),
+                    DBTeam.deleted_at.is_(None),
+                )
+                .order_by(DBTeam.id)
+                .first()
+            )
+        if team:
+            auth_logger.info(
+                f"Re-attaching {sign_in_username} to existing team {team.id} as admin"
+            )
+        else:
+            # Resolve the sign-up region — first active non-dedicated region
+            sign_up_region = (
+                db.query(DBRegion)
+                .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
+                .order_by(DBRegion.id)
+                .first()
+            )
+            if not sign_up_region:
+                auth_logger.error(
+                    "No active public region available for new team creation"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="No active public region available",
+                )
+            # First create the team
+            team_data = TeamCreate(
+                name=f"Team {sign_in_username}",
+                admin_email=sign_in_username,
+                phone="",  # Required by schema but not used for auto-created teams
+                billing_address="",  # Required by schema but not used for auto-created teams
+                budget_type=BudgetType.PERIODIC,
+                region_id=sign_up_region.id,
+            )
+            team = await register_team(team_data, db)
 
         user_data = UserCreate(
             email=sign_in_username,
@@ -810,8 +846,17 @@ async def generate_trial_access(
             .first()
         )
 
-    # If no region is found, raise an error
+    # If no region is found, raise an error.
+    # Logged at error level because this fails EVERY trial signup, silently: the
+    # caller gets a 404 and nothing else records it. Renaming or deactivating
+    # the trial region is enough to cause it, and the only other symptom is
+    # signup volume dropping to zero.
     if not region:
+        auth_logger.error(
+            "AI_TRIAL_REGION=%r does not match an active region. "
+            "All trial signups are failing with 404.",
+            settings.AI_TRIAL_REGION,
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No region available for trial access: {settings.AI_TRIAL_REGION}",
@@ -989,7 +1034,26 @@ async def generate_trial_access(
         # after the trial user was committed (e.g. key creation failing). An
         # orphaned trial user counts toward AI_TRIAL_MAX_USERS forever.
         # Each step is guarded separately so a cleanup failure never masks the
-        # original error; the user row goes first since it consumes trial capacity.
+        # original error.
+        #
+        # The LiteLLM key goes FIRST. Deleting the user row first and failing
+        # here leaves a working key that nothing in our database points at:
+        # every cleanup path we have iterates key rows, so an orphan like that
+        # is invisible to all of them and stays live until its natural expiry.
+        # The user row only consumes trial capacity, which is a counter we can
+        # raise; a stranded key stays live until its natural expiry and is not
+        # recoverable by any automated means.
+        try:
+            if private_ai_key and private_ai_key.litellm_token:
+                await litellm_service.delete_key(private_ai_key.litellm_token)
+        except Exception as cleanup_error:
+            # Log the alias, never the token: this line goes to shared logs.
+            # The alias is what identifies the key in LiteLLM's own admin UI.
+            auth_logger.error(
+                f"Trial cleanup failed to delete LiteLLM key for "
+                f"{user.email if user else 'unknown user'}; it is now orphaned "
+                f"and no cleanup job can find it: {cleanup_error}"
+            )
         try:
             if user:
                 db.delete(user)
@@ -999,13 +1063,6 @@ async def generate_trial_access(
             auth_logger.error(
                 f"Trial cleanup failed to delete user {user.email}; "
                 f"orphaned row still counts toward AI_TRIAL_MAX_USERS: {cleanup_error}"
-            )
-        try:
-            if private_ai_key:
-                await litellm_service.delete_key(private_ai_key.litellm_token)
-        except Exception as cleanup_error:
-            auth_logger.error(
-                f"Trial cleanup failed to delete LiteLLM key: {cleanup_error}"
             )
 
         if isinstance(e, HTTPException):
