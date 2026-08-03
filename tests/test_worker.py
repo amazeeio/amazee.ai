@@ -3631,3 +3631,115 @@ async def test_invoice_ledger_duplicate_invoice_id_is_idempotent(
         f"Double-allocation detected: consumed_cents={topup_entry.consumed_cents}, "
         "expected at most 100¢ from a single FIFO run"
     )
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_does_not_expire_anonymous_trial_team_keys(
+    mock_litellm,
+    mock_ses,
+    mock_limit_service,
+    db,
+    test_region,
+):
+    """The anonymous-trial team must never have its keys expired wholesale.
+
+    Its keys belong to thousands of unrelated users, and this branch expires
+    every key in every region the team holds one in. The team's own freshness
+    expired long ago and never renews, so without an exemption every trial key
+    is re-expired on each run that passes the 24h notification gate — including
+    keys minted minutes earlier.
+    """
+    from app.core.config import settings
+    from app.db.models import DBUser  # noqa: F811
+    trial_team = DBTeam(
+        name="AI Trial Team",
+        admin_email=settings.AI_TRIAL_TEAM_EMAIL,
+        is_active=True,
+        created_at=datetime.now(UTC) - timedelta(days=200),
+    )
+    db.add(trial_team)
+    db.commit()
+    db.refresh(trial_team)
+
+    trial_user = DBUser(
+        email="trial-1-abc@example.com",
+        team_id=trial_team.id,
+        is_active=True,
+        role="user",
+    )
+    db.add(trial_user)
+    db.commit()
+    db.refresh(trial_user)
+
+    # Minted moments ago — exactly the key the old behaviour destroyed.
+    fresh_key = DBPrivateAIKey(
+        name="Trial Key for trial-1-abc@example.com",
+        database_name="db_trial_1",
+        database_username="u_trial_1",
+        database_password="pw",
+        owner_id=trial_user.id,
+        team_id=trial_team.id,
+        region_id=test_region.id,
+        litellm_token="trial_token_1",
+        created_at=datetime.now(UTC),
+    )
+    db.add(fresh_key)
+    db.commit()
+
+    mock_litellm_instance = mock_litellm.return_value
+    mock_litellm_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {"spend": 0.0, "max_budget": 2.0, "key_alias": "trial-key"}
+        }
+    )
+    mock_litellm_instance.update_key_duration = AsyncMock()
+
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
+    await monitor_teams(db)
+
+    mock_litellm_instance.update_key_duration.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_does_not_retire_anonymous_trial_team(
+    mock_litellm,
+    mock_ses,
+    mock_limit_service,
+    db,
+    test_region,
+):
+    """Inactivity must never soft-delete the team that owns every trial key.
+
+    Activity is measured from the newest trial user or key, so a long enough
+    lull in signups would otherwise start the retention clock — and the
+    hard-delete job then removes the keys, users and team across every region.
+    """
+    from app.core.config import settings
+    trial_team = DBTeam(
+        name="AI Trial Team",
+        admin_email=settings.AI_TRIAL_TEAM_EMAIL,
+        is_active=True,
+        created_at=datetime.now(UTC) - timedelta(days=400),
+    )
+    db.add(trial_team)
+    db.commit()
+    db.refresh(trial_team)
+
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
+    await monitor_teams(db)
+
+    db.refresh(trial_team)
+    assert trial_team.retention_warning_sent_at is None
+    assert trial_team.deleted_at is None
