@@ -2964,13 +2964,19 @@ async def reap_trial_keys(db: Session):
 
     Includes the region new trials are issued on — that is the region that
     actually accumulates them, so skipping it would reap nothing that matters.
-    Safety comes from the filters instead: only keys older than
-    ``AI_TRIAL_RETENTION_DAYS`` with no recorded spend. Setting that below
-    ``LIVE_REGION_MIN_AGE_DAYS`` makes the guard refuse the live region rather
-    than risk deleting keys belonging to active trials.
+    Safety comes from age instead: only keys older than
+    ``AI_TRIAL_RETENTION_DAYS``. Setting that below ``LIVE_REGION_MIN_AGE_DAYS``
+    makes the guard refuse the live region rather than risk deleting keys
+    belonging to active trials.
 
-    Never deletes a trial that recorded spend, however small, and never deletes
-    a row whose remote resources could not be removed first.
+    Age is the whole policy — spend is not consulted. An exhausted trial cannot
+    be topped up (the user registers a real key instead), and no trial key older
+    than 90 days has ever recorded spend on prod, so sparing used ones would
+    protect nobody while leaving their vector databases behind for good. A
+    90-day window also leaves an exhausted user seeing "out of budget" for far
+    longer than they would plausibly return, rather than a missing key.
+
+    Never deletes a row whose remote resources could not be removed first.
     """
     logger.info("Reaping abandoned trial keys")
     retention_days = settings.AI_TRIAL_RETENTION_DAYS
@@ -2984,7 +2990,6 @@ async def reap_trial_keys(db: Session):
                 db,
                 region.id,
                 older_than_days=retention_days,
-                unused_only=True,
                 limit=batch_size,
             )
         except LiveTrialRegionError as e:
@@ -2998,7 +3003,7 @@ async def reap_trial_keys(db: Session):
             continue
 
         logger.info(
-            "Region %s (%s): reaping %s trial key(s) older than %sd with no spend",
+            "Region %s (%s): reaping %s trial key(s) older than %sd",
             region.id,
             region.name,
             len(keys),
@@ -3017,6 +3022,10 @@ async def reap_trial_keys(db: Session):
                 key,
                 region,
                 delete_user=True,
+                # Age is the policy here, so a used key is a deliberate target
+                # rather than an accident. The flag exists to tell those two
+                # cases apart; it still guards the manual CLI's unfiltered path.
+                allow_used=True,
                 litellm_service=litellm_service,
                 postgres_manager=postgres_manager,
             )
