@@ -198,16 +198,40 @@ async def test_reaper_keeps_recent_trials(
 
 
 @pytest.mark.asyncio
-async def test_reaper_keeps_trials_that_spent_money(
+async def test_reaper_reaps_used_trials_once_old_enough(
     db: Session,
     trial_team: DBTeam,
     live_region: DBRegion,
     old_region: DBRegion,
     patched_services,
 ):
-    """Any recorded spend means a real user, however small the amount."""
+    """Age is the whole policy — spend does not exempt a trial.
+
+    An exhausted trial cannot be topped up, so sparing it would leave its vector
+    database behind for good while protecting nobody.
+    """
     _, key = _trial_key(
         db, trial_team, old_region, "spent@example.com", age_days=90, spend=0.01
+    )
+    key_id = key.id
+
+    summary = await reap_trial_keys(db)
+
+    assert summary.deleted == 1
+    assert db.query(DBPrivateAIKey).filter_by(id=key_id).first() is None
+
+
+@pytest.mark.asyncio
+async def test_reaper_keeps_recent_trials_even_when_used(
+    db: Session,
+    trial_team: DBTeam,
+    live_region: DBRegion,
+    old_region: DBRegion,
+    patched_services,
+):
+    """Recency still protects a trial; that is the only thing that does."""
+    _, key = _trial_key(
+        db, trial_team, old_region, "fresh-spent@example.com", age_days=5, spend=1.9
     )
     key_id = key.id
 

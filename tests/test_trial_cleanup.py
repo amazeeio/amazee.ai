@@ -149,16 +149,10 @@ def test_guard_refuses_an_unfiltered_sweep_of_the_live_region(
     assert settings.AI_TRIAL_REGION in str(exc.value)
 
 
-def test_guard_refuses_the_live_region_without_the_unused_filter(
-    db: Session, live_region: DBRegion
-):
-    with pytest.raises(LiveTrialRegionError):
-        assert_safe_for_region(db, live_region.id, older_than_days=90)
-
-
 def test_guard_refuses_the_live_region_without_an_age_filter(
     db: Session, live_region: DBRegion
 ):
+    """Age is the only signal, so its absence is what makes a sweep unsafe."""
     with pytest.raises(LiveTrialRegionError):
         assert_safe_for_region(db, live_region.id, unused_only=True)
 
@@ -171,16 +165,18 @@ def test_guard_refuses_too_young_an_age_on_the_live_region(
             db,
             live_region.id,
             older_than_days=LIVE_REGION_MIN_AGE_DAYS - 1,
-            unused_only=True,
         )
     assert str(LIVE_REGION_MIN_AGE_DAYS) in str(exc.value)
 
 
-def test_guard_allows_an_old_unused_sweep_of_the_live_region(
+def test_guard_allows_an_old_sweep_of_the_live_region(
     db: Session, live_region: DBRegion
 ):
-    """The live region must stay reapable — it is the one that accumulates."""
-    assert_safe_for_region(db, live_region.id, older_than_days=30, unused_only=True)
+    """The live region must stay reapable — it is the one that accumulates.
+
+    No unused_only required: a trial is reaped on age alone.
+    """
+    assert_safe_for_region(db, live_region.id, older_than_days=LIVE_REGION_MIN_AGE_DAYS)
 
 
 def test_guard_allows_anything_on_a_decommissioned_region(
@@ -232,9 +228,7 @@ def test_selection_reaps_only_abandoned_keys_on_the_live_region(
         created_at=now - timedelta(days=90),
     )
 
-    selected = select_trial_keys(
-        db, live_region.id, older_than_days=30, unused_only=True
-    )
+    selected = select_trial_keys(db, live_region.id, older_than_days=30)
 
     assert [k.id for k in selected] == [abandoned.id]
 

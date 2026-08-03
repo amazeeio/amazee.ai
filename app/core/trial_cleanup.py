@@ -4,12 +4,12 @@ Shared by the manual cleanup script and the scheduled reaper so the two cannot
 drift apart. Two rules live here rather than in the callers, because a caller
 that forgets either one causes damage that is not recoverable:
 
-1. **Every destructive call names exactly one region, and that region may not
-   be the live trial region.** On 2026-08-02 an ad-hoc script walked every
-   region and expired 1,110 keys that had just been minted on the *new* trial
-   region. ``select_trial_keys`` raises for the region ``AI_TRIAL_REGION``
-   resolves to, so the guard cannot be skipped by forgetting to call it —
-   there is no way to get a list of keys without going through it.
+1. **Every destructive call names exactly one region, and sweeping the live
+   trial region requires an age filter.** On 2026-08-02 a batch expiry was run
+   that was not scoped to one region, and it expired 1,110 keys that had just
+   been minted on the *new* trial region. ``select_trial_keys`` runs the guard
+   itself, so it cannot be skipped by forgetting to call it — there is no way
+   to get a list of keys without going through it.
 
 2. **A key row is deleted only once its remote resources are gone.** The
    LiteLLM key and the Postgres database outlive the row that points at them,
@@ -82,10 +82,13 @@ def resolve_live_trial_region(db: Session) -> Optional[DBRegion]:
     return region
 
 
-#: Youngest a key may be for the reaper to touch it on the region that is
-#: currently issuing trials. The 2026-08-02 incident deleted keys minted the
-#: same week; anything this old is abandoned, not in use.
-LIVE_REGION_MIN_AGE_DAYS = 7
+#: Youngest a key may be to be swept from the region currently issuing trials.
+#: The 2026-08-02 incident deleted keys minted the same week.
+#:
+#: Age is the only policy signal — a trial is reaped on age alone, used or not —
+#: so this floor is doing all the work on its own and is set well above the
+#: incident's window rather than just outside it.
+LIVE_REGION_MIN_AGE_DAYS = 30
 
 
 def assert_safe_for_region(
@@ -104,10 +107,16 @@ def assert_safe_for_region(
     What must never happen is an *unfiltered* sweep of it — that is the
     2026-08-02 incident, where every trial key on the new trial region was
     destroyed including ones minted the same day. So a sweep of the live region
-    is allowed only when it is narrowed to keys that are both old enough to be
-    abandoned and have never recorded any spend. Every other region is
-    unrestricted; it is not issuing trials, so nothing there can be in use by
-    someone who signed up minutes ago.
+    requires an age filter of at least ``LIVE_REGION_MIN_AGE_DAYS``. Every other
+    region is unrestricted; it is not issuing trials, so nothing there can be in
+    use by someone who signed up minutes ago.
+
+    Spend is deliberately not part of this: a trial is reaped on age alone.
+    Measured on prod, no trial key older than 90 days has ever recorded any
+    spend, and an exhausted trial has no way to add budget — the user registers
+    a real key instead — so keeping used ones indefinitely would protect nothing
+    while leaving their vector databases behind forever. ``unused_only`` remains
+    available as a caller's own extra caution, but the guard does not require it.
 
     An unresolvable ``AI_TRIAL_REGION`` does not block anything: no region is
     issuing trials in that state. It is logged because it also means trial
@@ -125,12 +134,12 @@ def assert_safe_for_region(
     if live.id != region_id:
         return
 
-    if not unused_only or older_than_days is None:
+    if older_than_days is None:
         raise LiveTrialRegionError(
             f"Region {region_id} ({live.name}) is the live trial region "
             f"(AI_TRIAL_REGION={settings.AI_TRIAL_REGION!r}). It can only be "
-            "swept with both an age filter and unused-only, so keys issued to "
-            "people who just signed up are never touched."
+            "swept with an age filter, so keys issued to people who just "
+            "signed up are never touched."
         )
     if older_than_days < LIVE_REGION_MIN_AGE_DAYS:
         raise LiveTrialRegionError(
@@ -162,8 +171,8 @@ def select_trial_keys(
 
     Always runs the live-region guard, so there is no way to obtain a list of
     keys to delete without it. The guard reads ``older_than_days`` and
-    ``unused_only``: on the live trial region both are mandatory, everywhere
-    else they are optional filters.
+    ``unused_only``: an age filter is mandatory on the live trial region,
+    everywhere else both are optional.
 
     A key belongs to a trial team by ``team_id`` or via its owner's ``team_id``
     — both are populated in practice, and matching only one silently misses
