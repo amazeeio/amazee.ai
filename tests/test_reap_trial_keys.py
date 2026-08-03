@@ -111,7 +111,7 @@ def patched_services():
 async def test_reaper_spares_fresh_keys_on_the_live_trial_region(
     db: Session, trial_team: DBTeam, live_region: DBRegion, patched_services
 ):
-    """The 2026-08-02 incident, as a regression test.
+    """Regression: a bulk sweep must not reach fresh signups.
 
     A key minted on the live trial region days ago belongs to someone who just
     signed up. It must survive the reaper.

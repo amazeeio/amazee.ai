@@ -143,7 +143,7 @@ def test_inactive_region_is_not_the_live_trial_region(
 def test_guard_refuses_an_unfiltered_sweep_of_the_live_region(
     db: Session, live_region: DBRegion
 ):
-    """The 2026-08-02 shape: take everything on the region issuing trials."""
+    """The dangerous shape: take everything on the region issuing trials."""
     with pytest.raises(LiveTrialRegionError) as exc:
         assert_safe_for_region(db, live_region.id)
     assert settings.AI_TRIAL_REGION in str(exc.value)
@@ -198,7 +198,7 @@ def test_guard_allows_when_trial_region_does_not_resolve(
 def test_selection_refuses_an_unfiltered_sweep_of_the_live_region(
     db: Session, trial_team: DBTeam, live_region: DBRegion
 ):
-    """This is the 2026-08-02 incident: keys on the new trial region.
+    """The dangerous case: keys on the region currently issuing trials.
 
     The guard is inside select_trial_keys so a caller cannot reach the keys
     without tripping it.
@@ -427,7 +427,7 @@ async def test_delete_removes_remote_resources_then_rows(
 async def test_dead_litellm_leaves_every_row_in_place(
     db: Session, trial_team: DBTeam, old_region: DBRegion
 ):
-    """The de103 rule: a dead proxy must not cost us the row.
+    """A dead proxy must not cost us the row.
 
     Deleting the row while the LiteLLM key survives strands it with nothing
     left pointing at it.

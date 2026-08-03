@@ -1040,10 +1040,9 @@ async def generate_trial_access(
         # here leaves a working key that nothing in our database points at:
         # every cleanup path we have iterates key rows, so an orphan like that
         # is invisible to all of them and stays live until its natural expiry.
-        # One such key was found on de103, minted 2026-04-07 and still valid
-        # until 2027. The user row only consumes trial capacity, which is a
-        # counter we can raise; a stranded key is not recoverable by any
-        # automated means.
+        # The user row only consumes trial capacity, which is a counter we can
+        # raise; a stranded key stays live until its natural expiry and is not
+        # recoverable by any automated means.
         try:
             if private_ai_key and private_ai_key.litellm_token:
                 await litellm_service.delete_key(private_ai_key.litellm_token)
