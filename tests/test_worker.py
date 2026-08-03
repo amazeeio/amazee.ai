@@ -3645,13 +3645,10 @@ async def test_monitor_teams_does_not_expire_anonymous_trial_team_keys(
     db,
     test_region,
 ):
-    """The anonymous-trial team must never have its keys expired wholesale.
+    """A trial key minted moments ago must survive monitor_teams.
 
-    Its keys belong to thousands of unrelated users, and this branch expires
-    every key in every region the team holds one in. The team's own freshness
-    expired long ago and never renews, so without an exemption every trial key
-    is re-expired on each run that passes the 24h notification gate — including
-    keys minted minutes earlier.
+    The trial team's freshness ran out long ago, so without an exemption every
+    trial key is expired on each run.
     """
     from app.core.config import settings
     from app.db.models import DBUser  # noqa: F811
@@ -3718,11 +3715,9 @@ async def test_monitor_teams_does_not_retire_anonymous_trial_team(
     db,
     test_region,
 ):
-    """Inactivity must never soft-delete the team that owns every trial key.
+    """A quiet trial team must not be retired for inactivity.
 
-    Activity is measured from the newest trial user or key, so a long enough
-    lull in signups would otherwise start the retention clock — and the
-    hard-delete job then removes the keys, users and team across every region.
+    Retiring it would soft-delete the team that owns every trial key.
     """
     from app.core.config import settings
     trial_team = DBTeam(
