@@ -1305,30 +1305,6 @@ class AdminModelBase(BaseModel):
     litellm_params: Optional[dict] = None
 
 
-class AdminModelCreate(AdminModelBase):
-    access_group_ids: Optional[List[int]] = None
-    is_alias: bool = False
-    alias_targets: Optional[List[AdminModelAliasTarget]] = None
-    # region_id -> params merged over litellm_params for that region
-    region_overrides: Optional[Dict[int, dict]] = None
-
-
-class AdminModelUpdate(BaseModel):
-    access_group_ids: Optional[List[int]] = None
-    alias_targets: Optional[List[AdminModelAliasTarget]] = None
-    region_overrides: Optional[Dict[int, dict]] = None
-    display_name: Optional[str] = None
-    provider: Optional[str] = None
-    type: Optional[str] = None
-    context_length: Optional[int] = None
-    max_output_tokens: Optional[int] = None
-    description: Optional[str] = None
-    real_eol: Optional[datetime] = None
-    override_eol: Optional[datetime] = None
-    is_active_globally: Optional[bool] = None
-    litellm_params: Optional[dict] = None
-
-
 class AdminModelResponse(AdminModelBase):
     id: int
     created_at: datetime
@@ -1340,58 +1316,6 @@ class AdminModelResponse(AdminModelBase):
     is_alias: bool = False
     alias_targets: List[AdminModelAliasTarget] = Field(default_factory=list)
     model_config = ConfigDict(from_attributes=True)
-
-
-class AdminModelRegionToggleRequest(BaseModel):
-    model_id: int
-    region_id: int
-    is_active: bool
-    # When provided, replaces the stored per-region params override
-    litellm_params_override: Optional[dict] = None
-
-
-class ImportableModelResponse(BaseModel):
-    model_id: str
-    display_name: str
-    provider: str
-    type: str
-    context_length: Optional[int] = None
-    max_output_tokens: Optional[int] = None
-    description: Optional[str] = None
-    litellm_params: Optional[dict] = None
-    credential_keys: List[str] = Field(default_factory=list)
-
-
-class AdminModelImport(AdminModelBase):
-    region_id: int
-    access_group_ids: Optional[List[int]] = None
-
-
-class AdminModelImportAllRequest(BaseModel):
-    region_id: int
-    access_group_ids: Optional[List[int]] = None
-
-
-class AdminModelImportAllResponse(BaseModel):
-    imported: List[str] = Field(default_factory=list)
-    skipped: List[str] = Field(default_factory=list)
-    errors: Dict[str, str] = Field(default_factory=dict)
-
-
-class BedrockCandidate(BaseModel):
-    """An upstream Bedrock model id an admin can pick as a region's backend id."""
-
-    model_id: str
-    model_name: str
-    provider_name: str
-    regions: List[str] = Field(default_factory=list)
-
-
-class BedrockCandidatesResponse(BaseModel):
-    query: str
-    candidates: List[BedrockCandidate] = Field(default_factory=list)
-    # regional area -> AWS regions considered "in area" (for UI highlighting)
-    area_aws_regions: Dict[str, List[str]] = Field(default_factory=dict)
 
 
 # The slug is the literal string synced into LiteLLM model_info.access_groups
