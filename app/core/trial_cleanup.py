@@ -29,7 +29,7 @@ from sqlalchemy import exists, or_
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.team_service import is_ai_trial_team
+from app.core.team_service import is_anonymous_trial_team
 from app.db.models import (
     DBAuditLog,
     DBBudgetAlertState,
@@ -150,10 +150,10 @@ def assert_safe_for_region(
 def get_trial_team_ids(db: Session) -> list[int]:
     """Ids of every team that pools anonymous trial users.
 
-    Normally exactly one. Returns a list because ``is_ai_trial_team`` matches on
+    Normally exactly one. Returns a list because ``is_anonymous_trial_team`` matches on
     ``admin_email`` and a manually created duplicate would otherwise be missed.
     """
-    return [team.id for team in db.query(DBTeam).all() if is_ai_trial_team(team)]
+    return [team.id for team in db.query(DBTeam).all() if is_anonymous_trial_team(team)]
 
 
 def select_trial_keys(
@@ -471,7 +471,7 @@ def _delete_trial_user(db: Session, user_id: int) -> tuple[bool, Optional[str]]:
     user = db.query(DBUser).filter(DBUser.id == user_id).first()
     if user is None:
         return False, "user row already gone"
-    if not is_ai_trial_team(user.team):
+    if not is_anonymous_trial_team(user.team):
         # Defensive: a non-trial owner means the selection query is wrong.
         return False, "owner is not in a trial team"
 
