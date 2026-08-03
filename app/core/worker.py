@@ -2414,11 +2414,14 @@ async def monitor_teams(db: Session):
 
                 # Now handle trial expiry notifications and key expiry (after retention checks)
                 is_pool_team = team.budget_type == BudgetType.POOL
-                # The anonymous-trial team is a permanent container for trial
-                # users, not a customer working through a trial period. Its
-                # freshness therefore runs out and never renews, and every
-                # lifecycle rule keyed on that would fire against it forever.
-                is_trial_team = is_ai_trial_team(team)
+                # NB two different "trials" meet here. TRIAL_OVER_DAYS /
+                # days_remaining above are the 30-day free trial of a real,
+                # signed-up member. This flag is the *anonymous* trial team
+                # (AI_TRIAL_TEAM_EMAIL) — a permanent container for unrelated
+                # trial users, not a customer working through a trial period.
+                # Its freshness therefore runs out and never renews, so every
+                # lifecycle rule keyed on that fires against it forever.
+                is_anonymous_trial_team = is_ai_trial_team(team)
 
                 # Check if team was monitored within 24 hours
                 should_send_notifications = settings.ENABLE_LIMITS
@@ -2432,7 +2435,7 @@ async def monitor_teams(db: Session):
                 # POOL teams have their own lifecycle and are excluded from trial notifications.
                 team_freshness = _monitor_team_freshness(team, db)
                 days_remaining = TRIAL_OVER_DAYS - team_freshness
-                if not is_pool_team and not is_trial_team:
+                if not is_pool_team and not is_anonymous_trial_team:
                     _send_expiry_notification(
                         db,
                         team,
@@ -2460,7 +2463,7 @@ async def monitor_teams(db: Session):
                 if (
                     not has_products
                     and not is_pool_team
-                    and not is_trial_team
+                    and not is_anonymous_trial_team
                     and days_remaining <= 0
                     and should_send_notifications
                 ):
