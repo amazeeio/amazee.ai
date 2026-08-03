@@ -452,10 +452,12 @@ class DBAuditLog(Base):
     __tablename__ = "audit_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, nullable=False, default=lambda: datetime.now(UTC))
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    event_type = Column(String, nullable=False)
-    resource_type = Column(String, nullable=False)
+    timestamp = Column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC), index=True
+    )
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    event_type = Column(String, nullable=False, index=True)
+    resource_type = Column(String, nullable=False, index=True)
     resource_id = Column(String, nullable=True)
     action = Column(String, nullable=False)
     details = Column(JSON, nullable=True)
@@ -741,6 +743,56 @@ class DBSignupEvent(Base):
     created_at = Column(
         DateTime(timezone=True), default=func.now(), nullable=False, index=True
     )
+
+
+class DBBudgetAlertState(Base):
+    """Highest budget threshold already notified for one alert subject.
+
+    One row per subject, **not** one row per notification. ``subject_key``
+    identifies the thing being watched (a key, a team+region, or a member of a
+    team in a region) and ``period_key`` identifies the billing window that
+    ``last_threshold_pct`` refers to.
+
+    The pair is what makes alerts both idempotent and self-re-arming: while the
+    window is unchanged we never re-notify a band we have already sent, and when
+    a new billing cycle produces a different ``period_key`` the bands reset so
+    the customer is warned again in the new period. A TTL-based dedup (which is
+    what LiteLLM's native alerting uses) cannot express that, because it expires
+    on wall-clock time rather than on the cycle boundary.
+    """
+
+    __tablename__ = "budget_alert_state"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # "key:<key_id>" | "team:<team_id>:<region_id>" | "member:<team_id>:<user_id>:<region_id>"
+    subject_key = Column(String, unique=True, nullable=False, index=True)
+    subject_type = Column(String, nullable=False, index=True)  # key|team|team_member
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=False, index=True)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    key_id = Column(Integer, ForeignKey("ai_tokens.id"), nullable=True, index=True)
+
+    period_key = Column(String, nullable=False)
+    last_threshold_pct = Column(Integer, default=0, nullable=False)
+
+    # How many times this subject's bands have been re-armed inside the current
+    # period. A POOL top-up raises the denominator, so the percentage can fall
+    # below a band already notified and later cross it again — a real second
+    # warning. It is mixed into the event id so that crossing gets a fresh id,
+    # while a redelivery of the first one keeps the original. Without it the
+    # consumer's de-duplication would silently swallow the second warning.
+    arm_seq = Column(Integer, default=0, nullable=False)
+
+    # Snapshot of the numbers that triggered the last notification. The
+    # denominator is recorded because a POOL top-up moves it, so without this
+    # the event cannot be explained after the fact.
+    spend_at_notify = Column(Float, nullable=True)
+    budget_at_notify = Column(Float, nullable=True)
+    percent_at_notify = Column(Float, nullable=True)
+
+    notified_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 
 
 class DBDisposableDomain(Base):

@@ -22,7 +22,7 @@ from collections import defaultdict
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.core.team_service import is_ai_trial_team
+from app.core.team_service import is_anonymous_trial_team
 from app.db.database import SessionLocal
 from app.db.models import DBPrivateAIKey, DBRegion, DBTeam, DBUser
 from app.services.litellm import INFERENCE_ONLY_ROUTES, LiteLLMService
@@ -31,7 +31,7 @@ from app.services.litellm import INFERENCE_ONLY_ROUTES, LiteLLMService
 def get_trial_keys_grouped_by_region(session):
     """Return trial-team LiteLLM keys grouped by region_id."""
     trial_team_ids = [
-        team.id for team in session.query(DBTeam).all() if is_ai_trial_team(team)
+        team.id for team in session.query(DBTeam).all() if is_anonymous_trial_team(team)
     ]
     if not trial_team_ids:
         return defaultdict(list)

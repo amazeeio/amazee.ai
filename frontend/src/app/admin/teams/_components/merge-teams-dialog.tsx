@@ -21,26 +21,21 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useTeams } from "@/hooks/use-teams";
-import { Team } from "@/types/team";
 
 interface MergeTeamsDialogProps {
-  teams: Team[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
-export function MergeTeamsDialog({
-  teams,
-  open,
-  onOpenChange,
-}: MergeTeamsDialogProps) {
+export function MergeTeamsDialog({ open, onOpenChange }: MergeTeamsDialogProps) {
   const [targetTeamId, setTargetTeamId] = useState("");
   const [sourceTeamId, setSourceTeamId] = useState("");
   const [conflictResolutionStrategy, setConflictResolutionStrategy] = useState<
     "delete" | "rename" | "cancel"
   >("rename");
   const [renameSuffix, setRenameSuffix] = useState("_merged");
-  const { mergeTeams, isMerging } = useTeams();
+  // Full team list is only fetched once the dialog is opened
+  const { teams, mergeTeams, isMerging } = useTeams(false, { enabled: open });
 
   const handleMerge = (e: React.FormEvent) => {
     e.preventDefault();
