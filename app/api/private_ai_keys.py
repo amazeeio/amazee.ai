@@ -46,7 +46,7 @@ from app.core.limit_service import (
     DEFAULT_RPM_PER_KEY,
 )
 from app.core.pool_budget_service import pool_team_has_ever_purchased
-from app.core.team_service import is_ai_trial_team
+from app.core.team_service import is_anonymous_trial_team
 
 router = APIRouter(tags=["private-ai-keys"])
 
@@ -533,7 +533,7 @@ async def create_llm_token(
     # Trial keys therefore get LiteLLM's inference-only route group: LLM calls
     # work, every management route returns 403. Members of a real (customer)
     # team are colleagues, so this scoping is deliberately trial-only.
-    allowed_routes = INFERENCE_ONLY_ROUTES if is_ai_trial_team(effective_team) else None
+    allowed_routes = INFERENCE_ONLY_ROUTES if is_anonymous_trial_team(effective_team) else None
 
     if (owner is not None and owner.team_id) or team_id:
         if settings.ENABLE_LIMITS and not is_pool_team:
