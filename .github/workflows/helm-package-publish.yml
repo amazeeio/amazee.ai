@@ -109,9 +109,10 @@ jobs:
 
       - name: Test chart templates
         env:
-          # backend.secretKey is `required` in the chart; helm doesn't read env
-          # vars itself, so pass the repo secret in via --set.
-          AMAZEEAI_JWT_SECRET: ${{ secrets.AMAZEEAI_JWT_SECRET }}
+          # backend.secretKey is `required` in the chart; any non-empty value
+          # renders. A dummy keeps this working on dependabot/fork PRs, which
+          # can't read repo secrets.
+          AMAZEEAI_JWT_SECRET: ci-dummy-jwt-secret
         run: |
           # Test the main chart with minimal values
           cd helm
@@ -130,7 +131,7 @@ jobs:
 
       - name: Lint charts
         env:
-          AMAZEEAI_JWT_SECRET: ${{ secrets.AMAZEEAI_JWT_SECRET }}
+          AMAZEEAI_JWT_SECRET: ci-dummy-jwt-secret
         run: |
           cd helm
           helm lint . --strict --set backend.secretKey="$AMAZEEAI_JWT_SECRET"
