@@ -21,6 +21,7 @@ from app.core.limit_service import (
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
 )
+from app.services.litellm import INFERENCE_ONLY_ROUTES
 
 
 @patch("app.api.private_ai_keys.settings")
@@ -1769,7 +1770,7 @@ def test_create_llm_token_for_trial_team_is_inference_only(
 
     assert response.status_code == 200
     payload = _key_generate_payload(mock_httpx_post_client, "Trial Key")
-    assert payload["allowed_routes"] == ["llm_api_routes"]
+    assert payload["allowed_routes"] == INFERENCE_ONLY_ROUTES
 
 
 @pytest.mark.parametrize(

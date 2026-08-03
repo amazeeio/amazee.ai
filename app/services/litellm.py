@@ -21,7 +21,14 @@ logger = logging.getLogger(__name__)
 # /v1/messages, /models, pass-through providers — and excludes /team/*, /key/*,
 # /user/* and /spend/*. Used for keys that must stay private from their own
 # team, i.e. the shared anonymous-trial team.
-INFERENCE_ONLY_ROUTES = ["llm_api_routes"]
+#
+# /model/info is added explicitly: it is an info route, NOT part of
+# `llm_api_routes`, but the Drupal module (`ai_provider_amazeeio`) calls it with
+# the trial key to list models — both from `AmazeeClient::models()` and from the
+# provider config form, which needs the human-readable description that the
+# OpenAI-style /models list does not carry. Without it, trial sites get 403 on
+# model discovery. It exposes the region's model catalogue only, not other keys.
+INFERENCE_ONLY_ROUTES = ["llm_api_routes", "/model/info"]
 
 
 class LiteLLMService:
