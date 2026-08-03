@@ -46,6 +46,7 @@ from app.core.limit_service import (
     DEFAULT_RPM_PER_KEY,
 )
 from app.core.pool_budget_service import pool_team_has_ever_purchased
+from app.core.spend_period_service import canonical_budget_duration
 from app.core.team_service import is_anonymous_trial_team
 
 router = APIRouter(tags=["private-ai-keys"])
@@ -1140,7 +1141,9 @@ async def update_budget_period(
     3. Return the updated spend information
 
     Required parameters:
-    - **budget_duration**: The new budget period (e.g. "monthly", "weekly", "daily")
+    - **budget_duration**: The new budget period. Accepts canonical forms such
+      as "30d", "7d" or "24h", and the word forms "monthly", "weekly", "daily"
+      and "hourly", which are stored in their canonical equivalent.
 
     Note: You must be authenticated to use this endpoint.
     Only the owner of the key or an admin can update it.
@@ -1159,10 +1162,12 @@ async def update_budget_period(
     )
 
     try:
-        # Update budget period in LiteLLM
+        # Canonicalise before writing. A word form stored on the key leaves it
+        # with no computable period start, so period spend and budget alerts go
+        # blank for that key.
         await litellm_service.update_budget(
             litellm_token=private_ai_key.litellm_token,
-            budget_duration=budget_update.budget_duration,
+            budget_duration=canonical_budget_duration(budget_update.budget_duration),
         )
 
         # Get updated spend information
