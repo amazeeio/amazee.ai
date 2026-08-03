@@ -64,9 +64,9 @@ class Settings(BaseSettings):
     # LiteLLM key AND a Postgres database, and nothing else ever reclaims
     # either, so without this they accumulate for the life of the region.
     #
-    # 90 days, not 30: someone can set up a Drupal site and not touch its AI
-    # key for a month or two, so a shorter window would delete keys people are
-    # still going to use.
+    # Generous on purpose: someone can set up a site and not touch its AI key
+    # for a month or two, so a short window would delete keys people are still
+    # going to use.
     AI_TRIAL_RETENTION_DAYS: int = int(os.getenv("AI_TRIAL_RETENTION_DAYS", "90"))
     # Cap per reaper run. Each deletion is an HTTP call plus a DROP DATABASE,
     # so a first run against a large backlog is spread over several nights

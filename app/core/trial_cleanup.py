@@ -5,11 +5,11 @@ drift apart. Two rules live here rather than in the callers, because a caller
 that forgets either one causes damage that is not recoverable:
 
 1. **Every destructive call names exactly one region, and sweeping the live
-   trial region requires an age filter.** On 2026-08-02 a batch expiry was run
-   that was not scoped to one region, and it expired 1,110 keys that had just
-   been minted on the *new* trial region. ``select_trial_keys`` runs the guard
-   itself, so it cannot be skipped by forgetting to call it — there is no way
-   to get a list of keys without going through it.
+   trial region requires an age filter.** A bulk operation that is not scoped
+   to a single region will also hit whichever region is currently issuing
+   trials, destroying keys minted moments earlier. ``select_trial_keys`` runs
+   the guard itself, so it cannot be skipped by forgetting to call it — there
+   is no way to get a list of keys without going through it.
 
 2. **A key row is deleted only once its remote resources are gone.** The
    LiteLLM key and the Postgres database outlive the row that points at them,
@@ -83,11 +83,10 @@ def resolve_live_trial_region(db: Session) -> Optional[DBRegion]:
 
 
 #: Youngest a key may be to be swept from the region currently issuing trials.
-#: The 2026-08-02 incident deleted keys minted the same week.
 #:
 #: Age is the only policy signal — a trial is reaped on age alone, used or not —
-#: so this floor is doing all the work on its own and is set well above the
-#: incident's window rather than just outside it.
+#: so this floor is doing all the work on its own, and is set well clear of the
+#: window in which a signup is plausibly still setting things up.
 LIVE_REGION_MIN_AGE_DAYS = 30
 
 
@@ -104,19 +103,17 @@ def assert_safe_for_region(
     minted, so it is the region that actually accumulates them, and a reaper
     that skips it reaps nothing that matters.
 
-    What must never happen is an *unfiltered* sweep of it — that is the
-    2026-08-02 incident, where every trial key on the new trial region was
-    destroyed including ones minted the same day. So a sweep of the live region
-    requires an age filter of at least ``LIVE_REGION_MIN_AGE_DAYS``. Every other
-    region is unrestricted; it is not issuing trials, so nothing there can be in
-    use by someone who signed up minutes ago.
+    What must never happen is an *unfiltered* sweep of it, which would destroy
+    keys minted moments earlier along with the abandoned ones. So a sweep of the
+    live region requires an age filter of at least ``LIVE_REGION_MIN_AGE_DAYS``.
+    Every other region is unrestricted; it is not issuing trials, so nothing
+    there can be in use by someone who signed up minutes ago.
 
-    Spend is deliberately not part of this: a trial is reaped on age alone.
-    Measured on prod, no trial key older than 90 days has ever recorded any
-    spend, and an exhausted trial has no way to add budget — the user registers
-    a real key instead — so keeping used ones indefinitely would protect nothing
-    while leaving their vector databases behind forever. ``unused_only`` remains
-    available as a caller's own extra caution, but the guard does not require it.
+    Spend is deliberately not part of this: a trial is reaped on age alone. An
+    exhausted trial cannot be topped up — the user registers a real key instead
+    — so sparing used ones would protect nobody while leaving their vector
+    databases behind for good. ``unused_only`` remains available as a caller's
+    own extra caution, but the guard does not require it.
 
     An unresolvable ``AI_TRIAL_REGION`` does not block anything: no region is
     issuing trials in that state. It is logged because it also means trial
@@ -216,22 +213,20 @@ def _has_recorded_spend():
     """SQL predicate: this key's owner has spend recorded against them.
 
     Must be applied in the query, never as a Python filter over the results.
-    ``limit`` is a SQL LIMIT, so filtering afterwards would pick the batch
-    first and shrink it second: keys with spend are permanently undeletable and
-    sort to the front by id, so once their number exceeds the batch size every
-    run would select the same undeletable prefix, filter it away, and reap
-    nothing — forever.
+    ``limit`` is a SQL LIMIT, so filtering afterwards would pick the batch first
+    and shrink it second — and if the excluded keys sort to the front by id, a
+    batch could come back empty every run while later keys are never reached.
 
     Reads the owner's BUDGET ``limited_resources`` row rather than asking
     LiteLLM, so filtering thousands of keys costs one join instead of a network
     round trip each. ``current_value`` is the figure the budget system
-    maintains, and it is cumulative — LiteLLM's monthly ``budget_duration``
-    reset does not roll it back — so it stays a safe signal of "this trial was
-    used at some point".
+    maintains, and it is cumulative — a periodic ``budget_duration`` reset does
+    not roll it back — so it stays a safe signal of "this trial was used at some
+    point".
 
     A missing row, a NULL ``current_value``, or a NULL ``owner_id`` all mean no
-    spend was ever recorded, which is the normal state for the ~99.6% of trials
-    that are never called.
+    spend was ever recorded, which is the normal state for a trial that is never
+    called.
     """
     return exists().where(
         DBLimitedResource.owner_type == OwnerType.USER,

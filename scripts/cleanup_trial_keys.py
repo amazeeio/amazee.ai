@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Delete anonymous-trial keys from ONE region, with their remote resources.
 
-Written after 2026-08-02, when a batch expiry that was not scoped to one region
-expired 1,110 trial keys that had just been minted on the new trial region. The
-safety properties are not in this file — they are in ``app.core.trial_cleanup``,
-which refuses an unfiltered sweep of whatever region ``AI_TRIAL_REGION`` resolves
-to. That region can still be cleaned, but only of keys old enough not to belong
-to a recent signup. This script is a command line over that.
+The safety properties are not in this file — they are in
+``app.core.trial_cleanup``, which refuses an unfiltered sweep of whatever region
+``AI_TRIAL_REGION`` resolves to. That region can still be cleaned, but only of
+keys old enough not to belong to a recent signup. This script is a command line
+over that.
 
 Deletes, per key: the LiteLLM key, the Postgres vector database, the key row and
 its dependent rows, and optionally the trial user. Remote resources go first, so

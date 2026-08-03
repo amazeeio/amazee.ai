@@ -2959,8 +2959,8 @@ async def reap_trial_keys(db: Session):
 
     ``monitor_trial_users`` only expires a key in LiteLLM. Nothing has ever
     deleted the key row, the trial user, or the Postgres database each trial
-    provisions, so every region accumulates them for its whole life — de103
-    reached 11,507. This is the job that stops that.
+    provisions, so without this every region accumulates both for its whole
+    life. This is the job that stops that.
 
     Includes the region new trials are issued on — that is the region that
     actually accumulates them, so skipping it would reap nothing that matters.
@@ -2970,11 +2970,10 @@ async def reap_trial_keys(db: Session):
     belonging to active trials.
 
     Age is the whole policy — spend is not consulted. An exhausted trial cannot
-    be topped up (the user registers a real key instead), and no trial key older
-    than 90 days has ever recorded spend on prod, so sparing used ones would
-    protect nobody while leaving their vector databases behind for good. A
-    90-day window also leaves an exhausted user seeing "out of budget" for far
-    longer than they would plausibly return, rather than a missing key.
+    be topped up (the user registers a real key instead), so sparing used ones
+    would protect nobody while leaving their vector databases behind for good. A
+    long retention also leaves an exhausted user seeing "out of budget" rather
+    than a missing key, for longer than they would plausibly return.
 
     Never deletes a row whose remote resources could not be removed first.
     """
