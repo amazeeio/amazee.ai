@@ -1378,13 +1378,14 @@ def test_update_budget_duration_as_team_admin(
     data = response.json()
     assert data["budget_duration"] == "monthly"
 
-    # Verify that the LiteLLM API was called with the correct parameters
+    # The word form is canonicalised before it reaches LiteLLM, so the key does
+    # not end up carrying a duration our period maths cannot parse.
     mock_httpx_combined_client.post.assert_called_with(
         f"{test_region.litellm_api_url}/key/update",
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
         json={
             "key": test_key.litellm_token,
-            "budget_duration": "monthly",
+            "budget_duration": "30d",
             "duration": "365d",
         },
     )

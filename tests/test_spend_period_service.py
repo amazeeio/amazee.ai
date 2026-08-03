@@ -2,6 +2,8 @@ from datetime import UTC, datetime, timedelta
 
 from app.core.config import settings
 from app.core.spend_period_service import (
+    canonical_budget_duration,
+    compute_period_start,
     resolve_team_period_window,
     upsert_team_spend_period,
 )
@@ -226,3 +228,51 @@ def test_pool_window_ignores_topups_when_a_subscription_is_active(
     assert window.source == "subscription_ledger"
     assert 10 <= (now - window.period_start).days <= 12
     assert window.budget_duration == "31d"
+
+
+def test_canonical_budget_duration_maps_word_forms():
+    """
+    GIVEN: A budget duration written as a word
+    WHEN: It is canonicalised
+    THEN: The canonical equivalent is returned
+    """
+    assert canonical_budget_duration("hourly") == "1h"
+    assert canonical_budget_duration("daily") == "24h"
+    assert canonical_budget_duration("weekly") == "7d"
+    assert canonical_budget_duration("monthly") == "30d"
+
+
+def test_canonical_budget_duration_is_case_and_space_insensitive():
+    assert canonical_budget_duration(" Monthly ") == "30d"
+    assert canonical_budget_duration("WEEKLY") == "7d"
+
+
+def test_canonical_budget_duration_passes_through_unrecognised():
+    """LiteLLM stays the authority on what is valid, so nothing else is rewritten."""
+    for value in ("30d", "7d", "24h", "1h", "1mo", "31d", "nonsense"):
+        assert canonical_budget_duration(value) == value
+    assert canonical_budget_duration(None) is None
+    assert canonical_budget_duration("") == ""
+
+
+def test_word_form_and_canonical_agree_on_period_start():
+    """
+    GIVEN: A word-form duration and its canonical equivalent
+    WHEN: The period start is computed for each
+    THEN: Both yield the same value, and the word form is no longer None
+    """
+    reset_at = datetime(2026, 9, 1, tzinfo=UTC)
+    for word, canonical in (
+        ("monthly", "30d"),
+        ("weekly", "7d"),
+        ("daily", "24h"),
+        ("hourly", "1h"),
+    ):
+        via_word = compute_period_start(reset_at, canonical_budget_duration(word))
+        via_canonical = compute_period_start(reset_at, canonical)
+        assert via_word == via_canonical
+        assert via_word is not None
+
+        # Read-side safety net: keys already carrying a word form resolve too,
+        # so no data migration is needed.
+        assert compute_period_start(reset_at, word) == via_canonical
