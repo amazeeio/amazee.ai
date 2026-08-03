@@ -23,11 +23,13 @@ logger = logging.getLogger(__name__)
 # team, i.e. the shared anonymous-trial team.
 #
 # /model/info is added explicitly: it is an info route, NOT part of
-# `llm_api_routes`, but the Drupal module (`ai_provider_amazeeio`) calls it with
-# the trial key to list models — both from `AmazeeClient::models()` and from the
-# provider config form, which needs the human-readable description that the
-# OpenAI-style /models list does not carry. Without it, trial sites get 403 on
-# model discovery. It exposes the region's model catalogue only, not other keys.
+# `llm_api_routes`. The Drupal module (`ai_provider_amazeeio`) lists models
+# through it with whatever key it holds — trial keys and self-service keys
+# alike — from `AmazeeClient::models()` and from the provider config form, which
+# needs the human-readable description that the OpenAI-style /models list does
+# not carry. Unrestricted keys reach it anyway, so only the route-restricted
+# trial keys need it named here; without it those sites 403 on model discovery.
+# It exposes the region's model catalogue only, not other keys.
 INFERENCE_ONLY_ROUTES = ["llm_api_routes", "/model/info"]
 
 
