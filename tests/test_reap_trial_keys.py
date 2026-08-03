@@ -144,7 +144,11 @@ async def test_reaper_does_reap_abandoned_keys_on_the_live_trial_region(
 
 @pytest.mark.asyncio
 async def test_reaper_skips_the_live_region_when_retention_is_too_short(
-    db: Session, trial_team: DBTeam, live_region: DBRegion, patched_services, monkeypatch
+    db: Session,
+    trial_team: DBTeam,
+    live_region: DBRegion,
+    patched_services,
+    monkeypatch,
 ):
     """A misconfigured retention must not become a mass deletion."""
     monkeypatch.setattr(settings, "AI_TRIAL_RETENTION_DAYS", 1)

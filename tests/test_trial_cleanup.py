@@ -546,6 +546,52 @@ async def test_audit_logs_are_detached_not_deleted(
 
 
 @pytest.mark.asyncio
+async def test_used_key_is_refused_without_allow_used(
+    db: Session, trial_team: DBTeam, old_region: DBRegion
+):
+    """Last line of defence: a selection built without unused_only still cannot
+    destroy a key someone spent money on unless that is asked for explicitly."""
+    _, key = _make_trial_key(
+        db, trial_team, old_region, email="paid@example.com", spend=1.25
+    )
+    key_id = key.id
+    litellm, postgres = AsyncMock(), AsyncMock()
+
+    result = await delete_trial_key(
+        db, key, old_region, litellm_service=litellm, postgres_manager=postgres
+    )
+
+    assert not result.ok
+    assert "recorded spend" in result.error
+    litellm.delete_key.assert_not_awaited()
+    postgres.delete_database.assert_not_awaited()
+    assert db.query(DBPrivateAIKey).filter_by(id=key_id).first() is not None
+
+
+@pytest.mark.asyncio
+async def test_used_key_is_deleted_when_explicitly_allowed(
+    db: Session, trial_team: DBTeam, old_region: DBRegion
+):
+    """Draining a region that is being switched off must still be possible."""
+    _, key = _make_trial_key(
+        db, trial_team, old_region, email="paid@example.com", spend=1.25
+    )
+    key_id = key.id
+
+    result = await delete_trial_key(
+        db,
+        key,
+        old_region,
+        allow_used=True,
+        litellm_service=AsyncMock(),
+        postgres_manager=AsyncMock(),
+    )
+
+    assert result.ok
+    assert db.query(DBPrivateAIKey).filter_by(id=key_id).first() is None
+
+
+@pytest.mark.asyncio
 async def test_key_without_vector_db_skips_the_drop(
     db: Session, trial_team: DBTeam, old_region: DBRegion
 ):
