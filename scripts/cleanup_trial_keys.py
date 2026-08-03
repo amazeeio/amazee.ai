@@ -46,17 +46,17 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from app.core.trial_cleanup import (  # noqa: E402
+from app.core.trial_cleanup import (
     LiveTrialRegionError,
     TrialCleanupSummary,
     assess_selection,
     delete_trial_key,
     select_trial_keys,
 )
-from app.db.database import SessionLocal  # noqa: E402
-from app.db.models import DBRegion  # noqa: E402
-from app.db.postgres import PostgresManager  # noqa: E402
-from app.services.litellm import LiteLLMService  # noqa: E402
+from app.db.database import SessionLocal
+from app.db.models import DBRegion
+from app.db.postgres import PostgresManager
+from app.services.litellm import LiteLLMService
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
