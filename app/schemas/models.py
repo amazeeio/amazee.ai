@@ -1457,3 +1457,70 @@ class TeamGroupSyncRunResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+# --- Declarative config apply (GitOps flow: config repo -> /admin/models/apply) ---
+# Everything is keyed by stable strings (model_id, group slug, region name), never
+# DB ids, so the payload can live in a repo with no knowledge of this database.
+
+
+class ApplyAccessGroupSpec(BaseModel):
+    slug: str = Field(min_length=1, max_length=64, pattern=ACCESS_GROUP_SLUG_PATTERN)
+    label: str = Field(min_length=1)
+    description: Optional[str] = None
+    # region names the group is deployed to
+    regions: List[str] = Field(default_factory=list)
+
+
+class ApplyDeploymentSpec(BaseModel):
+    region: str
+    litellm_params_override: Optional[dict] = None
+
+
+class ApplyAliasTargetSpec(BaseModel):
+    region: str
+    # catalog model_id of the target (must be a non-alias model in the payload or DB)
+    target: str
+
+
+class ApplyModelSpec(BaseModel):
+    model_id: str
+    display_name: str
+    provider: str
+    type: str
+    context_length: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+    description: Optional[str] = None
+    real_eol: Optional[datetime] = None
+    override_eol: Optional[datetime] = None
+    litellm_params: Optional[dict] = None
+    access_groups: List[str] = Field(default_factory=list)  # group slugs
+    is_alias: bool = False
+    deployments: List[ApplyDeploymentSpec] = Field(default_factory=list)
+    alias_targets: List[ApplyAliasTargetSpec] = Field(default_factory=list)
+
+
+class ApplyConfigRequest(BaseModel):
+    dry_run: bool = False
+    # prune=True deactivates catalog models absent from the payload (soft —
+    # never hard-deletes). Access groups are never pruned automatically.
+    prune: bool = False
+    access_groups: List[ApplyAccessGroupSpec] = Field(default_factory=list)
+    models: List[ApplyModelSpec] = Field(default_factory=list)
+
+
+class ApplyChange(BaseModel):
+    entity: str  # access_group | model | deployment | alias_target
+    key: str
+    action: str  # create | update | deactivate | prune
+    detail: Optional[str] = None
+
+
+class ApplyConfigResponse(BaseModel):
+    dry_run: bool
+    changes: List[ApplyChange] = Field(default_factory=list)
+    # catalog model_ids present in the DB but not in the payload (and not pruned)
+    unmanaged_models: List[str] = Field(default_factory=list)
+    # group slugs present in the DB but not in the payload (never auto-pruned)
+    unmanaged_access_groups: List[str] = Field(default_factory=list)
+    syncs_scheduled: int = 0
+
+
