@@ -35,6 +35,7 @@ from app.services.ses import SESService
 from app.core.team_service import (
     get_team_keys_by_region,
     get_team_region_litellm_keys,
+    is_anonymous_trial_team,
     soft_delete_team,
 )
 from app.db.database import get_db
@@ -2095,6 +2096,12 @@ async def _check_team_retention_policy(
     if team.budget_type == BudgetType.POOL:
         return
 
+    # So is the anonymous-trial team. Activity is measured from its newest key,
+    # so a long enough lull in signups would soft-delete the team that owns
+    # every trial key, and the hard-delete job would then remove them all.
+    if is_anonymous_trial_team(team):
+        return
+
     # Check team retention policy (only for non-deleted teams)
     if team.deleted_at:
         return  # Team already soft-deleted, skip retention check
@@ -2418,7 +2425,7 @@ async def monitor_teams(db: Session):
                 # POOL teams have their own lifecycle and are excluded from trial notifications.
                 team_freshness = _monitor_team_freshness(team, db)
                 days_remaining = TRIAL_OVER_DAYS - team_freshness
-                if not is_pool_team:
+                if not is_pool_team and not is_anonymous_trial_team(team):
                     _send_expiry_notification(
                         db,
                         team,
@@ -2434,9 +2441,18 @@ async def monitor_teams(db: Session):
 
                 # Expire if team trial has expired (if team has a product, expiry will be handled by Stripe)
                 # POOL teams are always exempt from trial expiration.
+                #
+                # The anonymous-trial team is exempt too. Its freshness ran
+                # out long ago and never renews, so leaving it in scope expires
+                # every trial key in every region on each run. Per-user budget
+                # limits are enforced separately by monitor_trial_users.
+                #
+                # Note the two unrelated meanings of "trial" here:
+                # days_remaining is a real member's 30-day trial.
                 if (
                     not has_products
                     and not is_pool_team
+                    and not is_anonymous_trial_team(team)
                     and days_remaining <= 0
                     and should_send_notifications
                 ):

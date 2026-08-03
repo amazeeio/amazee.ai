@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 
-def is_ai_trial_team(team: Optional[DBTeam]) -> bool:
+def is_anonymous_trial_team(team: Optional[DBTeam]) -> bool:
     """True for the single team that pools all anonymous trial users.
 
     Unlike a customer team, its members are unrelated to each other, so keys
