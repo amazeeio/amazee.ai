@@ -60,6 +60,18 @@ class Settings(BaseSettings):
         "AI_TRIAL_TEAM_EMAIL", "anonymous-trial-user@example.com"
     )
     AI_TRIAL_REGION: str = os.getenv("AI_TRIAL_REGION", "eu-west-1")
+    # Age at which an UNUSED trial key is reaped. Each trial provisions a
+    # LiteLLM key AND a Postgres database, and nothing else ever reclaims
+    # either, so without this they accumulate for the life of the region.
+    #
+    # Generous on purpose: someone can set up a site and not touch its AI key
+    # for a month or two, so a short window would delete keys people are still
+    # going to use.
+    AI_TRIAL_RETENTION_DAYS: int = int(os.getenv("AI_TRIAL_RETENTION_DAYS", "90"))
+    # Cap per reaper run. Each deletion is an HTTP call plus a DROP DATABASE,
+    # so a first run against a large backlog is spread over several nights
+    # rather than held open for hours.
+    AI_TRIAL_REAP_BATCH_SIZE: int = int(os.getenv("AI_TRIAL_REAP_BATCH_SIZE", "500"))
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "sk_test_string")
     STRIPE_PUBLISHABLE_KEY: str = os.getenv("STRIPE_PUBLISHABLE_KEY", "pk_test_string")
     WEBHOOK_SIG: str = os.getenv("WEBHOOK_SIG", "whsec_test_1234567890")

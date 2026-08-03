@@ -22,6 +22,13 @@ from app.db.models import (
     DBSpendCap,
     DBUserSpendCache,
 )
+from app.core.trial_cleanup import (
+    LiveTrialRegionError,
+    TrialCleanupSummary,
+    delete_trial_key,
+    select_trial_keys,
+)
+from app.db.postgres import PostgresManager
 from app.schemas.models import BudgetType
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
@@ -2945,3 +2952,102 @@ async def monitor_trial_users(db: Session):
         logger.error(f"Error in trial user monitoring: {e}")
         db.rollback()
         raise
+
+
+async def reap_trial_keys(db: Session):
+    """Delete abandoned anonymous-trial keys and everything they hold.
+
+    ``monitor_trial_users`` only expires a key in LiteLLM. Nothing has ever
+    deleted the key row, the trial user, or the Postgres database each trial
+    provisions, so without this every region accumulates both for its whole
+    life. This is the job that stops that.
+
+    Includes the region new trials are issued on — that is the region that
+    actually accumulates them, so skipping it would reap nothing that matters.
+    Safety comes from age instead: only keys older than
+    ``AI_TRIAL_RETENTION_DAYS``. Setting that below ``LIVE_REGION_MIN_AGE_DAYS``
+    makes the guard refuse the live region rather than risk deleting keys
+    belonging to active trials.
+
+    Age is the whole policy — spend is not consulted. An exhausted trial cannot
+    be topped up (the user registers a real key instead), so sparing used ones
+    would protect nobody while leaving their vector databases behind for good. A
+    long retention also leaves an exhausted user seeing "out of budget" rather
+    than a missing key, for longer than they would plausibly return.
+
+    Never deletes a row whose remote resources could not be removed first.
+    """
+    logger.info("Reaping abandoned trial keys")
+    retention_days = settings.AI_TRIAL_RETENTION_DAYS
+    batch_size = settings.AI_TRIAL_REAP_BATCH_SIZE
+    totals = TrialCleanupSummary()
+
+    regions = db.query(DBRegion).all()
+    for region in regions:
+        try:
+            keys = select_trial_keys(
+                db,
+                region.id,
+                older_than_days=retention_days,
+                limit=batch_size,
+            )
+        except LiveTrialRegionError as e:
+            # Only reachable when AI_TRIAL_RETENTION_DAYS is below the live
+            # region's minimum age. Warn rather than fail: the other regions
+            # still need reaping, and a too-short retention is a config error.
+            logger.warning("Skipping region %s (%s): %s", region.id, region.name, e)
+            continue
+
+        if not keys:
+            continue
+
+        logger.info(
+            "Region %s (%s): reaping %s trial key(s) older than %sd",
+            region.id,
+            region.name,
+            len(keys),
+            retention_days,
+        )
+
+        litellm_service = LiteLLMService(
+            api_url=region.litellm_api_url, api_key=region.litellm_api_key
+        )
+        postgres_manager = PostgresManager(region=region)
+
+        region_failures = 0
+        for key in keys:
+            result = await delete_trial_key(
+                db,
+                key,
+                region,
+                delete_user=True,
+                # Age is the policy here, so a used key is a deliberate target
+                # rather than an accident. The flag exists to tell those two
+                # cases apart; it still guards the manual CLI's unfiltered path.
+                allow_used=True,
+                litellm_service=litellm_service,
+                postgres_manager=postgres_manager,
+            )
+            totals.add(result)
+            if not result.ok:
+                region_failures += 1
+                logger.error("key_id=%s %s", result.key_id, result.error)
+                # Repeated failures in one region mean its endpoints are down,
+                # not that these particular keys are bad. Keep the rows and
+                # move on rather than hammering a dead host thousands of times.
+                if region_failures >= 10:
+                    logger.error(
+                        "Region %s (%s): abandoning after %s failures",
+                        region.id,
+                        region.name,
+                        region_failures,
+                    )
+                    break
+
+    logger.info(
+        "Trial reaper finished: deleted=%s failed=%s users_deleted=%s",
+        totals.deleted,
+        totals.failed,
+        totals.users_deleted,
+    )
+    return totals

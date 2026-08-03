@@ -846,8 +846,17 @@ async def generate_trial_access(
             .first()
         )
 
-    # If no region is found, raise an error
+    # If no region is found, raise an error.
+    # Logged at error level because this fails EVERY trial signup, silently: the
+    # caller gets a 404 and nothing else records it. Renaming or deactivating
+    # the trial region is enough to cause it, and the only other symptom is
+    # signup volume dropping to zero.
     if not region:
+        auth_logger.error(
+            "AI_TRIAL_REGION=%r does not match an active region. "
+            "All trial signups are failing with 404.",
+            settings.AI_TRIAL_REGION,
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No region available for trial access: {settings.AI_TRIAL_REGION}",
@@ -1025,7 +1034,26 @@ async def generate_trial_access(
         # after the trial user was committed (e.g. key creation failing). An
         # orphaned trial user counts toward AI_TRIAL_MAX_USERS forever.
         # Each step is guarded separately so a cleanup failure never masks the
-        # original error; the user row goes first since it consumes trial capacity.
+        # original error.
+        #
+        # The LiteLLM key goes FIRST. Deleting the user row first and failing
+        # here leaves a working key that nothing in our database points at:
+        # every cleanup path we have iterates key rows, so an orphan like that
+        # is invisible to all of them and stays live until its natural expiry.
+        # The user row only consumes trial capacity, which is a counter we can
+        # raise; a stranded key stays live until its natural expiry and is not
+        # recoverable by any automated means.
+        try:
+            if private_ai_key and private_ai_key.litellm_token:
+                await litellm_service.delete_key(private_ai_key.litellm_token)
+        except Exception as cleanup_error:
+            # Log the alias, never the token: this line goes to shared logs.
+            # The alias is what identifies the key in LiteLLM's own admin UI.
+            auth_logger.error(
+                f"Trial cleanup failed to delete LiteLLM key for "
+                f"{user.email if user else 'unknown user'}; it is now orphaned "
+                f"and no cleanup job can find it: {cleanup_error}"
+            )
         try:
             if user:
                 db.delete(user)
@@ -1035,13 +1063,6 @@ async def generate_trial_access(
             auth_logger.error(
                 f"Trial cleanup failed to delete user {user.email}; "
                 f"orphaned row still counts toward AI_TRIAL_MAX_USERS: {cleanup_error}"
-            )
-        try:
-            if private_ai_key:
-                await litellm_service.delete_key(private_ai_key.litellm_token)
-        except Exception as cleanup_error:
-            auth_logger.error(
-                f"Trial cleanup failed to delete LiteLLM key: {cleanup_error}"
             )
 
         if isinstance(e, HTTPException):
