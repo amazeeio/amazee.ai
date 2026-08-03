@@ -6,6 +6,7 @@ from app.api.auth import generate_trial_access
 from app.core.limit_service import LimitService
 from app.db.models import DBUser, DBTeam, DBPrivateAIKey, DBRegion
 from app.schemas.models import Token
+from app.services.litellm import INFERENCE_ONLY_ROUTES
 from fastapi import Response
 
 
@@ -268,4 +269,8 @@ def test_trial_key_cannot_read_its_own_litellm_team(
         if str(call.args[0]).endswith("/key/generate")
     ]
     assert len(key_generate_calls) == 1
-    assert key_generate_calls[0].kwargs["json"]["allowed_routes"] == ["llm_api_routes"]
+    allowed_routes = key_generate_calls[0].kwargs["json"]["allowed_routes"]
+    assert allowed_routes == INFERENCE_ONLY_ROUTES
+    # The Drupal module lists models via /model/info, which is an info route and
+    # not covered by llm_api_routes; without it trial sites 403 on discovery.
+    assert "/model/info" in allowed_routes
