@@ -5,4 +5,3 @@ httpx==0.28.1
 requests-mock==1.12.1
 faker==40.28.0
 pytest-env==1.6.0
-bump-my-version==1.4.1
