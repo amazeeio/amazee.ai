@@ -35,6 +35,7 @@ from app.services.ses import SESService
 from app.core.team_service import (
     get_team_keys_by_region,
     get_team_region_litellm_keys,
+    is_ai_trial_team,
     soft_delete_team,
 )
 from app.db.database import get_db
@@ -2095,6 +2096,14 @@ async def _check_team_retention_policy(
     if team.budget_type == BudgetType.POOL:
         return
 
+    # So is the anonymous-trial team. Activity is measured from its newest user
+    # or key, so a lull in trial signups long enough to cross the inactivity
+    # threshold would soft-delete the team that owns every trial key — and the
+    # hard-delete job then removes those keys, their users and the team across
+    # every region. It cannot be allowed to depend on signup volume.
+    if is_ai_trial_team(team):
+        return
+
     # Check team retention policy (only for non-deleted teams)
     if team.deleted_at:
         return  # Team already soft-deleted, skip retention check
@@ -2405,6 +2414,11 @@ async def monitor_teams(db: Session):
 
                 # Now handle trial expiry notifications and key expiry (after retention checks)
                 is_pool_team = team.budget_type == BudgetType.POOL
+                # The anonymous-trial team is a permanent container for trial
+                # users, not a customer working through a trial period. Its
+                # freshness therefore runs out and never renews, and every
+                # lifecycle rule keyed on that would fire against it forever.
+                is_trial_team = is_ai_trial_team(team)
 
                 # Check if team was monitored within 24 hours
                 should_send_notifications = settings.ENABLE_LIMITS
@@ -2418,7 +2432,7 @@ async def monitor_teams(db: Session):
                 # POOL teams have their own lifecycle and are excluded from trial notifications.
                 team_freshness = _monitor_team_freshness(team, db)
                 days_remaining = TRIAL_OVER_DAYS - team_freshness
-                if not is_pool_team:
+                if not is_pool_team and not is_trial_team:
                     _send_expiry_notification(
                         db,
                         team,
@@ -2434,9 +2448,19 @@ async def monitor_teams(db: Session):
 
                 # Expire if team trial has expired (if team has a product, expiry will be handled by Stripe)
                 # POOL teams are always exempt from trial expiration.
+                #
+                # So is the anonymous-trial team, and it MUST be. Its keys belong
+                # to thousands of unrelated users, and this branch expires every
+                # key in every region the team holds one in. Because the team's
+                # own freshness expired long ago and never renews, leaving it in
+                # scope re-expires every trial key — including ones minted
+                # minutes earlier — on each run that passes the 24h notification
+                # gate. Per-user budget enforcement is a separate mechanism
+                # (monitor_trial_users) and is unaffected by this exemption.
                 if (
                     not has_products
                     and not is_pool_team
+                    and not is_trial_team
                     and days_remaining <= 0
                     and should_send_notifications
                 ):
