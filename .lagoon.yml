@@ -19,6 +19,13 @@ environments:
         schedule: "0 5 1 * *"
         command: python scripts/trigger_trial_recon_job.py
         service: backend
+      # Daily, not monthly: every trial provisions a LiteLLM key AND a Postgres
+      # database, and nothing else reclaims either. Monthly lets ~6,000 of each
+      # pile up between runs. Capped per run by AI_TRIAL_REAP_BATCH_SIZE.
+      - name: reap-trial-keys
+        schedule: "0 1 * * *"
+        command: python scripts/trigger_trial_reaper_job.py
+        service: backend
       - name: refresh-disposable-domains
         schedule: "0 2 * * *"
         command: python scripts/trigger_refresh_disposable_domains_job.py
@@ -64,6 +71,13 @@ environments:
       - name: monitor-trial-users
         schedule: "0 5 1 * *"
         command: python scripts/trigger_trial_recon_job.py
+        service: backend
+      # Daily, not monthly: every trial provisions a LiteLLM key AND a Postgres
+      # database, and nothing else reclaims either. Monthly lets ~6,000 of each
+      # pile up between runs. Capped per run by AI_TRIAL_REAP_BATCH_SIZE.
+      - name: reap-trial-keys
+        schedule: "0 1 * * *"
+        command: python scripts/trigger_trial_reaper_job.py
         service: backend
       - name: refresh-disposable-domains
         schedule: "0 2 * * *"
