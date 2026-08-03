@@ -325,12 +325,33 @@ class TrialCleanupSummary:
             self.failed += 1
 
 
+def key_has_recorded_spend(db: Session, key: DBPrivateAIKey) -> bool:
+    """True when this key's owner has spend recorded against them.
+
+    The single-key form of the SQL predicate used by ``select_trial_keys``, for
+    the last-line check inside ``delete_trial_key``.
+    """
+    if key.owner_id is None:
+        return False
+    return db.query(
+        db.query(DBLimitedResource)
+        .filter(
+            DBLimitedResource.owner_type == OwnerType.USER,
+            DBLimitedResource.owner_id == key.owner_id,
+            DBLimitedResource.resource == ResourceType.BUDGET,
+            DBLimitedResource.current_value > 0,
+        )
+        .exists()
+    ).scalar()
+
+
 async def delete_trial_key(
     db: Session,
     key: DBPrivateAIKey,
     region: DBRegion,
     *,
     delete_user: bool = False,
+    allow_used: bool = False,
     litellm_service: Optional[LiteLLMService] = None,
     postgres_manager: Optional[PostgresManager] = None,
 ) -> TrialKeyDeletion:
@@ -347,8 +368,19 @@ async def delete_trial_key(
 
     Services are injectable so the caller can build one per region instead of
     one per key.
+
+    ``allow_used`` must be set explicitly to delete a key whose owner recorded
+    spend. This is the last line of defence rather than the first: the selection
+    query already excludes them when ``unused_only`` is on, and the reaper always
+    sets it. It exists because a selection built any other way — an unfiltered
+    sweep of a region that stopped issuing trials minutes ago, say — carries no
+    such guarantee, and by this point the next statement is irreversible.
     """
     result = TrialKeyDeletion(key_id=key.id)
+
+    if not allow_used and key_has_recorded_spend(db, key):
+        result.error = "owner has recorded spend; pass allow_used=True to delete anyway"
+        return result
 
     if key.litellm_token:
         service = litellm_service or LiteLLMService(

@@ -26,6 +26,14 @@ Usage:
     # do it, taking the trial user rows too
     python scripts/cleanup_trial_keys.py --region 5 --apply --delete-users
 
+    # drain a region being switched off, including keys someone used
+    python scripts/cleanup_trial_keys.py --region 5 --apply --delete-users \
+        --allow-used-keys --yes
+
+Two separate decisions, two separate flags. ``--yes`` skips the prompt.
+``--allow-used-keys`` permits destroying keys that have recorded spend or were
+created in the last 30 days. ``--yes`` alone will never do the latter.
+
 Re-running is safe: deleted keys are gone from the selection, and both remote
 calls are idempotent, so keys that failed part-way through are simply retried.
 """
@@ -89,7 +97,9 @@ async def run(args) -> int:
         print(f"Postgres: {region.postgres_host}")
         print(f"Filters:  {', '.join(filters) if filters else 'none — whole region'}")
         print(f"Matched:  {len(keys)} trial key(s)")
-        print(f"Users:    {'deleted with their last key' if args.delete_users else 'kept'}")
+        print(
+            f"Users:    {'deleted with their last key' if args.delete_users else 'kept'}"
+        )
 
         if not keys:
             return 0
@@ -101,13 +111,16 @@ async def run(args) -> int:
         if risk.needs_attention:
             print("\n  ! This selection is not all abandoned keys:")
             if risk.with_spend:
-                print(f"    {risk.with_spend} key(s) have recorded spend — "
-                      "someone used these")
+                print(
+                    f"    {risk.with_spend} key(s) have recorded spend — "
+                    "someone used these"
+                )
             if risk.younger_than_30d:
-                print(f"    {risk.younger_than_30d} key(s) were created in the "
-                      "last 30 days")
-            print("    Deleting them destroys working keys and their vector "
-                  "databases.")
+                print(
+                    f"    {risk.younger_than_30d} key(s) were created in the "
+                    "last 30 days"
+                )
+            print("    Deleting them destroys working keys and their vector databases.")
 
         if not args.apply:
             for key in keys[:10]:
@@ -119,6 +132,21 @@ async def run(args) -> int:
                 print(f"  ... and {len(keys) - 10} more")
             print("\nDry run. Re-run with --apply to delete.")
             return 0
+
+        # --yes means "do not prompt me", NOT "ignore the warning above". Those
+        # are different decisions and conflating them made --yes a silent
+        # override: an unfiltered sweep of a region that stopped issuing trials
+        # minutes ago would delete every live key without a single gate.
+        # Accepting that risk needs its own flag, so it cannot be inherited from
+        # a habit of passing --yes.
+        if risk.needs_attention and not args.allow_used_keys:
+            print(
+                "\nRefusing: this selection contains used or recent keys.\n"
+                "  Narrow it with --older-than-days / --unused-only, or pass\n"
+                "  --allow-used-keys if destroying them is genuinely intended\n"
+                "  (for example draining a region that is being switched off)."
+            )
+            return 3
 
         if not args.yes:
             if risk.needs_attention:
@@ -153,6 +181,7 @@ async def run(args) -> int:
                 key,
                 region,
                 delete_user=args.delete_users,
+                allow_used=args.allow_used_keys,
                 litellm_service=litellm_service,
                 postgres_manager=postgres_manager,
             )
@@ -214,7 +243,16 @@ def main():
         help="Also delete the trial user once their last key is gone.",
     )
     parser.add_argument(
-        "--yes", action="store_true", help="Skip the confirmation prompt."
+        "--yes",
+        action="store_true",
+        help="Skip the confirmation prompt. Does NOT permit deleting used or "
+        "recent keys — that needs --allow-used-keys as well.",
+    )
+    parser.add_argument(
+        "--allow-used-keys",
+        action="store_true",
+        help="Permit deleting keys with recorded spend or created in the last "
+        "30 days. Needed when draining a region that is being switched off.",
     )
     parser.add_argument(
         "--max-failures",
