@@ -1769,7 +1769,9 @@ def test_create_llm_token_for_trial_team_is_inference_only(
 
     assert response.status_code == 200
     payload = _key_generate_payload(mock_httpx_post_client, "Trial Key")
-    assert payload["allowed_routes"] == ["llm_api_routes"]
+    # Literal list, not INFERENCE_ONLY_ROUTES: the constant builds the request,
+    # so comparing to it would silently accept any route added to it later.
+    assert payload["allowed_routes"] == ["llm_api_routes", "/model/info"]
 
 
 @pytest.mark.parametrize(

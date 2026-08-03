@@ -268,4 +268,12 @@ def test_trial_key_cannot_read_its_own_litellm_team(
         if str(call.args[0]).endswith("/key/generate")
     ]
     assert len(key_generate_calls) == 1
-    assert key_generate_calls[0].kwargs["json"]["allowed_routes"] == ["llm_api_routes"]
+    # Spelled out rather than compared against INFERENCE_ONLY_ROUTES: the
+    # constant builds the request, so comparing to it would accept any route
+    # added to it later, including a management route. /model/info is required
+    # because the Drupal module lists models through it and llm_api_routes does
+    # not cover it; anything beyond these two must fail this test.
+    assert key_generate_calls[0].kwargs["json"]["allowed_routes"] == [
+        "llm_api_routes",
+        "/model/info",
+    ]
