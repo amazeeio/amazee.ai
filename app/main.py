@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 from app.__version__ import __version__
 from app.api import (
     access_groups,
+    admin_model_apply,
     admin_models,
     audit,
     auth,
@@ -223,6 +224,7 @@ app.include_router(
 app.include_router(limits.router, prefix="/limits", tags=["limits"])
 app.include_router(budgets.router, prefix="/budgets", tags=["budgets"])
 app.include_router(spend.router, prefix="/spend", tags=["spend"])
+app.include_router(admin_model_apply.router)
 app.include_router(admin_models.router)
 app.include_router(access_groups.router)
 
