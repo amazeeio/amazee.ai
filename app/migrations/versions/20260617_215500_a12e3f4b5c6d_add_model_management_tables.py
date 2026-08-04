@@ -1,7 +1,7 @@
 """add model management tables
 
 Revision ID: a12e3f4b5c6d
-Revises: 6c201dbaea6e
+Revises: d1e2f3a4b5c6
 Create Date: 2026-06-17 21:55:00.000000
 
 """
