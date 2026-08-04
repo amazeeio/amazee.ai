@@ -457,6 +457,24 @@ async def apply_model_config(
     unmanaged_models: List[str] = []
     for model in unmanaged:
         if req.prune:
+            # Sunset protocol (issue #427): a callable name may only be
+            # deactivated after its announced EOL has passed. No EOL = never
+            # announced = never pruned. The grace period is the gap between
+            # the catalog PR that sets eol_date and the PR that removes the row.
+            eol = _tz(model.override_eol) or _tz(model.real_eol)
+            if model.is_active_globally and (not eol or eol > datetime.now(UTC)):
+                changes.append(
+                    ApplyChange(
+                        entity="model",
+                        key=model.model_id,
+                        action="prune_blocked",
+                        detail=(
+                            f"eol {eol.date()} has not passed" if eol else "no eol_date announced"
+                        ),
+                    )
+                )
+                unmanaged_models.append(model.model_id)
+                continue
             if model.is_active_globally:
                 model.is_active_globally = False
                 changes.append(ApplyChange(entity="model", key=model.model_id, action="prune"))

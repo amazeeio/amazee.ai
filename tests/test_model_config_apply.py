@@ -127,6 +127,8 @@ def test_apply_removes_deployment_declaratively(mock_svc, client, admin_token, d
 @patch("app.services.model_sync.LiteLLMService")
 def test_apply_prune_deactivates_absent_models(mock_svc, client, admin_token, db, test_region):
     payload = _payload(test_region.name)
+    # Announce EOL (in the past) so the sunset guard allows the prune.
+    payload["models"][1]["real_eol"] = "2020-01-01T00:00:00Z"
     assert _apply(client, admin_token, payload).status_code == 200
 
     pruned = _payload(test_region.name)
@@ -140,6 +142,40 @@ def test_apply_prune_deactivates_absent_models(mock_svc, client, admin_token, db
     alias = db.query(DBModel).filter_by(model_id="chat").one()
     db.refresh(alias)
     assert alias.is_active_globally is False
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_apply_prune_blocked_before_eol(mock_svc, client, admin_token, db, test_region):
+    """Sunset protocol: prune must refuse a model with no announced EOL, or
+    whose EOL has not passed yet — it stays active and is reported."""
+    payload = _payload(test_region.name)
+    payload["models"][0]["real_eol"] = "2099-01-01T00:00:00Z"  # future EOL
+    assert _apply(client, admin_token, payload).status_code == 200
+
+    pruned = {
+        "prune": True,
+        "access_groups": _payload(test_region.name)["access_groups"],
+        "models": [
+            {
+                "model_id": "placeholder",
+                "display_name": "Placeholder",
+                "provider": "test",
+                "type": "chat",
+                "access_groups": ["default-models"],
+            }
+        ],
+    }
+    res = _apply(client, admin_token, pruned)
+    assert res.status_code == 200
+    blocked = {c["key"]: c["detail"] for c in res.json()["changes"] if c["action"] == "prune_blocked"}
+    assert "no eol_date announced" in blocked["chat"]  # alias never announced
+    assert "has not passed" in blocked["claude-sonnet"]  # future EOL
+    sonnet = db.query(DBModel).filter_by(model_id="claude-sonnet").one()
+    alias = db.query(DBModel).filter_by(model_id="chat").one()
+    db.refresh(sonnet)
+    db.refresh(alias)
+    assert sonnet.is_active_globally is True
+    assert alias.is_active_globally is True
 
 
 @patch("app.services.model_sync.LiteLLMService")

@@ -1434,7 +1434,7 @@ class ApplyConfigRequest(BaseModel):
 class ApplyChange(BaseModel):
     entity: str  # access_group | model | deployment | alias_target
     key: str
-    action: str  # create | update | deactivate | prune
+    action: str  # create | update | deactivate | prune | prune_blocked
     detail: Optional[str] = None
 
 
