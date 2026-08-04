@@ -187,6 +187,68 @@ def test_apply_alias_chain_rejected(client, admin_token, test_region):
     assert "chains are not supported" in res.json()["detail"]
 
 
+@patch("app.services.model_sync.LiteLLMService")
+def test_apply_retarget_alias_triggers_resync(mock_svc, client, admin_token, db, test_region):
+    payload = _payload(test_region.name)
+    payload["models"].append(
+        {
+            "model_id": "claude-haiku",
+            "display_name": "Claude Haiku",
+            "provider": "bedrock",
+            "type": "chat",
+            "litellm_params": {"model": "bedrock/anthropic.claude-haiku"},
+            "access_groups": ["default-models"],
+            "deployments": [{"region": test_region.name}],
+        }
+    )
+    assert _apply(client, admin_token, payload).status_code == 200
+
+    # Point the alias at a different target: alias must be marked changed and resynced.
+    payload["models"][1]["alias_targets"] = [{"region": test_region.name, "target": "claude-haiku"}]
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 200
+    data = res.json()
+    actions = {(c["entity"], c["key"], c["action"]) for c in data["changes"]}
+    assert ("alias_target", "chat", "update") in actions
+    assert data["syncs_scheduled"] == 1  # only the alias resyncs
+
+    alias = db.query(DBModel).filter_by(model_id="chat").one()
+    haiku = db.query(DBModel).filter_by(model_id="claude-haiku").one()
+    target = db.query(DBModelAliasTarget).filter_by(alias_model_id=alias.id).one()
+    assert target.target_model_id == haiku.id
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_apply_override_change_resyncs_only_that_region(mock_svc, client, admin_token, db, test_region):
+    from app.db.models import DBRegion
+
+    region2 = DBRegion(
+        name="second-region",
+        litellm_api_url="https://second-litellm.com",
+        litellm_api_key="key2",
+        is_active=True,
+    )
+    db.add(region2)
+    db.commit()
+
+    payload = _payload(test_region.name)
+    payload["models"][0]["deployments"].append({"region": "second-region"})
+    payload["models"][1]["alias_targets"].append({"region": "second-region", "target": "claude-sonnet"})
+    payload["access_groups"][0]["regions"].append("second-region")
+    assert _apply(client, admin_token, payload).status_code == 200
+
+    # Change only the first region's override — the second region must not resync.
+    payload["models"][0]["deployments"][0]["litellm_params_override"] = {
+        "model": "bedrock/au.anthropic.claude-sonnet-v2"
+    }
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["syncs_scheduled"] == 1
+    keys = {c["key"] for c in data["changes"]}
+    assert keys == {f"claude-sonnet@{test_region.name}"}
+
+
 def test_apply_requires_admin(client, test_token, test_region):
     res = client.post(
         "/admin/models/apply",
