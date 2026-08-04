@@ -69,6 +69,7 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
     db = None
     assoc = None
     model = None
+    pushed_params = None
     try:
         db = next(get_db())
         # Fetch model_region association
@@ -113,6 +114,7 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
         if assoc.is_active and model.is_active_globally:
             # Base params + per-region override, or the alias target's params.
             params, resolve_error = effective_litellm_params(db, model, region_id)
+            pushed_params = params
             if resolve_error:
                 assoc.sync_status = "failed"
                 assoc.sync_error = resolve_error
@@ -152,7 +154,12 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
                 assoc = db.query(DBModelRegion).filter_by(model_id=model_id, region_id=region_id).first()
                 if assoc:
                     assoc.sync_status = "failed"
-                    assoc.sync_error = _scrub_secrets(str(e), model.litellm_params if model else None)
+                    # Scrub every params source the request could have echoed:
+                    # base params, the per-region override, and the effective
+                    # params actually pushed (an alias pushes its TARGET's).
+                    scrubbed = _scrub_secrets(str(e), model.litellm_params if model else None)
+                    scrubbed = _scrub_secrets(scrubbed, assoc.litellm_params_override)
+                    assoc.sync_error = _scrub_secrets(scrubbed, pushed_params)
             except Exception as inner_e:
                 logger.error(f"Failed to write error status to DB: {inner_e}")
                 # Session is poisoned — drop assoc so finally can't commit the
