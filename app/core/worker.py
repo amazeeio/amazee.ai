@@ -1,5 +1,7 @@
+import asyncio
 import os
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func, and_, or_, update as sa_update
 from app.db.models import (
@@ -30,7 +32,7 @@ from app.core.trial_cleanup import (
 )
 from app.db.postgres import PostgresManager
 from app.schemas.models import BudgetType
-from app.services.litellm import LiteLLMService
+from app.services.litellm import LiteLLMService, hash_litellm_token
 from app.services.ses import SESService
 from app.core.team_service import (
     get_team_keys_by_region,
@@ -59,7 +61,7 @@ from app.services.stripe import (
     INVOICE_FAILURE_EVENTS,
 )
 from prometheus_client import Gauge, Counter, Summary
-from typing import Dict, List, Optional
+from typing import Awaitable, Callable, Dict, List, Optional
 from app.core.security import create_access_token
 from app.core.config import settings
 from urllib.parse import urljoin
@@ -111,6 +113,43 @@ key_spend_percentage = Gauge(
     "Percentage of budget used for each key",
     ["team_id", "team_name", "key_alias"],
 )
+
+# Bulk key-listing metrics. A snapshot failure silently degrades the
+# reconciliation job back to one HTTP call per key, which is ~40 minutes at
+# 13.5k keys, so it must be observable rather than just logged.
+region_key_snapshot_failed_total = Counter(
+    "region_key_snapshot_failed_total",
+    "Total number of failed bulk /key/list snapshots, by region",
+    ["region_name"],
+)
+
+region_key_snapshot_keys = Gauge(
+    "region_key_snapshot_keys",
+    "Number of keys returned by the last bulk /key/list snapshot, by region",
+    ["region_name"],
+)
+
+key_state_fallback_total = Counter(
+    "key_state_fallback_total",
+    "Total number of keys that fell back to a per-key /key/info lookup",
+    ["region_name"],
+)
+
+key_write_failed_total = Counter(
+    "key_write_failed_total",
+    "Total number of per-key LiteLLM write calls that failed during reconciliation",
+    ["region_name"],
+)
+
+# Concurrent per-key LiteLLM writes during reconciliation. Bounds load on the
+# proxy while keeping the daily expiry run off the ~34 minute sequential path.
+KEY_WRITE_CONCURRENCY = max(1, int(os.getenv("KEY_WRITE_CONCURRENCY", "10")))
+
+# Queued writes are flushed once this many pile up, rather than only at the end
+# of a region. Without a cap, an expiring key stays usable until every key in
+# the region has been read; when the bulk snapshot is unavailable each read
+# costs a round-trip, so that wait grows with the region's key count.
+KEY_WRITE_BATCH = max(1, int(os.getenv("KEY_WRITE_BATCH", "500")))
 
 # Retention metrics
 team_retention_warning_sent_total = Counter(
@@ -1754,6 +1793,120 @@ async def apply_product_for_team(
     return sync_errors
 
 
+class RegionKeyStateCache:
+    """Per-run cache of bulk ``/key/list`` snapshots, keyed by region id.
+
+    ``monitor_teams`` reconciles ~1.1k teams that share a handful of regions, so
+    the snapshot must be fetched once per region per run and reused across every
+    team in it. Fetching per team would re-paginate the same region up to 1.1k
+    times and be far worse than the per-key loop it replaces.
+
+    A failed snapshot is cached as an empty mapping so one broken region is
+    retried once per run, not once per team.
+    """
+
+    def __init__(self) -> None:
+        self._snapshots: Dict[int, Dict[str, dict]] = {}
+
+    async def get(
+        self, region: DBRegion, litellm_service: LiteLLMService
+    ) -> Dict[str, dict]:
+        if region.id in self._snapshots:
+            return self._snapshots[region.id]
+
+        snapshot: Dict[str, dict] = {}
+        try:
+            listed = await litellm_service.list_all_keys()
+            # Guard the shape rather than trusting it: anything other than a
+            # mapping must degrade to the per-key path instead of being indexed
+            # into and yielding nonsense spend values.
+            if not isinstance(listed, dict):
+                raise TypeError(
+                    f"expected dict from list_all_keys, got {type(listed).__name__}"
+                )
+            snapshot = listed
+            region_key_snapshot_keys.labels(region_name=region.name).set(len(snapshot))
+        except Exception as e:
+            # Degrade rather than abort: callers fall back to per-key lookups.
+            # Loud, because the fallback is ~200x slower.
+            region_key_snapshot_failed_total.labels(region_name=region.name).inc()
+            logger.error(
+                "Bulk key snapshot failed for region %s, falling back to per-key "
+                "/key/info lookups (much slower): %s",
+                region.name,
+                str(e),
+            )
+            snapshot = {}
+
+        self._snapshots[region.id] = snapshot
+        return snapshot
+
+
+async def _run_key_writes(
+    pending_writes: list[tuple[int, Callable[[], Awaitable[None]]]],
+    region_name: str,
+) -> int:
+    """Run queued per-key LiteLLM writes concurrently, bounded by a semaphore.
+
+    Returns the number that failed. A failing write is logged and counted but
+    never aborts the region, matching the previous per-key behaviour.
+    """
+    if not pending_writes:
+        return 0
+
+    semaphore = asyncio.Semaphore(KEY_WRITE_CONCURRENCY)
+
+    async def _run(key_id: int, write: Callable[[], Awaitable[None]]) -> Optional[str]:
+        try:
+            async with semaphore:
+                await write()
+            return None
+        except Exception as exc:
+            return f"Key {key_id}: {str(exc)}"
+
+    errors = [
+        error
+        for error in await asyncio.gather(
+            *[_run(key_id, write) for key_id, write in pending_writes]
+        )
+        if error is not None
+    ]
+    for error in errors:
+        logger.error("Key write failed in region %s: %s", region_name, error)
+    if errors:
+        key_write_failed_total.labels(region_name=region_name).inc(len(errors))
+    logger.info(
+        "Applied %d key write(s) in region %s (%d failed)",
+        len(pending_writes) - len(errors),
+        region_name,
+        len(errors),
+    )
+    return len(errors)
+
+
+async def _resolve_key_state(
+    key: DBPrivateAIKey,
+    region: DBRegion,
+    litellm_service: LiteLLMService,
+    snapshot: Dict[str, dict],
+) -> dict:
+    """Return LiteLLM state for ``key`` as a flat dict.
+
+    Prefers the bulk snapshot. Falls back to a single ``/key/info`` call when the
+    key is absent - it may have been created after the snapshot was taken, or the
+    snapshot may have failed entirely.
+    """
+    if snapshot:
+        info = snapshot.get(hash_litellm_token(key.litellm_token))
+        # Only trust a real mapping; anything else falls through to /key/info.
+        if isinstance(info, dict):
+            return info
+
+    key_state_fallback_total.labels(region_name=region.name).inc()
+    key_info = await litellm_service.get_key_info(key.litellm_token)
+    return key_info.get("info", {}) or {}
+
+
 async def reconcile_team_keys(
     db: Session,
     team: DBTeam,
@@ -1761,9 +1914,15 @@ async def reconcile_team_keys(
     expire_keys: bool,
     renewal_period_days: Optional[int] = None,
     max_budget_amount: Optional[float] = None,
+    key_state_cache: Optional["RegionKeyStateCache"] = None,
 ) -> float:
     """
     Monitor spend for all keys in a team across different regions and optionally update keys after renewal period.
+
+    Key state is read from a bulk ``/key/list`` snapshot rather than one
+    ``/key/info`` call per key. Every key is still visited and every existing
+    budget/duration/expiry correction still applies - only the reads are
+    batched, and writes are issued exactly as before for keys that drifted.
 
     Args:
         team: The team to monitor keys for
@@ -1771,10 +1930,15 @@ async def reconcile_team_keys(
         expire_keys: Whether to expire keys (set duration to 0)
         renewal_period_days: Optional renewal period in days. If provided, will check for and update keys renewed within the last hour.
         max_budget_amount: Optional maximum budget amount. If provided, will update the budget amount for the keys.
+        key_state_cache: Shared per-run snapshot cache. Callers reconciling more
+            than one team must pass a single instance so each region is listed
+            once per run; when omitted a private cache is used.
 
     Returns:
         float: Total spend across all keys for the team
     """
+    if key_state_cache is None:
+        key_state_cache = RegionKeyStateCache()
     team_total = 0
     total_by_user = defaultdict(float)
     service_key_total = 0
@@ -1788,12 +1952,22 @@ async def reconcile_team_keys(
                 api_url=region.litellm_api_url, api_key=region.litellm_api_key
             )
 
+            # One bulk listing per region, shared across every team in this run
+            snapshot = await key_state_cache.get(region, litellm_service)
+
+            # Writes are queued here and run concurrently in batches of
+            # KEY_WRITE_BATCH. Issuing them inline costs one round-trip per key,
+            # which is ~34 minutes for the 11.5k-key trial team on the daily
+            # expiry run.
+            pending_writes: list[tuple[int, Callable[[], Awaitable[None]]]] = []
+
             # Check spend for each key in this region
             for key in keys:
                 try:
-                    # Get current spend using get_key_info
-                    key_info = await litellm_service.get_key_info(key.litellm_token)
-                    info = key_info.get("info", {})
+                    # Read state from the bulk snapshot, falling back per key
+                    info = await _resolve_key_state(
+                        key, region, litellm_service, snapshot
+                    )
                     # Ensure that even if LiteLLM returns `None` we have a value
                     current_spend = info.get("spend", 0) or 0.0
                     budget = info.get("max_budget", 0) or 0.0
@@ -1817,19 +1991,34 @@ async def reconcile_team_keys(
                         logger.info(
                             f"Key {key.id} expiring, setting duration to 0 days"
                         )
-                        await litellm_service.update_key_duration(
-                            key.litellm_token, "0d"
+                        pending_writes.append(
+                            (
+                                key.id,
+                                partial(
+                                    litellm_service.update_key_duration,
+                                    key.litellm_token,
+                                    "0d",
+                                ),
+                            )
                         )
                     else:
-                        update_data = {"litellm_token": key.litellm_token}
+                        # Each drifted field is tracked on its own so the write
+                        # carries only what actually drifted. Reads come from a
+                        # snapshot that can be minutes old, so a write that also
+                        # sends unrelated fields could overwrite a change made
+                        # after the snapshot was taken.
                         needs_update = False
+                        new_budget_amount: Optional[float] = None
+                        new_budget_duration: Optional[str] = None
+                        extend_key_life = False
+
                         current_max_budget = info.get("max_budget")
                         # If the budget amount mis-matches, always update that field
                         if (
                             max_budget_amount is not None
                             and current_max_budget != max_budget_amount
                         ):
-                            update_data["budget_amount"] = max_budget_amount
+                            new_budget_amount = max_budget_amount
                             needs_update = True
                             logger.info(
                                 f"Key {key.id} has incorrect budget of {current_max_budget}, will change to {max_budget_amount}"
@@ -1841,7 +2030,7 @@ async def reconcile_team_keys(
                             current_budget_duration is None
                             and renewal_period_days is not None
                         ):
-                            update_data["budget_duration"] = f"{renewal_period_days}d"
+                            new_budget_duration = f"{renewal_period_days}d"
                             needs_update = True
                             logger.info(
                                 f"Key {key.id} budget update triggered by None budget_duration"
@@ -1851,7 +2040,7 @@ async def reconcile_team_keys(
                             current_budget_duration == "0d"
                             and renewal_period_days is not None
                         ):
-                            update_data["budget_duration"] = f"{renewal_period_days}d"
+                            new_budget_duration = f"{renewal_period_days}d"
                             needs_update = True
                             logger.info(
                                 f"Key {key.id} budget update triggered by 0d duration (expired key fix)"
@@ -1864,36 +2053,52 @@ async def reconcile_team_keys(
                             )
                             this_month = current_time + timedelta(days=30)
                             if parsed_expiry_date <= this_month:
-                                update_data["budget_duration"] = (
-                                    f"{renewal_period_days}d"
-                                )
+                                new_budget_duration = f"{renewal_period_days}d"
+                                extend_key_life = True
                                 needs_update = True
                                 logger.info(
                                     f"Key {key.id} expires at {expiry_date}, updating to extend life."
                                 )
 
                         if needs_update:
-                            # Determine what the new budget_duration will be for logging
-                            new_budget_duration = update_data.get(
-                                "budget_duration", current_budget_duration
-                            )
                             logger.info(
-                                f"Key {key.id} budget update triggered: changing from {current_budget_duration}, {current_max_budget} to {new_budget_duration}, {max_budget_amount}"
+                                f"Key {key.id} budget update triggered: changing from {current_budget_duration}, {current_max_budget} to {new_budget_duration or current_budget_duration}, {max_budget_amount}"
                             )
 
-                            # Extract litellm_token and other parameters for update_budget call
-                            litellm_token = update_data.pop("litellm_token")
-                            budget_duration = update_data.get("budget_duration")
-                            budget_amount = update_data.get("budget_amount")
-
-                            # Call update_budget with correct parameter order
-                            # Always pass budget_duration as second positional argument (can be None)
-                            await litellm_service.update_budget(
-                                litellm_token,
-                                budget_duration,
-                                budget_amount=budget_amount,
-                            )
-                            logger.info(f"Updated key {key.id} budget settings")
+                            if extend_key_life:
+                                # update_budget also resets the key's duration to
+                                # 365d, which is the whole point when the key is
+                                # close to expiring. budget_duration is always set
+                                # on this path, so nothing is sent as null.
+                                pending_writes.append(
+                                    (
+                                        key.id,
+                                        partial(
+                                            litellm_service.update_budget,
+                                            key.litellm_token,
+                                            new_budget_duration,
+                                            budget_amount=new_budget_amount,
+                                        ),
+                                    )
+                                )
+                            else:
+                                # Budget-only drift: leave duration/expiry alone and
+                                # send no field we did not mean to change. LiteLLM
+                                # reads a null budget_duration as "clear it", so
+                                # passing None here would wipe the reset period and
+                                # the next run would write it back - a flap.
+                                pending_writes.append(
+                                    (
+                                        key.id,
+                                        partial(
+                                            litellm_service.update_key_budget,
+                                            key.litellm_token,
+                                            budget_duration=new_budget_duration,
+                                            max_budget=new_budget_amount,
+                                        ),
+                                    )
+                                )
+                            logger.info(f"Queued key {key.id} budget update")
                         else:
                             logger.info(
                                 f"Key {key.id} budget settings already match the expected values, no update needed"
@@ -1928,6 +2133,15 @@ async def reconcile_team_keys(
                 except Exception as e:
                     logger.error(f"Error monitoring key {key.id} spend: {str(e)}")
                     continue
+
+                # Flush early so an expiring key does not stay usable until the
+                # whole region has been read.
+                if len(pending_writes) >= KEY_WRITE_BATCH:
+                    await _run_key_writes(pending_writes, region.name)
+                    pending_writes = []
+
+            # Execute any writes left over from the last partial batch
+            await _run_key_writes(pending_writes, region.name)
 
         except Exception as e:
             logger.error(
@@ -2389,6 +2603,8 @@ async def monitor_teams(db: Session):
 
         logger.info(f"Found {len(teams)} teams to track")
         limit_service = LimitService(db)
+        # Shared across every team so each region is bulk-listed once per run
+        key_state_cache = RegionKeyStateCache()
         for team in teams:
             try:
                 team_label = (str(team.id), team.name)
@@ -2503,6 +2719,7 @@ async def monitor_teams(db: Session):
                     expire_keys,
                     renewal_period_days,
                     max_budget_amount,
+                    key_state_cache=key_state_cache,
                 )
 
                 # Set the total spend metric for the team (always emit metrics)
@@ -2569,6 +2786,13 @@ async def monitor_teams(db: Session):
         # Update active team labels for next run
         active_team_labels.clear()
         active_team_labels.update(current_team_labels)
+
+        # Log wall-clock so an overrun of the hourly interval is visible in logs,
+        # not just in the monitor_teams_duration_seconds metric.
+        elapsed = (datetime.now(UTC) - current_time).total_seconds()
+        logger.info(
+            "Team monitoring completed in %.1fs for %d teams", elapsed, len(teams)
+        )
 
     except Exception as e:
         logger.error(f"Error in team monitoring task: {str(e)}")
