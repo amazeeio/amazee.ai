@@ -20,6 +20,10 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# EX_TEMPFAIL. Signals "did not run, try later" - distinct from success (0) and
+# from a hard failure (1) so an overrunning previous run can be alerted on.
+EXIT_LOCK_CONTENTION = 75
+
 
 async def trigger_recon_job():
     """Manually trigger the recon job (monitor_teams) in the background scheduler thread"""
@@ -47,10 +51,15 @@ async def trigger_recon_job():
                 release_lock(lock_name, db)
                 logger.info("Released monitor_teams lock")
         else:
-            logger.warning(
-                "Another process has the monitor_teams lock, cannot execute recon job"
+            # Lock contention on an hourly schedule almost always means the
+            # previous run is still going, i.e. monitor_teams is overrunning its
+            # window. Log at ERROR (not INFO) so it surfaces, and signal it
+            # distinctly via the exit code - see main().
+            logger.error(
+                "Another process has the monitor_teams lock, cannot execute recon job. "
+                "If this is the scheduled run, the previous run is overrunning its "
+                "interval and monitoring is being skipped."
             )
-            logger.info("This is normal if the scheduled job is currently running")
             return False
 
     except Exception as e:
@@ -72,11 +81,13 @@ def main():
             logger.info("✅ Recon job completed successfully")
             sys.exit(0)
         else:
-            logger.info(
-                "⚠️  Recon job could not be executed (lock held by another process)"
+            logger.error(
+                "⚠️  Recon job skipped: lock held by another process (likely an "
+                "overrunning previous run)"
             )
-            # Exiting with status 0 because this is a normal, expected condition (lock held)
-            sys.exit(0)
+            # EX_TEMPFAIL: distinguishable from success (0) and from a hard
+            # failure (1), so a skipped run is alertable instead of silent.
+            sys.exit(EXIT_LOCK_CONTENTION)
 
     except Exception as e:
         logger.error(f"❌ Script failed: {str(e)}")
