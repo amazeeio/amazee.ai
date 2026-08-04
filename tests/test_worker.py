@@ -4085,6 +4085,64 @@ async def test_reconcile_team_keys_expire_writes_are_batched(
 
 
 @pytest.mark.asyncio
+@patch("app.core.worker.KEY_WRITE_BATCH", 2)
+@patch("app.core.worker.LiteLLMService")
+async def test_reconcile_team_keys_flushes_writes_before_region_ends(
+    mock_litellm, db, test_team, test_region
+):
+    """
+    Given: More keys than KEY_WRITE_BATCH, and no usable bulk snapshot
+    When: reconcile_team_keys runs with expire_keys=True
+    Then: Expiry writes start landing before the last key has been read
+
+    Without batching, every key stays usable until the whole region is read.
+    That wait is worst on the fallback path, where each read is a round-trip.
+    """
+    tokens = [f"sk-flush-{i}" for i in range(5)]
+    for i, tok in enumerate(tokens):
+        db.add(
+            DBPrivateAIKey(
+                name=f"Key {i}",
+                litellm_token=tok,
+                region=test_region,
+                team_id=test_team.id,
+            )
+        )
+    db.commit()
+
+    events = []
+
+    async def _read(token):
+        events.append(("read", token))
+        return {"info": {"spend": 1.0, "max_budget": 10.0}}
+
+    async def _write(token, duration):
+        events.append(("write", token))
+
+    mock_instance = mock_litellm.return_value
+    mock_instance.get_key_info = AsyncMock(side_effect=_read)
+    mock_instance.update_budget = AsyncMock()
+    mock_instance.update_key_budget = AsyncMock()
+    mock_instance.update_key_duration = AsyncMock(side_effect=_write)
+    # Empty snapshot forces the per-key fallback read for every key
+    mock_instance.list_all_keys = AsyncMock(return_value={})
+
+    keys_by_region = get_team_keys_by_region(db, test_team.id)
+    team_total = await reconcile_team_keys(db, test_team, keys_by_region, True)
+
+    assert team_total == 5.0
+    # Every key still expired, and spend still counted
+    assert mock_instance.update_key_duration.await_count == 5
+
+    kinds = [kind for kind, _ in events]
+    first_write = kinds.index("write")
+    last_read = len(kinds) - 1 - kinds[::-1].index("read")
+    assert first_write < last_read, (
+        f"writes only ran after every read finished: {events}"
+    )
+
+
+@pytest.mark.asyncio
 @patch("app.core.worker.LiteLLMService")
 async def test_reconcile_team_keys_write_failure_does_not_lose_spend(
     mock_litellm, db, test_team, test_region
