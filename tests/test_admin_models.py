@@ -306,6 +306,71 @@ def test_sync_model_global_deactivation_deregisters(mock_litellm_class, db, test
     mock_instance.delete_model.assert_called_once_with("test/globally-inactive-model", ["dep-1"])
 
 
+@patch("app.services.model_sync.LiteLLMService")
+def test_sync_error_scrubs_override_credentials(mock_litellm_class, db, test_region):
+    """sync_error must redact credentials from ALL params sources: base params,
+    the per-region override, and (for aliases) the target's effective params —
+    proxies can echo the full request payload in error bodies."""
+    from app.db.models import DBModelAliasTarget
+    from app.services.model_sync import sync_model_to_region_task
+
+    target = DBModel(
+        model_id="scrub-target",
+        display_name="Scrub Target",
+        provider="test",
+        type="chat",
+        litellm_params={"model": "x", "aws_secret_access_key": "sk-target-secret99"},
+    )
+    alias = DBModel(
+        model_id="scrub-alias",
+        display_name="Scrub Alias",
+        provider="alias",
+        type="chat",
+        is_alias=True,
+    )
+    db.add_all([target, alias])
+    db.commit()
+    db.add(
+        DBModelAliasTarget(
+            alias_model_id=alias.id, region_id=test_region.id, target_model_id=target.id
+        )
+    )
+    db.add(
+        DBModelRegion(
+            model_id=target.id,
+            region_id=test_region.id,
+            is_active=True,
+            litellm_params_override={"api_key": "sk-override-secret99"},
+        )
+    )
+    alias_assoc = DBModelRegion(
+        model_id=alias.id,
+        region_id=test_region.id,
+        is_active=True,
+        sync_status="pending",
+    )
+    db.add(alias_assoc)
+    db.commit()
+
+    mock_instance = MagicMock()
+    mock_instance.get_model_deployment_ids = AsyncMock(return_value=[])
+    mock_instance.add_model = AsyncMock(
+        side_effect=Exception(
+            "422: payload rejected: aws_secret_access_key=sk-target-secret99 api_key=sk-override-secret99"
+        )
+    )
+    mock_litellm_class.return_value = mock_instance
+
+    import asyncio
+    asyncio.run(sync_model_to_region_task(alias.id, test_region.id))
+
+    db.refresh(alias_assoc)
+    assert alias_assoc.sync_status == "failed"
+    assert "sk-target-secret99" not in alias_assoc.sync_error
+    assert "sk-override-secret99" not in alias_assoc.sync_error
+    assert "********" in alias_assoc.sync_error
+
+
 def test_admin_get_model_redacts_credentials(client, admin_token, db):
     """Detail endpoint must redact credential values but keep keys and os.environ/ refs visible."""
     m = DBModel(
