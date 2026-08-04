@@ -1567,10 +1567,19 @@ def test_current_cycle_start_rolls_forward_to_contain_now():
 
     # 1mo snaps to the calendar month, matching LiteLLM's own boundary.
     assert current_cycle_start("1mo", anchor, now) == datetime(2026, 7, 1, tzinfo=UTC)
-    # An anchor in the future is left alone, and junk yields nothing.
+    # An anchor in the future is left alone.
     future = now + timedelta(days=5)
     assert current_cycle_start("31d", future, now) == future
-    assert current_cycle_start("weekly", anchor, now) is None
+
+    # A stored word form canonicalises, so it resolves to a real cycle instead
+    # of silently yielding no window.
+    weekly = current_cycle_start("weekly", anchor, now)
+    assert weekly == current_cycle_start("7d", anchor, now)
+    assert weekly is not None
+    assert weekly <= now < weekly + timedelta(days=7)
+
+    # Genuine junk still yields nothing.
+    assert current_cycle_start("nonsense", anchor, now) is None
     assert current_cycle_start(None, anchor, now) is None
 
 

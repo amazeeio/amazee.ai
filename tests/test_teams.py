@@ -5,9 +5,11 @@ from app.core.config import settings
 from app.core.limit_service import LimitService, setup_default_limits
 from app.core.security import get_password_hash
 from app.db.models import (
+    DBBudgetAlertState,
     DBPrivateAIKey,
     DBProduct,
     DBRegion,
+    DBSpendCap,
     DBTeam,
     DBTeamProduct,
     DBTeamRegion,
@@ -2368,3 +2370,64 @@ def test_restored_team_keys_are_accessible(
     keys = response.json()
     key_names = [k.get("name") for k in keys]
     assert "restored-key" in key_names
+
+
+def test_delete_team_with_budget_rows(client, admin_token, db, test_team, test_region):
+    """
+    GIVEN: A team with a team spend cap, a member spend cap and a budget alert state row
+    WHEN: The team is deleted
+    THEN: A 200 is returned and every budget row for the team is gone
+
+    Both tables reference teams.id without a cascade, so before this was fixed
+    the delete raised a foreign key violation and surfaced as a 500.
+    """
+    member = DBUser(email="team-budget-member@example.com", team_id=test_team.id)
+    db.add(member)
+    db.commit()
+    db.refresh(member)
+
+    db.add_all(
+        [
+            DBSpendCap(
+                scope="team",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                max_budget=20.0,
+                budget_duration="31d",
+            ),
+            DBSpendCap(
+                scope="team_member",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                user_id=member.id,
+                max_budget=3.0,
+                budget_duration="1mo",
+            ),
+            DBBudgetAlertState(
+                subject_key=f"team:{test_team.id}",
+                subject_type="team",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                period_key="2026-08",
+            ),
+        ]
+    )
+    db.commit()
+    team_id = test_team.id
+
+    with patch(
+        "app.api.teams.LiteLLMService.update_team_budget", new_callable=AsyncMock
+    ):
+        response = client.delete(
+            f"/teams/{team_id}", headers={"Authorization": f"Bearer {admin_token}"}
+        )
+    assert response.status_code == 200
+
+    assert db.query(DBTeam).filter(DBTeam.id == team_id).first() is None
+    assert db.query(DBSpendCap).filter(DBSpendCap.team_id == team_id).count() == 0
+    assert (
+        db.query(DBBudgetAlertState)
+        .filter(DBBudgetAlertState.team_id == team_id)
+        .count()
+        == 0
+    )
