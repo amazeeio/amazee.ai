@@ -28,7 +28,7 @@ from app.db.models import (
     DBSpendCap,
 )
 from app.core.email import normalize_email_for_lookup
-from app.services.litellm import LiteLLMService
+from app.services.litellm import INFERENCE_ONLY_ROUTES, LiteLLMService
 from app.core.security import (
     get_current_user_from_auth,
     get_role_min_team_admin,
@@ -46,6 +46,8 @@ from app.core.limit_service import (
     DEFAULT_RPM_PER_KEY,
 )
 from app.core.pool_budget_service import pool_team_has_ever_purchased
+from app.core.spend_period_service import canonical_budget_duration
+from app.core.team_service import is_anonymous_trial_team
 
 router = APIRouter(tags=["private-ai-keys"])
 
@@ -398,7 +400,11 @@ async def _create_private_ai_key(
             if db_info and region:
                 # Delete vector database
                 postgres_manager = PostgresManager(region=region)
-                await postgres_manager.delete_database(db_info.database_name)
+                # Drop the role too — a leftover role keeps valid, unowned
+                # credentials on the shared cluster.
+                await postgres_manager.delete_database(
+                    db_info.database_name, db_info.database_username
+                )
                 logger.info("Cleaned up vector database after failure")
         except Exception as cleanup_error:
             logger.error(
@@ -522,6 +528,14 @@ async def create_llm_token(
             db, effective_team.id, region.id
         )
 
+    # Every anonymous trial lands in ONE shared team (so the keys stay
+    # trackable), and LiteLLM lets any key in a team read that team —
+    # /team/info returns every sibling key with its owner, spend and budget.
+    # Trial keys therefore get LiteLLM's inference-only route group: LLM calls
+    # work, every management route returns 403. Members of a real (customer)
+    # team are colleagues, so this scoping is deliberately trial-only.
+    allowed_routes = INFERENCE_ONLY_ROUTES if is_anonymous_trial_team(effective_team) else None
+
     if (owner is not None and owner.team_id) or team_id:
         if settings.ENABLE_LIMITS and not is_pool_team:
             limit_service.check_key_limits(owner.team_id or team_id, owner_id)
@@ -582,6 +596,7 @@ async def create_llm_token(
             rpm_limit=max_rpm_limit,
             apply_limits=not is_pool_team,
             blocked=(True if is_pool_team and not has_pool_purchase else None),
+            allowed_routes=allowed_routes,
         )
         if is_pool_team and not has_pool_purchase:
             await litellm_service.update_key_budget(
@@ -1126,7 +1141,9 @@ async def update_budget_period(
     3. Return the updated spend information
 
     Required parameters:
-    - **budget_duration**: The new budget period (e.g. "monthly", "weekly", "daily")
+    - **budget_duration**: The new budget period. Accepts canonical forms such
+      as "30d", "7d" or "24h", and the word forms "monthly", "weekly", "daily"
+      and "hourly", which are stored in their canonical equivalent.
 
     Note: You must be authenticated to use this endpoint.
     Only the owner of the key or an admin can update it.
@@ -1145,10 +1162,12 @@ async def update_budget_period(
     )
 
     try:
-        # Update budget period in LiteLLM
+        # Canonicalise before writing. A word form stored on the key leaves it
+        # with no computable period start, so period spend and budget alerts go
+        # blank for that key.
         await litellm_service.update_budget(
             litellm_token=private_ai_key.litellm_token,
-            budget_duration=budget_update.budget_duration,
+            budget_duration=canonical_budget_duration(budget_update.budget_duration),
         )
 
         # Get updated spend information

@@ -3,17 +3,22 @@ import { Team } from "@/types/team";
 import { get, post, put, del } from "@/utils/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
-export function useTeams(includeDeleted: boolean = false) {
+export function useTeams(
+  includeDeleted: boolean = false,
+  options: { enabled?: boolean } = {},
+) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  // Queries
+  // Queries. The full-list fetch is expensive on production, so callers
+  // that only need the mutations should pass { enabled: false }.
   const teamsQuery = useQuery<Team[]>({
     queryKey: ["teams", includeDeleted],
     queryFn: async () => {
       const response = await get(`/teams?include_deleted=${includeDeleted}`);
       return response.json();
     },
+    enabled: options.enabled ?? true,
   });
 
   // Mutations

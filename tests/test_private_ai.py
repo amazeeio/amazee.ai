@@ -1,4 +1,7 @@
 from unittest.mock import patch, Mock, AsyncMock
+
+import pytest
+
 from app.db.models import (
     DBPrivateAIKey,
     DBPeriodicBudgetLedgerEntry,
@@ -13,6 +16,7 @@ from datetime import datetime, UTC
 from app.core.security import get_password_hash
 from httpx import HTTPStatusError
 from fastapi import status, HTTPException
+from app.core.config import settings
 from app.core.limit_service import (
     DEFAULT_MAX_SPEND,
     DEFAULT_RPM_PER_KEY,
@@ -1374,13 +1378,14 @@ def test_update_budget_duration_as_team_admin(
     data = response.json()
     assert data["budget_duration"] == "monthly"
 
-    # Verify that the LiteLLM API was called with the correct parameters
+    # The word form is canonicalised before it reaches LiteLLM, so the key does
+    # not end up carrying a duration our period maths cannot parse.
     mock_httpx_combined_client.post.assert_called_with(
         f"{test_region.litellm_api_url}/key/update",
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
         json={
             "key": test_key.litellm_token,
-            "budget_duration": "monthly",
+            "budget_duration": "30d",
             "duration": "365d",
         },
     )
@@ -1719,6 +1724,97 @@ def test_create_llm_token_for_non_gated_pool_team_is_never_blocked(
     ]
     assert len(key_generate_calls) == 1
     assert "blocked" not in key_generate_calls[0].kwargs["json"]
+
+
+def _key_generate_payload(mock_client, key_name):
+    calls = [
+        call
+        for call in mock_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/generate")
+        and call.kwargs.get("json", {})
+        .get("metadata", {})
+        .get("amazeeai_private_ai_key_name")
+        == key_name
+    ]
+    assert len(calls) == 1
+    return calls[0].kwargs["json"]
+
+
+@patch("httpx.AsyncClient")
+def test_create_llm_token_for_trial_team_is_inference_only(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
+    """All anonymous trials share one team, and LiteLLM lets any key in a team
+    read that team (/team/info exposes every sibling key's owner, spend and
+    budget). Trial keys must therefore be scoped to inference routes."""
+    test_team.admin_email = settings.AI_TRIAL_TEAM_EMAIL
+    db.commit()
+
+    mock_client_class.return_value = mock_httpx_post_client
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Trial Key",
+            "team_id": test_team.id,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = _key_generate_payload(mock_httpx_post_client, "Trial Key")
+    # Literal list, not INFERENCE_ONLY_ROUTES: the constant builds the request,
+    # so comparing to it would silently accept any route added to it later.
+    assert payload["allowed_routes"] == ["llm_api_routes", "/model/info"]
+
+
+@pytest.mark.parametrize(
+    "admin_email",
+    [
+        "customer-team-admin@example.com",
+        # A plus-tag of the trial address is a DIFFERENT team (that's how the
+        # trial team is looked up), so it must not inherit the restriction.
+        settings.AI_TRIAL_TEAM_EMAIL.replace("@", "+customer@"),
+    ],
+)
+@patch("httpx.AsyncClient")
+def test_create_llm_token_for_customer_team_is_unrestricted(
+    mock_client_class,
+    admin_email,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
+    """Members of a real team are colleagues — the trial restriction must not
+    leak into normal team keys."""
+    test_team.admin_email = admin_email
+    db.commit()
+
+    mock_client_class.return_value = mock_httpx_post_client
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Customer Key",
+            "team_id": test_team.id,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = _key_generate_payload(mock_httpx_post_client, "Customer Key")
+    assert "allowed_routes" not in payload
 
 
 def test_create_vector_db_as_system_admin(client, admin_token, test_region):
@@ -2738,8 +2834,9 @@ def test_create_private_ai_key_cleanup_on_db_storage_failure(
     assert cleanup_call[0][0] == f"{test_region.litellm_api_url}/key/delete"
     assert cleanup_call[1]["json"]["keys"] == ["test-private-key-123"]
 
-    # Verify vector database was cleaned up
-    mock_delete_db.assert_called_once_with("test_db_123")
+    # Verify vector database AND its role were cleaned up — a leftover role
+    # keeps valid credentials on the shared cluster.
+    mock_delete_db.assert_called_once_with("test_db_123", "test_user")
 
     # Verify no key was stored in the database
     stored_keys = client.get(

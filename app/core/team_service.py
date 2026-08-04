@@ -7,6 +7,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Dict, List, Optional
 
+from app.core.config import settings
 from app.core.limit_service import DEFAULT_KEY_DURATION
 from app.db.models import (
     DBAuditLog,
@@ -21,6 +22,21 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+
+
+def is_anonymous_trial_team(team: Optional[DBTeam]) -> bool:
+    """True for the single team that pools all anonymous trial users.
+
+    Unlike a customer team, its members are unrelated to each other, so keys
+    minted in it must stay private from the rest of the team.
+
+    Compared case-insensitively but WITHOUT plus-tag stripping, matching how
+    the trial team is looked up and created in `generate_trial_access` — a
+    plus-tagged address is a different team, not the trial team.
+    """
+    if team is None or not team.admin_email:
+        return False
+    return team.admin_email.lower() == settings.AI_TRIAL_TEAM_EMAIL.lower()
 
 
 def get_team_region_litellm_keys(
