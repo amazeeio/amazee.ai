@@ -145,6 +145,12 @@ key_write_failed_total = Counter(
 # proxy while keeping the daily expiry run off the ~34 minute sequential path.
 KEY_WRITE_CONCURRENCY = max(1, int(os.getenv("KEY_WRITE_CONCURRENCY", "10")))
 
+# Queued writes are flushed once this many pile up, rather than only at the end
+# of a region. Without a cap, an expiring key stays usable until every key in
+# the region has been read; when the bulk snapshot is unavailable each read
+# costs a round-trip, so that wait grows with the region's key count.
+KEY_WRITE_BATCH = max(1, int(os.getenv("KEY_WRITE_BATCH", "500")))
+
 # Retention metrics
 team_retention_warning_sent_total = Counter(
     "team_retention_warning_sent_total",
@@ -1949,9 +1955,10 @@ async def reconcile_team_keys(
             # One bulk listing per region, shared across every team in this run
             snapshot = await key_state_cache.get(region, litellm_service)
 
-            # Writes are queued here and executed concurrently after the loop.
-            # Issuing them inline costs one round-trip per key, which is ~34
-            # minutes for the 11.5k-key trial team on the daily expiry run.
+            # Writes are queued here and run concurrently in batches of
+            # KEY_WRITE_BATCH. Issuing them inline costs one round-trip per key,
+            # which is ~34 minutes for the 11.5k-key trial team on the daily
+            # expiry run.
             pending_writes: list[tuple[int, Callable[[], Awaitable[None]]]] = []
 
             # Check spend for each key in this region
@@ -2127,7 +2134,13 @@ async def reconcile_team_keys(
                     logger.error(f"Error monitoring key {key.id} spend: {str(e)}")
                     continue
 
-            # Execute the queued key writes for this region concurrently
+                # Flush early so an expiring key does not stay usable until the
+                # whole region has been read.
+                if len(pending_writes) >= KEY_WRITE_BATCH:
+                    await _run_key_writes(pending_writes, region.name)
+                    pending_writes = []
+
+            # Execute any writes left over from the last partial batch
             await _run_key_writes(pending_writes, region.name)
 
         except Exception as e:
