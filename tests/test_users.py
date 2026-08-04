@@ -1,4 +1,5 @@
 from app.db.models import (
+    DBBudgetAlertState,
     DBRegion,
     DBSpendCap,
     DBUser,
@@ -76,6 +77,57 @@ def test_get_users_include_inactive(client, admin_token, db):
     )
     assert response.status_code == 200
     assert "inactive-list@example.com" in [u["email"] for u in response.json()]
+
+
+def test_get_users_paginated(client, admin_token, db):
+    for i in range(3):
+        db.add(
+            DBUser(
+                email=f"paginated-{i}@example.com",
+                hashed_password=get_password_hash("password"),
+                is_active=True,
+            )
+        )
+    db.commit()
+
+    response = client.get(
+        "/users/?search=paginated-&limit=2&sort_by=email&sort_order=desc",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "3"
+    assert [u["email"] for u in response.json()] == [
+        "paginated-2@example.com",
+        "paginated-1@example.com",
+    ]
+
+    response = client.get(
+        "/users/?search=paginated-&limit=2&skip=2&sort_by=email&sort_order=desc",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "3"
+    assert [u["email"] for u in response.json()] == ["paginated-0@example.com"]
+
+
+def test_get_users_search_escapes_wildcards(client, admin_token, db):
+    for email in ["wild_card@example.com", "wildxcard@example.com"]:
+        db.add(
+            DBUser(
+                email=email,
+                hashed_password=get_password_hash("password"),
+                is_active=True,
+            )
+        )
+    db.commit()
+
+    response = client.get(
+        "/users/?search=wild_card",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "1"
+    assert [u["email"] for u in response.json()] == ["wild_card@example.com"]
 
 
 def test_get_user_by_id(client, admin_token, test_user):
@@ -1438,3 +1490,57 @@ def test_sign_in_creates_user_with_default_limits(client, db):
     )
     assert budget_limit is None  # Should be inherited from team, not user-specific
     assert rpm_limit is None  # Should be inherited from team, not user-specific
+
+
+def test_delete_user_with_member_budget_and_alert_state(
+    client, admin_token, db, test_team, test_region
+):
+    """
+    GIVEN: A user who has a team member spend cap and a budget alert state row
+    WHEN: The user is deleted
+    THEN: A 200 is returned and both budget rows are gone
+
+    Both tables reference users.id without a cascade, so before this was fixed
+    the delete raised a foreign key violation and surfaced as a 500.
+    """
+    user = DBUser(email="member-budget@example.com", team_id=test_team.id)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    db.add(
+        DBSpendCap(
+            scope="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=user.id,
+            max_budget=3.0,
+            budget_duration="1mo",
+        )
+    )
+    db.add(
+        DBBudgetAlertState(
+            subject_key=f"team_member:{test_team.id}:{user.id}",
+            subject_type="team_member",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=user.id,
+            period_key="2026-08",
+        )
+    )
+    db.commit()
+    user_id = user.id
+
+    response = client.delete(
+        f"/users/{user_id}", headers={"Authorization": f"Bearer {admin_token}"}
+    )
+    assert response.status_code == 200
+
+    assert db.query(DBUser).filter(DBUser.id == user_id).first() is None
+    assert db.query(DBSpendCap).filter(DBSpendCap.user_id == user_id).count() == 0
+    assert (
+        db.query(DBBudgetAlertState)
+        .filter(DBBudgetAlertState.user_id == user_id)
+        .count()
+        == 0
+    )

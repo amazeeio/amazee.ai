@@ -5,9 +5,11 @@ from app.core.config import settings
 from app.core.limit_service import LimitService, setup_default_limits
 from app.core.security import get_password_hash
 from app.db.models import (
+    DBBudgetAlertState,
     DBPrivateAIKey,
     DBProduct,
     DBRegion,
+    DBSpendCap,
     DBTeam,
     DBTeamProduct,
     DBTeamRegion,
@@ -481,6 +483,50 @@ def test_list_teams(client, admin_token, db, test_team):
     assert isinstance(teams, list)
     assert len(teams) >= 1
     assert any(t["admin_email"] == "testteam@example.com" for t in teams)
+
+
+def test_list_teams_paginated(client, admin_token, db):
+    for i in range(3):
+        db.add(
+            DBTeam(
+                name=f"paginated team {i}",
+                admin_email=f"paginated-team-{i}@example.com",
+            )
+        )
+    db.commit()
+
+    response = client.get(
+        "/teams/?name=paginated team&limit=2&sort_by=name&sort_order=desc",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "3"
+    assert [t["name"] for t in response.json()] == [
+        "paginated team 2",
+        "paginated team 1",
+    ]
+
+    response = client.get(
+        "/teams/?name=paginated team&limit=2&skip=2&sort_by=name&sort_order=desc",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "3"
+    assert [t["name"] for t in response.json()] == ["paginated team 0"]
+
+
+def test_list_teams_filter_escapes_wildcards(client, admin_token, db):
+    for name in ["wild_card team", "wildxcard team"]:
+        db.add(DBTeam(name=name, admin_email=f"{name.replace(' ', '-')}@example.com"))
+    db.commit()
+
+    response = client.get(
+        "/teams/?name=wild_card",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "1"
+    assert [t["name"] for t in response.json()] == ["wild_card team"]
 
 
 def test_list_teams_unauthorized(client, test_token):
@@ -2324,3 +2370,64 @@ def test_restored_team_keys_are_accessible(
     keys = response.json()
     key_names = [k.get("name") for k in keys]
     assert "restored-key" in key_names
+
+
+def test_delete_team_with_budget_rows(client, admin_token, db, test_team, test_region):
+    """
+    GIVEN: A team with a team spend cap, a member spend cap and a budget alert state row
+    WHEN: The team is deleted
+    THEN: A 200 is returned and every budget row for the team is gone
+
+    Both tables reference teams.id without a cascade, so before this was fixed
+    the delete raised a foreign key violation and surfaced as a 500.
+    """
+    member = DBUser(email="team-budget-member@example.com", team_id=test_team.id)
+    db.add(member)
+    db.commit()
+    db.refresh(member)
+
+    db.add_all(
+        [
+            DBSpendCap(
+                scope="team",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                max_budget=20.0,
+                budget_duration="31d",
+            ),
+            DBSpendCap(
+                scope="team_member",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                user_id=member.id,
+                max_budget=3.0,
+                budget_duration="1mo",
+            ),
+            DBBudgetAlertState(
+                subject_key=f"team:{test_team.id}",
+                subject_type="team",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                period_key="2026-08",
+            ),
+        ]
+    )
+    db.commit()
+    team_id = test_team.id
+
+    with patch(
+        "app.api.teams.LiteLLMService.update_team_budget", new_callable=AsyncMock
+    ):
+        response = client.delete(
+            f"/teams/{team_id}", headers={"Authorization": f"Bearer {admin_token}"}
+        )
+    assert response.status_code == 200
+
+    assert db.query(DBTeam).filter(DBTeam.id == team_id).first() is None
+    assert db.query(DBSpendCap).filter(DBSpendCap.team_id == team_id).count() == 0
+    assert (
+        db.query(DBBudgetAlertState)
+        .filter(DBBudgetAlertState.team_id == team_id)
+        .count()
+        == 0
+    )

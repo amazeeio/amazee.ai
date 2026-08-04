@@ -4125,3 +4125,110 @@ async def test_reconcile_team_keys_write_failure_does_not_lose_spend(
     # All three attempted, and spend counted for all three
     assert mock_instance.update_key_duration.await_count == 3
     assert team_total == 6.0
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_does_not_expire_anonymous_trial_team_keys(
+    mock_litellm,
+    mock_ses,
+    mock_limit_service,
+    db,
+    test_region,
+):
+    """A trial key minted moments ago must survive monitor_teams.
+
+    The trial team's freshness ran out long ago, so without an exemption every
+    trial key is expired on each run.
+    """
+    from app.core.config import settings
+    from app.db.models import DBUser  # noqa: F811
+    trial_team = DBTeam(
+        name="AI Trial Team",
+        admin_email=settings.AI_TRIAL_TEAM_EMAIL,
+        is_active=True,
+        created_at=datetime.now(UTC) - timedelta(days=200),
+    )
+    db.add(trial_team)
+    db.commit()
+    db.refresh(trial_team)
+
+    trial_user = DBUser(
+        email="trial-1-abc@example.com",
+        team_id=trial_team.id,
+        is_active=True,
+        role="user",
+    )
+    db.add(trial_user)
+    db.commit()
+    db.refresh(trial_user)
+
+    # Minted moments ago — exactly the key the old behaviour destroyed.
+    fresh_key = DBPrivateAIKey(
+        name="Trial Key for trial-1-abc@example.com",
+        database_name="db_trial_1",
+        database_username="u_trial_1",
+        database_password="pw",
+        owner_id=trial_user.id,
+        team_id=trial_team.id,
+        region_id=test_region.id,
+        litellm_token="trial_token_1",
+        created_at=datetime.now(UTC),
+    )
+    db.add(fresh_key)
+    db.commit()
+
+    mock_litellm_instance = mock_litellm.return_value
+    mock_litellm_instance.get_key_info = AsyncMock(
+        return_value={
+            "info": {"spend": 0.0, "max_budget": 2.0, "key_alias": "trial-key"}
+        }
+    )
+    mock_litellm_instance.update_key_duration = AsyncMock()
+
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
+    await monitor_teams(db)
+
+    mock_litellm_instance.update_key_duration.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("app.core.worker.LimitService")
+@patch("app.core.worker.SESService")
+@patch("app.core.worker.LiteLLMService")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+async def test_monitor_teams_does_not_retire_anonymous_trial_team(
+    mock_litellm,
+    mock_ses,
+    mock_limit_service,
+    db,
+    test_region,
+):
+    """A quiet trial team must not be retired for inactivity.
+
+    Retiring it would soft-delete the team that owns every trial key.
+    """
+    from app.core.config import settings
+    trial_team = DBTeam(
+        name="AI Trial Team",
+        admin_email=settings.AI_TRIAL_TEAM_EMAIL,
+        is_active=True,
+        created_at=datetime.now(UTC) - timedelta(days=400),
+    )
+    db.add(trial_team)
+    db.commit()
+    db.refresh(trial_team)
+
+    mock_limit_instance = mock_limit_service.return_value
+    mock_limit_instance.set_team_limits = Mock()
+
+    await monitor_teams(db)
+
+    db.refresh(trial_team)
+    assert trial_team.retention_warning_sent_at is None
+    assert trial_team.deleted_at is None

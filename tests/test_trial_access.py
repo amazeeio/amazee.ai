@@ -226,3 +226,54 @@ async def test_generate_trial_access_cleanup_on_key_creation_failure(
     assert exc_info.value.status_code == expected_status
 
     assert mock_db.delete.call_count >= 1
+
+
+@patch("app.db.postgres.PostgresManager.create_database")
+@patch("httpx.AsyncClient")
+def test_trial_key_cannot_read_its_own_litellm_team(
+    mock_client_class, mock_create_db, client, db, test_region
+):
+    """Full provisioning path.
+
+    Every anonymous trial shares one team, and LiteLLM treats a key's team_id as
+    team membership — so an unscoped trial key can GET /team/info and read every
+    other trial's owner, spend and budget. The trial key must therefore be minted
+    with LiteLLM's inference-only route group.
+    """
+    mock_create_db.return_value = {
+        "database_name": "db_trial",
+        "database_host": "pghost",
+        "database_username": "user_trial",
+        "database_password": "pw",
+    }
+
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"key": "sk-trial-test-key"}
+    mock_response.raise_for_status.return_value = None
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    with patch("app.core.config.settings.AI_TRIAL_REGION", test_region.name):
+        response = client.post("/auth/generate-trial-access", json={})
+
+    assert response.status_code == 200, response.text
+
+    key_generate_calls = [
+        call
+        for call in mock_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/generate")
+    ]
+    assert len(key_generate_calls) == 1
+    # Spelled out rather than compared against INFERENCE_ONLY_ROUTES: the
+    # constant builds the request, so comparing to it would accept any route
+    # added to it later, including a management route. /model/info is required
+    # because the Drupal module lists models through it and llm_api_routes does
+    # not cover it; anything beyond these two must fail this test.
+    assert key_generate_calls[0].kwargs["json"]["allowed_routes"] == [
+        "llm_api_routes",
+        "/model/info",
+    ]

@@ -7,7 +7,7 @@ import {
   ChevronsUpDown,
   ChevronRight,
 } from "lucide-react";
-import { useState, useMemo, Fragment } from "react";
+import { useState, useMemo, useEffect, Fragment } from "react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -18,14 +18,19 @@ import {
   TableHeader,
   TableRow,
   TablePagination,
-  useTablePagination,
 } from "@/components/ui/table";
 import { TableActionButtons } from "@/components/ui/table-action-buttons";
 import { TableFilters, FilterField } from "@/components/ui/table-filters";
+import { useDebounce } from "@/hooks/use-debounce";
 import { useToast } from "@/hooks/use-toast";
 import { User, USER_ROLES } from "@/types/user";
 import { get, del, put } from "@/utils/api";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  useQuery,
+  useMutation,
+  useQueryClient,
+  keepPreviousData,
+} from "@tanstack/react-query";
 import { CreateUserDialog } from "./_components/create-user-dialog";
 import { EditUserRoleDialog } from "./_components/edit-user-role-dialog";
 import { UserExpansionRow } from "./_components/user-expansion-row";
@@ -52,16 +57,76 @@ export default function UsersPage() {
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [showDeleted, setShowDeleted] = useState(false);
 
+  // Server-side pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const debouncedEmailFilter = useDebounce(emailFilter, 300);
+  const debouncedTeamFilter = useDebounce(teamFilter, 300);
+
+  // Filtering, sorting, and pagination happen server-side; loading every
+  // user into the browser doesn't scale on production.
+  const queryParams = useMemo(() => {
+    const params = new URLSearchParams({
+      skip: ((currentPage - 1) * pageSize).toString(),
+      limit: pageSize.toString(),
+    });
+    if (showDeleted) params.set("include_inactive", "true");
+    if (debouncedEmailFilter) params.set("search", debouncedEmailFilter);
+    if (debouncedTeamFilter) params.set("team", debouncedTeamFilter);
+    if (roleFilter !== "all") params.set("role", roleFilter);
+    if (sortField) {
+      params.set("sort_by", sortField);
+      params.set("sort_order", sortDirection);
+    }
+    return params.toString();
+  }, [
+    currentPage,
+    pageSize,
+    showDeleted,
+    debouncedEmailFilter,
+    debouncedTeamFilter,
+    roleFilter,
+    sortField,
+    sortDirection,
+  ]);
+
   // Queries
-  const { data: users = [], isLoading: isLoadingUsers } = useQuery<User[]>({
-    queryKey: ["users", showDeleted],
+  const { data: usersData, isLoading: isLoadingUsers } = useQuery<{
+    items: User[];
+    total: number;
+  }>({
+    queryKey: ["users", queryParams],
     queryFn: async () => {
-      const response = await get(
-        showDeleted ? "/users?include_inactive=true" : "/users",
+      const response = await get(`/users?${queryParams}`);
+      const items: User[] = await response.json();
+      const total = Number(
+        response.headers.get("X-Total-Count") ?? items.length,
       );
-      return response.json();
+      return { items, total };
     },
+    placeholderData: keepPreviousData,
   });
+  const users = usersData?.items ?? [];
+  const totalItems = usersData?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+
+  // Back to the first page whenever the result set changes shape
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [
+    debouncedEmailFilter,
+    debouncedTeamFilter,
+    roleFilter,
+    showDeleted,
+    sortField,
+    sortDirection,
+    pageSize,
+  ]);
+
+  // Clamp when mutations shrink the result set below the current page
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
 
   const { data: teams = [] } = useQuery<{ id: string; name: string }[]>({
     queryKey: ["teams"],
@@ -69,56 +134,9 @@ export default function UsersPage() {
       const response = await get("/teams");
       return response.json();
     },
+    // Only needed to populate the create-user dialog's team dropdown
+    enabled: isAddingUser,
   });
-
-  // Filtered and sorted users
-  const filteredAndSortedUsers = useMemo(() => {
-    const filtered = users.filter((user) => {
-      const emailMatch = user.email
-        .toLowerCase()
-        .includes(emailFilter.toLowerCase());
-      const teamMatch =
-        !teamFilter ||
-        (user.team_name || "None")
-          .toLowerCase()
-          .includes(teamFilter.toLowerCase());
-      const roleMatch = roleFilter === "all" || user.role === roleFilter;
-
-      return emailMatch && teamMatch && roleMatch;
-    });
-
-    if (sortField) {
-      filtered.sort((a, b) => {
-        let aValue: string;
-        let bValue: string;
-
-        switch (sortField) {
-          case "email":
-            aValue = a.email.toLowerCase();
-            bValue = b.email.toLowerCase();
-            break;
-          case "team_name":
-            aValue = (a.team_name || "None").toLowerCase();
-            bValue = (b.team_name || "None").toLowerCase();
-            break;
-          case "role":
-            aValue = (a.role || "").toLowerCase();
-            bValue = (b.role || "").toLowerCase();
-            break;
-          default:
-            return 0;
-        }
-
-        if (sortDirection === "asc") {
-          return aValue.localeCompare(bValue);
-        } else {
-          return bValue.localeCompare(aValue);
-        }
-      });
-    }
-
-    return filtered;
-  }, [users, emailFilter, teamFilter, roleFilter, sortField, sortDirection]);
 
   const hasActiveFilters = Boolean(
     emailFilter.trim() || teamFilter.trim() || roleFilter !== "all",
@@ -155,17 +173,6 @@ export default function UsersPage() {
       ],
     },
   ];
-
-  // Pagination
-  const {
-    currentPage,
-    pageSize,
-    totalPages,
-    totalItems,
-    paginatedData,
-    goToPage,
-    changePageSize,
-  } = useTablePagination(filteredAndSortedUsers, 10);
 
   // Handle sorting
   const handleSort = (field: SortField) => {
@@ -301,8 +308,8 @@ export default function UsersPage() {
           setSortDirection("asc");
         }}
         hasActiveFilters={hasActiveFilters}
-        totalItems={users.length}
-        filteredItems={filteredAndSortedUsers.length}
+        totalItems={totalItems}
+        filteredItems={totalItems}
       />
 
       <div className="rounded-md border">
@@ -343,14 +350,14 @@ export default function UsersPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {paginatedData.length === 0 ? (
+            {users.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={8} className="text-center py-6">
                   No users found. Create a new user to get started.
                 </TableCell>
               </TableRow>
             ) : (
-              paginatedData.map((user) => (
+              users.map((user) => (
                 <Fragment key={user.id}>
                   <TableRow
                     className="cursor-pointer hover:bg-muted/50"
@@ -438,8 +445,8 @@ export default function UsersPage() {
         totalPages={totalPages}
         pageSize={pageSize}
         totalItems={totalItems}
-        onPageChange={goToPage}
-        onPageSizeChange={changePageSize}
+        onPageChange={setCurrentPage}
+        onPageSizeChange={setPageSize}
       />
 
       <EditUserRoleDialog
