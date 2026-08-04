@@ -98,11 +98,29 @@ def _apply_profit_margin(price: float | None, margin: float) -> float | None:
     return price * (1 + margin)
 
 
+# Words that must not be title-cased, because the vendor writes them
+# differently (acronyms, lowercase model families).
+_DISPLAY_WORD_OVERRIDES = {
+    "gpt": "GPT",
+    "deepseek": "DeepSeek",
+    "o1": "o1",
+    "o3": "o3",
+    "o4": "o4",
+}
+
+
+def _display_word(word: str) -> str:
+    override = _DISPLAY_WORD_OVERRIDES.get(word.lower())
+    if override:
+        return override
+    return word if word.isupper() else word.capitalize()
+
+
 def _to_display_name(model_id: str, aliases: list[str] | None = None) -> str:
     """Convert a model_id to a human-friendly display name.
 
-    If aliases contain a dotted version number (e.g. "claude-4.7"), use that
-    to produce "Claude 4.7" instead of "Claude 4 7".
+    If aliases contain a dotted version number (for example "claude-4.7"), use
+    that to produce "Claude 4.7" instead of "Claude 4 7".
     """
     # Build a mapping of hyphenated number sequences to dotted equivalents
     # by inspecting aliases for dotted versions.
@@ -129,9 +147,7 @@ def _to_display_name(model_id: str, aliases: list[str] | None = None) -> str:
         )
 
     words = re.split(r"[-_]+", modified_id)
-    return " ".join(
-        word.upper() if word.isupper() else word.capitalize() for word in words if word
-    )
+    return " ".join(_display_word(word) for word in words if word)
 
 
 def _normalize_alias(alias: str) -> str:
