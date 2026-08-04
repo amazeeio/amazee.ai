@@ -79,10 +79,14 @@ def test_admin_models_are_read_only(client, admin_token):
     /admin/models/apply — direct CRUD must not exist."""
     headers = {"Authorization": f"Bearer {admin_token}"}
     body = {"model_id": "x", "display_name": "x", "provider": "x", "type": "chat"}
-    assert client.post("/admin/models", headers=headers, json=body).status_code == 405
-    assert client.put("/admin/models/1", headers=headers, json=body).status_code == 405
-    assert client.delete("/admin/models/1", headers=headers).status_code == 405
-    assert client.post("/admin/models/region-toggle", headers=headers, json={}).status_code == 405
+    create_res = client.post("/admin/models", headers=headers, json=body)
+    update_res = client.put("/admin/models/1", headers=headers, json=body)
+    delete_res = client.delete("/admin/models/1", headers=headers)
+    toggle_res = client.post("/admin/models/region-toggle", headers=headers, json={})
+    assert create_res.status_code == 405
+    assert update_res.status_code == 405
+    assert delete_res.status_code == 405
+    assert toggle_res.status_code == 405
 
 
 def test_admin_list_models_search_wildcard_escaping(client, admin_token, db):
