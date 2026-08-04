@@ -25,6 +25,7 @@ from app.core.litellm_user_sync import sync_add_user_to_team, sync_remove_user_f
 from app.core.worker import generate_pricing_url, get_team_admin_email
 from app.db.database import get_db
 from app.db.models import (
+    DBBudgetAlertState,
     DBPrivateAIKey,
     DBProduct,
     DBRegion,
@@ -434,6 +435,17 @@ async def delete_team(team_id: int, db: Session = Depends(get_db)):
 
     # Remove all product associations
     db.query(DBTeamProduct).filter(DBTeamProduct.team_id == team_id).delete()
+
+    # Budget rows reference the team without a cascade, so a team that ever had a
+    # team or member budget, or fired a budget alert, cannot be deleted until
+    # they are cleared. Both only describe spend limits, so they die with the
+    # team. Deleting by team_id also covers team_member-scoped caps.
+    db.query(DBSpendCap).filter(DBSpendCap.team_id == team_id).delete(
+        synchronize_session=False
+    )
+    db.query(DBBudgetAlertState).filter(DBBudgetAlertState.team_id == team_id).delete(
+        synchronize_session=False
+    )
 
     # Delete the team
     db.delete(db_team)

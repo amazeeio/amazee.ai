@@ -32,6 +32,7 @@ from app.schemas.models import (
     UserMarketingUpdatesByEmailUpdate,
 )
 from app.db.models import (
+    DBBudgetAlertState,
     DBPrivateAIKey,
     DBRegion,
     DBSpendCap,
@@ -1213,6 +1214,17 @@ async def delete_user(
         )
 
     team_id = db_user.team_id
+
+    # Budget rows reference the user without a cascade, so a user who ever had a
+    # member budget or fired a budget alert cannot be deleted until they are
+    # cleared. Both only describe spend limits, so they die with the user.
+    db.query(DBSpendCap).filter(DBSpendCap.user_id == user_id).delete(
+        synchronize_session=False
+    )
+    db.query(DBBudgetAlertState).filter(DBBudgetAlertState.user_id == user_id).delete(
+        synchronize_session=False
+    )
+
     db.delete(db_user)
     try:
         db.commit()
