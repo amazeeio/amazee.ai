@@ -1386,7 +1386,31 @@ async def test_bedrock_eol_index_is_derived_once_per_fetch():
         ("deepseek-v3-2", ["deepseek-v3.2"], "DeepSeek V3.2"),
         ("claude-4-5-sonnet", ["claude-4.5"], "Claude 4.5 Sonnet"),
         ("mistral-large-latest", None, "Mistral Large Latest"),
+        ("glm-5.2", None, "GLM 5.2"),
+        ("glm-4-6", ["glm-4.6"], "GLM 4.6"),
+        ("minimax-m3", None, "MiniMax M3"),
     ],
 )
 def test_to_display_name_keeps_vendor_casing(model_id, aliases, expected):
     assert public_api._to_display_name(model_id, aliases) == expected
+
+
+@pytest.mark.parametrize(
+    "model_id,litellm_provider,expected_name,expected_website",
+    [
+        ("glm-5.2", "deepinfra", "Z.ai", "https://z.ai"),
+        ("glm-4-6", "openai", "Z.ai", "https://z.ai"),
+        ("minimax-m3", "deepinfra", "MiniMax", "https://www.minimax.io"),
+        # Existing vendors must keep resolving as before.
+        ("deepseek-v4-flash", "deepinfra", "DeepSeek", "https://www.deepseek.com"),
+        ("claude-4-5-sonnet", "bedrock", "Anthropic", "https://www.anthropic.com"),
+    ],
+)
+def test_infer_manufacturer_covers_open_weight_vendors(
+    model_id, litellm_provider, expected_name, expected_website
+):
+    item = {"model_info": {"litellm_provider": litellm_provider}}
+    manufacturer = public_api._infer_manufacturer(model_id, item)
+    assert manufacturer is not None, f"no manufacturer inferred for {model_id}"
+    assert manufacturer.name == expected_name
+    assert manufacturer.website == expected_website
