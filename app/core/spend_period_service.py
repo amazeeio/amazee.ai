@@ -20,6 +20,30 @@ from app.schemas.models import BudgetType
 from app.services.litellm import LiteLLMService
 
 
+# Word-form budget durations accepted at our API boundary, mapped to the
+# canonical forms LiteLLM and our period maths both understand. Storing a word
+# form leaves the key with no computable period start, because the parsers below
+# only match "1mo" and "<int><unit>".
+_WORD_FORM_DURATIONS = {
+    "hourly": "1h",
+    "daily": "24h",
+    "weekly": "7d",
+    "monthly": "30d",
+}
+
+
+def canonical_budget_duration(budget_duration: str | None) -> str | None:
+    """Map a word-form budget duration to its canonical form.
+
+    Anything already canonical, or unrecognised, is passed through unchanged so
+    LiteLLM stays the authority on what is valid.
+    """
+    if not budget_duration:
+        return budget_duration
+    key = str(budget_duration).strip().lower()
+    return _WORD_FORM_DURATIONS.get(key, budget_duration)
+
+
 def _to_int_or_none(value: Any) -> int | None:
     if value is None:
         return None
@@ -67,6 +91,10 @@ def current_cycle_start(
     if not budget_duration:
         return None
 
+    # Keys written before durations were canonicalised on write may still carry
+    # a word form, which would otherwise fall through as unparseable.
+    budget_duration = canonical_budget_duration(budget_duration)
+
     if budget_duration in ("1mo", "30d"):
         return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
@@ -101,6 +129,10 @@ def compute_period_start(
     """
     if budget_reset_at is None or not budget_duration:
         return None
+
+    # Keys written before durations were canonicalised on write may still carry
+    # a word form, which would otherwise fall through as unparseable.
+    budget_duration = canonical_budget_duration(budget_duration)
 
     # Handle "1mo" / "30d" — both snap to 1st of next calendar month
     # so the period start is always the 1st of the current month.

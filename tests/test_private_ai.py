@@ -1378,13 +1378,14 @@ def test_update_budget_duration_as_team_admin(
     data = response.json()
     assert data["budget_duration"] == "monthly"
 
-    # Verify that the LiteLLM API was called with the correct parameters
+    # The word form is canonicalised before it reaches LiteLLM, so the key does
+    # not end up carrying a duration our period maths cannot parse.
     mock_httpx_combined_client.post.assert_called_with(
         f"{test_region.litellm_api_url}/key/update",
         headers={"Authorization": f"Bearer {test_region.litellm_api_key}"},
         json={
             "key": test_key.litellm_token,
-            "budget_duration": "monthly",
+            "budget_duration": "30d",
             "duration": "365d",
         },
     )
@@ -1723,6 +1724,65 @@ def test_create_llm_token_for_non_gated_pool_team_is_never_blocked(
     ]
     assert len(key_generate_calls) == 1
     assert "blocked" not in key_generate_calls[0].kwargs["json"]
+
+
+@patch("httpx.AsyncClient")
+@patch("app.core.config.settings.ENABLE_LIMITS", True)
+def test_create_llm_token_for_gated_pool_team_without_purchase_uses_zero_budget(
+    mock_client_class,
+    client,
+    admin_token,
+    test_region,
+    db,
+    test_team,
+    mock_httpx_post_client,
+):
+    """A gated POOL team with no purchase gets a zero-budget key, not a blocked
+    one. LiteLLM then rejects inference with a budget error the user can act on,
+    instead of an auth error pointing at an admin-only unblock.
+    """
+    test_team.budget_type = "pool"
+    test_team.require_purchase_for_requests = True
+    db.commit()
+
+    mock_client_class.return_value = mock_httpx_post_client
+
+    response = client.post(
+        "/private-ai-keys/token",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "region_id": test_region.id,
+            "name": "Gated Pool Key",
+            "team_id": test_team.id,
+        },
+    )
+
+    assert response.status_code == 200
+
+    key_generate_calls = [
+        call
+        for call in mock_httpx_post_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/generate")
+        and call.kwargs.get("json", {})
+        .get("metadata", {})
+        .get("amazeeai_private_ai_key_name")
+        == "Gated Pool Key"
+    ]
+    assert len(key_generate_calls) == 1
+    assert "blocked" not in key_generate_calls[0].kwargs["json"]
+
+    key_update_calls = [
+        call
+        for call in mock_httpx_post_client.post.call_args_list
+        if str(call.args[0]).endswith("/key/update")
+    ]
+    assert len(key_update_calls) == 1
+    update_payload = key_update_calls[0].kwargs["json"]
+    assert update_payload["max_budget"] == 0.0
+    assert update_payload["budget_duration"] == (
+        f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d"
+    )
+    assert "blocked" not in update_payload
 
 
 def _key_generate_payload(mock_client, key_name):

@@ -1374,3 +1374,19 @@ async def test_bedrock_eol_index_is_derived_once_per_fetch():
     assert mock_client.get.await_count == 1
     expected = {"anthropic.claude-3-haiku-20240307-v1:0": "2026-09-10"}
     assert all(index == expected for index in indexes)
+
+
+@pytest.mark.parametrize(
+    "model_id,aliases,expected",
+    [
+        ("gpt-4-1", ["gpt-4.1"], "GPT 4.1"),
+        ("gpt-4-1-mini", ["gpt-4.1-mini"], "GPT 4.1 Mini"),
+        ("gpt-4o-transcribe", None, "GPT 4o Transcribe"),
+        ("gpt-o4-mini", None, "GPT o4 Mini"),
+        ("deepseek-v3-2", ["deepseek-v3.2"], "DeepSeek V3.2"),
+        ("claude-4-5-sonnet", ["claude-4.5"], "Claude 4.5 Sonnet"),
+        ("mistral-large-latest", None, "Mistral Large Latest"),
+    ],
+)
+def test_to_display_name_keeps_vendor_casing(model_id, aliases, expected):
+    assert public_api._to_display_name(model_id, aliases) == expected

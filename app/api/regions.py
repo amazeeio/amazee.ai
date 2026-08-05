@@ -178,22 +178,61 @@ async def list_regions(
 
     # Regular users can only see non-dedicated regions
     if not current_user.team_id:
-        return (
-            db.query(DBRegion)
-            .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
-            .all()
-        )
+        return _active_public_regions(db)
 
-    # Team members can only see their team's single assigned region.
     team = db.query(DBTeam).filter(DBTeam.id == current_user.team_id).first()
-    if not team or not team.region_id:
-        return []
-    region = (
+    if not team:
+        return _active_public_regions(db)
+
+    # The team's own regions: its explicit allowlist plus its primary region.
+    # Both are read because they model different things — the allowlist is the
+    # set a team may use, while the scalar records which one it currently sits
+    # in. Reading only the scalar would strand a team on a single region even
+    # when more are assigned, and return nothing at all once that region goes
+    # inactive.
+    assigned = (
         db.query(DBRegion)
-        .filter(DBRegion.id == team.region_id, DBRegion.is_active.is_(True))
-        .first()
+        .outerjoin(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
+        .filter(
+            DBRegion.is_active.is_(True),
+            (DBTeamRegion.team_id == team.id) | (DBRegion.id == team.region_id),
+        )
+        .distinct()
+        .all()
     )
-    return [region] if region else []
+
+    # A team holding any dedicated region is served by dedicated infrastructure
+    # and must not be offered the public pool. Teams that only hold public
+    # regions can use any public region.
+    #
+    # Inactive dedicated regions count here, unlike above: retiring a dedicated
+    # region must not quietly hand that team the whole public pool.
+    holds_dedicated_region = (
+        db.query(DBRegion.id)
+        .outerjoin(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
+        .filter(
+            DBRegion.is_dedicated.is_(True),
+            (DBTeamRegion.team_id == team.id) | (DBRegion.id == team.region_id),
+        )
+        .first()
+        is not None
+    )
+    if team.hide_public_regions or holds_dedicated_region:
+        return assigned
+
+    by_id = {region.id: region for region in assigned}
+    for region in _active_public_regions(db):
+        by_id.setdefault(region.id, region)
+    return list(by_id.values())
+
+
+def _active_public_regions(db: Session) -> List[DBRegion]:
+    """Active regions in the shared public pool."""
+    return (
+        db.query(DBRegion)
+        .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
+        .all()
+    )
 
 
 @router.get(
