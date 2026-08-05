@@ -103,6 +103,8 @@ def _apply_profit_margin(price: float | None, margin: float) -> float | None:
 _DISPLAY_WORD_OVERRIDES = {
     "gpt": "GPT",
     "deepseek": "DeepSeek",
+    "glm": "GLM",
+    "minimax": "MiniMax",
     "o1": "o1",
     "o3": "o3",
     "o4": "o4",
@@ -211,6 +213,8 @@ _MANUFACTURER_RULES: list[dict[str, str | None]] = [
     {"keyword": "deepseek", "name": "DeepSeek", "website": "https://www.deepseek.com"},
     {"keyword": "llama", "name": "Meta", "website": "https://ai.meta.com/llama"},
     {"keyword": "kimi", "name": "Moonshot", "website": "https://www.moonshot.cn"},
+    {"keyword": "glm", "name": "Z.ai", "website": "https://z.ai"},
+    {"keyword": "minimax", "name": "MiniMax", "website": "https://www.minimax.io"},
     {
         "keyword": "qwen",
         "name": "Alibaba",
