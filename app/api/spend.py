@@ -16,6 +16,7 @@ from app.core.periodic_budget_ledger_service import compute_active_topup_remaini
 from app.core.pool_budget_service import (
     pool_available_budget_for_team_region as shared_pool_available_budget_for_team_region,
     pool_team_budget_duration_for_enforcement as shared_pool_team_budget_duration_for_enforcement,
+    pool_team_has_ever_purchased,
 )
 from app.core.security import (
     get_current_user_from_auth,
@@ -396,6 +397,24 @@ def _get_region_or_404(db: Session, region_id: int) -> DBRegion:
     region = (
         db.query(DBRegion)
         .filter(DBRegion.id == region_id, DBRegion.is_active.is_(True))
+        .first()
+    )
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+    return region
+
+
+def _lock_region_or_404(db: Session, region_id: int) -> DBRegion:
+    """Load an active region and hold a row lock on it for this transaction.
+
+    The purchase path takes the same lock and clears key gates in LiteLLM before
+    it commits its purchase row, so a reader that does not contend on this row
+    can observe "never purchased" for a team that is already funded.
+    """
+    region = (
+        db.query(DBRegion)
+        .filter(DBRegion.id == region_id, DBRegion.is_active.is_(True))
+        .with_for_update()
         .first()
     )
     if not region:
@@ -2246,7 +2265,10 @@ async def update_key_budget(
     summary="Clear key budget override",
     description=(
         "Clears key max_budget and budget_duration by setting both to null "
-        "in LiteLLM. Removes the spend cap and budget reset window from the key."
+        "in LiteLLM. Removes the spend cap and budget reset window from the key. "
+        "Exception: for a purchase-gated pool team with no purchase yet, the key "
+        "keeps a zero max_budget so it still cannot serve requests; the first "
+        "purchase clears it."
     ),
     response_description="Key budget clear result with max_budget=null and budget_duration=null.",
     openapi_extra={
@@ -2299,13 +2321,57 @@ async def clear_key_budget(
     service = LiteLLMService(
         api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
-    await service.update_key_budget(
-        litellm_token=key.litellm_token,
-        budget_duration=None,
-        max_budget=None,
-        clear_max_budget=True,
-        clear_budget_duration=True,
+
+    # A gated pool team that has never purchased keeps its keys at a zero
+    # max_budget, which is the only thing stopping inference: LiteLLM denies a
+    # key at spend >= max_budget but a team only at spend > max_budget, so a
+    # cleared key would pass its first request against the team's $0 budget.
+    # Re-apply the gate instead of clearing. The first purchase clears it, and
+    # from then on this endpoint behaves normally.
+    # Resolve the team the same way key creation does: the key's own team, or
+    # the owner's team for a user-scoped key. Reading only key.team_id would
+    # miss a user key whose owner sits in a gated team.
+    gate_team_id = key.team_id
+    if gate_team_id is None and key.owner_id is not None:
+        gate_team_id = (
+            db.query(DBUser.team_id).filter(DBUser.id == key.owner_id).scalar()
+        )
+    gate_team = (
+        db.query(DBTeam).filter(DBTeam.id == gate_team_id).first()
+        if gate_team_id is not None
+        else None
     )
+
+    gate_key = False
+    if gate_team is not None and gate_team.requires_pool_purchase_gate:
+        # Serialise against a concurrent first purchase. That path clears key
+        # gates in LiteLLM before committing its purchase row, so an unlocked
+        # check can still read "never purchased" and re-gate a key the purchase
+        # just funded, leaving it unable to serve requests. Taking the same
+        # region lock means whichever runs first wins: a purchase in flight
+        # blocks this until it commits, and a clear in flight makes the purchase
+        # wait and then clear the gate itself.
+        _lock_region_or_404(db, region_id)
+        gate_key = not pool_team_has_ever_purchased(db, gate_team_id, region_id)
+
+    if gate_key:
+        await service.update_key_budget(
+            litellm_token=key.litellm_token,
+            budget_duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
+            max_budget=0.0,
+            clear_max_budget=False,
+        )
+    else:
+        await service.update_key_budget(
+            litellm_token=key.litellm_token,
+            budget_duration=None,
+            max_budget=None,
+            clear_max_budget=True,
+            clear_budget_duration=True,
+        )
+
+    # The cap row is dropped either way, so the first purchase resolves the key
+    # to the team budget rather than resurrecting a cap the caller removed.
     _delete_spend_cap(
         db,
         scope="key",
@@ -2328,5 +2394,10 @@ async def clear_key_budget(
         key_id=key_id,
         max_budget=info.get("max_budget"),
         budget_duration=info.get("budget_duration"),
-        note="Cleared key max_budget and budget_duration overrides.",
+        note=(
+            "Team has not purchased yet: key kept at a zero max_budget so it "
+            "cannot serve requests. The first purchase clears it."
+            if gate_key
+            else "Cleared key max_budget and budget_duration overrides."
+        ),
     )
