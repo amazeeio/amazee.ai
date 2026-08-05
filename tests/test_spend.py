@@ -5,6 +5,7 @@ from app.core.roles import UserRole
 from datetime import UTC, datetime, timedelta
 from sqlalchemy.exc import IntegrityError
 
+from app.api.spend import _lock_region_or_404
 from app.core.config import settings
 from app.core.security import get_password_hash
 from app.db.models import (
@@ -2180,6 +2181,51 @@ def test_clear_key_budget_keeps_gate_for_unpurchased_pool_team(
         .first()
         is None
     )
+
+
+@patch("app.api.spend._lock_region_or_404", wraps=_lock_region_or_404)
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_clear_key_budget_takes_region_lock_before_gate_decision(
+    mock_update_key_budget,
+    mock_get_key_info,
+    spy_lock_region,
+    client,
+    admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
+):
+    """The purchase check must run behind the region lock.
+
+    A first purchase clears key gates in LiteLLM before committing its purchase
+    row, so an unlocked check can re-gate a key that purchase just funded.
+    """
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.add(test_team)
+    key = DBPrivateAIKey(
+        name="pool-lock-key",
+        litellm_token="pool-lock-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+    mock_get_key_info.return_value = {
+        "info": {"max_budget": 0.0, "budget_duration": "30d"}
+    }
+
+    response = client.post(
+        f"/spend/{test_region.id}/key/{key.id}/budget/clear",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    spy_lock_region.assert_called_once()
+    assert spy_lock_region.call_args.args[1] == test_region.id
 
 
 @patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)

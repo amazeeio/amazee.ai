@@ -404,6 +404,24 @@ def _get_region_or_404(db: Session, region_id: int) -> DBRegion:
     return region
 
 
+def _lock_region_or_404(db: Session, region_id: int) -> DBRegion:
+    """Load an active region and hold a row lock on it for this transaction.
+
+    The purchase path takes the same lock and clears key gates in LiteLLM before
+    it commits its purchase row, so a reader that does not contend on this row
+    can observe "never purchased" for a team that is already funded.
+    """
+    region = (
+        db.query(DBRegion)
+        .filter(DBRegion.id == region_id, DBRegion.is_active.is_(True))
+        .with_for_update()
+        .first()
+    )
+    if not region:
+        raise HTTPException(status_code=404, detail="Region not found")
+    return region
+
+
 def _assert_team_access(current_user: DBUser, role: str, team_id: int) -> None:
     if current_user.is_admin:
         return
@@ -2318,15 +2336,23 @@ async def clear_key_budget(
         gate_team_id = (
             db.query(DBUser.team_id).filter(DBUser.id == key.owner_id).scalar()
         )
+    gate_team = (
+        db.query(DBTeam).filter(DBTeam.id == gate_team_id).first()
+        if gate_team_id is not None
+        else None
+    )
 
     gate_key = False
-    if gate_team_id is not None:
-        team = db.query(DBTeam).filter(DBTeam.id == gate_team_id).first()
-        gate_key = (
-            team is not None
-            and team.requires_pool_purchase_gate
-            and not pool_team_has_ever_purchased(db, gate_team_id, region_id)
-        )
+    if gate_team is not None and gate_team.requires_pool_purchase_gate:
+        # Serialise against a concurrent first purchase. That path clears key
+        # gates in LiteLLM before committing its purchase row, so an unlocked
+        # check can still read "never purchased" and re-gate a key the purchase
+        # just funded, leaving it unable to serve requests. Taking the same
+        # region lock means whichever runs first wins: a purchase in flight
+        # blocks this until it commits, and a clear in flight makes the purchase
+        # wait and then clear the gate itself.
+        _lock_region_or_404(db, region_id)
+        gate_key = not pool_team_has_ever_purchased(db, gate_team_id, region_id)
 
     if gate_key:
         await service.update_key_budget(
