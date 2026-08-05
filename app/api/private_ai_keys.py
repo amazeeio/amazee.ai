@@ -595,10 +595,14 @@ async def create_llm_token(
             max_budget=max_max_spend,
             rpm_limit=max_rpm_limit,
             apply_limits=not is_pool_team,
-            blocked=(True if is_pool_team and not has_pool_purchase else None),
             allowed_routes=allowed_routes,
         )
         if is_pool_team and not has_pool_purchase:
+            # Gate the key with a zero budget instead of LiteLLM's `blocked`
+            # flag. A blocked key fails with an auth error telling the caller to
+            # ask an admin for an unblock, which the user cannot act on. A zero
+            # max_budget makes LiteLLM reject inference with a budget error,
+            # which says the real reason: the team has not purchased yet.
             await litellm_service.update_key_budget(
                 litellm_token=litellm_token,
                 budget_duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
