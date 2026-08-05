@@ -1178,3 +1178,273 @@ def test_get_team_daily_activity_filters_by_team_ids(mock_client_class, test_reg
     assert first_call.kwargs["params"]["team_ids"] == "Test_Region_7"
     assert first_call.kwargs["params"]["start_date"] == "2025-06-01"
     assert first_call.kwargs["params"]["end_date"] == "2025-06-02"
+
+
+def _key_list_client(pages):
+    """Build a mocked httpx client that returns ``pages`` in order from /key/list."""
+    responses = []
+    for payload in pages:
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = payload
+        mock_response.raise_for_status.return_value = None
+        responses.append(mock_response)
+
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = responses
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    return mock_client
+
+
+@patch("httpx.AsyncClient")
+def test_list_all_keys_paginates_and_keys_by_token(mock_client_class, test_region):
+    """Multi-page listing walks every page and keys results by hashed token."""
+    page_1 = {
+        "keys": [{"token": f"hash-{i}", "spend": float(i)} for i in range(100)],
+        "total_count": 150,
+        "total_pages": 2,
+    }
+    page_2 = {
+        "keys": [{"token": f"hash-{i}", "spend": float(i)} for i in range(100, 150)],
+        "total_count": 150,
+        "total_pages": 2,
+    }
+    mock_client = _key_list_client([page_1, page_2])
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    result = asyncio.run(service.list_all_keys())
+
+    # Every key from both pages is present, keyed by its token
+    assert len(result) == 150
+    assert result["hash-0"]["spend"] == 0.0
+    assert result["hash-149"]["spend"] == 149.0
+
+    # Two requests, with the expected pagination params
+    assert mock_client.get.call_count == 2
+    first, second = mock_client.get.call_args_list
+    assert first.args[0].endswith("/key/list")
+    assert first.kwargs["params"]["page"] == 1
+    assert first.kwargs["params"]["size"] == 100
+    assert first.kwargs["params"]["return_full_object"] is True
+    assert first.kwargs["params"]["include_team_keys"] is True
+    assert second.kwargs["params"]["page"] == 2
+
+
+@patch("httpx.AsyncClient")
+def test_list_all_keys_partial_last_page(mock_client_class, test_region):
+    """A short final page ends pagination without an extra request."""
+    page_1 = {
+        "keys": [{"token": f"hash-{i}"} for i in range(100)],
+        "total_pages": 2,
+    }
+    page_2 = {"keys": [{"token": "hash-100"}], "total_pages": 2}
+    mock_client = _key_list_client([page_1, page_2])
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    result = asyncio.run(service.list_all_keys())
+
+    assert len(result) == 101
+    assert mock_client.get.call_count == 2
+
+
+@patch("httpx.AsyncClient")
+def test_list_all_keys_empty_region(mock_client_class, test_region):
+    """A region with no keys returns an empty mapping after one request."""
+    mock_client = _key_list_client([{"keys": [], "total_count": 0, "total_pages": 0}])
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    result = asyncio.run(service.list_all_keys())
+
+    assert result == {}
+    assert mock_client.get.call_count == 1
+
+
+@patch("httpx.AsyncClient")
+def test_list_all_keys_stops_without_total_pages(mock_client_class, test_region):
+    """A missing total_pages must not loop forever - an empty page ends it."""
+    page_1 = {"keys": [{"token": f"hash-{i}"} for i in range(100)]}
+    page_2 = {"keys": []}
+    mock_client = _key_list_client([page_1, page_2])
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    result = asyncio.run(service.list_all_keys())
+
+    assert len(result) == 100
+    assert mock_client.get.call_count == 2
+
+
+@patch("httpx.AsyncClient")
+def test_list_all_keys_clamps_page_size_to_100(mock_client_class, test_region):
+    """LiteLLM rejects size > 100 with a 422, so the value is clamped."""
+    mock_client = _key_list_client([{"keys": [], "total_pages": 0}])
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    asyncio.run(service.list_all_keys(page_size=5000))
+
+    assert mock_client.get.call_args_list[0].kwargs["params"]["size"] == 100
+
+
+@patch("httpx.AsyncClient")
+def test_list_all_keys_skips_non_dict_entries(mock_client_class, test_region):
+    """Bare token strings are ignored rather than breaking the sweep."""
+    page_1 = {
+        "keys": ["sk-bare-string", {"token": "hash-1", "spend": 1.0}, {"spend": 2.0}],
+        "total_pages": 1,
+    }
+    mock_client = _key_list_client([page_1])
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    result = asyncio.run(service.list_all_keys())
+
+    # Only the entry that is a dict AND has a token is kept
+    assert result == {"hash-1": {"token": "hash-1", "spend": 1.0}}
+
+
+@patch("httpx.AsyncClient")
+def test_list_all_keys_failure_raises(mock_client_class, test_region):
+    """A non-2xx response surfaces as an HTTPException."""
+    request = httpx.Request("GET", f"{test_region.litellm_api_url}/key/list")
+    response = httpx.Response(status_code=500, request=request, text="boom")
+    mock_response = Mock()
+    mock_response.status_code = 500
+    mock_response.raise_for_status.side_effect = HTTPStatusError(
+        "boom", request=request, response=response
+    )
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_response
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(service.list_all_keys())
+
+    assert exc_info.value.status_code == 500
+
+
+def _key_list_client_by_page(pages_by_number, record=None):
+    """Mock client that answers /key/list from a {page_number: payload} map.
+
+    Page-keyed rather than call-ordered, because pages after the first are
+    fetched concurrently and may arrive in any order.
+    """
+
+    async def _get(url, headers=None, params=None, timeout=None):
+        page = params["page"]
+        if record is not None:
+            record.append(page)
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = pages_by_number[page]
+        mock_response.raise_for_status.return_value = None
+        return mock_response
+
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = _get
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    return mock_client
+
+
+@patch("httpx.AsyncClient")
+def test_list_all_keys_fetches_later_pages_concurrently(mock_client_class, test_region):
+    """With total_pages known, pages 2..N are requested and all keys merged."""
+    pages = {
+        n: {
+            "keys": [
+                {"token": f"hash-{(n - 1) * 100 + i}"}
+                for i in range(100 if n < 4 else 25)
+            ],
+            "total_pages": 4,
+        }
+        for n in (1, 2, 3, 4)
+    }
+    requested = []
+    mock_client = _key_list_client_by_page(pages, record=requested)
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    result = asyncio.run(service.list_all_keys())
+
+    # 3 full pages + a 25-key final page
+    assert len(result) == 325
+    # Every page requested exactly once, order-independent
+    assert sorted(requested) == [1, 2, 3, 4]
+
+
+@patch("httpx.AsyncClient")
+def test_list_all_keys_concurrency_is_bounded(mock_client_class, test_region):
+    """No more than LIST_KEYS_PAGE_CONCURRENCY page requests run at once."""
+    from app.services import litellm as litellm_module
+
+    total = 30
+    pages = {
+        n: {
+            "keys": [{"token": f"h-{n}-{i}"} for i in range(100 if n < total else 5)],
+            "total_pages": total,
+        }
+        for n in range(1, total + 1)
+    }
+
+    in_flight = 0
+    peak = 0
+
+    async def _get(url, headers=None, params=None, timeout=None):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0)  # let other tasks interleave
+        in_flight -= 1
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = pages[params["page"]]
+        mock_response.raise_for_status.return_value = None
+        return mock_response
+
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = _get
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client_class.return_value = mock_client
+
+    service = LiteLLMService(
+        api_url=test_region.litellm_api_url, api_key=test_region.litellm_api_key
+    )
+
+    result = asyncio.run(service.list_all_keys())
+
+    assert len(result) == 29 * 100 + 5
+    assert peak <= litellm_module.LIST_KEYS_PAGE_CONCURRENCY
