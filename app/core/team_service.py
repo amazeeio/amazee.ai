@@ -17,6 +17,7 @@ from app.db.models import (
     DBTeamRegion,
     DBUser,
 )
+from app.services.access_groups import effective_team_group_slugs
 from app.services.litellm import LiteLLMService
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -251,6 +252,7 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> dict:
                 await litellm_service.create_team(
                     team_id=lite_team_id,
                     team_alias=lite_team_id,
+                    models=effective_team_group_slugs(db, team.id, region),
                 )
                 logger.info(
                     f"Re-provisioned LiteLLM team {lite_team_id} in region {region.name}"

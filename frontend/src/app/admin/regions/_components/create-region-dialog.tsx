@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
+import { REGIONAL_AREAS } from "@/types/region";
 import { post } from "@/utils/api";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -37,11 +38,16 @@ export function CreateRegionDialog({
     litellm_api_url: "",
     litellm_api_key: "",
     is_dedicated: false,
+    regional_area: "",
   });
 
   const createRegionMutation = useMutation({
     mutationFn: async (regionData: typeof newRegion) => {
-      const response = await post("regions", regionData);
+      const response = await post("regions", {
+        ...regionData,
+        // Backend enum rejects "" — unset means null
+        regional_area: regionData.regional_area || null,
+      });
       return response.json();
     },
     onSuccess: () => {
@@ -58,6 +64,7 @@ export function CreateRegionDialog({
         litellm_api_url: "",
         litellm_api_key: "",
         is_dedicated: false,
+        regional_area: "",
       });
       toast({
         title: "Success",
@@ -210,6 +217,26 @@ export function CreateRegionDialog({
                 required
               />
             </div>
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="regional_area" className="text-sm font-medium">
+              Regional Area
+            </label>
+            <select
+              id="regional_area"
+              value={newRegion.regional_area}
+              onChange={(e) =>
+                setNewRegion({ ...newRegion, regional_area: e.target.value })
+              }
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+            >
+              <option value="">— Not set —</option>
+              {REGIONAL_AREAS.map((area) => (
+                <option key={area} value={area}>
+                  {area}
+                </option>
+              ))}
+            </select>
           </div>
           <div className="flex items-center space-x-2">
             <input

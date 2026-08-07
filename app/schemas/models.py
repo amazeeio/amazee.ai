@@ -218,6 +218,13 @@ RegionApiUrl = Annotated[str, AfterValidator(validate_region_api_url)]
 RegionDbHost = Annotated[str, AfterValidator(validate_region_host)]
 
 
+# Which market a LiteLLM region serves. Fixed enum: extending it is a
+# deliberate code change (drives bedrock candidate suggestions in the model
+# dialog and appears on region admin responses).
+REGIONAL_AREAS = ("US", "US+CA", "EU", "DE", "CH", "UK", "AU", "APAC", "GLOBAL")
+RegionalArea = Literal["US", "US+CA", "EU", "DE", "CH", "UK", "AU", "APAC", "GLOBAL"]
+
+
 class RegionBase(BaseModel):
     name: str
     label: Optional[str] = None
@@ -230,6 +237,7 @@ class RegionBase(BaseModel):
     litellm_api_key: str
     is_active: bool = True
     is_dedicated: bool = False
+    regional_area: Optional[RegionalArea] = None
 
 
 class RegionCreate(RegionBase):
@@ -252,6 +260,7 @@ class RegionUpdate(BaseModel):
     litellm_api_key: Optional[str] = None
     is_active: bool
     is_dedicated: bool
+    regional_area: Optional[RegionalArea] = None
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -273,6 +282,9 @@ class RegionAdminResponse(RegionResponse):
     # (postgres_admin_password / litellm_api_key stay server-side).
     postgres_port: int
     postgres_admin_user: str
+    regional_area: Optional[str] = None
+    # NULL = access-group enforcement off (legacy all-models behavior)
+    default_access_group_id: Optional[int] = None
 
 
 class RegionSummaryResponse(BaseModel):
@@ -1259,3 +1271,180 @@ class SubscriptionDeactivateResponse(BaseModel):
     team_id: int
     payment_id: Optional[int] = None
     idempotent: bool = False
+
+
+class AdminModelRegionResponse(BaseModel):
+    region_id: int
+    region_name: str
+    is_active: bool
+    sync_status: str
+    sync_error: Optional[str] = None
+    synced_at: Optional[datetime] = None
+    # Merged over the model's litellm_params at sync time (credentials redacted)
+    litellm_params_override: Optional[dict] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AdminModelAliasTarget(BaseModel):
+    region_id: int
+    target_model_id: int
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AdminModelBase(BaseModel):
+    model_id: str
+    display_name: str
+    provider: str
+    type: str
+    context_length: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+    description: Optional[str] = None
+    real_eol: Optional[datetime] = None
+    override_eol: Optional[datetime] = None
+    is_active_globally: bool = True
+    litellm_params: Optional[dict] = None
+
+
+class AdminModelResponse(AdminModelBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    deleted_at: Optional[datetime] = None
+    regions: List[AdminModelRegionResponse] = Field(default_factory=list)
+    access_group_slugs: List[str] = Field(default_factory=list)
+    access_group_ids: List[int] = Field(default_factory=list)
+    is_alias: bool = False
+    alias_targets: List[AdminModelAliasTarget] = Field(default_factory=list)
+    model_config = ConfigDict(from_attributes=True)
+
+
+# The slug is the literal string synced into LiteLLM model_info.access_groups
+# and team models lists — immutable after creation (see DBModelAccessGroup).
+ACCESS_GROUP_SLUG_PATTERN = r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+
+
+class AccessGroupCreate(BaseModel):
+    slug: str = Field(min_length=1, max_length=64, pattern=ACCESS_GROUP_SLUG_PATTERN)
+    label: str = Field(min_length=1)
+    description: Optional[str] = None
+    model_ids: List[int] = Field(default_factory=list)
+    region_ids: List[int] = Field(default_factory=list)
+
+
+class AccessGroupUpdate(BaseModel):
+    label: Optional[str] = None
+    description: Optional[str] = None
+    model_ids: Optional[List[int]] = None
+    region_ids: Optional[List[int]] = None
+
+
+class AccessGroupResponse(BaseModel):
+    id: int
+    slug: str
+    label: str
+    description: Optional[str] = None
+    model_ids: List[int] = Field(default_factory=list)
+    region_ids: List[int] = Field(default_factory=list)
+    default_in_region_ids: List[int] = Field(default_factory=list)
+    team_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RegionDefaultAccessGroupRequest(BaseModel):
+    # None = turn enforcement off for the region (legacy all-models behavior)
+    group_id: Optional[int] = None
+
+
+class TeamAccessGroupsUpdateRequest(BaseModel):
+    access_groups: List[str] = Field(default_factory=list)
+
+
+class TeamAccessGroupsResponse(BaseModel):
+    team_id: int
+    access_groups: List[str] = Field(default_factory=list)
+    # region_name -> default group slug, for each enforced region the team belongs to
+    defaults: Dict[str, str] = Field(default_factory=dict)
+
+
+class TeamGroupSyncRunResponse(BaseModel):
+    id: int
+    region_id: int
+    status: str
+    total: int
+    done: int
+    failed_team_ids: Optional[List[int]] = None
+    error_sample: Optional[str] = None
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+
+# --- Declarative config apply (GitOps flow: config repo -> /admin/models/apply) ---
+# Everything is keyed by stable strings (model_id, group slug, region name), never
+# DB ids, so the payload can live in a repo with no knowledge of this database.
+
+
+class ApplyAccessGroupSpec(BaseModel):
+    slug: str = Field(min_length=1, max_length=64, pattern=ACCESS_GROUP_SLUG_PATTERN)
+    label: str = Field(min_length=1)
+    description: Optional[str] = None
+    # region names the group is deployed to
+    regions: List[str] = Field(default_factory=list)
+
+
+class ApplyDeploymentSpec(BaseModel):
+    region: str
+    litellm_params_override: Optional[dict] = None
+
+
+class ApplyAliasTargetSpec(BaseModel):
+    region: str
+    # catalog model_id of the target (must be a non-alias model in the payload or DB)
+    target: str
+
+
+class ApplyModelSpec(BaseModel):
+    model_id: str
+    display_name: str
+    provider: str
+    type: str
+    context_length: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+    description: Optional[str] = None
+    real_eol: Optional[datetime] = None
+    override_eol: Optional[datetime] = None
+    litellm_params: Optional[dict] = None
+    access_groups: List[str] = Field(default_factory=list)  # group slugs
+    is_alias: bool = False
+    deployments: List[ApplyDeploymentSpec] = Field(default_factory=list)
+    alias_targets: List[ApplyAliasTargetSpec] = Field(default_factory=list)
+
+
+class ApplyConfigRequest(BaseModel):
+    dry_run: bool = False
+    # prune=True deactivates catalog models absent from the payload (soft —
+    # never hard-deletes). Access groups are never pruned automatically.
+    prune: bool = False
+    access_groups: List[ApplyAccessGroupSpec] = Field(default_factory=list)
+    models: List[ApplyModelSpec] = Field(default_factory=list)
+
+
+class ApplyChange(BaseModel):
+    entity: str  # access_group | model | deployment | alias_target
+    key: str
+    action: str  # create | update | deactivate | prune | prune_blocked
+    detail: Optional[str] = None
+
+
+class ApplyConfigResponse(BaseModel):
+    dry_run: bool
+    changes: List[ApplyChange] = Field(default_factory=list)
+    # catalog model_ids present in the DB but not in the payload (and not pruned)
+    unmanaged_models: List[str] = Field(default_factory=list)
+    # group slugs present in the DB but not in the payload (never auto-pruned)
+    unmanaged_access_groups: List[str] = Field(default_factory=list)
+    syncs_scheduled: int = 0
+
+
