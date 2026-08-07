@@ -1438,6 +1438,11 @@ class ApplyChange(BaseModel):
     detail: Optional[str] = None
 
 
+class SkippedRegion(BaseModel):
+    region: str
+    reason: str  # unknown | inactive | not_catalog_managed
+
+
 class ApplyConfigResponse(BaseModel):
     dry_run: bool
     changes: List[ApplyChange] = Field(default_factory=list)
@@ -1445,6 +1450,10 @@ class ApplyConfigResponse(BaseModel):
     unmanaged_models: List[str] = Field(default_factory=list)
     # group slugs present in the DB but not in the payload (never auto-pruned)
     unmanaged_access_groups: List[str] = Field(default_factory=list)
+    # Regions the payload named that this environment left untouched. Not an
+    # error — one catalog is posted to every environment. Callers surface these
+    # (PR comment, Slack) so a typo'd or retired region stays visible.
+    skipped_regions: List[SkippedRegion] = Field(default_factory=list)
     syncs_scheduled: int = 0
 
 
