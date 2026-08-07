@@ -25,6 +25,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.admin_models import _contains_sentinel, _merge_credential_sentinels
+from app.core.config import catalog_manages
 from app.core.security import get_role_min_system_admin
 from app.db.database import get_db
 from app.db.models import (
@@ -117,6 +118,14 @@ def _resolve_regions(db: Session, req: ApplyConfigRequest) -> Dict[str, DBRegion
     inactive = sorted(name for name, r in found.items() if not r.is_active)
     if inactive:
         raise _bad_request(f"Inactive regions in payload: {inactive}")
+    # Fail the config-repo PR loudly rather than writing DB rows whose sync the
+    # choke point in sync_model_to_region_task would then refuse.
+    unmanaged = sorted(name for name in found if not catalog_manages(name))
+    if unmanaged:
+        raise _bad_request(
+            f"Regions not managed by the model catalog: {unmanaged}. "
+            "Add them to CATALOG_MANAGED_REGIONS to opt them in."
+        )
     return found
 
 

@@ -2,6 +2,7 @@ import logging
 import traceback
 from datetime import datetime, UTC
 
+from app.core.config import catalog_manages
 from app.db.database import get_db
 from app.db.models import DBModel, DBModelAliasTarget, DBModelRegion, DBRegion
 from app.services.access_groups import model_access_group_slugs
@@ -95,6 +96,17 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
             logger.warning(f"Sync skipped: Region {region.name} is inactive.")
             assoc.sync_status = "failed"
             assoc.sync_error = f"Region {region.name} is inactive and cannot be synchronized."
+            assoc.updated_at = datetime.now(UTC)
+            db.commit()
+            return
+
+        # Last line of defence before any write to a proxy: a region the
+        # catalog does not manage (private regions like ren2, or every region
+        # while the catalog is still gated off) is never touched.
+        if not catalog_manages(region.name):
+            logger.warning(f"Sync skipped: region {region.name} is not catalog-managed.")
+            assoc.sync_status = "not_configured"
+            assoc.sync_error = f"Region {region.name} is not catalog-managed (CATALOG_MANAGED_REGIONS)."
             assoc.updated_at = datetime.now(UTC)
             db.commit()
             return
