@@ -21,7 +21,7 @@ os.environ["ENABLE_SIGNUP_VELOCITY_LIMIT"] = "false"
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from app.main import app
 from app.db.database import get_db
@@ -43,6 +43,11 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 
 @pytest.fixture
 def db():
+    # Drop custom type before tables to avoid duplicate key violations
+    with engine.connect() as conn:
+        conn.execute(text("DROP TYPE IF EXISTS budget_type_enum CASCADE"))
+        conn.commit()
+
     # Create the test database and tables
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
@@ -55,6 +60,9 @@ def db():
         db.close()
         # Clean up after test
         Base.metadata.drop_all(bind=engine)
+        with engine.connect() as conn:
+            conn.execute(text("DROP TYPE IF EXISTS budget_type_enum CASCADE"))
+            conn.commit()
 
 
 @pytest.fixture

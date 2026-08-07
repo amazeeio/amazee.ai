@@ -11,7 +11,15 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.security import get_current_user_from_auth
 from app.db.database import get_db
-from app.db.models import DBRegion, DBTeamRegion, DBUser
+from app.db.models import (
+    DBModel,
+    DBModelAccessGroupModel,
+    DBModelAccessGroupRegion,
+    DBRegion,
+    DBTeamModelAccessGroup,
+    DBTeamRegion,
+    DBUser,
+)
 from app.schemas.models import (
     BedrockMissingModel,
     ProviderMissingModelsReport,
@@ -659,6 +667,89 @@ def _filter_region_groups_by_alias(
     return filtered_region_groups
 
 
+def _filter_region_groups_by_access(
+    db: Session, region_groups: list[PublicRegionModels], user: DBUser | None
+) -> list[PublicRegionModels]:
+    """Access-group enforcement for the catalog: in a region with a default
+    access group, only models in the default group (plus the caller team's
+    opt-ins) are listed — unauthenticated callers see exactly the "available
+    to everyone" default set. Regions without a default are unfiltered
+    (legacy all-models). Admins always see everything.
+
+    Query cost is fixed per request (at most three queries) regardless of how
+    many regions are enforced — this is a high-traffic endpoint.
+    """
+    if user is not None and user.is_admin:
+        return region_groups
+
+    enforced = {
+        r.name: r
+        for r in db.query(DBRegion)
+        .filter(DBRegion.default_access_group_id.isnot(None))
+        .all()
+    }
+    if not enforced:
+        return region_groups
+
+    relevant = [enforced[g.region] for g in region_groups if g.region in enforced]
+    if not relevant:
+        return region_groups
+
+    # region_id -> allowed group ids: the region default plus the caller
+    # team's opt-in groups deployed to that region.
+    allowed_group_ids: dict[int, set[int]] = {
+        r.id: {r.default_access_group_id} for r in relevant
+    }
+    team_id = user.team_id if user else None
+    if team_id:
+        opt_ins = (
+            db.query(DBTeamModelAccessGroup.group_id, DBModelAccessGroupRegion.region_id)
+            .join(
+                DBModelAccessGroupRegion,
+                DBModelAccessGroupRegion.group_id == DBTeamModelAccessGroup.group_id,
+            )
+            .filter(
+                DBTeamModelAccessGroup.team_id == team_id,
+                DBModelAccessGroupRegion.region_id.in_(allowed_group_ids.keys()),
+            )
+            .all()
+        )
+        for group_id, region_id in opt_ins:
+            allowed_group_ids[region_id].add(group_id)
+
+    all_group_ids = set().union(*allowed_group_ids.values())
+    rows = (
+        db.query(DBModelAccessGroupModel.group_id, DBModel.model_id)
+        .join(DBModel, DBModel.id == DBModelAccessGroupModel.model_id)
+        .filter(
+            DBModelAccessGroupModel.group_id.in_(all_group_ids),
+            DBModel.deleted_at.is_(None),
+        )
+        .all()
+    )
+    names_by_group: dict[int, set[str]] = {}
+    for group_id, model_name in rows:
+        names_by_group.setdefault(group_id, set()).add(model_name)
+
+    filtered: list[PublicRegionModels] = []
+    for group in region_groups:
+        region = enforced.get(group.region)
+        if region is None:
+            filtered.append(group)
+            continue
+        allowed: set[str] = set().union(
+            *(names_by_group.get(gid, set()) for gid in allowed_group_ids[region.id])
+        )
+        filtered.append(
+            PublicRegionModels(
+                region=group.region,
+                status=group.status,
+                models=[m for m in group.models if m.model_id in allowed],
+            )
+        )
+    return filtered
+
+
 async def _resolve_optional_user(request: Request, db: Session) -> DBUser | None:
     """Optionally resolve the authenticated user from the request.
 
@@ -913,6 +1004,7 @@ async def list_public_models(
     # Signal to CacheControlMiddleware whether response contains user-specific data.
     request.state._public_models_is_authenticated = user is not None
 
+    visible_groups = _filter_region_groups_by_access(db, visible_groups, user)
     return _filter_region_groups_by_alias(visible_groups, alias_filters)
 
 

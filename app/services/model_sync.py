@@ -1,0 +1,193 @@
+import logging
+import traceback
+from datetime import datetime, UTC
+
+from app.core.config import catalog_manages
+from app.db.database import get_db
+from app.db.models import DBModel, DBModelAliasTarget, DBModelRegion, DBRegion
+from app.services.access_groups import model_access_group_slugs
+from app.services.litellm import LiteLLMService
+
+logger = logging.getLogger(__name__)
+
+
+def effective_litellm_params(
+    db, model: DBModel, region_id: int
+) -> tuple[dict | None, str | None]:
+    """Resolve the params actually pushed to a region: base litellm_params
+    merged with the region's override — or, for an alias, the region target's
+    effective params (pointer semantics). Returns (params, error)."""
+    if model.is_alias:
+        target_row = (
+            db.query(DBModelAliasTarget)
+            .filter_by(alias_model_id=model.id, region_id=region_id)
+            .first()
+        )
+        if not target_row:
+            return None, f"Alias '{model.model_id}' has no target model for this region."
+        target = db.query(DBModel).filter_by(id=target_row.target_model_id).first()
+        if not target or target.deleted_at is not None or not target.is_active_globally:
+            return None, f"Alias '{model.model_id}' target is missing or inactive."
+        if target.is_alias:
+            return None, f"Alias '{model.model_id}' points at another alias; chains are not supported."
+        params, error = effective_litellm_params(db, target, region_id)
+        if error:
+            return None, error
+        # The deployment is registered under the ALIAS name; make sure the
+        # backend `model` stays the target's (add_model would otherwise
+        # default it to the alias name).
+        if "model" not in params:
+            params["model"] = target.model_id
+        return params, None
+
+    assoc = db.query(DBModelRegion).filter_by(model_id=model.id, region_id=region_id).first()
+    override = dict(assoc.litellm_params_override or {}) if assoc else {}
+    return {**dict(model.litellm_params or {}), **override}, None
+
+
+def _scrub_secrets(text: str, litellm_params) -> str:
+    """Proxy error bodies can echo the request payload (e.g. a 422 quoting
+    litellm_params, api_key included). sync_error is shown in admin responses,
+    so blank out any stored string param value that appears in the text."""
+    if not litellm_params:
+        return text
+    for v in litellm_params.values():
+        if isinstance(v, dict):
+            text = _scrub_secrets(text, v)
+        elif isinstance(v, str) and len(v) >= 8 and not v.startswith("os.environ/"):
+            text = text.replace(v, "********")
+    return text
+
+
+async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
+    """
+    Background task to synchronize a model's state to a regional LiteLLM proxy.
+    Creates its own DB session to avoid lifecycle issues with request-scoped DB sessions.
+    Updates the DBModelRegion status to 'synced' or 'failed' based on the result.
+    """
+    logger.info(f"Starting background synchronization of model_id={model_id} to region_id={region_id}")
+    
+    db = None
+    assoc = None
+    model = None
+    pushed_params = None
+    try:
+        db = next(get_db())
+        # Fetch model_region association
+        assoc = db.query(DBModelRegion).filter_by(model_id=model_id, region_id=region_id).first()
+        if not assoc:
+            logger.error(f"Sync failed: DBModelRegion association not found for model_id={model_id}, region_id={region_id}")
+            return
+            
+        # Fetch model and region
+        model = db.query(DBModel).filter_by(id=model_id).first()
+        region = db.query(DBRegion).filter_by(id=region_id).first()
+        
+        if not model or not region:
+            logger.error(f"Sync failed: Model or Region not found for model_id={model_id}, region_id={region_id}")
+            assoc.sync_status = "failed"
+            assoc.sync_error = f"Model found: {bool(model)}, Region found: {bool(region)}"
+            assoc.updated_at = datetime.now(UTC)
+            db.commit()
+            return
+
+        # Check region active status
+        if not region.is_active:
+            logger.warning(f"Sync skipped: Region {region.name} is inactive.")
+            assoc.sync_status = "failed"
+            assoc.sync_error = f"Region {region.name} is inactive and cannot be synchronized."
+            assoc.updated_at = datetime.now(UTC)
+            db.commit()
+            return
+
+        # Last line of defence before any write to a proxy: a region the
+        # catalog does not manage (private regions like ren2, or every region
+        # while the catalog is still gated off) is never touched.
+        if not catalog_manages(region.name):
+            logger.warning(f"Sync skipped: region {region.name} is not catalog-managed.")
+            assoc.sync_status = "not_configured"
+            assoc.sync_error = f"Region {region.name} is not catalog-managed (CATALOG_MANAGED_REGIONS)."
+            assoc.updated_at = datetime.now(UTC)
+            db.commit()
+            return
+
+        # Instantiate LiteLLM client for the region
+        litellm_service = LiteLLMService(
+            api_url=region.litellm_api_url,
+            api_key=region.litellm_api_key
+        )
+        
+        # LiteLLM keys /model/update and /model/delete on the deployment id
+        # (model_info.id), and /model/new allows duplicate model_names — so
+        # resolve existing deployment ids first and upsert accordingly, instead
+        # of add-then-catch-conflict (which would silently create duplicates).
+        deployment_ids = await litellm_service.get_model_deployment_ids(model.model_id)
+
+        if assoc.is_active and model.is_active_globally:
+            # Base params + per-region override, or the alias target's params.
+            params, resolve_error = effective_litellm_params(db, model, region_id)
+            pushed_params = params
+            if resolve_error:
+                assoc.sync_status = "failed"
+                assoc.sync_error = resolve_error
+                db.commit()
+                logger.error(f"Sync failed for model_id={model_id}, region_id={region_id}: {resolve_error}")
+                return
+            # Access-group tags are derived state: groups containing this model
+            # that are deployed to this region. Always sent (possibly []) so
+            # removing a model from its last group clears the tags on the proxy.
+            access_groups = model_access_group_slugs(db, model.id, region_id)
+            if deployment_ids:
+                logger.info(f"Updating model '{model.model_id}' in region '{region.name}' (deployments: {deployment_ids})")
+                await litellm_service.update_model(
+                    model.model_id, params, deployment_ids, access_groups=access_groups
+                )
+            else:
+                logger.info(f"Registering model '{model.model_id}' in region '{region.name}'")
+                await litellm_service.add_model(
+                    model.model_id, params, access_groups=access_groups
+                )
+        else:
+            logger.info(f"Deregistering model '{model.model_id}' from region '{region.name}'")
+            await litellm_service.delete_model(model.model_id, deployment_ids)
+            
+        # Success!
+        assoc.sync_status = "synced"
+        assoc.sync_error = None
+        assoc.synced_at = datetime.now(UTC)
+        logger.info(f"Successfully synchronized model_id={model_id} to region_id={region_id}")
+        
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        logger.error(f"Sync failed for model_id={model_id}, region_id={region_id}: {e}\n{error_trace}")
+        # Refresh assoc from DB to avoid session binding issues if any
+        if db:
+            try:
+                assoc = db.query(DBModelRegion).filter_by(model_id=model_id, region_id=region_id).first()
+                if assoc:
+                    assoc.sync_status = "failed"
+                    # Scrub every params source the request could have echoed:
+                    # base params, the per-region override, and the effective
+                    # params actually pushed (an alias pushes its TARGET's).
+                    scrubbed = _scrub_secrets(str(e), model.litellm_params if model else None)
+                    scrubbed = _scrub_secrets(scrubbed, assoc.litellm_params_override)
+                    assoc.sync_error = _scrub_secrets(scrubbed, pushed_params)
+            except Exception as inner_e:
+                logger.error(f"Failed to write error status to DB: {inner_e}")
+                # Session is poisoned — drop assoc so finally can't commit the
+                # in-memory 'synced' state for a sync that actually failed.
+                assoc = None
+                try:
+                    db.rollback()
+                except Exception:
+                    # Best-effort rollback during error handling; ignore rollback
+                    # failures here and let finally close the session.
+                    pass
+        
+    finally:
+        if db:
+            if assoc:
+                assoc.updated_at = datetime.now(UTC)
+                db.commit()
+            db.close()
+

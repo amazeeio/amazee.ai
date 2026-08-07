@@ -175,6 +175,14 @@ class Settings(BaseSettings):
         os.getenv("BEDROCK_MISSING_MODELS_TIMEOUT_SECONDS", "15")
     )
 
+    # --- Model catalog (amazeeai-model-catalog) ---
+    # Allow-list of region names the catalog may write to. Empty = catalog sync
+    # is off entirely, which is the default so a deploy never starts pushing
+    # models on its own. Private regions that keep their own LiteLLM config
+    # elsewhere (ren2) must never be listed — their absence here is what stops
+    # the catalog from overwriting or deleting their models.
+    CATALOG_MANAGED_REGIONS: str = os.getenv("CATALOG_MANAGED_REGIONS", "")
+
     model_config = ConfigDict(env_file=".env", extra="ignore")
     main_route: str = os.getenv("LAGOON_ROUTE", "http://localhost:8800")
     frontend_route: str = os.getenv("FRONTEND_ROUTE", "http://localhost:3000")
@@ -226,3 +234,20 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def catalog_manages(region_name: str) -> bool:
+    """True if the model catalog may push to this region's LiteLLM proxy.
+
+    Read at call time, not import time, so tests and a Lagoon env-var change
+    take effect without a code change.
+    """
+    # ponytail: reuse the existing local-privileges signal instead of a "*"
+    # wildcard — docker-compose and the test suite already set ENV_SUFFIX=local,
+    # and prod ("production") can never reach this branch, so there is no
+    # single value an operator can set that opens every region on prod.
+    if settings.ENV_SUFFIX == "local":
+        return True
+    return region_name in {
+        r.strip() for r in settings.CATALOG_MANAGED_REGIONS.split(",") if r.strip()
+    }
