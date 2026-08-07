@@ -285,6 +285,26 @@ def test_apply_override_change_resyncs_only_that_region(mock_svc, client, admin_
     assert keys == {f"claude-sonnet@{test_region.name}"}
 
 
+def test_apply_refuses_regions_the_catalog_does_not_manage(
+    client, admin_token, db, test_region, monkeypatch
+):
+    """The prod gate: outside local, a region absent from CATALOG_MANAGED_REGIONS
+    is rejected before anything is written — this is what keeps the catalog off
+    private regions like ren2."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ENV_SUFFIX", "production")
+    monkeypatch.setattr(settings, "CATALOG_MANAGED_REGIONS", "")
+    res = _apply(client, admin_token, _payload(test_region.name))
+    assert res.status_code == 400
+    assert "not managed by the model catalog" in res.json()["detail"]
+    assert db.query(DBModel).count() == 0
+
+    monkeypatch.setattr(settings, "CATALOG_MANAGED_REGIONS", f"other, {test_region.name}")
+    with patch("app.services.model_sync.LiteLLMService"):
+        assert _apply(client, admin_token, _payload(test_region.name)).status_code == 200
+
+
 def test_apply_requires_admin(client, test_token, test_region):
     res = client.post(
         "/admin/models/apply",

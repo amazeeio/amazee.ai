@@ -13,6 +13,7 @@ from datetime import datetime, UTC
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from app.core.config import catalog_manages
 from app.db.database import get_db
 from app.db.models import (
     DBModelAccessGroup,
@@ -52,7 +53,9 @@ def effective_team_group_slugs(db: Session, team_id: int, region: DBRegion) -> l
     Returns None when the region has no default group (enforcement off) —
     callers must then leave the team's `models` untouched (or clear it).
     """
-    if region.default_access_group_id is None:
+    # A region the catalog does not manage never gets group restrictions, even
+    # if a default group was set on it by hand.
+    if region.default_access_group_id is None or not catalog_manages(region.name):
         return None
 
     default_slug = (
@@ -96,6 +99,9 @@ async def sync_team_groups(db: Session, team_id: int, region: DBRegion) -> None:
     ([] = all-proxy-models on LiteLLM), so turning enforcement off rolls
     teams back to legacy behavior.
     """
+    if not catalog_manages(region.name):
+        logger.info(f"Team group sync skipped: region {region.name} is not catalog-managed.")
+        return
     slugs = effective_team_group_slugs(db, team_id, region)
     service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
     lite_team_id = LiteLLMService.format_team_id(region.name, team_id)
