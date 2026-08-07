@@ -193,11 +193,32 @@ def test_apply_without_prune_reports_unmanaged(mock_svc, client, admin_token, db
     assert alias.is_active_globally is True
 
 
-def test_apply_unknown_region_rejected(client, admin_token, test_region):
-    payload = _payload("no-such-region")
-    res = _apply(client, admin_token, payload)
-    assert res.status_code == 400
-    assert "Unknown regions" in res.json()["detail"]
+def test_apply_unknown_region_is_skipped_not_rejected(client, admin_token, test_region):
+    """A region this environment has never heard of is reported, not fatal —
+    the config repo posts one catalog to dev/main/prod."""
+    res = _apply(client, admin_token, _payload("no-such-region"))
+    assert res.status_code == 200
+    assert res.json()["skipped_regions"] == [
+        {"region": "no-such-region", "reason": "unknown"}
+    ]
+
+
+def test_apply_skips_bad_region_but_still_applies_the_good_ones(
+    client, admin_token, db, test_region
+):
+    """The bug this fixes: one stale region must not sink the rest of the apply."""
+    payload = _payload(test_region.name)
+    payload["models"][0]["deployments"].append({"region": "no-such-region"})
+    with patch("app.services.model_sync.LiteLLMService"):
+        res = _apply(client, admin_token, payload)
+    assert res.status_code == 200
+    data = res.json()
+    assert [s["region"] for s in data["skipped_regions"]] == ["no-such-region"]
+    assert {c["key"] for c in data["changes"] if c["entity"] == "deployment"} == {
+        f"claude-sonnet@{test_region.name}",
+        f"chat@{test_region.name}",
+    }
+    assert db.query(DBModelRegion).count() == 2
 
 
 def test_apply_prune_with_empty_models_rejected(client, admin_token):
@@ -285,24 +306,51 @@ def test_apply_override_change_resyncs_only_that_region(mock_svc, client, admin_
     assert keys == {f"claude-sonnet@{test_region.name}"}
 
 
-def test_apply_refuses_regions_the_catalog_does_not_manage(
+def test_apply_leaves_regions_the_catalog_does_not_manage_alone(
     client, admin_token, db, test_region, monkeypatch
 ):
-    """The prod gate: outside local, a region absent from CATALOG_MANAGED_REGIONS
-    is rejected before anything is written — this is what keeps the catalog off
-    private regions like ren2."""
+    """The prod gate: outside local, CATALOG_MANAGED_REGIONS bounds every write.
+    A region absent from it is reported and untouched — no deployment row, no
+    sync — which is what keeps the catalog off private regions like ren2."""
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "ENV_SUFFIX", "production")
     monkeypatch.setattr(settings, "CATALOG_MANAGED_REGIONS", "")
     res = _apply(client, admin_token, _payload(test_region.name))
-    assert res.status_code == 400
-    assert "not managed by the model catalog" in res.json()["detail"]
-    assert db.query(DBModel).count() == 0
+    assert res.status_code == 200
+    assert res.json()["skipped_regions"] == [
+        {"region": test_region.name, "reason": "not_catalog_managed"}
+    ]
+    assert res.json()["syncs_scheduled"] == 0
+    assert db.query(DBModelRegion).count() == 0
 
     monkeypatch.setattr(settings, "CATALOG_MANAGED_REGIONS", f"other, {test_region.name}")
     with patch("app.services.model_sync.LiteLLMService"):
+        res = _apply(client, admin_token, _payload(test_region.name))
+    assert res.status_code == 200
+    assert res.json()["skipped_regions"] == []
+    assert db.query(DBModelRegion).count() == 2
+
+
+def test_apply_does_not_deactivate_deployments_in_unmanaged_regions(
+    client, admin_token, db, test_region, monkeypatch
+):
+    """The destructive case skipping opens up: once a region drops out of
+    CATALOG_MANAGED_REGIONS its deployment is no longer in the payload's desired
+    set, and the 'file is authoritative' rule would otherwise switch it off."""
+    from app.core.config import settings
+
+    with patch("app.services.model_sync.LiteLLMService"):
         assert _apply(client, admin_token, _payload(test_region.name)).status_code == 200
+    assocs = db.query(DBModelRegion).all()
+    assert len(assocs) == 2 and all(a.is_active for a in assocs)
+
+    monkeypatch.setattr(settings, "ENV_SUFFIX", "production")
+    monkeypatch.setattr(settings, "CATALOG_MANAGED_REGIONS", "")
+    assert _apply(client, admin_token, _payload(test_region.name)).status_code == 200
+    for a in assocs:
+        db.refresh(a)
+    assert all(a.is_active for a in assocs)
 
 
 def test_apply_requires_admin(client, test_token, test_region):

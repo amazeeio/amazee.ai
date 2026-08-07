@@ -15,6 +15,10 @@ Semantics:
   and are soft-deactivated (never hard-deleted).
 - Access groups are never pruned automatically: deleting a group cascades to
   team attachments, which is runtime state this endpoint does not own.
+- CATALOG_MANAGED_REGIONS bounds every write. Region references outside it —
+  unknown here, inactive, or not opted in — are skipped and returned in
+  `skipped_regions`, never a 400: one catalog is posted to every environment,
+  so a region only prod knows about must not fail the whole dev apply.
 """
 
 import logging
@@ -43,6 +47,7 @@ from app.schemas.models import (
     ApplyConfigRequest,
     ApplyConfigResponse,
     ApplyModelSpec,
+    SkippedRegion,
 )
 from app.services.model_sync import sync_model_to_region_task
 
@@ -101,38 +106,53 @@ def _validate_specs(req: ApplyConfigRequest) -> None:
             )
 
 
-def _resolve_regions(db: Session, req: ApplyConfigRequest) -> Dict[str, DBRegion]:
+def _resolve_regions(
+    db: Session, req: ApplyConfigRequest
+) -> Tuple[Dict[str, DBRegion], Set[int], List[SkippedRegion]]:
+    """Split the payload's region references into what this environment acts on
+    and what it leaves alone.
+
+    CATALOG_MANAGED_REGIONS is the blast radius. The config repo POSTs the same
+    catalog to dev/main/prod, so a region this environment has never heard of —
+    or has retired, or has not opted in — is skipped and reported, never a 400:
+    one stale row must not sink the other forty deployments.
+
+    Returns (resolvable payload regions, managed region ids, skipped). The
+    managed-id set is every managed region in the DB, not just the ones this
+    payload names — it is the scope for deactivation, so a region dropped from
+    the CSVs still gets its deployments turned off, while a region outside the
+    scope is never written to at all.
+    """
     names: Set[str] = set()
     for g in req.access_groups:
         names.update(g.regions)
     for m in req.models:
         names.update(d.region for d in m.deployments)
         names.update(t.region for t in m.alias_targets)
-    if not names:
-        return {}
-    rows = db.query(DBRegion).filter(DBRegion.name.in_(names)).all()
-    found = {r.name: r for r in rows}
-    missing = sorted(names - set(found))
-    if missing:
-        raise _bad_request(f"Unknown regions in payload: {missing}")
-    inactive = sorted(name for name, r in found.items() if not r.is_active)
-    if inactive:
-        raise _bad_request(f"Inactive regions in payload: {inactive}")
-    # Fail the config-repo PR loudly rather than writing DB rows whose sync the
-    # choke point in sync_model_to_region_task would then refuse.
-    unmanaged = sorted(name for name in found if not catalog_manages(name))
-    if unmanaged:
-        raise _bad_request(
-            f"Regions not managed by the model catalog: {unmanaged}. "
-            "Add them to CATALOG_MANAGED_REGIONS to opt them in."
-        )
-    return found
+
+    by_name = {r.name: r for r in db.query(DBRegion).all()}
+    managed_ids = {r.id for r in by_name.values() if r.is_active and catalog_manages(r.name)}
+
+    regions: Dict[str, DBRegion] = {}
+    skipped: List[SkippedRegion] = []
+    for name in sorted(names):
+        row = by_name.get(name)
+        if row is None:
+            skipped.append(SkippedRegion(region=name, reason="unknown"))
+        elif not row.is_active:
+            skipped.append(SkippedRegion(region=name, reason="inactive"))
+        elif not catalog_manages(name):
+            skipped.append(SkippedRegion(region=name, reason="not_catalog_managed"))
+        else:
+            regions[name] = row
+    return regions, managed_ids, skipped
 
 
 def _apply_access_groups(
     db: Session,
     req: ApplyConfigRequest,
     regions: Dict[str, DBRegion],
+    managed_ids: Set[int],
     changes: List[ApplyChange],
 ) -> Tuple[Dict[str, DBModelAccessGroup], Dict[int, Set[int]]]:
     """Upsert groups and their region deployments. Returns (slug -> group,
@@ -154,10 +174,11 @@ def _apply_access_groups(
             changes.append(
                 ApplyChange(entity="access_group", key=spec.slug, action="update", detail="label/description")
             )
-        desired_regions = {regions[name].id for name in spec.regions}
+        desired_regions = {regions[name].id for name in spec.regions if name in regions}
         existing_regions = {
             row.region_id
             for row in db.query(DBModelAccessGroupRegion).filter_by(group_id=group.id).all()
+            if row.region_id in managed_ids
         }
         if desired_regions != existing_regions:
             for rid in existing_regions - desired_regions:
@@ -258,6 +279,7 @@ def _apply_deployments(
     spec_key: str,
     desired: Dict[int, Optional[dict]],
     region_names: Dict[int, str],
+    managed_ids: Set[int],
     changes: List[ApplyChange],
 ) -> Set[int]:
     """Reconcile DBModelRegion rows to `desired` (region_id -> override).
@@ -312,8 +334,10 @@ def _apply_deployments(
                 )
             )
             to_sync.add(region_id)
+    # Only managed regions are ours to turn off; a deployment in a skipped
+    # region is someone else's row and stays exactly as it is.
     for region_id, assoc in existing.items():
-        if region_id not in desired and assoc.is_active:
+        if region_id in managed_ids and region_id not in desired and assoc.is_active:
             assoc.is_active = False
             assoc.sync_status = "pending"
             assoc.sync_error = None
@@ -356,7 +380,7 @@ async def apply_model_config(
 ):
     """Apply a full desired-state model config (see module docstring)."""
     _validate_specs(req)
-    regions = _resolve_regions(db, req)
+    regions, managed_ids, skipped_regions = _resolve_regions(db, req)
     region_names = {r.id: r.name for r in regions.values()}
     # Deactivations can hit regions not referenced in the payload at all.
     for r in db.query(DBRegion.id, DBRegion.name).all():
@@ -365,7 +389,7 @@ async def apply_model_config(
     changes: List[ApplyChange] = []
     syncs: Set[Tuple[int, int]] = set()  # (model_pk, region_id)
 
-    groups, changed_group_regions = _apply_access_groups(db, req, regions, changes)
+    groups, changed_group_regions = _apply_access_groups(db, req, regions, managed_ids, changes)
 
     # Non-alias models first so alias targets can resolve against the DB.
     ordered = [m for m in req.models if not m.is_alias] + [m for m in req.models if m.is_alias]
@@ -380,6 +404,8 @@ async def apply_model_config(
         if spec.is_alias:
             desired_targets = set()
             for t in spec.alias_targets:
+                if t.region not in regions:
+                    continue
                 target = models_by_id.get(t.target) or (
                     db.query(DBModel)
                     .filter(DBModel.model_id == t.target, DBModel.deleted_at.is_(None))
@@ -395,9 +421,15 @@ async def apply_model_config(
             existing_targets = {
                 (row.region_id, row.target_model_id)
                 for row in db.query(DBModelAliasTarget).filter_by(alias_model_id=model.id).all()
+                if row.region_id in managed_ids
             }
             if desired_targets != existing_targets:
-                db.query(DBModelAliasTarget).filter_by(alias_model_id=model.id).delete()
+                # Scoped delete: rewriting the alias must not drop targets that
+                # point at regions this environment does not manage.
+                db.query(DBModelAliasTarget).filter(
+                    DBModelAliasTarget.alias_model_id == model.id,
+                    DBModelAliasTarget.region_id.in_(managed_ids),
+                ).delete(synchronize_session=False)
                 for region_id, target_pk in desired_targets:
                     db.add(
                         DBModelAliasTarget(
@@ -415,11 +447,13 @@ async def apply_model_config(
             }
         else:
             desired_deployments = {
-                regions[d.region].id: d.litellm_params_override for d in spec.deployments
+                regions[d.region].id: d.litellm_params_override
+                for d in spec.deployments
+                if d.region in regions
             }
 
         to_sync = _apply_deployments(
-            db, model, spec.model_id, desired_deployments, region_names, changes
+            db, model, spec.model_id, desired_deployments, region_names, managed_ids, changes
         )
         group_pks = {groups[slug].id for slug in spec.access_groups}
         if _replace_group_memberships(db, model, group_pks, changes):
@@ -433,7 +467,7 @@ async def apply_model_config(
         model = models_by_id[spec.model_id]
         if model.id in catalog_changed:
             for assoc in db.query(DBModelRegion).filter_by(model_id=model.id).all():
-                if assoc.is_active:
+                if assoc.is_active and assoc.region_id in managed_ids:
                     syncs.add((model.id, assoc.region_id))
 
     # A group's region set changing re-tags member models in the affected regions.
@@ -488,7 +522,7 @@ async def apply_model_config(
                 model.is_active_globally = False
                 changes.append(ApplyChange(entity="model", key=model.model_id, action="prune"))
             for assoc in db.query(DBModelRegion).filter_by(model_id=model.id).all():
-                if assoc.is_active:
+                if assoc.is_active and assoc.region_id in managed_ids:
                     assoc.is_active = False
                     assoc.sync_status = "pending"
                     assoc.updated_at = datetime.now(UTC)
@@ -518,6 +552,7 @@ async def apply_model_config(
             changes=changes,
             unmanaged_models=sorted(unmanaged_models),
             unmanaged_access_groups=unmanaged_access_groups,
+            skipped_regions=skipped_regions,
             syncs_scheduled=len(syncs),
         )
 
@@ -532,5 +567,6 @@ async def apply_model_config(
         changes=changes,
         unmanaged_models=sorted(unmanaged_models),
         unmanaged_access_groups=unmanaged_access_groups,
+        skipped_regions=skipped_regions,
         syncs_scheduled=len(syncs),
     )

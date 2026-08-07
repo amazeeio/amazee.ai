@@ -410,6 +410,49 @@ def test_model_access_group_slugs(db, test_region, test_team):
     assert model_access_group_slugs(db, model.id, test_region.id) == ["in-region"]
 
 
+def test_public_listing_does_not_enforce_on_unmanaged_regions(db, test_region, monkeypatch):
+    """Model->group membership is global (no region column), so a catalog apply
+    rewrites it for every region at once. A region the catalog does not manage
+    must therefore not filter its listing on it — its teams are unrestricted on
+    LiteLLM anyway (see effective_team_group_slugs)."""
+    from app.api.public import _filter_region_groups_by_access
+    from app.core.config import settings
+    from app.schemas.models import (
+        PublicModelCapabilities,
+        PublicModelPricing,
+        PublicModelSummary,
+        PublicRegionModels,
+    )
+
+    group = _make_group(db, slug="default-zdr", region_ids=[test_region.id])
+    test_region.default_access_group_id = group.id
+    db.commit()
+    groups = [
+        PublicRegionModels(
+            region=test_region.name,
+            status="available",
+            models=[
+                PublicModelSummary(
+                    model_id="openai/not-in-any-group",
+                    display_name="Not In Any Group",
+                    provider="openai",
+                    type="chat",
+                    description="",
+                    capabilities=PublicModelCapabilities(),
+                    pricing=PublicModelPricing(),
+                )
+            ],
+        )
+    ]
+
+    monkeypatch.setattr(settings, "ENV_SUFFIX", "production")
+    monkeypatch.setattr(settings, "CATALOG_MANAGED_REGIONS", test_region.name)
+    assert _filter_region_groups_by_access(db, groups, None)[0].models == []
+
+    monkeypatch.setattr(settings, "CATALOG_MANAGED_REGIONS", "")
+    assert _filter_region_groups_by_access(db, groups, None)[0].models == groups[0].models
+
+
 @patch("app.services.model_sync.LiteLLMService")
 def test_model_sync_pushes_access_groups(mock_service_cls, client, db, test_region):
     from app.services.model_sync import sync_model_to_region_task

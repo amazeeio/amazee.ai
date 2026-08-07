@@ -8,7 +8,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
+from app.core.config import catalog_manages, settings
 from app.core.security import get_current_user_from_auth
 from app.db.database import get_db
 from app.db.models import (
@@ -676,6 +676,12 @@ def _filter_region_groups_by_access(
     to everyone" default set. Regions without a default are unfiltered
     (legacy all-models). Admins always see everything.
 
+    A region the catalog does not manage is unfiltered too, even if a default
+    group was set on it by hand: `effective_team_group_slugs` refuses to
+    restrict those teams on LiteLLM, so filtering the listing would hide models
+    the caller can actually call — and would make the listing move whenever an
+    apply rewrites the (global, region-less) model->group memberships.
+
     Query cost is fixed per request (at most three queries) regardless of how
     many regions are enforced — this is a high-traffic endpoint.
     """
@@ -687,6 +693,7 @@ def _filter_region_groups_by_access(
         for r in db.query(DBRegion)
         .filter(DBRegion.default_access_group_id.isnot(None))
         .all()
+        if catalog_manages(r.name)
     }
     if not enforced:
         return region_groups
