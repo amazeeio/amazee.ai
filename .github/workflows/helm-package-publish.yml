@@ -23,6 +23,11 @@ env:
 
 jobs:
   package-and-publish:
+    # The OCI tag comes from Chart.yaml's SemVer, and nothing forces a bump per
+    # PR — so publishing on pull_request overwrites the released tag with
+    # unreviewed branch content. PRs get `test-charts` below; only push and
+    # release publish.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       packages: write  # helm push charts to GHCR (GitHub Packages)
