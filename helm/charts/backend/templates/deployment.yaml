@@ -90,6 +90,11 @@ spec:
                 configMapKeyRef:
                   name: {{ include "backend.fullname" . }}-config
                   key: PASSWORDLESS_SIGN_IN
+            - name: CATALOG_MANAGED_REGIONS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "backend.fullname" . }}-config
+                  key: CATALOG_MANAGED_REGIONS
             - name: AWS_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
