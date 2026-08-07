@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Billing Sync Recovery**: Recover from LiteLLM sync failures in top-up and `/cycle` flows (#617)
 - **Catalog Apply**: Skip and report unknown/inactive/unmanaged regions instead of rejecting the whole apply (#672)
 - **Access Groups**: Stop enforcing access-group visibility on regions the catalog does not manage (#672)
-- **Helm**: Set `CATALOG_MANAGED_REGIONS` on the backend pod — the allow-list was read but never plumbed through, so no deployed environment could push the catalog to any region (#672)
+- **Helm**: Set `CATALOG_MANAGED_REGIONS` on the backend pod — the allow-list was read but never plumbed through, so no deployed environment could push the catalog to any region (#673)
 
 ### Changed
 
