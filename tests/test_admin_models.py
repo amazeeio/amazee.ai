@@ -406,6 +406,9 @@ def test_alias_sync_writes_model_group_alias_and_removes_legacy_entry(
 
     mock_instance = MagicMock()
     mock_instance.get_model_deployment_ids = AsyncMock(return_value=["legacy-dep-1"])
+    mock_instance.get_model_info = AsyncMock(
+        return_value={"data": [{"model_name": "alias-target", "model_info": {"id": "t-1"}}]}
+    )
     mock_instance.delete_model = AsyncMock()
     mock_instance.set_model_group_aliases = AsyncMock()
     mock_instance.add_model = AsyncMock()
@@ -421,8 +424,35 @@ def test_alias_sync_writes_model_group_alias_and_removes_legacy_entry(
     mock_instance.set_model_group_aliases.assert_called_once_with(
         {"chat-alias": "alias-target"}
     )
+    # The map must land BEFORE the legacy entry is deleted — a failed delete
+    # then leaves both mechanisms serving, never neither.
+    method_order = [c[0] for c in mock_instance.mock_calls]
+    assert method_order.index("set_model_group_aliases") < method_order.index("delete_model")
     mock_instance.add_model.assert_not_called()
     mock_instance.update_model.assert_not_called()
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_alias_sync_skips_target_missing_from_proxy(mock_litellm_class, db, test_region):
+    """A target that is active in the DB but absent from the proxy (its own
+    sync pending/failed) must not be routed to — the alias is marked failed
+    and retried by a later apply instead of 404ing."""
+    from app.services.model_sync import sync_model_to_region_task
+
+    alias, alias_assoc = _make_alias_with_target(db, test_region)
+
+    mock_instance = MagicMock()
+    mock_instance.get_model_deployment_ids = AsyncMock(return_value=[])
+    mock_instance.get_model_info = AsyncMock(return_value={"data": []})
+    mock_instance.set_model_group_aliases = AsyncMock()
+    mock_litellm_class.return_value = mock_instance
+
+    import asyncio
+    asyncio.run(sync_model_to_region_task(alias.id, test_region.id))
+
+    db.refresh(alias_assoc)
+    assert alias_assoc.sync_status == "failed"
+    mock_instance.set_model_group_aliases.assert_called_once_with({})
 
 
 @patch("app.services.model_sync.LiteLLMService")
@@ -435,6 +465,7 @@ def test_alias_sync_fails_when_target_not_deployed(mock_litellm_class, db, test_
 
     mock_instance = MagicMock()
     mock_instance.get_model_deployment_ids = AsyncMock(return_value=[])
+    mock_instance.get_model_info = AsyncMock(return_value={"data": []})
     mock_instance.set_model_group_aliases = AsyncMock()
     mock_litellm_class.return_value = mock_instance
 
