@@ -121,6 +121,31 @@ def test_apply_reschedules_failed_syncs_without_config_diff(
     }
 
 
+@patch("app.services.model_sync.LiteLLMService")
+def test_apply_pruned_deployment_is_deactivated_not_resynced(
+    mock_svc, client, admin_token, db, test_region
+):
+    """A failed deployment that is being pruned in the same apply must show a
+    single 'deactivate' change — never a contradictory 'resync' as well."""
+    payload = _payload(test_region.name)
+    payload["models"][1]["real_eol"] = "2020-01-01T00:00:00Z"
+    assert _apply(client, admin_token, payload).status_code == 200
+    db.query(DBModelRegion).update({"sync_status": "failed"})
+    db.commit()
+
+    pruned = _payload(test_region.name)
+    pruned["models"] = [m for m in pruned["models"] if m["model_id"] == "claude-sonnet"]
+    pruned["prune"] = True
+    res = _apply(client, admin_token, pruned)
+    assert res.status_code == 200
+    actions = [
+        (c["key"], c["action"])
+        for c in res.json()["changes"]
+        if c["key"].startswith("chat@")
+    ]
+    assert actions == [(f"chat@{test_region.name}", "deactivate")]
+
+
 def test_apply_dry_run_writes_nothing(client, admin_token, db, test_region):
     payload = _payload(test_region.name)
     payload["dry_run"] = True
