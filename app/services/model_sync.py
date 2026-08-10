@@ -185,17 +185,15 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
                 text("SELECT pg_advisory_xact_lock(:ns, :region)"),
                 {"ns": ALIAS_MAP_LOCK_NAMESPACE, "region": region_id},
             )
+            # The map is computed from DB state ONLY — deliberately not
+            # filtered against the proxy's live /model/info. During a rollout
+            # the proxy's model list is mid-churn (replica lag, router
+            # reloads), and a stale read here would bake missing aliases into
+            # the map with sync_status happily 'synced' (observed on us1: the
+            # last writer's stale snapshot shrank the map to one entry). A
+            # target whose own sync has not landed yet merely 404s until it
+            # does — the name-based mapping then works with no alias rewrite.
             alias_map = region_model_group_alias_map(db, region_id)
-            # A DB row saying the target is deployed is not enough — its own
-            # sync may still be pending or failed. Only route to model groups
-            # that actually exist on the proxy, or the alias would 404.
-            info = await litellm_service.get_model_info()
-            live_names = {
-                entry.get("model_name")
-                for entry in (info.get("data") or [])
-                if isinstance(entry, dict)
-            }
-            alias_map = {a: t for a, t in alias_map.items() if t in live_names}
             # Write the map before deleting any legacy alias-as-model entry:
             # if the delete then fails, both mechanisms briefly coexist (which
             # still serves requests) and the retry cleans up — the reverse
@@ -211,8 +209,7 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
             ):
                 assoc.sync_status = "failed"
                 assoc.sync_error = (
-                    f"Alias '{model.model_id}' has no active target deployment "
-                    "in this region (or its target has not synced yet)."
+                    f"Alias '{model.model_id}' has no active target deployment in this region."
                 )
                 db.commit()
                 logger.error(f"Sync failed for model_id={model_id}, region_id={region_id}: {assoc.sync_error}")
