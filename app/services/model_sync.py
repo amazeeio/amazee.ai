@@ -5,7 +5,10 @@ from datetime import datetime, UTC
 from app.core.config import catalog_manages
 from app.db.database import get_db
 from app.db.models import DBModel, DBModelAliasTarget, DBModelRegion, DBRegion
-from app.services.access_groups import model_access_group_slugs
+from app.services.access_groups import (
+    model_access_group_slugs,
+    sync_region_access_group_entities,
+)
 from app.services.litellm import LiteLLMService
 
 logger = logging.getLogger(__name__)
@@ -209,7 +212,13 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
         else:
             logger.info(f"Deregistering model '{model.model_id}' from region '{region.name}'")
             await litellm_service.delete_model(model.model_id, deployment_ids)
-            
+
+        # A model coming or going changes group membership, so mirror the
+        # region's access groups into the proxy's entity registry (the list
+        # the LiteLLM admin UI shows). Aliases are never entity members.
+        if not model.is_alias:
+            await sync_region_access_group_entities(db, region, service=litellm_service)
+
         # Success!
         assoc.sync_status = "synced"
         assoc.sync_error = None

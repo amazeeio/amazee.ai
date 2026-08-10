@@ -169,6 +169,7 @@ def test_sync_model_existing_deployment_updates(mock_litellm_class, db, test_reg
     mock_instance.get_model_deployment_ids = AsyncMock(return_value=["dep-123"])
     mock_instance.add_model = AsyncMock()
     mock_instance.update_model = AsyncMock(return_value={"status": "success"})
+    mock_instance.list_access_groups = AsyncMock(return_value=[])
     mock_litellm_class.return_value = mock_instance
 
     m = DBModel(
@@ -213,6 +214,7 @@ def test_sync_model_poisoned_session_never_commits_stale_synced(mock_litellm_cla
     mock_instance = MagicMock()
     mock_instance.get_model_deployment_ids = AsyncMock(return_value=[])
     mock_instance.add_model = AsyncMock(return_value={"status": "success"})
+    mock_instance.list_access_groups = AsyncMock(return_value=[])
     mock_litellm_class.return_value = mock_instance
 
     m = DBModel(
@@ -234,16 +236,16 @@ def test_sync_model_poisoned_session_never_commits_stale_synced(mock_litellm_cla
     db.commit()
 
     class PoisonedSession:
-        """Delegates to a real session; the 6th query (the error-path re-query,
-        after assoc/model/region/effective-params/access-group-slugs fetches)
-        raises as if the connection dropped."""
+        """Delegates to a real session; the 7th query (the error-path re-query,
+        after assoc/model/region/effective-params/access-group-slugs/entity-
+        reconcile fetches) raises as if the connection dropped."""
         def __init__(self, real):
             self._real = real
             self._queries = 0
 
         def query(self, *args, **kwargs):
             self._queries += 1
-            if self._queries > 5:
+            if self._queries > 6:
                 raise RuntimeError("connection lost")
             return self._real.query(*args, **kwargs)
 
@@ -276,6 +278,7 @@ def test_sync_model_global_deactivation_deregisters(mock_litellm_class, db, test
     mock_instance = MagicMock()
     mock_instance.get_model_deployment_ids = AsyncMock(return_value=["dep-1"])
     mock_instance.delete_model = AsyncMock(return_value=None)
+    mock_instance.list_access_groups = AsyncMock(return_value=[])
     mock_litellm_class.return_value = mock_instance
 
     m = DBModel(

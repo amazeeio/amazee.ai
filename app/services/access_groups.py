@@ -16,9 +16,11 @@ from sqlalchemy.orm import Session
 from app.core.config import catalog_manages
 from app.db.database import get_db
 from app.db.models import (
+    DBModel,
     DBModelAccessGroup,
     DBModelAccessGroupModel,
     DBModelAccessGroupRegion,
+    DBModelRegion,
     DBRegion,
     DBTeam,
     DBTeamGroupSyncRun,
@@ -28,6 +30,11 @@ from app.db.models import (
 from app.services.litellm import LiteLLMService
 
 logger = logging.getLogger(__name__)
+
+# Written into every access-group entity amazee.ai creates on a proxy — the
+# reconciler only ever deletes entities carrying this marker, so groups made
+# by hand in the LiteLLM UI survive.
+ACCESS_GROUP_MANAGED_DESCRIPTION = "Managed by the amazee.ai model catalog"
 
 
 def model_access_group_slugs(db: Session, model_pk: int, region_id: int) -> list[str]:
@@ -44,6 +51,66 @@ def model_access_group_slugs(db: Session, model_pk: int, region_id: int) -> list
         .all()
     )
     return sorted(row[0] for row in rows)
+
+
+def region_access_group_members(db: Session, region_id: int) -> dict[str, list[str]]:
+    """slug -> sorted member model_ids for every group deployed to the region.
+    Only real, actively deployed models count — aliases resolve to their target
+    at auth time, so they are never entity members."""
+    rows = (
+        db.query(DBModelAccessGroup.slug, DBModel.model_id)
+        .join(DBModelAccessGroupRegion, DBModelAccessGroupRegion.group_id == DBModelAccessGroup.id)
+        .join(DBModelAccessGroupModel, DBModelAccessGroupModel.group_id == DBModelAccessGroup.id)
+        .join(DBModel, DBModel.id == DBModelAccessGroupModel.model_id)
+        .join(
+            DBModelRegion,
+            (DBModelRegion.model_id == DBModel.id)
+            & (DBModelRegion.region_id == region_id)
+            & (DBModelRegion.is_active.is_(True)),
+        )
+        .filter(
+            DBModelAccessGroupRegion.region_id == region_id,
+            DBModel.deleted_at.is_(None),
+            DBModel.is_active_globally.is_(True),
+            DBModel.is_alias.is_(False),
+        )
+        .all()
+    )
+    members: dict[str, list[str]] = {}
+    for slug, model_id in rows:
+        members.setdefault(slug, []).append(model_id)
+    return {slug: sorted(ids) for slug, ids in members.items()}
+
+
+async def sync_region_access_group_entities(
+    db: Session, region: DBRegion, service: LiteLLMService | None = None
+) -> None:
+    """Mirror the region's access groups into LiteLLM's entity store
+    (/v1/access_group — what the proxy admin UI lists).
+
+    Enforcement itself rides on the model tags and team `models` lists; the
+    entity registry is the operator-visible half. Reconciled whole each time:
+    create missing groups, fix drifted member lists, and delete groups we
+    created that are no longer deployed to the region. Entities without our
+    description marker are treated as hand-made and never deleted.
+    """
+    desired = region_access_group_members(db, region.id)
+    if service is None:
+        service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+    existing = {g["access_group_name"]: g for g in await service.list_access_groups()}
+
+    for slug, members in desired.items():
+        row = existing.get(slug)
+        if row is None:
+            await service.create_access_group(
+                slug, members, description=ACCESS_GROUP_MANAGED_DESCRIPTION
+            )
+        elif sorted(row.get("access_model_names") or []) != members:
+            await service.update_access_group(row["access_group_id"], model_names=members)
+
+    for slug, row in existing.items():
+        if slug not in desired and row.get("description") == ACCESS_GROUP_MANAGED_DESCRIPTION:
+            await service.delete_access_group(row["access_group_id"])
 
 
 def effective_team_group_slugs(db: Session, team_id: int, region: DBRegion) -> list[str] | None:
