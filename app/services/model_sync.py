@@ -90,6 +90,103 @@ def region_model_group_alias_map(db, region_id: int) -> dict[str, str]:
     return alias_map
 
 
+def _extract_alias_map(router_settings: dict) -> dict[str, str]:
+    """Normalize /router/settings' model_group_alias field to {alias: target}.
+    Values may be plain strings or {'model': ..., 'hidden': ...} dicts."""
+    for field in router_settings.get("fields") or []:
+        if isinstance(field, dict) and field.get("field_name") == "model_group_alias":
+            value = field.get("field_value")
+            if not isinstance(value, dict):
+                return {}
+            return {
+                str(alias): str(target.get("model")) if isinstance(target, dict) else str(target)
+                for alias, target in value.items()
+            }
+    return {}
+
+
+async def reconcile_region_models(db, region: DBRegion) -> dict:
+    """Detect and repair drift between the DB's desired state and the region's
+    proxy. 'synced' is a claim about the past: models can vanish behind our
+    back (proxy admin UI, DB restores, cluster rollouts). This compares the
+    proxy's live models and alias map against what the DB says should exist
+    and re-runs the ordinary sync task for anything drifted — so the region
+    continuously converges to the catalog.
+    """
+    service = LiteLLMService(api_url=region.litellm_api_url, api_key=region.litellm_api_key)
+    info = await service.get_model_info()
+    entries = [e for e in (info.get("data") or []) if isinstance(e, dict)]
+    all_names = {e.get("model_name") for e in entries}
+    # Only DB-registered entries are ours to delete; a same-named config-file
+    # model still satisfies "the model is available".
+    db_names = {
+        e.get("model_name") for e in entries if (e.get("model_info") or {}).get("db_model")
+    }
+
+    to_sync: list[int] = []
+    rows = (
+        db.query(DBModelRegion, DBModel)
+        .join(DBModel, DBModel.id == DBModelRegion.model_id)
+        .filter(DBModelRegion.region_id == region.id, DBModel.is_alias.is_(False))
+        .all()
+    )
+    for assoc, model in rows:
+        desired = bool(
+            assoc.is_active and model.is_active_globally and model.deleted_at is None
+        )
+        drifted = (desired and model.model_id not in all_names) or (
+            not desired and model.model_id in db_names
+        )
+        if drifted:
+            assoc.sync_status = "pending"
+            assoc.updated_at = datetime.now(UTC)
+            to_sync.append(model.id)
+
+    # Any single alias sync rewrites the region's whole map, so one drifted
+    # map costs one sync of whichever alias row exists.
+    alias_pk: int | None = None
+    desired_map = region_model_group_alias_map(db, region.id)
+    actual_map = _extract_alias_map(await service.get_router_settings())
+    if desired_map != actual_map:
+        alias_row = (
+            db.query(DBModelRegion)
+            .join(DBModel, DBModel.id == DBModelRegion.model_id)
+            .filter(DBModelRegion.region_id == region.id, DBModel.is_alias.is_(True))
+            .first()
+        )
+        if alias_row:
+            alias_row.sync_status = "pending"
+            alias_row.updated_at = datetime.now(UTC)
+            alias_pk = alias_row.model_id
+    db.commit()
+
+    for model_pk in to_sync:
+        await sync_model_to_region_task(model_pk, region.id)
+    if alias_pk is not None:
+        await sync_model_to_region_task(alias_pk, region.id)
+    if to_sync or alias_pk is not None:
+        logger.warning(
+            f"Reconcile repaired drift on region {region.name}: "
+            f"{len(to_sync)} model(s) resynced, alias map rewritten: {alias_pk is not None}"
+        )
+    return {"models_resynced": len(to_sync), "alias_map_rewritten": alias_pk is not None}
+
+
+async def reconcile_all_managed_regions(db) -> dict[str, dict]:
+    """Run drift reconciliation for every active catalog-managed region.
+    Regions are independent — one unreachable proxy must not stop the rest."""
+    results: dict[str, dict] = {}
+    for region in db.query(DBRegion).filter(DBRegion.is_active.is_(True)).all():
+        if not catalog_manages(region.name):
+            continue
+        try:
+            results[region.name] = await reconcile_region_models(db, region)
+        except Exception as e:
+            logger.error(f"Reconcile failed for region {region.name}: {e}")
+            results[region.name] = {"error": str(e)}
+    return results
+
+
 def _scrub_secrets(text: str, litellm_params) -> str:
     """Proxy error bodies can echo the request payload (e.g. a 422 quoting
     litellm_params, api_key included). sync_error is shown in admin responses,
