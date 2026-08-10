@@ -308,22 +308,62 @@ def test_sync_model_global_deactivation_deregisters(mock_litellm_class, db, test
 
 @patch("app.services.model_sync.LiteLLMService")
 def test_sync_error_scrubs_override_credentials(mock_litellm_class, db, test_region):
-    """sync_error must redact credentials from ALL params sources: base params,
-    the per-region override, and (for aliases) the target's effective params —
-    proxies can echo the full request payload in error bodies."""
-    from app.db.models import DBModelAliasTarget
+    """sync_error must redact credentials from ALL params sources: base params
+    and the per-region override — proxies can echo the full request payload in
+    error bodies."""
     from app.services.model_sync import sync_model_to_region_task
 
-    target = DBModel(
-        model_id="scrub-target",
-        display_name="Scrub Target",
+    model = DBModel(
+        model_id="scrub-model",
+        display_name="Scrub Model",
         provider="test",
         type="chat",
-        litellm_params={"model": "x", "aws_secret_access_key": "sk-target-secret99"},
+        litellm_params={"model": "x", "aws_secret_access_key": "sk-base-secret99"},
+    )
+    db.add(model)
+    db.commit()
+    assoc = DBModelRegion(
+        model_id=model.id,
+        region_id=test_region.id,
+        is_active=True,
+        sync_status="pending",
+        litellm_params_override={"api_key": "sk-override-secret99"},
+    )
+    db.add(assoc)
+    db.commit()
+
+    mock_instance = MagicMock()
+    mock_instance.get_model_deployment_ids = AsyncMock(return_value=[])
+    mock_instance.add_model = AsyncMock(
+        side_effect=Exception(
+            "422: payload rejected: aws_secret_access_key=sk-base-secret99 api_key=sk-override-secret99"
+        )
+    )
+    mock_litellm_class.return_value = mock_instance
+
+    import asyncio
+    asyncio.run(sync_model_to_region_task(model.id, test_region.id))
+
+    db.refresh(assoc)
+    assert assoc.sync_status == "failed"
+    assert "sk-base-secret99" not in assoc.sync_error
+    assert "sk-override-secret99" not in assoc.sync_error
+    assert "********" in assoc.sync_error
+
+
+def _make_alias_with_target(db, region, *, target_active=True):
+    from app.db.models import DBModelAliasTarget
+
+    target = DBModel(
+        model_id="alias-target",
+        display_name="Alias Target",
+        provider="test",
+        type="chat",
+        litellm_params={"model": "test/alias-target"},
     )
     alias = DBModel(
-        model_id="scrub-alias",
-        display_name="Scrub Alias",
+        model_id="chat-alias",
+        display_name="Chat Alias",
         provider="alias",
         type="chat",
         is_alias=True,
@@ -332,33 +372,67 @@ def test_sync_error_scrubs_override_credentials(mock_litellm_class, db, test_reg
     db.commit()
     db.add(
         DBModelAliasTarget(
-            alias_model_id=alias.id, region_id=test_region.id, target_model_id=target.id
+            alias_model_id=alias.id, region_id=region.id, target_model_id=target.id
         )
     )
     db.add(
         DBModelRegion(
             model_id=target.id,
-            region_id=test_region.id,
-            is_active=True,
-            litellm_params_override={"api_key": "sk-override-secret99"},
+            region_id=region.id,
+            is_active=target_active,
+            sync_status="synced",
         )
     )
     alias_assoc = DBModelRegion(
-        model_id=alias.id,
-        region_id=test_region.id,
-        is_active=True,
-        sync_status="pending",
+        model_id=alias.id, region_id=region.id, is_active=True, sync_status="pending"
     )
     db.add(alias_assoc)
     db.commit()
+    return alias, alias_assoc
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_alias_sync_writes_model_group_alias_and_removes_legacy_entry(
+    mock_litellm_class, db, test_region
+):
+    """An alias must land as router_settings.model_group_alias, never as a
+    duplicate model entry — and any legacy alias-as-model entry is deleted."""
+    from app.services.model_sync import sync_model_to_region_task
+
+    alias, alias_assoc = _make_alias_with_target(db, test_region)
+
+    mock_instance = MagicMock()
+    mock_instance.get_model_deployment_ids = AsyncMock(return_value=["legacy-dep-1"])
+    mock_instance.delete_model = AsyncMock()
+    mock_instance.set_model_group_aliases = AsyncMock()
+    mock_instance.add_model = AsyncMock()
+    mock_instance.update_model = AsyncMock()
+    mock_litellm_class.return_value = mock_instance
+
+    import asyncio
+    asyncio.run(sync_model_to_region_task(alias.id, test_region.id))
+
+    db.refresh(alias_assoc)
+    assert alias_assoc.sync_status == "synced"
+    mock_instance.delete_model.assert_called_once_with("chat-alias", ["legacy-dep-1"])
+    mock_instance.set_model_group_aliases.assert_called_once_with(
+        {"chat-alias": "alias-target"}
+    )
+    mock_instance.add_model.assert_not_called()
+    mock_instance.update_model.assert_not_called()
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_alias_sync_fails_when_target_not_deployed(mock_litellm_class, db, test_region):
+    """An active alias whose target is not actively deployed in the region
+    drops out of the pushed map and is marked failed, not silently synced."""
+    from app.services.model_sync import sync_model_to_region_task
+
+    alias, alias_assoc = _make_alias_with_target(db, test_region, target_active=False)
 
     mock_instance = MagicMock()
     mock_instance.get_model_deployment_ids = AsyncMock(return_value=[])
-    mock_instance.add_model = AsyncMock(
-        side_effect=Exception(
-            "422: payload rejected: aws_secret_access_key=sk-target-secret99 api_key=sk-override-secret99"
-        )
-    )
+    mock_instance.set_model_group_aliases = AsyncMock()
     mock_litellm_class.return_value = mock_instance
 
     import asyncio
@@ -366,9 +440,8 @@ def test_sync_error_scrubs_override_credentials(mock_litellm_class, db, test_reg
 
     db.refresh(alias_assoc)
     assert alias_assoc.sync_status == "failed"
-    assert "sk-target-secret99" not in alias_assoc.sync_error
-    assert "sk-override-secret99" not in alias_assoc.sync_error
-    assert "********" in alias_assoc.sync_error
+    assert "no active target deployment" in alias_assoc.sync_error
+    mock_instance.set_model_group_aliases.assert_called_once_with({})
 
 
 def test_admin_get_model_redacts_credentials(client, admin_token, db):

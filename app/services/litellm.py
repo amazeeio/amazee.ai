@@ -958,6 +958,29 @@ class LiteLLMService:
                 detail=f"Failed to get LiteLLM router settings: {error_msg}",
             )
 
+    async def set_model_group_aliases(self, alias_map: dict[str, str]) -> None:
+        """Replace the proxy's router-level alias map (model_group_alias).
+
+        POST /config/update persists router_settings in LiteLLM's DB config
+        row, so this survives restarts. The map is one router-wide dict —
+        callers must always send the region's FULL desired map, not a delta.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=MODEL_HTTP_TIMEOUT) as client:
+                response = await client.post(
+                    f"{self.api_url}/config/update",
+                    headers={"Authorization": f"Bearer {self.master_key}"},
+                    json={"router_settings": {"model_group_alias": alias_map}},
+                )
+                response.raise_for_status()
+                logger.info(f"Updated model_group_alias to {alias_map} in LiteLLM")
+        except httpx.HTTPStatusError as e:
+            _, error_msg, _ = self._parse_http_error(e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to update LiteLLM model_group_alias: {error_msg}",
+            )
+
     async def get_cost_margin_config(self) -> dict:
         """Get LiteLLM provider margin configuration."""
         try:
