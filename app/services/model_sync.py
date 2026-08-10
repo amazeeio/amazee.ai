@@ -162,12 +162,6 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
             api_key=region.litellm_api_key
         )
         
-        # LiteLLM keys /model/update and /model/delete on the deployment id
-        # (model_info.id), and /model/new allows duplicate model_names — so
-        # resolve existing deployment ids first and upsert accordingly, instead
-        # of add-then-catch-conflict (which would silently create duplicates).
-        deployment_ids = await litellm_service.get_model_deployment_ids(model.model_id)
-
         if model.is_alias:
             # Real aliases live in router_settings.model_group_alias, not as
             # duplicate model entries (auth resolves the alias to its target,
@@ -199,9 +193,32 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
             # still serves requests) and the retry cleans up — the reverse
             # order would leave the alias with neither.
             await litellm_service.set_model_group_aliases(alias_map)
-            if deployment_ids:
+            # Legacy cleanup, guarded: once the map is live, LiteLLM expands
+            # every alias into a synthetic /model/info entry identical to its
+            # target — INCLUDING the target's deployment id. Deleting "ids
+            # under the alias name" therefore deletes the target itself
+            # (observed on de1: claude-4-5-sonnet vanished). A real legacy
+            # entry has its own id that appears under no other model_name, so
+            # only ids exclusive to the alias name are legacy and deletable.
+            info = await litellm_service.get_model_info()
+            ids_by_name: dict[str, set[str]] = {}
+            for entry in info.get("data") or []:
+                if (
+                    isinstance(entry, dict)
+                    and isinstance(entry.get("model_info"), dict)
+                    and entry["model_info"].get("id")
+                ):
+                    ids_by_name.setdefault(entry.get("model_name"), set()).add(
+                        entry["model_info"]["id"]
+                    )
+            other_ids: set[str] = set()
+            for name, ids in ids_by_name.items():
+                if name != model.model_id:
+                    other_ids |= ids
+            legacy_ids = ids_by_name.get(model.model_id, set()) - other_ids
+            if legacy_ids:
                 logger.info(f"Removing legacy alias model entry '{model.model_id}' from region '{region.name}'")
-                await litellm_service.delete_model(model.model_id, deployment_ids)
+                await litellm_service.delete_model(model.model_id, sorted(legacy_ids))
             if (
                 assoc.is_active
                 and model.is_active_globally
@@ -215,6 +232,12 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
                 logger.error(f"Sync failed for model_id={model_id}, region_id={region_id}: {assoc.sync_error}")
                 return
         elif assoc.is_active and model.is_active_globally:
+            # LiteLLM keys /model/update and /model/delete on the deployment id
+            # (model_info.id), and /model/new allows duplicate model_names — so
+            # resolve existing deployment ids first and upsert accordingly,
+            # instead of add-then-catch-conflict (which would silently create
+            # duplicates).
+            deployment_ids = await litellm_service.get_model_deployment_ids(model.model_id)
             # Base params + per-region override, or the alias target's params.
             params, resolve_error = effective_litellm_params(db, model, region_id)
             pushed_params = params
@@ -240,6 +263,7 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
                 )
         else:
             logger.info(f"Deregistering model '{model.model_id}' from region '{region.name}'")
+            deployment_ids = await litellm_service.get_model_deployment_ids(model.model_id)
             await litellm_service.delete_model(model.model_id, deployment_ids)
 
         # A model coming or going changes group membership, so mirror the
