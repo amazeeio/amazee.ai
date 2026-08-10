@@ -88,11 +88,62 @@ def test_apply_creates_everything(mock_svc, client, admin_token, db, test_region
 def test_apply_is_idempotent(mock_svc, client, admin_token, db, test_region):
     payload = _payload(test_region.name)
     assert _apply(client, admin_token, payload).status_code == 200
+    # Only cleanly synced rows are a no-op; anything else is retried on purpose.
+    db.query(DBModelRegion).update({"sync_status": "synced"})
+    db.commit()
     res = _apply(client, admin_token, payload)
     assert res.status_code == 200
     data = res.json()
     assert data["changes"] == []
     assert data["syncs_scheduled"] == 0
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_apply_reschedules_failed_syncs_without_config_diff(
+    mock_svc, client, admin_token, db, test_region
+):
+    """A sync that failed (e.g. the proxy still had the model in its config
+    file) must be retried by the next apply, even when the config is unchanged."""
+    payload = _payload(test_region.name)
+    assert _apply(client, admin_token, payload).status_code == 200
+    db.query(DBModelRegion).update({"sync_status": "synced"})
+    model = db.query(DBModel).filter_by(model_id="claude-sonnet").one()
+    assoc = db.query(DBModelRegion).filter_by(model_id=model.id).one()
+    assoc.sync_status = "failed"
+    db.commit()
+
+    res = _apply(client, admin_token, payload)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["syncs_scheduled"] == 1
+    assert {(c["key"], c["action"]) for c in data["changes"]} == {
+        (f"claude-sonnet@{test_region.name}", "resync")
+    }
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_apply_pruned_deployment_is_deactivated_not_resynced(
+    mock_svc, client, admin_token, db, test_region
+):
+    """A failed deployment that is being pruned in the same apply must show a
+    single 'deactivate' change — never a contradictory 'resync' as well."""
+    payload = _payload(test_region.name)
+    payload["models"][1]["real_eol"] = "2020-01-01T00:00:00Z"
+    assert _apply(client, admin_token, payload).status_code == 200
+    db.query(DBModelRegion).update({"sync_status": "failed"})
+    db.commit()
+
+    pruned = _payload(test_region.name)
+    pruned["models"] = [m for m in pruned["models"] if m["model_id"] == "claude-sonnet"]
+    pruned["prune"] = True
+    res = _apply(client, admin_token, pruned)
+    assert res.status_code == 200
+    actions = [
+        (c["key"], c["action"])
+        for c in res.json()["changes"]
+        if c["key"].startswith("chat@")
+    ]
+    assert actions == [(f"chat@{test_region.name}", "deactivate")]
 
 
 def test_apply_dry_run_writes_nothing(client, admin_token, db, test_region):
@@ -259,6 +310,8 @@ def test_apply_retarget_alias_triggers_resync(mock_svc, client, admin_token, db,
         }
     )
     assert _apply(client, admin_token, payload).status_code == 200
+    db.query(DBModelRegion).update({"sync_status": "synced"})
+    db.commit()
 
     # Point the alias at a different target: alias must be marked changed and resynced.
     payload["models"][1]["alias_targets"] = [{"region": test_region.name, "target": "claude-haiku"}]
@@ -293,6 +346,8 @@ def test_apply_override_change_resyncs_only_that_region(mock_svc, client, admin_
     payload["models"][1]["alias_targets"].append({"region": "second-region", "target": "claude-sonnet"})
     payload["access_groups"][0]["regions"].append("second-region")
     assert _apply(client, admin_token, payload).status_code == 200
+    db.query(DBModelRegion).update({"sync_status": "synced"})
+    db.commit()
 
     # Change only the first region's override — the second region must not resync.
     payload["models"][0]["deployments"][0]["litellm_params_override"] = {

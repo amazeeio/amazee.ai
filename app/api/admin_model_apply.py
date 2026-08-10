@@ -15,6 +15,8 @@ Semantics:
   and are soft-deactivated (never hard-deleted).
 - Access groups are never pruned automatically: deleting a group cascades to
   team attachments, which is runtime state this endpoint does not own.
+- Deployments in managed regions whose last sync did not end in 'synced' are
+  rescheduled on every apply, even with no config diff — apply is self-healing.
 - CATALOG_MANAGED_REGIONS bounds every write. Region references outside it —
   unknown here, inactive, or not opted in — are skipped and returned in
   `skipped_regions`, never a 400: one catalog is posted to every environment,
@@ -536,6 +538,34 @@ async def apply_model_config(
                     syncs.add((model.id, assoc.region_id))
         else:
             unmanaged_models.append(model.model_id)
+
+    # A deployment whose last sync failed never diffs again, so re-running the
+    # apply with an unchanged config would leave it broken forever (e.g. syncs
+    # rejected because the proxy still had the model in its config file).
+    # Reschedule every managed row that is not cleanly synced — the sync task
+    # is an idempotent upsert/delete, so retrying is always safe. This runs
+    # after every diff-driven sync (including pruning) so a deployment already
+    # scheduled — e.g. one being deactivated — is not double-reported.
+    for assoc, model_key in (
+        db.query(DBModelRegion, DBModel.model_id)
+        .join(DBModel, DBModel.id == DBModelRegion.model_id)
+        .filter(
+            DBModelRegion.region_id.in_(managed_ids),
+            DBModelRegion.sync_status != "synced",
+        )
+        .all()
+    ):
+        if (assoc.model_id, assoc.region_id) in syncs:
+            continue
+        changes.append(
+            ApplyChange(
+                entity="deployment",
+                key=f"{model_key}@{region_names.get(assoc.region_id, assoc.region_id)}",
+                action="resync",
+                detail=f"retrying sync_status={assoc.sync_status}",
+            )
+        )
+        syncs.add((assoc.model_id, assoc.region_id))
 
     payload_slugs = {g.slug for g in req.access_groups}
     unmanaged_access_groups = sorted(
