@@ -501,6 +501,9 @@ def test_model_sync_reconciles_access_group_entities(mock_service_cls, client, d
     model = _make_model(db)
     _deploy_model(db, model, test_region, sync_status="pending")
     _make_group(db, slug="grp", model_ids=[model.id], region_ids=[test_region.id])
+    # Deployed to the region but memberless — must still exist as an entity
+    # so teams can attach it before any model ships (e.g. 'preview').
+    _make_group(db, slug="empty-group", model_ids=[], region_ids=[test_region.id])
     model_pk, region_pk = model.id, test_region.id
     model_key = model.model_id
 
@@ -529,6 +532,7 @@ def test_model_sync_reconciles_access_group_entities(mock_service_cls, client, d
             },
         ]
     )
+    instance.create_access_group = AsyncMock(return_value={})
     instance.update_access_group = AsyncMock(return_value={})
     instance.delete_access_group = AsyncMock(return_value=None)
 
@@ -537,3 +541,6 @@ def test_model_sync_reconciles_access_group_entities(mock_service_cls, client, d
 
     instance.update_access_group.assert_called_once_with("ag-1", model_names=[model_key])
     instance.delete_access_group.assert_called_once_with("ag-2")
+    instance.create_access_group.assert_called_once_with(
+        "empty-group", [], description=ACCESS_GROUP_MANAGED_DESCRIPTION
+    )

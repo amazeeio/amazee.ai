@@ -55,8 +55,18 @@ def model_access_group_slugs(db: Session, model_pk: int, region_id: int) -> list
 
 def region_access_group_members(db: Session, region_id: int) -> dict[str, list[str]]:
     """slug -> sorted member model_ids for every group deployed to the region.
-    Only real, actively deployed models count — aliases resolve to their target
-    at auth time, so they are never entity members."""
+
+    Every deployed group is included, even with no members yet (e.g. a
+    'preview' group that exists so teams can attach before any model ships).
+    Only real, actively deployed models count as members — aliases resolve to
+    their target at auth time, so they are never entity members."""
+    deployed = (
+        db.query(DBModelAccessGroup.slug)
+        .join(DBModelAccessGroupRegion, DBModelAccessGroupRegion.group_id == DBModelAccessGroup.id)
+        .filter(DBModelAccessGroupRegion.region_id == region_id)
+        .all()
+    )
+    members: dict[str, list[str]] = {slug: [] for (slug,) in deployed}
     rows = (
         db.query(DBModelAccessGroup.slug, DBModel.model_id)
         .join(DBModelAccessGroupRegion, DBModelAccessGroupRegion.group_id == DBModelAccessGroup.id)
@@ -76,7 +86,6 @@ def region_access_group_members(db: Session, region_id: int) -> dict[str, list[s
         )
         .all()
     )
-    members: dict[str, list[str]] = {}
     for slug, model_id in rows:
         members.setdefault(slug, []).append(model_id)
     return {slug: sorted(ids) for slug, ids in members.items()}
