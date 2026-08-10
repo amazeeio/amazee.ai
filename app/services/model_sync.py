@@ -2,13 +2,22 @@ import logging
 import traceback
 from datetime import datetime, UTC
 
+from sqlalchemy import text
+
 from app.core.config import catalog_manages
 from app.db.database import get_db
 from app.db.models import DBModel, DBModelAliasTarget, DBModelRegion, DBRegion
-from app.services.access_groups import model_access_group_slugs
+from app.services.access_groups import (
+    model_access_group_slugs,
+    sync_region_access_group_entities,
+)
 from app.services.litellm import LiteLLMService
 
 logger = logging.getLogger(__name__)
+
+# First key of the two-int postgres advisory lock serializing per-region
+# writes of router_settings.model_group_alias (second key: region id).
+ALIAS_MAP_LOCK_NAMESPACE = 743_291_648
 
 
 def effective_litellm_params(
@@ -43,6 +52,42 @@ def effective_litellm_params(
     assoc = db.query(DBModelRegion).filter_by(model_id=model.id, region_id=region_id).first()
     override = dict(assoc.litellm_params_override or {}) if assoc else {}
     return {**dict(model.litellm_params or {}), **override}, None
+
+
+def region_model_group_alias_map(db, region_id: int) -> dict[str, str]:
+    """The full desired ``model_group_alias`` map for one region's proxy:
+    every active alias with an active target deployment in that region.
+    Router-level state — always computed whole, never per-alias deltas."""
+    alias_map: dict[str, str] = {}
+    rows = (
+        db.query(DBModel, DBModelAliasTarget)
+        .join(DBModelAliasTarget, DBModelAliasTarget.alias_model_id == DBModel.id)
+        .join(
+            DBModelRegion,
+            (DBModelRegion.model_id == DBModel.id)
+            & (DBModelRegion.region_id == region_id)
+            & (DBModelRegion.is_active.is_(True)),
+        )
+        .filter(
+            DBModelAliasTarget.region_id == region_id,
+            DBModel.is_alias.is_(True),
+            DBModel.is_active_globally.is_(True),
+            DBModel.deleted_at.is_(None),
+        )
+        .all()
+    )
+    for alias, target_row in rows:
+        target = db.query(DBModel).filter_by(id=target_row.target_model_id).first()
+        if not target or target.deleted_at is not None or not target.is_active_globally:
+            continue
+        deployed = (
+            db.query(DBModelRegion)
+            .filter_by(model_id=target.id, region_id=region_id, is_active=True)
+            .first()
+        )
+        if deployed:
+            alias_map[alias.model_id] = target.model_id
+    return alias_map
 
 
 def _scrub_secrets(text: str, litellm_params) -> str:
@@ -123,7 +168,56 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
         # of add-then-catch-conflict (which would silently create duplicates).
         deployment_ids = await litellm_service.get_model_deployment_ids(model.model_id)
 
-        if assoc.is_active and model.is_active_globally:
+        if model.is_alias:
+            # Real aliases live in router_settings.model_group_alias, not as
+            # duplicate model entries (auth resolves the alias to its target,
+            # so access-group checks apply to the target's tags). The map is
+            # one router-wide dict, so activation, retargeting and
+            # deactivation are all "recompute and rewrite the full map".
+            #
+            # Serialize map writes per region: concurrent alias syncs (e.g.
+            # overlapping catalog applies across uvicorn workers) would
+            # otherwise race on the shared dict and the last — possibly
+            # stalest — writer would win. The advisory lock is transaction-
+            # scoped, so compute-and-push always runs against DB state at
+            # least as fresh as any earlier writer's.
+            db.execute(
+                text("SELECT pg_advisory_xact_lock(:ns, :region)"),
+                {"ns": ALIAS_MAP_LOCK_NAMESPACE, "region": region_id},
+            )
+            alias_map = region_model_group_alias_map(db, region_id)
+            # A DB row saying the target is deployed is not enough — its own
+            # sync may still be pending or failed. Only route to model groups
+            # that actually exist on the proxy, or the alias would 404.
+            info = await litellm_service.get_model_info()
+            live_names = {
+                entry.get("model_name")
+                for entry in (info.get("data") or [])
+                if isinstance(entry, dict)
+            }
+            alias_map = {a: t for a, t in alias_map.items() if t in live_names}
+            # Write the map before deleting any legacy alias-as-model entry:
+            # if the delete then fails, both mechanisms briefly coexist (which
+            # still serves requests) and the retry cleans up — the reverse
+            # order would leave the alias with neither.
+            await litellm_service.set_model_group_aliases(alias_map)
+            if deployment_ids:
+                logger.info(f"Removing legacy alias model entry '{model.model_id}' from region '{region.name}'")
+                await litellm_service.delete_model(model.model_id, deployment_ids)
+            if (
+                assoc.is_active
+                and model.is_active_globally
+                and model.model_id not in alias_map
+            ):
+                assoc.sync_status = "failed"
+                assoc.sync_error = (
+                    f"Alias '{model.model_id}' has no active target deployment "
+                    "in this region (or its target has not synced yet)."
+                )
+                db.commit()
+                logger.error(f"Sync failed for model_id={model_id}, region_id={region_id}: {assoc.sync_error}")
+                return
+        elif assoc.is_active and model.is_active_globally:
             # Base params + per-region override, or the alias target's params.
             params, resolve_error = effective_litellm_params(db, model, region_id)
             pushed_params = params
@@ -150,7 +244,13 @@ async def sync_model_to_region_task(model_id: int, region_id: int) -> None:
         else:
             logger.info(f"Deregistering model '{model.model_id}' from region '{region.name}'")
             await litellm_service.delete_model(model.model_id, deployment_ids)
-            
+
+        # A model coming or going changes group membership, so mirror the
+        # region's access groups into the proxy's entity registry (the list
+        # the LiteLLM admin UI shows). Aliases are never entity members.
+        if not model.is_alias:
+            await sync_region_access_group_entities(db, region, service=litellm_service)
+
         # Success!
         assoc.sync_status = "synced"
         assoc.sync_error = None
