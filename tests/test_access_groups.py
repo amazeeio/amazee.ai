@@ -463,11 +463,13 @@ def test_model_sync_pushes_access_groups(mock_service_cls, client, db, test_regi
     _make_group(db, slug="grp", model_ids=[model.id], region_ids=[test_region.id])
     # The sync task commits and closes the session, detaching/expiring the
     # fixtures' instances — capture plain ids up front.
-    model_pk, region_pk = model.id, test_region.id
+    model_pk, region_pk, model_key = model.id, test_region.id, model.model_id
 
     instance = mock_service_cls.return_value
     instance.get_model_deployment_ids = AsyncMock(return_value=[])
     instance.add_model = AsyncMock(return_value={})
+    instance.list_access_groups = AsyncMock(return_value=[])
+    instance.create_access_group = AsyncMock(return_value={})
 
     with patch("app.services.model_sync.get_db", lambda: iter([db])):
         asyncio.run(sync_model_to_region_task(model_pk, region_pk))
@@ -480,3 +482,58 @@ def test_model_sync_pushes_access_groups(mock_service_cls, client, db, test_regi
         .first()
     )
     assert refreshed.sync_status == "synced"
+    # The entity registry (what the LiteLLM UI lists) is reconciled too.
+    from app.services.access_groups import ACCESS_GROUP_MANAGED_DESCRIPTION
+
+    instance.create_access_group.assert_called_once_with(
+        "grp", [model_key], description=ACCESS_GROUP_MANAGED_DESCRIPTION
+    )
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_model_sync_reconciles_access_group_entities(mock_service_cls, client, db, test_region):
+    """Drifted member lists are corrected, stale managed entities are deleted,
+    and hand-made entities (no marker description) are never touched."""
+    from app.services.access_groups import ACCESS_GROUP_MANAGED_DESCRIPTION
+    from app.services.model_sync import sync_model_to_region_task
+    import asyncio
+
+    model = _make_model(db)
+    _deploy_model(db, model, test_region, sync_status="pending")
+    _make_group(db, slug="grp", model_ids=[model.id], region_ids=[test_region.id])
+    model_pk, region_pk = model.id, test_region.id
+    model_key = model.model_id
+
+    instance = mock_service_cls.return_value
+    instance.get_model_deployment_ids = AsyncMock(return_value=[])
+    instance.add_model = AsyncMock(return_value={})
+    instance.list_access_groups = AsyncMock(
+        return_value=[
+            {
+                "access_group_id": "ag-1",
+                "access_group_name": "grp",
+                "description": ACCESS_GROUP_MANAGED_DESCRIPTION,
+                "access_model_names": ["stale-model"],
+            },
+            {
+                "access_group_id": "ag-2",
+                "access_group_name": "retired-group",
+                "description": ACCESS_GROUP_MANAGED_DESCRIPTION,
+                "access_model_names": [],
+            },
+            {
+                "access_group_id": "ag-3",
+                "access_group_name": "hand-made",
+                "description": "made in the UI",
+                "access_model_names": [],
+            },
+        ]
+    )
+    instance.update_access_group = AsyncMock(return_value={})
+    instance.delete_access_group = AsyncMock(return_value=None)
+
+    with patch("app.services.model_sync.get_db", lambda: iter([db])):
+        asyncio.run(sync_model_to_region_task(model_pk, region_pk))
+
+    instance.update_access_group.assert_called_once_with("ag-1", model_names=[model_key])
+    instance.delete_access_group.assert_called_once_with("ag-2")
