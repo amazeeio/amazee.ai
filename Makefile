@@ -11,16 +11,22 @@ test-network:
 backend-test-build:
 	docker build -t amazee-backend-test -f Dockerfile.test .
 
-# Start PostgreSQL container for testing
+# Start PostgreSQL container for testing.
+# Durability is off and data lives on tmpfs: the DB is throwaway, and the
+# test suite is DDL/commit-heavy enough that fsync dominates otherwise.
 test-postgres: test-network
 	docker run -d \
 		--name amazee-test-postgres \
 		--network amazeeai_default \
+		--tmpfs /var/lib/postgresql/data \
 		-e POSTGRES_USER=postgres \
 		-e POSTGRES_PASSWORD=postgres \
 		-e POSTGRES_DB=postgres_service \
-		pgvector/pgvector:pg16 && \
-	sleep 5
+		pgvector/pgvector:pg16 \
+		-c fsync=off -c synchronous_commit=off -c full_page_writes=off && \
+	i=0; until docker exec amazee-test-postgres pg_isready -U postgres >/dev/null 2>&1; do \
+		i=$$((i+1)); [ $$i -ge 60 ] && echo "postgres not ready after 60s" && exit 1; sleep 1; \
+	done; sleep 1
 
 # Teardown: stop and remove test containers, network, and image
 test-teardown:
