@@ -405,7 +405,16 @@ def test_alias_sync_writes_model_group_alias_and_removes_legacy_entry(
     alias, alias_assoc = _make_alias_with_target(db, test_region)
 
     mock_instance = MagicMock()
-    mock_instance.get_model_deployment_ids = AsyncMock(return_value=["legacy-dep-1"])
+    mock_instance.get_model_info = AsyncMock(
+        return_value={
+            "data": [
+                # Genuine legacy alias-as-model entry: its id exists under no
+                # other model_name, so it is deletable.
+                {"model_name": "chat-alias", "model_info": {"id": "legacy-dep-1"}},
+                {"model_name": "alias-target", "model_info": {"id": "t-1"}},
+            ]
+        }
+    )
     mock_instance.delete_model = AsyncMock()
     mock_instance.set_model_group_aliases = AsyncMock()
     mock_instance.add_model = AsyncMock()
@@ -430,6 +439,38 @@ def test_alias_sync_writes_model_group_alias_and_removes_legacy_entry(
 
 
 @patch("app.services.model_sync.LiteLLMService")
+def test_alias_sync_never_deletes_synthetic_alias_expansion(mock_litellm_class, db, test_region):
+    """Once the map is live, LiteLLM expands the alias into a /model/info
+    entry that carries the TARGET's deployment id. Deleting 'ids under the
+    alias name' would delete the target itself (this removed
+    claude-4-5-sonnet on de1) — shared ids must never be deleted."""
+    from app.services.model_sync import sync_model_to_region_task
+
+    alias, alias_assoc = _make_alias_with_target(db, test_region)
+
+    mock_instance = MagicMock()
+    mock_instance.get_model_info = AsyncMock(
+        return_value={
+            "data": [
+                # Synthetic expansion: alias entry shares the target's id.
+                {"model_name": "chat-alias", "model_info": {"id": "t-1"}},
+                {"model_name": "alias-target", "model_info": {"id": "t-1"}},
+            ]
+        }
+    )
+    mock_instance.delete_model = AsyncMock()
+    mock_instance.set_model_group_aliases = AsyncMock()
+    mock_litellm_class.return_value = mock_instance
+
+    import asyncio
+    asyncio.run(sync_model_to_region_task(alias.id, test_region.id))
+
+    db.refresh(alias_assoc)
+    assert alias_assoc.sync_status == "synced"
+    mock_instance.delete_model.assert_not_called()
+
+
+@patch("app.services.model_sync.LiteLLMService")
 def test_alias_map_is_computed_from_db_not_proxy_state(mock_litellm_class, db, test_region):
     """The pushed map must come from DB truth alone. Filtering against the
     proxy's live model list bakes mid-rollout replica lag into the map (a
@@ -440,7 +481,6 @@ def test_alias_map_is_computed_from_db_not_proxy_state(mock_litellm_class, db, t
     alias, alias_assoc = _make_alias_with_target(db, test_region)
 
     mock_instance = MagicMock()
-    mock_instance.get_model_deployment_ids = AsyncMock(return_value=[])
     # Proxy reports NO models at all — the map must still be written whole.
     mock_instance.get_model_info = AsyncMock(return_value={"data": []})
     mock_instance.set_model_group_aliases = AsyncMock()
@@ -465,7 +505,7 @@ def test_alias_sync_fails_when_target_not_deployed(mock_litellm_class, db, test_
     alias, alias_assoc = _make_alias_with_target(db, test_region, target_active=False)
 
     mock_instance = MagicMock()
-    mock_instance.get_model_deployment_ids = AsyncMock(return_value=[])
+    mock_instance.get_model_info = AsyncMock(return_value={"data": []})
     mock_instance.set_model_group_aliases = AsyncMock()
     mock_litellm_class.return_value = mock_instance
 
@@ -476,6 +516,118 @@ def test_alias_sync_fails_when_target_not_deployed(mock_litellm_class, db, test_
     assert alias_assoc.sync_status == "failed"
     assert "no active target deployment" in alias_assoc.sync_error
     mock_instance.set_model_group_aliases.assert_called_once_with({})
+
+
+def _router_settings_with_map(alias_map):
+    return {"fields": [{"field_name": "model_group_alias", "field_value": alias_map}]}
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_reconcile_restores_models_deleted_behind_our_back(mock_litellm_class, db, test_region):
+    """A model the DB says is deployed but the proxy no longer has (admin UI
+    deletion, DB restore, cluster rollout) must be re-registered by the
+    reconcile sweep even though its row reads 'synced'."""
+    from app.services.model_sync import reconcile_region_models
+
+    m = DBModel(
+        model_id="test/vanished-model",
+        display_name="Vanished Model",
+        provider="test",
+        type="chat",
+    )
+    db.add(m)
+    db.commit()
+    assoc = DBModelRegion(
+        model_id=m.id, region_id=test_region.id, is_active=True, sync_status="synced"
+    )
+    db.add(assoc)
+    db.commit()
+
+    mock_instance = MagicMock()
+    mock_instance.get_model_info = AsyncMock(return_value={"data": []})
+    mock_instance.get_router_settings = AsyncMock(return_value=_router_settings_with_map({}))
+    mock_instance.get_model_deployment_ids = AsyncMock(return_value=[])
+    mock_instance.add_model = AsyncMock(return_value={})
+    mock_instance.list_access_groups = AsyncMock(return_value=[])
+    mock_litellm_class.return_value = mock_instance
+
+    import asyncio
+    result = asyncio.run(reconcile_region_models(db, test_region))
+
+    assert result == {"models_resynced": 1, "alias_map_rewritten": False}
+    mock_instance.add_model.assert_called_once()
+    db.expire_all()
+    assert (
+        db.query(DBModelRegion).filter_by(model_id=m.id, region_id=test_region.id).one().sync_status
+        == "synced"
+    )
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_reconcile_is_a_noop_when_proxy_matches(mock_litellm_class, db, test_region):
+    from app.services.model_sync import reconcile_region_models
+
+    m = DBModel(
+        model_id="test/stable-model",
+        display_name="Stable Model",
+        provider="test",
+        type="chat",
+    )
+    db.add(m)
+    db.commit()
+    db.add(
+        DBModelRegion(
+            model_id=m.id, region_id=test_region.id, is_active=True, sync_status="synced"
+        )
+    )
+    db.commit()
+
+    mock_instance = MagicMock()
+    mock_instance.get_model_info = AsyncMock(
+        return_value={
+            "data": [{"model_name": "test/stable-model", "model_info": {"id": "d1", "db_model": True}}]
+        }
+    )
+    mock_instance.get_router_settings = AsyncMock(return_value=_router_settings_with_map({}))
+    mock_instance.add_model = AsyncMock()
+    mock_instance.update_model = AsyncMock()
+    mock_instance.delete_model = AsyncMock()
+    mock_litellm_class.return_value = mock_instance
+
+    import asyncio
+    result = asyncio.run(reconcile_region_models(db, test_region))
+
+    assert result == {"models_resynced": 0, "alias_map_rewritten": False}
+    mock_instance.add_model.assert_not_called()
+    mock_instance.update_model.assert_not_called()
+    mock_instance.delete_model.assert_not_called()
+
+
+@patch("app.services.model_sync.LiteLLMService")
+def test_reconcile_rewrites_drifted_alias_map(mock_litellm_class, db, test_region):
+    """A wiped or stale router alias map is rewritten via one alias sync."""
+    from app.services.model_sync import reconcile_region_models
+
+    alias, alias_assoc = _make_alias_with_target(db, test_region)
+
+    mock_instance = MagicMock()
+    mock_instance.get_model_info = AsyncMock(
+        return_value={
+            "data": [{"model_name": "alias-target", "model_info": {"id": "t-1", "db_model": True}}]
+        }
+    )
+    # Proxy map is empty; DB wants {chat-alias: alias-target}.
+    mock_instance.get_router_settings = AsyncMock(return_value=_router_settings_with_map({}))
+    mock_instance.set_model_group_aliases = AsyncMock()
+    mock_litellm_class.return_value = mock_instance
+
+    import asyncio
+    result = asyncio.run(reconcile_region_models(db, test_region))
+
+    assert result == {"models_resynced": 0, "alias_map_rewritten": True}
+    mock_instance.set_model_group_aliases.assert_called_once_with(
+        {"chat-alias": "alias-target"}
+    )
 
 
 def test_admin_get_model_redacts_credentials(client, admin_token, db):
