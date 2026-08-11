@@ -608,7 +608,7 @@ def test_reconcile_rewrites_drifted_alias_map(mock_litellm_class, db, test_regio
     """A wiped or stale router alias map is rewritten via one alias sync."""
     from app.services.model_sync import reconcile_region_models
 
-    alias, alias_assoc = _make_alias_with_target(db, test_region)
+    _make_alias_with_target(db, test_region)
 
     mock_instance = MagicMock()
     mock_instance.get_model_info = AsyncMock(
