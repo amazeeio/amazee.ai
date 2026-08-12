@@ -40,7 +40,7 @@ jobs:
       # Never interpolate inputs into run: blocks directly (script injection).
       INPUT_IMAGE: ${{ inputs.image }}
       INPUT_TAG: ${{ inputs.tag }}
-      GH_TOKEN: ${{ secrets.K0RDENT_LITELLM_READ_TOKEN }}
+      GH_TOKEN: ${{ secrets.AMAZEE_AI_CI_READ_TOKEN }}
       # Fallbacks when resolution fails (keep roughly current; the resolve
       # step warns whenever these are used).
       FALLBACK_PROD_TAG: v1.95.0
