@@ -188,17 +188,6 @@ services:
     labels:
       lagoon.type: none
 
-  ollama:
-    image: ollama/ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ./ollama-init.sh:/usr/local/bin/ollama-init.sh
-      - ollama_data:/root/.ollama
-    entrypoint: [ "/bin/sh", "/usr/local/bin/ollama-init.sh" ]
-    labels:
-      lagoon.type: none
-
   prometheus:
     image: prom/prometheus:latest
     ports:
@@ -242,4 +231,3 @@ volumes:
     name: litellm3_postgres_data
   prometheus_data:
   grafana_data:
-  ollama_data:
