@@ -36,6 +36,30 @@ MOCK_INPUT_COST_PER_TOKEN = 0.001
 MOCK_OUTPUT_COST_PER_TOKEN = 0.002
 
 
+@pytest.fixture
+def db(_schema):
+    """Override the unit db fixture: truncate WITHOUT restarting identity.
+
+    LiteLLM entities persist across tests within a run and are keyed by app
+    DB ids (format_team_id(region, team.id)). With RESTART IDENTITY every
+    test's team would be id 1 again and collide with LiteLLM state left by
+    earlier tests (e.g. inherit a tiny team cap). Monotonic ids keep LiteLLM
+    ids unique per test; `down -v` resets both sides between runs.
+    """
+    from tests.conftest import _ALL_TABLES, TestingSessionLocal, engine
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        conn.execute(text(f"TRUNCATE {_ALL_TABLES} CASCADE"))
+        conn.commit()
+
+    session = TestingSessionLocal()
+    try:
+        yield session
+    finally:
+        session.close()
+
+
 def wait_for(predicate, timeout=30, interval=0.5, message="condition"):
     """Poll until predicate() is truthy. LiteLLM flushes spend asynchronously
     (proxy_batch_write_at), so spend/cap/reset assertions must never be
