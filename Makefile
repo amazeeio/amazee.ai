@@ -1,4 +1,4 @@
-.PHONY: backend-test backend-test-build test-clean test-teardown test-network test-postgres frontend-test frontend-test-build migration-create migration-upgrade migration-downgrade migration-stamp
+.PHONY: backend-test backend-test-build test-clean test-teardown test-network test-postgres frontend-test frontend-test-build integration-test migration-create migration-upgrade migration-downgrade migration-stamp
 
 # Default target
 all: backend-test
@@ -58,7 +58,7 @@ backend-test-regex: backend-test-build test-postgres
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/scripts:/app/scripts \
 		-v $(PWD)/tests:/app/tests \
-		amazee-backend-test pytest -vv -k "$(regex)" || status=$$?; \
+		amazee-backend-test pytest -vv --ignore=tests/integration -k "$(regex)" || status=$$?; \
 	$(MAKE) test-clean; \
 	exit $$status
 
@@ -102,7 +102,7 @@ backend-test-cov: backend-test-build test-postgres
 		-v $(PWD)/app:/app/app \
 		-v $(PWD)/scripts:/app/scripts \
 		-v $(PWD)/tests:/app/tests \
-		amazee-backend-test pytest -v --cov=app tests/ || status=$$?; \
+		amazee-backend-test pytest -v --cov=app --ignore=tests/integration tests/ || status=$$?; \
 	$(MAKE) test-clean; \
 	exit $$status
 
@@ -118,6 +118,20 @@ frontend-test: frontend-test-build
 
 # Run all tests (backend and frontend)
 test-all: backend-test frontend-test
+
+# Integration tests against real LiteLLM instances (see
+# litellm-integration-tests-plan.md). Runs under its own compose project so
+# teardown can never touch the dev stack's containers or volumes.
+# Override the proxy image with LITELLM_IMAGE / LITELLM_TAG, e.g.:
+#   make integration-test LITELLM_TAG=v1.95.0
+INTEGRATION_COMPOSE = docker compose -p amazeeai-integration \
+	-f docker-compose.yml -f docker-compose.integration.yml
+
+integration-test:
+	@status=0; \
+	$(INTEGRATION_COMPOSE) run --rm --build integration-test || status=$$?; \
+	$(INTEGRATION_COMPOSE) down -v --remove-orphans; \
+	exit $$status
 
 # Clean up test containers and images
 test-clean:
