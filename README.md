@@ -88,6 +88,20 @@ make backend-test-cov   # Run backend tests with coverage report
 make backend-test-regex # Waits for a string which pytest will parse to only collect a subset of tests
 ```
 
+### LiteLLM Integration Tests
+```bash
+make integration-test                     # Against the default proxy image
+make integration-test LITELLM_TAG=v1.95.0 # Gate a specific LiteLLM version
+make integration-test LITELLM_IMAGE=ghcr.io/amazeeio/litellm-lagoon-base-database LITELLM_TAG=v1.96.2
+```
+Runs `tests/integration/` against **real LiteLLM proxies** (budgets, spend
+tracking, caps, budget cycles incl. the 31d/1mo special cases, lifecycle,
+user sync, model sync). Uses `docker-compose.integration.yml` under its own
+compose project, so it never touches your dev containers or volumes.
+Requires docker compose >= 2.24. CI: the "LiteLLM Integration Gate" workflow
+(manual dispatch to gate a version bump + weekly cron); see
+`litellm-integration-tests-plan.md` for design and prerequisites.
+
 ### 💳 Testing Stripe
 See [[tests/stripe_test_trigger.md]] for detailed instructions on testing Stripe integration for billing.
 

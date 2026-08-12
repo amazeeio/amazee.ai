@@ -215,13 +215,13 @@ async def wait_for_key_spend(litellm_url, token, timeout=30, interval=0.5):
     )
 
 
-def completion(litellm_url, token, timeout=30):
+def completion(litellm_url, token, model=MOCK_MODEL, timeout=30):
     """One mock completion through the real proxy with a generated key."""
     return httpx.post(
         f"{litellm_url}/chat/completions",
         headers=_auth(token),
         json={
-            "model": MOCK_MODEL,
+            "model": model,
             "messages": [{"role": "user", "content": "integration test"}],
         },
         timeout=timeout,
