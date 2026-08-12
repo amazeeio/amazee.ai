@@ -18,5 +18,6 @@ COPY tests/ tests/
 ENV PYTHONPATH=/app
 ENV TESTING=1
 
-# Command to run tests
-CMD ["pytest", "-v", "tests/"]
+# Command to run tests (integration suite runs separately via
+# `make integration-test` against real LiteLLM instances)
+CMD ["pytest", "-v", "--ignore=tests/integration", "tests/"]
