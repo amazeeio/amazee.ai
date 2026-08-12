@@ -40,7 +40,7 @@ the workflow file and emit a warning annotation.
 
 ### Prerequisites (manual, one-time — least privilege, no classic PAT)
 
-1. **`K0RDENT_LITELLM_READ_TOKEN`** repo secret: a **fine-grained PAT**, read-only
+1. **`AMAZEE_AI_CI_READ_TOKEN`** repo secret: a **fine-grained PAT**, read-only
    `contents` permission, scoped to exactly `amazeeio/amazeeai-k0rdent-clusters` and
    `amazeeio/litellm-lagoon`. Used only by the resolve step. No write capability anywhere.
    **Verify first that the amazeeio org allows fine-grained PATs** (org setting; many orgs have
@@ -202,7 +202,7 @@ Runtime budget: whole suite < ~10 min per matrix leg (forced-reset test is the s
 - **Input hygiene**: `workflow_dispatch` inputs are never interpolated into `run:` blocks
   (`${{ inputs.tag }}` in shell is the classic Actions script injection). Inputs pass via
   `env:` and are validated against `^[A-Za-z0-9._/-]+$` before use.
-- Job 1 `resolve`: with `K0RDENT_LITELLM_READ_TOKEN`, produce the matrix JSON
+- Job 1 `resolve`: with `AMAZEE_AI_CI_READ_TOKEN`, produce the matrix JSON
   (`[{image: berriai, tag: <oldest prod>}, {image: amazeeio, tag: <lagoon pin>}]`), or a
   single-leg matrix from validated dispatch inputs. Hardcoded fallback tags + warning
   annotation on resolution failure.
