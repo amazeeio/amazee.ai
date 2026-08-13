@@ -85,10 +85,12 @@ async def create_zero_rated_stripe_subscription(
     except HTTPException:
         raise
     except stripe_sdk.error.StripeError as e:
+        # Stripe's own message stays in the log. It can name internal objects,
+        # and the caller cannot act on it anyway.
         logger.error(f"Stripe error creating subscription: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Error creating subscription: {str(e)}",
+            detail="Error creating subscription in Stripe",
         )
     except Exception as e:
         logger.error(f"Error creating Stripe subscription: {str(e)}")

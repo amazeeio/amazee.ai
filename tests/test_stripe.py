@@ -256,7 +256,8 @@ def test_create_stripe_subscription_stripe_error(
         asyncio.run(create_zero_rated_stripe_subscription(customer_id, product_id))
 
     assert exc_info.value.status_code == 400
-    assert "Error creating subscription: Customer not found" in exc_info.value.detail
+    assert exc_info.value.detail == "Error creating subscription in Stripe"
+    assert "Customer not found" not in exc_info.value.detail
 
 
 @patch("app.services.stripe.stripe.Price.list")
@@ -318,4 +319,5 @@ def test_create_stripe_subscription_price_retrieve_error(mock_price_retrieve):
         )
 
     assert exc_info.value.status_code == 400
-    assert "Error creating subscription: Price not found" in exc_info.value.detail
+    assert exc_info.value.detail == "Error creating subscription in Stripe"
+    assert "Price not found" not in exc_info.value.detail
