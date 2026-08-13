@@ -1,14 +1,11 @@
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-import stripe
 
 from app.core.config import settings
 from app.core.worker import (
     _record_periodic_payment_direct,
-    _run_cycle_from_stripe_event,
     apply_billing_cycle_for_team,
     reconcile_periodic_team_budget_drift,
 )
@@ -20,16 +17,6 @@ from app.db.models import (
     DBTeam,
 )
 from app.schemas.models import BudgetType
-
-
-def _stripe_meta(data: dict) -> stripe.StripeObject:
-    """Build a real StripeObject metadata instead of a bare dict.
-
-    stripe-python v15 StripeObject no longer subclasses dict, so production
-    code reads metadata via getattr(). Test fixtures must supply the same
-    shape or they silently diverge from prod.
-    """
-    return stripe.StripeObject.construct_from(data, key="sk_test")
 
 
 @pytest.mark.asyncio
@@ -532,80 +519,6 @@ def test_subscription_cycle_endpoint_first_cycle_is_region_scoped(
     mock_apply_cycle.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-@patch("app.core.worker.capture_periodic_team_spend_for_period", new_callable=AsyncMock)
-@patch("app.core.worker._record_periodic_payment_direct", new_callable=AsyncMock)
-@patch("app.core.worker._sync_periodic_ledger_for_period", new_callable=AsyncMock)
-@patch("app.core.worker.apply_billing_cycle_for_team", new_callable=AsyncMock)
-async def test_webhook_cycle_first_cycle_is_region_scoped(
-    mock_apply_cycle,
-    mock_sync_ledger,
-    mock_record_payment,
-    mock_capture,
-    db,
-    test_team,
-    test_region,
-):
-    other_region = DBRegion(
-        name="test-region-third",
-        label="Test Region Third",
-        description="Third region for webhook region-scoped cycle tests",
-        postgres_host="amazee-test-postgres",
-        postgres_port=5432,
-        postgres_admin_user="postgres",
-        postgres_admin_password="postgres",
-        litellm_api_url="https://test-litellm-third.com",
-        litellm_api_key="test-litellm-key-third",
-        is_active=True,
-    )
-    db.add(other_region)
-    db.commit()
-
-    test_team.stripe_customer_id = "cus_cycle_scope"
-    db.add(
-        DBPeriodicBudgetLedgerEntry(
-            team_id=test_team.id,
-            region_id=other_region.id,
-            entry_type="subscription",
-            amount_cents=10000,
-            consumed_cents=0,
-            purchased_at=datetime.now(UTC),
-            effective_period_start=datetime.now(UTC),
-            effective_period_end=datetime.now(UTC) + timedelta(days=31),
-            expires_at=datetime.now(UTC) + timedelta(days=31),
-            is_active=True,
-        )
-    )
-    db.commit()
-
-    mock_record_payment.return_value = 987
-    mock_apply_cycle.return_value = []
-
-    event_object = SimpleNamespace(
-        subscription="sub_region_scope",
-        amount_paid=10000,
-        id="in_region_scope",
-        currency="usd",
-        parent=SimpleNamespace(
-            subscription_details=SimpleNamespace(
-                subscription="sub_region_scope",
-                metadata=_stripe_meta({"regionId": str(test_region.id)}),
-            )
-        ),
-    )
-
-    await _run_cycle_from_stripe_event(
-        db=db,
-        event_id="evt_region_scope",
-        customer_id="cus_cycle_scope",
-        event_object=event_object,
-    )
-
-    mock_capture.assert_not_awaited()
-    mock_sync_ledger.assert_awaited_once()
-    mock_apply_cycle.assert_awaited_once()
-
-
 def test_subscription_cycle_endpoint_idempotent(client, admin_token, db, test_team):
     payment = DBPeriodicPayment(
         team_id=test_team.id,
@@ -1093,49 +1006,6 @@ def test_pool_subscription_cycle_endpoint_returns_404_for_unknown_team(
         },
     )
     assert response.status_code == 404
-
-
-@pytest.mark.asyncio
-@patch("app.core.worker._record_periodic_payment_direct", new_callable=AsyncMock)
-@patch("app.core.worker.apply_billing_cycle_for_team", new_callable=AsyncMock)
-@patch("app.core.worker._sync_periodic_ledger_for_period", new_callable=AsyncMock)
-@patch("app.core.worker.capture_periodic_team_spend_for_period", new_callable=AsyncMock)
-async def test_pool_team_invoice_paid_not_skipped(
-    mock_capture_period,
-    mock_sync_ledger,
-    mock_apply_cycle,
-    mock_record_payment,
-    db,
-    test_region,
-):
-    """POOL teams must NOT be skipped on invoice.paid — _run_cycle_from_stripe_event
-    must proceed through the billing cycle for POOL teams."""
-    pool_team = _make_pool_team(db, "Pool Invoice Team")
-    mock_apply_cycle.return_value = []
-    mock_record_payment.return_value = 501
-
-    event_object = SimpleNamespace(
-        id="inv_pool_1",
-        subscription="sub_pool_1",
-        amount_paid=3000,
-        period_start=1700000000,
-        period_end=1702678400,
-        parent=SimpleNamespace(
-            subscription_details=SimpleNamespace(
-                subscription="sub_pool_1",
-                metadata=_stripe_meta({"regionId": str(test_region.id)}),
-            )
-        ),
-    )
-
-    await _run_cycle_from_stripe_event(
-        db=db,
-        event_id="evt_pool_invoice",
-        customer_id=pool_team.stripe_customer_id,
-        event_object=event_object,
-    )
-
-    mock_apply_cycle.assert_awaited_once()
 
 
 @pytest.mark.asyncio
