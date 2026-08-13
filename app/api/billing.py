@@ -165,7 +165,7 @@ async def create_team_subscription(
                 "Product %s applied for team %s with %s sync errors",
                 subscription_data.product_id,
                 team.id,
-                len(sync_errors),
+                len(sync_errors or []),
             )
 
         return SubscriptionResponse(
@@ -173,6 +173,7 @@ async def create_team_subscription(
             product_id=subscription_data.product_id,
             team_id=team_id,
             created_at=datetime.now(UTC),
+            sync_error_count=len(sync_errors or []),
         )
     except Exception as e:
         logger.error(f"Error creating subscription for team {team_id}: {str(e)}")
