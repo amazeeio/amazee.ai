@@ -159,11 +159,13 @@ async def create_team_subscription(
             start_date=datetime.now(UTC),
         )
         if sync_errors:
+            # Only the count: each error is already logged where it happens, and
+            # the text carries LiteLLM exception detail.
             logger.error(
-                "Product %s applied for team %s with sync errors: %s",
+                "Product %s applied for team %s with %s sync errors",
                 subscription_data.product_id,
                 team.id,
-                sync_errors,
+                len(sync_errors),
             )
 
         return SubscriptionResponse(
