@@ -35,6 +35,29 @@ def get_return_url(team_id: int) -> str:
     return f"{frontend_url}/teams/{team_id}/dashboard"
 
 
+async def _cancel_orphan_subscription(subscription_id: str, team_id: int) -> None:
+    """Cancel a Stripe subscription that our database never recorded.
+
+    A subscription nobody can see from our side keeps billing the customer, so
+    a failed cancel needs the id in the log for manual cleanup.
+    """
+    try:
+        await cancel_subscription(subscription_id)
+        logger.info(
+            "Cancelled unrecorded subscription %s for team %s",
+            subscription_id,
+            team_id,
+        )
+    except Exception as exc:
+        logger.error(
+            "Could not cancel unrecorded subscription %s for team %s: %s"
+            " — cancel it in Stripe by hand",
+            subscription_id,
+            team_id,
+            exc,
+        )
+
+
 @router.post(
     "/teams/{team_id}/portal", dependencies=[Depends(get_role_min_specific_team_admin)]
 )
@@ -170,11 +193,6 @@ async def create_team_subscription(
                     sync_error_count,
                 )
         except Exception as exc:
-            # The product association is committed before the budget sync, so
-            # by now the Stripe subscription and the association both exist. A
-            # 500 would deny both, and the retry it invites is refused as a
-            # duplicate. Report the failed sync and let the admin delete and
-            # redo the subscription.
             logger.error(
                 "Failed to apply product %s for team %s: %s",
                 subscription_data.product_id,
@@ -182,6 +200,29 @@ async def create_team_subscription(
                 exc,
                 exc_info=True,
             )
+            db.rollback()
+            association = (
+                db.query(DBTeamProduct)
+                .filter(
+                    DBTeamProduct.team_id == team.id,
+                    DBTeamProduct.product_id == subscription_data.product_id,
+                )
+                .first()
+            )
+            if association is None:
+                # The failure came before the association was committed, so the
+                # Stripe subscription is the only thing that exists. Cancel it
+                # to keep Stripe and the database in step and leave a clean
+                # retry.
+                await _cancel_orphan_subscription(subscription_id, team.id)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Error creating subscription",
+                )
+            # The association is committed and the Stripe subscription exists,
+            # so a 500 would deny both, and the retry it invites is refused as
+            # a duplicate. Report the failed sync and let the admin delete and
+            # redo the subscription.
             sync_error_count = 1
 
         return SubscriptionResponse(
