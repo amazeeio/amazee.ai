@@ -544,7 +544,47 @@ def test_create_team_subscription_stripe_error(
 
     # Assert
     assert response.status_code == 500
-    assert "Error creating subscription" in response.json()["detail"]
+    assert response.json()["detail"] == "Error creating subscription"
+    assert "Stripe API error" not in response.text
+
+
+@patch("app.api.billing.create_zero_rated_stripe_subscription", new_callable=AsyncMock)
+@patch("app.api.billing.create_stripe_customer", new_callable=AsyncMock)
+def test_create_team_subscription_keeps_stripe_status_code(
+    mock_create_customer,
+    mock_create_subscription,
+    client,
+    db,
+    test_team,
+    test_product,
+    admin_token,
+):
+    """
+    GIVEN: A team with an existing Stripe customer ID
+    WHEN: The Stripe service rejects the product with a 400
+    THEN: That status and message reach the caller, not a 500
+    """
+    # Arrange
+    test_team.stripe_customer_id = "cus_123"
+    db.add(test_team)
+    db.add(test_product)
+    db.commit()
+
+    mock_create_subscription.side_effect = HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=f"Product {test_product.id} is not free. Price amount: 500 usd",
+    )
+
+    # Act
+    response = client.post(
+        f"/billing/teams/{test_team.id}/subscriptions",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"product_id": test_product.id},
+    )
+
+    # Assert
+    assert response.status_code == 400
+    assert "is not free" in response.json()["detail"]
 
 
 @patch("app.api.billing.get_subscribed_products_for_customer", new_callable=AsyncMock)
