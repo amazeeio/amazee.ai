@@ -175,11 +175,19 @@ async def create_team_subscription(
             created_at=datetime.now(UTC),
             sync_error_count=len(sync_errors or []),
         )
+    except HTTPException:
+        # Stripe and product validation already carry a status and a message
+        # meant for the caller. Re-wrapping them hides both behind a 500.
+        raise
     except Exception as e:
-        logger.error(f"Error creating subscription for team {team_id}: {str(e)}")
+        # Generic detail: the exception text can carry Stripe or LiteLLM
+        # internals. The full error goes to the log.
+        logger.error(
+            "Error creating subscription for team %s: %s", team_id, e, exc_info=True
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error creating subscription: {str(e)}",
+            detail="Error creating subscription",
         )
 
 
