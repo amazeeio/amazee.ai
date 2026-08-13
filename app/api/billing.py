@@ -152,28 +152,44 @@ async def create_team_subscription(
         # Attach the product to the team and apply its budget. Stripe no longer
         # tells us about this subscription, so the association must happen here
         # or the team keeps a Stripe subscription with no product in our DB.
-        sync_errors = await apply_product_for_team(
-            db=db,
-            customer_id=team.stripe_customer_id,
-            product_id=subscription_data.product_id,
-            start_date=datetime.now(UTC),
-        )
-        if sync_errors:
-            # Only the count: each error is already logged where it happens, and
-            # the text carries LiteLLM exception detail.
+        try:
+            sync_errors = await apply_product_for_team(
+                db=db,
+                customer_id=team.stripe_customer_id,
+                product_id=subscription_data.product_id,
+                start_date=datetime.now(UTC),
+            )
+            sync_error_count = len(sync_errors or [])
+            if sync_error_count:
+                # Only the count: each error is already logged where it happens,
+                # and the text carries LiteLLM exception detail.
+                logger.error(
+                    "Product %s applied for team %s with %s sync errors",
+                    subscription_data.product_id,
+                    team.id,
+                    sync_error_count,
+                )
+        except Exception as exc:
+            # The product association is committed before the budget sync, so
+            # by now the Stripe subscription and the association both exist. A
+            # 500 would deny both, and the retry it invites is refused as a
+            # duplicate. Report the failed sync and let the admin delete and
+            # redo the subscription.
             logger.error(
-                "Product %s applied for team %s with %s sync errors",
+                "Failed to apply product %s for team %s: %s",
                 subscription_data.product_id,
                 team.id,
-                len(sync_errors or []),
+                exc,
+                exc_info=True,
             )
+            sync_error_count = 1
 
         return SubscriptionResponse(
             subscription_id=subscription_id,
             product_id=subscription_data.product_id,
             team_id=team_id,
             created_at=datetime.now(UTC),
-            sync_error_count=len(sync_errors or []),
+            sync_error_count=sync_error_count,
         )
     except HTTPException:
         # Stripe and product validation already carry a status and a message

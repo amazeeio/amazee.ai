@@ -548,6 +548,48 @@ def test_create_team_subscription_stripe_error(
     assert "Stripe API error" not in response.text
 
 
+@patch("app.api.billing.apply_product_for_team", new_callable=AsyncMock)
+@patch("app.api.billing.create_zero_rated_stripe_subscription", new_callable=AsyncMock)
+@patch("app.api.billing.create_stripe_customer", new_callable=AsyncMock)
+def test_create_team_subscription_survives_apply_product_exception(
+    mock_create_customer,
+    mock_create_subscription,
+    mock_apply_product,
+    client,
+    db,
+    test_team,
+    test_product,
+    admin_token,
+):
+    """
+    GIVEN: A team with an existing Stripe customer ID
+    WHEN: Applying the product raises after the association is committed
+    THEN: The subscription is reported with a sync error, not as a failure
+    """
+    # Arrange
+    test_team.stripe_customer_id = "cus_apply_raises_123"
+    db.add(test_team)
+    db.add(test_product)
+    db.commit()
+
+    mock_create_subscription.return_value = "sub_apply_raises_123"
+    mock_apply_product.side_effect = Exception("LiteLLM gateway timeout")
+
+    # Act
+    response = client.post(
+        f"/billing/teams/{test_team.id}/subscriptions",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"product_id": test_product.id},
+    )
+
+    # Assert
+    assert response.status_code == 201
+    data = response.json()
+    assert data["subscription_id"] == "sub_apply_raises_123"
+    assert data["sync_error_count"] == 1
+    assert "LiteLLM gateway timeout" not in response.text
+
+
 @patch("app.api.billing.create_zero_rated_stripe_subscription", new_callable=AsyncMock)
 @patch("app.api.billing.create_stripe_customer", new_callable=AsyncMock)
 def test_create_team_subscription_keeps_stripe_status_code(
