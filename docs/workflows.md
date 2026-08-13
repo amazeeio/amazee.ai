@@ -89,12 +89,11 @@ amaee.ai integrates with **Stripe** for automated billing and subscription manag
     *   Generates a secure link to the Stripe Customer Portal where users can manage payment methods and view invoices.
 *   **Pricing Tables**: `GET /teams/{team_id}/pricing-table-session`
     *   Provides a client secret for the frontend to render Stripe Pricing Tables.
-*   **Webhooks**: `POST /billing/events`
-    *   Asynchronously processes Stripe events (e.g., subscription created, payment failed) via a background worker (`handle_stripe_event_background`).
 
 ### 3.2 Subscription Lifecycle
 *   **Manual Assignment**: `POST /teams/{team_id}/subscriptions` (Admin only).
-    *   Admins can manually link a team to a Stripe Product ID.
+    *   Admins can manually link a team to a Stripe Product ID. The product is applied to the team, and its budget synced, in the same request.
+*   **Renewals**: `POST /billing/subscription/cycle`, called by MOAD when Stripe reports a paid invoice. MOAD owns the Stripe webhook.
 *   **Removal**: `DELETE /teams/{team_id}/subscription/{product_id}`
     *   Cancels the Stripe subscription and removes the local association.
 

@@ -8,6 +8,7 @@ from app.core.security import (
     get_role_min_specific_team_admin,
     get_role_min_system_admin,
 )
+from app.core.worker import apply_product_for_team
 from app.db.database import get_db
 from app.db.models import DBProduct, DBTeam, DBTeamProduct
 from app.schemas.models import (
@@ -147,6 +148,23 @@ async def create_team_subscription(
         logger.info(
             f"Created subscription {subscription_id} for team {team.id} to product {subscription_data.product_id}"
         )
+
+        # Attach the product to the team and apply its budget. Stripe no longer
+        # tells us about this subscription, so the association must happen here
+        # or the team keeps a Stripe subscription with no product in our DB.
+        sync_errors = await apply_product_for_team(
+            db=db,
+            customer_id=team.stripe_customer_id,
+            product_id=subscription_data.product_id,
+            start_date=datetime.now(UTC),
+        )
+        if sync_errors:
+            logger.error(
+                "Product %s applied for team %s with sync errors: %s",
+                subscription_data.product_id,
+                team.id,
+                sync_errors,
+            )
 
         return SubscriptionResponse(
             subscription_id=subscription_id,

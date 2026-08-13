@@ -211,7 +211,6 @@ helm install amazee-ai . -n amazee-ai --create-namespace \
 | `backend.database.url` | Database connection URL (auto-generated if empty) | `""` |
 | `backend.secretKey` | JWT signing secret (`AMAZEEAI_JWT_SECRET`). **Required**, no default. | `""` |
 | `backend.stripeSecretKey` | Stripe secret key | `sk_test_your_stripe_secret_key` |
-| `backend.webhookSig` | Webhook signature (only needed for local development with Stripe CLI) | `""` |
 | `backend.awsAccessKeyId` | AWS access key ID | `your_aws_access_key` |
 | `backend.awsSecretAccessKey` | AWS secret access key | `your_aws_secret_key` |
 | `backend.enableMetrics` | Enable metrics collection | `true` |
@@ -363,7 +362,6 @@ helm install amazee-ai-app oci://ghcr.io/amazeeio/amazee.ai/amazee-ai \
 5. **TLS**: Enable TLS for ingress in production
 6. **Resource Limits**: Configure proper resource limits
 7. **External PostgreSQL**: For external PostgreSQL, ensure secure connection strings and network access
-8. **Webhook Signature**: The `webhookSig` is only needed for local development with Stripe CLI and can be left empty in production
 
 ## Support
 

@@ -320,6 +320,50 @@ def test_create_team_subscription_success_existing_customer(
 
 @patch("app.api.billing.create_zero_rated_stripe_subscription", new_callable=AsyncMock)
 @patch("app.api.billing.create_stripe_customer", new_callable=AsyncMock)
+def test_create_team_subscription_associates_product(
+    mock_create_customer,
+    mock_create_subscription,
+    client,
+    db,
+    test_team,
+    test_product,
+    admin_token,
+):
+    """
+    GIVEN: A team with an existing Stripe customer ID
+    WHEN: A zero-rated subscription is created for a product
+    THEN: The team is associated with the product in the database
+    """
+    # Arrange
+    test_team.stripe_customer_id = "cus_assoc_123"
+    db.add(test_team)
+    db.add(test_product)
+    db.commit()
+
+    mock_create_subscription.return_value = "sub_assoc_123"
+
+    # Act
+    response = client.post(
+        f"/billing/teams/{test_team.id}/subscriptions",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"product_id": test_product.id},
+    )
+
+    # Assert
+    assert response.status_code == 201
+    association = (
+        db.query(DBTeamProduct)
+        .filter(
+            DBTeamProduct.team_id == test_team.id,
+            DBTeamProduct.product_id == test_product.id,
+        )
+        .first()
+    )
+    assert association is not None
+
+
+@patch("app.api.billing.create_zero_rated_stripe_subscription", new_callable=AsyncMock)
+@patch("app.api.billing.create_stripe_customer", new_callable=AsyncMock)
 def test_create_team_subscription_success_new_customer(
     mock_create_customer,
     mock_create_subscription,
