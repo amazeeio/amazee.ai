@@ -1079,6 +1079,9 @@ class SubscriptionResponse(BaseModel):
     product_id: str
     team_id: int
     created_at: datetime
+    # Above zero means the product is attached but its budget did not reach
+    # LiteLLM. The error text stays in the server log.
+    sync_error_count: int = 0
     model_config = ConfigDict(from_attributes=True)
 
 

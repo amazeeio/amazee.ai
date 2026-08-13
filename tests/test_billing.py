@@ -351,6 +351,7 @@ def test_create_team_subscription_associates_product(
 
     # Assert
     assert response.status_code == 201
+    assert response.json()["sync_error_count"] == 0
     association = (
         db.query(DBTeamProduct)
         .filter(
@@ -360,6 +361,50 @@ def test_create_team_subscription_associates_product(
         .first()
     )
     assert association is not None
+
+
+@patch("app.api.billing.apply_product_for_team", new_callable=AsyncMock)
+@patch("app.api.billing.create_zero_rated_stripe_subscription", new_callable=AsyncMock)
+@patch("app.api.billing.create_stripe_customer", new_callable=AsyncMock)
+def test_create_team_subscription_reports_sync_errors(
+    mock_create_customer,
+    mock_create_subscription,
+    mock_apply_product,
+    client,
+    db,
+    test_team,
+    test_product,
+    admin_token,
+):
+    """
+    GIVEN: A team with an existing Stripe customer ID
+    WHEN: Applying the product reports LiteLLM sync errors
+    THEN: The response counts them, and the error text is not returned
+    """
+    # Arrange
+    test_team.stripe_customer_id = "cus_sync_err_123"
+    db.add(test_team)
+    db.add(test_product)
+    db.commit()
+
+    mock_create_subscription.return_value = "sub_sync_err_123"
+    mock_apply_product.return_value = [
+        "Failed to update team 1 budget in region test",
+        "Failed to update key 2 in LiteLLM",
+    ]
+
+    # Act
+    response = client.post(
+        f"/billing/teams/{test_team.id}/subscriptions",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"product_id": test_product.id},
+    )
+
+    # Assert
+    assert response.status_code == 201
+    data = response.json()
+    assert data["sync_error_count"] == 2
+    assert "LiteLLM" not in response.text
 
 
 @patch("app.api.billing.create_zero_rated_stripe_subscription", new_callable=AsyncMock)

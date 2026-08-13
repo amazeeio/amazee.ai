@@ -166,7 +166,7 @@ export function useTeams(
       });
       return response.json();
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["teams"] });
       queryClient.invalidateQueries({
         queryKey: ["team", variables.teamId.toString()],
@@ -174,6 +174,17 @@ export function useTeams(
       queryClient.invalidateQueries({
         queryKey: ["team-products", variables.teamId.toString()],
       });
+      // The product is attached even when the budget did not reach LiteLLM.
+      // Say so, so nobody reads a green toast as a complete subscription.
+      if (data?.sync_error_count > 0) {
+        toast({
+          title: "Subscribed with sync errors",
+          description:
+            "The product is attached, but the budget did not sync. Check the backend logs.",
+          variant: "destructive",
+        });
+        return;
+      }
       toast({
         title: "Success",
         description: "Subscribed to product successfully",
