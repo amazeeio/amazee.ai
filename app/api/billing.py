@@ -35,24 +35,19 @@ def get_return_url(team_id: int) -> str:
     return f"{frontend_url}/teams/{team_id}/dashboard"
 
 
-async def _cancel_orphan_subscription(subscription_id: str, team_id: int) -> None:
-    """Cancel a Stripe subscription that our database never recorded.
+def _drop_association(db: Session, association: DBTeamProduct, team_id: int) -> None:
+    """Undo the product association after Stripe refused the subscription.
 
-    A subscription nobody can see from our side keeps billing the customer, so
-    a failed cancel needs the id in the log for manual cleanup.
+    A leftover row blocks the next attempt, so a failed cleanup has to say so.
     """
     try:
-        await cancel_subscription(subscription_id)
-        logger.info(
-            "Cancelled unrecorded subscription %s for team %s",
-            subscription_id,
-            team_id,
-        )
+        db.delete(association)
+        db.commit()
     except Exception as exc:
+        db.rollback()
         logger.error(
-            "Could not cancel unrecorded subscription %s for team %s: %s"
-            " — cancel it in Stripe by hand",
-            subscription_id,
+            "Could not remove the product association for team %s: %s"
+            " — the next subscription attempt will be refused as a duplicate",
             team_id,
             exc,
         )
@@ -165,16 +160,31 @@ async def create_team_subscription(
             db.add(team)
             db.commit()
 
-        subscription_id = await create_zero_rated_stripe_subscription(
-            customer_id=team.stripe_customer_id, product_id=subscription_data.product_id
+        # Record the association before calling Stripe, so no subscription can
+        # exist that our database does not know about. Stripe is the harder
+        # side to clean up by hand; a row without a subscription is visible and
+        # the delete route removes it.
+        association = DBTeamProduct(
+            team_id=team.id, product_id=subscription_data.product_id
         )
+        db.add(association)
+        db.commit()
+
+        try:
+            subscription_id = await create_zero_rated_stripe_subscription(
+                customer_id=team.stripe_customer_id,
+                product_id=subscription_data.product_id,
+            )
+        except Exception:
+            _drop_association(db, association, team.id)
+            raise
+
         logger.info(
             f"Created subscription {subscription_id} for team {team.id} to product {subscription_data.product_id}"
         )
 
-        # Attach the product to the team and apply its budget. Stripe no longer
-        # tells us about this subscription, so the association must happen here
-        # or the team keeps a Stripe subscription with no product in our DB.
+        # Apply the product budget. Stripe no longer reports this subscription,
+        # so nothing else will do it.
         try:
             sync_errors = await apply_product_for_team(
                 db=db,
@@ -193,6 +203,10 @@ async def create_team_subscription(
                     sync_error_count,
                 )
         except Exception as exc:
+            # The subscription and the association both exist, so a 500 would
+            # deny both, and the retry it invites is refused as a duplicate.
+            # Report the failed sync and let the admin delete and redo the
+            # subscription.
             logger.error(
                 "Failed to apply product %s for team %s: %s",
                 subscription_data.product_id,
@@ -200,41 +214,6 @@ async def create_team_subscription(
                 exc,
                 exc_info=True,
             )
-            association = None
-            try:
-                db.rollback()
-                association = (
-                    db.query(DBTeamProduct)
-                    .filter(
-                        DBTeamProduct.team_id == team.id,
-                        DBTeamProduct.product_id == subscription_data.product_id,
-                    )
-                    .first()
-                )
-            except Exception as probe_exc:
-                # A database that cannot answer cannot prove the association
-                # exists. Treat the subscription as unrecorded: a subscription
-                # nobody can see is worse than an association an admin can
-                # delete by hand.
-                logger.error(
-                    "Could not read back the product association for team %s: %s",
-                    team.id,
-                    probe_exc,
-                )
-            if association is None:
-                # The failure came before the association was committed, so the
-                # Stripe subscription is the only thing that exists. Cancel it
-                # to keep Stripe and the database in step and leave a clean
-                # retry.
-                await _cancel_orphan_subscription(subscription_id, team.id)
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Error creating subscription",
-                )
-            # The association is committed and the Stripe subscription exists,
-            # so a 500 would deny both, and the retry it invites is refused as
-            # a duplicate. Report the failed sync and let the admin delete and
-            # redo the subscription.
             sync_error_count = 1
 
         return SubscriptionResponse(
