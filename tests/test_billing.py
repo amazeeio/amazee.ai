@@ -546,153 +546,11 @@ def test_create_team_subscription_stripe_error(
     assert response.status_code == 500
     assert response.json()["detail"] == "Error creating subscription"
     assert "Stripe API error" not in response.text
-
-
-@patch("app.api.billing.apply_product_for_team", new_callable=AsyncMock)
-@patch("app.api.billing.create_zero_rated_stripe_subscription", new_callable=AsyncMock)
-@patch("app.api.billing.create_stripe_customer", new_callable=AsyncMock)
-def test_create_team_subscription_survives_apply_product_exception(
-    mock_create_customer,
-    mock_create_subscription,
-    mock_apply_product,
-    client,
-    db,
-    test_team,
-    test_product,
-    admin_token,
-):
-    """
-    GIVEN: A team with an existing Stripe customer ID
-    WHEN: Applying the product raises after the association is committed
-    THEN: The subscription is reported with a sync error, not as a failure
-    """
-    # Arrange
-    test_team.stripe_customer_id = "cus_apply_raises_123"
-    db.add(test_team)
-    db.add(test_product)
-    db.commit()
-
-    mock_create_subscription.return_value = "sub_apply_raises_123"
-
-    def commit_association_then_raise(**kwargs):
-        """Mimic apply_product_for_team: commit the row, then fail the sync."""
-        db.add(DBTeamProduct(team_id=test_team.id, product_id=test_product.id))
-        db.commit()
-        raise Exception("LiteLLM gateway timeout")
-
-    mock_apply_product.side_effect = commit_association_then_raise
-
-    # Act
-    response = client.post(
-        f"/billing/teams/{test_team.id}/subscriptions",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={"product_id": test_product.id},
+    # The association is written before Stripe is called, so it must be gone.
+    assert (
+        db.query(DBTeamProduct).filter(DBTeamProduct.team_id == test_team.id).first()
+        is None
     )
-
-    # Assert
-    assert response.status_code == 201
-    data = response.json()
-    assert data["subscription_id"] == "sub_apply_raises_123"
-    assert data["sync_error_count"] == 1
-    assert "LiteLLM gateway timeout" not in response.text
-
-
-@patch("app.api.billing.cancel_subscription", new_callable=AsyncMock)
-@patch("app.api.billing.apply_product_for_team", new_callable=AsyncMock)
-@patch("app.api.billing.create_zero_rated_stripe_subscription", new_callable=AsyncMock)
-@patch("app.api.billing.create_stripe_customer", new_callable=AsyncMock)
-def test_create_team_subscription_cancels_unrecorded_subscription(
-    mock_create_customer,
-    mock_create_subscription,
-    mock_apply_product,
-    mock_cancel,
-    client,
-    db,
-    test_team,
-    test_product,
-    admin_token,
-):
-    """
-    GIVEN: A team with an existing Stripe customer ID
-    WHEN: Applying the product fails before the association is committed
-    THEN: The Stripe subscription is cancelled and the request fails
-    """
-    # Arrange
-    test_team.stripe_customer_id = "cus_no_assoc_123"
-    db.add(test_team)
-    db.add(test_product)
-    db.commit()
-
-    mock_create_subscription.return_value = "sub_no_assoc_123"
-    mock_apply_product.side_effect = Exception("database is down")
-
-    # Act
-    response = client.post(
-        f"/billing/teams/{test_team.id}/subscriptions",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={"product_id": test_product.id},
-    )
-
-    # Assert
-    assert response.status_code == 500
-    assert response.json()["detail"] == "Error creating subscription"
-    mock_cancel.assert_awaited_once_with("sub_no_assoc_123")
-    association = (
-        db.query(DBTeamProduct)
-        .filter(
-            DBTeamProduct.team_id == test_team.id,
-            DBTeamProduct.product_id == test_product.id,
-        )
-        .first()
-    )
-    assert association is None
-
-
-@patch("app.api.billing.cancel_subscription", new_callable=AsyncMock)
-@patch("app.api.billing.apply_product_for_team", new_callable=AsyncMock)
-@patch("app.api.billing.create_zero_rated_stripe_subscription", new_callable=AsyncMock)
-@patch("app.api.billing.create_stripe_customer", new_callable=AsyncMock)
-def test_create_team_subscription_cancels_when_database_cannot_answer(
-    mock_create_customer,
-    mock_create_subscription,
-    mock_apply_product,
-    mock_cancel,
-    client,
-    db,
-    test_team,
-    test_product,
-    admin_token,
-    monkeypatch,
-):
-    """
-    GIVEN: A team with an existing Stripe customer ID
-    WHEN: The database also fails while checking whether the product attached
-    THEN: The Stripe subscription is cancelled rather than left unrecorded
-    """
-    # Arrange
-    test_team.stripe_customer_id = "cus_db_down_123"
-    db.add(test_team)
-    db.add(test_product)
-    db.commit()
-
-    mock_create_subscription.return_value = "sub_db_down_123"
-    mock_apply_product.side_effect = Exception("database is down")
-
-    def raise_on_rollback():
-        raise Exception("database is down")
-
-    monkeypatch.setattr(db, "rollback", raise_on_rollback)
-
-    # Act
-    response = client.post(
-        f"/billing/teams/{test_team.id}/subscriptions",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={"product_id": test_product.id},
-    )
-
-    # Assert
-    assert response.status_code == 500
-    mock_cancel.assert_awaited_once_with("sub_db_down_123")
 
 
 @patch("app.api.billing.create_zero_rated_stripe_subscription", new_callable=AsyncMock)
@@ -732,6 +590,61 @@ def test_create_team_subscription_keeps_stripe_status_code(
     # Assert
     assert response.status_code == 400
     assert "is not free" in response.json()["detail"]
+    assert (
+        db.query(DBTeamProduct).filter(DBTeamProduct.team_id == test_team.id).first()
+        is None
+    )
+
+
+@patch("app.api.billing.apply_product_for_team", new_callable=AsyncMock)
+@patch("app.api.billing.create_zero_rated_stripe_subscription", new_callable=AsyncMock)
+@patch("app.api.billing.create_stripe_customer", new_callable=AsyncMock)
+def test_create_team_subscription_survives_apply_product_exception(
+    mock_create_customer,
+    mock_create_subscription,
+    mock_apply_product,
+    client,
+    db,
+    test_team,
+    test_product,
+    admin_token,
+):
+    """
+    GIVEN: A team with an existing Stripe customer ID
+    WHEN: Applying the product budget raises
+    THEN: The subscription is reported with a sync error and stays associated
+    """
+    # Arrange
+    test_team.stripe_customer_id = "cus_apply_raises_123"
+    db.add(test_team)
+    db.add(test_product)
+    db.commit()
+
+    mock_create_subscription.return_value = "sub_apply_raises_123"
+    mock_apply_product.side_effect = Exception("LiteLLM gateway timeout")
+
+    # Act
+    response = client.post(
+        f"/billing/teams/{test_team.id}/subscriptions",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"product_id": test_product.id},
+    )
+
+    # Assert
+    assert response.status_code == 201
+    data = response.json()
+    assert data["subscription_id"] == "sub_apply_raises_123"
+    assert data["sync_error_count"] == 1
+    assert "LiteLLM gateway timeout" not in response.text
+    association = (
+        db.query(DBTeamProduct)
+        .filter(
+            DBTeamProduct.team_id == test_team.id,
+            DBTeamProduct.product_id == test_product.id,
+        )
+        .first()
+    )
+    assert association is not None
 
 
 @patch("app.api.billing.get_subscribed_products_for_customer", new_callable=AsyncMock)
