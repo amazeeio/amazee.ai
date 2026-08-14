@@ -200,15 +200,27 @@ async def create_team_subscription(
                 exc,
                 exc_info=True,
             )
-            db.rollback()
-            association = (
-                db.query(DBTeamProduct)
-                .filter(
-                    DBTeamProduct.team_id == team.id,
-                    DBTeamProduct.product_id == subscription_data.product_id,
+            association = None
+            try:
+                db.rollback()
+                association = (
+                    db.query(DBTeamProduct)
+                    .filter(
+                        DBTeamProduct.team_id == team.id,
+                        DBTeamProduct.product_id == subscription_data.product_id,
+                    )
+                    .first()
                 )
-                .first()
-            )
+            except Exception as probe_exc:
+                # A database that cannot answer cannot prove the association
+                # exists. Treat the subscription as unrecorded: a subscription
+                # nobody can see is worse than an association an admin can
+                # delete by hand.
+                logger.error(
+                    "Could not read back the product association for team %s: %s",
+                    team.id,
+                    probe_exc,
+                )
             if association is None:
                 # The failure came before the association was committed, so the
                 # Stripe subscription is the only thing that exists. Cancel it

@@ -648,6 +648,53 @@ def test_create_team_subscription_cancels_unrecorded_subscription(
     assert association is None
 
 
+@patch("app.api.billing.cancel_subscription", new_callable=AsyncMock)
+@patch("app.api.billing.apply_product_for_team", new_callable=AsyncMock)
+@patch("app.api.billing.create_zero_rated_stripe_subscription", new_callable=AsyncMock)
+@patch("app.api.billing.create_stripe_customer", new_callable=AsyncMock)
+def test_create_team_subscription_cancels_when_database_cannot_answer(
+    mock_create_customer,
+    mock_create_subscription,
+    mock_apply_product,
+    mock_cancel,
+    client,
+    db,
+    test_team,
+    test_product,
+    admin_token,
+    monkeypatch,
+):
+    """
+    GIVEN: A team with an existing Stripe customer ID
+    WHEN: The database also fails while checking whether the product attached
+    THEN: The Stripe subscription is cancelled rather than left unrecorded
+    """
+    # Arrange
+    test_team.stripe_customer_id = "cus_db_down_123"
+    db.add(test_team)
+    db.add(test_product)
+    db.commit()
+
+    mock_create_subscription.return_value = "sub_db_down_123"
+    mock_apply_product.side_effect = Exception("database is down")
+
+    def raise_on_rollback():
+        raise Exception("database is down")
+
+    monkeypatch.setattr(db, "rollback", raise_on_rollback)
+
+    # Act
+    response = client.post(
+        f"/billing/teams/{test_team.id}/subscriptions",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"product_id": test_product.id},
+    )
+
+    # Assert
+    assert response.status_code == 500
+    mock_cancel.assert_awaited_once_with("sub_db_down_123")
+
+
 @patch("app.api.billing.create_zero_rated_stripe_subscription", new_callable=AsyncMock)
 @patch("app.api.billing.create_stripe_customer", new_callable=AsyncMock)
 def test_create_team_subscription_keeps_stripe_status_code(
