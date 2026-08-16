@@ -9,9 +9,18 @@
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
         "app/__version__.py",
-        "helm/Chart.yaml",
-        "helm/charts/backend/Chart.yaml",
-        "helm/charts/frontend/Chart.yaml",
+        {
+          "type": "generic",
+          "path": "helm/Chart.yaml"
+        },
+        {
+          "type": "generic",
+          "path": "helm/charts/backend/Chart.yaml"
+        },
+        {
+          "type": "generic",
+          "path": "helm/charts/frontend/Chart.yaml"
+        },
         {
           "type": "json",
           "path": "frontend/package.json",
