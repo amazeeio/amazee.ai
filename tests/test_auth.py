@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock
 from app.api.auth import generate_validation_token
 
 
@@ -354,7 +354,7 @@ def test_sign_in_missing_data(client):
     assert "Invalid sign in data" in response.json()["detail"]
 
 
-def test_sign_in_new_user_success(client, mock_dynamodb):
+def test_sign_in_new_user_success(client, mock_dynamodb, test_region):
     # Use a hardcoded validation code since we're mocking the response anyway
     email = "newuser@example.com"
     code = "TESTCODE"
@@ -366,10 +366,14 @@ def test_sign_in_new_user_success(client, mock_dynamodb):
         "ttl": 1234567890,
     }
 
-    # Test with JSON data
-    response = client.post(
-        "/auth/sign-in", json={"username": email, "verification_code": code}
-    )
+    with (
+        patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock),
+        patch("app.core.litellm_user_sync.LiteLLMService") as mock_sync_litellm,
+    ):
+        mock_sync_litellm.return_value = AsyncMock()
+        response = client.post(
+            "/auth/sign-in", json={"username": email, "verification_code": code}
+        )
 
     # Verify the response
     assert response.status_code == 200
@@ -404,6 +408,113 @@ def test_sign_in_new_user_success(client, mock_dynamodb):
     team_user = team_data["users"][0]
     assert team_user["email"] == email
     assert team_user["role"] == "admin"  # User should have admin role in the team
+
+
+def test_sign_in_reuses_orphaned_team(client, db, mock_dynamodb, test_region):
+    """
+    Given a team whose admin user was hard-deleted (team exists, user does not)
+    When the user signs in again with a valid verification code
+    Then they are re-created as admin of the existing team instead of
+    failing with "Email already registered".
+    """
+    from datetime import UTC, datetime
+
+    from app.db.models import DBTeam
+
+    email = "orphaned@example.com"
+    code = "TESTCODE"
+
+    team = DBTeam(
+        name=f"Team {email}",
+        admin_email=email,
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    db.add(team)
+    db.commit()
+    db.refresh(team)
+
+    mock_dynamodb.read_validation_code.return_value = {
+        "email": email,
+        "code": code,
+        "ttl": 1234567890,
+    }
+
+    with (
+        patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock),
+        patch("app.core.litellm_user_sync.LiteLLMService") as mock_sync_litellm,
+    ):
+        mock_sync_litellm.return_value = AsyncMock()
+        response = client.post(
+            "/auth/sign-in", json={"username": email, "verification_code": code}
+        )
+
+    assert response.status_code == 200
+    token = response.json()["access_token"]
+
+    response = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    user_data = response.json()
+    assert user_data["email"] == email
+    assert user_data["role"] == "admin"
+    assert user_data["team_id"] == team.id  # reused, not a new team
+
+
+def test_sign_in_reuses_orphaned_team_with_plus_tagged_admin_email(
+    client, db, mock_dynamodb, test_region
+):
+    """
+    Given an orphaned team whose stored admin_email is plus-tagged
+    When the user signs in with the base (tag-stripped) email
+    Then the tagged team is reused instead of creating a new one.
+    """
+    from datetime import UTC, datetime
+
+    from app.db.models import DBTeam
+
+    email = "tagged_orphan@example.com"
+    code = "TESTCODE"
+
+    team = DBTeam(
+        name="Team tagged_orphan+p12@example.com",
+        admin_email="tagged_orphan+p12@example.com",
+        is_active=True,
+        created_at=datetime.now(UTC),
+        budget_type="periodic",
+    )
+    db.add(team)
+    db.commit()
+    db.refresh(team)
+
+    mock_dynamodb.read_validation_code.return_value = {
+        "email": email,
+        "code": code,
+        "ttl": 1234567890,
+    }
+
+    with (
+        patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock),
+        patch("app.core.litellm_user_sync.LiteLLMService") as mock_sync_litellm,
+    ):
+        mock_sync_litellm.return_value = AsyncMock()
+        response = client.post(
+            "/auth/sign-in",
+            json={
+                "username": "tagged_orphan+p12@example.com",
+                "verification_code": code,
+            },
+        )
+
+    assert response.status_code == 200
+    token = response.json()["access_token"]
+
+    response = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    user_data = response.json()
+    assert user_data["email"] == email
+    assert user_data["role"] == "admin"
+    assert user_data["team_id"] == team.id  # reused, not a new team
 
 
 def test_create_token_basic(client, test_user, test_token):
@@ -775,7 +886,7 @@ def test_sign_in_cookie_expiration_system_admin(client, test_admin, mock_dynamod
     assert "Max-Age=28800" in set_cookie_header or "max-age=28800" in set_cookie_header
 
 
-def test_sign_in_new_user_cookie_expiration(client, mock_dynamodb):
+def test_sign_in_new_user_cookie_expiration(client, mock_dynamodb, test_region):
     """
     Given a new user signing in for the first time
     When the user signs in with verification code
@@ -790,9 +901,14 @@ def test_sign_in_new_user_cookie_expiration(client, mock_dynamodb):
         "ttl": 1234567890,
     }
 
-    response = client.post(
-        "/auth/sign-in", json={"username": email, "verification_code": code}
-    )
+    with (
+        patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock),
+        patch("app.core.litellm_user_sync.LiteLLMService") as mock_sync_litellm,
+    ):
+        mock_sync_litellm.return_value = AsyncMock()
+        response = client.post(
+            "/auth/sign-in", json={"username": email, "verification_code": code}
+        )
     assert response.status_code == 200
 
     # Check that the cookie is set with 30-minute expiration (new users are not system admins)

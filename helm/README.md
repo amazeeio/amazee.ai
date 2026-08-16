@@ -222,6 +222,7 @@ helm install amazee-ai . -n amazee-ai --create-namespace \
 | `backend.envSuffix` | Environment suffix. Anything other than `local` disables the docs/openapi routes and local-bearer bypass; never set `local` in a deployed env. | `"production"` |
 | `backend.forwardedAllowIps` | IPs/CIDRs uvicorn trusts `X-Forwarded-*` headers from (`FORWARDED_ALLOW_IPS`). Narrow to your ingress/Lagoon-router CIDR; never `"*"`. | RFC1918 ranges |
 | `backend.passwordlessSignIn` | Enable passwordless sign-in | `true` |
+| `backend.catalogManagedRegions` | Comma-separated amazee.ai region **names** the model catalog may write to and push at (`CATALOG_MANAGED_REGIONS`). Empty = the catalog touches nothing. Opt regions in one at a time; names must match `regions.name` in amazee.ai, not the k0rdent region name. | `""` |
 | `backend.resources.requests.memory` | Backend memory request | `256Mi` |
 | `backend.resources.requests.cpu` | Backend CPU request | `250m` |
 | `backend.resources.limits.memory` | Backend memory limit | `512Mi` |

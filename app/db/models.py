@@ -117,11 +117,24 @@ class DBRegion(Base):
     litellm_api_key = Column(String)
     is_active = Column(Boolean, default=True)
     is_dedicated = Column(Boolean, default=False)
+    # Which market this region serves (US, US+CA, EU, DE, CH, UK, AU, ...) —
+    # drives bedrock candidate suggestions; enum enforced at the API layer.
+    regional_area = Column(String, nullable=True)
+    # NULL = access-group enforcement off for this region (legacy all-models
+    # behavior; team `models` lists are never touched). Set = enforcement on.
+    default_access_group_id = Column(
+        Integer,
+        ForeignKey("model_access_groups.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     created_at = Column(DateTime(timezone=True), default=func.now())
 
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="region")
     teams = relationship("DBTeamRegion", back_populates="region")
     admin_users = relationship("DBUserAdminRegion", back_populates="region")
+    default_access_group = relationship(
+        "DBModelAccessGroup", foreign_keys=[default_access_group_id]
+    )
 
 
 class DBAPIToken(Base):
@@ -191,6 +204,7 @@ class DBTeam(Base):
     deleted_at = Column(DateTime(timezone=True), nullable=True)
     retention_warning_sent_at = Column(DateTime(timezone=True), nullable=True)
     last_pool_purchase = Column(DateTime(timezone=True), nullable=True)
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=True, index=True)
 
     users = relationship("DBUser", back_populates="team")
     private_ai_keys = relationship("DBPrivateAIKey", back_populates="team")
@@ -201,6 +215,7 @@ class DBTeam(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    region = relationship("DBRegion", foreign_keys=[region_id])
     metrics = relationship(
         "DBTeamMetrics", back_populates="team", uselist=False, cascade="all, delete"
     )
@@ -450,10 +465,12 @@ class DBAuditLog(Base):
     __tablename__ = "audit_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, nullable=False, default=lambda: datetime.now(UTC))
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    event_type = Column(String, nullable=False)
-    resource_type = Column(String, nullable=False)
+    timestamp = Column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC), index=True
+    )
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    event_type = Column(String, nullable=False, index=True)
+    resource_type = Column(String, nullable=False, index=True)
     resource_id = Column(String, nullable=True)
     action = Column(String, nullable=False)
     details = Column(JSON, nullable=True)
@@ -741,6 +758,56 @@ class DBSignupEvent(Base):
     )
 
 
+class DBBudgetAlertState(Base):
+    """Highest budget threshold already notified for one alert subject.
+
+    One row per subject, **not** one row per notification. ``subject_key``
+    identifies the thing being watched (a key, a team+region, or a member of a
+    team in a region) and ``period_key`` identifies the billing window that
+    ``last_threshold_pct`` refers to.
+
+    The pair is what makes alerts both idempotent and self-re-arming: while the
+    window is unchanged we never re-notify a band we have already sent, and when
+    a new billing cycle produces a different ``period_key`` the bands reset so
+    the customer is warned again in the new period. A TTL-based dedup (which is
+    what LiteLLM's native alerting uses) cannot express that, because it expires
+    on wall-clock time rather than on the cycle boundary.
+    """
+
+    __tablename__ = "budget_alert_state"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # "key:<key_id>" | "team:<team_id>:<region_id>" | "member:<team_id>:<user_id>:<region_id>"
+    subject_key = Column(String, unique=True, nullable=False, index=True)
+    subject_type = Column(String, nullable=False, index=True)  # key|team|team_member
+    region_id = Column(Integer, ForeignKey("regions.id"), nullable=False, index=True)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    key_id = Column(Integer, ForeignKey("ai_tokens.id"), nullable=True, index=True)
+
+    period_key = Column(String, nullable=False)
+    last_threshold_pct = Column(Integer, default=0, nullable=False)
+
+    # How many times this subject's bands have been re-armed inside the current
+    # period. A POOL top-up raises the denominator, so the percentage can fall
+    # below a band already notified and later cross it again — a real second
+    # warning. It is mixed into the event id so that crossing gets a fresh id,
+    # while a redelivery of the first one keeps the original. Without it the
+    # consumer's de-duplication would silently swallow the second warning.
+    arm_seq = Column(Integer, default=0, nullable=False)
+
+    # Snapshot of the numbers that triggered the last notification. The
+    # denominator is recorded because a POOL top-up moves it, so without this
+    # the event cannot be explained after the fact.
+    spend_at_notify = Column(Float, nullable=True)
+    budget_at_notify = Column(Float, nullable=True)
+    percent_at_notify = Column(Float, nullable=True)
+
+    notified_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
+
+
 class DBDisposableDomain(Base):
     """Blocklist of disposable / dynamic-DNS email domains (trial-account abuse
     protection, moad #620). Populated by the daily refresh cron from a committed
@@ -754,3 +821,200 @@ class DBDisposableDomain(Base):
     updated_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class DBModel(Base):
+    __tablename__ = "models"
+
+    id = Column(Integer, primary_key=True, index=True)
+    model_id = Column(String, nullable=False)
+    display_name = Column(String, nullable=False)
+    provider = Column(String, nullable=False)
+    type = Column(String, nullable=False)
+    context_length = Column(Integer, nullable=True)
+    max_output_tokens = Column(Integer, nullable=True)
+    description = Column(String, nullable=True)
+    real_eol = Column(DateTime(timezone=True), nullable=True)
+    override_eol = Column(DateTime(timezone=True), nullable=True)
+    is_active_globally = Column(Boolean, default=True, nullable=False)
+    litellm_params = Column(JSON, nullable=True)
+    # Alias models point at another model per region (model_alias_targets) and
+    # inherit the target's effective litellm_params at sync time.
+    is_alias = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+
+    regions = relationship("DBModelRegion", back_populates="model", cascade="all, delete-orphan")
+    alias_targets = relationship(
+        "DBModelAliasTarget",
+        back_populates="alias_model",
+        cascade="all, delete-orphan",
+        foreign_keys="DBModelAliasTarget.alias_model_id",
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_models_model_id",
+            "model_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+
+class DBModelAccessGroup(Base):
+    """A named set of models synced to LiteLLM as a model access group.
+
+    LiteLLM has no access-group object: a group exists only as a string inside
+    each model's model_info.access_groups and each team's models list. The slug
+    is that string — immutable after creation, since renaming it would require
+    rewriting every deployment and team on every proxy. label/description are
+    dashboard-only and never synced.
+    """
+
+    __tablename__ = "model_access_groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    slug = Column(String, unique=True, nullable=False, index=True)
+    label = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+
+    model_associations = relationship(
+        "DBModelAccessGroupModel", back_populates="group", cascade="all, delete-orphan"
+    )
+    region_associations = relationship(
+        "DBModelAccessGroupRegion", back_populates="group", cascade="all, delete-orphan"
+    )
+    team_associations = relationship(
+        "DBTeamModelAccessGroup", back_populates="group", cascade="all, delete-orphan"
+    )
+
+
+class DBModelAccessGroupModel(Base):
+    __tablename__ = "model_access_group_models"
+
+    group_id = Column(
+        Integer,
+        ForeignKey("model_access_groups.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    model_id = Column(
+        Integer, ForeignKey("models.id", ondelete="CASCADE"), primary_key=True, nullable=False
+    )
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    group = relationship("DBModelAccessGroup", back_populates="model_associations")
+    model = relationship("DBModel")
+
+
+class DBModelAccessGroupRegion(Base):
+    """Deploy toggle: a group deployed to a region means its member models carry
+    the slug tag there, the region's teams may opt into it, and it is eligible
+    to be that region's default group."""
+
+    __tablename__ = "model_access_group_regions"
+
+    group_id = Column(
+        Integer,
+        ForeignKey("model_access_groups.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    region_id = Column(
+        Integer, ForeignKey("regions.id", ondelete="CASCADE"), primary_key=True, nullable=False
+    )
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    group = relationship("DBModelAccessGroup", back_populates="region_associations")
+    region = relationship("DBRegion")
+
+
+class DBTeamModelAccessGroup(Base):
+    """Opt-in group attachments only — the region's default group is implicit
+    (computed at sync time) and never stored per team."""
+
+    __tablename__ = "team_model_access_groups"
+
+    team_id = Column(
+        Integer, ForeignKey("teams.id", ondelete="CASCADE"), primary_key=True, nullable=False
+    )
+    group_id = Column(
+        Integer,
+        ForeignKey("model_access_groups.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+
+    team = relationship("DBTeam")
+    group = relationship("DBModelAccessGroup", back_populates="team_associations")
+
+
+class DBTeamGroupSyncRun(Base):
+    """One row per region-wide team fan-out (enforcement flip / default change).
+    Per-team truth is recomputable from the DB, so this only tracks progress
+    for the admin UI — there is deliberately no per-team sync_status."""
+
+    __tablename__ = "team_group_sync_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    region_id = Column(
+        Integer, ForeignKey("regions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    status = Column(String, default="running", nullable=False)  # running | done | failed
+    total = Column(Integer, default=0, nullable=False)
+    done = Column(Integer, default=0, nullable=False)
+    failed_team_ids = Column(JSON, nullable=True)
+    error_sample = Column(String, nullable=True)
+    started_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+
+    region = relationship("DBRegion")
+
+
+class DBModelRegion(Base):
+    __tablename__ = "model_regions"
+
+    model_id = Column(Integer, ForeignKey("models.id", ondelete="CASCADE"), primary_key=True, nullable=False)
+    region_id = Column(Integer, ForeignKey("regions.id", ondelete="CASCADE"), primary_key=True, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    # Merged over the model's litellm_params at sync time — lets the same
+    # catalog model use a different backend ID (e.g. bedrock inference
+    # profile) per region.
+    litellm_params_override = Column(JSON, nullable=True)
+    sync_status = Column(String, default="pending", nullable=False)
+    sync_error = Column(String, nullable=True)
+    synced_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+
+    model = relationship("DBModel", back_populates="regions")
+    region = relationship("DBRegion")
+
+
+class DBModelAliasTarget(Base):
+    """Per-region target of an alias model. Pointer semantics: the alias
+    always resolves to the target's current effective params at sync time."""
+
+    __tablename__ = "model_alias_targets"
+
+    alias_model_id = Column(
+        Integer, ForeignKey("models.id", ondelete="CASCADE"), primary_key=True, nullable=False
+    )
+    region_id = Column(
+        Integer, ForeignKey("regions.id", ondelete="CASCADE"), primary_key=True, nullable=False
+    )
+    target_model_id = Column(Integer, ForeignKey("models.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=func.now(), onupdate=func.now(), nullable=False)
+
+    alias_model = relationship(
+        "DBModel", back_populates="alias_targets", foreign_keys=[alias_model_id]
+    )
+    target_model = relationship("DBModel", foreign_keys=[target_model_id])
+    region = relationship("DBRegion")

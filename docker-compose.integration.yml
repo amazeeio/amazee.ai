@@ -1,0 +1,65 @@
+# Integration-test overlay: real LiteLLM proxies, no mocks at the LiteLLM
+# boundary. Never used implicitly — `make integration-test` composes it
+# explicitly under its own project name (see Makefile) so `down -v` can never
+# touch the dev stack's containers or volumes.
+#
+# Requires docker compose >= 2.24 (`!reset`).
+services:
+  litellm:
+    # No host ports: tests run inside the compose network, and dropping the
+    # binding avoids collisions with a running dev stack.
+    ports: !reset []
+    volumes:
+      - ./tests/integration/litellm-test-config.yaml:/etc/litellm/config.yaml:ro
+    command: ["--config", "/etc/litellm/config.yaml", "--port", "4000"]
+
+  litellm2:
+    ports: !reset []
+    volumes:
+      - ./tests/integration/litellm-test-config.yaml:/etc/litellm/config.yaml:ro
+    command: ["--config", "/etc/litellm/config.yaml", "--port", "4000"]
+
+  postgres:
+    ports: !reset []
+
+  integration-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    command: ["pytest", "-v", "tests/integration"]
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres/postgres_service
+      SECRET_KEY: test-secret-key
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres_service
+      DYNAMODB_ROLE_NAME: test-role
+      SES_ROLE_NAME: test-role
+      TESTING: "1"
+      ENV_SUFFIX: test
+      # Must match the fixed region names in tests/integration/conftest.py.
+      AI_TRIAL_REGION: integration-a
+      CATALOG_MANAGED_REGIONS: integration-a,integration-b
+    volumes:
+      - ./app:/app/app
+      - ./scripts:/app/scripts
+      - ./tests:/app/tests
+    depends_on:
+      postgres:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+      litellm2:
+        condition: service_healthy
+
+volumes:
+  # The base file gives these volumes explicit global names, which would
+  # escape the -p project isolation: an integration `down -v` would delete
+  # the dev stack's data. Re-namespace them here.
+  litellm_postgres_data:
+    name: amazeeai-integration_litellm_postgres_data
+  litellm2_postgres_data:
+    name: amazeeai-integration_litellm2_postgres_data
+  litellm3_postgres_data:
+    name: amazeeai-integration_litellm3_postgres_data

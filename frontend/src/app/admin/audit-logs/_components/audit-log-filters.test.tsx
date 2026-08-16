@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { AuditLogFilters as IFilters } from "@/types/audit-log";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { AuditLogFilters } from "./audit-log-filters";
@@ -105,6 +105,32 @@ describe("AuditLogFilters", () => {
     expect(mockOnFilterChange).toHaveBeenCalledWith(
       "user_email",
       "new@example.com",
+    );
+  });
+
+  it("calls onFilterChange when date range changes", () => {
+    render(
+      <AuditLogFilters
+        filters={defaultFilters}
+        onFilterChange={mockOnFilterChange}
+        metadata={defaultMetadata}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("From date"), {
+      target: { value: "2026-07-21T10:00" },
+    });
+    expect(mockOnFilterChange).toHaveBeenCalledWith(
+      "from_date",
+      "2026-07-21T10:00",
+    );
+
+    fireEvent.change(screen.getByLabelText("To date"), {
+      target: { value: "2026-07-21T11:00" },
+    });
+    expect(mockOnFilterChange).toHaveBeenCalledWith(
+      "to_date",
+      "2026-07-21T11:00",
     );
   });
 });

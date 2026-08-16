@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session, contains_eager
 
 from sqlalchemy import func, or_
@@ -9,7 +9,7 @@ from collections import defaultdict
 
 from app.core.config import settings
 from app.core.litellm_user_sync import (
-    get_target_regions_for_user,
+    get_team_region,
     sync_add_user_to_team,
     sync_create_user_across_regions,
     sync_delete_user_across_regions,
@@ -32,6 +32,7 @@ from app.schemas.models import (
     UserMarketingUpdatesByEmailUpdate,
 )
 from app.db.models import (
+    DBBudgetAlertState,
     DBPrivateAIKey,
     DBRegion,
     DBSpendCap,
@@ -711,31 +712,40 @@ async def remove_user_admin_region(
     "/", response_model=List[User], dependencies=[Depends(get_role_min_team_admin)]
 )
 async def list_users(
+    response: Response,
     current_user: DBUser = Depends(get_current_user_from_auth),
     search: Optional[str] = None,
+    team: Optional[str] = None,
+    role: Optional[str] = None,
+    include_inactive: bool = False,
+    skip: int = Query(0, ge=0),
+    limit: Optional[int] = Query(None, ge=1, le=1000),
+    sort_by: Optional[str] = Query(None, pattern="^(email|team_name|role)$"),
+    sort_order: str = Query("asc", pattern="^(asc|desc)$"),
     db: Session = Depends(get_db),
 ):
     """
     List users. Accessible by admin users or team admins for their team members.
     Users from soft-deleted teams and inactive users are excluded from the results.
-    Optionally filter by search term (partial email match).
+    System admins can pass include_inactive=true to also see inactive users.
+    Optionally filter by search term (partial email match), team (partial team
+    name match), and role (exact match).
+    Supports pagination via skip/limit (unpaginated when limit is omitted, for
+    backwards compatibility); the total match count is returned in the
+    X-Total-Count response header.
     """
     if current_user.is_admin:
         # Use LEFT JOIN to get all users and their team information in a single query
-        # Exclude users from soft-deleted teams and inactive users
+        # Exclude users from soft-deleted teams
         query = (
             db.query(DBUser, DBTeam.name.label("team_name"))
             .outerjoin(DBTeam, DBUser.team_id == DBTeam.id)
             .filter(
-                DBUser.is_active.is_(True),
                 (DBUser.team_id.is_(None)) | (DBTeam.deleted_at.is_(None)),
             )
         )
-
-        if search:
-            query = query.filter(DBUser.email.ilike(f"%{search}%"))
-
-        users = query.all()
+        if not include_inactive:
+            query = query.filter(DBUser.is_active.is_(True))
     else:
         # Return only users in the team admin's team with team information
         # Exclude if team is soft-deleted or user is inactive
@@ -749,14 +759,37 @@ async def list_users(
             )
         )
 
-        if search:
-            query = query.filter(DBUser.email.ilike(f"%{search}%"))
+    if search:
+        escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = query.filter(DBUser.email.ilike(f"%{escaped}%", escape="\\"))
+    if team:
+        escaped = team.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = query.filter(DBTeam.name.ilike(f"%{escaped}%", escape="\\"))
+    if role:
+        query = query.filter(DBUser.role == role)
 
-        users = query.all()
+    total = query.count()
+    response.headers["X-Total-Count"] = str(total)
+
+    sort_columns = {
+        "email": func.lower(DBUser.email),
+        "team_name": func.lower(DBTeam.name),
+        "role": func.lower(DBUser.role),
+    }
+    order_by = []
+    if sort_by:
+        column = sort_columns[sort_by]
+        order_by.append(column.desc() if sort_order == "desc" else column.asc())
+    # Stable ordering so skip/limit pagination is deterministic
+    order_by.append(DBUser.id)
+    query = query.order_by(*order_by)
+
+    if limit is not None:
+        query = query.offset(skip).limit(limit)
 
     # Map the results to DBUser objects with team_name
     result = []
-    for user, team_name in users:
+    for user, team_name in query.all():
         user.team_name = team_name
         result.append(user)
     return result
@@ -946,7 +979,8 @@ async def update_user(
     synced_regions = []
     updated_regions = []
     if user_update.email is not None:
-        synced_regions = get_target_regions_for_user(db, db_user.team_id)
+        region = get_team_region(db, db_user.team_id) if db_user.team_id else None
+        synced_regions = [region] if region else []
         for region in synced_regions:
             service = LiteLLMService(
                 api_url=region.litellm_api_url, api_key=region.litellm_api_key
@@ -1180,6 +1214,17 @@ async def delete_user(
         )
 
     team_id = db_user.team_id
+
+    # Budget rows reference the user without a cascade, so a user who ever had a
+    # member budget or fired a budget alert cannot be deleted until they are
+    # cleared. Both only describe spend limits, so they die with the user.
+    db.query(DBSpendCap).filter(DBSpendCap.user_id == user_id).delete(
+        synchronize_session=False
+    )
+    db.query(DBBudgetAlertState).filter(DBBudgetAlertState.user_id == user_id).delete(
+        synchronize_session=False
+    )
+
     db.delete(db_user)
     try:
         db.commit()
