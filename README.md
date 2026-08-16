@@ -38,6 +38,22 @@ Two merges, no manual commands:
 2. **Merge the `Deploy vX.Y.Z to production` PR** that step 1 opens. Lagoon
    deploys `main` to production.
 
+### Release notes
+
+`CHANGELOG.md` is built from commit subjects, so it describes the code. Two more
+sets of notes are written from the actual diff of the released tag range, by a
+model reached through the LiteLLM proxy:
+
+- **Product notes** go into the body of the deploy pull request, so the person
+  who approves the deploy can see what ships, including migrations and new
+  required secrets.
+- **User-facing notes** are appended to the GitHub Release page. If the release
+  holds nothing a user can see, this part is skipped.
+
+Neither is stored as a file. The prompts live in `.github/prompts/`. The step
+needs the `LITELLM_API_KEY` repository secret; without it the deploy pull
+request still opens, with a plain body.
+
 Cases to know about:
 
 - **No Release PR is open.** Nothing since the last release changes the version:
