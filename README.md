@@ -29,6 +29,28 @@ Production deploys from `main`, so the release is live only after you merge that
 `dev` → `main` pull request. Tags are cut on `dev`, at release time, not at
 deploy time.
 
+### Deploying to production
+
+Two merges, no manual commands:
+
+1. **Merge the Release PR** (`chore(dev): release X.Y.Z`). Check the version and
+   the generated changelog section first.
+2. **Merge the `Deploy vX.Y.Z to production` PR** that step 1 opens. Lagoon
+   deploys `main` to production.
+
+Cases to know about:
+
+- **No Release PR is open.** Nothing since the last release changes the version:
+  only `chore:`, `ci:`, `test:` or `build:` commits landed. To deploy anyway,
+  open the pull request yourself:
+  `gh pr create --base main --head dev --title "Deploy to production"`.
+- **A deploy PR from an earlier release is still open.** The workflow retitles
+  that one to the newest tag instead of opening a second one, so one deploy can
+  carry several releases.
+- **The deploy PR is `dev` → `main`, not tag → `main`.** Commits that land on
+  `dev` after the tag ship with it. Merge the deploy PR soon after the release
+  if you want the deploy and the tag to hold the same code.
+
 The released version is recorded in `.release-please-manifest.json` and kept in sync across:
 - `version.txt`
 - `app/__version__.py` - Python application version
