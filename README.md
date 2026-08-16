@@ -23,6 +23,11 @@ This project uses semantic versioning (MAJOR.MINOR.PATCH). Releases are automate
 2. Regenerates `CHANGELOG.md` from the commit history
 3. Creates the `vX.Y.Z` git tag and GitHub Release
 4. Packages and publishes the Helm charts to GHCR
+5. Opens (or retitles) the `dev` → `main` pull request for the production deploy
+
+Production deploys from `main`, so the release is live only after you merge that
+`dev` → `main` pull request. Tags are cut on `dev`, at release time, not at
+deploy time.
 
 The released version is recorded in `.release-please-manifest.json` and kept in sync across:
 - `version.txt`
