@@ -9,7 +9,7 @@ from app.db.database import get_db
 from app.api.auth import get_current_user_from_auth
 from app.core.roles import UserRole
 from app.schemas.models import (
-    Region,
+    RegionAdminResponse,
     RegionCreate,
     RegionResponse,
     User,
@@ -40,6 +40,7 @@ from app.core.litellm_user_sync import (
     sync_remove_user_from_team,
 )
 from app.schemas.limits import ResourceType
+from app.services.access_groups import effective_team_group_slugs
 from app.services.litellm import LiteLLMService
 
 logger = logging.getLogger(__name__)
@@ -123,10 +124,14 @@ async def validate_database_connection(
 
 
 @router.post(
-    "", response_model=Region, dependencies=[Depends(get_role_min_system_admin)]
+    "",
+    response_model=RegionAdminResponse,
+    dependencies=[Depends(get_role_min_system_admin)],
 )
 @router.post(
-    "/", response_model=Region, dependencies=[Depends(get_role_min_system_admin)]
+    "/",
+    response_model=RegionAdminResponse,
+    dependencies=[Depends(get_role_min_system_admin)],
 )
 async def create_region(region: RegionCreate, db: Session = Depends(get_db)):
     # Check if region with this name already exists
@@ -174,27 +179,66 @@ async def list_regions(
 
     # Regular users can only see non-dedicated regions
     if not current_user.team_id:
-        return (
-            db.query(DBRegion)
-            .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
-            .all()
-        )
+        return _active_public_regions(db)
 
-    # Team members can only see their team's explicitly assigned regions.
-    return (
+    team = db.query(DBTeam).filter(DBTeam.id == current_user.team_id).first()
+    if not team:
+        return _active_public_regions(db)
+
+    # The team's own regions: its explicit allowlist plus its primary region.
+    # Both are read because they model different things — the allowlist is the
+    # set a team may use, while the scalar records which one it currently sits
+    # in. Reading only the scalar would strand a team on a single region even
+    # when more are assigned, and return nothing at all once that region goes
+    # inactive.
+    assigned = (
         db.query(DBRegion)
-        .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
+        .outerjoin(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
         .filter(
             DBRegion.is_active.is_(True),
-            DBTeamRegion.team_id == current_user.team_id,
+            (DBTeamRegion.team_id == team.id) | (DBRegion.id == team.region_id),
         )
+        .distinct()
+        .all()
+    )
+
+    # A team holding any dedicated region is served by dedicated infrastructure
+    # and must not be offered the public pool. Teams that only hold public
+    # regions can use any public region.
+    #
+    # Inactive dedicated regions count here, unlike above: retiring a dedicated
+    # region must not quietly hand that team the whole public pool.
+    holds_dedicated_region = (
+        db.query(DBRegion.id)
+        .outerjoin(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
+        .filter(
+            DBRegion.is_dedicated.is_(True),
+            (DBTeamRegion.team_id == team.id) | (DBRegion.id == team.region_id),
+        )
+        .first()
+        is not None
+    )
+    if team.hide_public_regions or holds_dedicated_region:
+        return assigned
+
+    by_id = {region.id: region for region in assigned}
+    for region in _active_public_regions(db):
+        by_id.setdefault(region.id, region)
+    return list(by_id.values())
+
+
+def _active_public_regions(db: Session) -> List[DBRegion]:
+    """Active regions in the shared public pool."""
+    return (
+        db.query(DBRegion)
+        .filter(DBRegion.is_active.is_(True), DBRegion.is_dedicated.is_(False))
         .all()
     )
 
 
 @router.get(
     "/admin",
-    response_model=List[Region],
+    response_model=List[RegionAdminResponse],
     dependencies=[Depends(get_role_min_system_admin)],
 )
 async def list_admin_regions(db: Session = Depends(get_db)):
@@ -248,7 +292,7 @@ async def delete_region(region_id: int, db: Session = Depends(get_db)):
 
 @router.put(
     "/{region_id}",
-    response_model=Region,
+    response_model=RegionAdminResponse,
     dependencies=[Depends(get_role_min_system_admin)],
 )
 async def update_region(
@@ -287,6 +331,10 @@ async def update_region(
 
     # Update the region fields
     update_data = region.model_dump(exclude_unset=True)
+    # Blank or null credentials mean "keep current" — never wipe stored secrets.
+    for secret_field in ("postgres_admin_password", "litellm_api_key"):
+        if not update_data.get(secret_field):
+            update_data.pop(secret_field, None)
     for field, value in update_data.items():
         setattr(db_region, field, value)
 
@@ -361,8 +409,10 @@ async def _associate_team_with_region(
             detail="Team is already associated with this region",
         )
 
+    previous_region_id = team.region_id
     team_region = DBTeamRegion(team_id=team_id, region_id=region_id)
     db.add(team_region)
+    team.region_id = region_id
 
     try:
         db.commit()
@@ -393,6 +443,7 @@ async def _associate_team_with_region(
             team_alias=lite_team_id,
             max_budget=max_budget,
             budget_duration=budget_duration,
+            models=effective_team_group_slugs(db, team_id, region),
         )
     except Exception as e:
         logger.error(
@@ -412,7 +463,8 @@ async def _associate_team_with_region(
             )
             if persisted_association is not None:
                 db.delete(persisted_association)
-                db.commit()
+            team.region_id = previous_region_id
+            db.commit()
         except Exception:
             db.rollback()
             logger.exception(
@@ -428,11 +480,12 @@ async def _associate_team_with_region(
     try:
         team_users = db.query(DBUser).filter(DBUser.team_id == team_id).all()
         for team_user in team_users:
+            # team.region_id is already updated — sync_add_user_to_team will
+            # resolve the region from the team automatically.
             await sync_add_user_to_team(
                 db=db,
                 db_user=team_user,
                 team_id=team_id,
-                force_regions=[region],
             )
     except Exception as e:
         logger.error(
@@ -452,7 +505,8 @@ async def _associate_team_with_region(
             )
             if persisted_association is not None:
                 db.delete(persisted_association)
-                db.commit()
+            team.region_id = previous_region_id
+            db.commit()
         except Exception:
             db.rollback()
             logger.exception(
@@ -465,6 +519,34 @@ async def _associate_team_with_region(
             detail="Failed to bootstrap team in LiteLLM",
         )
 
+    # The region change succeeded end-to-end. Drop the previous primary
+    # region's association so team_regions stays consistent with
+    # team.region_id — otherwise the stale row would trip the
+    # "already associated" guard and permanently block ever switching the
+    # team back to that region. Best-effort: the primary change is already
+    # committed and synced, so a cleanup failure must not fail the request.
+    if previous_region_id is not None and previous_region_id != region_id:
+        try:
+            stale_association = (
+                db.query(DBTeamRegion)
+                .filter(
+                    DBTeamRegion.team_id == team_id,
+                    DBTeamRegion.region_id == previous_region_id,
+                )
+                .first()
+            )
+            if stale_association is not None:
+                db.delete(stale_association)
+                db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Failed to remove stale team-region association after primary "
+                "region change (team_id=%s, previous_region_id=%s)",
+                team_id,
+                previous_region_id,
+            )
+
     return {"message": "Team associated with region successfully"}
 
 
@@ -474,6 +556,14 @@ async def _disassociate_team_from_region(
     team_id: int,
     db: Session,
 ) -> dict[str, str]:
+    # Prevent removing a team's primary region.
+    team = db.query(DBTeam).filter(DBTeam.id == team_id).first()
+    if team and team.region_id == region_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot disassociate team's primary region",
+        )
+
     association = (
         db.query(DBTeamRegion)
         .filter(DBTeamRegion.team_id == team_id, DBTeamRegion.region_id == region_id)
@@ -505,7 +595,7 @@ async def _disassociate_team_from_region(
                 db=db,
                 db_user=team_user,
                 team_id=team_id,
-                force_regions=[region],
+                region=region,
             )
     except Exception as e:
         try:

@@ -7,6 +7,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from typing import Dict, List, Optional
 
+from app.core.config import settings
 from app.core.limit_service import DEFAULT_KEY_DURATION
 from app.db.models import (
     DBAuditLog,
@@ -16,11 +17,27 @@ from app.db.models import (
     DBTeamRegion,
     DBUser,
 )
+from app.services.access_groups import effective_team_group_slugs
 from app.services.litellm import LiteLLMService
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
+
+
+def is_anonymous_trial_team(team: Optional[DBTeam]) -> bool:
+    """True for the single team that pools all anonymous trial users.
+
+    Unlike a customer team, its members are unrelated to each other, so keys
+    minted in it must stay private from the rest of the team.
+
+    Compared case-insensitively but WITHOUT plus-tag stripping, matching how
+    the trial team is looked up and created in `generate_trial_access` — a
+    plus-tagged address is a different team, not the trial team.
+    """
+    if team is None or not team.admin_email:
+        return False
+    return team.admin_email.lower() == settings.AI_TRIAL_TEAM_EMAIL.lower()
 
 
 def get_team_region_litellm_keys(
@@ -235,6 +252,7 @@ async def restore_soft_deleted_team(db: Session, team: DBTeam) -> dict:
                 await litellm_service.create_team(
                     team_id=lite_team_id,
                     team_alias=lite_team_id,
+                    models=effective_team_group_slugs(db, team.id, region),
                 )
                 logger.info(
                     f"Re-provisioned LiteLLM team {lite_team_id} in region {region.name}"

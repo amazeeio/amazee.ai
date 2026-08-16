@@ -1,0 +1,125 @@
+name: LiteLLM Integration Gate
+
+# Runs the real-LiteLLM integration suite (tests/integration) against the two
+# proxy stacks we actually deploy:
+#   - upstream berriai/litellm-database at the tag prod runs (resolved live
+#     from amazeeio/amazeeai-k0rdent-clusters, oldest prod cluster wins)
+#   - amazeeio/litellm-lagoon-base-database at the tag litellm-lagoon pins
+#     (what litellm-jabba / litellm-kessel run)
+#
+# Dispatch with an explicit image/tag to gate a candidate bump; green means
+# the backend's budget/spend/cycle/lifecycle behavior holds on that version.
+# See litellm-integration-tests-plan.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Proxy image (default: both deployed stacks as a matrix)"
+        required: false
+        type: string
+      tag:
+        description: "Image tag to gate (requires image)"
+        required: false
+        type: string
+  schedule:
+    # Weekly early warning: litellm-lagoon-base rebuilds daily from upstream
+    # stable and jabba/kessel bump ASAP, so upstream breakage should surface
+    # before a human plans a bump.
+    - cron: "0 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    env:
+      # Never interpolate inputs into run: blocks directly (script injection).
+      INPUT_IMAGE: ${{ inputs.image }}
+      INPUT_TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ secrets.AMAZEE_AI_CI_READ_TOKEN }}
+      # Fallbacks when resolution fails (keep roughly current; the resolve
+      # step warns whenever these are used).
+      FALLBACK_PROD_TAG: v1.95.0
+      FALLBACK_LAGOON_TAG: v1.96.2
+    steps:
+      - name: Build test matrix
+        id: matrix
+        run: |
+          set -euo pipefail
+          valid='^[A-Za-z0-9._/-]+$'
+
+          if [ -n "$INPUT_IMAGE" ] || [ -n "$INPUT_TAG" ]; then
+            if [ -z "$INPUT_IMAGE" ] || [ -z "$INPUT_TAG" ]; then
+              echo "::error::image and tag inputs must be provided together"
+              exit 1
+            fi
+            if ! echo "$INPUT_IMAGE" | grep -Eq "$valid" || ! echo "$INPUT_TAG" | grep -Eq "$valid"; then
+              echo "::error::image/tag contain invalid characters"
+              exit 1
+            fi
+            echo "matrix=[{\"image\":\"$INPUT_IMAGE\",\"tag\":\"$INPUT_TAG\"}]" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Prod leg: oldest litellm-helm image tag across prod clusters.
+          prod_tag=""
+          if [ -n "$GH_TOKEN" ]; then
+            files=$(gh api repos/amazeeio/amazeeai-k0rdent-clusters/contents/clusters/prod --jq '.[].name' 2>/dev/null || true)
+            for f in $files; do
+              tag=$(gh api "repos/amazeeio/amazeeai-k0rdent-clusters/contents/clusters/prod/$f" --jq '.content' 2>/dev/null \
+                | base64 -d | grep -A3 'litellm-helm:' | sed -n 's/.*tag: *"\{0,1\}\(v[0-9][^" ]*\)"\{0,1\}.*/\1/p' | head -1 || true)
+              [ -n "$tag" ] && prod_tag=$(printf '%s\n%s\n' "$prod_tag" "$tag" | grep . | sort -V | head -1)
+            done
+          fi
+          if [ -z "$prod_tag" ]; then
+            echo "::warning::could not resolve prod LiteLLM tag from amazeeai-k0rdent-clusters; using fallback $FALLBACK_PROD_TAG"
+            prod_tag="$FALLBACK_PROD_TAG"
+          fi
+
+          # Lagoon leg: LITELLM_BASE_TAG pinned in litellm-lagoon's Dockerfile.
+          lagoon_tag=""
+          if [ -n "$GH_TOKEN" ]; then
+            lagoon_tag=$(gh api repos/amazeeio/litellm-lagoon/contents/proxy/Dockerfile --jq '.content' 2>/dev/null \
+              | base64 -d | sed -n 's/^ARG LITELLM_BASE_TAG=\(.*\)$/\1/p' | head -1 || true)
+          fi
+          if [ -z "$lagoon_tag" ]; then
+            echo "::warning::could not resolve LITELLM_BASE_TAG from litellm-lagoon; using fallback $FALLBACK_LAGOON_TAG"
+            lagoon_tag="$FALLBACK_LAGOON_TAG"
+          fi
+
+          echo "resolved: prod=$prod_tag lagoon=$lagoon_tag"
+          echo "matrix=[{\"image\":\"ghcr.io/berriai/litellm-database\",\"tag\":\"$prod_tag\"},{\"image\":\"ghcr.io/amazeeio/litellm-lagoon-base-database\",\"tag\":\"$lagoon_tag\"}]" >> "$GITHUB_OUTPUT"
+
+  integration:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read  # ghcr pull of the internal amazeeio image via GITHUB_TOKEN
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    name: integration (${{ matrix.image }}:${{ matrix.tag }})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to ghcr
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run integration suite
+        env:
+          LITELLM_IMAGE: ${{ matrix.image }}
+          LITELLM_TAG: ${{ matrix.tag }}
+        run: make integration-test

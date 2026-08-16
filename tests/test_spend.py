@@ -5,6 +5,8 @@ from app.core.roles import UserRole
 from datetime import UTC, datetime, timedelta
 from sqlalchemy.exc import IntegrityError
 
+from app.api.spend import _lock_region_or_404
+from app.core.config import settings
 from app.core.security import get_password_hash
 from app.db.models import (
     BudgetType,
@@ -2109,6 +2111,180 @@ def test_clear_key_budget_endpoint(
         .first()
     )
     assert cap is None
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_clear_key_budget_keeps_gate_for_unpurchased_pool_team(
+    mock_update_key_budget,
+    mock_get_key_info,
+    client,
+    admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
+):
+    """A gated pool team with no purchase must not have its key gate cleared.
+
+    LiteLLM denies a key at spend >= max_budget but a team only at
+    spend > max_budget, so a cleared key would serve its first request against
+    the team's $0 budget.
+    """
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.add(test_team)
+    key = DBPrivateAIKey(
+        name="pool-gated-key",
+        litellm_token="pool-gated-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+    db.add(
+        DBSpendCap(
+            scope="key",
+            region_id=test_region.id,
+            team_id=test_team.id,
+            user_id=test_team_user.id,
+            key_id=key.id,
+            max_budget=10.0,
+            budget_duration="1mo",
+        )
+    )
+    db.commit()
+    mock_get_key_info.return_value = {
+        "info": {"max_budget": 0.0, "budget_duration": "30d"}
+    }
+
+    response = client.post(
+        f"/spend/{test_region.id}/key/{key.id}/budget/clear",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    mock_update_key_budget.assert_awaited_once_with(
+        litellm_token=key.litellm_token,
+        budget_duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
+        max_budget=0.0,
+        clear_max_budget=False,
+    )
+    assert response.json()["max_budget"] == 0.0
+    assert "has not purchased" in response.json()["note"]
+    # The cap row still goes, so the first purchase resolves the key to the
+    # team budget instead of resurrecting a cap the caller removed.
+    assert (
+        db.query(DBSpendCap)
+        .filter(DBSpendCap.scope == "key", DBSpendCap.key_id == key.id)
+        .first()
+        is None
+    )
+
+
+@patch("app.api.spend._lock_region_or_404", wraps=_lock_region_or_404)
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_clear_key_budget_takes_region_lock_before_gate_decision(
+    mock_update_key_budget,
+    mock_get_key_info,
+    spy_lock_region,
+    client,
+    admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
+):
+    """The purchase check must run behind the region lock.
+
+    A first purchase clears key gates in LiteLLM before committing its purchase
+    row, so an unlocked check can re-gate a key that purchase just funded.
+    """
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.add(test_team)
+    key = DBPrivateAIKey(
+        name="pool-lock-key",
+        litellm_token="pool-lock-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.commit()
+    mock_get_key_info.return_value = {
+        "info": {"max_budget": 0.0, "budget_duration": "30d"}
+    }
+
+    response = client.post(
+        f"/spend/{test_region.id}/key/{key.id}/budget/clear",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    spy_lock_region.assert_called_once()
+    assert spy_lock_region.call_args.args[1] == test_region.id
+
+
+@patch("app.api.spend.LiteLLMService.get_key_info", new_callable=AsyncMock)
+@patch("app.api.spend.LiteLLMService.update_key_budget", new_callable=AsyncMock)
+def test_clear_key_budget_clears_once_pool_team_has_purchased(
+    mock_update_key_budget,
+    mock_get_key_info,
+    client,
+    admin_token,
+    test_team,
+    test_team_user,
+    test_region,
+    db,
+):
+    """One purchase is enough to restore the normal clear behaviour."""
+    test_team.budget_type = BudgetType.POOL
+    test_team.require_purchase_for_requests = True
+    db.add(test_team)
+    key = DBPrivateAIKey(
+        name="pool-purchased-key",
+        litellm_token="pool-purchased-token",
+        region_id=test_region.id,
+        owner_id=test_team_user.id,
+        team_id=test_team.id,
+    )
+    db.add(key)
+    db.add(
+        DBPoolPurchase(
+            team_id=test_team.id,
+            region_id=test_region.id,
+            amount_cents=500,
+            currency="USD",
+            purchased_at=datetime.now(UTC),
+            stripe_payment_id=f"pool-clear-{test_team.id}-{test_region.id}",
+            created_at=datetime.now(UTC),
+        )
+    )
+    db.commit()
+    mock_get_key_info.return_value = {
+        "info": {"max_budget": None, "budget_duration": None}
+    }
+
+    response = client.post(
+        f"/spend/{test_region.id}/key/{key.id}/budget/clear",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    mock_update_key_budget.assert_awaited_once_with(
+        litellm_token=key.litellm_token,
+        budget_duration=None,
+        max_budget=None,
+        clear_max_budget=True,
+        clear_budget_duration=True,
+    )
+    assert response.json()["max_budget"] is None
+    assert response.json()["note"] == (
+        "Cleared key max_budget and budget_duration overrides."
+    )
 
 
 @patch("app.api.spend.LiteLLMService.update_team_member", new_callable=AsyncMock)

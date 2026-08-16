@@ -5,9 +5,11 @@ from app.core.config import settings
 from app.core.limit_service import LimitService, setup_default_limits
 from app.core.security import get_password_hash
 from app.db.models import (
+    DBBudgetAlertState,
     DBPrivateAIKey,
     DBProduct,
     DBRegion,
+    DBSpendCap,
     DBTeam,
     DBTeamProduct,
     DBTeamRegion,
@@ -38,19 +40,21 @@ def test_dbteam_budget_type_defaults_to_periodic(db):
     assert team.require_purchase_for_requests is True
 
 
-def test_register_team(client, admin_token):
+def test_register_team(client, admin_token, test_region):
     """Test registering a new team"""
-    response = client.post(
-        "/teams/",
-        json={
-            "name": "Test Team",
-            "admin_email": "team@example.com",
-            "phone": "1234567890",
-            "billing_address": "123 Test St, Test City, 12345",
-            "budget_type": "pool",
-        },
-        headers={"Authorization": f"Bearer {admin_token}"},
-    )
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
+        response = client.post(
+            "/teams/",
+            json={
+                "name": "Test Team",
+                "admin_email": "team@example.com",
+                "phone": "1234567890",
+                "billing_address": "123 Test St, Test City, 12345",
+                "budget_type": "pool",
+                "region_id": test_region.id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
     assert response.status_code == 201
     team_data = response.json()
     assert team_data["name"] == "Test Team"
@@ -64,18 +68,20 @@ def test_register_team(client, admin_token):
     assert "updated_at" in team_data
 
 
-def test_register_and_update_team_hide_public_regions(client, admin_token):
+def test_register_and_update_team_hide_public_regions(client, admin_token, test_region):
     """Test registering and updating a team with hide_public_regions"""
     # Register team with hide_public_regions=True
-    response = client.post(
-        "/teams/",
-        json={
-            "name": "Hidden Regions Team",
-            "admin_email": "hidden@example.com",
-            "hide_public_regions": True,
-        },
-        headers={"Authorization": f"Bearer {admin_token}"},
-    )
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
+        response = client.post(
+            "/teams/",
+            json={
+                "name": "Hidden Regions Team",
+                "admin_email": "hidden@example.com",
+                "hide_public_regions": True,
+                "region_id": test_region.id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
     assert response.status_code == 201
     team_data = response.json()
     assert team_data["name"] == "Hidden Regions Team"
@@ -121,6 +127,7 @@ def test_register_team_creates_litellm_team_for_active_shared_regions(
                 "phone": "1234567890",
                 "billing_address": "123 Test St, Test City, 12345",
                 "budget_type": "pool",
+                "region_id": test_region.id,
             },
             headers={"Authorization": f"Bearer {admin_token}"},
         )
@@ -132,6 +139,7 @@ def test_register_team_creates_litellm_team_for_active_shared_regions(
         team_alias=f"{test_region.name}_{team_data['id']}",
         max_budget=0.0,
         budget_duration="365d",
+        models=None,
     )
 
 
@@ -165,6 +173,7 @@ def test_register_pool_team_excludes_dedicated_regions_from_litellm_bootstrap(
                 "phone": "1234567890",
                 "billing_address": "123 Test St, Test City, 12345",
                 "budget_type": "pool",
+                "region_id": test_region.id,
             },
             headers={"Authorization": f"Bearer {admin_token}"},
         )
@@ -176,6 +185,7 @@ def test_register_pool_team_excludes_dedicated_regions_from_litellm_bootstrap(
         team_alias=f"{test_region.name}_{team_data['id']}",
         max_budget=0.0,
         budget_duration="365d",
+        models=None,
     )
 
 
@@ -209,6 +219,7 @@ def test_register_periodic_team_excludes_dedicated_regions_from_litellm_bootstra
                 "phone": "1234567890",
                 "billing_address": "123 Test St, Test City, 12345",
                 "budget_type": "periodic",
+                "region_id": test_region.id,
             },
             headers={"Authorization": f"Bearer {admin_token}"},
         )
@@ -221,10 +232,11 @@ def test_register_periodic_team_excludes_dedicated_regions_from_litellm_bootstra
         team_alias=f"{test_region.name}_{team_data['id']}",
         max_budget=27.0,
         budget_duration=None,
+        models=None,
     )
 
 
-def test_register_team_seeds_public_region_associations(
+def test_register_team_creates_single_region_association(
     client, admin_token, test_region, db
 ):
     with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
@@ -234,39 +246,37 @@ def test_register_team_seeds_public_region_associations(
                 "name": "Seed Regions Team",
                 "admin_email": "seed-regions@example.com",
                 "budget_type": "periodic",
+                "region_id": test_region.id,
             },
             headers={"Authorization": f"Bearer {admin_token}"},
         )
     assert response.status_code == 201
     team_id = response.json()["id"]
 
-    association = (
-        db.query(DBTeamRegion)
-        .filter(
-            DBTeamRegion.team_id == team_id, DBTeamRegion.region_id == test_region.id
+    associations = db.query(DBTeamRegion).filter(DBTeamRegion.team_id == team_id).all()
+    assert len(associations) == 1
+    assert response.json()["region_id"] == test_region.id
+
+
+def test_register_team_allows_purchase_gate_override(client, admin_token, test_region):
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
+        response = client.post(
+            "/teams/",
+            json={
+                "name": "No Purchase Gate Team",
+                "admin_email": "no-purchase-gate@example.com",
+                "budget_type": "pool",
+                "require_purchase_for_requests": False,
+                "region_id": test_region.id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
         )
-        .first()
-    )
-    assert association is not None
-
-
-def test_register_team_allows_purchase_gate_override(client, admin_token):
-    response = client.post(
-        "/teams/",
-        json={
-            "name": "No Purchase Gate Team",
-            "admin_email": "no-purchase-gate@example.com",
-            "budget_type": "pool",
-            "require_purchase_for_requests": False,
-        },
-        headers={"Authorization": f"Bearer {admin_token}"},
-    )
 
     assert response.status_code == 201
     assert response.json()["require_purchase_for_requests"] is False
 
 
-def test_register_team_unauthenticated(client):
+def test_register_team_unauthenticated(client, test_region):
     """Test that unauthenticated requests are rejected"""
     response = client.post(
         "/teams/",
@@ -275,12 +285,13 @@ def test_register_team_unauthenticated(client):
             "admin_email": "team@example.com",
             "phone": "1234567890",
             "billing_address": "123 Test St, Test City, 12345",
+            "region_id": test_region.id,
         },
     )
     assert response.status_code == 401
 
 
-def test_register_team_duplicate_admin_email(client, db, admin_token):
+def test_register_team_duplicate_admin_email(client, db, admin_token, test_region):
     """Test registering a team with an email that already exists"""
     # First, create a team
     team = DBTeam(
@@ -305,6 +316,7 @@ def test_register_team_duplicate_admin_email(client, db, admin_token):
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321",
             "budget_type": "pool",
+            "region_id": test_region.id,
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -312,7 +324,9 @@ def test_register_team_duplicate_admin_email(client, db, admin_token):
     assert response.json()["detail"] == "Email already registered"
 
 
-def test_register_team_duplicate_admin_email_case_insensitive(client, db, admin_token):
+def test_register_team_duplicate_admin_email_case_insensitive(
+    client, db, admin_token, test_region
+):
     """
     Given a team with admin_email "existing@example.com" exists
     When registering a new team with admin_email "EXISTING@EXAMPLE.COM"
@@ -341,6 +355,7 @@ def test_register_team_duplicate_admin_email_case_insensitive(client, db, admin_
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321",
             "budget_type": "pool",
+            "region_id": test_region.id,
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -349,7 +364,7 @@ def test_register_team_duplicate_admin_email_case_insensitive(client, db, admin_
 
 
 def test_register_team_duplicate_admin_email_case_insensitive_reverse(
-    client, db, admin_token
+    client, db, admin_token, test_region
 ):
     """
     Given a team with admin_email "EXISTING@EXAMPLE.COM" exists
@@ -378,6 +393,7 @@ def test_register_team_duplicate_admin_email_case_insensitive_reverse(
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321",
             "budget_type": "pool",
+            "region_id": test_region.id,
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -385,7 +401,7 @@ def test_register_team_duplicate_admin_email_case_insensitive_reverse(
     assert response.json()["detail"] == "Email already registered"
 
 
-def test_register_team_duplicate_name(client, db, admin_token):
+def test_register_team_duplicate_name(client, db, admin_token, test_region):
     """
     Given a team with name "Existing Team" exists
     When registering a new team with name "Existing Team"
@@ -414,6 +430,7 @@ def test_register_team_duplicate_name(client, db, admin_token):
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321",
             "budget_type": "pool",
+            "region_id": test_region.id,
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -421,7 +438,9 @@ def test_register_team_duplicate_name(client, db, admin_token):
     assert response.json()["detail"] == "Team name already exists"
 
 
-def test_register_team_duplicate_name_case_insensitive(client, db, admin_token):
+def test_register_team_duplicate_name_case_insensitive(
+    client, db, admin_token, test_region
+):
     """
     Given a team with name "Existing Team" exists
     When registering a new team with name "existing team"
@@ -450,6 +469,7 @@ def test_register_team_duplicate_name_case_insensitive(client, db, admin_token):
             "phone": "0987654321",
             "billing_address": "456 New St, New City, 54321",
             "budget_type": "pool",
+            "region_id": test_region.id,
         },
         headers={"Authorization": f"Bearer {admin_token}"},
     )
@@ -466,6 +486,50 @@ def test_list_teams(client, admin_token, db, test_team):
     assert isinstance(teams, list)
     assert len(teams) >= 1
     assert any(t["admin_email"] == "testteam@example.com" for t in teams)
+
+
+def test_list_teams_paginated(client, admin_token, db):
+    for i in range(3):
+        db.add(
+            DBTeam(
+                name=f"paginated team {i}",
+                admin_email=f"paginated-team-{i}@example.com",
+            )
+        )
+    db.commit()
+
+    response = client.get(
+        "/teams/?name=paginated team&limit=2&sort_by=name&sort_order=desc",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "3"
+    assert [t["name"] for t in response.json()] == [
+        "paginated team 2",
+        "paginated team 1",
+    ]
+
+    response = client.get(
+        "/teams/?name=paginated team&limit=2&skip=2&sort_by=name&sort_order=desc",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "3"
+    assert [t["name"] for t in response.json()] == ["paginated team 0"]
+
+
+def test_list_teams_filter_escapes_wildcards(client, admin_token, db):
+    for name in ["wild_card team", "wildxcard team"]:
+        db.add(DBTeam(name=name, admin_email=f"{name.replace(' ', '-')}@example.com"))
+    db.commit()
+
+    response = client.get(
+        "/teams/?name=wild_card",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    assert response.headers["X-Total-Count"] == "1"
+    assert [t["name"] for t in response.json()] == ["wild_card team"]
 
 
 def test_list_teams_unauthorized(client, test_token):
@@ -1921,7 +1985,7 @@ def test_merge_teams_with_both_teams_dedicated_regions_fails(client, admin_token
     assert target_team_region_exists is not None
 
 
-def test_register_team_creates_default_limits(client, db, admin_token):
+def test_register_team_creates_default_limits(client, db, admin_token, test_region):
     """
     Given: A new team is being created
     When: The team registration endpoint is called
@@ -1937,17 +2001,19 @@ def test_register_team_creates_default_limits(client, db, admin_token):
     setup_default_limits(db)
 
     # Register a new team
-    response = client.post(
-        "/teams/",
-        json={
-            "name": "New Team",
-            "admin_email": "newteam@example.com",
-            "phone": "1234567890",
-            "billing_address": "123 New St, New City, 12345",
-            "budget_type": "periodic",
-        },
-        headers={"Authorization": f"Bearer {admin_token}"},
-    )
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
+        response = client.post(
+            "/teams/",
+            json={
+                "name": "New Team",
+                "admin_email": "newteam@example.com",
+                "phone": "1234567890",
+                "billing_address": "123 New St, New City, 12345",
+                "budget_type": "periodic",
+                "region_id": test_region.id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
 
     assert response.status_code == 201
     team_data = response.json()
@@ -2001,7 +2067,9 @@ def test_register_team_creates_default_limits(client, db, admin_token):
     assert rpm_limit.max_value == 500.0  # DEFAULT_RPM_PER_KEY
 
 
-def test_register_team_does_not_create_limits_when_disabled(client, db, admin_token):
+def test_register_team_does_not_create_limits_when_disabled(
+    client, db, admin_token, test_region
+):
     """
     Given: ENABLE_LIMITS is set to false
     When: A new team is created
@@ -2014,17 +2082,19 @@ def test_register_team_does_not_create_limits_when_disabled(client, db, admin_to
     settings.ENABLE_LIMITS = False
 
     # Register a new team
-    response = client.post(
-        "/teams/",
-        json={
-            "name": "New Team Without Limits",
-            "admin_email": "newteamlimits@example.com",
-            "phone": "1234567890",
-            "billing_address": "123 New St, New City, 12345",
-            "budget_type": "pool",
-        },
-        headers={"Authorization": f"Bearer {admin_token}"},
-    )
+    with patch("app.api.teams.LiteLLMService.create_team", new_callable=AsyncMock):
+        response = client.post(
+            "/teams/",
+            json={
+                "name": "New Team Without Limits",
+                "admin_email": "newteamlimits@example.com",
+                "phone": "1234567890",
+                "billing_address": "123 New St, New City, 12345",
+                "budget_type": "pool",
+                "region_id": test_region.id,
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
 
     assert response.status_code == 201
     team_data = response.json()
@@ -2303,3 +2373,64 @@ def test_restored_team_keys_are_accessible(
     keys = response.json()
     key_names = [k.get("name") for k in keys]
     assert "restored-key" in key_names
+
+
+def test_delete_team_with_budget_rows(client, admin_token, db, test_team, test_region):
+    """
+    GIVEN: A team with a team spend cap, a member spend cap and a budget alert state row
+    WHEN: The team is deleted
+    THEN: A 200 is returned and every budget row for the team is gone
+
+    Both tables reference teams.id without a cascade, so before this was fixed
+    the delete raised a foreign key violation and surfaced as a 500.
+    """
+    member = DBUser(email="team-budget-member@example.com", team_id=test_team.id)
+    db.add(member)
+    db.commit()
+    db.refresh(member)
+
+    db.add_all(
+        [
+            DBSpendCap(
+                scope="team",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                max_budget=20.0,
+                budget_duration="31d",
+            ),
+            DBSpendCap(
+                scope="team_member",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                user_id=member.id,
+                max_budget=3.0,
+                budget_duration="1mo",
+            ),
+            DBBudgetAlertState(
+                subject_key=f"team:{test_team.id}",
+                subject_type="team",
+                region_id=test_region.id,
+                team_id=test_team.id,
+                period_key="2026-08",
+            ),
+        ]
+    )
+    db.commit()
+    team_id = test_team.id
+
+    with patch(
+        "app.api.teams.LiteLLMService.update_team_budget", new_callable=AsyncMock
+    ):
+        response = client.delete(
+            f"/teams/{team_id}", headers={"Authorization": f"Bearer {admin_token}"}
+        )
+    assert response.status_code == 200
+
+    assert db.query(DBTeam).filter(DBTeam.id == team_id).first() is None
+    assert db.query(DBSpendCap).filter(DBSpendCap.team_id == team_id).count() == 0
+    assert (
+        db.query(DBBudgetAlertState)
+        .filter(DBBudgetAlertState.team_id == team_id)
+        .count()
+        == 0
+    )

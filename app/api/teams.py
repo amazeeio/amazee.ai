@@ -1,6 +1,6 @@
 import logging
 from datetime import UTC, datetime
-from typing import List
+from typing import List, Optional
 
 from app.api.private_ai_keys import delete_private_ai_key
 from app.core.config import settings
@@ -25,9 +25,11 @@ from app.core.litellm_user_sync import sync_add_user_to_team, sync_remove_user_f
 from app.core.worker import generate_pricing_url, get_team_admin_email
 from app.db.database import get_db
 from app.db.models import (
+    DBBudgetAlertState,
     DBPrivateAIKey,
     DBProduct,
     DBRegion,
+    DBSpendCap,
     DBTeam,
     DBTeamMetrics,
     DBTeamProduct,
@@ -35,6 +37,7 @@ from app.db.models import (
     DBUser,
 )
 from app.schemas.models import (
+    BudgetType,
     SalesProduct,
     SalesTeam,
     SalesTeamsResponse,
@@ -46,9 +49,10 @@ from app.schemas.models import (
     TeamWithUsers,
 )
 from app.services.disposable_domains import assert_email_domain_allowed
+from app.services.access_groups import effective_team_group_slugs
 from app.services.litellm import LiteLLMService
 from app.services.ses import SESService
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload, selectinload
 
@@ -77,12 +81,13 @@ def _create_default_limits_for_team(team: DBTeam, db: Session) -> None:
             # Don't fail team creation if limit creation fails
 
 
-async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
+async def _create_litellm_team_for_region(db: Session, team: DBTeam, region: DBRegion) -> None:
     """
-    Create region-scoped LiteLLM teams for the team's explicitly allowed regions.
+    Create a region-scoped LiteLLM team for the given team in the given region.
 
     POOL teams start with $0 budget and a configurable duration (purchases raise budget).
     PERIODIC teams start with the default budget (DEFAULT_MAX_SPEND).
+    When the region has a default access group, the team starts restricted to it.
     """
     max_budget = 0.0 if team.requires_pool_purchase_gate else DEFAULT_MAX_SPEND
     budget_duration = (
@@ -90,49 +95,16 @@ async def _create_litellm_teams_for_new_team(team: DBTeam, db: Session) -> None:
         if team.requires_pool_purchase_gate
         else None
     )
-
-    regions = (
-        db.query(DBRegion)
-        .join(DBTeamRegion, DBTeamRegion.region_id == DBRegion.id)
-        .filter(
-            DBRegion.is_active.is_(True),
-            DBTeamRegion.team_id == team.id,
-        )
-        .all()
+    litellm_service = LiteLLMService(
+        api_url=region.litellm_api_url, api_key=region.litellm_api_key
     )
-
-    for region in regions:
-        litellm_service = LiteLLMService(
-            api_url=region.litellm_api_url, api_key=region.litellm_api_key
-        )
-        lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
-        await litellm_service.create_team(
-            team_id=lite_team_id,
-            team_alias=lite_team_id,
-            max_budget=max_budget,
-            budget_duration=budget_duration,
-        )
-
-
-def _seed_default_allowed_regions_for_team(team: DBTeam, db: Session) -> None:
-    # Keep legacy behavior for callers still sending hide_public_regions=True:
-    # explicit list stays empty instead of inheriting all public regions.
-    if team.hide_public_regions:
-        return
-
-    public_regions = (
-        db.query(DBRegion)
-        .filter(
-            DBRegion.is_active.is_(True),
-            DBRegion.is_dedicated.is_(False),
-        )
-        .all()
-    )
-    db.add_all(
-        [
-            DBTeamRegion(team_id=team.id, region_id=region.id)
-            for region in public_regions
-        ]
+    lite_team_id = LiteLLMService.format_team_id(region.name, team.id)
+    await litellm_service.create_team(
+        team_id=lite_team_id,
+        team_alias=lite_team_id,
+        max_budget=max_budget,
+        budget_duration=budget_duration,
+        models=effective_team_group_slugs(db, team.id, region),
     )
 
 
@@ -149,6 +121,23 @@ async def register_team(
     # Defense-in-depth: block disposable / dynamic-DNS admin emails before any
     # team is created (the sign-in auto-provision path creates a team first).
     assert_email_domain_allowed(db, team.admin_email)
+
+    # Validate region — must be active and non-dedicated
+    region = (
+        db.query(DBRegion)
+        .filter(DBRegion.id == team.region_id, DBRegion.is_active.is_(True))
+        .first()
+    )
+    if not region:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid or inactive region_id: {team.region_id}",
+        )
+    if region.is_dedicated:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot register a team in a dedicated region",
+        )
 
     # Check if team email already exists (case insensitive)
     db_team = (
@@ -184,14 +173,16 @@ async def register_team(
         hide_public_regions=team.hide_public_regions,
         budget_type=team.budget_type,
         require_purchase_for_requests=team.require_purchase_for_requests,
+        region_id=region.id,
     )
 
     db.add(db_team)
     try:
         db.flush()
-        _seed_default_allowed_regions_for_team(db_team, db)
+        # Create the single team_region row for backwards compatibility
+        db.add(DBTeamRegion(team_id=db_team.id, region_id=region.id))
         db.flush()
-        await _create_litellm_teams_for_new_team(db_team, db)
+        await _create_litellm_team_for_region(db, db_team, region)
         db.commit()
         db.refresh(db_team)
     except HTTPException:
@@ -216,22 +207,71 @@ async def register_team(
 @router.get(
     "/", response_model=List[Team], dependencies=[Depends(get_role_min_system_admin)]
 )
-async def list_teams(include_deleted: bool = False, db: Session = Depends(get_db)):
+async def list_teams(
+    response: Response,
+    include_deleted: bool = False,
+    name: Optional[str] = None,
+    admin_email: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    skip: int = Query(0, ge=0),
+    limit: Optional[int] = Query(None, ge=1, le=1000),
+    sort_by: Optional[str] = Query(
+        None, pattern="^(name|admin_email|is_active|created_at)$"
+    ),
+    sort_order: str = Query("asc", pattern="^(asc|desc)$"),
+    db: Session = Depends(get_db),
+):
     """
     List all teams. Only accessible by admin users.
 
     Args:
         include_deleted: If True, include soft-deleted teams in the results. Defaults to False.
+        name / admin_email: partial-match filters.
+        is_active: filter by active status.
+        skip / limit: pagination (unpaginated when limit is omitted, for
+            backwards compatibility). The total match count is returned in
+            the X-Total-Count response header.
     """
-    query = db.query(DBTeam).options(
+    query = db.query(DBTeam)
+
+    if not include_deleted:
+        query = query.filter(DBTeam.deleted_at.is_(None))
+    if name:
+        escaped = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = query.filter(DBTeam.name.ilike(f"%{escaped}%", escape="\\"))
+    if admin_email:
+        escaped = (
+            admin_email.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        query = query.filter(DBTeam.admin_email.ilike(f"%{escaped}%", escape="\\"))
+    if is_active is not None:
+        query = query.filter(DBTeam.is_active.is_(is_active))
+
+    total = query.count()
+    response.headers["X-Total-Count"] = str(total)
+
+    sort_columns = {
+        "name": func.lower(DBTeam.name),
+        "admin_email": func.lower(DBTeam.admin_email),
+        "is_active": DBTeam.is_active,
+        "created_at": DBTeam.created_at,
+    }
+    order_by = []
+    if sort_by:
+        column = sort_columns[sort_by]
+        order_by.append(column.desc() if sort_order == "desc" else column.asc())
+    # Stable ordering so skip/limit pagination is deterministic
+    order_by.append(DBTeam.id)
+
+    query = query.options(
         joinedload(DBTeam.active_products).joinedload(DBTeamProduct.product),
         selectinload(DBTeam.allowed_region_associations).joinedload(
             DBTeamRegion.region
         ),
-    )
+    ).order_by(*order_by)
 
-    if not include_deleted:
-        query = query.filter(DBTeam.deleted_at.is_(None))
+    if limit is not None:
+        query = query.offset(skip).limit(limit)
 
     return query.all()
 
@@ -399,6 +439,17 @@ async def delete_team(team_id: int, db: Session = Depends(get_db)):
     # Remove all product associations
     db.query(DBTeamProduct).filter(DBTeamProduct.team_id == team_id).delete()
 
+    # Budget rows reference the team without a cascade, so a team that ever had a
+    # team or member budget, or fired a budget alert, cannot be deleted until
+    # they are cleared. Both only describe spend limits, so they die with the
+    # team. Deleting by team_id also covers team_member-scoped caps.
+    db.query(DBSpendCap).filter(DBSpendCap.team_id == team_id).delete(
+        synchronize_session=False
+    )
+    db.query(DBBudgetAlertState).filter(DBBudgetAlertState.team_id == team_id).delete(
+        synchronize_session=False
+    )
+
     # Delete the team
     db.delete(db_team)
     db.commit()
@@ -430,6 +481,18 @@ async def extend_team_trial(team_id: int, db: Session = Depends(get_db)):
     # Get all keys for the team grouped by region
     keys_by_region = get_team_keys_by_region(db, team_id)
 
+    # Pool/top-up teams must not be forced onto the short DEFAULT_KEY_DURATION
+    # trial window or a per-key budget cap. Their key life should track the
+    # pool purchase horizon and their spend is governed by the team-level pool
+    # budget. Stamping DEFAULT_KEY_DURATION here previously expired paid,
+    # in-credit keys mid-period (issue #631).
+    #
+    # Detect pool teams by budget_type, NOT by the purchase gate: an ungated
+    # pool team (require_purchase_for_requests=False) is still a pool team and
+    # must be protected too. requires_pool_purchase_gate would let such teams
+    # fall into the trial branch.
+    is_pool_team = db_team.budget_type == BudgetType.POOL
+
     # Update keys for each region
     for region, keys in keys_by_region.items():
         # Initialize LiteLLM service for this region
@@ -437,16 +500,63 @@ async def extend_team_trial(team_id: int, db: Session = Depends(get_db)):
             api_url=region.litellm_api_url, api_key=region.litellm_api_key
         )
 
+        # Explicit operator per-key caps (DBSpendCap) for this region's keys, so
+        # the pool branch clears only *stale* caps left by the old trial path
+        # and preserves deliberate key caps.
+        key_cap_map: dict[int, float] = {}
+        if is_pool_team and keys:
+            for cap_key_id, cap_value in (
+                db.query(DBSpendCap.key_id, DBSpendCap.max_budget)
+                .filter(
+                    DBSpendCap.scope == "key",
+                    DBSpendCap.region_id == region.id,
+                    DBSpendCap.key_id.isnot(None),
+                    DBSpendCap.max_budget.isnot(None),
+                    DBSpendCap.key_id.in_([k.id for k in keys]),
+                )
+                .all()
+            ):
+                key_cap_map[int(cap_key_id)] = float(cap_value)
+
         # Update each key's duration and budget via LiteLLM
         for key in keys:
             try:
-                await litellm_service.set_key_restrictions(
-                    litellm_token=key.litellm_token,
-                    duration=f"{DEFAULT_KEY_DURATION}d",
-                    budget_duration=f"{DEFAULT_KEY_DURATION}d",
-                    budget_amount=DEFAULT_MAX_SPEND,
-                    rpm_limit=DEFAULT_RPM_PER_KEY,
-                )
+                if is_pool_team:
+                    # Extend key life to the pool horizon and clear any stale
+                    # per-key budget so the team-level pool governs spend —
+                    # unless an explicit operator key cap is configured, which
+                    # is preserved. Without clearing, a key previously clobbered
+                    # by the old trial path stays capped at DEFAULT_MAX_SPEND
+                    # even while the pool has credit (issue #631).
+                    configured_cap = key_cap_map.get(key.id)
+                    if configured_cap is None:
+                        await litellm_service.update_key_budget(
+                            litellm_token=key.litellm_token,
+                            budget_duration=None,
+                            max_budget=None,
+                            clear_max_budget=True,
+                            clear_budget_duration=True,
+                            blocked=False,
+                        )
+                    else:
+                        await litellm_service.update_key_budget(
+                            litellm_token=key.litellm_token,
+                            max_budget=configured_cap,
+                            clear_max_budget=False,
+                            blocked=False,
+                        )
+                    await litellm_service.update_key_duration(
+                        litellm_token=key.litellm_token,
+                        duration=f"{settings.POOL_PURCHASE_EXPIRY_DAYS}d",
+                    )
+                else:
+                    await litellm_service.set_key_restrictions(
+                        litellm_token=key.litellm_token,
+                        duration=f"{DEFAULT_KEY_DURATION}d",
+                        budget_duration=f"{DEFAULT_KEY_DURATION}d",
+                        budget_amount=DEFAULT_MAX_SPEND,
+                        rpm_limit=DEFAULT_RPM_PER_KEY,
+                    )
             except Exception as e:
                 logger.error(f"Failed to update key {key.id} via LiteLLM: {str(e)}")
                 # Continue with other keys even if one fails

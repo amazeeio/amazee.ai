@@ -3,16 +3,20 @@
 """Check for models approaching or past their End-of-Life (EOL) date.
 
 Queries ``GET /public/models`` on the configured backend (defaults to
-https://api.amazee.ai), parses the ``(EOL: YYYY-MM-DD)`` annotation from
-each model's ``metadata_raw`` field, and emits GitHub Actions outputs for
-Slack notification when models are:
+https://api.amazee.ai), reads each model's structured ``eol_date`` field, and
+emits GitHub Actions outputs for Slack notification when models are:
 
 * **Expired**: EOL date is in the past.
 * **Approaching EOL**: EOL date is within the configured warning window
   (default 30 days).
 
+Older backends do not send ``eol_date``, so the ``(EOL: YYYY-MM-DD)`` annotation
+in ``metadata_raw`` is kept as a fallback.
+
 The script is intentionally stdlib-only so the workflow doesn't need to
-install anything.
+install anything. That is also why the annotation regex is duplicated here
+instead of imported from ``app`` — importing ``app.core`` pulls in pydantic.
+``tests/test_check_eol_models.py`` asserts both copies parse the same string.
 """
 
 from __future__ import annotations
@@ -60,6 +64,16 @@ def fetch_public_models(api_url: str, timeout: int = 60) -> list[dict[str, Any]]
             f"Unexpected response format from {url}: expected a list, got {type(data).__name__}"
         )
     return data
+
+
+def parse_eol_date(value: Any) -> date | None:
+    """Parse the structured ``eol_date`` field (ISO ``YYYY-MM-DD``)."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError:
+        return None
 
 
 def extract_eol_date(metadata_raw: Any) -> date | None:
@@ -127,7 +141,9 @@ def check_eol_models(
                 continue
             seen.add(model_id)
 
-            eol_date = extract_eol_date(model.get("metadata_raw"))
+            eol_date = parse_eol_date(model.get("eol_date")) or extract_eol_date(
+                model.get("metadata_raw")
+            )
             if eol_date is None:
                 continue
 

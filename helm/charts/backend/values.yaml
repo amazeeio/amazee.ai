@@ -30,6 +30,10 @@ enableLimits: "true"
 # local-bearer bypass. Only docker-compose should ever set "local".
 envSuffix: "production"
 passwordlessSignIn: "true"
+# Comma-separated amazee.ai region names the model catalog may write to and
+# push at. Empty = the catalog touches nothing; opt regions in one at a time.
+# Must be the region's `name` in amazee.ai, not its k0rdent name.
+catalogManagedRegions: ""
 # Client IPs/CIDRs uvicorn trusts X-Forwarded-* headers from. Defaults to the
 # RFC1918 ranges so only in-cluster peers (the ingress/Lagoon router) are
 # trusted; narrow to your router's actual CIDR if known. Never use "*".
