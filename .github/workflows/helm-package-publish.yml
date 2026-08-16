@@ -1,5 +1,11 @@
 name: Package and Publish Helm Charts
 
+# Pushes and pull requests only lint/template the charts. Publishing happens
+# exactly once per release: the release-please workflow calls this one with
+# publish=true when the vX.Y.Z GitHub Release is created. (A
+# `release: published` trigger would never fire for releases created with the
+# default GITHUB_TOKEN, and publishing on branch pushes would double-publish
+# the same chart version.)
 on:
   push:
     branches: [ main, dev ]
@@ -11,8 +17,20 @@ on:
     paths:
       - 'helm/**'
       - '.github/workflows/helm-package-publish.yml'
-  release:
-    types: [ published ]
+  workflow_call:
+    inputs:
+      publish:
+        description: 'Package and push the charts to GHCR'
+        type: boolean
+        required: false
+        default: false
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Package and push the charts to GHCR'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -23,11 +41,8 @@ env:
 
 jobs:
   package-and-publish:
-    # The OCI tag comes from Chart.yaml's SemVer, and nothing forces a bump per
-    # PR — so publishing on pull_request overwrites the released tag with
-    # unreviewed branch content. PRs get `test-charts` below; only push and
-    # release publish.
-    if: github.event_name != 'pull_request'
+    if: inputs.publish
+    needs: test-charts
     runs-on: ubuntu-latest
     permissions:
       packages: write  # helm push charts to GHCR (GitHub Packages)

@@ -17,29 +17,65 @@ This repository contains the backend and frontend services for the amazee.ai app
 
 ## 📦 Versioning
 
-This project uses semantic versioning (MAJOR.MINOR.PATCH). Version information is maintained in:
+This project uses semantic versioning (MAJOR.MINOR.PATCH). Releases are automated with [release-please](https://github.com/googleapis/release-please): every push to `dev` updates a rolling Release PR based on [Conventional Commit](https://www.conventionalcommits.org/) messages (`feat:` bumps minor, `fix:` bumps patch, `feat!:`/`BREAKING CHANGE:` bumps major). Merging that Release PR:
+
+1. Bumps the version in every file that carries it
+2. Regenerates `CHANGELOG.md` from the commit history
+3. Creates the `vX.Y.Z` git tag and GitHub Release
+4. Packages and publishes the Helm charts to GHCR
+5. Opens (or retitles) the `dev` → `main` pull request for the production deploy
+
+Production deploys from `main`, so the release is live only after you merge that
+`dev` → `main` pull request. Tags are cut on `dev`, at release time, not at
+deploy time.
+
+### Deploying to production
+
+Two merges, no manual commands:
+
+1. **Merge the Release PR** (`chore(dev): release X.Y.Z`). Check the version and
+   the generated changelog section first.
+2. **Merge the `Deploy vX.Y.Z to production` PR** that step 1 opens. Lagoon
+   deploys `main` to production.
+
+### Release notes
+
+`CHANGELOG.md` is built from commit subjects, so it describes the code. Two more
+sets of notes are written from the actual diff of the released tag range, by a
+model reached through the LiteLLM proxy:
+
+- **Product notes** go into the body of the deploy pull request, so the person
+  who approves the deploy can see what ships, including migrations and new
+  required secrets.
+- **User-facing notes** are appended to the GitHub Release page. If the release
+  holds nothing a user can see, this part is skipped.
+
+Neither is stored as a file. The prompts live in `.github/prompts/`. The step
+needs the `LITELLM_API_KEY` repository secret; without it the deploy pull
+request still opens, with a plain body.
+
+Cases to know about:
+
+- **No Release PR is open.** Nothing since the last release changes the version:
+  only `chore:`, `ci:`, `test:` or `build:` commits landed. To deploy anyway,
+  open the pull request yourself:
+  `gh pr create --base main --head dev --title "Deploy to production"`.
+- **A deploy PR from an earlier release is still open.** The workflow retitles
+  that one to the newest tag instead of opening a second one, so one deploy can
+  carry several releases.
+- **The deploy PR is `dev` → `main`, not tag → `main`.** Commits that land on
+  `dev` after the tag ship with it. Merge the deploy PR soon after the release
+  if you want the deploy and the tag to hold the same code.
+
+The released version is recorded in `.release-please-manifest.json` and kept in sync across:
+- `version.txt`
 - `app/__version__.py` - Python application version
-- `helm/Chart.yaml` - Main Helm chart version
+- `helm/Chart.yaml` - Main Helm chart version, `appVersion`, and subchart dependency pins
 - `helm/charts/backend/Chart.yaml` - Backend chart version
 - `helm/charts/frontend/Chart.yaml` - Frontend chart version
+- `frontend/package.json` / `frontend/package-lock.json`
 
-To bump the version across all files:
-
-```bash
-# Install bump-my-version (if not already installed)
-pip install bump-my-version
-
-# Bump patch version (2.0.0 -> 2.0.1)
-bump-my-version bump patch
-
-# Bump minor version (2.0.0 -> 2.1.0)
-bump-my-version bump minor
-
-# Bump major version (2.0.0 -> 3.0.0)
-bump-my-version bump major
-```
-
-The version bump will automatically update all version references and create a git tag.
+Do not edit version numbers or `CHANGELOG.md` by hand — release-please owns them. The list of synced files is configured in `release-please-config.json` (files annotated with `x-release-please-version` markers).
 
 ## 📋 Prerequisites
 
