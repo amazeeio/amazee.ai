@@ -96,16 +96,33 @@ jobs:
             git diff "$PREV..$TAG" | head -3000
           } > /tmp/changelog-input.md
 
+      # Assemble the prompts here instead of letting the action template them.
+      # It substitutes template variables into the raw text of a *.prompt.yml
+      # before parsing that text as YAML, and only the first substituted line
+      # keeps the block-scalar indentation — so a multi-line diff terminates the
+      # scalar and the parse fails. Any prompt file that is not *.prompt.yml is
+      # sent verbatim, which is what we want.
+      - name: Build the prompts
+        if: env.LITELLM_API_KEY != ''
+        run: |
+          for kind in user product; do
+            {
+              sed "s|{{version}}|$TAG|g" ".github/prompts/changelog-$kind.md"
+              echo
+              cat /tmp/changelog-input.md
+            } > "/tmp/$kind-prompt.md"
+          done
+
+      # The notes are a convenience; opening the deploy PR is the job's real
+      # output. Never let a model or endpoint failure hold back a released
+      # version, so the inference steps report but do not fail the job.
       - name: Write the user-facing notes
         id: ai_user
         if: env.LITELLM_API_KEY != ''
+        continue-on-error: true
         uses: actions/ai-inference@b81b2afb8390ee6839b494a404766bef6493c7d9 # v1
         with:
-          prompt-file: '.github/prompts/changelog-user.prompt.yml'
-          input: |
-            version: ${{ needs.release-please.outputs.tag_name }}
-          file_input: |
-            changes: /tmp/changelog-input.md
+          prompt-file: /tmp/user-prompt.md
           model: claude-4-6-sonnet
           max-tokens: 4000
           endpoint: https://litellm.amazeeai-us1.amazeeio.review
@@ -114,7 +131,7 @@ jobs:
       # The action reuses one response file per run, so keep this answer before
       # the next inference overwrites it.
       - name: Keep the user-facing notes
-        if: env.LITELLM_API_KEY != ''
+        if: steps.ai_user.outcome == 'success'
         env:
           RESPONSE_FILE: ${{ steps.ai_user.outputs.response-file }}
         run: cp "$RESPONSE_FILE" /tmp/user-notes.md
@@ -122,26 +139,23 @@ jobs:
       - name: Write the product notes
         id: ai_product
         if: env.LITELLM_API_KEY != ''
+        continue-on-error: true
         uses: actions/ai-inference@b81b2afb8390ee6839b494a404766bef6493c7d9 # v1
         with:
-          prompt-file: '.github/prompts/changelog-product.prompt.yml'
-          input: |
-            version: ${{ needs.release-please.outputs.tag_name }}
-          file_input: |
-            changes: /tmp/changelog-input.md
+          prompt-file: /tmp/product-prompt.md
           model: claude-4-6-sonnet
           max-tokens: 4000
           endpoint: https://litellm.amazeeai-us1.amazeeio.review
           token: ${{ secrets.LITELLM_API_KEY }}
 
       - name: Keep the product notes
-        if: env.LITELLM_API_KEY != ''
+        if: steps.ai_product.outcome == 'success'
         env:
           RESPONSE_FILE: ${{ steps.ai_product.outputs.response-file }}
         run: cp "$RESPONSE_FILE" /tmp/product-notes.md
 
       - name: Append the user-facing notes to the GitHub Release
-        if: env.LITELLM_API_KEY != ''
+        if: steps.ai_user.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
