@@ -98,9 +98,13 @@ jobs:
           # CHANGELOG.md only repeats the commit log printed above.
           NOISE=":(exclude,glob)**/package-lock.json :(exclude)CHANGELOG.md"
 
-          # Read in full, always, however large the deploy. These decide whether
-          # a deploy needs a maintenance window.
-          CRITICAL="app/migrations/versions .lagoon.yml helm app/core/config.py"
+          # Read in full, always, however large the deploy: these decide whether
+          # a deploy needs a maintenance window, a new secret or a rollback plan.
+          # docker-compose.yml belongs here because it carries the lagoon.type
+          # service definitions, not just local development.
+          CRITICAL="app/migrations/versions .lagoon.yml docker-compose.yml helm"
+          CRITICAL="$CRITICAL Dockerfile frontend/Dockerfile backend-start.sh"
+          CRITICAL="$CRITICAL requirements.txt app/core/config.py frontend/next.config.ts"
 
           # The same paths again as exclusions, so "everything else" does not
           # repeat what the full section already printed.
@@ -132,7 +136,7 @@ jobs:
               echo
               git diff --stat "$base..$head"
               echo
-              echo "## Migrations, Lagoon, Helm and settings (full)"
+              echo "## Deploy-sensitive files (full)"
               echo
               # shellcheck disable=SC2086
               git diff "$base..$head" -- $CRITICAL
