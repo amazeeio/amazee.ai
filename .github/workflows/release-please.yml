@@ -69,11 +69,16 @@ jobs:
       # release-please builds CHANGELOG.md from commit subjects, which describe
       # the code. These notes describe the product, and are read from the actual
       # diff so a vague commit message cannot hide a user-visible change.
-      # The two audiences read different ranges. The release notes describe one
-      # release, so they read tag-to-tag. The deploy PR merges dev into main and
-      # can carry several releases at once, so its notes read main-to-tag —
-      # otherwise a deploy that ships three migrations is announced as shipping
-      # none, and the approver cannot see what is about to go live.
+      # The two audiences read different ranges. A GitHub Release must describe
+      # exactly its own version, so those notes read tag-to-tag. The deploy PR
+      # merges dev into main and can carry several releases at once, so its
+      # notes read main-to-dev — otherwise a deploy that ships three migrations
+      # is announced as shipping none.
+      #
+      # The deploy head is dev, not the tag. Commits typed chore:, ci:, test: or
+      # build: never produce a release, so they would land on dev after the tag,
+      # ship with the deploy and appear in no set of notes at all. Some of them
+      # touch .lagoon.yml and helm/.
       - name: Collect the ranges
         if: env.LITELLM_API_KEY != ''
         run: |
@@ -84,36 +89,75 @@ jobs:
           fi
           git rev-parse --verify --quiet "$PREV^{commit}" > /dev/null
 
-          # The checkout resolved a tag, so main is not a local ref yet.
-          git fetch --quiet origin main
-          echo "Release range: $PREV..$TAG"
-          echo "Deploy range:  origin/main..$TAG"
+          # The checkout resolved a tag, so no branch is a local ref yet.
+          git fetch --quiet origin main dev
+
+          # Everything the approval notes cannot say anything useful about. They
+          # stay in the file list and the stat, they just do not get to eat the
+          # diff budget: the lockfile alone is 40% of a typical deploy diff, and
+          # CHANGELOG.md only repeats the commit log printed above.
+          NOISE=":(exclude,glob)**/package-lock.json :(exclude)CHANGELOG.md"
+
+          # Read in full, always, however large the deploy. These decide whether
+          # a deploy needs a maintenance window.
+          CRITICAL="app/migrations/versions .lagoon.yml helm app/core/config.py"
+
+          # The same paths again as exclusions, so "everything else" does not
+          # repeat what the full section already printed.
+          SKIP="$NOISE"
+          for path in $CRITICAL; do
+            SKIP="$SKIP :(exclude)$path"
+          done
+
+          BUDGET=8000
 
           dump() {
+            base=$1 head=$2 out=$3
+            rest=$(mktemp)
+            # shellcheck disable=SC2086 # word splitting builds the pathspec list
+            git diff "$base..$head" -- . $SKIP > "$rest"
             {
               echo "## Commit log"
               echo
-              git log --oneline "$1..$TAG"
+              git log --oneline "$base..$head"
               echo
               # --stat elides leading directories on long paths, which hides
               # app/migrations/versions/ entirely. List the paths in full so a
               # schema change cannot slip past the deploy approver.
-              echo "## Changed files"
+              echo "## Changed files (complete)"
               echo
-              git diff --name-status "$1..$TAG"
+              git diff --name-status "$base..$head"
               echo
               echo "## Diff stat"
               echo
-              git diff --stat "$1..$TAG"
+              git diff --stat "$base..$head"
               echo
-              echo "## Detailed diff (truncated)"
+              echo "## Migrations, Lagoon, Helm and settings (full)"
               echo
-              git diff "$1..$TAG" | head -3000
-            } > "$2"
+              # shellcheck disable=SC2086
+              git diff "$base..$head" -- $CRITICAL
+              echo
+              echo "## Everything else"
+              echo
+              head -"$BUDGET" "$rest"
+              if [ "$(wc -l < "$rest")" -gt "$BUDGET" ]; then
+                echo
+                echo "[Truncated at $BUDGET lines. The complete file list is above; say so if a change may be missing.]"
+              fi
+            } > "$out"
+            rm -f "$rest"
           }
 
-          dump "$PREV" /tmp/release-range.md
-          dump origin/main /tmp/deploy-range.md
+          echo "Release range: $PREV..$TAG"
+          dump "$PREV" "$TAG" /tmp/release-range.md
+
+          echo "Deploy range:  origin/main..origin/dev"
+          dump origin/main origin/dev /tmp/deploy-range.md
+
+          # The approver needs to know where the notes stop, because dev keeps
+          # moving after this body is written.
+          echo "main...$(git rev-parse --short origin/dev) ($(git rev-list --count origin/main..origin/dev) commits)" \
+            > /tmp/deploy-range.txt
 
       # Assemble the prompts here instead of letting the action template them.
       # It substitutes template variables into the raw text of a *.prompt.yml
@@ -212,6 +256,12 @@ jobs:
               echo
             else
               echo "See the release notes for the full changelog."
+              echo
+            fi
+            if [ -f /tmp/deploy-range.txt ]; then
+              # dev keeps moving after this body is written, so name the cutoff
+              # rather than let the notes look current when they are not.
+              echo "These notes cover \`$(cat /tmp/deploy-range.txt)\`. Anything merged to dev afterwards ships too, but is not described above."
               echo
             fi
             echo "Opened automatically by the Release Please workflow."
