@@ -17,13 +17,19 @@ TAG=${3:-}
 REPO_URL=${REPO_URL:-}
 
 # GitHub rejects a body over 65536 characters. Keep well clear of it.
+#
+# Capped with sed rather than head: head closes the pipe as soon as it has its
+# lines, the writer dies of SIGPIPE, and pipefail turns that into a failed
+# script — aborting on exactly the large deploys the cap exists for. sed reads
+# its input to the end.
 MAX_FILES=400
 MAX_COMMITS=300
 
 # Anything that changes how production runs rather than what it computes.
 # docker-compose.yml is here because it carries the lagoon.type service
-# definitions, not only local development.
-SENSITIVE='^(app/migrations/versions/|\.lagoon\.yml$|docker-compose\.yml$|helm/|Dockerfile$|frontend/Dockerfile$|frontend/next\.config\.ts$|backend-start\.sh$|requirements\.txt$|app/core/config\.py$)'
+# definitions, not only local development, and scripts/ because .lagoon.yml
+# names those files as the cronjob commands.
+SENSITIVE='^(app/migrations/versions/|scripts/|\.lagoon\.yml$|docker-compose\.yml$|helm/|Dockerfile$|frontend/Dockerfile$|frontend/next\.config\.ts$|backend-start\.sh$|requirements\.txt$|app/core/config\.py$)'
 
 range="$(git rev-parse --short "$BASE")...$(git rev-parse --short "$HEAD")"
 commits=$(git rev-list --count "$BASE..$HEAD")
@@ -43,8 +49,10 @@ echo
 
 echo "## ⚠️ Check before merging"
 echo
-# Documentation under a sensitive path cannot change how production runs.
-sensitive=$(printf '%s\n' "$files" | awk '{print $2}' | grep -E "$SENSITIVE" | grep -vE '\.md$' || true)
+# Last field, not second: a rename prints "R100 <old> <new>", and the path that
+# ships is the destination. Documentation under a sensitive path cannot change
+# how production runs.
+sensitive=$(printf '%s\n' "$files" | awk '{print $NF}' | grep -E "$SENSITIVE" | grep -vE '\.md$' || true)
 if [ -z "$sensitive" ]; then
   echo "Nothing that changes how production runs: no migrations, no Lagoon,"
   echo "Helm, Docker or settings changes."
@@ -72,7 +80,7 @@ echo
 echo "## Commits"
 echo
 echo '```'
-git log --oneline "$BASE..$HEAD" | head -"$MAX_COMMITS"
+git log --oneline "$BASE..$HEAD" | sed -n "1,${MAX_COMMITS}p"
 if [ "$commits" -gt "$MAX_COMMITS" ]; then
   echo "... and $((commits - MAX_COMMITS)) more"
 fi
@@ -82,7 +90,7 @@ echo
 echo "<details><summary>Changed files ($total_files)</summary>"
 echo
 echo '```'
-printf '%s\n' "$files" | head -"$MAX_FILES"
+printf '%s\n' "$files" | sed -n "1,${MAX_FILES}p"
 if [ "$total_files" -gt "$MAX_FILES" ]; then
   echo "... and $((total_files - MAX_FILES)) more"
 fi
