@@ -68,6 +68,31 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return encoded_jwt
 
 
+def assert_token_not_revoked(db: Session, payload: dict) -> None:
+    """Raise 401 unless the token id is present and still allowed.
+
+    Every path that turns a decoded JWT into access must call this, including the
+    refresh in /auth/validate-jwt. Skipping it there would let a revoked token buy
+    a fresh one and undo the logout.
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    # A token with no jti cannot be revoked at logout, so it is not accepted.
+    # Only tokens signed before revocation existed lack one.
+    jti = payload.get("jti")
+    if not jti:
+        logger.info("Rejected access token without a jti claim")
+        raise credentials_exception
+
+    if is_token_revoked(db, jti):
+        logger.info("Rejected revoked access token jti=%s", jti)
+        raise credentials_exception
+
+
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
     db: Session = Depends(get_db),
@@ -89,16 +114,7 @@ async def get_current_user(
     except JWTError:
         raise credentials_exception
 
-    # A token with no jti cannot be revoked at logout, so it is not accepted.
-    # Only tokens signed before this check existed lack one.
-    jti = payload.get("jti")
-    if not jti:
-        logger.info("Rejected access token without a jti claim")
-        raise credentials_exception
-
-    if is_token_revoked(db, jti):
-        logger.info("Rejected revoked access token jti=%s", jti)
-        raise credentials_exception
+    assert_token_not_revoked(db, payload)
 
     raw_email: str = payload.get("sub")
     # Normalize plus-tags so a token minted for "user+p12@" still resolves

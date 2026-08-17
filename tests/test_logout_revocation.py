@@ -1,6 +1,7 @@
 """Logout must stop the presented access token from working again (CWE-613)."""
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 import pytest
 from jose import jwt
@@ -124,6 +125,80 @@ def test_logout_does_not_affect_the_users_other_sessions(client, test_user):
         ).status_code
         == 200
     )
+
+
+def test_revoked_token_cannot_be_refreshed_by_validate_jwt(
+    client, test_user, test_token
+):
+    # The refresh endpoint decodes the token itself, so it needs its own check.
+    # Without one, a revoked token buys a fresh one and undoes the logout.
+    assert client.get(f"/auth/validate-jwt?token={test_token}").status_code == 200
+
+    client.post("/auth/logout", headers={"Authorization": f"Bearer {test_token}"})
+
+    query = client.get(f"/auth/validate-jwt?token={test_token}")
+    header = client.get(
+        "/auth/validate-jwt", headers={"Authorization": f"Bearer {test_token}"}
+    )
+
+    assert query.status_code == 401
+    assert header.status_code == 401
+    assert "access_token" not in query.json()
+
+
+def test_validate_jwt_refuses_a_token_without_a_jti(client, test_user):
+    legacy = jwt.encode(
+        {"sub": test_user.email, "exp": datetime.now(UTC) + timedelta(minutes=30)},
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+
+    assert client.get(f"/auth/validate-jwt?token={legacy}").status_code == 401
+
+
+@patch("app.api.auth.SESService")
+def test_expired_revoked_token_gets_no_recovery_email(mock_ses, client, db, test_user):
+    mock_ses.return_value.send_email.return_value = True
+    token = create_access_token(
+        data={"sub": test_user.email}, expires_delta=timedelta(minutes=30)
+    )
+    revoke_access_token(db, token)
+
+    # Same token, now past its expiry, replayed at the refresh endpoint.
+    expired_revoked = jwt.encode(
+        {
+            "sub": test_user.email,
+            "jti": _claims(token)["jti"],
+            "exp": datetime.now(UTC) - timedelta(seconds=1),
+        },
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+
+    response = client.get(f"/auth/validate-jwt?token={expired_revoked}")
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Could not validate credentials"
+    mock_ses.return_value.send_email.assert_not_called()
+
+
+@patch("app.api.auth.SESService")
+def test_expired_token_without_a_jti_still_gets_a_recovery_email(
+    mock_ses, client, test_user
+):
+    mock_ses.return_value.send_email.return_value = True
+    # An old emailed link: it predates revocation, so recovery must still work.
+    legacy_expired = jwt.encode(
+        {"sub": test_user.email, "exp": datetime.now(UTC) - timedelta(seconds=1)},
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+
+    response = client.get(f"/auth/validate-jwt?token={legacy_expired}")
+
+    assert response.status_code == 401
+    assert "validation URL has been sent" in response.json()["detail"]
+    mock_ses.return_value.send_email.assert_called_once()
 
 
 def test_logout_leaves_api_tokens_working(client, db, test_user, test_token):
