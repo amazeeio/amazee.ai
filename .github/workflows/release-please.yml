@@ -52,6 +52,12 @@ jobs:
     permissions:
       contents: write       # append the user-facing notes to the GitHub Release
       pull-requests: write
+    # Shares the group with the refresh job below, because both write this body.
+    # Serialized, not cancelled: whoever writes last read git last, so the body
+    # ends up describing the newest dev either way.
+    concurrency:
+      group: prod-deploy-pr-body
+      cancel-in-progress: false
     env:
       # Job-level so the AI steps can test it — the `secrets` context is not
       # available in a job-level `if`. Empty means no key configured, which
@@ -194,9 +200,12 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+    # Same group as the job above. Cancelling is wrong here: a cancelled run can
+    # leave the body describing an older dev than the one that would merge, and
+    # queueing costs one git read.
     concurrency:
       group: prod-deploy-pr-body
-      cancel-in-progress: true
+      cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
       REPO_URL: ${{ github.server_url }}/${{ github.repository }}
